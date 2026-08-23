@@ -8,6 +8,7 @@ use ergatai_runtime::{get_agent_runtime, ResourceLimits, WorkspaceSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::messaging::{get_message_sender, SendRequest, SendMessageResult};
 use crate::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -22,6 +23,14 @@ pub struct SpawnAgentRequest {
 #[derive(Debug, Deserialize)]
 pub struct SendMessageRequest {
     pub message: String,
+    /// Optional sender identifier. Defaults to "api" if not provided.
+    /// Workflows can set this to identify themselves in message history.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// Optional message type: "request", "response", or "broadcast".
+    /// Defaults to "request" if not provided.
+    #[serde(default)]
+    pub message_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -32,6 +41,8 @@ pub struct SpawnAgentResponse {
 #[derive(Debug, Serialize)]
 pub struct AgentInfoResponse {
     pub agent_id: String,
+    /// Human-readable stable identifier (e.g., "agent-1"). User-facing display name.
+    pub stable_id: Option<String>,
     pub agent_uuid: String,
     pub workspace_id: String,
     /// Lifecycle state name (lowercase, e.g., "running", "idle", "processing")
@@ -63,6 +74,7 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
             let lifecycle_state = a.lifecycle.state_name().to_string();
             AgentInfoResponse {
                 agent_id: a.agent_id,
+                stable_id: a.stable_id,
                 agent_uuid: a.agent_uuid,
                 workspace_id: a.workspace_id,
                 // Fix: use lowercase lifecycle state instead of Debug-formatted AgentState
@@ -242,15 +254,43 @@ pub async fn send_message(
     Path(id): Path<String>,
     Json(req): Json<SendMessageRequest>,
 ) -> impl IntoResponse {
-    let runtime = get_agent_runtime();
+    let sender = get_message_sender();
+    let send_req = SendRequest {
+        from: req.from.unwrap_or_else(|| "api".to_string()),
+        to: id.clone(),
+        message: req.message,
+        message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
+    };
 
-    match runtime.inject_message(&id, &req.message).await {
-        Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => (
+    match sender.send(send_req).await {
+        SendMessageResult::Queued {
+            target_agent,
+            stream,
+            sequence,
+        } => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "queued",
+                "target_agent": target_agent,
+                "stream": stream,
+                "sequence": sequence,
+            })),
+        )
+            .into_response(),
+        SendMessageResult::DirectDelivered { target_agent } => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "direct_delivered",
+                "target_agent": target_agent,
+            })),
+        )
+            .into_response(),
+        SendMessageResult::Rejected { reason } => (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
+            Json(serde_json::json!({
+                "status": "rejected",
+                "reason": reason,
+            })),
         )
             .into_response(),
     }
@@ -361,6 +401,7 @@ mod tests {
     fn test_agent_info_response_serialization() {
         let resp = AgentInfoResponse {
             agent_id: "a-1".to_string(),
+            stable_id: Some("agent-1".to_string()),
             agent_uuid: "uuid-1".to_string(),
             workspace_id: "ws-1".to_string(),
             state: "running".to_string(),

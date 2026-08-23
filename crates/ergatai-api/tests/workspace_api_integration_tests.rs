@@ -19,6 +19,24 @@ fn test_state() -> AppState {
     }
 }
 
+/// RAII guard that cleans up a workspace when dropped.
+/// Calls DELETE /api/v1/workspaces/{id} on drop to ensure tmux session cleanup.
+struct WorkspaceCleanupGuard {
+    ws_id: String,
+}
+
+impl Drop for WorkspaceCleanupGuard {
+    fn drop(&mut self) {
+        // Cleanup must be synchronous — Drop runs after the tokio runtime may have
+        // shut down, so tokio::spawn would be silently cancelled.
+        // Use tmux directly to kill the session (best-effort).
+        let session_name = format!("ergatai-{}", self.ws_id);
+        let _ = std::process::Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
+    }
+}
+
 /// Build a test AppState with an auth token.
 fn test_state_with_token(token: &str) -> AppState {
     AppState {
@@ -87,6 +105,9 @@ async fn create_workspace_malformed_json_returns_4xx() {
 async fn create_workspace_with_valid_id_returns_created_or_bad_request() {
     let app = build_rest_app(test_state());
     let ws_id = format!("test-ws-{}", uuid::Uuid::new_v4());
+    let guard = WorkspaceCleanupGuard {
+        ws_id: ws_id.clone(),
+    };
 
     let response = app
         .oneshot(
@@ -121,12 +142,17 @@ async fn create_workspace_with_valid_id_returns_created_or_bad_request() {
     if body.get("error").is_some() {
         assert!(!body["error"].as_str().unwrap().is_empty());
     }
+
+    drop(guard); // ensure cleanup runs
 }
 
 #[tokio::test]
 async fn create_workspace_with_env_and_persist() {
     let app = build_rest_app(test_state());
     let ws_id = format!("test-ws-env-{}", uuid::Uuid::new_v4());
+    let guard = WorkspaceCleanupGuard {
+        ws_id: ws_id.clone(),
+    };
 
     let response = app
         .oneshot(
@@ -153,6 +179,8 @@ async fn create_workspace_with_env_and_persist() {
         "unexpected status: {}",
         response.status()
     );
+
+    drop(guard); // ensure cleanup runs
 }
 
 // ── list_workspaces ──────────────────────────────────────────────────

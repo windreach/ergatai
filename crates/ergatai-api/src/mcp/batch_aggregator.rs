@@ -420,74 +420,69 @@ impl BatchAggregator {
         }
     }
 
-    /// 合并多条回复成一条消息（带去重）
+    /// 合并多条回复成一条消息（提示词只注入一次）
+    ///
+    /// 格式:
+    /// ```text
+    /// {"from":"agent-2","message":"回复内容"}
+    /// {"from":"agent-3","message":"回复内容"}
+    /// [hint — 只出现一次]
+    /// ```
     fn merge_replies(
         &self,
         replies: &HashMap<String, String>,
         targets: &HashSet<String>,
     ) -> String {
-        let mut result = String::from("## 📨 Batch Reply Summary\n\n");
+        let mut result = String::new();
 
         // 按 targets 顺序排列，确保一致性
         let mut sorted_targets: Vec<_> = targets.iter().collect();
         sorted_targets.sort();
 
-        // 用于去重：content -> list of agents who sent this content
-        let mut content_to_agents: std::collections::HashMap<&str, Vec<&str>> =
-            std::collections::HashMap::new();
-        let _seen_contents: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        // 第一遍：收集所有回复，找出重复的
+        // 输出每条回复（去掉各自的提示词）— 使用 serde_json 确保正确转义
         for target in sorted_targets.iter() {
             if let Some(reply) = replies.get(target.as_str()) {
-                // 清理提示词后再比较（避免相同内容因提示词不同被误判）
-                let cleaned_reply = Self::strip_hint(reply);
-                content_to_agents
-                    .entry(cleaned_reply)
-                    .or_default()
-                    .push(target.as_str());
-            }
-        }
-
-        // 第二遍：输出去重后的结果
-        let mut output_order: Vec<(&str, &Vec<&str>)> =
-            content_to_agents.iter().map(|(k, v)| (*k, v)).collect();
-        // 按第一个 agent 的名称排序，保持一致性
-        output_order.sort_by_key(|(_, agents)| agents.first().copied().unwrap_or(""));
-
-        for (content, agents) in output_order {
-            let from_list = agents.join(", ");
-            if agents.len() > 1 {
-                // 多个 agent 回复相同内容
-                result.push_str(&format!(
-                    "### From: {} (same reply)\n\n{}\n\n",
-                    from_list, content
-                ));
-            } else {
-                result.push_str(&format!("### From: {}\n\n{}\n\n", from_list, content));
+                let cleaned = Self::strip_hint(reply);
+                let msg_json = serde_json::json!({
+                    "from": target,
+                    "message": cleaned
+                });
+                result.push_str(&msg_json.to_string());
+                result.push('\n');
             }
         }
 
         // 检查没有回复的 targets
         for target in sorted_targets.iter() {
             if !replies.contains_key(target.as_str()) {
-                result.push_str(&format!("### From: {}\n\n_(no reply)_\n\n", target));
+                let msg_json = serde_json::json!({
+                    "from": target,
+                    "message": "(no reply)"
+                });
+                result.push_str(&msg_json.to_string());
+                result.push('\n');
             }
         }
 
-        result.push_str("---\n_Replies merged — no need to process individually_");
+        // 提示词只注入一次（batch 回复都是发给提问者的 → 用 questioner hint）
+        // 不实现隐藏方案 — ANSI conceal 和同色隐藏兼容性差，hint 保持可见
+        let hint_text = "[System prompt: No questions → output \"END\" in terminal, DO NOT call any tools; Has questions → reply via send_message MCP]";
+        result.push_str(hint_text);
+
         result
     }
 
     /// 清理消息中的提示词，用于内容比较
     fn strip_hint(content: &str) -> &str {
-        // 提示词格式: [Reply via send_message MCP...] 或 [If no questions, just show "Received"]
+        // 提示词格式: [Reply via send_message MCP...] 或 [No questions → output "END"...]
         // 这些提示词在消息末尾，用 [] 包裹
         let content = content.trim();
         if let Some(idx) = content.rfind('[') {
             let potential_hint = &content[idx..];
-            if potential_hint.starts_with("[Reply via")
+            if potential_hint.starts_with("[System prompt:")
+                || potential_hint.starts_with("[Reply via")
                 || potential_hint.starts_with("[If no questions")
+                || potential_hint.starts_with("[No questions")
             {
                 return content[..idx].trim();
             }

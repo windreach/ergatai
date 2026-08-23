@@ -290,6 +290,8 @@ fn agent_message_payload_roundtrip() {
         to_agent: "%20".to_string(),
         from_uuid: Some("uuid-1".to_string()),
         to_uuid: Some("uuid-2".to_string()),
+        from_stable: None,
+        to_stable: None,
         content: "Hello from agent 10".to_string(),
         thread_id: Some("thread-abc".to_string()),
         timestamp: 1700000000,

@@ -80,6 +80,8 @@ pub async fn route_agent_message(
         to_agent: to_agent.to_string(),
         from_uuid,
         to_uuid,
+        from_stable: None,
+        to_stable: None,
         content: content.to_string(),
         thread_id,
         timestamp,

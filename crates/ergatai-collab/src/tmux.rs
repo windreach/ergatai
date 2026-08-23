@@ -115,15 +115,25 @@ fn sanitize_message(message: &str) -> String {
         .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
         .collect();
 
-    // Truncate (respecting UTF-8 boundaries)
-    if single_line.len() > MAX_MESSAGE_SIZE {
-        let mut end = MAX_MESSAGE_SIZE;
-        while end > 0 && !single_line.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}... [truncated]", &single_line[..end])
+    // Strip leading '$ ' or '$' to prevent shell command interpretation.
+    // Defense-in-depth: if the pane is running a shell, a leading '$'
+    // would cause the message to be executed as a command.
+    let trimmed = single_line.trim_start();
+    let no_dollar = if let Some(rest) = trimmed.strip_prefix('$') {
+        rest.trim_start().to_string()
     } else {
         single_line
+    };
+
+    // Truncate (respecting UTF-8 boundaries)
+    if no_dollar.len() > MAX_MESSAGE_SIZE {
+        let mut end = MAX_MESSAGE_SIZE;
+        while end > 0 && !no_dollar.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}... [truncated]", &no_dollar[..end])
+    } else {
+        no_dollar
     }
 }
 

@@ -78,26 +78,58 @@ impl UnifiedAgentRegistry {
     }
 
     /// Register a new agent
+    ///
+    /// MEDIUM BUG FIX: If `agent_id` or `mcp_agent_id` was already mapped to a
+    /// different UUID, the old index entry is cleaned up to prevent orphaned
+    /// records in `agents_by_uuid`. Without this, re-registering an agent with
+    /// the same agent_id but a new UUID would leave the old record unreachable
+    /// by any index — a memory leak.
     pub async fn register(&self, record: AgentRecord) {
         let uuid = record.agent_uuid.clone();
         let agent_id = record.agent_id.clone();
         let mcp_id = record.mcp_agent_id.clone();
+
+        // MEDIUM BUG FIX: Clean up stale index entries before inserting new ones.
+        // If agent_id was previously bound to a different UUID, remove that old
+        // mapping to prevent orphaned records.
+        {
+            let mut id_to_uuid = self.agent_id_to_uuid.write().await;
+            if let Some(old_uuid) = id_to_uuid.get(&agent_id) {
+                if *old_uuid != uuid {
+                    warn!(
+                        old_agent_uuid = %old_uuid,
+                        new_agent_uuid = %uuid,
+                        agent_id = %agent_id,
+                        "agent_id re-bound to different UUID — removing old record"
+                    );
+                    self.agents_by_uuid.write().await.remove(old_uuid);
+                }
+            }
+            id_to_uuid.insert(agent_id.clone(), uuid.clone());
+        }
+
+        // Clean up stale mcp_id binding if it points to a different UUID
+        if let Some(ref mcp) = mcp_id {
+            let mut mcp_to_uuid = self.mcp_id_to_uuid.write().await;
+            if let Some(old_uuid) = mcp_to_uuid.get(mcp) {
+                if *old_uuid != uuid {
+                    warn!(
+                        old_agent_uuid = %old_uuid,
+                        new_agent_uuid = %uuid,
+                        mcp_agent_id = %mcp,
+                        "mcp_agent_id re-bound to different UUID — removing old record"
+                    );
+                    self.agents_by_uuid.write().await.remove(old_uuid);
+                }
+            }
+            mcp_to_uuid.insert(mcp.clone(), uuid.clone());
+        }
 
         // Store the record
         self.agents_by_uuid
             .write()
             .await
             .insert(uuid.clone(), record);
-
-        // Update indices
-        self.agent_id_to_uuid
-            .write()
-            .await
-            .insert(agent_id, uuid.clone());
-
-        if let Some(mcp) = mcp_id {
-            self.mcp_id_to_uuid.write().await.insert(mcp, uuid.clone());
-        }
 
         debug!(agent_uuid = %uuid, "Agent registered in unified registry");
     }
@@ -513,5 +545,71 @@ mod tests {
         assert_eq!(counts.total, 2);
         assert_eq!(counts.alive, 2);
         assert_eq!(counts.idle, 1);
+    }
+
+    /// MEDIUM #22 regression test: re-registering an agent with the same agent_id
+    /// but a different UUID must clean up the old record to prevent orphaned entries.
+    #[tokio::test]
+    async fn test_register_cleans_stale_agent_id_index() {
+        let registry = UnifiedAgentRegistry::new();
+
+        // Register first agent with agent_id "%10"
+        registry
+            .register(create_test_record("uuid-old", "%10"))
+            .await;
+        assert!(registry.get_by_uuid("uuid-old").await.is_some());
+        assert!(registry.get_by_agent_id("%10").await.is_some());
+
+        // Re-register with same agent_id but different UUID
+        registry
+            .register(create_test_record("uuid-new", "%10"))
+            .await;
+
+        // New record should be accessible
+        let by_id = registry.get_by_agent_id("%10").await;
+        assert!(by_id.is_some());
+        assert_eq!(by_id.unwrap().agent_uuid, "uuid-new");
+
+        // Old record should be cleaned up (no orphan)
+        let old = registry.get_by_uuid("uuid-old").await;
+        assert!(
+            old.is_none(),
+            "Old record should be removed when agent_id is re-bound"
+        );
+
+        // Total count should be 1, not 2
+        let all = registry.list_all().await;
+        assert_eq!(all.len(), 1, "No orphaned records should remain");
+    }
+
+    /// MEDIUM #22 regression test: re-binding mcp_agent_id must clean up the old record.
+    #[tokio::test]
+    async fn test_register_cleans_stale_mcp_id_index() {
+        let registry = UnifiedAgentRegistry::new();
+
+        // Register first agent with mcp_agent_id
+        let mut record1 = create_test_record("uuid-old", "%20");
+        record1.mcp_agent_id = Some("opencode@abc".to_string());
+        registry.register(record1).await;
+
+        // Register second agent with same mcp_agent_id but different UUID
+        let mut record2 = create_test_record("uuid-new", "%21");
+        record2.mcp_agent_id = Some("opencode@abc".to_string());
+        registry.register(record2).await;
+
+        // New record should be accessible via mcp_id
+        let by_mcp = registry.get_by_mcp_id("opencode@abc").await;
+        assert!(by_mcp.is_some());
+        assert_eq!(by_mcp.unwrap().agent_uuid, "uuid-new");
+
+        // Old record should be cleaned up
+        assert!(
+            registry.get_by_uuid("uuid-old").await.is_none(),
+            "Old record should be removed when mcp_agent_id is re-bound"
+        );
+
+        // Total count should be 1
+        let all = registry.list_all().await;
+        assert_eq!(all.len(), 1, "No orphaned records should remain");
     }
 }

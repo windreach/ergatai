@@ -33,6 +33,9 @@ pub mod unified_registry;
 pub use ergatai_runtime::agent_lifecycle;
 pub use ergatai_runtime::agent_record;
 
+// ── Re-export runtime for graceful shutdown ──
+pub use ergatai_runtime::runtime;
+
 // ── Re-export extracted crates ──
 pub use ergatai_agent as agent;
 pub use ergatai_collab as cross_agent;

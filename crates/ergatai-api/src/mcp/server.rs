@@ -25,10 +25,8 @@ use tracing::{error, info, warn};
 
 use ergatai_core::agent_registry::AgentRegistry;
 use ergatai_runtime::get_agent_runtime;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::conversation::{ConversationManager, TokenOwner};
-use super::rate_limiter::get_rate_limiter;
+use super::conversation::ConversationManager;
 
 /// Shared registry of MCP peer handles for pushing notifications to agents.
 /// Key: agent_id (e.g., "opencode@abcd1234")
@@ -49,7 +47,9 @@ pub struct ErgataiMcpServer {
     peer_registry: PeerRegistry,
     /// Per-session agent ID (set during initialize, used in send_message)
     session_agent_id: Arc<RwLock<Option<String>>>,
-    /// Conversation manager for loop prevention (AutoGen-style)
+    /// Conversation manager for loop prevention (AutoGen-style).
+    /// Kept for future use; current send_message delegates to global MessageSender.
+    #[allow(dead_code)]
     conversation_manager: Arc<ConversationManager>,
     /// Agent identifier from URL path (e.g., "agent-1", "agent-2")
     /// Used to bind MCP connections to specific rmux panes
@@ -286,7 +286,7 @@ impl ErgataiMcpServer {
     /// Use this to determine who you can message before calling `send_message`.
     /// Agents filtered out are not reachable — `send_message` would reject them.
     #[tool(
-        description = "List agents you can communicate with. Without a DAG, returns all online agents. With a DAG, returns only agents allowed by the DAG's MeshPolicy. Supports optional filter: {can_communicate_with, in_dag, status}."
+        description = "List agents you can communicate with in Ergatai. WITHOUT active DAG: returns all online agents. WITH active DAG: returns ONLY agents allowed by the DAG's MeshPolicy (communication policy). The 'dag_mode' field in the response indicates whether filtering is active. Supports optional filter: {can_communicate_with, in_dag, status}."
     )]
     async fn list_agents(
         &self,
@@ -570,50 +570,7 @@ impl ErgataiMcpServer {
             target_agent_id, message, message_type
         );
 
-        // Rate-limit check: 60 messages per target agent per minute.
-        // `try_acquire` is atomic (check + reserve under one lock) and sync —
-        // the critical section is short and contains no `.await`. Recording
-        // happens here, not after publish, so a failed publish still counts
-        // against the limit (stricter: prevents abuse via rapid failing sends).
-        let rl = get_rate_limiter();
-        if let Err(e) = rl.try_acquire(target_agent_id) {
-            tracing::warn!(%e, "send_message rate-limited");
-            return Err(ErrorData::invalid_params(e.to_string(), None));
-        }
-
-        // Find the matching agent - support both exact ID and name prefix
-        // Check both MCP registry and AgentRuntime
-        let agents = self.registry.list_agents().await;
-        let runtime = get_agent_runtime();
-        let runtime_agents = runtime.list_agents().await;
-
-        let matching_agent = agents
-            .iter()
-            .find(|a| {
-                // Exact match
-                a.agent_id == *target_agent_id
-                // Or prefix match (e.g., "simple-agent" matches "simple-agent@ead00fad")
-                || a.agent_id.starts_with(&format!("{}@", target_agent_id))
-            })
-            .map(|a| a.agent_id.clone())
-            .or_else(|| {
-                // Check runtime agents (by agent_id, task_id, ergatai_agent_id, or agent_uuid)
-                runtime_agents
-                    .iter()
-                    .find(|a| {
-                        a.agent_id == *target_agent_id
-                            || a.agent_uuid == *target_agent_id
-                            || a.task_id.as_deref() == Some(target_agent_id)
-                            || a.handle
-                                .metadata
-                                .get("ergatai_agent_id")
-                                .map(|id| id == target_agent_id)
-                                .unwrap_or(false)
-                    })
-                    .map(|a| a.agent_id.clone())
-            });
-
-        // Get the sender agent ID
+        // Get the sender agent ID from MCP session
         let from_agent = self
             .session_agent_id
             .read()
@@ -621,239 +578,48 @@ impl ErgataiMcpServer {
             .clone()
             .unwrap_or_else(|| "unknown-mcp-client".to_string());
 
-        let resolved_agent_id = match matching_agent {
-            Some(id) => {
-                info!(
-                    from_agent = %from_agent,
-                    target_agent_id = %target_agent_id,
-                    resolved_agent_id = %id,
-                    "Message routing: resolved target agent ID"
-                );
-                id
-            }
-            None => {
-                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                    "Agent {} not found. Agent must connect via MCP or be running in tmux.",
-                    target_agent_id
-                ))]));
-            }
+        // Delegate to the shared MessageSender service (same pipeline as REST API)
+        let sender = crate::messaging::get_message_sender();
+        let send_req = crate::messaging::SendRequest {
+            from: from_agent.clone(),
+            to: target_agent_id.to_string(),
+            message: message.to_string(),
+            message_type: message_type.to_string(),
         };
 
-        // Server-side safety net: reject self-messages.
-        // Both IDs must be resolved to runtime IDs before comparing —
-        // from_agent is an MCP ID (e.g. "opencode@abcd") while resolved_agent_id
-        // is a runtime ID (e.g. "%312"). Without resolution the check never fires.
-        let from_runtime_id = runtime.resolve_agent_id(&from_agent).await;
-        if from_runtime_id.as_deref() == Some(&resolved_agent_id) {
-            return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                "Cannot send message to yourself. Agent '{}' cannot target itself.",
-                from_agent
-            ))]));
-        }
+        match sender.send(send_req).await {
+            crate::messaging::SendMessageResult::Queued {
+                target_agent,
+                stream,
+                sequence,
+            } => {
+                let response_json = serde_json::json!({
+                    "status": "queued",
+                    "target_agent": target_agent,
+                    "delivery_method": "nats_jetstream",
+                    "stream": stream,
+                    "sequence": sequence,
+                    "note": "Message persisted to NATS JetStream. Background consumer will deliver via tmux injection."
+                });
 
-        // ── Collaboration session ACL (MeshPolicy enforcement) ──
-        // Try plausible identifier pairs for sender/receiver against every active
-        // DAG session. A session only "speaks up" when both endpoints are its
-        // participants (Denied or Allowed); otherwise it returns NotApplicable
-        // and we keep scanning. First Denied wins; if no scheduler denies, the
-        // message is allowed.
-        {
-            let sender_ids = [
-                from_agent.as_str(),
-                from_runtime_id.as_deref().unwrap_or(""),
-            ];
-            let receiver_ids = [target_agent_id.as_str(), resolved_agent_id.as_str()];
-
-            'scheduler_loop: for scheduler in ergatai_core::cross_agent::list_dag_schedulers() {
-                for &s in &sender_ids {
-                    if s.is_empty() {
-                        continue;
-                    }
-                    for &r in &receiver_ids {
-                        if r.is_empty() {
-                            continue;
-                        }
-                        match scheduler.check_communication(s, r).await {
-                            ergatai_core::cross_agent::CommunicationCheck::Denied(reason) => {
-                                warn!(
-                                    from = %s,
-                                    to = %r,
-                                    reason = %reason,
-                                    "MeshPolicy denied message"
-                                );
-                                return Ok(CallToolResult::error(vec![ContentBlock::text(
-                                    format!(
-                                        "Message rejected by DAG communication policy: {}. \
-                                         Use `list_agents` to see which agents you can message, \
-                                         or `get_collaboration_status` to inspect the active DAG rules.",
-                                        reason
-                                    ),
-                                )]));
-                            }
-                            ergatai_core::cross_agent::CommunicationCheck::Allowed => {
-                                // This session covered both endpoints and permits
-                                // the pair — skip to next scheduler.
-                                continue 'scheduler_loop;
-                            }
-                            ergatai_core::cross_agent::CommunicationCheck::NotApplicable => {
-                                // This session doesn't cover both endpoints; keep
-                                // scanning other (sender, receiver) pairs.
-                            }
-                        }
-                    }
-                }
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    serde_json::to_string_pretty(&response_json).unwrap_or_default(),
+                )]))
             }
-        }
+            crate::messaging::SendMessageResult::DirectDelivered { target_agent } => {
+                let response_json = serde_json::json!({
+                    "status": "direct_delivered",
+                    "target_agent": target_agent,
+                    "delivery_method": "tmux_injection",
+                    "note": "NATS unavailable. Message delivered directly via tmux injection (no persistence)."
+                });
 
-        // ── Check if this is a reply BEFORE check_and_record modifies token state ──
-        // is_reply_message checks token_owner: if sender holds token, it means recipient sent last.
-        // Must be called BEFORE check_and_record which transfers the token.
-        let from_runtime_id_for_batch = from_runtime_id
-            .clone()
-            .unwrap_or_else(|| from_agent.clone());
-        let is_reply = self
-            .is_reply_message(&from_runtime_id_for_batch, &resolved_agent_id)
-            .await;
-
-        info!(
-            from_agent = %from_agent,
-            from_runtime_id = ?from_runtime_id,
-            from_runtime_id_for_batch = %from_runtime_id_for_batch,
-            resolved_agent_id = %resolved_agent_id,
-            is_reply = is_reply,
-            "is_reply_message check"
-        );
-
-        // ── Conversation loop prevention (AutoGen-style) ──
-        // Use runtime IDs for consistency (from_runtime_id_for_batch and resolved_agent_id are both runtime IDs).
-        // Check max_turns, max_consecutive_auto_reply, max_execution_time, and TERMINATE keyword.
-        if let Err(e) = self
-            .conversation_manager
-            .check_and_record(&from_runtime_id_for_batch, &resolved_agent_id, message)
-            .await
-        {
-            warn!(
-                from = %from_agent,
-                to = %resolved_agent_id,
-                error = %e,
-                "Conversation loop prevention blocked message"
-            );
-            return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                "Message blocked by conversation loop prevention: {}",
-                e
-            ))]));
-        }
-
-        // ── Batch aggregator: record send for group message detection ──
-        // Track this send to detect when agent sends to multiple targets in quick succession.
-        // Skip recording if this is a reply (to avoid confusing batch detection).
-        let batch_id = super::get_batch_aggregator()
-            .record_send(&from_runtime_id_for_batch, &resolved_agent_id, is_reply)
-            .await;
-
-        if let Some(ref bid) = batch_id {
-            info!(
-                from = %from_agent,
-                to = %resolved_agent_id,
-                batch_id = %bid,
-                "Message is part of a batch"
-            );
-        }
-
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        // ── Primary path: publish to NATS JetStream (reliable) ──
-        if let Some(conn) = ergatai_nats::get_nats_connection().await {
-            // Resolve sender MCP ID → runtime ID for the reply target
-            let sender_runtime_id = runtime
-                .resolve_agent_id(&from_agent)
-                .await
-                .unwrap_or_else(|| from_agent.clone());
-
-            // Use human-readable ergatai_agent_id (e.g., "agent-2") for display.
-            // Fall back to runtime ID (pane ID or UUID) if not available.
-            let sender_display = runtime
-                .get_agent(&sender_runtime_id)
-                .await
-                .and_then(|info| info.handle.metadata.get("ergatai_agent_id").cloned())
-                .unwrap_or_else(|| sender_runtime_id.clone());
-
-            // Format message with contextual hint based on message type
-            let formatted_content = Self::format_agent_message(&sender_display, message, is_reply);
-
-            let bus = ergatai_nats::EventBus::new(conn);
-            let mut metadata = std::collections::HashMap::new();
-            if let Some(ref bid) = batch_id {
-                metadata.insert("batch_id".to_string(), bid.clone());
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    serde_json::to_string_pretty(&response_json).unwrap_or_default(),
+                )]))
             }
-
-            // Get agent UUIDs for stable routing
-            let from_uuid = runtime
-                .get_agent(&from_runtime_id_for_batch)
-                .await
-                .map(|info| info.agent_uuid);
-            let to_uuid = runtime
-                .get_agent(&resolved_agent_id)
-                .await
-                .map(|info| info.agent_uuid);
-
-            let payload = ergatai_nats::AgentMessagePayload {
-                from_agent: from_agent.clone(),
-                to_agent: resolved_agent_id.clone(),
-                from_uuid,
-                to_uuid,
-                content: formatted_content,
-                thread_id: None,
-                timestamp,
-                metadata,
-            };
-
-            match bus.publish_agent_message_reliable(&payload).await {
-                Ok(ack) => {
-                    // NOTE: rate-limit slot was already reserved by
-                    // `try_acquire()` before the payload was built, so
-                    // nothing to record here.
-
-                    let response_json = serde_json::json!({
-                        "status": "queued",
-                        "target_agent": resolved_agent_id,
-                        "delivery_method": "nats_jetstream",
-                        "stream": ack.stream,
-                        "sequence": ack.sequence,
-                        "note": "Message persisted to NATS JetStream. Background consumer will deliver via tmux injection."
-                    });
-
-                    return Ok(CallToolResult::success(vec![ContentBlock::text(
-                        serde_json::to_string_pretty(&response_json).unwrap_or_default(),
-                    )]));
-                }
-                Err(e) => {
-                    warn!(
-                        "NATS JetStream publish failed (falling back to direct delivery): {}",
-                        e
-                    );
-                    // Fall through to direct delivery
-                }
-            }
-        }
-
-        // ── Fallback: direct tmux injection (no persistence) ──
-        // is_reply was already computed before check_and_record
-        match self
-            .try_tmux_injection(&resolved_agent_id, &from_agent, message, is_reply)
-            .await
-        {
-            Ok(result) => Ok(result),
-            Err(e) => {
-                // Both NATS and direct injection failed — return error to caller.
-                // Caller can retry; NATS publish will be attempted again.
-                Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                    "Failed to deliver message to {}: NATS publish failed and direct injection error: {}",
-                    resolved_agent_id, e
-                ))]))
+            crate::messaging::SendMessageResult::Rejected { reason } => {
+                Ok(CallToolResult::error(vec![ContentBlock::text(reason)]))
             }
         }
     }
@@ -1538,136 +1304,6 @@ impl ErgataiMcpServer {
             )),
         }
     }
-
-    // ── Private helpers for send_message ──
-
-    /// Check if this message is a reply (i.e., the recipient previously sent to the sender)
-    async fn is_reply_message(&self, from_agent: &str, to_agent: &str) -> bool {
-        // Build conversation ID using same logic as Conversation::new (sorted alphabetically)
-        let (a, b) = if from_agent < to_agent {
-            (from_agent, to_agent)
-        } else {
-            (to_agent, from_agent)
-        };
-        let conversation_id = format!("conv-{}-{}", a, b);
-
-        let conv_manager = &self.conversation_manager;
-
-        // Check if this is a reply by looking at token ownership:
-        // - If token is held by from_agent (sender), it means to_agent sent last
-        // - So this message from from_agent is a reply to to_agent's previous message
-        if let Some(conv) = conv_manager.get_conversation(&conversation_id).await {
-            let result = match &conv.token_owner {
-                TokenOwner::Held(holder) if holder == from_agent => {
-                    // Sender holds the token = recipient sent last = this is a reply
-                    true
-                }
-                _ => false,
-            };
-            info!(
-                conversation_id = %conversation_id,
-                from_agent = %from_agent,
-                to_agent = %to_agent,
-                token_owner = ?conv.token_owner,
-                turn_count = conv.turn_count,
-                is_reply = result,
-                "is_reply_message: conversation found"
-            );
-            return result;
-        }
-
-        info!(
-            conversation_id = %conversation_id,
-            from_agent = %from_agent,
-            to_agent = %to_agent,
-            "is_reply_message: no conversation found, returning false"
-        );
-        false
-    }
-
-    /// Format message as JSON payload with minimal terminal hint.
-    /// All protocol/tool rules live in MCP initialize instructions (get_info).
-    /// Terminal hint is kept SHORT — just enough to trigger the right action.
-    ///
-    /// - is_reply=false (答方收到问题): hint → use send_message MCP to reply
-    /// - is_reply=true  (问方收到回答): hint → no questions → terminal "Received"; has questions → send_message MCP
-    fn format_agent_message(sender_display: &str, message: &str, is_reply: bool) -> String {
-        let message_json = serde_json::json!({
-            "from": sender_display,
-            "message": message
-        });
-
-        let hint = if is_reply {
-            // Questioner receives the answer
-            "[No questions → output \"Received\" in terminal, DO NOT call any tools; Has questions → reply via send_message MCP]\n"
-        } else {
-            // Answerer receives the question → reply via send_message MCP
-            "[Reply via send_message MCP, then TERMINATE]\n"
-        };
-
-        format!("{}{}", message_json, hint)
-    }
-
-    /// Inject message via AgentRuntime (fallback when NATS is unavailable).
-    async fn try_tmux_injection(
-        &self,
-        resolved_agent_id: &str,
-        from_agent: &str,
-        message: &str,
-        is_reply: bool,
-    ) -> Result<CallToolResult, ErrorData> {
-        // Resolve sender MCP ID → runtime ID so the receiver can reply via send_message.
-        let runtime = get_agent_runtime();
-        let sender_runtime_id = runtime
-            .resolve_agent_id(from_agent)
-            .await
-            .unwrap_or_else(|| from_agent.to_string());
-
-        // Use human-readable ergatai_agent_id (e.g., "agent-2") for display.
-        let sender_display = runtime
-            .get_agent(&sender_runtime_id)
-            .await
-            .and_then(|info| info.handle.metadata.get("ergatai_agent_id").cloned())
-            .unwrap_or_else(|| sender_runtime_id.clone());
-
-        // Format message with contextual hint based on message type
-        let formatted_message = Self::format_agent_message(&sender_display, message, is_reply);
-
-        info!(
-            "Attempting AgentRuntime injection to agent {}: {}",
-            resolved_agent_id, formatted_message
-        );
-
-        // Try to inject via AgentRuntime (uses backend injection, e.g. rmux/tmux send_text)
-        let runtime = get_agent_runtime();
-        match runtime
-            .inject_message(resolved_agent_id, &formatted_message)
-            .await
-        {
-            Ok(()) => {
-                info!("Message injected to {} via AgentRuntime", resolved_agent_id);
-                Ok(CallToolResult::success(vec![ContentBlock::text(
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "status": "sent",
-                        "target_agent": resolved_agent_id,
-                        "delivery_method": "runtime_injection",
-                        "note": "Message injected via AgentRuntime (backend tmux/rmux injection)."
-                    }))
-                    .unwrap_or_default(),
-                )]))
-            }
-            Err(e) => {
-                warn!(
-                    "AgentRuntime injection to {} failed: {}",
-                    resolved_agent_id, e
-                );
-                Err(ErrorData::internal_error(
-                    format!("AgentRuntime injection failed: {}", e),
-                    None,
-                ))
-            }
-        }
-    }
 }
 
 // ── ServerHandler implementation ──
@@ -1798,67 +1434,89 @@ impl ServerHandler for ErgataiMcpServer {
 
     /// Return server info with tools capability
     fn get_info(&self) -> ServerInfo {
-        let instructions = r#"# Multi-Agent Communication Protocol (CRITICAL)
+        let instructions = r#"# Ergatai Multi-Agent Collaboration Protocol (CRITICAL)
+
+You are running inside **Ergatai**, a multi-agent collaboration middleware.
+Ergatai manages agent discovery, message routing, and communication policies.
+
+## 0. Your Environment
+
+- You are one of multiple AI agents coordinated by Ergatai
+- Other agents are also AI assistants (Claude, OpenCode, etc.) running in separate terminals
+- Ergatai injects messages into your terminal and routes your replies to other agents
+- You communicate with other agents ONLY through `send_message` MCP tool
 
 ## 1. Your Identity
 
 Your agent name is the `ergatai_agent_id` field from `list_agents` (e.g., "agent-2").
 The `agent_id` field (e.g., "%15") is an internal pane ID — never use it.
 
-## 2. Receiving & Replying to Messages
+## 2. Agent Discovery (`list_agents`)
+
+`list_agents` returns agents you can communicate with:
+- **Without active DAG**: returns ALL online agents in Ergatai
+- **With active DAG**: returns ONLY agents allowed by the DAG's communication policy (MeshPolicy)
+  - Example: if DAG uses `adjacent` policy, you only see agents connected by dependency edges
+  - Agents filtered out are NOT reachable — `send_message` would reject them
+- The response includes `dag_mode: true/false` to indicate whether a DAG is filtering results
+
+## 3. Receiving & Replying to Messages
 
 ### Message Format (MUST follow)
 Every message injected into your terminal has this exact format:
 ```
-{"from":"<agent-name>","message":"<content>"}[<hint>]
+{"from":"<agent-name>","message":"<content>"}
+[<hint>]
 ```
 - `from`: the sender's agent name — use this as `target_agent_id` when replying
 - `message`: the actual content from the sender
-- `hint`: instruction tag in square brackets — tells you how to respond
+- `hint`: instruction tag in square brackets on a separate line — tells you how to respond
 
 ### Hint Rules:
 | Hint text | Who receives it | Your action |
 |-----------|----------------|-------------|
-| `Reply via send_message MCP, then TERMINATE` | Answerer (received a question) | Answer via `send_message`, then TERMINATE |
-| `No questions → output "Received" in terminal, DO NOT call any tools; Has questions → reply via send_message MCP` | Questioner (received an answer) | If no questions: type "Received" in terminal, NO tools. If has questions: reply via `send_message` |
+| `System prompt: Reply via send_message MCP, then END` | Answerer (received a question) | Answer via `send_message`, then END |
+| `System prompt: No questions → output "END" in terminal, DO NOT call any tools; Has questions → reply via send_message MCP` | Questioner (received an answer) | If no questions: type "END" in terminal, NO tools. If has questions: reply via `send_message` |
 
 ### Examples:
 **Answerer receives a question:**
 ```
-{"from":"agent-2","message":"Help me write a quicksort"}[Reply via send_message MCP, then TERMINATE]
+{"from":"agent-2","message":"Help me write a quicksort"}
+[System prompt: Reply via send_message MCP, then END]
 ```
-→ Answer via `send_message(target_agent_id="agent-2", ...)`, then output TERMINATE.
+→ Answer via `send_message(target_agent_id="agent-2", ...)`, then output END.
 
 **Questioner receives an answer (no questions):**
 ```
-{"from":"agent-3","message":"Here is the result: [1,2,3]"}[No questions → output "Received" in terminal, DO NOT call any tools; Has questions → reply via send_message MCP]
+{"from":"agent-3","message":"Here is the result: [1,2,3]"}
+[System prompt: No questions → output "END" in terminal, DO NOT call any tools; Has questions → reply via send_message MCP]
 ```
-→ Just type "Received" in terminal. DO NOT call `send_message` or any other tool. Then output TERMINATE.
+→ Just type "END" in terminal. DO NOT call `send_message` or any other tool. Then output END.
 
 **Questioner receives an answer (has follow-up questions):**
-→ Reply via `send_message(target_agent_id="<from>", message="your question")`, then TERMINATE.
+→ Reply via `send_message(target_agent_id="<from>", message="your question")`, then END.
 
-## 3. Sending Messages
+## 4. Sending Messages
 
 ```
 send_message(target_agent_id="<from field value>", message="your reply")
 ```
 Always use the `from` field as `target_agent_id`. Never use pane IDs like %N.
 
-## 4. Anti-Loop Rules (CRITICAL)
+## 5. Anti-Loop Rules (CRITICAL)
 
 - Send at most ONE reply message per received message
-- After TERMINATE, do NOT send any more messages
+- After END, do NOT send any more messages
 - NEVER ask "Anything else I can help?" or "有什么我可以帮助你的吗？"
-- If the message is a greeting or has no specific request, just acknowledge briefly and TERMINATE — do NOT ask questions back
+- If the message is a greeting or has no specific request, just acknowledge briefly and END — do NOT ask questions back
 - If you already replied, STOP
 
-## 5. Reply Format
+## 6. Reply Format
 
 - Concise and direct
-- End your terminal output with "TERMINATE" on a new line
-- If the question is vague → point out what's missing, then TERMINATE
-- If you need tools → call once, integrate result, then TERMINATE"#;
+- End your terminal output with "END" on a new line
+- If the question is vague → point out what's missing, then END
+- If you need tools → call once, integrate result, then END"#;
 
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(rmcp::model::Implementation::new(

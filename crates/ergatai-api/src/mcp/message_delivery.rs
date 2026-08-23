@@ -311,9 +311,20 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
     // ── Batch aggregator: check if this reply should be collected ──
     // If the recipient (to) initiated a batch and the sender (from) is a target,
     // collect this reply instead of delivering immediately.
+    // Use stable ergatai_agent_id for consistent batch matching with send_message's record_send.
+    // Prefer pre-computed stable IDs from payload (avoids redundant resolution).
+    // Fallback to AgentRuntime::resolve_to_stable_id for backward compat with old messages.
+    let from_stable = match payload.from_stable {
+        Some(ref s) => s.clone(),
+        None => runtime.resolve_to_stable_id(&from_runtime_id, None).await,
+    };
+    let to_stable = match payload.to_stable {
+        Some(ref s) => s.clone(),
+        None => runtime.resolve_to_stable_id(&to_runtime_id, None).await,
+    };
     let batch_aggregator = super::get_batch_aggregator();
     let batch_result = batch_aggregator
-        .on_reply(&from_runtime_id, &to_runtime_id, formatted_message)
+        .on_reply(&from_stable, &to_stable, formatted_message)
         .await;
 
     match batch_result {

@@ -1007,6 +1007,8 @@ mod tests {
             to_agent: "codex".to_string(),
             from_uuid: None,
             to_uuid: None,
+            from_stable: None,
+            to_stable: None,
             content: "@codex review this".to_string(),
             thread_id: Some("thread-1".to_string()),
             timestamp: 1234567890,

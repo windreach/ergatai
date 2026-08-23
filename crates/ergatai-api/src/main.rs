@@ -21,6 +21,7 @@ use tower_governor::{governor::GovernorConfigBuilder, key_extractor::KeyExtracto
 
 use ergatai_api::mcp::conversation::{ConversationConfig, ConversationManager};
 use ergatai_api::mcp::rate_limiter::get_rate_limiter;
+use ergatai_api::messaging::init_message_sender;
 use ergatai_api::mcp::{
     create_mcp_service, start_conversation_reaper, start_message_delivery_consumer,
     start_peer_reaper,
@@ -276,6 +277,8 @@ async fn async_main(args: Args) -> Result<()> {
 
     // Create MCP services
     let conversation_manager = Arc::new(ConversationManager::new(ConversationConfig::default()));
+    // Initialize the global MessageSender so both REST API and MCP use the same pipeline.
+    init_message_sender(conversation_manager.clone());
     let mcp_service_1 = create_mcp_service(
         mcp_registry.clone(), peer_registry.clone(), conversation_manager.clone(),
         mcp_cancellation_token.clone(), args.sse_keep_alive, Some("agent-1".to_string()),

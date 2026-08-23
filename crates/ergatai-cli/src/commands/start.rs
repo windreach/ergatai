@@ -98,31 +98,22 @@ pub async fn handle(
         .context("Failed to create workspace")?;
     println!("✓ Workspace ready: {} (id: {})", agent_name, workspace.id);
 
-    // Step 2: Check if agent already running in this workspace
-    let agents = client.list_agents().await?;
-    let existing_agent = agents.iter().find(|a| {
-        a.workspace_id == workspace_id
-            // Prefer the is_alive boolean from the unified lifecycle state machine.
-            // Fall back to case-insensitive string comparison for backward compat.
-            && (a.is_alive || a.state.eq_ignore_ascii_case("running"))
-    });
-
-    if let Some(agent) = existing_agent {
-        println!("✓ Agent already running: {}", agent.agent_id);
-    } else {
-        // Step 3: Spawn agent (use absolute path as command, pass work_dir)
-        println!("✓ Spawning agent: {}", agent_command);
-        let response = client
-            .spawn_agent(
-                &workspace_id,
-                &agent_command,
-                effective_work_dir.as_deref(),
-                None,
-            )
-            .await
-            .context("Failed to spawn agent")?;
-        println!("✓ Agent spawned: {}", response.agent_id);
-    };
+    // Step 2: Spawn agent (use absolute path as command, pass work_dir).
+    // Always call spawn — the backend's find_running_pane() does proper tmux-level
+    // verification and will reattach to an existing pane or send the command to the
+    // default pane as appropriate. The API agent registry can be stale (e.g. after
+    // the tmux session is killed externally), so we must NOT skip spawn based on it.
+    println!("✓ Spawning agent: {}", agent_command);
+    let response = client
+        .spawn_agent(
+            &workspace_id,
+            &agent_command,
+            effective_work_dir.as_deref(),
+            None,
+        )
+        .await
+        .context("Failed to spawn agent")?;
+    println!("✓ Agent spawned: {}", response.agent_id);
 
     // Step 4: Attach to session
     let session_name = workspace

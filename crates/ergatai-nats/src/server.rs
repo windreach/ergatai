@@ -211,6 +211,13 @@ impl NatsServer {
         self.port
     }
 
+    /// Get the child process PID (for atexit registration).
+    ///
+    /// Returns None if the child has already been reaped.
+    pub fn child_pid(&self) -> Option<u32> {
+        self.child.as_ref().map(|c| c.id())
+    }
+
     /// Get the connection URL for this server
     pub fn url(&self) -> String {
         format!("127.0.0.1:{}", self.port)
@@ -427,10 +434,25 @@ fn register_cleanup_handler(pid: u32) {
     atexit_cleanup::register(pid);
 }
 
+/// Register an atexit handler to kill the child nats-server process on normal exit.
+///
+/// This is a safety net for production: if the process exits normally but
+/// `NatsServer::drop()` didn't run (e.g., signal handler called `process::exit()`),
+/// the atexit handler ensures the child is killed.
+#[cfg(unix)]
+pub fn register_production_cleanup_handler(pid: u32) {
+    atexit_cleanup::register(pid);
+}
+
 #[cfg(not(unix))]
 fn register_cleanup_handler(_pid: u32) {
     // On non-Unix platforms, we can't register atexit handlers easily.
     // The cleanup_stale_test_servers() function will handle cleanup on next run.
+}
+
+#[cfg(not(unix))]
+pub fn register_production_cleanup_handler(_pid: u32) {
+    // No-op on non-Unix
 }
 
 impl Drop for NatsServer {
@@ -440,8 +462,41 @@ impl Drop for NatsServer {
 
             // Try to kill the process
             if let Err(e) = child.kill() {
-                error!(error = %e, port = self.port, "Failed to kill nats-server");
-                return;
+                // CRITICAL BUG FIX: Previously, if kill() failed, we returned immediately
+                // and leaked the zombie process. Now we fallback to waitpid() to reap it.
+                error!(error = %e, port = self.port, "Failed to kill nats-server, attempting waitpid fallback");
+
+                // Try to reap the zombie even if kill failed
+                match child.try_wait() {
+                    Ok(Some(_)) => {
+                        // Process already exited
+                        info!(port = self.port, "nats-server already exited");
+                        return;
+                    }
+                    Ok(None) => {
+                        // Process still running but kill failed — try SIGKILL via command
+                        warn!(port = self.port, "Attempting SIGKILL via command fallback");
+                        let pid = child.id();
+                        let _ = std::process::Command::new("kill")
+                            .args(["-9", &pid.to_string()])
+                            .output();
+
+                        // Wait a bit more for the process to exit
+                        for _ in 0..10 {
+                            std::thread::sleep(Duration::from_millis(100));
+                            if let Ok(Some(_)) = child.try_wait() {
+                                info!(port = self.port, "nats-server exited after SIGKILL fallback");
+                                return;
+                            }
+                        }
+                        warn!(port = self.port, "nats-server still alive after SIGKILL fallback, may be zombie");
+                        return;
+                    }
+                    Err(e) => {
+                        error!(error = %e, port = self.port, "waitpid failed after kill error");
+                        return;
+                    }
+                }
             }
 
             // Wait for process to exit with a timeout to prevent hanging
@@ -460,10 +515,28 @@ impl Drop for NatsServer {
                     Ok(None) => {
                         // Still running
                         if waited_ms >= DROP_MAX_WAIT_MS {
+                            // CRITICAL BUG FIX: Previously returned here, leaking zombie.
+                            // Now attempt SIGKILL via command as last resort.
                             warn!(
                                 port = self.port,
                                 waited_ms = waited_ms,
-                                "nats-server did not exit within timeout, leaving as zombie"
+                                "nats-server did not exit within timeout, attempting SIGKILL fallback"
+                            );
+                            let pid = child.id();
+                            let _ = std::process::Command::new("kill")
+                                .args(["-9", &pid.to_string()])
+                                .output();
+
+                            // Give it one more chance
+                            std::thread::sleep(Duration::from_millis(500));
+                            if let Ok(Some(_)) = child.try_wait() {
+                                info!(port = self.port, "nats-server exited after SIGKILL");
+                                return;
+                            }
+
+                            warn!(
+                                port = self.port,
+                                "nats-server still alive after SIGKILL, may be zombie"
                             );
                             return;
                         }

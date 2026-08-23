@@ -1052,29 +1052,14 @@ impl AgentRuntimeBackend for TmuxBackend {
             info!(pane_id = pane_id, "Instruction injected ({}B)", instr.len());
         }
 
-        // Set auto-kill hooks only for non-persist, first-agent (single-agent) sessions.
-        // Multi-agent sessions: don't kill the whole session on one pane's death or detach.
-        // Note: if a second agent is later added to a session that already has these hooks,
-        // the hooks will kill the whole session on first agent exit — callers should use
-        // persist=true for multi-agent workloads.
-        if !persist && is_first_agent {
-            // Kill session when user detaches
-            let _ = Self::run_tmux_cmd(&[
-                "set-hook",
-                "-t",
-                &session,
-                "client-detached",
-                "kill-session -t '#S'",
-            ]).await;
-            // Kill session when agent process exits (pane dies)
-            let _ = Self::run_tmux_cmd(&[
-                "set-hook",
-                "-t",
-                &session,
-                "pane-died",
-                "kill-session -t '#S'",
-            ]).await;
-        }
+        // NOTE: Removed auto-kill hooks (`pane-died → kill-session`, `client-detached → kill-session`).
+        // These hooks were dangerous because:
+        // 1. They kill the ENTIRE session when ANY pane dies, destroying other agents in the same session.
+        // 2. `wait_for_exit` replaces the `pane-died` hook, but there's a race window.
+        // 3. Discovered agents (from previous server instances) may share sessions with new agents.
+        // Session cleanup is now handled explicitly by `cleanup_workspace`, which checks for
+        // other active panes before killing the session.
+        let _ = (persist, is_first_agent); // suppress unused variable warnings
 
         // For multi-agent: mark this workspace as having an anchor pane
         // so subsequent start_agent calls will split instead of reusing default.
@@ -1286,8 +1271,34 @@ impl AgentRuntimeBackend for TmuxBackend {
 
     async fn cleanup_workspace(&self, handle: &WorkspaceHandle) -> ErgataiResult<()> {
         let session = Self::session_name_from_handle(handle)?;
-        info!(session = session, "Cleaning up tmux session");
 
+        // Check if session has other active panes (agents) before killing.
+        // A session may host multiple agents (multi-agent workspace);
+        // killing it would terminate all of them, not just the one that exited.
+        match Self::run_tmux_cmd(&["list-panes", "-t", &session, "-F", "#{pane_id}"]).await {
+            Ok(output) if output.status.success() => {
+                let pane_count = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .count();
+                if pane_count > 1 {
+                    debug!(
+                        session = session,
+                        pane_count = pane_count,
+                        "Skipping workspace cleanup: session has {} active panes",
+                        pane_count
+                    );
+                    return Ok(());
+                }
+            }
+            _ => {
+                // Session doesn't exist or can't list panes — already gone
+                debug!(session = session, "Session already gone during cleanup check");
+                return Ok(());
+            }
+        }
+
+        info!(session = session, "Cleaning up tmux session");
         if let Err(e) =
             Self::run_tmux_cmd_checked(&["kill-session", "-t", &session], "Failed to kill session")
                 .await
@@ -1383,7 +1394,7 @@ impl AgentRuntimeBackend for TmuxBackend {
                 let mut ws_metadata = HashMap::new();
                 ws_metadata.insert("session".to_string(), session_name.clone());
                 ws_metadata.insert("default_pane_id".to_string(), pane_id.to_string());
-                ws_metadata.insert("persist".to_string(), "false".to_string());
+                ws_metadata.insert("persist".to_string(), "true".to_string());
                 let workspace = WorkspaceHandle {
                     id: workspace_id.clone(),
                     backend: "tmux".to_string(),

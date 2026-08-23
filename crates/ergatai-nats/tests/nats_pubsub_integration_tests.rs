@@ -202,6 +202,8 @@ async fn test_event_bus_agent_message_roundtrip() {
         to_agent: agent_id.to_string(),
         from_uuid: None,
         to_uuid: None,
+        from_stable: None,
+        to_stable: None,
         content: "@test-agent-5 please review".to_string(),
         thread_id: Some("thread-1".to_string()),
         timestamp: 1_700_000_000,

@@ -75,6 +75,25 @@ pub struct ConversationConfig {
     /// Maximum conversation duration before automatic termination.
     /// Default: 5 minutes (in seconds)
     pub max_execution_time_secs: u64,
+
+    /// Maximum completed rounds (一问一答 = 1 round) before forced termination.
+    /// Default: 3 rounds (6 messages total)
+    #[serde(default = "default_max_rounds")]
+    pub max_rounds: u32,
+
+    /// Cooldown period (in seconds) after a conversation ends before the same
+    /// pair can start a new conversation. Prevents rapid re-engagement.
+    /// Default: 15 seconds
+    #[serde(default = "default_cooldown_secs")]
+    pub cooldown_secs: u64,
+}
+
+fn default_max_rounds() -> u32 {
+    3
+}
+
+fn default_cooldown_secs() -> u64 {
+    15
 }
 
 impl Default for ConversationConfig {
@@ -85,6 +104,8 @@ impl Default for ConversationConfig {
             max_turns: 2,
             max_consecutive_auto_reply: 5,
             max_execution_time_secs: 300,
+            max_rounds: 3,        // Max 3 rounds per conversation
+            cooldown_secs: 15,    // 15s cooldown after conversation ends
         }
     }
 }
@@ -142,6 +163,16 @@ pub struct Conversation {
 
     /// Total message count
     pub message_count: u32,
+
+    /// Completed rounds (一问一答 = 1 round = 2 messages).
+    /// Max 3 rounds allowed per conversation before forced termination.
+    #[serde(default)]
+    pub completed_rounds: u32,
+
+    /// When the conversation ended (for cooldown tracking).
+    /// None if still active.
+    #[serde(default)]
+    pub ended_at: Option<DateTime<Utc>>,
 }
 
 /// Conversation lifecycle states.
@@ -192,6 +223,8 @@ impl Conversation {
             started_at: Utc::now(),
             last_activity: Utc::now(),
             message_count: 0,
+            completed_rounds: 0,
+            ended_at: None,
         }
     }
 
@@ -251,36 +284,63 @@ impl ConversationManager {
 
         // ── Terminal state check ──
         if conv.is_terminal() {
-            warn!(
-                conv_id = %conv.id,
-                state = ?conv.state,
-                "Conversation already terminated"
-            );
-            return Err(ErgataiError::internal(format!(
-                "Conversation {} already terminated (state: {:?}). Start a new conversation.",
-                conv.id, conv.state
-            )));
+            // Check if cooldown has elapsed — allow new conversation after cooldown
+            if let Some(ended_at) = conv.ended_at {
+                let cooldown_elapsed = Utc::now()
+                    .signed_duration_since(ended_at)
+                    .num_seconds()
+                    .unsigned_abs();
+                if cooldown_elapsed >= self.config.cooldown_secs {
+                    // Cooldown elapsed — reset conversation for new cycle
+                    info!(
+                        conv_id = %conv.id,
+                        cooldown_secs = cooldown_elapsed,
+                        "Cooldown elapsed — resetting conversation"
+                    );
+                    *conv = Conversation::new(from, to);
+                } else {
+                    let remaining = self.config.cooldown_secs - cooldown_elapsed;
+                    warn!(
+                        conv_id = %conv.id,
+                        remaining_secs = remaining,
+                        "Conversation in cooldown"
+                    );
+                    return Err(ErgataiError::internal(format!(
+                        "Conversation {} in cooldown. Wait {}s before starting a new conversation.",
+                        conv.id, remaining
+                    )));
+                }
+            } else {
+                warn!(
+                    conv_id = %conv.id,
+                    state = ?conv.state,
+                    "Conversation already terminated"
+                );
+                return Err(ErgataiError::internal(format!(
+                    "Conversation {} already terminated (state: {:?}). Start a new conversation.",
+                    conv.id, conv.state
+                )));
+            }
         }
 
         // ── Timeout check ──
+        // When max_execution_time is exceeded, auto-reset the conversation instead of
+        // permanently blocking. This handles the case where agents restart and reuse
+        // the same conversation ID — the old timer shouldn't block new messages forever.
         let elapsed = Utc::now()
             .signed_duration_since(conv.started_at)
             .num_seconds()
             .unsigned_abs();
         if elapsed > self.config.max_execution_time_secs {
-            warn!(
+            info!(
                 conv_id = %conv.id,
                 elapsed_secs = elapsed,
                 max_secs = self.config.max_execution_time_secs,
-                "Conversation timeout"
+                "Conversation timeout — auto-resetting for new cycle"
             );
-            conv.state = ConversationState::Terminated {
-                reason: TerminationReason::TimedOut,
-            };
-            return Err(ErgataiError::internal(format!(
-                "Conversation {} exceeded max execution time ({}s). Start a new conversation.",
-                conv.id, self.config.max_execution_time_secs
-            )));
+            // Auto-reset: create fresh conversation with same participants
+            *conv = Conversation::new(from, to);
+            // Continue processing — the new conversation will accept the message
         }
 
         // ── Consecutive auto-reply check (same agent spamming when token is Free) ──
@@ -302,6 +362,7 @@ impl ConversationManager {
             conv.state = ConversationState::Terminated {
                 reason: TerminationReason::Completed,
             };
+            conv.ended_at = Some(Utc::now());
             return Err(ErgataiError::internal(format!(
                 "Agent {} exceeded max consecutive auto-replies ({}). Conversation {} terminated.",
                 from, self.config.max_consecutive_auto_reply, conv.id
@@ -345,21 +406,24 @@ impl ConversationManager {
         // ── Token transfer / release ──
         if has_terminate {
             // TERMINATE releases the token — either party can start a new cycle.
+            // Does NOT terminate the conversation — just resets for a new round.
             info!(
                 conv_id = %conv.id,
                 from = from,
                 "TERMINATE detected — releasing token (会话 cycle complete)"
             );
             conv.token_owner = TokenOwner::Free;
+            // Reset turn count for new cycle (but keep completed_rounds and auto_reply counters)
+            conv.turn_count = 0;
         } else {
-            // Normal send: token transfers to the other party.
+            // Normal send: token transfers to the other party (一问一答).
             let other = conv.other_participant(from).map(|s| s.to_string());
             if let Some(other_id) = other {
                 debug!(
                     conv_id = %conv.id,
                     from = from,
                     next_holder = %other_id,
-                    "Token transferred"
+                    "Token transferred (一问一答 enforcement)"
                 );
                 conv.token_owner = TokenOwner::Held(other_id);
             }
@@ -369,6 +433,39 @@ impl ConversationManager {
         conv.turn_count += 1;
         conv.message_count += 1;
         conv.last_activity = Utc::now();
+
+        // ── Track completed rounds (一问一答 = 1 round = 2 messages) ──
+        // Every 2 messages completes a round. When max_rounds is reached, terminate.
+        if conv.turn_count % 2 == 0 {
+            conv.completed_rounds += 1;
+            debug!(
+                conv_id = %conv.id,
+                completed_rounds = conv.completed_rounds,
+                max_rounds = self.config.max_rounds,
+                "Round completed"
+            );
+
+            // Check if max rounds reached — force termination
+            if conv.completed_rounds >= self.config.max_rounds {
+                warn!(
+                    conv_id = %conv.id,
+                    completed_rounds = conv.completed_rounds,
+                    max_rounds = self.config.max_rounds,
+                    cooldown_secs = self.config.cooldown_secs,
+                    "Max rounds reached — terminating conversation"
+                );
+                conv.state = ConversationState::Terminated {
+                    reason: TerminationReason::Completed,
+                };
+                conv.ended_at = Some(Utc::now());
+                conv.token_owner = TokenOwner::Free;
+
+                return Err(ErgataiError::internal(format!(
+                    "Conversation {} completed {} rounds (max {}). Cooldown: {}s before next conversation.",
+                    conv.id, conv.completed_rounds, self.config.max_rounds, self.config.cooldown_secs
+                )));
+            }
+        }
 
         // Update consecutive auto-reply counters
         *conv
@@ -434,6 +531,11 @@ impl ConversationManager {
     /// Number of tracked conversations (for diagnostics / reaper logging).
     pub async fn len(&self) -> usize {
         self.conversations.read().await.len()
+    }
+
+    /// Returns `true` if there are no tracked conversations.
+    pub async fn is_empty(&self) -> bool {
+        self.conversations.read().await.is_empty()
     }
 
     /// Clean up old conversations (older than `max_age`).
@@ -610,6 +712,8 @@ mod tests {
             max_turns: 10,
             max_consecutive_auto_reply: 5,
             max_execution_time_secs: 300,
+            max_rounds: 100,       // high limit for basic tests
+            cooldown_secs: 0,      // no cooldown for tests
         };
         let manager = ConversationManager::new(config);
 
@@ -626,7 +730,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_transfer_basic() {
-        // Token alternates: A sends → token to B, B sends → token to A
+        // Token alternates: A sends → token to B, B sends → token to A (一问一答)
         let config = ConversationConfig::default();
         let manager = ConversationManager::new(config);
 
@@ -659,7 +763,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_holder_check() {
-        // Only the token holder can send. Non-holder is BLOCKED.
+        // Only the token holder can send. Non-holder is BLOCKED (一问一答 enforcement).
         let config = ConversationConfig {
             max_consecutive_auto_reply: 100, // disable for this test
             ..ConversationConfig::default()
@@ -693,7 +797,10 @@ mod tests {
     #[tokio::test]
     async fn test_terminate_releases_token() {
         // TERMINATE releases the token to Free — either party can send next.
-        let config = ConversationConfig::default();
+        let config = ConversationConfig {
+            cooldown_secs: 0, // no cooldown for tests
+            ..ConversationConfig::default()
+        };
         let manager = ConversationManager::new(config);
 
         // A sends — token to B
@@ -729,7 +836,10 @@ mod tests {
     #[tokio::test]
     async fn test_terminate_from_either_party() {
         // TERMINATE can be sent by any token holder (not just the "initiator").
-        let config = ConversationConfig::default();
+        let config = ConversationConfig {
+            cooldown_secs: 0, // no cooldown for tests
+            ..ConversationConfig::default()
+        };
         let manager = ConversationManager::new(config);
 
         // A sends — token to B
@@ -767,6 +877,7 @@ mod tests {
         // and re-claims it, consecutive_auto_reply catches the spam.
         let config = ConversationConfig {
             max_consecutive_auto_reply: 3,
+            cooldown_secs: 0, // no cooldown for tests
             ..ConversationConfig::default()
         };
         let manager = ConversationManager::new(config);
@@ -800,7 +911,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_prevents_one_sided_spam() {
-        // Without TERMINATE, the token model itself prevents one-sided spam.
+        // Without TERMINATE, the token model itself prevents one-sided spam (一问一答).
         // A sends → token to B → A is blocked until B replies.
         let config = ConversationConfig {
             max_consecutive_auto_reply: 100, // disable to test token alone
@@ -963,5 +1074,57 @@ mod tests {
         let conv = manager.get_conversation("conv-a-b").await.unwrap();
         assert_eq!(conv.turn_count, 2);
         assert_eq!(conv.message_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_max_rounds_enforcement() {
+        // After 3 rounds (6 messages), conversation is terminated.
+        let config = ConversationConfig {
+            max_rounds: 3,
+            cooldown_secs: 0,
+            max_consecutive_auto_reply: 100,
+            ..ConversationConfig::default()
+        };
+        let manager = ConversationManager::new(config);
+
+        // Round 1: A→B, B→A (2 messages)
+        manager.check_and_record("a", "b", "q1").await.unwrap();
+        manager.check_and_record("b", "a", "a1").await.unwrap();
+        let conv = manager.get_conversation("conv-a-b").await.unwrap();
+        assert_eq!(conv.completed_rounds, 1);
+
+        // Round 2: A→B, B→A (4 messages)
+        manager.check_and_record("a", "b", "q2").await.unwrap();
+        manager.check_and_record("b", "a", "a2").await.unwrap();
+        let conv = manager.get_conversation("conv-a-b").await.unwrap();
+        assert_eq!(conv.completed_rounds, 2);
+
+        // Round 3: A→B, B→A (6 messages) — triggers max_rounds termination
+        manager.check_and_record("a", "b", "q3").await.unwrap();
+        let result = manager.check_and_record("b", "a", "a3").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("completed 3 rounds"));
+    }
+
+    #[tokio::test]
+    async fn test_cooldown_after_termination() {
+        // After conversation ends, must wait cooldown_secs before new conversation.
+        let config = ConversationConfig {
+            max_rounds: 1,        // terminate after 1 round
+            cooldown_secs: 15,    // 15s cooldown
+            max_consecutive_auto_reply: 100,
+            ..ConversationConfig::default()
+        };
+        let manager = ConversationManager::new(config);
+
+        // Complete 1 round — triggers termination
+        manager.check_and_record("a", "b", "q").await.unwrap();
+        let result = manager.check_and_record("b", "a", "a").await;
+        assert!(result.is_err()); // max_rounds reached
+
+        // Try to send again — blocked by cooldown
+        let result = manager.check_and_record("a", "b", "new q").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cooldown"));
     }
 }

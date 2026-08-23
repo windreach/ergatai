@@ -811,47 +811,90 @@ impl DagScheduler {
                 if scheduler.finalized.load(Ordering::SeqCst) {
                     break;
                 }
-                // Only fire if something is actually running
-                let running_count = {
+                // Count nodes by status to detect different stall scenarios
+                let (running_count, pending_count) = {
                     let graph = scheduler.graph.lock().await;
-                    graph
+                    let running = graph
                         .nodes
                         .iter()
                         .filter(|n| n.status == TaskStatus::Running)
-                        .count()
+                        .count();
+                    let pending = graph
+                        .nodes
+                        .iter()
+                        .filter(|n| n.status == TaskStatus::Pending)
+                        .count();
+                    (running, pending)
                 };
-                if running_count == 0 {
-                    continue;
-                }
-                let age = scheduler.last_progress_age_secs().await;
-                if age >= timeout_secs {
-                    tracing::warn!(
+
+                // Case 1: No active work at all — DAG might be complete or deadlocked
+                if running_count == 0 && pending_count == 0 {
+                    // All nodes are Completed/Failed/Skipped — finalize
+                    tracing::info!(
                         dag_id = %scheduler.dag_id,
-                        stall_secs = age,
-                        timeout_secs = timeout_secs,
-                        "DAG stalled — no progress, finalizing"
+                        "DAG has no active or pending nodes — finalizing"
                     );
-                    let mut graph = scheduler.graph.lock().await;
-                    for node in graph.nodes.iter_mut() {
-                        if node.status == TaskStatus::Running {
-                            node.status = TaskStatus::Failed;
-                            // Record stall reason in metadata (TaskNode has no error field).
-                            node.metadata.insert(
-                                "stall_error".to_string(),
-                                format!(
-                                    "stalled: no progress for {}s (limit {}s)",
-                                    age, timeout_secs
-                                ),
-                            );
-                        }
-                    }
-                    // IMPORTANT: `graph` lock MUST be dropped before calling
-                    // `finalize_if_terminal()`, because `finalize_if_terminal()`
-                    // internally re-acquires `graph.lock()`. Holding both would
-                    // deadlock (tokio::sync::Mutex is not reentrant).
-                    drop(graph);
                     scheduler.finalize_if_terminal().await;
                     break;
+                }
+
+                // Case 2: Has Running nodes — check if they're stalled (existing logic)
+                if running_count > 0 {
+                    let age = scheduler.last_progress_age_secs().await;
+                    if age >= timeout_secs {
+                        tracing::warn!(
+                            dag_id = %scheduler.dag_id,
+                            stall_secs = age,
+                            timeout_secs = timeout_secs,
+                            "DAG stalled — running nodes made no progress, finalizing"
+                        );
+                        let mut graph = scheduler.graph.lock().await;
+                        for node in graph.nodes.iter_mut() {
+                            if node.status == TaskStatus::Running {
+                                node.status = TaskStatus::Failed;
+                                node.metadata.insert(
+                                    "stall_error".to_string(),
+                                    format!(
+                                        "stalled: no progress for {}s (limit {}s)",
+                                        age, timeout_secs
+                                    ),
+                                );
+                            }
+                        }
+                        drop(graph);
+                        scheduler.finalize_if_terminal().await;
+                        break;
+                    }
+                }
+
+                // Case 3: Has Pending but no Running — agents never picked up tasks
+                if running_count == 0 && pending_count > 0 {
+                    let age = scheduler.last_progress_age_secs().await;
+                    if age >= timeout_secs {
+                        tracing::warn!(
+                            dag_id = %scheduler.dag_id,
+                            pending_nodes = pending_count,
+                            stall_secs = age,
+                            timeout_secs = timeout_secs,
+                            "DAG stalled — pending nodes waiting for agents, no running nodes, finalizing"
+                        );
+                        let mut graph = scheduler.graph.lock().await;
+                        for node in graph.nodes.iter_mut() {
+                            if node.status == TaskStatus::Pending {
+                                node.status = TaskStatus::Failed;
+                                node.metadata.insert(
+                                    "stall_error".to_string(),
+                                    format!(
+                                        "stalled: no agent picked up task for {}s (limit {}s)",
+                                        age, timeout_secs
+                                    ),
+                                );
+                            }
+                        }
+                        drop(graph);
+                        scheduler.finalize_if_terminal().await;
+                        break;
+                    }
                 }
             }
         });

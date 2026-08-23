@@ -76,6 +76,14 @@ pub async fn init_nats() -> ErgataiResult<NatsConnection> {
     let port = server.port();
     info!(port = port, "NATS server started");
 
+    // HIGH BUG FIX: Register atexit handler as safety net for production.
+    // If the process exits normally but NatsServer::drop() didn't run
+    // (e.g., signal handler called process::exit()), the atexit handler
+    // ensures the child nats-server is killed, preventing zombie processes.
+    if let Some(pid) = server.child_pid() {
+        crate::server::register_production_cleanup_handler(pid);
+    }
+
     info!("Connecting to NATS server...");
     let connection = NatsConnection::connect_to_server(&server).await?;
     info!("Connected to NATS server");
@@ -253,6 +261,11 @@ pub async fn shutdown_nats() {
 
     // Drop server (kills child process)
     state.server = None;
+
+    // HIGH BUG FIX: Reset the initialization flag so re-init after shutdown works.
+    // Previously, the flag was never reset, so is_nats_initialized_sync() would
+    // return true even after shutdown, causing stale state checks.
+    NATS_INITIALIZED.store(false, std::sync::atomic::Ordering::Release);
 
     info!("NATS shutdown complete");
 }

@@ -27,6 +27,7 @@ use ergatai_core::nats;
 
 pub mod api;
 pub mod mcp;
+pub mod messaging;
 
 // ── AppState ─────────────────────────────────────────────────────────
 
