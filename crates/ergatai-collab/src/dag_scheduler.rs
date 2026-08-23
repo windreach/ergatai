@@ -274,6 +274,13 @@ impl DagScheduler {
         // Spawn stall watchdog (idempotent — only spawns once, no-ops without stall_timeout_secs)
         self.spawn_stall_watcher().await;
 
+        // Wait for the NATS task consumer to be ready before publishing any messages.
+        // Prevents a race condition on the first DAG submission after server start:
+        // global_scheduler() spawns the consumer in a background task, but consumer
+        // initialization requires NATS round-trips. Without this wait, messages
+        // published before the consumer is bound to the stream could be missed.
+        self.scheduler.wait_for_consumer_ready().await;
+
         // Clear completed/failed agents from previous DAG runs (M14 fix)
         let launcher = super::agent_launcher::AgentLauncher::new(self.project_root.clone());
         launcher.clear_stale_agents().await?;
@@ -401,9 +408,9 @@ impl DagScheduler {
         // Deadline check: refuse dispatch when the DAG-level timeout has elapsed.
         // Mirrors the budget-check pattern — finalize defensively so the DAG can
         // settle, then propagate the error to the caller.
-        if let Some(reason) = self.check_deadline() {
+        if let Some(err) = self.check_deadline() {
             self.finalize_if_terminal().await;
-            return Err(ErgataiError::internal(reason));
+            return Err(err);
         }
         // Budget check: refuse dispatch when DAG-level agent call cap is exhausted.
         // On exhaustion, defensively nudge terminal finalization so the DAG can
@@ -546,25 +553,25 @@ impl DagScheduler {
         };
         let current = self.agent_call_count.load(Ordering::SeqCst);
         if current >= limit {
-            Err(ErgataiError::internal(format!(
-                "DAG {} budget exhausted: {} / {} agent calls",
-                self.dag_id, current, limit
-            )))
+            Err(ErgataiError::DagBudgetExhausted {
+                dag_id: self.dag_id.clone(),
+                used: current,
+                limit,
+            })
         } else {
             Ok(())
         }
     }
 
-    /// Returns Some(reason) if the DAG deadline has passed, None otherwise.
-    fn check_deadline(&self) -> Option<String> {
+    /// Returns Some(error) if the DAG deadline has passed, None otherwise.
+    fn check_deadline(&self) -> Option<ErgataiError> {
         let deadline = self.deadline?;
         let now = std::time::Instant::now();
         if now >= deadline {
-            Some(format!(
-                "DAG {} exceeded deadline by {}s",
-                self.dag_id,
-                now.duration_since(deadline).as_secs()
-            ))
+            Some(ErgataiError::DagDeadlineExceeded {
+                dag_id: self.dag_id.clone(),
+                exceeded_by_secs: now.duration_since(deadline).as_secs(),
+            })
         } else {
             None
         }
@@ -986,7 +993,99 @@ impl DagScheduler {
         // 2. Read upstream dependency outputs from the context
         let upstream_context = self.build_upstream_context_block(node).await;
 
-        // 3. Build the plan content
+        // 3. Resolve task description:
+        //    - If `task` field exists in YAML, it's stored in metadata["task_path"]
+        //    - Try to read it as a file path first
+        //    - If file read fails, treat it as inline text description
+        //    - If `task` field doesn't exist, use task name
+        tracing::info!(
+            node_id = %node.id,
+            has_task_path = node.metadata.contains_key("task_path"),
+            task_path_preview = node.metadata.get("task_path").map(|s| s.chars().take(50).collect::<String>()),
+            "Resolving task description"
+        );
+        let task_description = if let Some(task_value) = node.metadata.get("task_path") {
+            // Try as file path first.
+            //
+            // SECURITY: task_value comes from untrusted YAML metadata submitted by
+            // agents. A malicious agent could set `task: "../../../etc/passwd"` to
+            // read arbitrary files via the scheduler (whose PID is auto-allowed by
+            // the fanotify enforcer). Canonicalize and verify containment before
+            // reading. If the file doesn't exist or escapes project_root, fall
+            // through to the inline-description treatment.
+            let full_path = self.project_root.join(task_value);
+            let safe_path: Option<std::path::PathBuf> = match tokio::fs::canonicalize(&full_path).await {
+                Ok(resolved) => {
+                    let canonical_root = tokio::fs::canonicalize(&self.project_root).await.ok();
+                    match canonical_root {
+                        Some(root) if resolved.starts_with(&root) => Some(resolved),
+                        Some(root) => {
+                            tracing::warn!(
+                                node_id = %node.id,
+                                task_path = %task_value,
+                                resolved = %resolved.display(),
+                                root = %root.display(),
+                                "Task path escapes project_root — rejected, treating as inline description"
+                            );
+                            None
+                        }
+                        None => {
+                            // Can't resolve root — treat as inline to be safe
+                            None
+                        }
+                    }
+                }
+                Err(_) => {
+                    // File doesn't exist — fall through to inline treatment
+                    None
+                }
+            };
+
+            if let Some(path) = safe_path {
+                tracing::info!(
+                    node_id = %node.id,
+                    full_path = %path.display(),
+                    "Attempting to read task file"
+                );
+                match tokio::fs::read_to_string(&path).await {
+                    Ok(content) => {
+                        tracing::info!(
+                            node_id = %node.id,
+                            task_path = %task_value,
+                            "Read task description from file ({}B)",
+                            content.len()
+                        );
+                        content
+                    }
+                    Err(e) => {
+                        tracing::info!(
+                            node_id = %node.id,
+                            error = %e,
+                            "Task field treated as inline description ({}B)",
+                            task_value.len()
+                        );
+                        task_value.clone()
+                    }
+                }
+            } else {
+                // Canonicalization failed (file doesn't exist) or path escaped root
+                tracing::info!(
+                    node_id = %node.id,
+                    "Task field treated as inline description ({}B)",
+                    task_value.len()
+                );
+                task_value.clone()
+            }
+        } else {
+            // No task field - use task name
+            tracing::info!(
+                node_id = %node.id,
+                "No task_path in metadata, using task name"
+            );
+            node.task.clone()
+        };
+
+        // 4. Build the plan content
         // Use the SAME result path convention as TaskCoordinator::get_result_path()
         // so the agent-exit watcher finds the result file when checking RunningAgent.result_file.
         // Path: .ergatai/.plan/results/{node_id}-{agent_name}.md
@@ -1003,6 +1102,10 @@ impl DagScheduler {
 - **Result**: {}
 {}
 {}
+
+## Detailed Description
+
+{}
 "#,
             node.task,
             node.agent,
@@ -1015,6 +1118,7 @@ impl DagScheduler {
                 .map(|s| format!("- **Input**: {}", s))
                 .unwrap_or_default(),
             upstream_context,
+            task_description,
         );
 
         tokio::fs::write(&plan_file, content).await?;
@@ -1083,9 +1187,9 @@ impl DagScheduler {
         result_path: Option<String>,
     ) -> ErgataiResult<Vec<String>> {
         // Deadline check: short-circuit if the DAG has exceeded its timeout.
-        if let Some(reason) = self.check_deadline() {
+        if let Some(err) = self.check_deadline() {
             self.finalize_if_terminal().await;
-            return Err(ErgataiError::internal(reason));
+            return Err(err);
         }
         // Node completion is observable progress — refresh the stall watchdog timestamp.
         self.touch_progress().await;
@@ -1186,9 +1290,9 @@ impl DagScheduler {
     /// double-submitting the task.
     pub async fn on_node_failed(&self, node_id: &str, error: &str) -> ErgataiResult<()> {
         // Deadline check: short-circuit if the DAG has exceeded its timeout.
-        if let Some(reason) = self.check_deadline() {
+        if let Some(err) = self.check_deadline() {
             self.finalize_if_terminal().await;
-            return Err(ErgataiError::internal(reason));
+            return Err(err);
         }
         // Node failure is observable progress — refresh the stall watchdog timestamp.
         self.touch_progress().await;
@@ -1336,11 +1440,14 @@ impl DagScheduler {
     /// exhausted / deadline exceeded) or transient. Permanent failures mark the
     /// node as `Failed` and skip downstream dependents. Transient failures revert
     /// the node to `Pending` so it can be retried when another node completes.
+    ///
+    /// If `skip_downstream` itself fails after a permanent error, we escalate to
+    /// `finalize_if_terminal()` to prevent the DAG from hanging with nodes stuck
+    /// in `Pending` forever (HIGH #4 fix).
     async fn handle_submission_error(&self, node_id: &str, error: &ErgataiError) {
-        let error_msg = error.to_string();
-        let is_permanent = error_msg.contains("budget exhausted")
-            || error_msg.contains("exceeded deadline")
-            || error_msg.contains("deadline");
+        // Use the centralized classification method instead of fragile string
+        // matching on error messages (HIGH #3 fix).
+        let is_permanent = error.is_permanent_dag_failure();
 
         if is_permanent {
             tracing::error!(
@@ -1358,11 +1465,16 @@ impl DagScheduler {
             }
             drop(graph);
             if let Err(skip_err) = self.skip_downstream(node_id).await {
-                tracing::warn!(
-                    "Failed to skip downstream after permanent failure of {}: {}",
+                // CRITICAL: If skip_downstream fails, the DAG will hang with
+                // downstream nodes stuck in Pending forever. Escalate by
+                // attempting to finalize the DAG immediately.
+                tracing::error!(
+                    "Failed to skip downstream after permanent failure of {}: {}. \
+                     Attempting finalize_if_terminal to prevent DAG hang.",
                     node_id,
                     skip_err
                 );
+                self.finalize_if_terminal().await;
             }
         } else {
             tracing::warn!(
@@ -2490,15 +2602,18 @@ mod tests {
         let new_count = scheduler.increment_agent_calls();
         assert_eq!(new_count, 1, "first increment should yield 1");
 
-        // Second budget check should fail with "budget exhausted" in message.
+        // Second budget check should fail with DagBudgetExhausted variant.
         let err = scheduler
             .check_budget()
             .expect_err("check_budget should be Err after exhausting the budget");
-        let msg = err.to_string();
         assert!(
-            msg.contains("budget exhausted"),
-            "expected 'budget exhausted' in error message, got: {}",
-            msg
+            matches!(err, ErgataiError::DagBudgetExhausted { .. }),
+            "expected DagBudgetExhausted variant, got: {:?}",
+            err
+        );
+        assert!(
+            err.is_permanent_dag_failure(),
+            "DagBudgetExhausted should be classified as permanent failure"
         );
     }
 
@@ -2510,14 +2625,19 @@ mod tests {
         assert!(scheduler.check_deadline().is_none());
         // Set deadline to past
         scheduler.deadline = Some(std::time::Instant::now() - std::time::Duration::from_secs(10));
-        // Should return Some(reason) with "exceeded deadline" in message
-        let reason = scheduler.check_deadline().unwrap();
+        // Should return Some(DagDeadlineExceeded) with dag_id
+        let err = scheduler.check_deadline().unwrap();
         assert!(
-            reason.contains("exceeded deadline"),
-            "expected 'exceeded deadline' in reason, got: {}",
-            reason
+            matches!(err, ErgataiError::DagDeadlineExceeded { .. }),
+            "expected DagDeadlineExceeded variant, got: {:?}",
+            err
         );
-        // Reason should also include the dag_id for observability
+        assert!(
+            err.is_permanent_dag_failure(),
+            "DagDeadlineExceeded should be classified as permanent failure"
+        );
+        // Error message should include the dag_id for observability
+        let reason = err.to_string();
         assert!(
             reason.contains(scheduler.dag_id()),
             "expected dag_id in reason, got: {}",
@@ -2829,7 +2949,11 @@ tasks:
     #[tokio::test]
     async fn test_handle_submission_error_budget_exhausted_marks_failed() {
         let (scheduler, _temp) = chain_scheduler(TaskStatus::Running).await;
-        let error = ErgataiError::internal("DAG dag-1 budget exhausted: 10 / 10 agent calls");
+        let error = ErgataiError::DagBudgetExhausted {
+            dag_id: "dag-1".to_string(),
+            used: 10,
+            limit: 10,
+        };
 
         scheduler.handle_submission_error("n1", &error).await;
 
@@ -2854,7 +2978,10 @@ tasks:
     #[tokio::test]
     async fn test_handle_submission_error_deadline_exceeded_marks_failed() {
         let (scheduler, _temp) = chain_scheduler(TaskStatus::Running).await;
-        let error = ErgataiError::internal("DAG dag-1 exceeded deadline by 30s");
+        let error = ErgataiError::DagDeadlineExceeded {
+            dag_id: "dag-1".to_string(),
+            exceeded_by_secs: 30,
+        };
 
         scheduler.handle_submission_error("n1", &error).await;
 
@@ -3067,5 +3194,290 @@ tasks:
         assert!(session.allows("agent-b", "agent-a"));
         // Non-hub ↔ non-hub should be denied
         assert!(!session.allows("agent-b", "agent-c"));
+    }
+
+    // ===== handle_submission_error skip_downstream escalation tests (HIGH #4 fix) =====
+
+    #[tokio::test]
+    async fn test_handle_submission_error_uses_is_permanent_dag_failure() {
+        // Verify that handle_submission_error uses the centralized
+        // is_permanent_dag_failure() method with structured variants.
+        let (scheduler, _temp) = chain_scheduler(TaskStatus::Running).await;
+
+        // Test with budget exhausted error (structured variant)
+        let budget_error = ErgataiError::DagBudgetExhausted {
+            dag_id: "dag-1".to_string(),
+            used: 10,
+            limit: 10,
+        };
+        assert!(
+            budget_error.is_permanent_dag_failure(),
+            "budget exhausted should be classified as permanent"
+        );
+        scheduler.handle_submission_error("n1", &budget_error).await;
+
+        let g = scheduler.graph.lock().await;
+        assert_eq!(g.find_node("n1").unwrap().status, TaskStatus::Failed);
+        assert_eq!(g.find_node("n2").unwrap().status, TaskStatus::Skipped);
+    }
+
+    #[tokio::test]
+    async fn test_handle_submission_error_transient_not_permanent() {
+        let (scheduler, _temp) = chain_scheduler(TaskStatus::Running).await;
+
+        // Test with a transient error (should NOT be permanent)
+        let transient_error = ErgataiError::agent_timeout("agent timed out");
+        assert!(
+            !transient_error.is_permanent_dag_failure(),
+            "agent timeout should not be classified as permanent"
+        );
+
+        scheduler.handle_submission_error("n1", &transient_error).await;
+
+        let g = scheduler.graph.lock().await;
+        // Transient error should revert to Pending, not Failed
+        assert_eq!(
+            g.find_node("n1").unwrap().status,
+            TaskStatus::Pending,
+            "transient error should revert node to Pending"
+        );
+        // Downstream should NOT be skipped
+        assert_eq!(
+            g.find_node("n2").unwrap().status,
+            TaskStatus::Pending,
+            "downstream should remain Pending after transient error"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_submission_error_structured_permanent_variants() {
+        // Verify is_permanent_dag_failure matches on structured variants, not strings.
+        // Using ErgataiError::internal(...) with similar text should NOT match —
+        // only the dedicated DagBudgetExhausted / DagDeadlineExceeded variants do.
+        let permanent_cases: Vec<ErgataiError> = vec![
+            ErgataiError::DagBudgetExhausted {
+                dag_id: "dag-1".to_string(),
+                used: 10,
+                limit: 10,
+            },
+            ErgataiError::DagDeadlineExceeded {
+                dag_id: "dag-1".to_string(),
+                exceeded_by_secs: 30,
+            },
+        ];
+        for err in permanent_cases {
+            assert!(
+                err.is_permanent_dag_failure(),
+                "{:?} should be classified as permanent",
+                err
+            );
+        }
+
+        // String-based errors that HAPPEN to contain the old substrings should NOT match.
+        // This is the whole point of the structured-variant refactor: no more fragile
+        // substring classification.
+        let non_permanent_cases: Vec<ErgataiError> = vec![
+            ErgataiError::internal("DAG dag-1 budget exhausted: 10 / 10 agent calls"),
+            ErgataiError::internal("DAG dag-1 exceeded deadline by 30s"),
+            ErgataiError::internal("Some other error mentioning budget exhausted in middle"),
+            ErgataiError::internal("Agent spawn failed: process died"),
+            ErgataiError::internal("Network error: connection refused"),
+            ErgataiError::agent_timeout("node timed out"),
+        ];
+        for err in non_permanent_cases {
+            assert!(
+                !err.is_permanent_dag_failure(),
+                "{:?} should NOT be classified as permanent",
+                err
+            );
+        }
+    }
+
+    // ===== P0 Boundary Tests =====
+
+    /// P0: Submit an empty graph (zero nodes).
+    ///
+    /// Verifies that submit_graph handles the edge case gracefully without
+    /// panicking or hanging. The DAG should be considered "complete" immediately.
+    #[tokio::test]
+    async fn test_submit_graph_empty_graph_returns_empty_and_finalizes() {
+        let graph = TaskGraph::new(vec![]); // Empty graph
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".ergatai")).unwrap();
+        let scheduler = DagScheduler::new(temp_dir.path().to_path_buf(), graph);
+
+        // Submit the empty graph — should return immediately with no tasks
+        let result = scheduler.submit_graph().await;
+        assert!(result.is_ok(), "submit_graph should succeed on empty graph");
+
+        let submitted = result.unwrap();
+        assert!(
+            submitted.is_empty(),
+            "Empty graph should submit zero tasks, got {:?}",
+            submitted
+        );
+
+        // The graph should be considered complete (all zero nodes are terminal)
+        let g = scheduler.graph.lock().await;
+        assert!(
+            g.is_complete(),
+            "Empty graph should be immediately complete"
+        );
+    }
+
+    /// P0: Submit graph when deadline has already passed.
+    ///
+    /// Verifies that submit_graph rejects submission when the deadline is in the past,
+    /// rather than hanging or proceeding with invalid state.
+    #[tokio::test]
+    async fn test_submit_graph_deadline_in_past_returns_error() {
+        let mut graph = TaskGraph::new(vec![TaskNode::new("n1", "agent-a", "Task A")]);
+        // Set a deadline that's already passed (1 second timeout, but started 10 seconds ago)
+        graph.timeout = Some(1);
+        graph.started_at = Some(
+            (chrono::Utc::now() - chrono::Duration::seconds(10)).to_rfc3339(),
+        );
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".ergatai")).unwrap();
+        let scheduler = DagScheduler::new(temp_dir.path().to_path_buf(), graph);
+
+        // Submit should fail because deadline has passed
+        let result = scheduler.submit_graph().await;
+        assert!(
+            result.is_err(),
+            "submit_graph should fail when deadline is in the past"
+        );
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("deadline") || err.to_string().contains("passed"),
+            "Error should mention deadline: {}",
+            err
+        );
+    }
+
+    /// P0: Concurrent on_node_failed handlers should not cause duplicate retries.
+    ///
+    /// When two handlers race to process the same node failure, only one should
+    /// actually retry. This tests the atomic status check in on_node_failed.
+    #[tokio::test]
+    async fn test_on_node_failed_concurrent_handlers_only_one_retries() {
+        use std::sync::Arc;
+        use tokio::task::JoinSet;
+
+        let graph = TaskGraph::new(vec![TaskNode::new("n1", "agent-a", "Task A")]);
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".ergatai")).unwrap();
+        let scheduler = Arc::new(DagScheduler::new(temp_dir.path().to_path_buf(), graph));
+
+        // Put n1 into Running state
+        {
+            let mut g = scheduler.graph.lock().await;
+            g.update_status("n1", TaskStatus::Running).unwrap();
+        }
+
+        // Spawn 5 concurrent on_node_failed handlers
+        let mut joinset = JoinSet::new();
+        for i in 0..5 {
+            let sched = scheduler.clone();
+            joinset.spawn(async move {
+                sched
+                    .on_node_failed("n1", &format!("failure from handler {}", i))
+                    .await
+            });
+        }
+
+        // Wait for all handlers to complete
+        let mut successes = 0;
+        let mut _ignored = 0;
+        while let Some(result) = joinset.join_next().await {
+            match result.unwrap() {
+                Ok(()) => successes += 1,
+                Err(e) => {
+                    // Some handlers may return errors if they see the node is no longer Running
+                    if e.to_string().contains("not Running") || e.to_string().contains("status") {
+                        _ignored += 1;
+                    } else {
+                        panic!("Unexpected error: {}", e);
+                    }
+                }
+            }
+        }
+
+        // At least one handler should have succeeded
+        assert!(
+            successes >= 1,
+            "At least one handler should process the failure"
+        );
+
+        // Check final state — node should be either Pending (retry) or Failed (no retry)
+        let g = scheduler.graph.lock().await;
+        let node = g.find_node("n1").unwrap();
+        assert!(
+            node.status == TaskStatus::Pending || node.status == TaskStatus::Failed,
+            "Node should be Pending (retry) or Failed (no retry), got {:?}",
+            node.status
+        );
+
+        // Retry count should be at most 1 (only one handler incremented it)
+        assert!(
+            node.retry_count <= 1,
+            "P0 BOUNDARY: Retry count should be at most 1 with concurrent handlers, got {}",
+            node.retry_count
+        );
+    }
+
+    /// P0: When retry's generate_and_submit fails, node should be marked Failed
+    /// and downstream should be skipped (not left in Pending forever).
+    #[tokio::test]
+    async fn test_on_node_failed_retry_submit_failure_marks_failed_and_skips() {
+        // This test verifies the cascading failure path:
+        // 1. Node n1 is Running, n2 depends on n1
+        // 2. n1 fails, on_node_failed retries it
+        // 3. Retry's submit fails (e.g., budget exhausted)
+        // 4. n1 should be marked Failed, n2 should be Skipped
+
+        let graph = TaskGraph::new(vec![
+            TaskNode::new("n1", "agent-a", "Task A"),
+            TaskNode::new("n2", "agent-b", "Task B").with_dependencies(vec!["n1".into()]),
+        ]);
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".ergatai")).unwrap();
+        let mut scheduler = DagScheduler::new(temp_dir.path().to_path_buf(), graph);
+
+        // Set max_agent_calls to 0 so any submit will fail with budget exhausted
+        scheduler.max_agent_calls = Some(0);
+
+        // Put n1 into Running state
+        {
+            let mut g = scheduler.graph.lock().await;
+            g.update_status("n1", TaskStatus::Running).unwrap();
+        }
+
+        // Simulate n1 failure — retry will fail due to budget
+        let result = scheduler.on_node_failed("n1", "simulated failure").await;
+
+        // The result might be Ok or Err depending on implementation,
+        // but the important thing is the final state
+        let _ = result; // Ignore the result, check state instead
+
+        let g = scheduler.graph.lock().await;
+
+        // n1 should be Failed (retry exhausted due to budget)
+        let n1 = g.find_node("n1").unwrap();
+        assert_eq!(
+            n1.status,
+            TaskStatus::Failed,
+            "P0 BOUNDARY: n1 should be Failed when retry submit fails"
+        );
+
+        // n2 should be Skipped (downstream of failed node)
+        let n2 = g.find_node("n2").unwrap();
+        assert_eq!(
+            n2.status,
+            TaskStatus::Skipped,
+            "P0 BOUNDARY: n2 should be Skipped when upstream n1 fails permanently"
+        );
     }
 }

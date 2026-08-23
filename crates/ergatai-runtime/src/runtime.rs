@@ -297,15 +297,44 @@ impl AgentRuntime {
 
         for (agent_id, handle) in discovered {
             // If this workspace already has an agent registered (e.g., via launch_agent),
-            // update its handle metadata with the latest discovery data (especially
-            // ergatai_agent_id, which may have been read from the child process's
-            // ERGATAI_AGENT_ID env var). Then skip re-registration.
-            if let Some(existing) = registry.values_mut().find(|info| info.workspace_id == handle.workspace.id) {
-                // Merge ergatai_agent_id from fresh discovery
-                if let Some(eai) = handle.metadata.get("ergatai_agent_id") {
-                    existing.handle.metadata.insert("ergatai_agent_id".to_string(), eai.clone());
+            // validate the pane is still the same and update its handle metadata with
+            // the latest discovery data. If the pane changed, re-register the agent.
+            //
+            // All mutations happen under the SAME write-lock acquisition to prevent
+            // state changes between drop/re-acquire (previously: drop → remove → re-acquire
+            // created a window where another task could insert a duplicate workspace entry).
+            let existing_match: Option<(String, Option<String>, Option<String>)> = registry
+                .values()
+                .find(|info| info.workspace_id == handle.workspace.id)
+                .map(|info| {
+                    (
+                        info.agent_id.clone(),
+                        info.handle.metadata.get("pane_id").cloned(),
+                        handle.metadata.get("pane_id").cloned(),
+                    )
+                });
+
+            if let Some((old_agent_id, existing_pane_id, new_pane_id)) = existing_match {
+                // Check if pane changed (agent died and pane was recreated)
+                if existing_pane_id != new_pane_id {
+                    warn!(
+                        workspace_id = %handle.workspace.id,
+                        old_pane = ?existing_pane_id,
+                        new_pane = ?new_pane_id,
+                        "Pane changed — agent likely died and pane was recreated. Re-registering agent."
+                    );
+                    // Remove old registration under the SAME lock, then fall through
+                    // to register the new agent below.
+                    registry.remove(&old_agent_id);
+                } else {
+                    // Same pane - just update metadata
+                    if let Some(eai) = handle.metadata.get("ergatai_agent_id") {
+                        if let Some(existing) = registry.get_mut(&old_agent_id) {
+                            existing.handle.metadata.insert("ergatai_agent_id".to_string(), eai.clone());
+                        }
+                    }
+                    continue;
                 }
-                continue;
             }
             // Atomic check-and-insert under a single write lock acquisition.
             // entry().or_insert() ensures no TOCTOU gap between contains_key and insert.

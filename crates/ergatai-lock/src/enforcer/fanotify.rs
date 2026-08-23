@@ -149,10 +149,20 @@ pub struct FanotifyBackend {
     /// `stop()` can force-close it.
     fd: Arc<AtomicI32>,
     /// Tokio async wrapper for readiness notifications.
-    async_fd: tokio::io::unix::AsyncFd<RawFd>,
-    /// Project root. Not used for path stripping (that's the facade's job)
-    /// but kept for diagnostics and potential future use.
-    _project_root: PathBuf,
+    /// Wrapped in `Mutex<Option<>>` so that `force_close()` can extract and
+    /// neutralize it before closing the fd, preventing AsyncFd's Drop from
+    /// double-closing (which would cause fd-reuse UB).
+    async_fd: tokio::sync::Mutex<Option<tokio::io::unix::AsyncFd<RawFd>>>,
+    /// Project root — used for path scope filtering in `parse_events_from_buffer`.
+    /// Events whose resolved path is outside project_root are immediately
+    /// FAN_ALLOW'd to avoid processing irrelevant mount-point events.
+    project_root: PathBuf,
+    /// PID of the enforcer process itself. Events from this PID are immediately
+    /// FAN_ALLOW'd to prevent deadlock: if the event loop's own file operations
+    /// (SQLite, logging, /proc reads) were queued for processing, the sequential
+    /// event loop would deadlock (it blocks on SQLite → SQLite blocked on
+    /// fanotify → fanotify waiting for event loop).
+    self_pid: u32,
     /// Buffered event state. Mutex is tokio's async Mutex because it is
     /// held across `.await` points (when waiting for `readable()`).
     state: Mutex<ReadBuffer>,
@@ -265,8 +275,9 @@ impl FanotifyBackend {
 
         Ok(Self {
             fd: Arc::new(AtomicI32::new(raw_fd)),
-            async_fd,
-            _project_root: project_root.to_path_buf(),
+            async_fd: tokio::sync::Mutex::new(Some(async_fd)),
+            project_root: project_root.to_path_buf(),
+            self_pid: std::process::id(),
             state: Mutex::new(ReadBuffer::new()),
         })
     }
@@ -281,7 +292,20 @@ impl FanotifyBackend {
     /// Returns `true` if at least one event was enqueued. Events whose path
     /// cannot be resolved are responded to immediately with `FAN_ALLOW`
     /// (fail-open) and not enqueued — the kernel must not be left waiting.
-    fn parse_events_from_buffer(fd: Arc<AtomicI32>, state: &mut ReadBuffer) -> bool {
+    ///
+    /// **Deadlock prevention**: Events from `self_pid` (the enforcer process)
+    /// and events whose resolved path is outside `project_root` are immediately
+    /// FAN_ALLOW'd here, BEFORE entering the pending queue. This is critical:
+    /// if self-PID events entered the queue, the sequential event loop would
+    /// deadlock — it calls `decide()` which does SQLite queries, but SQLite's
+    /// own file opens would generate fanotify events that sit unprocessed in
+    /// the queue because the event loop is blocked waiting for SQLite.
+    fn parse_events_from_buffer(
+        fd: Arc<AtomicI32>,
+        state: &mut ReadBuffer,
+        self_pid: u32,
+        project_root: &std::path::Path,
+    ) -> bool {
         let meta_size = std::mem::size_of::<libc::fanotify_event_metadata>();
         let mut found_any = false;
         let group_fd = fd.load(Ordering::SeqCst);
@@ -319,9 +343,43 @@ impl FanotifyBackend {
                 break;
             }
 
+            // FAN_Q_OVERFLOW: kernel queue overflowed. Some permission events
+            // were dropped. Those processes may be stuck — but since we use
+            // FAN_MARK_MOUNT, new events will keep arriving. Log at error level
+            // so operators can detect and investigate.
+            if meta.mask & libc::FAN_Q_OVERFLOW != 0 {
+                error!(
+                    "fanotify: queue overflow — some permission events may have been dropped"
+                );
+                state.offset += event_len;
+                continue;
+            }
+
             if meta.mask & libc::FAN_OPEN_PERM != 0 {
                 match readlink_proc_fd(meta.fd) {
                     Some(abs_path) => {
+                        // DEADLOCK PREVENTION: Self-PID events must be allowed
+                        // immediately. If we enqueue them, the event loop will
+                        // process them via decide() which needs SQLite, but
+                        // SQLite's own file opens are also intercepted by
+                        // fanotify — creating a circular wait (deadlock).
+                        if meta.pid as u32 == self_pid {
+                            Self::respond_and_close_raw(group_fd, meta.fd, true);
+                            state.offset += event_len;
+                            continue;
+                        }
+
+                        // SCOPE FILTER: FAN_MARK_MOUNT monitors the entire mount
+                        // point, not just project_root. Events for files outside
+                        // project_root are irrelevant to file locking — allow
+                        // them immediately to avoid unnecessary processing and
+                        // potential system-wide slowdown.
+                        if !abs_path.starts_with(project_root) {
+                            Self::respond_and_close_raw(group_fd, meta.fd, true);
+                            state.offset += event_len;
+                            continue;
+                        }
+
                         state.pending.push_back(FileAccessEvent {
                             absolute_path: abs_path,
                             pid: meta.pid as u32,
@@ -411,7 +469,12 @@ impl EnforcerBackend for FanotifyBackend {
                     return Some(ev);
                 }
                 // Try to parse more from unconsumed bytes in the buffer.
-                if Self::parse_events_from_buffer(self.fd.clone(), &mut state) {
+                if Self::parse_events_from_buffer(
+                    self.fd.clone(),
+                    &mut state,
+                    self.self_pid,
+                    &self.project_root,
+                ) {
                     if let Some(ev) = state.pending.pop_front() {
                         return Some(ev);
                     }
@@ -419,7 +482,15 @@ impl EnforcerBackend for FanotifyBackend {
             }
 
             // 2. Wait for the fanotify fd to become readable.
-            let mut guard = match self.async_fd.readable().await {
+            let async_fd_guard = self.async_fd.lock().await;
+            let async_fd_ref = match async_fd_guard.as_ref() {
+                Some(a) => a,
+                None => {
+                    // Backend was force-closed; stop the event loop.
+                    return None;
+                }
+            };
+            let mut guard = match async_fd_ref.readable().await {
                 Ok(g) => g,
                 Err(e) => {
                     warn!(error = %e, "fanotify AsyncFd::readable failed, stopping");
@@ -428,7 +499,7 @@ impl EnforcerBackend for FanotifyBackend {
             };
 
             // 3. Read events into the buffer.
-            let fd: RawFd = self.async_fd.as_raw_fd();
+            let fd: RawFd = async_fd_ref.as_raw_fd();
             let mut state = self.state.lock().await;
             // SAFETY: `fd` is a valid open fanotify group fd (owned by `async_fd`,
             // which wraps it via `AsyncFd`). `state.buf` is a `Vec<u8>` with capacity
@@ -456,7 +527,12 @@ impl EnforcerBackend for FanotifyBackend {
             guard.clear_ready();
 
             // 4. Parse events and yield the first one (if any).
-            Self::parse_events_from_buffer(self.fd.clone(), &mut state);
+            Self::parse_events_from_buffer(
+                self.fd.clone(),
+                &mut state,
+                self.self_pid,
+                &self.project_root,
+            );
             if let Some(ev) = state.pending.pop_front() {
                 return Some(ev);
             }
@@ -485,10 +561,81 @@ impl EnforcerBackend for FanotifyBackend {
     }
 
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Mark the fd as closed. The actual close is handled by AsyncFd on drop;
-        // we must NOT close it here to avoid double-close (AsyncFd owns the fd).
-        self.fd.store(-1, Ordering::SeqCst);
+        // Use force_close to safely neutralize AsyncFd before closing the fd.
+        // This prevents double-close / fd-reuse UB.
+        self.force_close();
         Ok(())
+    }
+
+    fn drain_self_events(&self) {
+        let fd: RawFd = self.fd.load(Ordering::SeqCst);
+        if fd < 0 {
+            return;
+        }
+        // FIX: Try to lock state FIRST. If we can't get the lock, skip this
+        // iteration — the data stays in the kernel queue and will be picked up
+        // by the event loop or the next drain attempt. Previously, we read first
+        // then tried to lock, which could drop the read data if try_lock failed.
+        let mut state = match self.state.try_lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        // Now read directly into state.buf. This way no data is lost.
+        let n = unsafe {
+            libc::read(fd, state.buf.as_mut_ptr() as *mut _, state.buf.len())
+        };
+        if n <= 0 {
+            return;
+        }
+        state.len = n as usize;
+        state.offset = 0;
+        // parse_events_from_buffer handles self-PID (FAN_ALLOW) and scope
+        // filter (FAN_ALLOW) internally. Non-self events are pushed to
+        // state.pending for the event loop to pick up later.
+        Self::parse_events_from_buffer(
+            self.fd.clone(),
+            &mut state,
+            self.self_pid,
+            &self.project_root,
+        );
+    }
+
+    fn force_close(&self) {
+        let fd = self.fd.swap(-1, Ordering::SeqCst);
+        if fd < 0 {
+            return;
+        }
+        warn!(fd, "fanotify: force-closing group fd");
+        // SAFETY: `fd` was a valid open fanotify group fd owned by this backend.
+        // We swap it to -1 first to prevent any concurrent read/close from using
+        // the same fd number.
+        //
+        // Extract the AsyncFd from the Option and call into_inner() to get back
+        // the raw fd WITHOUT letting AsyncFd's Drop close it. This prevents the
+        // double-close / fd-reuse UB that would occur if AsyncFd's Drop closed
+        // the fd after we already closed it (another open() could reuse the fd
+        // number between our close and AsyncFd's Drop).
+        //
+        // We use try_lock() because force_close() is a sync method. If the
+        // mutex is held (event loop is running), we fall back to closing the
+        // fd directly — AsyncFd will later get EBADF on its close, which is
+        // harmless (just a logged warning).
+        match self.async_fd.try_lock() {
+            Ok(mut guard) => {
+                if let Some(async_fd) = guard.take() {
+                    // into_inner() returns the RawFd without closing it.
+                    let inner_fd = async_fd.into_inner();
+                    debug_assert_eq!(inner_fd, fd, "AsyncFd fd mismatch");
+                }
+            }
+            Err(_) => {
+                // Event loop holds the lock. Close the fd directly.
+                // AsyncFd's Drop will later get EBADF — harmless.
+            }
+        }
+        unsafe {
+            libc::close(fd);
+        }
     }
 }
 

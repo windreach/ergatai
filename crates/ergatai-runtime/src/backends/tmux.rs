@@ -150,8 +150,55 @@ impl TmuxBackend {
         Ok(())
     }
 
+    /// Check if a pane is running a specific process (or a child of it).
+    /// Returns the current command name running in the pane.
+    async fn get_pane_command(pane: &str) -> Option<String> {
+        // Use tmux display-message to get the pane's current command
+        let output = Self::run_tmux_cmd(&[
+            "display-message",
+            "-t", pane,
+            "-p", "#{pane_current_command}",
+        ]).await.ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        let cmd = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Some(cmd)
+    }
+
+    /// Check if the pane is running bash/sh (i.e., the agent process died).
+    /// This is used to prevent injecting messages into a dead agent's shell.
+    async fn is_pane_running_shell(pane: &str) -> bool {
+        if let Some(cmd) = Self::get_pane_command(pane).await {
+            let cmd_lower = cmd.to_lowercase();
+            // Check if it's a shell (bash, sh, zsh, fish, etc.)
+            cmd_lower.contains("bash") ||
+            cmd_lower.contains("/bash") ||
+            cmd_lower == "sh" ||
+            cmd_lower.contains("/sh") ||
+            cmd_lower.contains("zsh") ||
+            cmd_lower.contains("fish")
+        } else {
+            false
+        }
+    }
+
     /// Send sanitized text + Enter to a tmux pane.
     async fn send_to_pane(pane: &str, text: &str) -> ErgataiResult<()> {
+        // Check if the pane is running a shell (agent process died)
+        if Self::is_pane_running_shell(pane).await {
+            tracing::warn!(
+                pane = %pane,
+                "Pane is running shell (agent likely died). Skipping injection to prevent command execution."
+            );
+            return Err(ErgataiError::internal(format!(
+                "Cannot inject message: pane {} is running shell (agent process died)",
+                pane
+            )));
+        }
+
         let sanitized = sanitize_message(text);
 
         Self::run_tmux_cmd_checked(

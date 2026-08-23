@@ -1,0 +1,20 @@
+name: test-dag-description
+description: 测试任务描述文件读取
+
+tasks:
+  # 方式1: task 字段指向文件路径
+  - name: Task A
+    agent: agent-2
+    task: examples/task-a-description.md  # 文件路径
+    priority: medium
+
+  # 方式2: task 字段直接写内联文字描述
+  - name: Task B
+    agent: agent-3
+    task: |                                # 内联文字
+      实现一个字符串处理工具：
+      - trim(): 去除首尾空白
+      - reverse(): 反转字符串
+      - to_upper(): 转大写
+      文件放在 examples/string-utils/
+    priority: low

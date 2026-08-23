@@ -71,6 +71,13 @@ impl EventBus {
             "ergatai.task.submit.{}",
             sanitize_agent_name(&payload.target_agent)
         );
+        tracing::info!(
+            task_id = %payload.task_id,
+            agent = %payload.target_agent,
+            sanitized = sanitize_agent_name(&payload.target_agent),
+            subject = %subject,
+            "Publishing task submission to JetStream"
+        );
         let json = serde_json::to_vec(payload)?;
         self.connection.publish_jetstream(&subject, json).await
     }

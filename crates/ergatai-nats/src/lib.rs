@@ -57,7 +57,8 @@ pub use file_access_streams::{
     FILE_ACCESS_ESCALATE_STREAM, FILE_ACCESS_GRANT_STREAM, FILE_ACCESS_REQUEST_STREAM,
 };
 pub use manager::{
-    get_nats_connection, get_nats_server_port, init_nats, is_nats_initialized, shutdown_nats,
+    get_nats_connection, get_nats_server_port, init_nats, init_nats_with_store_dir,
+    is_nats_initialized, is_nats_initialized_sync, shutdown_nats,
 };
 pub use server::{shared_test_server, NatsServer};
 pub use task_queue::NatsTaskQueue;

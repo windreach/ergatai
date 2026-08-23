@@ -120,6 +120,24 @@ impl DecisionEngine {
         self.self_pids.write().remove(&pid);
     }
 
+    /// Remove PIDs whose processes no longer exist. Call this periodically
+    /// (e.g., every 30s from the re-discovery loop) to prevent unbounded growth.
+    ///
+    /// Checks `/proc/{pid}` existence — if the directory is gone, the process
+    /// has exited and the PID is stale.
+    pub fn prune_dead_pids(&self) {
+        let mut pids = self.self_pids.write();
+        let current = std::process::id();
+        pids.retain(|&pid| {
+            // Always keep our own PID
+            if pid == current {
+                return true;
+            }
+            // Check if the process still exists
+            std::path::Path::new(&format!("/proc/{}", pid)).exists()
+        });
+    }
+
     /// Access the underlying lock manager (for recording violations, etc.).
     pub fn lock_manager(&self) -> &Arc<FileLockManager> {
         &self.lock_manager
@@ -239,6 +257,10 @@ pub struct Enforcer {
     ///
     /// On non-Linux this is always `-1` and never touched.
     backend_fd: Arc<AtomicI32>,
+    /// Backend trait object. Held so that `stop()` can call `force_close()`
+    /// to safely neutralize AsyncFd before closing the fd, preventing
+    /// double-close / fd-reuse UB.
+    backend: Option<Arc<dyn EnforcerBackend>>,
     /// Cancellation token for the event loop.
     cancel: CancellationToken,
     /// Join handle for the event loop task. `None` if enforcer is disabled.
@@ -330,6 +352,7 @@ impl Enforcer {
 
         Ok(Self {
             backend_fd,
+            backend: Some(backend),
             cancel,
             task: Arc::new(parking_lot::Mutex::new(Some(task))),
             active: Arc::new(AtomicBool::new(true)),
@@ -357,10 +380,22 @@ impl Enforcer {
                 warn!("enforcer: event loop did not exit within 2s; forcing fd close");
             }
         }
-        // Mark the backend fd as closed. The actual close is handled by the
-        // backend's AsyncFd on drop; we must NOT close it here to avoid
-        // double-close undefined behavior.
-        self.backend_fd.store(-1, Ordering::SeqCst);
+        // Force-close the backend fd to destroy the kernel fanotify group
+        // immediately. This ensures subsequent file opens are NOT intercepted
+        // by this (now-stopped) enforcer — critical when multiple enforcers
+        // are created sequentially (e.g., in tests). Without this, a stale
+        // fanotify group would block processes waiting for a response that
+        // never comes.
+        //
+        // Use force_close() which safely neutralizes AsyncFd before closing
+        // the fd, preventing double-close / fd-reuse UB.
+        if let Some(ref backend) = self.backend {
+            backend.force_close();
+        } else {
+            // Fallback for backends without force_close (or if backend was
+            // already taken). Just set the atomic to -1.
+            self.backend_fd.swap(-1, Ordering::SeqCst);
+        }
         self.active.store(false, Ordering::SeqCst);
         info!("enforcer stopped");
     }
@@ -374,6 +409,7 @@ impl Enforcer {
     fn disabled(project_root: PathBuf, project_id: String, config: EnforcerConfig) -> Self {
         Self {
             backend_fd: Arc::new(AtomicI32::new(-1)),
+            backend: None,
             cancel: CancellationToken::new(),
             task: Arc::new(parking_lot::Mutex::new(None)),
             active: Arc::new(AtomicBool::new(false)),
@@ -510,17 +546,49 @@ impl Enforcer {
                 .ok()
                 .map(|p| p.to_string_lossy().to_string());
 
-            // Run the decision in-place. `block_in_place` converts the current
-            // tokio worker into a blocking thread for the duration; tokio
-            // compensates by spinning up a replacement worker. Inside,
-            // `check_file_lock_status_fast` uses try_lock() on the SQLite
-            // mutex, so this never blocks indefinitely.
+            // CRITICAL DEADLOCK PREVENTION:
+            // `decide()` queries SQLite, which opens locks.db. That open() triggers
+            // a fanotify FAN_OPEN_PERM event. Since the event loop is `.await`-ing
+            // this spawn_blocking, only a CONCURRENT thread can read the fanotify
+            // queue and respond. We spawn a dedicated OS thread that continuously
+            // drains self-PID events while decide() runs.
+            //
+            // Without this, the blocking thread deadlocks:
+            //   decide() → SQLite → open(locks.db) → FAN_OPEN_PERM → kernel blocks
+            //   the thread → nobody reads fanotify queue → nobody responds → DEADLOCK
             let decision = match relative.as_deref() {
                 Some(rel) => {
                     let engine = engine.clone();
+                    let backend = backend.clone();
                     let rel_owned = rel.to_string();
                     let pid = event.pid;
-                    tokio::task::block_in_place(move || engine.decide(&rel_owned, pid))
+                    tokio::task::spawn_blocking(move || {
+                        // Spawn a concurrent thread that drains self-PID events
+                        // while decide() runs. This thread reads the fanotify fd
+                        // non-blocking and immediately responds to any events
+                        // from our own process (SQLite file opens).
+                        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let stop2 = stop.clone();
+                        let backend2 = backend.clone();
+                        let drain_handle = std::thread::spawn(move || {
+                            while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
+                                backend2.drain_self_events();
+                                // 1ms sleep: balances responsiveness (SQLite open()
+                                // takes ~100μs-1ms) against CPU usage. The previous
+                                // 100μs interval was a busy-wait that woke the CPU
+                                // 10× more often without meaningful latency benefit.
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                            }
+                            // Final drain after decide() returns
+                            backend2.drain_self_events();
+                        });
+                        let decision = engine.decide(&rel_owned, pid);
+                        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                        let _ = drain_handle.join();
+                        decision
+                    })
+                    .await
+                    .unwrap_or(Decision::Allow) // join error → fail open
                 }
                 None => Decision::Allow, // outside project or resolution failed → allow
             };

@@ -46,6 +46,8 @@ pub enum ErrorCode {
     LockConflict,
     InvalidPath,
     NotFound,
+    DagBudgetExhausted,
+    DagDeadlineExceeded,
 
     // Internal errors
     Internal,
@@ -85,6 +87,8 @@ impl ErrorCode {
             Self::LockConflict => "ERR_LOCK_CONFLICT",
             Self::InvalidPath => "ERR_INVALID_PATH",
             Self::NotFound => "ERR_NOT_FOUND",
+            Self::DagBudgetExhausted => "ERR_DAG_BUDGET_EXHAUSTED",
+            Self::DagDeadlineExceeded => "ERR_DAG_DEADLINE_EXCEEDED",
 
             Self::Internal => "ERR_INTERNAL",
             Self::Channel => "ERR_CHANNEL",
@@ -213,6 +217,24 @@ pub enum ErgataiError {
     /// Resource not found
     #[error("Not found: {0}")]
     NotFound(String),
+
+    /// DAG global agent-call budget exhausted — permanent failure, not retryable.
+    ///
+    /// Structured variant so callers can match on it directly instead of relying
+    /// on fragile string matching of error messages.
+    #[error("DAG {dag_id} budget exhausted: {used} / {limit} agent calls")]
+    DagBudgetExhausted {
+        dag_id: String,
+        used: u64,
+        limit: u64,
+    },
+
+    /// DAG deadline exceeded — permanent failure, not retryable.
+    #[error("DAG {dag_id} exceeded deadline by {exceeded_by_secs}s")]
+    DagDeadlineExceeded {
+        dag_id: String,
+        exceeded_by_secs: u64,
+    },
 
     // ===== Internal Errors =====
     /// Unexpected internal error — preserves source error chain
@@ -395,6 +417,8 @@ impl ErgataiError {
             ErgataiError::LockConflictWithRetry { .. } => ErrorCode::LockConflict,
             ErgataiError::InvalidPath(_) => ErrorCode::InvalidPath,
             ErgataiError::NotFound(_) => ErrorCode::NotFound,
+            ErgataiError::DagBudgetExhausted { .. } => ErrorCode::DagBudgetExhausted,
+            ErgataiError::DagDeadlineExceeded { .. } => ErrorCode::DagDeadlineExceeded,
 
             // Internal errors
             ErgataiError::InternalError { .. } => ErrorCode::Internal,
@@ -422,6 +446,22 @@ impl ErgataiError {
                 | ErgataiError::NetworkError { .. }
                 | ErgataiError::NatsError(_)
                 | ErgataiError::IoError(_)
+        )
+    }
+
+    /// Check if this is a permanent DAG failure that should not be retried.
+    ///
+    /// Permanent failures (budget exhausted, deadline exceeded) indicate the
+    /// DAG cannot make further progress. The scheduler uses this to decide
+    /// whether to mark the node as `Failed` and skip downstream dependents,
+    /// rather than reverting to `Pending` for retry.
+    ///
+    /// Matches on the structured [`DagBudgetExhausted`] and [`DagDeadlineExceeded`]
+    /// variants — no string matching on error messages.
+    pub fn is_permanent_dag_failure(&self) -> bool {
+        matches!(
+            self,
+            ErgataiError::DagBudgetExhausted { .. } | ErgataiError::DagDeadlineExceeded { .. }
         )
     }
 
@@ -618,6 +658,57 @@ mod tests {
         let err2 = ErgataiError::internal_with_source("wrapped", io_err);
         assert!(
             matches!(err2, ErgataiError::InternalError { ref message, source: Some(_) } if message == "wrapped")
+        );
+    }
+
+    #[test]
+    fn test_permanent_dag_failure_budget_exhausted() {
+        let err = ErgataiError::DagBudgetExhausted {
+            dag_id: "dag-1".to_string(),
+            used: 10,
+            limit: 10,
+        };
+        assert!(
+            err.is_permanent_dag_failure(),
+            "budget exhausted should be a permanent failure"
+        );
+        // Verify the Display output matches the old format (backward-compatible messages)
+        assert!(
+            err.to_string().contains("budget exhausted"),
+            "error message should contain 'budget exhausted', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_permanent_dag_failure_deadline_exceeded() {
+        let err = ErgataiError::DagDeadlineExceeded {
+            dag_id: "dag-1".to_string(),
+            exceeded_by_secs: 30,
+        };
+        assert!(
+            err.is_permanent_dag_failure(),
+            "exceeded deadline should be a permanent failure"
+        );
+        assert!(
+            err.to_string().contains("exceeded deadline"),
+            "error message should contain 'exceeded deadline', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_permanent_dag_failure_transient_errors() {
+        let err = ErgataiError::internal("agent launch failed: process died");
+        assert!(
+            !err.is_permanent_dag_failure(),
+            "transient agent errors should not be permanent failures"
+        );
+
+        let err = ErgataiError::agent_timeout("node timed out");
+        assert!(
+            !err.is_permanent_dag_failure(),
+            "agent timeout should not be a permanent DAG failure"
         );
     }
 }

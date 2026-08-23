@@ -551,11 +551,14 @@ Write your results in markdown:
                         tracing::debug!(agent_id = %agent_id, "Agent status: Starting → Running");
                     }
                     Err(e) => {
-                        tracing::warn!(
+                        // MEDIUM #6 fix: Invalid state transitions indicate a bug in the
+                        // state machine. Use error! level so it surfaces in monitoring
+                        // rather than being lost among normal warnings.
+                        tracing::error!(
                             agent_id = %agent_id,
                             current_status = ?agent.status,
                             error = %e,
-                            "Invalid state transition to Running"
+                            "BUG: Invalid state transition to Running — state machine invariant violated"
                         );
                     }
                 }
@@ -675,12 +678,13 @@ Write your results in markdown:
                                 );
                             }
                             Err(e) => {
-                                tracing::warn!(
+                                // MEDIUM #6 fix: Invalid state transitions indicate a bug.
+                                tracing::error!(
                                     agent_id = %agent_id_monitor,
                                     current_status = ?agent.status,
                                     target_status = ?status,
                                     error = %e,
-                                    "Invalid state transition to terminal state"
+                                    "BUG: Invalid state transition to terminal state — state machine invariant violated"
                                 );
                             }
                         }

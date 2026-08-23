@@ -78,6 +78,12 @@ pub struct TaskScheduler {
     concurrency_limit: usize,
     /// Semaphore enforcing the concurrency limit. Each running task holds one permit.
     semaphore: Arc<Semaphore>,
+    /// Signals when the NATS JetStream consumer is ready to receive messages.
+    /// Prevents a race condition where DAG submission publishes messages before
+    /// the consumer has finished initialization.
+    consumer_ready: tokio::sync::watch::Sender<bool>,
+    /// Receiver clone for awaiting consumer readiness.
+    consumer_ready_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 /// Extract the objective from a plan's markdown content.
@@ -108,6 +114,8 @@ impl TaskScheduler {
             concurrency_limit
         };
 
+        let (ready_tx, ready_rx) = tokio::sync::watch::channel(false);
+
         Self {
             project_root,
             strategy,
@@ -116,6 +124,33 @@ impl TaskScheduler {
             queue_file,
             concurrency_limit: limit,
             semaphore: Arc::new(Semaphore::new(limit)),
+            consumer_ready: ready_tx,
+            consumer_ready_rx: ready_rx,
+        }
+    }
+
+    /// Wait for the NATS JetStream consumer to be ready.
+    ///
+    /// Returns immediately if the consumer is already ready, or if NATS is
+    /// unavailable (the consumer task signals ready even on failure to avoid
+    /// deadlocking callers).
+    pub async fn wait_for_consumer_ready(&self) {
+        let mut rx = self.consumer_ready_rx.clone();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            rx.wait_for(|ready| *ready),
+        )
+        .await;
+        match result {
+            Ok(Ok(_)) => {} // Consumer ready
+            Ok(Err(_)) => {
+                tracing::warn!("Consumer ready channel dropped, proceeding anyway");
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Timed out waiting for consumer ready (5s), proceeding with submission"
+                );
+            }
         }
     }
 
@@ -585,6 +620,7 @@ impl TaskScheduler {
                 Some(c) => c,
                 None => {
                     tracing::warn!("NATS not initialized, consumer not started");
+                    scheduler.consumer_ready.send_modify(|ready| *ready = true);
                     return;
                 }
             };
@@ -595,6 +631,7 @@ impl TaskScheduler {
                 Ok(m) => m,
                 Err(e) => {
                     tracing::error!(error = %e, "Failed to initialize task submission consumer");
+                    scheduler.consumer_ready.send_modify(|ready| *ready = true);
                     return;
                 }
             };
@@ -603,6 +640,9 @@ impl TaskScheduler {
                 "JetStream task consumer started (stream: {}, filter: ergatai.task.submit.*)",
                 ergatai_nats::DAG_EVENTS_STREAM
             );
+
+            // Signal that the consumer is bound and ready to receive messages.
+            scheduler.consumer_ready.send_modify(|ready| *ready = true);
 
             use futures_util::StreamExt;
             loop {

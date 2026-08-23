@@ -2,6 +2,7 @@
 //!
 //! Provides lazy initialization of NATS server and connection.
 
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -19,6 +20,11 @@ struct NatsState {
 }
 
 static NATS_STATE: OnceLock<RwLock<NatsState>> = OnceLock::new();
+/// Atomic flag set to `true` once `init_nats()` completes successfully.
+/// Provides a synchronous check for "is NATS available" without acquiring
+/// the async RwLock — used by `start_nats_consumer` to fast-path in test
+/// environments where NATS is never initialized.
+static NATS_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn nats_state() -> &'static RwLock<NatsState> {
     NATS_STATE.get_or_init(|| {
@@ -79,6 +85,55 @@ pub async fn init_nats() -> ErgataiResult<NatsConnection> {
 
     state.server = Some(server);
     state.connection = Some(connection.clone());
+
+    // Mark NATS as initialized (sync flag for fast-path checks).
+    NATS_INITIALIZED.store(true, std::sync::atomic::Ordering::Release);
+
+    Ok(connection)
+}
+
+/// Initialize NATS with a custom store directory (for test isolation).
+///
+/// Identical to [`init_nats()`] but uses `store_dir` instead of the default
+/// persistent location (`~/.local/share/ergatai/nats-store`). This prevents
+/// test NATS servers from conflicting with a running ergatai instance or
+/// accumulating zombie processes sharing the same JetStream store.
+///
+/// The function is idempotent — if already initialized with a live connection,
+/// the existing connection is returned regardless of `store_dir`.
+pub async fn init_nats_with_store_dir(store_dir: PathBuf) -> ErgataiResult<NatsConnection> {
+    let state = nats_state();
+    let mut state = state.write().await;
+
+    if let Some(conn) = &state.connection {
+        if conn.is_connected() {
+            info!("NATS already initialized (reusing existing connection)");
+            return Ok(conn.clone());
+        }
+    }
+
+    if state.server.is_some() || state.connection.is_some() {
+        info!("Replacing stale/disconnected NATS state");
+        state.connection = None;
+        state.server = None;
+    }
+
+    info!(store_dir = %store_dir.display(), "Starting NATS server with custom store dir");
+    let server = NatsServer::start_with_store_dir(store_dir).await?;
+    let port = server.port();
+    info!(port = port, "NATS server started (isolated store)");
+
+    info!("Connecting to NATS server...");
+    let connection = NatsConnection::connect_to_server(&server).await?;
+    info!("Connected to NATS server");
+
+    info!("Initializing JetStream streams...");
+    init_jetstream_streams(&connection).await?;
+
+    state.server = Some(server);
+    state.connection = Some(connection.clone());
+
+    NATS_INITIALIZED.store(true, std::sync::atomic::Ordering::Release);
 
     Ok(connection)
 }
@@ -165,6 +220,16 @@ pub async fn is_nats_initialized() -> bool {
         .as_ref()
         .map(|c| c.is_connected())
         .unwrap_or(false)
+}
+
+/// Synchronous check for whether NATS has been initialized.
+///
+/// Returns `true` once `init_nats()` has completed successfully at least once.
+/// This avoids acquiring the async `RwLock` — useful in sync contexts (e.g.,
+/// before `tokio::spawn`) to skip NATS-dependent setup when NATS is unavailable
+/// (common in test environments).
+pub fn is_nats_initialized_sync() -> bool {
+    NATS_INITIALIZED.load(std::sync::atomic::Ordering::Acquire)
 }
 
 /// Get the port the NATS server is listening on

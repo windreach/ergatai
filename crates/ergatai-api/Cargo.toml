@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[lib]
+name = "ergatai_api"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ergatai-server"
 path = "src/main.rs"
@@ -53,7 +57,7 @@ tokio-util = "0.7"
 # HTTP server
 axum = { version = "0.7", features = ["ws"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
-tower = "0.4"
+tower = "0.5"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # Rate limiting

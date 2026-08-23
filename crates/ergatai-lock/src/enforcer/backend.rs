@@ -111,4 +111,31 @@ pub trait EnforcerBackend: Send + Sync + 'static {
     /// After `stop()` returns, `next_event()` must return `None`.
     /// Idempotent — calling `stop()` multiple times is safe.
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Drain and immediately respond to self-PID events that were generated
+    /// by the calling thread's own file operations (e.g., SQLite opening the
+    /// database file).
+    ///
+    /// # When to call
+    ///
+    /// Call this from a `spawn_blocking` closure that runs the decision engine.
+    /// The decision engine may open files (SQLite) that trigger fanotify
+    /// permission events. Since the event loop is `.await`-ing the blocking
+    /// result, no other thread reads the fanotify queue — causing a deadlock.
+    /// Draining self-PID events from the blocking thread breaks this cycle.
+    ///
+    /// Default implementation is a no-op (non-fanotify backends don't need this).
+    fn drain_self_events(&self) {}
+
+    /// Force-close the backend's kernel resource (e.g., fanotify group fd).
+    ///
+    /// Called from `Enforcer::stop()` when the event loop fails to exit within
+    /// the timeout. This ensures the kernel resource is released immediately,
+    /// even if background threads still hold Arc references to the backend.
+    ///
+    /// After `force_close`, any pending reads return errors and new events
+    /// are no longer delivered. The backend is effectively dead.
+    ///
+    /// Default implementation is a no-op.
+    fn force_close(&self) {}
 }
