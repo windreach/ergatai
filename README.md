@@ -4,13 +4,9 @@
 
 <img src="assets/logo.png" alt="Ergatai Logo" width="200">
 
-**Multi-Agent Collaboration Middleware**
+### Turn your AI coding assistants into a coordinated team.
 
-*Your AI agents share a codebase. Ergatai makes sure they don't step on each other.*
-
-</div>
-
-<div align="center">
+*Claude, Cursor, Codex — working together instead of stepping on each other.*
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 &ensp;
@@ -22,167 +18,104 @@
 
 <br/>
 
-## Why Ergatai
+---
 
-You already have Claude Code, Cursor, and Codex. Each is great on its own. But when you try to use two of them on the same project, they overwrite each other's changes, duplicate work, and have no idea what the other is doing.
+### The problem
 
-Existing solutions ask you to build your own agents from scratch. We think that's backwards. Ergatai connects the agents you already use — open-source or closed-source — through MCP, with file locking and DAG orchestration so they actually collaborate instead of collide.
+You have Claude Code refactoring the auth module. Cursor is adding tests. Codex is updating docs.
 
-<br/>
+They're all editing the same files. Nobody knows what the others are doing. Merge conflicts. Duplicated work. Overwritten changes.
 
-## What can Ergatai do?
+**Ergatai fixes this.** It connects your existing AI agents through a lightweight coordination layer — so they can talk, divide work, and edit code without colliding.
 
-Ergatai connects AI agents so they can work together on complex tasks — like a team of specialists coordinating on a project.
+---
 
-### 🔄 Agent-to-Agent Messaging
+### See it in action
 
-Agents send and receive messages through Ergatai's relay. Claude Code can ask Cursor to refactor a module, and Codex can report results back.
+<!-- TODO: Replace with actual demo GIF -->
+![Demo](assets/demo-placeholder.gif)
 
-### 📋 DAG-Based Task Orchestration
+*Three agents collaborating on a single codebase — messages flowing, tasks dispatched, files locked safely.*
 
-Submit multi-step workflows where different agents handle different phases — with dependencies between tasks.
+---
 
-### 🔒 Safe Concurrent File Access
+### What you can do
 
-When multiple agents edit the same codebase, Ergatai prevents conflicts with token-based locking and kernel-level enforcement.
+**💬 Agents that talk to each other**
 
-<br/>
+Claude can ask Cursor to review a PR. Codex can report results back to the team. No more copy-pasting between terminals.
 
-## Quick Start
+**📋 Divide and conquer**
 
-### 1. Install
+Submit a complex task. Ergatai breaks it into steps, assigns them to different agents, and tracks progress — like a project manager for AI.
+
+**🔒 No more merge conflicts**
+
+When two agents try to edit the same file, Ergatai locks it safely. One works while the other waits. No overwritten changes, no lost work.
+
+---
+
+### Quick Start
+
+**1. Install**
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/windreach/Ergatai/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/windreach/ergatai/main/install.sh | bash
 ```
 
-This installs:
-- `ergatai` — CLI tool
-- `ega` — short alias (symlink)
-- `ergatai-server` — API server (with `CAP_SYS_ADMIN` for file locking)
-
-### 2. Start the server
+**2. Start the server**
 
 ```bash
-ergatai-server --port 3000
+ergatai-server
 ```
 
-### 3. Quick launch an agent
+**3. Launch your first agent**
 
 ```bash
-# In your project directory
 ega claude
 ```
 
-This creates a workspace, spawns the agent, and attaches to the terminal session — all in one command.
+**4. Add more agents**
 
-### 4. Configure MCP for other agents
+Point your other agents (Cursor, Codex, etc.) to `http://localhost:3000/mcp/<agent-name>` in their MCP config.
 
-Add Ergatai to your agent's MCP config:
+That's it. Your agents can now collaborate.
 
-```json
-{
-  "mcpServers": {
-    "ergatai": {
-      "url": "http://localhost:3000/mcp/alice"
-    }
-  }
-}
-```
+📖 [Full installation guide](docs/getting-started/INSTALL.md) · [CLI reference](docs/guide/CLI.md) · [MCP setup](docs/guide/MCP.md)
 
-Each agent needs a unique path suffix (`/mcp/alice`, `/mcp/bob`, etc.).
+---
 
-📖 See [Installation Guide](docs/getting-started/INSTALL.md) and [CLI Guide](docs/guide/CLI.md) for details.
+### Works with your favorite agents
 
-<br/>
+| Agent | Status |
+|-------|--------|
+| Claude Code | ✅ Verified |
+| Cursor | ✅ Verified |
+| Codex | ✅ Supported |
+| Goose | ✅ Supported |
+| Cline | ✅ Supported |
+| Any MCP-compatible agent | ✅ Supported |
 
-## Features
+---
 
-| Capability | Description |
-|------------|-------------|
-| **Agent Messaging** | Agents send and receive messages through Ergatai's relay (NATS JetStream with rate limiting) |
-| **DAG Orchestration** | Submit YAML workflows with task dependencies and strict validation |
-| **Safe Concurrency** | Two-tier token system (SystemToken + FileToken) with kernel-level enforcement |
-| **Agent Discovery** | Automatic registration via tmux panes, MCP connections, or named registration |
-| **Agent Agnostic** | Works with any MCP-compatible agent — Claude, Cursor, Codex, and more |
-| **Local First** | All execution runs locally; no data leaves your machine |
-| **Crash Recovery** | DAG state persisted to disk; heartbeat monitoring reclaims stale locks automatically |
+### Why Ergatai?
 
-<br/>
+- **Local-first** — Everything runs on your machine. No data leaves your laptop.
+- **Agent-agnostic** — Works with any MCP-compatible agent. Switch agents without switching tools.
+- **Zero infrastructure** — No Kubernetes, no cloud services. Just one binary.
+- **Crash-proof** — DAG state persisted to disk. If Ergatai crashes, it recovers where it left off.
 
-## Architecture
+---
 
-```
-Agents (Claude, Cursor, Codex, ...)
-         │ MCP
-         ▼
-┌────────────────────────────────┐
-│     Ergatai Middleware         │
-│  ┌──────────────────────────┐  │
-│  │   MCP Server + tmux      │  │
-│  └──────────────────────────┘  │
-│  ┌──────────────────────────┐  │
-│  │  Agent Registry │ DAG    │  │
-│  │  File Locks     │ Sched  │  │
-│  └──────────────────────────┘  │
-│  ┌──────────────────────────┐  │
-│  │   NATS + JetStream       │  │
-│  └──────────────────────────┘  │
-└────────────────────────────────┘
-         │
-         ▼
-   Shared Codebase (with file locking)
-```
+### Learn more
 
-📖 See [Architecture Overview](docs/architecture/OVERVIEW.md) for details.
+- [Architecture Overview](docs/architecture/OVERVIEW.md) — How it works under the hood
+- [Examples](examples/) — Sample workflows and use cases
+- [Contributing](CONTRIBUTING.md) — Join the project
 
-<br/>
+---
 
-## Supported Agents
-
-| Agent | Status | Notes |
-|-------|--------|-------|
-| Claude Code | ✅ Verified | Native MCP support |
-| Cursor | ✅ Verified | IDE-integrated agent |
-| Codex | ✅ Supported | OpenAI CLI agent |
-| Goose | ✅ Supported | Block's AI assistant |
-| Cline | ✅ Supported | VS Code extension |
-| Custom | ✅ Supported | Any MCP-compatible runtime |
-
-<br/>
-
-## Documentation
-
-- [Installation Guide](docs/getting-started/INSTALL.md) — detailed installation steps
-- [CLI Guide](docs/guide/CLI.md) — command reference
-- [MCP Configuration](docs/guide/MCP.md) — agent MCP setup
-- [Architecture](docs/architecture/OVERVIEW.md) — system design for developers
-
-<br/>
-
-## FAQ
-
-<details>
-<summary><b>Should I use Ergatai or wire agents directly?</b></summary>
-
-Use Ergatai when you have 2+ agents that need to coordinate. Use direct wiring only for simple point-to-point communication.
-</details>
-
-<details>
-<summary><b>Does Ergatai send data to the cloud?</b></summary>
-
-No. Ergatai runs entirely locally. No telemetry, no phoning home.
-</details>
-
-<details>
-<summary><b>Why does file locking require CAP_SYS_ADMIN?</b></summary>
-
-Ergatai uses Linux fanotify for kernel-level file locking. This requires `CAP_SYS_ADMIN` — a kernel limitation. Without it, Ergatai falls back to advisory mode.
-</details>
-
-<br/>
-
-## License
+### License
 
 Apache License 2.0 — see [LICENSE](LICENSE) for details.
 
@@ -190,6 +123,6 @@ Apache License 2.0 — see [LICENSE](LICENSE) for details.
 
 <div align="center">
 
-**Tell your AI agents what to do, and they get it done — together.**
+**Tell your agents what to do. They'll figure out the rest — together.**
 
 </div>
