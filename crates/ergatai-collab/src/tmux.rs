@@ -24,8 +24,7 @@ use tracing::{debug, info, trace, warn};
 
 /// Get the tmux binary path, using the shared cache from `ergatai_binary`.
 fn tmux_binary() -> Result<&'static PathBuf> {
-    ergatai_binary::find_tmux_binary_cached()
-        .map_err(|e| anyhow::anyhow!("{}", e))
+    ergatai_binary::find_tmux_binary_cached().map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 // ── Configuration constants (override via environment variables) ──
@@ -198,9 +197,11 @@ async fn run_tmux_cmd(args: &[&str]) -> Result<std::process::Output> {
             );
         }
 
-        let result =
-            tokio::time::timeout(TMUX_CMD_TIMEOUT, Command::new(tmux_path).args(args).output())
-                .await;
+        let result = tokio::time::timeout(
+            TMUX_CMD_TIMEOUT,
+            Command::new(tmux_path).args(args).output(),
+        )
+        .await;
 
         match result {
             Ok(Ok(output)) => return Ok(output),

@@ -9,8 +9,8 @@ use std::collections::HashMap;
 
 use ergatai_dag::critical_path::calculate_critical_path;
 use ergatai_dag::{
-    parse_dag_yaml, Condition, DagContext, TaskComplexity, TaskGraph, TaskNode, TaskStatus,
-    render_template,
+    parse_dag_yaml, render_template, Condition, DagContext, TaskComplexity, TaskGraph, TaskNode,
+    TaskStatus,
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -180,7 +180,9 @@ tasks:
     // Parameters resolved: user_query from input, target_file from default
     assert_eq!(
         graph.parameters.get("user_query"),
-        Some(&serde_json::Value::String("fix the performance bug".to_string()))
+        Some(&serde_json::Value::String(
+            "fix the performance bug".to_string()
+        ))
     );
     assert_eq!(
         graph.parameters.get("target_file"),
@@ -211,7 +213,10 @@ tasks:
     input: "{{anything}} goes {{here}}"
 "#;
     let graph = parse_dag_yaml(yaml, None).unwrap();
-    assert_eq!(graph.nodes[0].input.as_deref(), Some("{{anything}} goes {{here}}"));
+    assert_eq!(
+        graph.nodes[0].input.as_deref(),
+        Some("{{anything}} goes {{here}}")
+    );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -313,7 +318,9 @@ tasks:
     assert!(result.is_err(), "typo 'communcation' should be rejected");
     let err = result.unwrap_err().to_string();
     assert!(
-        err.contains("communcation") || err.contains("unknown field") || err.contains("YAML parse error"),
+        err.contains("communcation")
+            || err.contains("unknown field")
+            || err.contains("YAML parse error"),
         "error should mention the bad field: {err}"
     );
 }
@@ -382,8 +389,14 @@ fn validation_error_zero_timeout_values() {
     let cases = [
         ("timeout: 0\ntasks:\n  - name: A", "timeout"),
         ("max_agent_calls: 0\ntasks:\n  - name: A", "max_agent_calls"),
-        ("stall_timeout_secs: 0\ntasks:\n  - name: A", "stall_timeout_secs"),
-        ("node_timeout_secs: 0\ntasks:\n  - name: A", "node_timeout_secs"),
+        (
+            "stall_timeout_secs: 0\ntasks:\n  - name: A",
+            "stall_timeout_secs",
+        ),
+        (
+            "node_timeout_secs: 0\ntasks:\n  - name: A",
+            "node_timeout_secs",
+        ),
         ("tasks:\n  - name: A\n    timeout: 0", "timeout"),
     ];
 
@@ -447,7 +460,10 @@ tasks:
     let result = parse_dag_yaml(yaml, None);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("unknown_var"), "error should name the bad variable: {err}");
+    assert!(
+        err.contains("unknown_var"),
+        "error should name the bad variable: {err}"
+    );
 }
 
 // Rule 8: Missing dependency targets
@@ -678,10 +694,7 @@ tasks:
     }
 
     // DagContext for condition evaluation (which uses {{global.*}} prefix)
-    let mut ctx = DagContext::with_parameters(
-        HashMap::new(),
-        graph.parameters.clone(),
-    );
+    let mut ctx = DagContext::with_parameters(HashMap::new(), graph.parameters.clone());
 
     // Step 1: Plan is ready
     let ready = graph.ready_tasks();
@@ -694,7 +707,9 @@ tasks:
 
     // Mark Plan complete
     let plan_id = ready[0].id.clone();
-    graph.update_status(&plan_id, TaskStatus::Completed).unwrap();
+    graph
+        .update_status(&plan_id, TaskStatus::Completed)
+        .unwrap();
     ctx.record_output(
         &plan_id,
         serde_json::json!({"status": "approved", "summary": "Plan looks good"}),
@@ -710,7 +725,9 @@ tasks:
 
     // Mark Code complete
     let code_id = ready[0].id.clone();
-    graph.update_status(&code_id, TaskStatus::Completed).unwrap();
+    graph
+        .update_status(&code_id, TaskStatus::Completed)
+        .unwrap();
 
     // Step 3: Review is ready, check its condition
     let ready = graph.ready_tasks();
@@ -720,12 +737,17 @@ tasks:
     let review_node = ready[0];
     if let Some(ref cond_str) = review_node.condition {
         let condition = Condition::new(cond_str);
-        assert!(condition.evaluate(&ctx), "condition '1 == 1' should be true");
+        assert!(
+            condition.evaluate(&ctx),
+            "condition '1 == 1' should be true"
+        );
     }
 
     // Complete the DAG
     let review_id = review_node.id.clone();
-    graph.update_status(&review_id, TaskStatus::Completed).unwrap();
+    graph
+        .update_status(&review_id, TaskStatus::Completed)
+        .unwrap();
     assert!(graph.is_complete());
     assert_eq!(graph.progress(), 1.0);
 }
@@ -827,7 +849,10 @@ tasks:
 "#;
     let graph = parse_dag_yaml(yaml, None).unwrap();
     let node = &graph.nodes[0];
-    assert_eq!(node.metadata.get("custom_label"), Some(&"important".to_string()));
+    assert_eq!(
+        node.metadata.get("custom_label"),
+        Some(&"important".to_string())
+    );
     assert_eq!(node.metadata.get("estimated_cost"), Some(&"42".to_string()));
 }
 
@@ -844,10 +869,22 @@ tasks:
   - name: Default
 "#;
     let graph = parse_dag_yaml(yaml, None).unwrap();
-    assert_eq!(find_by_name(&graph, "Simple").complexity, TaskComplexity::Low);
-    assert_eq!(find_by_name(&graph, "Normal").complexity, TaskComplexity::Medium);
-    assert_eq!(find_by_name(&graph, "Hard").complexity, TaskComplexity::High);
-    assert_eq!(find_by_name(&graph, "Default").complexity, TaskComplexity::Medium);
+    assert_eq!(
+        find_by_name(&graph, "Simple").complexity,
+        TaskComplexity::Low
+    );
+    assert_eq!(
+        find_by_name(&graph, "Normal").complexity,
+        TaskComplexity::Medium
+    );
+    assert_eq!(
+        find_by_name(&graph, "Hard").complexity,
+        TaskComplexity::High
+    );
+    assert_eq!(
+        find_by_name(&graph, "Default").complexity,
+        TaskComplexity::Medium
+    );
 }
 
 #[test]
@@ -911,7 +948,10 @@ tasks:
     bad_params.insert("unknown".to_string(), serde_json::json!("bad"));
     let result = parse_dag_yaml(yaml, Some(bad_params));
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("Unknown parameter"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Unknown parameter"));
 }
 
 #[test]
@@ -934,9 +974,15 @@ tasks:
     scope: "tests/*.rs"
 "#;
     let graph = parse_dag_yaml(yaml, None).unwrap();
-    assert_eq!(find_by_name(&graph, "A").scope, Some("src/**/*.rs".to_string()));
+    assert_eq!(
+        find_by_name(&graph, "A").scope,
+        Some("src/**/*.rs".to_string())
+    );
     assert_eq!(find_by_name(&graph, "B").scope, Some("docs/**".to_string()));
-    assert_eq!(find_by_name(&graph, "C").scope, Some("tests/*.rs".to_string()));
+    assert_eq!(
+        find_by_name(&graph, "C").scope,
+        Some("tests/*.rs".to_string())
+    );
 }
 
 #[test]
@@ -966,7 +1012,10 @@ tasks:
     let graph = parse_dag_yaml(yaml, None).unwrap();
     assert_eq!(graph.nodes.len(), 2);
     assert_eq!(find_by_name(&graph, "A").priority.as_deref(), Some("Low"));
-    assert_eq!(find_by_name(&graph, "B").priority.as_deref(), Some("MEDIUM"));
+    assert_eq!(
+        find_by_name(&graph, "B").priority.as_deref(),
+        Some("MEDIUM")
+    );
 }
 
 #[test]
@@ -1012,18 +1061,12 @@ fn render_template_integration_with_dag_context() {
     let mut ctx = DagContext::empty();
     ctx.set_global("project", "ergatai");
     ctx.set_global("branch", "main");
-    ctx.record_output(
-        "node-1",
-        serde_json::json!({"result": "LGTM", "issues": 3}),
-    );
+    ctx.record_output("node-1", serde_json::json!({"result": "LGTM", "issues": 3}));
 
     let rendered = ctx.render_template(
         "Project {{global.project}} on {{global.branch}}: {{node-1.result}} with {{node-1.issues}} issues",
     );
-    assert_eq!(
-        rendered,
-        "Project ergatai on main: LGTM with 3 issues"
-    );
+    assert_eq!(rendered, "Project ergatai on main: LGTM with 3 issues");
 
     // Unresolved vars preserved
     let rendered2 = ctx.render_template("{{global.missing}} stays");
@@ -1113,9 +1156,7 @@ tasks:
 #[test]
 fn boundary_very_long_task_name_200_chars() {
     let long_name = "x".repeat(250);
-    let yaml = format!(
-        "tasks:\n  - name: \"{long_name}\"\n"
-    );
+    let yaml = format!("tasks:\n  - name: \"{long_name}\"\n");
     let graph = parse_dag_yaml(&yaml, None).unwrap();
     assert_eq!(graph.nodes.len(), 1);
     assert_eq!(graph.nodes[0].task.len(), 250);
@@ -1215,7 +1256,12 @@ fn boundary_deep_linear_chain_50_nodes() {
 
         if i < n - 1 {
             let ready = graph.ready_tasks();
-            assert_eq!(ready.len(), 1, "after completing N{i}, only N{} should be ready", i + 1);
+            assert_eq!(
+                ready.len(),
+                1,
+                "after completing N{i}, only N{} should be ready",
+                i + 1
+            );
             assert_eq!(ready[0].task, format!("N{}", i + 1));
         }
     }
@@ -1246,7 +1292,9 @@ fn boundary_wide_fan_out_one_root_twenty_children() {
 
     // Complete Root → all 20 children become ready
     let root_id = find_by_name(&graph, "Root").id.clone();
-    graph.update_status(&root_id, TaskStatus::Completed).unwrap();
+    graph
+        .update_status(&root_id, TaskStatus::Completed)
+        .unwrap();
     let ready = graph.ready_tasks();
     assert_eq!(ready.len(), n_children);
 
@@ -1335,10 +1383,7 @@ tasks:
 "#;
     let graph = parse_dag_yaml(yaml, None).unwrap();
     let node = &graph.nodes[0];
-    assert_eq!(
-        node.input.as_deref(),
-        Some("text {{unclosed more text")
-    );
+    assert_eq!(node.input.as_deref(), Some("text {{unclosed more text"));
 
     // Render it — unclosed braces preserved as literal
     let ctx: HashMap<String, String> = HashMap::new();
@@ -1391,10 +1436,7 @@ tasks:
         }
     }
 
-    let rendered = render_template(
-        graph.nodes[0].input.as_ref().unwrap(),
-        &flat_ctx,
-    );
+    let rendered = render_template(graph.nodes[0].input.as_ref().unwrap(), &flat_ctx);
     assert_eq!(rendered, "value is hello\nworld\t\"quotes\" & <braces>");
 }
 
@@ -1500,7 +1542,9 @@ tasks:
     let mut p = HashMap::new();
     p.insert(
         "query".to_string(),
-        serde_json::Value::String("SELECT * FROM users WHERE name = 'O''Brien' AND id < 100".to_string()),
+        serde_json::Value::String(
+            "SELECT * FROM users WHERE name = 'O''Brien' AND id < 100".to_string(),
+        ),
     );
     let graph = parse_dag_yaml(yaml, Some(p)).unwrap();
     assert_eq!(
@@ -1523,7 +1567,10 @@ tasks:
 "#;
     let long_val = "a".repeat(10_000);
     let mut p = HashMap::new();
-    p.insert("big".to_string(), serde_json::Value::String(long_val.clone()));
+    p.insert(
+        "big".to_string(),
+        serde_json::Value::String(long_val.clone()),
+    );
     let graph = parse_dag_yaml(yaml, Some(p)).unwrap();
     assert_eq!(
         graph.parameters.get("big"),
@@ -1623,8 +1670,14 @@ tasks:
     priority: low
 "#;
     let graph = parse_dag_yaml(yaml, None).unwrap();
-    assert_eq!(find_by_name(&graph, "High").priority.as_deref(), Some("high"));
-    assert_eq!(find_by_name(&graph, "Medium").priority.as_deref(), Some("medium"));
+    assert_eq!(
+        find_by_name(&graph, "High").priority.as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        find_by_name(&graph, "Medium").priority.as_deref(),
+        Some("medium")
+    );
     assert_eq!(find_by_name(&graph, "Low").priority.as_deref(), Some("low"));
 
     // All are ready (no deps)
@@ -1643,8 +1696,14 @@ tasks:
     priority: high
 "#;
     let graph = parse_dag_yaml(yaml, None).unwrap();
-    assert_eq!(find_by_name(&graph, "Inherits").priority.as_deref(), Some("low"));
-    assert_eq!(find_by_name(&graph, "Overrides").priority.as_deref(), Some("high"));
+    assert_eq!(
+        find_by_name(&graph, "Inherits").priority.as_deref(),
+        Some("low")
+    );
+    assert_eq!(
+        find_by_name(&graph, "Overrides").priority.as_deref(),
+        Some("high")
+    );
 }
 
 // ── 13. Communication policy edge cases ─────────────────────────────────────
@@ -1674,7 +1733,10 @@ tasks:
     agent: a
 "#;
     let result = parse_dag_yaml(yaml, None);
-    assert!(result.is_err(), "star with whitespace-only hub should be rejected");
+    assert!(
+        result.is_err(),
+        "star with whitespace-only hub should be rejected"
+    );
 }
 
 #[test]
@@ -1909,9 +1971,15 @@ tasks:
     let graph = parse_dag_yaml(yaml, None).unwrap();
     let prompt = graph.to_ai_prompt();
     // to_ai_prompt always includes "Task Graph:" header
-    assert!(prompt.contains("Task Graph:"), "prompt missing Task Graph header: {prompt}");
+    assert!(
+        prompt.contains("Task Graph:"),
+        "prompt missing Task Graph header: {prompt}"
+    );
     // Progress should be shown
-    assert!(prompt.contains("Progress:"), "prompt missing Progress: {prompt}");
+    assert!(
+        prompt.contains("Progress:"),
+        "prompt missing Progress: {prompt}"
+    );
 }
 
 #[test]
@@ -1933,7 +2001,11 @@ tasks:
     assert_eq!(ids.len(), graph.nodes.len());
     // All UUIDs should parse as valid UUIDs
     for node in &graph.nodes {
-        assert!(uuid::Uuid::parse_str(&node.id).is_ok(), "invalid UUID: {}", node.id);
+        assert!(
+            uuid::Uuid::parse_str(&node.id).is_ok(),
+            "invalid UUID: {}",
+            node.id
+        );
     }
 }
 
@@ -1946,7 +2018,9 @@ tasks:
 "#;
     let mut graph = parse_dag_yaml(yaml, None).unwrap();
     let id = find_by_name(&graph, "A").id.clone();
-    graph.set_result(&id, "/tmp/result.json".to_string()).unwrap();
+    graph
+        .set_result(&id, "/tmp/result.json".to_string())
+        .unwrap();
 
     let node = graph.find_node(&id).unwrap();
     assert_eq!(node.status, TaskStatus::Completed);

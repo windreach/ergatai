@@ -485,11 +485,17 @@ impl Drop for NatsServer {
                         for _ in 0..10 {
                             std::thread::sleep(Duration::from_millis(100));
                             if let Ok(Some(_)) = child.try_wait() {
-                                info!(port = self.port, "nats-server exited after SIGKILL fallback");
+                                info!(
+                                    port = self.port,
+                                    "nats-server exited after SIGKILL fallback"
+                                );
                                 return;
                             }
                         }
-                        warn!(port = self.port, "nats-server still alive after SIGKILL fallback, may be zombie");
+                        warn!(
+                            port = self.port,
+                            "nats-server still alive after SIGKILL fallback, may be zombie"
+                        );
                         return;
                     }
                     Err(e) => {

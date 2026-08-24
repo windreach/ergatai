@@ -37,13 +37,9 @@ pub enum SendMessageResult {
         sequence: u64,
     },
     /// Message delivered directly via tmux injection (NATS unavailable).
-    DirectDelivered {
-        target_agent: String,
-    },
+    DirectDelivered { target_agent: String },
     /// Message was rejected.
-    Rejected {
-        reason: String,
-    },
+    Rejected { reason: String },
 }
 
 /// Request to send a message.
@@ -70,8 +66,14 @@ pub struct MessageSender {
 
 impl MessageSender {
     /// Create a new MessageSender with the given conversation manager and peer registry.
-    pub fn new(conversation_manager: Arc<ConversationManager>, peer_registry: Arc<AgentRegistry>) -> Self {
-        Self { conversation_manager, peer_registry }
+    pub fn new(
+        conversation_manager: Arc<ConversationManager>,
+        peer_registry: Arc<AgentRegistry>,
+    ) -> Self {
+        Self {
+            conversation_manager,
+            peer_registry,
+        }
     }
 
     /// Send a message through the full pipeline.
@@ -145,8 +147,7 @@ impl MessageSender {
         }
 
         // ── 6. is_reply detection ──
-        let from_runtime_id_for_batch =
-            from_runtime_id.clone().unwrap_or_else(|| req.from.clone());
+        let from_runtime_id_for_batch = from_runtime_id.clone().unwrap_or_else(|| req.from.clone());
 
         let is_reply = self
             .is_reply_message(
@@ -319,11 +320,7 @@ impl MessageSender {
         from_stable: &str,
         to_stable: &str,
     ) -> Option<String> {
-        let sender_ids = [
-            from,
-            from_runtime_id.as_deref().unwrap_or(""),
-            from_stable,
-        ];
+        let sender_ids = [from, from_runtime_id.as_deref().unwrap_or(""), from_stable];
         let receiver_ids = [raw_to, resolved_to_id, to_stable];
 
         'scheduler_loop: for scheduler in list_dag_schedulers() {
@@ -378,15 +375,12 @@ impl MessageSender {
         let conversation_id = format!("conv-{}-{}", a, b);
 
         // Check token ownership
-        if let Some(conv) = self.conversation_manager.get_conversation(&conversation_id).await {
-            match &conv.token_owner {
-                crate::mcp::conversation::TokenOwner::Held(holder)
-                    if holder.as_str() == from_stable =>
-                {
-                    true
-                }
-                _ => false,
-            }
+        if let Some(conv) = self
+            .conversation_manager
+            .get_conversation(&conversation_id)
+            .await
+        {
+            matches!(&conv.token_owner, crate::mcp::conversation::TokenOwner::Held(holder) if holder.as_str() == from_stable)
         } else {
             false
         }
@@ -407,7 +401,7 @@ impl MessageSender {
                     .clone()
                     .or_else(|| info.handle.metadata.get("ergatai_agent_id").cloned())
             })
-            .unwrap_or_else(|| sender_runtime_id)
+            .unwrap_or(sender_runtime_id)
     }
 
     /// Format agent message with JSON structure and hint.
@@ -433,8 +427,12 @@ impl MessageSender {
 static MESSAGE_SENDER: OnceLock<MessageSender> = OnceLock::new();
 
 /// Initialize the global MessageSender (called once at startup).
-pub fn init_message_sender(conversation_manager: Arc<ConversationManager>) -> &'static MessageSender {
-    MESSAGE_SENDER.get_or_init(|| MessageSender::new(conversation_manager, Arc::new(agent_registry().clone())))
+pub fn init_message_sender(
+    conversation_manager: Arc<ConversationManager>,
+) -> &'static MessageSender {
+    MESSAGE_SENDER.get_or_init(|| {
+        MessageSender::new(conversation_manager, Arc::new(agent_registry().clone()))
+    })
 }
 
 /// Get the global MessageSender reference.

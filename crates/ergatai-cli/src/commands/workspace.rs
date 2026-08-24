@@ -12,7 +12,9 @@ pub async fn handle(action: WorkspaceAction, api_url: &str, token: Option<&str>)
             formatter::format_workspaces_table(&workspaces);
         }
         WorkspaceAction::Create { id, work_dir } => {
-            let workspace = client.create_workspace(&id, work_dir.as_deref(), false).await?;
+            let workspace = client
+                .create_workspace(&id, work_dir.as_deref(), false)
+                .await?;
             println!("Created workspace: {}", workspace.id);
         }
         WorkspaceAction::Delete { id } => {

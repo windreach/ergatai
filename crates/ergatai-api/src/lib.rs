@@ -62,7 +62,9 @@ pub fn app_state_with_token(token: Option<String>) -> &'static AppState {
 
 /// Get the global AppState reference.
 pub fn get_app_state() -> &'static AppState {
-    APP_STATE.get().expect("AppState not initialized — call app_state_with_token first")
+    APP_STATE
+        .get()
+        .expect("AppState not initialized — call app_state_with_token first")
 }
 
 // ── Prometheus metrics ───────────────────────────────────────────────
@@ -98,7 +100,10 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route("/metrics", get(metrics_endpoint))
         // Workspace management
         .route("/api/v1/workspaces", get(api::workspaces::list_workspaces))
-        .route("/api/v1/workspaces", post(api::workspaces::create_workspace))
+        .route(
+            "/api/v1/workspaces",
+            post(api::workspaces::create_workspace),
+        )
         .route(
             "/api/v1/workspaces/:id",
             delete(api::workspaces::delete_workspace),

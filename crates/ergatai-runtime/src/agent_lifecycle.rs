@@ -427,9 +427,7 @@ mod tests {
     fn test_exit_outcome_variants() {
         // Verify ExitOutcome can represent all termination modes
         let outcomes = vec![
-            ExitOutcome::Exited {
-                exit_code: Some(0),
-            },
+            ExitOutcome::Exited { exit_code: Some(0) },
             ExitOutcome::Exited { exit_code: None },
             ExitOutcome::Error {
                 error: "panic".into(),

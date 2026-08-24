@@ -8,7 +8,7 @@ use ergatai_runtime::{get_agent_runtime, ResourceLimits, WorkspaceSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::messaging::{get_message_sender, SendRequest, SendMessageResult};
+use crate::messaging::{get_message_sender, SendMessageResult, SendRequest};
 use crate::AppState;
 
 #[derive(Debug, Deserialize)]

@@ -59,11 +59,14 @@ pub use agent_record::{
 };
 pub use backend::AgentRuntimeBackend;
 pub use backends::direct_process::DirectProcessBackend;
-pub use backends::tmux::{TmuxBackend, TmuxPaneInfo, TmuxSessionInfo, TmuxStatus};
-#[deprecated(since = "0.2.0", note = "renamed to TmuxBackend — use TmuxBackend directly")]
-pub use backends::tmux::TmuxBackend as LocalPtyBackend;
 #[cfg(feature = "rmux")]
 pub use backends::rmux::{ManagedPaneInfo, RmuxBackend, RmuxDaemonInfo};
+#[deprecated(
+    since = "0.2.0",
+    note = "renamed to TmuxBackend — use TmuxBackend directly"
+)]
+pub use backends::tmux::TmuxBackend as LocalPtyBackend;
+pub use backends::tmux::{TmuxBackend, TmuxPaneInfo, TmuxSessionInfo, TmuxStatus};
 #[cfg(feature = "rmux")]
 pub use rmux_sdk::RmuxEndpoint;
 pub use runtime::{get_agent_runtime, init_agent_runtime, AgentRuntime};

@@ -348,9 +348,7 @@ impl FanotifyBackend {
             // FAN_MARK_MOUNT, new events will keep arriving. Log at error level
             // so operators can detect and investigate.
             if meta.mask & libc::FAN_Q_OVERFLOW != 0 {
-                error!(
-                    "fanotify: queue overflow — some permission events may have been dropped"
-                );
+                error!("fanotify: queue overflow — some permission events may have been dropped");
                 state.offset += event_len;
                 continue;
             }
@@ -581,9 +579,7 @@ impl EnforcerBackend for FanotifyBackend {
             Err(_) => return,
         };
         // Now read directly into state.buf. This way no data is lost.
-        let n = unsafe {
-            libc::read(fd, state.buf.as_mut_ptr() as *mut _, state.buf.len())
-        };
+        let n = unsafe { libc::read(fd, state.buf.as_mut_ptr() as *mut _, state.buf.len()) };
         if n <= 0 {
             return;
         }

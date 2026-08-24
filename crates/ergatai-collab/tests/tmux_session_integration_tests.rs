@@ -52,7 +52,9 @@ async fn require_tmux() -> Option<()> {
 
 #[tokio::test]
 async fn create_session_succeeds_and_session_exists() {
-    if require_tmux().await.is_none() { return; }
+    if require_tmux().await.is_none() {
+        return;
+    }
     let name = unique_session_name();
     let mgr = TmuxManager::new(&name);
 
@@ -74,7 +76,9 @@ async fn create_session_succeeds_and_session_exists() {
 
 #[tokio::test]
 async fn create_session_with_large_dimensions() {
-    if require_tmux().await.is_none() { return; }
+    if require_tmux().await.is_none() {
+        return;
+    }
     let name = unique_session_name();
     let mgr = TmuxManager::new(&name);
 
@@ -90,7 +94,9 @@ async fn create_session_with_large_dimensions() {
 
 #[tokio::test]
 async fn create_session_with_minimum_dimensions() {
-    if require_tmux().await.is_none() { return; }
+    if require_tmux().await.is_none() {
+        return;
+    }
     let name = unique_session_name();
     let mgr = TmuxManager::new(&name);
 
@@ -106,7 +112,9 @@ async fn create_session_with_minimum_dimensions() {
 
 #[tokio::test]
 async fn create_session_duplicate_name_fails() {
-    if require_tmux().await.is_none() { return; }
+    if require_tmux().await.is_none() {
+        return;
+    }
     let name = unique_session_name();
     let mgr = TmuxManager::new(&name);
 
@@ -125,7 +133,9 @@ async fn create_session_duplicate_name_fails() {
 
 #[tokio::test]
 async fn kill_session_removes_existing_session() {
-    if require_tmux().await.is_none() { return; }
+    if require_tmux().await.is_none() {
+        return;
+    }
     let name = unique_session_name();
     let mgr = TmuxManager::new(&name);
 
@@ -139,7 +149,9 @@ async fn kill_session_removes_existing_session() {
 
 #[tokio::test]
 async fn kill_session_nonexistent_does_not_panic() {
-    if require_tmux().await.is_none() { return; }
+    if require_tmux().await.is_none() {
+        return;
+    }
     let name = unique_session_name();
     let mgr = TmuxManager::new(&name);
 
@@ -151,7 +163,9 @@ async fn kill_session_nonexistent_does_not_panic() {
 
 #[tokio::test]
 async fn check_tmux_succeeds_when_installed() {
-    if require_tmux().await.is_none() { return; }
+    if require_tmux().await.is_none() {
+        return;
+    }
     let result = TmuxManager::check_tmux().await;
     assert!(
         result.is_ok(),
@@ -163,7 +177,9 @@ async fn check_tmux_succeeds_when_installed() {
 
 #[tokio::test]
 async fn multiple_independent_sessions() {
-    if require_tmux().await.is_none() { return; }
+    if require_tmux().await.is_none() {
+        return;
+    }
 
     let name1 = unique_session_name();
     let name2 = unique_session_name();
@@ -179,10 +195,7 @@ async fn multiple_independent_sessions() {
     // Kill one, the other survives
     mgr1.kill_session().await.unwrap();
     assert!(!session_exists(&name1).await);
-    assert!(
-        session_exists(&name2).await,
-        "other session should survive"
-    );
+    assert!(session_exists(&name2).await, "other session should survive");
 
     kill_session(&name2).await;
 }
@@ -191,7 +204,9 @@ async fn multiple_independent_sessions() {
 
 #[tokio::test]
 async fn session_name_with_dashes() {
-    if require_tmux().await.is_none() { return; }
+    if require_tmux().await.is_none() {
+        return;
+    }
     let name = format!("{}-test-session", unique_session_name());
     let mgr = TmuxManager::new(&name);
 
@@ -207,7 +222,9 @@ async fn session_name_with_dashes() {
 
 #[tokio::test]
 async fn session_name_with_underscores() {
-    if require_tmux().await.is_none() { return; }
+    if require_tmux().await.is_none() {
+        return;
+    }
     let name = format!("{}-test_session", unique_session_name());
     let mgr = TmuxManager::new(&name);
 

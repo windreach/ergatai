@@ -494,7 +494,10 @@ impl FileLockManager {
     /// **Note**: This method only increments `active_session_count` when creating
     /// a NEW token. If an existing ACTIVE token is found, the count is unchanged
     /// (the session was already counted when the token was first registered).
-    pub fn get_or_register_system_token(&self, token: &SystemToken) -> Result<TokenId, ErgataiError> {
+    pub fn get_or_register_system_token(
+        &self,
+        token: &SystemToken,
+    ) -> Result<TokenId, ErgataiError> {
         let conn = self.conn.lock();
 
         // 1. Try to find an existing ACTIVE token for this session
@@ -4373,8 +4376,14 @@ mod tests {
             15,
         );
         manager.register_file_token(&file_token).unwrap();
-        manager.acquire_lock(&file_token, "file1.txt").await.unwrap();
-        manager.acquire_lock(&file_token, "file2.txt").await.unwrap();
+        manager
+            .acquire_lock(&file_token, "file1.txt")
+            .await
+            .unwrap();
+        manager
+            .acquire_lock(&file_token, "file2.txt")
+            .await
+            .unwrap();
 
         let locks = manager.get_locks_by_token(file_token.id.as_str()).unwrap();
         assert_eq!(locks.len(), 2);
@@ -4611,7 +4620,11 @@ mod tests {
         // Second call should return the EXISTING token id, not create a new one
         let id2 = manager.get_or_register_system_token(&token2).unwrap();
         assert_eq!(id1, id2, "Should return the existing token ID");
-        assert_eq!(manager.active_session_count(), 1, "Session count should not increase");
+        assert_eq!(
+            manager.active_session_count(),
+            1,
+            "Session count should not increase"
+        );
     }
 
     #[tokio::test]
@@ -4667,7 +4680,10 @@ mod tests {
             15,
         );
         manager.register_file_token(&admin_token).unwrap();
-        manager.acquire_lock(&admin_token, "shared.txt").await.unwrap();
+        manager
+            .acquire_lock(&admin_token, "shared.txt")
+            .await
+            .unwrap();
 
         // Set up agent-2 trying to get WRITE lock on the same file
         let sys2 = SystemToken::new(
@@ -4727,7 +4743,10 @@ mod tests {
             15,
         );
         manager.register_file_token(&write_token).unwrap();
-        manager.acquire_lock(&write_token, "shared.txt").await.unwrap();
+        manager
+            .acquire_lock(&write_token, "shared.txt")
+            .await
+            .unwrap();
 
         // Set up agent-2 trying to get ADMIN lock on the same file
         let sys2 = SystemToken::new(
@@ -4934,7 +4953,10 @@ mod tests {
             15,
         );
         manager.register_file_token(&write_token).unwrap();
-        manager.acquire_lock(&write_token, "contested.txt").await.unwrap();
+        manager
+            .acquire_lock(&write_token, "contested.txt")
+            .await
+            .unwrap();
 
         // Agent 2 tries to acquire the same file (conflict)
         let sys2 = SystemToken::new(

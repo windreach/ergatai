@@ -11,8 +11,8 @@
 //! its own tempdir store. Tests skip gracefully if nats-server is not on PATH.
 
 use ergatai_nats::{
-    init_nats_with_store_dir, shutdown_nats,
-    AgentMessagePayload, DagEvent, EventBus, NodeCompletePayload, TaskSubmitPayload,
+    init_nats_with_store_dir, shutdown_nats, AgentMessagePayload, DagEvent, EventBus,
+    NodeCompletePayload, TaskSubmitPayload,
 };
 use futures_util::StreamExt;
 use std::collections::HashMap;

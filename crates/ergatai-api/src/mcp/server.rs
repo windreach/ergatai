@@ -726,11 +726,7 @@ impl ErgataiMcpServer {
         // 调度者（submitter）应该是纯协调角色，不应该同时是任务执行者。
         // 如果调度者在 DAG 的 task 列表中，拒绝提交。
         if let Some(ref runtime_id) = submitter_runtime_id {
-            let dag_agents: Vec<String> = graph
-                .nodes
-                .iter()
-                .map(|t| t.agent.clone())
-                .collect();
+            let dag_agents: Vec<String> = graph.nodes.iter().map(|t| t.agent.clone()).collect();
             if dag_agents.contains(runtime_id) {
                 warn!(
                     submitter = %runtime_id,
@@ -1027,8 +1023,8 @@ impl ErgataiMcpServer {
             agent_id.clone(),
             session_id.clone(),
             "default".to_string(), // project_root will be resolved by lock manager
-            7200, // 2 hour TTL for system token
-            60,   // heartbeat every 60s
+            7200,                  // 2 hour TTL for system token
+            60,                    // heartbeat every 60s
         );
 
         let system_token_id = match lock_manager.get_or_register_system_token(&system_token) {
@@ -2180,7 +2176,11 @@ mod tests {
         }
 
         // Verify: all 10 writes succeeded (no panics, no data corruption)
-        assert_eq!(results.len(), 10, "All 10 concurrent writes should complete");
+        assert_eq!(
+            results.len(),
+            10,
+            "All 10 concurrent writes should complete"
+        );
 
         // The final value should be one of the 10 agent IDs (last writer wins)
         let final_value = server.session_agent_id.read().await.clone();

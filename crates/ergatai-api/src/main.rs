@@ -21,11 +21,11 @@ use tower_governor::{governor::GovernorConfigBuilder, key_extractor::KeyExtracto
 
 use ergatai_api::mcp::conversation::{ConversationConfig, ConversationManager};
 use ergatai_api::mcp::rate_limiter::get_rate_limiter;
-use ergatai_api::messaging::init_message_sender;
 use ergatai_api::mcp::{
     create_mcp_service, start_conversation_reaper, start_message_delivery_consumer,
     start_peer_reaper,
 };
+use ergatai_api::messaging::init_message_sender;
 use ergatai_api::{app_state_with_token, build_rest_app};
 use ergatai_core::cross_agent::{set_dag_scheduler, DagScheduler};
 use ergatai_core::nats;
@@ -164,7 +164,10 @@ async fn async_main(args: Args) -> Result<()> {
         match (&args.tls_cert, &args.tls_key) {
             (Some(cert), Some(key)) => {
                 if !cert.exists() {
-                    return Err(anyhow::anyhow!("TLS certificate file not found: {}", cert.display()));
+                    return Err(anyhow::anyhow!(
+                        "TLS certificate file not found: {}",
+                        cert.display()
+                    ));
                 }
                 if !key.exists() {
                     return Err(anyhow::anyhow!("TLS key file not found: {}", key.display()));
@@ -172,10 +175,14 @@ async fn async_main(args: Args) -> Result<()> {
                 tracing::info!("TLS enabled with certificate: {}", cert.display());
             }
             (Some(_), None) => {
-                return Err(anyhow::anyhow!("--tls-key is required when --tls-cert is provided"));
+                return Err(anyhow::anyhow!(
+                    "--tls-key is required when --tls-cert is provided"
+                ));
             }
             (None, Some(_)) => {
-                return Err(anyhow::anyhow!("--tls-cert is required when --tls-key is provided"));
+                return Err(anyhow::anyhow!(
+                    "--tls-cert is required when --tls-key is provided"
+                ));
             }
             (None, None) => unreachable!(),
         }
@@ -280,20 +287,36 @@ async fn async_main(args: Args) -> Result<()> {
     // Initialize the global MessageSender so both REST API and MCP use the same pipeline.
     init_message_sender(conversation_manager.clone());
     let mcp_service_1 = create_mcp_service(
-        mcp_registry.clone(), peer_registry.clone(), conversation_manager.clone(),
-        mcp_cancellation_token.clone(), args.sse_keep_alive, Some("agent-1".to_string()),
+        mcp_registry.clone(),
+        peer_registry.clone(),
+        conversation_manager.clone(),
+        mcp_cancellation_token.clone(),
+        args.sse_keep_alive,
+        Some("agent-1".to_string()),
     );
     let mcp_service_2 = create_mcp_service(
-        mcp_registry.clone(), peer_registry.clone(), conversation_manager.clone(),
-        mcp_cancellation_token.clone(), args.sse_keep_alive, Some("agent-2".to_string()),
+        mcp_registry.clone(),
+        peer_registry.clone(),
+        conversation_manager.clone(),
+        mcp_cancellation_token.clone(),
+        args.sse_keep_alive,
+        Some("agent-2".to_string()),
     );
     let mcp_service_3 = create_mcp_service(
-        mcp_registry.clone(), peer_registry.clone(), conversation_manager.clone(),
-        mcp_cancellation_token.clone(), args.sse_keep_alive, Some("agent-3".to_string()),
+        mcp_registry.clone(),
+        peer_registry.clone(),
+        conversation_manager.clone(),
+        mcp_cancellation_token.clone(),
+        args.sse_keep_alive,
+        Some("agent-3".to_string()),
     );
     let mcp_service_default = create_mcp_service(
-        mcp_registry.clone(), peer_registry.clone(), conversation_manager.clone(),
-        mcp_cancellation_token.clone(), args.sse_keep_alive, None,
+        mcp_registry.clone(),
+        peer_registry.clone(),
+        conversation_manager.clone(),
+        mcp_cancellation_token.clone(),
+        args.sse_keep_alive,
+        None,
     );
     tracing::info!(
         "MCP server initialized (protocol 2025-06-18, Streamable HTTP, SSE keep-alive: {}s)",
@@ -301,7 +324,11 @@ async fn async_main(args: Args) -> Result<()> {
     );
 
     // Start background reapers
-    start_peer_reaper(mcp_registry.clone(), peer_registry.clone(), mcp_cancellation_token.clone());
+    start_peer_reaper(
+        mcp_registry.clone(),
+        peer_registry.clone(),
+        mcp_cancellation_token.clone(),
+    );
     start_conversation_reaper(conversation_manager.clone(), mcp_cancellation_token.clone());
 
     // Initialize NATS
@@ -309,7 +336,8 @@ async fn async_main(args: Args) -> Result<()> {
         Ok(conn) => {
             tracing::info!("✅ NATS initialized successfully");
 
-            let delivery_handle = start_message_delivery_consumer(conn, mcp_cancellation_token.clone());
+            let delivery_handle =
+                start_message_delivery_consumer(conn, mcp_cancellation_token.clone());
             let cancel_monitor = mcp_cancellation_token.clone();
             tokio::spawn(async move {
                 match delivery_handle.await {
@@ -333,7 +361,8 @@ async fn async_main(args: Args) -> Result<()> {
                         let agents = tokio::task::block_in_place(|| {
                             tokio::runtime::Handle::current().block_on(runtime.list_agents())
                         });
-                        agents.into_iter()
+                        agents
+                            .into_iter()
                             .filter_map(|info| {
                                 let pid: u32 = info.handle.process_id?.parse().ok()?;
                                 Some((pid, info.agent_id.clone(), info.workspace_id.clone()))
@@ -345,8 +374,12 @@ async fn async_main(args: Args) -> Result<()> {
             );
 
             if let Err(e) = ergatai_lock::init_file_access_with_enforcer(
-                "default", &project_root, std::sync::Arc::new(pid_resolver),
-            ).await {
+                "default",
+                &project_root,
+                std::sync::Arc::new(pid_resolver),
+            )
+            .await
+            {
                 tracing::warn!("File access control initialization failed: {}", e);
             } else {
                 tracing::info!("✅ File access control initialized");
@@ -394,7 +427,8 @@ async fn async_main(args: Args) -> Result<()> {
                                 continue;
                             }
                             let state_file = ergatai_dir.join(format!("dag-state-{dag_id}.json"));
-                            let context_file = ergatai_dir.join(format!("dag-context-{dag_id}.json"));
+                            let context_file =
+                                ergatai_dir.join(format!("dag-context-{dag_id}.json"));
                             if state_file.exists() {
                                 if let Err(e) = tokio::fs::remove_file(&state_file).await {
                                     tracing::warn!(dag_id = %dag_id, ?state_file, "Failed to remove stale DAG state file: {}", e);
@@ -450,7 +484,9 @@ async fn async_main(args: Args) -> Result<()> {
         .nest_service("/mcp/agent-2", mcp_service_2)
         .nest_service("/mcp/agent-3", mcp_service_3)
         .nest_service("/mcp", mcp_service_default)
-        .layer(tower_governor::GovernorLayer { config: governor_conf });
+        .layer(tower_governor::GovernorLayer {
+            config: governor_conf,
+        });
 
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)
         .parse()
@@ -464,7 +500,9 @@ async fn async_main(args: Args) -> Result<()> {
         let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to load TLS certificate: {}", e))?;
-        axum_server::bind_rustls(addr, tls_config).serve(app_with_connect_info).await?;
+        axum_server::bind_rustls(addr, tls_config)
+            .serve(app_with_connect_info)
+            .await?;
     } else {
         tracing::info!("Starting HTTP server on {}", addr);
         let listener = tokio::net::TcpListener::bind(addr).await?;

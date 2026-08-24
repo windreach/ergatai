@@ -36,7 +36,10 @@ fn deadline_gaps_match_fractions_for_100s() {
     let fail_gap = fail_at.duration_since(now).as_secs_f64();
 
     assert!((warn_gap - 50.0).abs() < 1.5, "warn gap was {warn_gap}");
-    assert!((escalate_gap - 80.0).abs() < 1.5, "escalate gap was {escalate_gap}");
+    assert!(
+        (escalate_gap - 80.0).abs() < 1.5,
+        "escalate gap was {escalate_gap}"
+    );
     assert!((fail_gap - 100.0).abs() < 1.5, "fail gap was {fail_gap}");
 }
 
@@ -96,7 +99,10 @@ fn low_complexity_halves_timeout() {
 
 #[test]
 fn medium_complexity_keeps_timeout() {
-    assert_eq!(adjust_timeout_by_complexity(100, TaskComplexity::Medium), 100);
+    assert_eq!(
+        adjust_timeout_by_complexity(100, TaskComplexity::Medium),
+        100
+    );
 }
 
 #[test]
@@ -137,7 +143,10 @@ fn complexity_adjusted_timeout_produces_correct_deadlines() {
     let fail_gap = fail_at.duration_since(now).as_secs_f64();
 
     assert!((warn_gap - 60.0).abs() < 2.0, "warn gap was {warn_gap}");
-    assert!((escalate_gap - 96.0).abs() < 2.0, "escalate gap was {escalate_gap}");
+    assert!(
+        (escalate_gap - 96.0).abs() < 2.0,
+        "escalate gap was {escalate_gap}"
+    );
     assert!((fail_gap - 120.0).abs() < 2.0, "fail gap was {fail_gap}");
 }
 

@@ -41,7 +41,7 @@ static TMUX_PATH: OnceLock<PathBuf> = OnceLock::new();
 ///
 /// # Errors
 ///
-/// Returns [`ErgataiError::Internal`] with platform-specific install
+/// Returns [`ErgataiError::InternalError`] with platform-specific install
 /// instructions if tmux is not found.
 pub fn find_tmux_binary() -> ErgataiResult<PathBuf> {
     TMUX_LOCATOR.find().map_err(|_| tmux_not_found_error())
@@ -104,11 +104,7 @@ mod tests {
     fn test_tmux_not_found_error_mentions_install() {
         let err = tmux_not_found_error();
         let msg = err.to_string();
-        assert!(
-            msg.contains("tmux"),
-            "error should mention tmux: {}",
-            msg
-        );
+        assert!(msg.contains("tmux"), "error should mention tmux: {}", msg);
         assert!(
             msg.contains("ERGATAI_TMUX_BINARY"),
             "error should mention env var: {}",

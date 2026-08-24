@@ -129,7 +129,10 @@ async fn parse_plan_missing_file_returns_error() {
 async fn cleanup_removes_plan_file() {
     let (coord, _dir) = setup_coordinator().await;
 
-    let path = coord.create_plan("to-cleanup", "temporary plan").await.unwrap();
+    let path = coord
+        .create_plan("to-cleanup", "temporary plan")
+        .await
+        .unwrap();
     assert!(path.exists());
 
     coord.cleanup_task("to-cleanup").await.unwrap();

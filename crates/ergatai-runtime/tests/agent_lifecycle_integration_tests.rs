@@ -278,9 +278,7 @@ fn lifecycle_valid_transition_chain_created_to_terminated() {
     // Stopping → Terminated
     rec.transition_to(
         AgentLifecycleState::Terminated {
-            outcome: ExitOutcome::Exited {
-                exit_code: Some(0),
-            },
+            outcome: ExitOutcome::Exited { exit_code: Some(0) },
             terminated_at: now(),
             duration_secs: 120,
         },
@@ -421,9 +419,7 @@ fn lifecycle_state_history_records_all_transitions() {
             timeout_secs: None,
         },
         AgentLifecycleState::Terminated {
-            outcome: ExitOutcome::Exited {
-                exit_code: Some(0),
-            },
+            outcome: ExitOutcome::Exited { exit_code: Some(0) },
             terminated_at: now(),
             duration_secs: 60,
         },
@@ -485,9 +481,7 @@ fn lifecycle_created_is_not_terminal_not_idle() {
 #[test]
 fn lifecycle_all_terminal_outcomes_are_terminal() {
     let outcomes = vec![
-        ExitOutcome::Exited {
-            exit_code: Some(0),
-        },
+        ExitOutcome::Exited { exit_code: Some(0) },
         ExitOutcome::Exited { exit_code: None },
         ExitOutcome::Error {
             error: "e".into(),
@@ -551,7 +545,11 @@ fn lifecycle_non_terminal_states_are_alive() {
 
     for state in states {
         assert!(state.is_alive(), "{:?} should be alive", state.state_name());
-        assert!(!state.is_terminal(), "{:?} should not be terminal", state.state_name());
+        assert!(
+            !state.is_terminal(),
+            "{:?} should not be terminal",
+            state.state_name()
+        );
     }
 }
 
@@ -772,13 +770,19 @@ async fn runtime_register_five_agents_and_list() {
     // Every launched id should appear in the list
     let listed_ids: HashSet<String> = agents.iter().map(|a| a.agent_id.clone()).collect();
     for id in &ids {
-        assert!(listed_ids.contains(id), "agent {id} missing from list_agents");
+        assert!(
+            listed_ids.contains(id),
+            "agent {id} missing from list_agents"
+        );
     }
 
     // Each agent has a non-empty UUID and is in Running state
     for agent in &agents {
         assert!(!agent.agent_uuid.is_empty());
-        assert!(matches!(agent.lifecycle, AgentLifecycleState::Running { .. }));
+        assert!(matches!(
+            agent.lifecycle,
+            AgentLifecycleState::Running { .. }
+        ));
     }
 
     // Cleanup
@@ -853,7 +857,10 @@ async fn runtime_lifecycle_state_visible_in_agent_info() {
 
     // launch_agent sets Running
     let info = runtime.get_agent(&agent_id).await.unwrap();
-    assert!(matches!(info.lifecycle, AgentLifecycleState::Running { .. }));
+    assert!(matches!(
+        info.lifecycle,
+        AgentLifecycleState::Running { .. }
+    ));
 
     // Transition to Processing
     runtime
@@ -868,7 +875,10 @@ async fn runtime_lifecycle_state_visible_in_agent_info() {
         .await
         .unwrap();
     let info = runtime.get_agent(&agent_id).await.unwrap();
-    assert!(matches!(info.lifecycle, AgentLifecycleState::Processing { .. }));
+    assert!(matches!(
+        info.lifecycle,
+        AgentLifecycleState::Processing { .. }
+    ));
     assert_eq!(info.lifecycle.task_id(), Some("task-abc"));
 
     // Transition to Stopping
@@ -884,16 +894,17 @@ async fn runtime_lifecycle_state_visible_in_agent_info() {
         .await
         .unwrap();
     let info = runtime.get_agent(&agent_id).await.unwrap();
-    assert!(matches!(info.lifecycle, AgentLifecycleState::Stopping { .. }));
+    assert!(matches!(
+        info.lifecycle,
+        AgentLifecycleState::Stopping { .. }
+    ));
 
     // Transition to Terminated
     runtime
         .set_agent_lifecycle(
             &agent_id,
             AgentLifecycleState::Terminated {
-                outcome: ExitOutcome::Exited {
-                    exit_code: Some(0),
-                },
+                outcome: ExitOutcome::Exited { exit_code: Some(0) },
                 terminated_at: now(),
                 duration_secs: 30,
             },
@@ -959,7 +970,11 @@ async fn runtime_concurrent_registration_from_multiple_tasks() {
 
     // All UUIDs unique
     let uuids: HashSet<String> = agents.iter().map(|a| a.agent_uuid.clone()).collect();
-    assert_eq!(uuids.len(), 20, "concurrent registrations must produce unique UUIDs");
+    assert_eq!(
+        uuids.len(),
+        20,
+        "concurrent registrations must produce unique UUIDs"
+    );
 
     // All agent_ids distinct
     let agent_ids: HashSet<String> = agents.iter().map(|a| a.agent_id.clone()).collect();
@@ -990,7 +1005,9 @@ async fn runtime_concurrent_register_discovered_agents() {
                 process_id: Some(format!("{i}")),
                 metadata: HashMap::new(),
             };
-            rt.register_discovered_agent(agent_id, handle).await.unwrap();
+            rt.register_discovered_agent(agent_id, handle)
+                .await
+                .unwrap();
         });
         handles.push(h);
     }
@@ -1085,7 +1102,10 @@ async fn runtime_launch_agent_sets_correct_agent_info_fields() {
     );
 
     // lifecycle is Running
-    assert!(matches!(info.lifecycle, AgentLifecycleState::Running { .. }));
+    assert!(matches!(
+        info.lifecycle,
+        AgentLifecycleState::Running { .. }
+    ));
 
     // task_id, mcp_agent_id initially None
     assert!(info.task_id.is_none());

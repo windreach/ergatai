@@ -446,7 +446,10 @@ impl AgentRuntime {
                     // Same pane - just update metadata and stable_id
                     if let Some(eai) = handle.metadata.get("ergatai_agent_id") {
                         if let Some(existing) = registry.get_mut(&old_agent_id) {
-                            existing.handle.metadata.insert("ergatai_agent_id".to_string(), eai.clone());
+                            existing
+                                .handle
+                                .metadata
+                                .insert("ergatai_agent_id".to_string(), eai.clone());
                             existing.stable_id = Some(eai.clone());
                         }
                     }
@@ -486,7 +489,8 @@ impl AgentRuntime {
         // This prevents TOCTOU race where the lock was dropped and re-acquired
         // in the middle of the loop, allowing other tasks to modify state.
         for (old_agent_id, old_uuid, old_mcp) in indices_to_clean {
-            self.remove_agent_indices(&old_agent_id, &old_uuid, old_mcp.as_deref()).await;
+            self.remove_agent_indices(&old_agent_id, &old_uuid, old_mcp.as_deref())
+                .await;
         }
 
         // Update UUID index for newly registered agents
@@ -538,7 +542,9 @@ impl AgentRuntime {
         } else {
             // Try RmuxBackend (deprecated but still in use behind feature flag).
             #[cfg(feature = "rmux")]
-            if let Some(rmux_backend) = backend_any.downcast_ref::<crate::backends::rmux::RmuxBackend>() {
+            if let Some(rmux_backend) =
+                backend_any.downcast_ref::<crate::backends::rmux::RmuxBackend>()
+            {
                 rmux_backend.health_check_agents().await
             } else {
                 debug!("health check not supported by backend, skipping prune");
@@ -928,7 +934,11 @@ impl AgentRuntime {
             // This enables callers (batch_aggregator, conversation_manager, etc.)
             // to address agents by their human-readable stable name.
             for (runtime_id, info) in registry.iter() {
-                if info.handle.metadata.get("ergatai_agent_id").map(String::as_str)
+                if info
+                    .handle
+                    .metadata
+                    .get("ergatai_agent_id")
+                    .map(String::as_str)
                     == Some(agent_id)
                 {
                     return Some(runtime_id.clone());
@@ -1764,7 +1774,11 @@ mod tests {
             last_heartbeat: now,
             state_history: Vec::new(),
         };
-        runtime.registry.write().await.insert(runtime_id.to_string(), info);
+        runtime
+            .registry
+            .write()
+            .await
+            .insert(runtime_id.to_string(), info);
     }
 
     /// Helper: insert an MCP index mapping.
@@ -1813,7 +1827,9 @@ mod tests {
     async fn test_resolve_to_stable_id_agent_identifier_fallback() {
         let runtime = make_runtime();
 
-        let result = runtime.resolve_to_stable_id("unknown-id", Some("agent-from-url")).await;
+        let result = runtime
+            .resolve_to_stable_id("unknown-id", Some("agent-from-url"))
+            .await;
         assert_eq!(result, "agent-from-url");
     }
 
@@ -1822,7 +1838,9 @@ mod tests {
     async fn test_resolve_to_stable_id_unresolved() {
         let runtime = make_runtime();
 
-        let result = runtime.resolve_to_stable_id("completely-unknown", None).await;
+        let result = runtime
+            .resolve_to_stable_id("completely-unknown", None)
+            .await;
         assert_eq!(result, "completely-unknown");
     }
 
@@ -1836,7 +1854,9 @@ mod tests {
             .await
             .unwrap();
 
-        let result = runtime.resolve_to_stable_id("agent-ws-nostable", None).await;
+        let result = runtime
+            .resolve_to_stable_id("agent-ws-nostable", None)
+            .await;
         // No ergatai_agent_id in metadata, so returns the runtime ID itself
         assert_eq!(result, "agent-ws-nostable");
     }

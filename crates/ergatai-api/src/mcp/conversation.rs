@@ -736,7 +736,8 @@ mod tests {
         let config = ConversationConfig::default();
         assert_eq!(config.max_turns, 2); // 一问一答
         assert_eq!(config.max_consecutive_auto_reply, 5);
-        assert_eq!(config.max_execution_time_secs, 300);
+        assert_eq!(config.max_execution_time_secs, 60);
+        assert_eq!(config.max_consecutive_sends, 2);
     }
 
     #[test]
@@ -800,8 +801,9 @@ mod tests {
             max_turns: 10,
             max_consecutive_auto_reply: 5,
             max_execution_time_secs: 300,
-            max_rounds: 100,       // high limit for basic tests
-            cooldown_secs: 0,      // no cooldown for tests
+            max_rounds: 100,  // high limit for basic tests
+            cooldown_secs: 0, // no cooldown for tests
+            max_consecutive_sends: 1,
         };
         let manager = ConversationManager::new(config);
 
@@ -819,7 +821,10 @@ mod tests {
     #[tokio::test]
     async fn test_token_transfer_basic() {
         // Token alternates: A sends → token to B, B sends → token to A (一问一答)
-        let config = ConversationConfig::default();
+        let config = ConversationConfig {
+            max_consecutive_sends: 1, // immediate transfer for this test
+            ..ConversationConfig::default()
+        };
         let manager = ConversationManager::new(config);
 
         // Initially: token is Free
@@ -854,6 +859,7 @@ mod tests {
         // Only the token holder can send. Non-holder is BLOCKED (一问一答 enforcement).
         let config = ConversationConfig {
             max_consecutive_auto_reply: 100, // disable for this test
+            max_consecutive_sends: 1,        // immediate transfer for this test
             ..ConversationConfig::default()
         };
         let manager = ConversationManager::new(config);
@@ -887,6 +893,7 @@ mod tests {
         // TERMINATE releases the token to Free — either party can send next.
         let config = ConversationConfig {
             cooldown_secs: 0, // no cooldown for tests
+            max_consecutive_sends: 1,
             ..ConversationConfig::default()
         };
         let manager = ConversationManager::new(config);
@@ -926,6 +933,7 @@ mod tests {
         // TERMINATE can be sent by any token holder (not just the "initiator").
         let config = ConversationConfig {
             cooldown_secs: 0, // no cooldown for tests
+            max_consecutive_sends: 1,
             ..ConversationConfig::default()
         };
         let manager = ConversationManager::new(config);
@@ -966,6 +974,7 @@ mod tests {
         let config = ConversationConfig {
             max_consecutive_auto_reply: 3,
             cooldown_secs: 0, // no cooldown for tests
+            max_consecutive_sends: 1,
             ..ConversationConfig::default()
         };
         let manager = ConversationManager::new(config);
@@ -1003,6 +1012,7 @@ mod tests {
         // A sends → token to B → A is blocked until B replies.
         let config = ConversationConfig {
             max_consecutive_auto_reply: 100, // disable to test token alone
+            max_consecutive_sends: 1,        // immediate transfer for this test
             ..ConversationConfig::default()
         };
         let manager = ConversationManager::new(config);
@@ -1125,10 +1135,7 @@ mod tests {
         let manager = ConversationManager::new(ConversationConfig::default());
 
         // Create and terminate a conversation
-        manager
-            .check_and_record("a", "b", "hello")
-            .await
-            .unwrap();
+        manager.check_and_record("a", "b", "hello").await.unwrap();
         manager
             .terminate_conversation("conv-a-b", TerminationReason::Completed)
             .await
@@ -1147,18 +1154,12 @@ mod tests {
     async fn test_conversation_turn_count_increments() {
         let manager = ConversationManager::new(ConversationConfig::default());
 
-        manager
-            .check_and_record("a", "b", "msg1")
-            .await
-            .unwrap();
+        manager.check_and_record("a", "b", "msg1").await.unwrap();
         let conv = manager.get_conversation("conv-a-b").await.unwrap();
         assert_eq!(conv.turn_count, 1);
         assert_eq!(conv.message_count, 1);
 
-        manager
-            .check_and_record("b", "a", "msg2")
-            .await
-            .unwrap();
+        manager.check_and_record("b", "a", "msg2").await.unwrap();
         let conv = manager.get_conversation("conv-a-b").await.unwrap();
         assert_eq!(conv.turn_count, 2);
         assert_eq!(conv.message_count, 2);
@@ -1170,6 +1171,7 @@ mod tests {
         let config = ConversationConfig {
             max_rounds: 3,
             cooldown_secs: 0,
+            max_consecutive_sends: 1,
             max_consecutive_auto_reply: 100,
             ..ConversationConfig::default()
         };
@@ -1191,15 +1193,19 @@ mod tests {
         manager.check_and_record("a", "b", "q3").await.unwrap();
         let result = manager.check_and_record("b", "a", "a3").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("completed 3 rounds"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("completed 3 rounds"));
     }
 
     #[tokio::test]
     async fn test_cooldown_after_termination() {
         // After conversation ends, must wait cooldown_secs before new conversation.
         let config = ConversationConfig {
-            max_rounds: 1,        // terminate after 1 round
-            cooldown_secs: 15,    // 15s cooldown
+            max_rounds: 1,     // terminate after 1 round
+            cooldown_secs: 15, // 15s cooldown
+            max_consecutive_sends: 1,
             max_consecutive_auto_reply: 100,
             ..ConversationConfig::default()
         };

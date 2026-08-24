@@ -63,7 +63,7 @@ fn test_linear_chain_critical_path() {
 
     // Verify earliest start times
     assert_eq!(result.earliest_start.get("A"), Some(&0));
-    assert_eq!(result.earliest_start.get("B"), Some(&5));  // after A (5)
+    assert_eq!(result.earliest_start.get("B"), Some(&5)); // after A (5)
     assert_eq!(result.earliest_start.get("C"), Some(&15)); // after A+B (5+10)
     assert_eq!(result.earliest_start.get("D"), Some(&18)); // after A+B+C (5+10+3)
 }
@@ -528,17 +528,29 @@ fn test_adjust_priority_slack_thresholds() {
 
     // A, B, D are critical (slack=0): 10 + 10 = 20
     let node_a = graph.nodes.iter().find(|n| n.id == "A").unwrap();
-    assert_eq!(adjust_priority_with_critical_path(node_a, &result, base_priority), 20);
+    assert_eq!(
+        adjust_priority_with_critical_path(node_a, &result, base_priority),
+        20
+    );
 
     let node_b = graph.nodes.iter().find(|n| n.id == "B").unwrap();
-    assert_eq!(adjust_priority_with_critical_path(node_b, &result, base_priority), 20);
+    assert_eq!(
+        adjust_priority_with_critical_path(node_b, &result, base_priority),
+        20
+    );
 
     let node_d = graph.nodes.iter().find(|n| n.id == "D").unwrap();
-    assert_eq!(adjust_priority_with_critical_path(node_d, &result, base_priority), 20);
+    assert_eq!(
+        adjust_priority_with_critical_path(node_d, &result, base_priority),
+        20
+    );
 
     // C has slack=15 (>= 10): 10 + 0 = 10
     let node_c = graph.nodes.iter().find(|n| n.id == "C").unwrap();
-    assert_eq!(adjust_priority_with_critical_path(node_c, &result, base_priority), 10);
+    assert_eq!(
+        adjust_priority_with_critical_path(node_c, &result, base_priority),
+        10
+    );
 }
 
 #[test]
@@ -624,10 +636,7 @@ fn test_skipped_nodes_excluded_from_critical_path() {
 fn test_default_duration_when_not_specified() {
     // When a node's duration is not in the map, it defaults to 10s
 
-    let graph = TaskGraph::new(vec![
-        node("A"),
-        node_with_deps("B", vec!["A"]),
-    ]);
+    let graph = TaskGraph::new(vec![node("A"), node_with_deps("B", vec!["A"])]);
 
     let mut durations = HashMap::new();
     durations.insert("A".to_string(), 5);

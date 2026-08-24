@@ -1057,7 +1057,9 @@ impl DagScheduler {
             // reading. If the file doesn't exist or escapes project_root, fall
             // through to the inline-description treatment.
             let full_path = self.project_root.join(task_value);
-            let safe_path: Option<std::path::PathBuf> = match tokio::fs::canonicalize(&full_path).await {
+            let safe_path: Option<std::path::PathBuf> = match tokio::fs::canonicalize(&full_path)
+                .await
+            {
                 Ok(resolved) => {
                     let canonical_root = tokio::fs::canonicalize(&self.project_root).await.ok();
                     match canonical_root {
@@ -1132,10 +1134,7 @@ impl DagScheduler {
         // Use the SAME result path convention as TaskCoordinator::get_result_path()
         // so the agent-exit watcher finds the result file when checking RunningAgent.result_file.
         // Path: .ergatai/.plan/results/{node_id}-{agent_name}.md
-        let result_path = format!(
-            ".ergatai/.plan/results/{}-{}.md",
-            node.id, node.agent
-        );
+        let result_path = format!(".ergatai/.plan/results/{}-{}.md", node.id, node.agent);
         let content = format!(
             r#"# Task: {}
 
@@ -1167,7 +1166,11 @@ impl DagScheduler {
         tokio::fs::write(&plan_file, content).await?;
 
         // Create results directory (matching TaskCoordinator's path convention)
-        let results_dir = self.project_root.join(".ergatai").join(".plan").join("results");
+        let results_dir = self
+            .project_root
+            .join(".ergatai")
+            .join(".plan")
+            .join("results");
         tokio::fs::create_dir_all(&results_dir).await?;
 
         Ok(plan_file)
@@ -1543,7 +1546,8 @@ impl DagScheduler {
                 tracing::warn!(
                     "Failed to revert node {} status to Pending after submission error: {}. \
                      Node may be stuck in incorrect state.",
-                    node_id, revert_err
+                    node_id,
+                    revert_err
                 );
             }
         }
@@ -1988,7 +1992,10 @@ impl DagScheduler {
                     node.status = TaskStatus::Failed;
                     node.metadata.insert(
                         "recovery_error".to_string(),
-                        format!("Target agent '{}' no longer exists after crash recovery", node.agent),
+                        format!(
+                            "Target agent '{}' no longer exists after crash recovery",
+                            node.agent
+                        ),
                     );
                     failed_dead += 1;
                     dead_agents_logged.insert(node.agent.clone());
@@ -1998,7 +2005,10 @@ impl DagScheduler {
                 node.status = TaskStatus::Failed;
                 node.metadata.insert(
                     "recovery_error".to_string(),
-                    format!("Target agent '{}' no longer exists after crash recovery", node.agent),
+                    format!(
+                        "Target agent '{}' no longer exists after crash recovery",
+                        node.agent
+                    ),
                 );
                 failed_dead += 1;
                 dead_agents_logged.insert(node.agent.clone());
@@ -2040,9 +2050,10 @@ impl DagScheduler {
     /// Returns false if all nodes are Failed, Completed, or Skipped.
     pub async fn has_viable_nodes(&self) -> bool {
         let graph = self.graph.lock().await;
-        graph.nodes.iter().any(|n| {
-            n.status == TaskStatus::Pending || n.status == TaskStatus::Running
-        })
+        graph
+            .nodes
+            .iter()
+            .any(|n| n.status == TaskStatus::Pending || n.status == TaskStatus::Running)
     }
 
     /// Count nodes by status for diagnostics
@@ -3123,9 +3134,7 @@ tasks:
 
     /// Helper: build a 3-node chain n1 → n2 → n3 in a scheduler.
     /// n1 is set to the given initial status.
-    async fn chain_scheduler(
-        n1_status: TaskStatus,
-    ) -> (DagScheduler, tempfile::TempDir) {
+    async fn chain_scheduler(n1_status: TaskStatus) -> (DagScheduler, tempfile::TempDir) {
         let graph = TaskGraph::new(vec![
             TaskNode::new("n1", "a", "A"),
             TaskNode::new("n2", "a", "B").with_dependencies(vec!["n1".into()]),
@@ -3433,7 +3442,9 @@ tasks:
             "agent timeout should not be classified as permanent"
         );
 
-        scheduler.handle_submission_error("n1", &transient_error).await;
+        scheduler
+            .handle_submission_error("n1", &transient_error)
+            .await;
 
         let g = scheduler.graph.lock().await;
         // Transient error should revert to Pending, not Failed
@@ -3535,9 +3546,7 @@ tasks:
         let mut graph = TaskGraph::new(vec![TaskNode::new("n1", "agent-a", "Task A")]);
         // Set a deadline that's already passed (1 second timeout, but started 10 seconds ago)
         graph.timeout = Some(1);
-        graph.started_at = Some(
-            (chrono::Utc::now() - chrono::Duration::seconds(10)).to_rfc3339(),
-        );
+        graph.started_at = Some((chrono::Utc::now() - chrono::Duration::seconds(10)).to_rfc3339());
 
         let temp_dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(temp_dir.path().join(".ergatai")).unwrap();

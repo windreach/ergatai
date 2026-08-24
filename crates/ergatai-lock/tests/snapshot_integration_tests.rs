@@ -38,7 +38,10 @@ fn create_snapshot_returns_git_hash() {
 
     let hash = mgr.create_snapshot("hello.txt", "agent-1").unwrap();
     assert!(!hash.is_empty(), "should return a non-empty git hash");
-    assert!(hash.len() >= 7, "git hash should be at least 7 chars, got: {hash}");
+    assert!(
+        hash.len() >= 7,
+        "git hash should be at least 7 chars, got: {hash}"
+    );
 }
 
 #[test]
@@ -49,7 +52,10 @@ fn create_snapshot_same_content_same_hash() {
 
     let hash_a = mgr.create_snapshot("a.txt", "agent-1").unwrap();
     let hash_b = mgr.create_snapshot("b.txt", "agent-1").unwrap();
-    assert_eq!(hash_a, hash_b, "same content should produce same git blob hash");
+    assert_eq!(
+        hash_a, hash_b,
+        "same content should produce same git blob hash"
+    );
 }
 
 #[test]
@@ -140,7 +146,10 @@ fn create_snapshot_empty_file() {
     fs::write(dir.path().join("empty.txt"), "").unwrap();
 
     let hash = mgr.create_snapshot("empty.txt", "agent-1").unwrap();
-    assert!(!hash.is_empty(), "empty file should still produce a git blob hash");
+    assert!(
+        !hash.is_empty(),
+        "empty file should still produce a git blob hash"
+    );
 }
 
 // ── Binary content ───────────────────────────────────────────────────
@@ -162,7 +171,11 @@ fn concurrent_snapshots_all_succeed() {
     let (mgr, dir) = setup();
 
     for i in 0..10 {
-        fs::write(dir.path().join(format!("file-{i}.txt")), format!("content {i}")).unwrap();
+        fs::write(
+            dir.path().join(format!("file-{i}.txt")),
+            format!("content {i}"),
+        )
+        .unwrap();
     }
 
     let hashes: Vec<String> = (0..10)

@@ -6,8 +6,8 @@
 use chrono::Utc;
 use ergatai_core::unified_registry::UnifiedAgentRegistry;
 use ergatai_runtime::{
-    AgentLifecycleState, AgentRecord, ExitOutcome,
-    RecordAgentHandle as AgentHandle, RecordWorkspaceHandle as WorkspaceHandle,
+    AgentLifecycleState, AgentRecord, ExitOutcome, RecordAgentHandle as AgentHandle,
+    RecordWorkspaceHandle as WorkspaceHandle,
 };
 use std::collections::HashMap;
 
@@ -102,7 +102,11 @@ async fn state_transitions_record_history() {
 
     reg.transition_state(
         "u4",
-        AgentLifecycleState::Running { task_id: None, started_at: Utc::now(), last_heartbeat: Utc::now() },
+        AgentLifecycleState::Running {
+            task_id: None,
+            started_at: Utc::now(),
+            last_heartbeat: Utc::now(),
+        },
         Some("started task".to_string()),
         serde_json::json!({"task": "T1"}),
     )
@@ -163,9 +167,41 @@ async fn list_filters_by_state_category() {
     reg.register(make_record("b", "%b")).await;
     reg.register(make_record("c", "%c")).await;
 
-    reg.transition_state("a", AgentLifecycleState::Running { task_id: None, started_at: Utc::now(), last_heartbeat: Utc::now() }, None, serde_json::json!({})).await.unwrap();
-    reg.transition_state("b", AgentLifecycleState::Idle { ready_since: Utc::now(), capabilities: vec![] }, None, serde_json::json!({})).await.unwrap();
-    reg.transition_state("c", AgentLifecycleState::Terminated { outcome: ExitOutcome::Signaled { signal: 9 }, terminated_at: Utc::now(), duration_secs: 10 }, None, serde_json::json!({})).await.unwrap();
+    reg.transition_state(
+        "a",
+        AgentLifecycleState::Running {
+            task_id: None,
+            started_at: Utc::now(),
+            last_heartbeat: Utc::now(),
+        },
+        None,
+        serde_json::json!({}),
+    )
+    .await
+    .unwrap();
+    reg.transition_state(
+        "b",
+        AgentLifecycleState::Idle {
+            ready_since: Utc::now(),
+            capabilities: vec![],
+        },
+        None,
+        serde_json::json!({}),
+    )
+    .await
+    .unwrap();
+    reg.transition_state(
+        "c",
+        AgentLifecycleState::Terminated {
+            outcome: ExitOutcome::Signaled { signal: 9 },
+            terminated_at: Utc::now(),
+            duration_secs: 10,
+        },
+        None,
+        serde_json::json!({}),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(reg.list_alive().await.len(), 2);
     assert_eq!(reg.list_idle().await.len(), 1);
@@ -182,8 +218,29 @@ async fn count_by_state_counts_correctly() {
     reg.register(make_record("y", "%y")).await;
     reg.register(make_record("z", "%z")).await;
 
-    reg.transition_state("y", AgentLifecycleState::Idle { ready_since: Utc::now(), capabilities: vec![] }, None, serde_json::json!({})).await.unwrap();
-    reg.transition_state("z", AgentLifecycleState::Terminated { outcome: ExitOutcome::Exited { exit_code: Some(0) }, terminated_at: Utc::now(), duration_secs: 5 }, None, serde_json::json!({})).await.unwrap();
+    reg.transition_state(
+        "y",
+        AgentLifecycleState::Idle {
+            ready_since: Utc::now(),
+            capabilities: vec![],
+        },
+        None,
+        serde_json::json!({}),
+    )
+    .await
+    .unwrap();
+    reg.transition_state(
+        "z",
+        AgentLifecycleState::Terminated {
+            outcome: ExitOutcome::Exited { exit_code: Some(0) },
+            terminated_at: Utc::now(),
+            duration_secs: 5,
+        },
+        None,
+        serde_json::json!({}),
+    )
+    .await
+    .unwrap();
 
     let c = reg.count_by_state().await;
     assert_eq!(c.total, 3);
@@ -222,7 +279,18 @@ async fn list_summaries_returns_all() {
 #[tokio::test]
 async fn transition_nonexistent_agent_returns_error() {
     let reg = UnifiedAgentRegistry::new();
-    let err = reg.transition_state("ghost", AgentLifecycleState::Idle { ready_since: Utc::now(), capabilities: vec![] }, None, serde_json::json!({})).await.unwrap_err();
+    let err = reg
+        .transition_state(
+            "ghost",
+            AgentLifecycleState::Idle {
+                ready_since: Utc::now(),
+                capabilities: vec![],
+            },
+            None,
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap_err();
     assert!(err.contains("not found"));
 }
 
@@ -256,10 +324,13 @@ async fn concurrent_registration_is_consistent() {
     for i in 0..20 {
         let r = reg.clone();
         handles.push(tokio::spawn(async move {
-            r.register(make_record(&format!("c{i}"), &format!("%c{i}"))).await;
+            r.register(make_record(&format!("c{i}"), &format!("%c{i}")))
+                .await;
         }));
     }
-    for h in handles { h.await.unwrap(); }
+    for h in handles {
+        h.await.unwrap();
+    }
 
     assert_eq!(reg.list_all().await.len(), 20);
     for i in 0..20 {

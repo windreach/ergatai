@@ -70,13 +70,13 @@ impl SnapshotManager {
             })?;
 
         // Use the actual git workdir as the canonical path (handles discovered repos)
-        let canonical_repo_path = repo
-            .workdir()
-            .unwrap_or(repo_path)
-            .canonicalize()
-            .map_err(|e| {
-                ErgataiError::internal(format!("Failed to canonicalize repo path: {}", e))
-            })?;
+        let canonical_repo_path =
+            repo.workdir()
+                .unwrap_or(repo_path)
+                .canonicalize()
+                .map_err(|e| {
+                    ErgataiError::internal(format!("Failed to canonicalize repo path: {}", e))
+                })?;
 
         Ok(Self {
             repo_path: canonical_repo_path.clone(),

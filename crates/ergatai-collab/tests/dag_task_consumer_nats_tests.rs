@@ -10,9 +10,7 @@
 //! Tests run in parallel safely via `TEST_LOCK` (each test gets its own
 //! isolated NATS server with a unique tempdir store).
 
-use ergatai_nats::{
-    init_nats_with_store_dir, shutdown_nats, EventBus, TaskSubmitPayload,
-};
+use ergatai_nats::{init_nats_with_store_dir, shutdown_nats, EventBus, TaskSubmitPayload};
 use futures_util::StreamExt;
 use std::sync::Mutex;
 use tempfile::tempdir;
@@ -25,7 +23,10 @@ static _NATS_STORE_GUARD: Mutex<Option<tempfile::TempDir>> = Mutex::new(None);
 static TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-async fn ensure_nats() -> Option<(ergatai_nats::NatsConnection, tokio::sync::MutexGuard<'static, ()>)> {
+async fn ensure_nats() -> Option<(
+    ergatai_nats::NatsConnection,
+    tokio::sync::MutexGuard<'static, ()>,
+)> {
     // Acquire the global lock FIRST — prevents concurrent shutdown_nats/init races.
     let _guard = TEST_LOCK.lock().await;
 
@@ -77,13 +78,9 @@ async fn create_task_consumer(
     'static,
     Result<async_nats::jetstream::Message, Box<dyn std::error::Error + Send + Sync>>,
 > {
-    ergatai_nats::init_dag_stream_pull_consumer(
-        conn,
-        "test_task_consumer",
-        "ergatai.task.submit.*",
-    )
-    .await
-    .expect("Failed to create test consumer")
+    ergatai_nats::init_dag_stream_pull_consumer(conn, "test_task_consumer", "ergatai.task.submit.*")
+        .await
+        .expect("Failed to create test consumer")
 }
 
 /// Core regression: published task is received by the consumer.
@@ -93,7 +90,9 @@ async fn create_task_consumer(
 /// before the consumer was bound.
 #[tokio::test]
 async fn test_consumer_receives_published_task() {
-    let Some((conn, _guard)) = ensure_nats().await else { return };
+    let Some((conn, _guard)) = ensure_nats().await else {
+        return;
+    };
 
     // Create consumer FIRST (mimics TaskScheduler startup)
     let mut messages = create_task_consumer(&conn).await;
@@ -128,7 +127,9 @@ async fn test_consumer_receives_published_task() {
 /// Multiple tasks are received in order.
 #[tokio::test]
 async fn test_consumer_receives_multiple_tasks() {
-    let Some((conn, _guard)) = ensure_nats().await else { return };
+    let Some((conn, _guard)) = ensure_nats().await else {
+        return;
+    };
     let mut messages = create_task_consumer(&conn).await;
     let bus = EventBus::new(conn);
 
@@ -145,8 +146,7 @@ async fn test_consumer_receives_multiple_tasks() {
 
     // Consumer should receive all messages
     for expected_id in &task_ids {
-        let result =
-            tokio::time::timeout(std::time::Duration::from_secs(5), messages.next()).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), messages.next()).await;
         let msg = result
             .expect("Should receive message within 5s")
             .expect("Stream should yield a message")
@@ -162,7 +162,9 @@ async fn test_consumer_receives_multiple_tasks() {
 /// Consumer should not crash on malformed messages.
 #[tokio::test]
 async fn test_consumer_survives_malformed_messages() {
-    let Some((conn, _guard)) = ensure_nats().await else { return };
+    let Some((conn, _guard)) = ensure_nats().await else {
+        return;
+    };
     let mut messages = create_task_consumer(&conn).await;
 
     // 1. Publish a malformed message (invalid JSON)
@@ -208,11 +210,12 @@ async fn test_consumer_survives_malformed_messages() {
 /// Consumer ready signal from global_scheduler completes promptly.
 #[tokio::test]
 async fn test_consumer_ready_signal_with_nats() {
-    let Some((_conn, _guard)) = ensure_nats().await else { return };
+    let Some((_conn, _guard)) = ensure_nats().await else {
+        return;
+    };
     let temp_dir = tempdir().unwrap();
-    let scheduler = ergatai_collab::task_scheduler::global_scheduler(Some(
-        temp_dir.path().to_path_buf(),
-    ));
+    let scheduler =
+        ergatai_collab::task_scheduler::global_scheduler(Some(temp_dir.path().to_path_buf()));
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(5),

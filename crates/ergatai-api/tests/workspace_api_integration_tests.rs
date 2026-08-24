@@ -129,8 +129,7 @@ async fn create_workspace_with_valid_id_returns_created_or_bad_request() {
 
     // Should be 201 (created) if tmux is available, or 400 if backend fails
     assert!(
-        response.status() == StatusCode::CREATED
-            || response.status() == StatusCode::BAD_REQUEST,
+        response.status() == StatusCode::CREATED || response.status() == StatusCode::BAD_REQUEST,
         "unexpected status: {}",
         response.status()
     );
@@ -174,8 +173,7 @@ async fn create_workspace_with_env_and_persist() {
         .unwrap();
 
     assert!(
-        response.status() == StatusCode::CREATED
-            || response.status() == StatusCode::BAD_REQUEST,
+        response.status() == StatusCode::CREATED || response.status() == StatusCode::BAD_REQUEST,
         "unexpected status: {}",
         response.status()
     );
@@ -311,8 +309,7 @@ async fn auth_middleware_exempts_health_endpoint() {
         .unwrap();
 
     assert!(
-        response.status() == StatusCode::OK
-            || response.status() == StatusCode::SERVICE_UNAVAILABLE,
+        response.status() == StatusCode::OK || response.status() == StatusCode::SERVICE_UNAVAILABLE,
         "health should be exempt from auth, got: {}",
         response.status()
     );
@@ -354,14 +351,16 @@ async fn health_endpoint_returns_json() {
         .unwrap();
 
     assert!(
-        response.status() == StatusCode::OK
-            || response.status() == StatusCode::SERVICE_UNAVAILABLE
+        response.status() == StatusCode::OK || response.status() == StatusCode::SERVICE_UNAVAILABLE
     );
 
     let body = body_json(response).await;
     assert!(body.get("status").is_some(), "should have status field");
     assert!(body.get("checks").is_some(), "should have checks field");
-    assert!(body.get("timestamp").is_some(), "should have timestamp field");
+    assert!(
+        body.get("timestamp").is_some(),
+        "should have timestamp field"
+    );
 }
 
 // ── DAG status endpoint ──────────────────────────────────────────────
@@ -441,8 +440,7 @@ async fn submit_dag_invalid_yaml_returns_400() {
                 .method(Method::POST)
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    json!({"definition": "not: valid: dag: yaml: [[["})
-                        .to_string(),
+                    json!({"definition": "not: valid: dag: yaml: [[["}).to_string(),
                 ))
                 .unwrap(),
         )

@@ -54,9 +54,8 @@ const EXIT_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// the path once per process (env var → bundled → sibling → PATH) and caches
 /// the result in a global `OnceLock`.
 fn tmux_binary() -> ErgataiResult<&'static PathBuf> {
-    ergatai_binary::find_tmux_binary_cached().map_err(|e| {
-        ErgataiError::internal(format!("tmux binary not found: {}", e))
-    })
+    ergatai_binary::find_tmux_binary_cached()
+        .map_err(|e| ErgataiError::internal(format!("tmux binary not found: {}", e)))
 }
 
 // ── TmuxBackend ──
@@ -156,9 +155,13 @@ impl TmuxBackend {
         // Use tmux display-message to get the pane's current command
         let output = Self::run_tmux_cmd(&[
             "display-message",
-            "-t", pane,
-            "-p", "#{pane_current_command}",
-        ]).await.ok()?;
+            "-t",
+            pane,
+            "-p",
+            "#{pane_current_command}",
+        ])
+        .await
+        .ok()?;
 
         if !output.status.success() {
             return None;
@@ -174,12 +177,12 @@ impl TmuxBackend {
         if let Some(cmd) = Self::get_pane_command(pane).await {
             let cmd_lower = cmd.to_lowercase();
             // Check if it's a shell (bash, sh, zsh, fish, etc.)
-            cmd_lower.contains("bash") ||
-            cmd_lower.contains("/bash") ||
-            cmd_lower == "sh" ||
-            cmd_lower.contains("/sh") ||
-            cmd_lower.contains("zsh") ||
-            cmd_lower.contains("fish")
+            cmd_lower.contains("bash")
+                || cmd_lower.contains("/bash")
+                || cmd_lower == "sh"
+                || cmd_lower.contains("/sh")
+                || cmd_lower.contains("zsh")
+                || cmd_lower.contains("fish")
         } else {
             false
         }
@@ -317,19 +320,14 @@ impl TmuxBackend {
     ///
     /// Reads `/proc/{pid}/stat` for each pane's child process to detect
     /// Zombie/Dead states. Called by `AgentRuntime::prune_unhealthy_agents()`.
-    pub async fn health_check_agents(
-        &self,
-    ) -> Vec<(String, super::proc_linux::ProcessState)> {
+    pub async fn health_check_agents(&self) -> Vec<(String, super::proc_linux::ProcessState)> {
         use super::proc_linux::read_proc_state;
 
-        let sessions_output = match Self::run_tmux_cmd(&[
-            "list-sessions", "-F", "#{session_name}",
-        ])
-        .await
-        {
-            Ok(o) if o.status.success() => o,
-            _ => return Vec::new(),
-        };
+        let sessions_output =
+            match Self::run_tmux_cmd(&["list-sessions", "-F", "#{session_name}"]).await {
+                Ok(o) if o.status.success() => o,
+                _ => return Vec::new(),
+            };
 
         let stdout = String::from_utf8_lossy(&sessions_output.stdout);
         let prefix = format!("{}-", self.session_prefix);
@@ -343,8 +341,11 @@ impl TmuxBackend {
 
         for session in &sessions {
             let pane_output = match Self::run_tmux_cmd(&[
-                "list-panes", "-t", session,
-                "-F", "#{pane_id}|#{pane_pid}",
+                "list-panes",
+                "-t",
+                session,
+                "-F",
+                "#{pane_id}|#{pane_pid}",
             ])
             .await
             {
@@ -369,7 +370,8 @@ impl TmuxBackend {
                     .unwrap_or_else(|| format!("pane_{}", pane_id.replace('%', "")));
 
                 #[cfg(target_os = "linux")]
-                let state = read_proc_state(pid).unwrap_or(super::proc_linux::ProcessState::Unknown);
+                let state =
+                    read_proc_state(pid).unwrap_or(super::proc_linux::ProcessState::Unknown);
                 #[cfg(not(target_os = "linux"))]
                 let state = super::proc_linux::ProcessState::Unknown;
 
@@ -386,9 +388,7 @@ impl TmuxBackend {
     pub async fn tmux_status(&self) -> TmuxStatus {
         // Get version
         let version = match Self::run_tmux_cmd(&["-V"]).await {
-            Ok(o) if o.status.success() => {
-                String::from_utf8_lossy(&o.stdout).trim().to_string()
-            }
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
             _ => "unknown".to_string(),
         };
 
@@ -443,14 +443,8 @@ impl TmuxBackend {
     /// Used by `start_agent` to determine whether this is the first agent
     /// (1 pane = default, use it) or a subsequent agent (2+ panes, split new).
     async fn count_panes_in_session(session: &str) -> usize {
-        match Self::run_tmux_cmd(&[
-            "list-panes", "-t", session, "-F", "#{pane_id}",
-        ])
-        .await
-        {
-            Ok(o) if o.status.success() => {
-                String::from_utf8_lossy(&o.stdout).lines().count()
-            }
+        match Self::run_tmux_cmd(&["list-panes", "-t", session, "-F", "#{pane_id}"]).await {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).lines().count(),
             _ => 0,
         }
     }
@@ -575,7 +569,7 @@ impl TmuxBackend {
 
     /// Gracefully stop an agent using its handle.
     ///
-    /// Convenience wrapper around [`graceful_stop_pane`] that extracts pane_id from the handle.
+    /// Convenience wrapper around [`Self::graceful_stop_pane`] that extracts pane_id from the handle.
     pub async fn graceful_stop_agent(
         &self,
         handle: &AgentHandle,
@@ -664,19 +658,13 @@ impl TmuxBackend {
     }
 
     /// Stop (close) a pane by session name and pane_id.
-    pub async fn stop_pane_by_id(
-        _session: &str,
-        pane_id: &str,
-    ) -> ErgataiResult<()> {
+    pub async fn stop_pane_by_id(_session: &str, pane_id: &str) -> ErgataiResult<()> {
         let _ = Self::run_tmux_cmd(&["kill-pane", "-t", pane_id]).await;
         Ok(())
     }
 
-    /// Force-kill a pane (alias for [`stop_pane_by_id`]).
-    pub async fn kill_pane_by_id(
-        session: &str,
-        pane_id: &str,
-    ) -> ErgataiResult<()> {
+    /// Force-kill a pane (alias for [`Self::stop_pane_by_id`]).
+    pub async fn kill_pane_by_id(session: &str, pane_id: &str) -> ErgataiResult<()> {
         Self::stop_pane_by_id(session, pane_id).await
     }
 
@@ -700,14 +688,11 @@ impl TmuxBackend {
     /// Returns a vector of [`TmuxPaneInfo`] structs with PID, command, cwd,
     /// and other details. Used by `/api/v1/status` and health monitoring.
     pub async fn tmux_status_detailed(&self) -> Vec<TmuxPaneInfo> {
-        let sessions_output = match Self::run_tmux_cmd(&[
-            "list-sessions", "-F", "#{session_name}",
-        ])
-        .await
-        {
-            Ok(o) if o.status.success() => o,
-            _ => return Vec::new(),
-        };
+        let sessions_output =
+            match Self::run_tmux_cmd(&["list-sessions", "-F", "#{session_name}"]).await {
+                Ok(o) if o.status.success() => o,
+                _ => return Vec::new(),
+            };
 
         let stdout = String::from_utf8_lossy(&sessions_output.stdout);
         let prefix = format!("{}-", self.session_prefix);
@@ -891,12 +876,16 @@ impl AgentRuntimeBackend for TmuxBackend {
                     &session_name,
                     "-F",
                     "#{pane_id}|#{pane_current_command}|#{pane_pid}",
-                ]).await {
+                ])
+                .await
+                {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                     let mut first_pane = None;
                     for line in stdout.lines() {
                         let parts: Vec<&str> = line.splitn(3, '|').collect();
-                        if parts.len() < 3 { continue; }
+                        if parts.len() < 3 {
+                            continue;
+                        }
                         if first_pane.is_none() {
                             first_pane = Some(parts[0].trim().to_string());
                         }
@@ -911,7 +900,9 @@ impl AgentRuntimeBackend for TmuxBackend {
         }
 
         // Store persist flag; destroy-unattached will be set after start_agent
-        let persist = spec.backend_config.get("persist")
+        let persist = spec
+            .backend_config
+            .get("persist")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         metadata.insert("persist".to_string(), persist.to_string());
@@ -942,8 +933,14 @@ impl AgentRuntimeBackend for TmuxBackend {
             ));
         }
 
-        let is_fresh = handle.metadata.get("fresh").map(|v| v == "true").unwrap_or(true);
-        let persist = handle.metadata.get("persist")
+        let is_fresh = handle
+            .metadata
+            .get("fresh")
+            .map(|v| v == "true")
+            .unwrap_or(true);
+        let persist = handle
+            .metadata
+            .get("persist")
             .map(|v| v == "true")
             .unwrap_or(false);
 
@@ -963,21 +960,38 @@ impl AgentRuntimeBackend for TmuxBackend {
                 }
                 None => {
                     // No running pane — use the default pane from new-session/list-panes.
-                    let default_pane = handle.metadata.get("default_pane_id").cloned()
-                        .ok_or_else(|| ErgataiError::internal("Missing default_pane_id in reused workspace"))?;
+                    let default_pane =
+                        handle
+                            .metadata
+                            .get("default_pane_id")
+                            .cloned()
+                            .ok_or_else(|| {
+                                ErgataiError::internal(
+                                    "Missing default_pane_id in reused workspace",
+                                )
+                            })?;
                     (default_pane, true)
                 }
             }
         } else if !is_first_agent {
             // ── Multi-agent: 2nd+ agent — split from anchor pane ──
             // Use the first pane in the session as the split target.
-            let anchor = handle.metadata.get("anchor_pane").cloned()
+            let anchor = handle
+                .metadata
+                .get("anchor_pane")
+                .cloned()
                 .or_else(|| handle.metadata.get("default_pane_id").cloned())
-                .ok_or_else(|| ErgataiError::internal("Missing anchor pane for multi-agent split"))?;
+                .ok_or_else(|| {
+                    ErgataiError::internal("Missing anchor pane for multi-agent split")
+                })?;
             let mut split_args = vec![
-                "split-window", "-h",
-                "-t", &anchor,
-                "-P", "-F", "#{pane_id}",
+                "split-window",
+                "-h",
+                "-t",
+                &anchor,
+                "-P",
+                "-F",
+                "#{pane_id}",
             ];
             // Apply cwd from workspace metadata.
             if let Some(dir) = handle.metadata.get("work_dir") {
@@ -999,8 +1013,14 @@ impl AgentRuntimeBackend for TmuxBackend {
             (new_pane, false)
         } else {
             // ── Fresh workspace: first agent uses the default pane ──
-            let default_pane = handle.metadata.get("default_pane_id").cloned()
-                .ok_or_else(|| ErgataiError::internal("Missing default_pane_id in workspace metadata"))?;
+            let default_pane =
+                handle
+                    .metadata
+                    .get("default_pane_id")
+                    .cloned()
+                    .ok_or_else(|| {
+                        ErgataiError::internal("Missing default_pane_id in workspace metadata")
+                    })?;
             (default_pane, true)
         };
 
@@ -1031,12 +1051,12 @@ impl AgentRuntimeBackend for TmuxBackend {
         // Set pane title (requires tmux >= 3.2 for -T flag on select-pane).
         // Best-effort: older tmux versions ignore the flag silently.
         let agent_id = format!("agent-{}", uuid::Uuid::new_v4());
-        let title = handle.metadata.get("title")
+        let title = handle
+            .metadata
+            .get("title")
             .cloned()
             .unwrap_or_else(|| agent_id.clone());
-        let _ = Self::run_tmux_cmd(&[
-            "select-pane", "-t", &pane_id, "-T", &title,
-        ]).await;
+        let _ = Self::run_tmux_cmd(&["select-pane", "-t", &pane_id, "-T", &title]).await;
 
         info!(
             pane_id = pane_id,
@@ -1185,7 +1205,10 @@ impl AgentRuntimeBackend for TmuxBackend {
     async fn stop_agent(&self, handle: &AgentHandle) -> ErgataiResult<()> {
         let pane_id = Self::pane_id(handle)?;
         let session = Self::session_name_from_handle(&handle.workspace)?;
-        info!(pane_id = pane_id, "Stopping agent (graceful: C-c then kill)");
+        info!(
+            pane_id = pane_id,
+            "Stopping agent (graceful: C-c then kill)"
+        );
 
         // Graceful: send Ctrl-C, wait up to 2s for pane to exit, then force-kill.
         Self::graceful_stop_pane(&session, &pane_id, "C-c", Duration::from_secs(2)).await
@@ -1238,14 +1261,7 @@ impl AgentRuntimeBackend for TmuxBackend {
                 {tmux_bin} wait-for -S {channel} 2>/dev/null || true\
             \""
         );
-        Self::run_tmux_cmd(&[
-            "set-hook",
-            "-t",
-            &session,
-            "pane-died",
-            &hook_cmd,
-        ])
-        .await?;
+        Self::run_tmux_cmd(&["set-hook", "-t", &session, "pane-died", &hook_cmd]).await?;
 
         // 2. Check if already dead (handles race: pane died before hook was set)
         match self.is_alive(handle).await {
@@ -1311,13 +1327,9 @@ impl AgentRuntimeBackend for TmuxBackend {
             let mut metadata = HashMap::new();
             metadata.insert("session".to_string(), session_name.clone());
             // Find first pane for this session
-            if let Ok(pane_output) = Self::run_tmux_cmd(&[
-                "list-panes",
-                "-t",
-                session_name,
-                "-F",
-                "#{pane_id}",
-            ]).await {
+            if let Ok(pane_output) =
+                Self::run_tmux_cmd(&["list-panes", "-t", session_name, "-F", "#{pane_id}"]).await
+            {
                 let pane_id = String::from_utf8_lossy(&pane_output.stdout)
                     .lines()
                     .next()
@@ -1368,7 +1380,10 @@ impl AgentRuntimeBackend for TmuxBackend {
             }
             _ => {
                 // Session doesn't exist or can't list panes — already gone
-                debug!(session = session, "Session already gone during cleanup check");
+                debug!(
+                    session = session,
+                    "Session already gone during cleanup check"
+                );
                 return Ok(());
             }
         }
@@ -1535,11 +1550,40 @@ impl AgentRuntimeBackend for TmuxBackend {
 fn is_tmux_key_name(s: &str) -> bool {
     // Named keys recognized by tmux send-keys.
     const NAMED_KEYS: &[&str] = &[
-        "Enter", "Return", "Escape", "Esc", "Tab", "BSpace", "BackSpace", "Bspace",
-        "Up", "Down", "Left", "Right", "Home", "End",
-        "NPage", "PPage", "PageUp", "PageDown", "Space", "BTab",
-        "Insert", "Delete",
-        "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+        "Enter",
+        "Return",
+        "Escape",
+        "Esc",
+        "Tab",
+        "BSpace",
+        "BackSpace",
+        "Bspace",
+        "Up",
+        "Down",
+        "Left",
+        "Right",
+        "Home",
+        "End",
+        "NPage",
+        "PPage",
+        "PageUp",
+        "PageDown",
+        "Space",
+        "BTab",
+        "Insert",
+        "Delete",
+        "F1",
+        "F2",
+        "F3",
+        "F4",
+        "F5",
+        "F6",
+        "F7",
+        "F8",
+        "F9",
+        "F10",
+        "F11",
+        "F12",
     ];
 
     // Modifier + single char: C-a, M-x, S-b (exactly 3 chars).
@@ -1571,9 +1615,7 @@ fn is_tmux_key_name(s: &str) -> bool {
 /// return `WaitResult::Signaled` when appropriate.
 fn exit_code_to_wait_result(code: i32) -> WaitResult {
     if code > 128 {
-        WaitResult::Signaled {
-            signal: code - 128,
-        }
+        WaitResult::Signaled { signal: code - 128 }
     } else {
         WaitResult::Exited { code }
     }

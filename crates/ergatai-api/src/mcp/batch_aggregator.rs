@@ -471,7 +471,7 @@ impl BatchAggregator {
                 let cleaned = Self::strip_hint(reply).to_string();
                 content_to_agents
                     .entry(cleaned)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(target.to_string());
             } else {
                 no_reply_agents.push(target.to_string());
@@ -484,15 +484,16 @@ impl BatchAggregator {
             // Try to parse content as JSON — agents may reply with structured
             // {"from":"...","message":"..."} objects. If parsing succeeds and has
             // a "message" field, extract the inner message to avoid double-wrapping.
-            let message_value = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(content) {
-                if let Some(inner_msg) = parsed.get("message").and_then(|m| m.as_str()) {
-                    serde_json::Value::String(inner_msg.to_string())
+            let message_value =
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(content) {
+                    if let Some(inner_msg) = parsed.get("message").and_then(|m| m.as_str()) {
+                        serde_json::Value::String(inner_msg.to_string())
+                    } else {
+                        serde_json::Value::String(content.clone())
+                    }
                 } else {
                     serde_json::Value::String(content.clone())
-                }
-            } else {
-                serde_json::Value::String(content.clone())
-            };
+                };
             let msg_json = serde_json::json!({
                 "from": agents_list,
                 "message": message_value
@@ -779,15 +780,21 @@ mod tests {
         aggregator.record_send("agent-a", "agent-c", false).await;
 
         // B replies — should be accepted (Some(true))
-        let r1 = aggregator.on_reply("agent-b", "agent-a", "reply from B").await;
+        let r1 = aggregator
+            .on_reply("agent-b", "agent-a", "reply from B")
+            .await;
         assert_eq!(r1, Some(true), "First reply should be accepted");
 
         // C replies — should also be accepted (finalizes the batch)
-        let r2 = aggregator.on_reply("agent-c", "agent-a", "reply from C").await;
+        let r2 = aggregator
+            .on_reply("agent-c", "agent-a", "reply from C")
+            .await;
         assert_eq!(r2, Some(true), "Second reply should also be accepted");
 
         // After flush, further replies should be delivered individually (Some(false))
-        let r3 = aggregator.on_reply("agent-b", "agent-a", "follow-up from B").await;
+        let r3 = aggregator
+            .on_reply("agent-b", "agent-a", "follow-up from B")
+            .await;
         assert_eq!(
             r3,
             Some(false),

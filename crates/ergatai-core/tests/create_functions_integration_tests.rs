@@ -2,9 +2,7 @@
 //!
 //! Covers the "create" lifecycle: create entity → verify → use → cleanup.
 
-use ergatai_dag::{
-    parse_dag_yaml, DagContext, TaskComplexity, TaskNode, TaskStatus,
-};
+use ergatai_dag::{parse_dag_yaml, DagContext, TaskComplexity, TaskNode, TaskStatus};
 use ergatai_nats::{init_nats_with_store_dir, shutdown_nats, NatsConnection};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -39,7 +37,9 @@ async fn ensure_nats() -> Option<(NatsConnection, tokio::sync::MutexGuard<'stati
 
 #[tokio::test]
 async fn create_custom_stream_and_verify() {
-    let Some((conn, _guard)) = ensure_nats().await else { return };
+    let Some((conn, _guard)) = ensure_nats().await else {
+        return;
+    };
 
     use async_nats::jetstream::stream::{Config, RetentionPolicy};
 
@@ -52,7 +52,11 @@ async fn create_custom_stream_and_verify() {
     };
 
     let stream = conn.create_stream(config).await;
-    assert!(stream.is_ok(), "create_stream should succeed: {:?}", stream.err());
+    assert!(
+        stream.is_ok(),
+        "create_stream should succeed: {:?}",
+        stream.err()
+    );
 
     let mut stream = stream.unwrap();
     let info = stream.info().await.unwrap();
@@ -62,7 +66,9 @@ async fn create_custom_stream_and_verify() {
 
 #[tokio::test]
 async fn create_stream_idempotent() {
-    let Some((conn, _guard)) = ensure_nats().await else { return };
+    let Some((conn, _guard)) = ensure_nats().await else {
+        return;
+    };
 
     use async_nats::jetstream::stream::Config;
 
@@ -76,7 +82,10 @@ async fn create_stream_idempotent() {
     assert!(r1.is_ok());
 
     let r2 = conn.create_stream(config).await;
-    assert!(r2.is_ok(), "creating same stream twice should be idempotent");
+    assert!(
+        r2.is_ok(),
+        "creating same stream twice should be idempotent"
+    );
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -125,9 +134,10 @@ tasks:
     input: "Implement based on step1"
     scope: "src/"
 "#;
-    let params = HashMap::from([
-        ("query".to_string(), serde_json::Value::String("build feature X".into())),
-    ]);
+    let params = HashMap::from([(
+        "query".to_string(),
+        serde_json::Value::String("build feature X".into()),
+    )]);
     let graph = parse_dag_yaml(yaml, Some(params)).unwrap();
 
     assert_eq!(graph.nodes.len(), 2);
@@ -155,7 +165,11 @@ tasks:
 
 #[test]
 fn create_task_node_default_state_is_pending() {
-    let node = TaskNode::new("n1".to_string(), "agent-1".to_string(), "my-task".to_string());
+    let node = TaskNode::new(
+        "n1".to_string(),
+        "agent-1".to_string(),
+        "my-task".to_string(),
+    );
     assert_eq!(node.status, TaskStatus::Pending);
     assert_eq!(node.task, "my-task");
     assert!(node.depends_on.is_empty());
@@ -185,7 +199,10 @@ fn create_dag_context_empty() {
 #[test]
 fn create_dag_context_with_parameters() {
     let mut params = HashMap::new();
-    params.insert("name".to_string(), serde_json::Value::String("world".into()));
+    params.insert(
+        "name".to_string(),
+        serde_json::Value::String("world".into()),
+    );
 
     let ctx = DagContext::with_parameters(HashMap::new(), params);
     assert_eq!(ctx.render_template("hello {{param.name}}"), "hello world");
@@ -198,7 +215,10 @@ fn dag_context_record_output_and_reference() {
     let mut ctx = DagContext::empty();
     ctx.record_output("step1", json!({"result": "done", "count": 42}));
 
-    assert_eq!(ctx.render_template("Step1 said: {{step1.result}}"), "Step1 said: done");
+    assert_eq!(
+        ctx.render_template("Step1 said: {{step1.result}}"),
+        "Step1 said: done"
+    );
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -237,7 +257,9 @@ async fn graph_is_complete_check() {
 
     // After YAML parsing, node ids are UUIDs — use the actual id
     let node_id = graph.nodes[0].id.clone();
-    graph.update_status(&node_id, TaskStatus::Completed).unwrap();
+    graph
+        .update_status(&node_id, TaskStatus::Completed)
+        .unwrap();
     assert!(graph.is_complete());
 }
 

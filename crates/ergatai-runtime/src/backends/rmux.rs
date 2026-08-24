@@ -1434,7 +1434,8 @@ impl AgentRuntimeBackend for RmuxBackend {
 
             // Try to read RMUX_PANE from the pane's child process environment.
             // This gives us the deterministic pane identifier (e.g., "%15").
-            let rmux_pane = child_pid.and_then(|pid| super::proc_linux::read_proc_environ(pid, "RMUX_PANE"));
+            let rmux_pane =
+                child_pid.and_then(|pid| super::proc_linux::read_proc_environ(pid, "RMUX_PANE"));
 
             // Try to read ERGATAI_AGENT_ID from the pane's descendant processes.
             // The startup script sets ERGATAI_AGENT_ID, then exec's opencode.

@@ -456,7 +456,7 @@ impl ErgataiError {
     /// whether to mark the node as `Failed` and skip downstream dependents,
     /// rather than reverting to `Pending` for retry.
     ///
-    /// Matches on the structured [`DagBudgetExhausted`] and [`DagDeadlineExceeded`]
+    /// Matches on the structured [`ErgataiError::DagBudgetExhausted`] and [`ErgataiError::DagDeadlineExceeded`]
     /// variants — no string matching on error messages.
     pub fn is_permanent_dag_failure(&self) -> bool {
         matches!(

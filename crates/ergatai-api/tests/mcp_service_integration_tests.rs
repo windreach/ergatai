@@ -21,7 +21,12 @@ fn test_mcp_deps() -> (
     let peer_registry = new_peer_registry();
     let conversation_manager = Arc::new(ConversationManager::new(ConversationConfig::default()));
     let cancellation_token = CancellationToken::new();
-    (registry, peer_registry, conversation_manager, cancellation_token)
+    (
+        registry,
+        peer_registry,
+        conversation_manager,
+        cancellation_token,
+    )
 }
 
 // ── create_mcp_service ───────────────────────────────────────────────
@@ -92,12 +97,7 @@ fn ergatai_mcp_server_new_creates_instance() {
 fn ergatai_mcp_server_without_agent_identifier() {
     let (registry, peer_registry, conversation_manager, _cancel) = test_mcp_deps();
 
-    let server = ErgataiMcpServer::new(
-        registry,
-        peer_registry,
-        conversation_manager,
-        None,
-    );
+    let server = ErgataiMcpServer::new(registry, peer_registry, conversation_manager, None);
 
     let debug_str = format!("{:?}", server);
     assert!(debug_str.contains("ErgataiMcpServer"));

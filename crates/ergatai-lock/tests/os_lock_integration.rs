@@ -44,18 +44,14 @@ impl TestPidRegistry {
     }
 
     fn register(&self, pid: u32, agent_id: &str, session_id: &str) {
-        self.entries.write().push((
-            pid,
-            agent_id.to_string(),
-            session_id.to_string(),
-        ));
+        self.entries
+            .write()
+            .push((pid, agent_id.to_string(), session_id.to_string()));
     }
 
     fn resolver(&self) -> Arc<CallbackPidResolver> {
         let entries = self.entries.clone();
-        Arc::new(CallbackPidResolver::new(move || {
-            entries.read().clone()
-        }))
+        Arc::new(CallbackPidResolver::new(move || entries.read().clone()))
     }
 }
 
@@ -102,7 +98,9 @@ impl TestFixture {
             3600,
             30,
         );
-        self.lock_manager.register_system_token(&sys).expect("register sys token");
+        self.lock_manager
+            .register_system_token(&sys)
+            .expect("register sys token");
         let token = FileToken::new(
             agent_id.to_string(),
             session_id.to_string(),
@@ -114,12 +112,15 @@ impl TestFixture {
             3600,
             15,
         );
-        self.lock_manager.register_file_token(&token).expect("register file token");
+        self.lock_manager
+            .register_file_token(&token)
+            .expect("register file token");
         (sys, token)
     }
 
     fn acquire_write_lock(&self, token: &FileToken, file_path: &str) {
-        self.rt.block_on(self.lock_manager.acquire_lock(token, file_path))
+        self.rt
+            .block_on(self.lock_manager.acquire_lock(token, file_path))
             .expect("Failed to acquire lock");
     }
 }
@@ -156,7 +157,11 @@ fn spawn_writer_child(file_path: &std::path::Path, marker: &str) -> std::process
     use std::process::Command;
     Command::new("bash")
         .arg("-c")
-        .arg(format!("sleep 1; echo '{}' >> {}", marker, file_path.display()))
+        .arg(format!(
+            "sleep 1; echo '{}' >> {}",
+            marker,
+            file_path.display()
+        ))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -199,7 +204,9 @@ fn require_root() -> bool {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_blocks_unauthorized_write() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial content");
@@ -208,8 +215,11 @@ fn test_os_lock_blocks_unauthorized_write() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -221,7 +231,10 @@ fn test_os_lock_blocks_unauthorized_write() {
     assert!(!status.success(), "Child should be blocked by fanotify");
 
     let content = fs::read_to_string(&test_file).unwrap();
-    assert!(!content.contains("unauthorized write"), "File should NOT be modified");
+    assert!(
+        !content.contains("unauthorized write"),
+        "File should NOT be modified"
+    );
 
     rt2.block_on(enforcer.stop());
     println!("✅ T1: non-holder blocked");
@@ -232,7 +245,9 @@ fn test_os_lock_blocks_unauthorized_write() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_allows_holder_access() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial content");
@@ -242,18 +257,26 @@ fn test_os_lock_allows_holder_access() {
     let registry = TestPidRegistry::new();
     registry.register(std::process::id(), "agent-a", "session-a");
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     let mut file = fs::OpenOptions::new()
-        .write(true).append(true)
-        .open(&test_file).expect("Failed to open");
+        .write(true)
+        .append(true)
+        .open(&test_file)
+        .expect("Failed to open");
     file.write_all(b"\nauthorized write").expect("write failed");
 
     let content = fs::read_to_string(&test_file).unwrap();
-    assert!(content.contains("authorized write"), "Holder should be able to write");
+    assert!(
+        content.contains("authorized write"),
+        "Holder should be able to write"
+    );
 
     rt2.block_on(enforcer.stop());
     println!("✅ T2: holder allowed");
@@ -264,7 +287,9 @@ fn test_os_lock_allows_holder_access() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_scope_outside_project() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let _locked_file = fix.write_file("locked.txt", "locked content");
@@ -273,8 +298,11 @@ fn test_os_lock_scope_outside_project() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -283,7 +311,10 @@ fn test_os_lock_scope_outside_project() {
     fs::write(&outside_file, "outside content").expect("outside write should succeed");
 
     let content = fs::read_to_string(&outside_file).unwrap();
-    assert_eq!(content, "outside content", "Outside file should be writable");
+    assert_eq!(
+        content, "outside content",
+        "Outside file should be writable"
+    );
 
     rt2.block_on(enforcer.stop());
     println!("✅ T3: scope filter works (outside files not intercepted)");
@@ -294,7 +325,9 @@ fn test_os_lock_scope_outside_project() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_unrelated_file_not_blocked() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let _locked_file = fix.write_file("locked.txt", "locked");
@@ -304,8 +337,11 @@ fn test_os_lock_unrelated_file_not_blocked() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -318,7 +354,10 @@ fn test_os_lock_unrelated_file_not_blocked() {
     assert!(status.success(), "Unrelated file should be writable");
 
     let content = fs::read_to_string(&other_file).unwrap();
-    assert!(content.contains("new content"), "Other file should be modified");
+    assert!(
+        content.contains("new content"),
+        "Other file should be modified"
+    );
 
     rt2.block_on(enforcer.stop());
     println!("✅ T4: unrelated file not affected by lock");
@@ -329,7 +368,9 @@ fn test_os_lock_unrelated_file_not_blocked() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_nested_directory() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let nested_file = fix.write_file("src/deep/nested/file.txt", "nested content");
@@ -338,8 +379,11 @@ fn test_os_lock_nested_directory() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -359,7 +403,9 @@ fn test_os_lock_nested_directory() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_self_pid_not_blocked() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial");
@@ -369,8 +415,11 @@ fn test_os_lock_self_pid_not_blocked() {
     // DO NOT register self PID in registry — tests self-PID fast-filter
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -380,8 +429,10 @@ fn test_os_lock_self_pid_not_blocked() {
 
     // Current process also writes — should succeed
     let mut file = fs::OpenOptions::new()
-        .write(true).append(true)
-        .open(&test_file).expect("self-pid write should work");
+        .write(true)
+        .append(true)
+        .open(&test_file)
+        .expect("self-pid write should work");
     file.write_all(b"\nself write").expect("write failed");
 
     rt2.block_on(enforcer.stop());
@@ -393,7 +444,9 @@ fn test_os_lock_self_pid_not_blocked() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_unknown_pid_allowed() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial");
@@ -403,8 +456,11 @@ fn test_os_lock_unknown_pid_allowed() {
     // Empty registry: all PIDs are unknown
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -414,10 +470,16 @@ fn test_os_lock_unknown_pid_allowed() {
     signal_child(&mut child);
 
     let status = child.wait().expect("wait failed");
-    assert!(status.success(), "Unknown PID should be allowed (design §3.4)");
+    assert!(
+        status.success(),
+        "Unknown PID should be allowed (design §3.4)"
+    );
 
     let content = fs::read_to_string(&test_file).unwrap();
-    assert!(content.contains("unknown-pid-write"), "Unknown PID write should succeed");
+    assert!(
+        content.contains("unknown-pid-write"),
+        "Unknown PID write should succeed"
+    );
 
     rt2.block_on(enforcer.stop());
     println!("✅ T7: unknown PID allowed (design §3.4)");
@@ -428,7 +490,9 @@ fn test_os_lock_unknown_pid_allowed() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_rapid_opens() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial");
@@ -438,8 +502,11 @@ fn test_os_lock_rapid_opens() {
     let registry = TestPidRegistry::new();
     registry.register(std::process::id(), "agent-a", "session-a");
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -467,7 +534,9 @@ fn test_os_lock_rapid_opens() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_release_unblocks_writer() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial");
@@ -476,8 +545,11 @@ fn test_os_lock_release_unblocks_writer() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -490,7 +562,8 @@ fn test_os_lock_release_unblocks_writer() {
     std::thread::sleep(std::time::Duration::from_millis(200));
 
     // Release the lock
-    fix.rt.block_on(fix.lock_manager.release_lock(token.id.as_str(), "test.txt"))
+    fix.rt
+        .block_on(fix.lock_manager.release_lock(token.id.as_str(), "test.txt"))
         .expect("release failed");
 
     // Now the child should complete
@@ -498,7 +571,10 @@ fn test_os_lock_release_unblocks_writer() {
     // After release, the lock cache should show unlocked → child allowed
     // (might take a moment for cache to update; child was already denied once)
     // Either outcome is acceptable: child was denied while locked, or allowed after release
-    println!("   Child exit status: {} (lock was released mid-flight)", status);
+    println!(
+        "   Child exit status: {} (lock was released mid-flight)",
+        status
+    );
 
     rt2.block_on(enforcer.stop());
     println!("✅ T9: lock release processed");
@@ -509,7 +585,9 @@ fn test_os_lock_release_unblocks_writer() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_multiple_files() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let file_a = fix.write_file("a.txt", "a");
@@ -520,8 +598,11 @@ fn test_os_lock_multiple_files() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -549,7 +630,9 @@ fn test_os_lock_multiple_files() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_concurrent_writers() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial");
@@ -560,8 +643,11 @@ fn test_os_lock_concurrent_writers() {
     // Register current process as holder
     registry.register(std::process::id(), "agent-a", "session-a");
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -569,16 +655,23 @@ fn test_os_lock_concurrent_writers() {
     let mut children = vec![];
     for i in 0..3 {
         let mut child = spawn_writer_child(&test_file, &format!("child-{}", i));
-        registry.register(child.id(), &format!("agent-{}", i + 1), &format!("session-{}", i + 1));
+        registry.register(
+            child.id(),
+            &format!("agent-{}", i + 1),
+            &format!("session-{}", i + 1),
+        );
         signal_child(&mut child);
         children.push(child);
     }
 
     // Holder writes successfully
     let mut file = fs::OpenOptions::new()
-        .write(true).append(true)
-        .open(&test_file).expect("holder open failed");
-    file.write_all(b"\nholder-write").expect("holder write failed");
+        .write(true)
+        .append(true)
+        .open(&test_file)
+        .expect("holder open failed");
+    file.write_all(b"\nholder-write")
+        .expect("holder write failed");
 
     // All children should be blocked
     for (i, child) in children.iter_mut().enumerate() {
@@ -587,8 +680,14 @@ fn test_os_lock_concurrent_writers() {
     }
 
     let content = fs::read_to_string(&test_file).unwrap();
-    assert!(content.contains("holder-write"), "Holder write should succeed");
-    assert!(!content.contains("child-"), "No child writes should succeed");
+    assert!(
+        content.contains("holder-write"),
+        "Holder write should succeed"
+    );
+    assert!(
+        !content.contains("child-"),
+        "No child writes should succeed"
+    );
 
     rt2.block_on(enforcer.stop());
     println!("✅ T11: concurrent writers — holder OK, 3 children blocked");
@@ -599,7 +698,9 @@ fn test_os_lock_concurrent_writers() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_stop_releases_blocking() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial");
@@ -608,8 +709,11 @@ fn test_os_lock_stop_releases_blocking() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -620,10 +724,16 @@ fn test_os_lock_stop_releases_blocking() {
     let mut child = spawn_writer_child(&test_file, "after-stop");
     signal_child(&mut child);
     let status = child.wait().expect("wait failed");
-    assert!(status.success(), "After enforcer stop, writes should succeed");
+    assert!(
+        status.success(),
+        "After enforcer stop, writes should succeed"
+    );
 
     let content = fs::read_to_string(&test_file).unwrap();
-    assert!(content.contains("after-stop"), "File should be modified after stop");
+    assert!(
+        content.contains("after-stop"),
+        "File should be modified after stop"
+    );
 
     println!("✅ T12: enforcer stop releases all blocking");
 }
@@ -634,7 +744,9 @@ fn test_os_lock_stop_releases_blocking() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_sequential_enforcers() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial");
@@ -645,8 +757,11 @@ fn test_os_lock_sequential_enforcers() {
     {
         let registry = TestPidRegistry::new();
         let (enforcer, rt) = start_enforcer(
-            &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-        ).expect("enforcer 1 start failed");
+            &fix.project_root,
+            fix.lock_manager.clone(),
+            registry.resolver(),
+        )
+        .expect("enforcer 1 start failed");
         std::thread::sleep(std::time::Duration::from_millis(200));
         rt.block_on(enforcer.stop());
     }
@@ -655,8 +770,11 @@ fn test_os_lock_sequential_enforcers() {
     {
         let registry = TestPidRegistry::new();
         let (enforcer, rt) = start_enforcer(
-            &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-        ).expect("enforcer 2 start failed");
+            &fix.project_root,
+            fix.lock_manager.clone(),
+            registry.resolver(),
+        )
+        .expect("enforcer 2 start failed");
 
         std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -677,7 +795,9 @@ fn test_os_lock_sequential_enforcers() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_high_concurrency() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     // Create multiple files
@@ -692,24 +812,29 @@ fn test_os_lock_high_concurrency() {
     let registry = TestPidRegistry::new();
     registry.register(std::process::id(), "agent-a", "session-a");
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // Spawn 8 threads, each reading all 10 files 20 times
     let start = std::time::Instant::now();
-    let handles: Vec<_> = (0..8).map(|_t| {
-        let project_root = fix.project_root.clone();
-        std::thread::spawn(move || {
-            for i in 0..10 {
-                for _ in 0..20 {
-                    let path = project_root.join(format!("file_{}.txt", i));
-                    let _ = fs::read_to_string(&path);
+    let handles: Vec<_> = (0..8)
+        .map(|_t| {
+            let project_root = fix.project_root.clone();
+            std::thread::spawn(move || {
+                for i in 0..10 {
+                    for _ in 0..20 {
+                        let path = project_root.join(format!("file_{}.txt", i));
+                        let _ = fs::read_to_string(&path);
+                    }
                 }
-            }
+            })
         })
-    }).collect();
+        .collect();
 
     for h in handles {
         h.join().expect("thread panicked");
@@ -735,7 +860,9 @@ fn test_os_lock_high_concurrency() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_symlink_to_outside() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     // Create a file OUTSIDE project_root
@@ -750,14 +877,20 @@ fn test_os_lock_symlink_to_outside() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // Read through the symlink — should succeed (real path outside project_root)
     let content = fs::read_to_string(&symlink_path).expect("symlink read should work");
-    assert_eq!(content, "secret content", "Symlink to outside should be readable");
+    assert_eq!(
+        content, "secret content",
+        "Symlink to outside should be readable"
+    );
 
     rt2.block_on(enforcer.stop());
     println!("✅ T15: symlink to outside resolved correctly");
@@ -769,7 +902,9 @@ fn test_os_lock_symlink_to_outside() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_rapid_lock_unlock_cycle() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial");
@@ -777,8 +912,11 @@ fn test_os_lock_rapid_lock_unlock_cycle() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -786,7 +924,8 @@ fn test_os_lock_rapid_lock_unlock_cycle() {
     let start = std::time::Instant::now();
     for _ in 0..100 {
         fix.acquire_write_lock(&token, "test.txt");
-        fix.rt.block_on(fix.lock_manager.release_lock(token.id.as_str(), "test.txt"))
+        fix.rt
+            .block_on(fix.lock_manager.release_lock(token.id.as_str(), "test.txt"))
             .expect("release failed");
     }
     let cycle_time = start.elapsed();
@@ -794,16 +933,25 @@ fn test_os_lock_rapid_lock_unlock_cycle() {
     // Final state: lock is released
     // Holder should be able to write
     let mut file = fs::OpenOptions::new()
-        .write(true).append(true)
-        .open(&test_file).expect("holder open after cycling");
+        .write(true)
+        .append(true)
+        .open(&test_file)
+        .expect("holder open after cycling");
     use std::io::Write;
-    file.write_all(b"\npost-cycle write").expect("holder write after cycling");
+    file.write_all(b"\npost-cycle write")
+        .expect("holder write after cycling");
 
     let content = fs::read_to_string(&test_file).unwrap();
-    assert!(content.contains("post-cycle write"), "Holder should write after 100 cycles");
+    assert!(
+        content.contains("post-cycle write"),
+        "Holder should write after 100 cycles"
+    );
 
     rt2.block_on(enforcer.stop());
-    println!("✅ T16: 100 rapid lock/unlock cycles in {:?}, cache consistent", cycle_time);
+    println!(
+        "✅ T16: 100 rapid lock/unlock cycles in {:?}, cache consistent",
+        cycle_time
+    );
 }
 
 /// T17: Many blocked processes then release — all unblock cleanly.
@@ -812,7 +960,9 @@ fn test_os_lock_rapid_lock_unlock_cycle() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_many_blocked_then_release() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial");
@@ -821,8 +971,11 @@ fn test_os_lock_many_blocked_then_release() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -830,7 +983,11 @@ fn test_os_lock_many_blocked_then_release() {
     let mut children = vec![];
     for i in 0..10 {
         let mut child = spawn_writer_child(&test_file, &format!("blocked-{}", i));
-        registry.register(child.id(), &format!("agent-{}", i), &format!("session-{}", i));
+        registry.register(
+            child.id(),
+            &format!("agent-{}", i),
+            &format!("session-{}", i),
+        );
         children.push(child);
     }
 
@@ -838,7 +995,8 @@ fn test_os_lock_many_blocked_then_release() {
     std::thread::sleep(std::time::Duration::from_millis(2000));
 
     // Release the lock
-    fix.rt.block_on(fix.lock_manager.release_lock(token.id.as_str(), "test.txt"))
+    fix.rt
+        .block_on(fix.lock_manager.release_lock(token.id.as_str(), "test.txt"))
         .expect("release failed");
 
     // All children should eventually complete (they were blocked, then unblocked)
@@ -851,7 +1009,10 @@ fn test_os_lock_many_blocked_then_release() {
     }
 
     rt2.block_on(enforcer.stop());
-    println!("✅ T17: 10 blocked processes handled after release ({:?})", start.elapsed());
+    println!(
+        "✅ T17: 10 blocked processes handled after release ({:?})",
+        start.elapsed()
+    );
 }
 
 /// T18: Token expiry — expired token should NOT allow access.
@@ -859,15 +1020,15 @@ fn test_os_lock_many_blocked_then_release() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_token_expiry() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let temp_dir = TempDir::new().expect("tempdir");
     let project_root = temp_dir.path().to_path_buf();
     let db_path = temp_dir.path().join("locks.db");
-    let lock_manager = Arc::new(
-        FileLockManager::new(&db_path, project_root.clone(), None)
-            .expect("lock manager"),
-    );
+    let lock_manager =
+        Arc::new(FileLockManager::new(&db_path, project_root.clone(), None).expect("lock manager"));
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     let test_file = project_root.join("test.txt");
@@ -875,29 +1036,35 @@ fn test_os_lock_token_expiry() {
 
     // Create token with very short TTL (1 second)
     let sys = SystemToken::new(
-        "agent-a".to_string(), "session-a".to_string(),
+        "agent-a".to_string(),
+        "session-a".to_string(),
         project_root.to_string_lossy().to_string(),
-        3600, 30,
+        3600,
+        30,
     );
     lock_manager.register_system_token(&sys).unwrap();
 
     let token = FileToken::new(
-        "agent-a".to_string(), "session-a".to_string(),
-        sys.id.clone(), "**".to_string(), FileMode::Write,
-        None, "test".to_string(),
-        1,   // expires_in_secs = 1 (very short!)
+        "agent-a".to_string(),
+        "session-a".to_string(),
+        sys.id.clone(),
+        "**".to_string(),
+        FileMode::Write,
+        None,
+        "test".to_string(),
+        1, // expires_in_secs = 1 (very short!)
         15,
     );
     lock_manager.register_file_token(&token).unwrap();
 
     // Acquire lock with the short-lived token
-    rt.block_on(lock_manager.acquire_lock(&token, "test.txt")).unwrap();
+    rt.block_on(lock_manager.acquire_lock(&token, "test.txt"))
+        .unwrap();
 
     let registry = TestPidRegistry::new();
     registry.register(std::process::id(), "agent-a", "session-a");
-    let (enforcer, rt2) = start_enforcer(
-        &project_root, lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+    let (enforcer, rt2) = start_enforcer(&project_root, lock_manager.clone(), registry.resolver())
+        .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -909,7 +1076,8 @@ fn test_os_lock_token_expiry() {
     // If expired, the lock should be considered released → any writer is "unknown" → Allow
     // OR the lock is still in cache → holder check fails → Deny
     let mut file = fs::OpenOptions::new()
-        .write(true).append(true)
+        .write(true)
+        .append(true)
         .open(&test_file);
 
     match file {
@@ -934,7 +1102,9 @@ fn test_os_lock_token_expiry() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_two_agents_same_file() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial");
@@ -945,21 +1115,28 @@ fn test_os_lock_two_agents_same_file() {
 
     // Agent B ALSO acquires lock on the same file (should this be allowed?)
     let (_sys_b, token_b) = fix.register_agent("agent-b", "session-b");
-    let result_b = fix.rt.block_on(fix.lock_manager.acquire_lock(&token_b, "test.txt"));
+    let result_b = fix
+        .rt
+        .block_on(fix.lock_manager.acquire_lock(&token_b, "test.txt"));
     println!("   Agent B acquire result: {:?}", result_b.is_ok());
 
     let registry = TestPidRegistry::new();
 
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // Agent A writes — should succeed
     let mut file_a = fs::OpenOptions::new()
-        .write(true).append(true)
-        .open(&test_file).expect("agent-a open");
+        .write(true)
+        .append(true)
+        .open(&test_file)
+        .expect("agent-a open");
     use std::io::Write;
     file_a.write_all(b"\nagent-a-write").expect("agent-a write");
 
@@ -967,7 +1144,8 @@ fn test_os_lock_two_agents_same_file() {
     // If B also got the lock, B should be allowed.
     // If B was denied the lock, B should be blocked.
     let result_b_write = fs::OpenOptions::new()
-        .write(true).append(true)
+        .write(true)
+        .append(true)
         .open(&test_file);
 
     match result_b_write {
@@ -985,7 +1163,9 @@ fn test_os_lock_two_agents_same_file() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_path_normalization() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     // Create nested structure with a subdir for traversal test
@@ -997,8 +1177,11 @@ fn test_os_lock_path_normalization() {
     let registry = TestPidRegistry::new();
     registry.register(std::process::id(), "agent-a", "session-a");
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1019,7 +1202,9 @@ fn test_os_lock_path_normalization() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_hardlink_to_locked_file() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let original = fix.write_file("original.txt", "original content");
@@ -1031,8 +1216,11 @@ fn test_os_lock_hardlink_to_locked_file() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1060,7 +1248,9 @@ fn test_os_lock_hardlink_to_locked_file() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_rename_locked_file() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let original = fix.write_file("before.txt", "content");
@@ -1070,8 +1260,11 @@ fn test_os_lock_rename_locked_file() {
     let registry = TestPidRegistry::new();
     registry.register(std::process::id(), "agent-a", "session-a");
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1085,7 +1278,8 @@ fn test_os_lock_rename_locked_file() {
     // but the enforcer normalizes the path from /proc/self/fd → "after.txt"
     // → no lock found → Allow. This tests the path-vs-inode behavior.
     let mut file = fs::OpenOptions::new()
-        .write(true).append(true)
+        .write(true)
+        .append(true)
         .open(&renamed);
 
     match file {
@@ -1107,7 +1301,9 @@ fn test_os_lock_rename_locked_file() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_o_append_blocked() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial");
@@ -1116,15 +1312,21 @@ fn test_os_lock_o_append_blocked() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // Child uses O_APPEND explicitly via bash >> operator
     let mut child = Command::new("bash")
         .arg("-c")
-        .arg(format!("sleep 1; echo 'append-write' >> {}", test_file.display()))
+        .arg(format!(
+            "sleep 1; echo 'append-write' >> {}",
+            test_file.display()
+        ))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1144,7 +1346,9 @@ fn test_os_lock_o_append_blocked() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_mmap_write() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial content here!");
@@ -1153,8 +1357,11 @@ fn test_os_lock_mmap_write() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1189,9 +1396,16 @@ os.close(fd)
 
     // mmap might fail because python3 isn't installed in Docker, so we log the result
     if !output.status.success() {
-        println!("   mmap write: BLOCKED or unavailable (stderr: {})", stderr.trim());
+        println!(
+            "   mmap write: BLOCKED or unavailable (stderr: {})",
+            stderr.trim()
+        );
     } else {
-        println!("   mmap write: {} (stdout: {})", output.status, stdout.trim());
+        println!(
+            "   mmap write: {} (stdout: {})",
+            output.status,
+            stdout.trim()
+        );
     }
 
     rt2.block_on(enforcer.stop());
@@ -1204,7 +1418,9 @@ os.close(fd)
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_fd_inheritance_across_fork() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial");
@@ -1214,8 +1430,11 @@ fn test_os_lock_fd_inheritance_across_fork() {
     let registry = TestPidRegistry::new();
     registry.register(std::process::id(), "agent-a", "session-a");
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1255,7 +1474,9 @@ fn test_os_lock_fd_inheritance_across_fork() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_very_long_path() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
 
@@ -1279,8 +1500,11 @@ fn test_os_lock_very_long_path() {
     let registry = TestPidRegistry::new();
     registry.register(std::process::id(), "agent-a", "session-a");
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1294,10 +1518,16 @@ fn test_os_lock_very_long_path() {
     signal_child(&mut child);
 
     let status = child.wait().expect("wait failed");
-    assert!(!status.success(), "Long path file should also be blocked for non-holder");
+    assert!(
+        !status.success(),
+        "Long path file should also be blocked for non-holder"
+    );
 
     rt2.block_on(enforcer.stop());
-    println!("✅ T26: very long path ({} chars) handled correctly", rel_str.len());
+    println!(
+        "✅ T26: very long path ({} chars) handled correctly",
+        rel_str.len()
+    );
 }
 
 /// T27: Unicode filename (中文文件名).
@@ -1305,7 +1535,9 @@ fn test_os_lock_very_long_path() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_unicode_filename() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let unicode_file = fix.write_file("测试文件_中文.txt", "unicode content");
@@ -1314,8 +1546,11 @@ fn test_os_lock_unicode_filename() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1325,7 +1560,10 @@ fn test_os_lock_unicode_filename() {
     signal_child(&mut child);
 
     let status = child.wait().expect("wait failed");
-    assert!(!status.success(), "Unicode filename should be blocked for non-holder");
+    assert!(
+        !status.success(),
+        "Unicode filename should be blocked for non-holder"
+    );
 
     rt2.block_on(enforcer.stop());
     println!("✅ T27: unicode filename (中文) handled correctly");
@@ -1336,7 +1574,9 @@ fn test_os_lock_unicode_filename() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_unlink_while_locked() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "content");
@@ -1346,8 +1586,11 @@ fn test_os_lock_unlink_while_locked() {
     let registry = TestPidRegistry::new();
     registry.register(std::process::id(), "agent-a", "session-a");
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1370,7 +1613,9 @@ fn test_os_lock_unlink_while_locked() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_enforcer_restart_during_active_lock() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial");
@@ -1380,8 +1625,11 @@ fn test_os_lock_enforcer_restart_during_active_lock() {
     // First enforcer
     let registry1 = TestPidRegistry::new();
     let (enforcer1, rt1) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry1.resolver(),
-    ).expect("enforcer 1 start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry1.resolver(),
+    )
+    .expect("enforcer 1 start failed");
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // Stop first enforcer while lock is still held
@@ -1392,15 +1640,21 @@ fn test_os_lock_enforcer_restart_during_active_lock() {
     let registry2 = TestPidRegistry::new();
     registry2.register(std::process::id(), "agent-a", "session-a");
     let (enforcer2, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry2.resolver(),
-    ).expect("enforcer 2 start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry2.resolver(),
+    )
+    .expect("enforcer 2 start failed");
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // Holder should still be able to write
     let mut file = fs::OpenOptions::new()
-        .write(true).append(true)
-        .open(&test_file).expect("holder open after restart");
-    file.write_all(b"\npost-restart write").expect("holder write after restart");
+        .write(true)
+        .append(true)
+        .open(&test_file)
+        .expect("holder open after restart");
+    file.write_all(b"\npost-restart write")
+        .expect("holder write after restart");
 
     // Non-holder should still be blocked
     let mut child = spawn_writer_child(&test_file, "post-restart-unauthorized");
@@ -1408,10 +1662,16 @@ fn test_os_lock_enforcer_restart_during_active_lock() {
     signal_child(&mut child);
 
     let status = child.wait().expect("wait failed");
-    assert!(!status.success(), "Non-holder should still be blocked after enforcer restart");
+    assert!(
+        !status.success(),
+        "Non-holder should still be blocked after enforcer restart"
+    );
 
     let content = fs::read_to_string(&test_file).unwrap();
-    assert!(content.contains("post-restart write"), "Holder write should succeed after restart");
+    assert!(
+        content.contains("post-restart write"),
+        "Holder write should succeed after restart"
+    );
 
     rt2.block_on(enforcer2.stop());
     println!("✅ T29: enforcer restart during active lock — state preserved");
@@ -1422,7 +1682,9 @@ fn test_os_lock_enforcer_restart_during_active_lock() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_release_by_wrong_token() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial");
@@ -1434,7 +1696,8 @@ fn test_os_lock_release_by_wrong_token() {
 
     // Agent B tries to release Agent A's lock — should fail
     let result = fix.rt.block_on(
-        fix.lock_manager.release_lock(token_b.id.as_str(), "test.txt")
+        fix.lock_manager
+            .release_lock(token_b.id.as_str(), "test.txt"),
     );
 
     match result {
@@ -1444,8 +1707,11 @@ fn test_os_lock_release_by_wrong_token() {
             // Verify file is now writable by anyone
             let registry = TestPidRegistry::new();
             let (enforcer, rt2) = start_enforcer(
-                &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-            ).expect("enforcer start failed");
+                &fix.project_root,
+                fix.lock_manager.clone(),
+                registry.resolver(),
+            )
+            .expect("enforcer start failed");
             std::thread::sleep(std::time::Duration::from_millis(500));
 
             let mut child = spawn_writer_child(&test_file, "after-wrong-release");
@@ -1462,7 +1728,12 @@ fn test_os_lock_release_by_wrong_token() {
     }
 
     // Clean up: release with correct token
-    fix.rt.block_on(fix.lock_manager.release_lock(token_a.id.as_str(), "test.txt")).ok();
+    fix.rt
+        .block_on(
+            fix.lock_manager
+                .release_lock(token_a.id.as_str(), "test.txt"),
+        )
+        .ok();
 
     println!("✅ T30: lock release by wrong token behavior documented");
 }
@@ -1472,7 +1743,9 @@ fn test_os_lock_release_by_wrong_token() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_concurrent_lock_release_race() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let _test_file = fix.write_file("test.txt", "initial");
@@ -1480,8 +1753,11 @@ fn test_os_lock_concurrent_lock_release_race() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1490,18 +1766,20 @@ fn test_os_lock_concurrent_lock_release_race() {
     let token_clone = token.clone();
     let start = std::time::Instant::now();
 
-    let handles: Vec<_> = (0..10).map(|i| {
-        let lm = lm.clone();
-        let tk = token_clone.clone();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            for _ in 0..20 {
-                let _ = rt.block_on(lm.acquire_lock(&tk, "test.txt"));
-                let _ = rt.block_on(lm.release_lock(tk.id.as_str(), "test.txt"));
-            }
-            i
+    let handles: Vec<_> = (0..10)
+        .map(|i| {
+            let lm = lm.clone();
+            let tk = token_clone.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                for _ in 0..20 {
+                    let _ = rt.block_on(lm.acquire_lock(&tk, "test.txt"));
+                    let _ = rt.block_on(lm.release_lock(tk.id.as_str(), "test.txt"));
+                }
+                i
+            })
         })
-    }).collect();
+        .collect();
 
     for h in handles {
         h.join().expect("thread panicked");
@@ -1523,21 +1801,28 @@ fn test_os_lock_concurrent_lock_release_race() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_nonexistent_file_then_create() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     // Don't create the file yet
     let (_sys, token) = fix.register_agent("agent-a", "session-a");
 
     // Try to lock a file that doesn't exist
-    let result = fix.rt.block_on(fix.lock_manager.acquire_lock(&token, "future.txt"));
+    let result = fix
+        .rt
+        .block_on(fix.lock_manager.acquire_lock(&token, "future.txt"));
     println!("   Lock non-existent file result: {:?}", result.is_ok());
 
     let registry = TestPidRegistry::new();
     registry.register(std::process::id(), "agent-a", "session-a");
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1547,8 +1832,10 @@ fn test_os_lock_nonexistent_file_then_create() {
 
     // Holder should be able to write to the newly created file
     let mut file = fs::OpenOptions::new()
-        .write(true).append(true)
-        .open(&future_file).expect("holder open future file");
+        .write(true)
+        .append(true)
+        .open(&future_file)
+        .expect("holder open future file");
     file.write_all(b"\nholder-write").expect("holder write");
 
     // Non-holder should be blocked
@@ -1568,7 +1855,9 @@ fn test_os_lock_nonexistent_file_then_create() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_read_allowed_write_blocked() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "readable content");
@@ -1577,8 +1866,11 @@ fn test_os_lock_read_allowed_write_blocked() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1609,7 +1901,9 @@ fn test_os_lock_read_allowed_write_blocked() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_queue_overflow_stress() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     // Create 50 files
@@ -1624,24 +1918,29 @@ fn test_os_lock_queue_overflow_stress() {
     let registry = TestPidRegistry::new();
     registry.register(std::process::id(), "agent-a", "session-a");
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // 16 threads × 50 files × 5 reads = 4000 concurrent opens
     let start = std::time::Instant::now();
-    let handles: Vec<_> = (0..16).map(|_| {
-        let project_root = fix.project_root.clone();
-        std::thread::spawn(move || {
-            for i in 0..50 {
-                for _ in 0..5 {
-                    let path = project_root.join(format!("file_{}.txt", i));
-                    let _ = fs::read_to_string(&path);
+    let handles: Vec<_> = (0..16)
+        .map(|_| {
+            let project_root = fix.project_root.clone();
+            std::thread::spawn(move || {
+                for i in 0..50 {
+                    for _ in 0..5 {
+                        let path = project_root.join(format!("file_{}.txt", i));
+                        let _ = fs::read_to_string(&path);
+                    }
                 }
-            }
+            })
         })
-    }).collect();
+        .collect();
 
     for h in handles {
         h.join().expect("thread panicked");
@@ -1655,7 +1954,10 @@ fn test_os_lock_queue_overflow_stress() {
     );
 
     rt2.block_on(enforcer.stop());
-    println!("✅ T34: 16 threads × 50 files × 5 reads (4000 opens) in {:?}", elapsed);
+    println!(
+        "✅ T34: 16 threads × 50 files × 5 reads (4000 opens) in {:?}",
+        elapsed
+    );
 }
 
 /// T35: /proc/self/fd access to locked file.
@@ -1663,7 +1965,9 @@ fn test_os_lock_queue_overflow_stress() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_proc_self_fd_access() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "proc-fd-content");
@@ -1673,8 +1977,11 @@ fn test_os_lock_proc_self_fd_access() {
     let registry = TestPidRegistry::new();
     registry.register(std::process::id(), "agent-a", "session-a");
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1689,7 +1996,10 @@ fn test_os_lock_proc_self_fd_access() {
 
     match content {
         Ok(c) => {
-            assert_eq!(c, "proc-fd-content", "Content via /proc/self/fd should match");
+            assert_eq!(
+                c, "proc-fd-content",
+                "Content via /proc/self/fd should match"
+            );
             println!("   /proc/self/fd read: OK (content matches)");
         }
         Err(e) => {
@@ -1706,7 +2016,9 @@ fn test_os_lock_proc_self_fd_access() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_cp_of_locked_file() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "copyable content");
@@ -1715,8 +2027,11 @@ fn test_os_lock_cp_of_locked_file() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1744,7 +2059,9 @@ fn test_os_lock_cp_of_locked_file() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_grep_on_locked_file() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "hello world\ngrep target line\nfoo bar");
@@ -1753,8 +2070,11 @@ fn test_os_lock_grep_on_locked_file() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1766,7 +2086,10 @@ fn test_os_lock_grep_on_locked_file() {
         .expect("grep failed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("grep target line"), "grep should find the line");
+    assert!(
+        stdout.contains("grep target line"),
+        "grep should find the line"
+    );
     println!("   grep on locked file: OK (found: {:?})", stdout.trim());
 
     rt2.block_on(enforcer.stop());
@@ -1778,7 +2101,9 @@ fn test_os_lock_grep_on_locked_file() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_contention_arbitration() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "contested");
@@ -1816,8 +2141,18 @@ fn test_os_lock_contention_arbitration() {
     );
 
     // Clean up
-    fix.rt.block_on(fix.lock_manager.release_lock(token_a.id.as_str(), "test.txt")).ok();
-    fix.rt.block_on(fix.lock_manager.release_lock(token_b.id.as_str(), "test.txt")).ok();
+    fix.rt
+        .block_on(
+            fix.lock_manager
+                .release_lock(token_a.id.as_str(), "test.txt"),
+        )
+        .ok();
+    fix.rt
+        .block_on(
+            fix.lock_manager
+                .release_lock(token_b.id.as_str(), "test.txt"),
+        )
+        .ok();
 
     println!("✅ T38: lock contention arbitration behavior documented");
 }
@@ -1827,7 +2162,9 @@ fn test_os_lock_contention_arbitration() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_negative_cache_expiry() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial");
@@ -1835,8 +2172,11 @@ fn test_os_lock_negative_cache_expiry() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1850,7 +2190,8 @@ fn test_os_lock_negative_cache_expiry() {
     assert!(!status1.success(), "Should be blocked while locked");
 
     // Unlock the file
-    fix.rt.block_on(fix.lock_manager.release_lock(token.id.as_str(), "test.txt"))
+    fix.rt
+        .block_on(fix.lock_manager.release_lock(token.id.as_str(), "test.txt"))
         .expect("release failed");
 
     // Wait for negative cache TTL (2ms) to expire
@@ -1873,7 +2214,9 @@ fn test_os_lock_negative_cache_expiry() {
 #[cfg(target_os = "linux")]
 #[ignore]
 fn test_os_lock_special_open_flags() {
-    if !require_root() { return; }
+    if !require_root() {
+        return;
+    }
 
     let fix = TestFixture::new();
     let test_file = fix.write_file("test.txt", "initial content for special flags");
@@ -1882,8 +2225,11 @@ fn test_os_lock_special_open_flags() {
 
     let registry = TestPidRegistry::new();
     let (enforcer, rt2) = start_enforcer(
-        &fix.project_root, fix.lock_manager.clone(), registry.resolver(),
-    ).expect("enforcer start failed");
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 

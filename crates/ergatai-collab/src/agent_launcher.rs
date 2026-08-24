@@ -306,7 +306,9 @@ impl AgentLauncher {
         // This allows DAG tasks to be dispatched to already-running agents (e.g., opencode
         // instances connected via MCP) instead of always spawning new processes.
         let runtime = get_agent_runtime();
-        let existing_agent_id = self.find_registered_agent(&runtime, &assignment.agent_name).await;
+        let existing_agent_id = self
+            .find_registered_agent(&runtime, &assignment.agent_name)
+            .await;
 
         if let Some(runtime_agent_id) = existing_agent_id {
             // Agent already exists — deliver task via message injection instead of launching new process
@@ -327,7 +329,10 @@ impl AgentLauncher {
             }
 
             // Inject the instruction as a message to the existing agent
-            if let Err(e) = runtime.inject_message(&runtime_agent_id, &instruction).await {
+            if let Err(e) = runtime
+                .inject_message(&runtime_agent_id, &instruction)
+                .await
+            {
                 tracing::error!(
                     agent = %agent_id,
                     runtime_agent_id = %runtime_agent_id,
@@ -343,7 +348,8 @@ impl AgentLauncher {
             // Spawn a lightweight watcher that only polls for result file (no process exit monitoring
             // since the process is shared/reused, not owned by this DAG).
             if let Some(ref node_id_val) = node_id {
-                self.spawn_result_file_watcher(&agent_id, &runtime_agent_id, node_id_val).await;
+                self.spawn_result_file_watcher(&agent_id, &runtime_agent_id, node_id_val)
+                    .await;
             }
         } else {
             // Agent not found in registry — launch a new process
@@ -756,7 +762,8 @@ Write your results in markdown:
                 }
             }
         });
-        let mcp_config_path = worktree_path.join(format!(".ergatai-mcp-{}.json", agent_id.replace('|', "-")));
+        let mcp_config_path =
+            worktree_path.join(format!(".ergatai-mcp-{}.json", agent_id.replace('|', "-")));
         if let Err(e) = tokio::fs::write(&mcp_config_path, mcp_config.to_string()).await {
             tracing::warn!(
                 agent = %agent_id,
@@ -775,10 +782,7 @@ Write your results in markdown:
         // metacharacters ($, `, ;, |, etc.). Wrap the path in single quotes and escape any
         // embedded single quotes via the standard '\'' trick (close the quote, insert a
         // literal escaped quote, reopen the quote).
-        let mcp_config_path_escaped = mcp_config_path
-            .display()
-            .to_string()
-            .replace('\'', "'\\''");
+        let mcp_config_path_escaped = mcp_config_path.display().to_string().replace('\'', "'\\''");
         let agent_command = format!(
             "{} --yes --mcp-config '{}'",
             base_command, mcp_config_path_escaped
@@ -903,14 +907,18 @@ Write your results in markdown:
                 };
 
                 match &trigger {
-                    CompletionTrigger::ProcessExit(Ok(ergatai_runtime::WaitResult::Exited { code: _ })) => {
+                    CompletionTrigger::ProcessExit(Ok(ergatai_runtime::WaitResult::Exited {
+                        code: _,
+                    })) => {
                         tracing::info!(
                             agent = %agent_id_monitor,
                             node_id = %node_id_monitor,
                             "Agent exited normally"
                         );
                     }
-                    CompletionTrigger::ProcessExit(Ok(ergatai_runtime::WaitResult::Signaled { signal })) => {
+                    CompletionTrigger::ProcessExit(Ok(ergatai_runtime::WaitResult::Signaled {
+                        signal,
+                    })) => {
                         tracing::warn!(
                             agent = %agent_id_monitor,
                             signal = signal,
