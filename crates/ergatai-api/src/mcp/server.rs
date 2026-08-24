@@ -283,8 +283,8 @@ impl ErgataiMcpServer {
     /// - `status: "<state>"` — Only agents whose lifecycle state matches (case-insensitive).
     ///   Valid states: created, initializing, idle, starting, running, processing, stopping, terminated.
     ///
-    /// Use this to determine who you can message before writing `@agent_name`.
-    /// Agents filtered out are not reachable — `@mentions` to them would not be delivered.
+    /// Use this to determine who you can message before calling `send_message`.
+    /// Agents filtered out are not reachable — `send_message` would reject them.
     #[tool(
         description = "List agents you can communicate with in Ergatai. WITHOUT active DAG: returns all online agents. WITH active DAG: returns ONLY agents allowed by the DAG's MeshPolicy (communication policy). The 'dag_mode' field in the response indicates whether filtering is active. Supports optional filter: {can_communicate_with, in_dag, status}."
     )]
@@ -555,7 +555,7 @@ impl ErgataiMcpServer {
     /// delivered by a background consumer via tmux/rmux injection. Direct tmux
     /// injection is used as a fallback when NATS is unavailable.
     #[tool(
-        description = "Fallback: use ONLY when @mention is not possible (e.g., need precise control over message routing). Preferred way: write @agent_name in your response — Ergatai captures it automatically. Without a DAG, any online agent is reachable. With a DAG, only agents allowed by the MeshPolicy are reachable (use list_agents to see who)."
+        description = "Send a message to another agent. Without a DAG, any online agent is reachable. With a DAG, only agents allowed by the MeshPolicy are reachable (use list_agents to see who). Persists via NATS JetStream with tmux fallback."
     )]
     async fn send_message(
         &self,
@@ -1485,10 +1485,7 @@ Ergatai manages agent discovery, message routing, and communication policies.
 - You are one of multiple AI agents coordinated by Ergatai
 - Other agents are also AI assistants (Claude, OpenCode, etc.) running in separate terminals
 - Ergatai injects messages into your terminal and routes your replies to other agents
-- **To reply to another agent**: write `@agent_name` in your response (e.g., `@agent-2 here is the answer...`)
-  - Ergatai captures the `@mention` from your terminal output and delivers it automatically
-  - This is the PRIMARY way to communicate — natural and simple
-- `send_message` MCP tool is available as a fallback if you need precise control
+- You communicate with other agents ONLY through `send_message` MCP tool
 
 ## 1. Your Identity
 
@@ -1501,7 +1498,7 @@ The `agent_id` field (e.g., "%15") is an internal pane ID — never use it.
 - **Without active DAG**: returns ALL online agents in Ergatai
 - **With active DAG**: returns ONLY agents allowed by the DAG's communication policy (MeshPolicy)
   - Example: if DAG uses `adjacent` policy, you only see agents connected by dependency edges
-  - Agents filtered out are NOT reachable — `@mentions` to them would not be delivered
+  - Agents filtered out are NOT reachable — `send_message` would reject them
 - The response includes `dag_mode: true/false` to indicate whether a DAG is filtering results
 
 ## 3. Receiving & Replying to Messages
@@ -1510,45 +1507,38 @@ The `agent_id` field (e.g., "%15") is an internal pane ID — never use it.
 Every message injected into your terminal has this exact format:
 ```
 {"from":"<agent-name>","message":"<content>"}
-[System prompt: ...]
+[<hint>]
 ```
-- `from`: the sender's agent name — use this as the `@mention` target when replying
+- `from`: the sender's agent name — use this as `target_agent_id` when replying
 - `message`: the actual content from the sender
-- `[System prompt: ...]`: instruction tag on a separate line — tells you how to respond
+- `hint`: instruction tag in square brackets on a separate line — tells you how to respond
 
 ### Hint Rules:
 | Hint text | Who receives it | Your action |
 |-----------|----------------|-------------|
-| `System prompt: Reply by writing @<name> in your response, then output END` | Answerer (received a question) | Write `@<sender>` in your response with the answer, then END |
-| `System prompt: No questions → output "END" in terminal; Has questions → reply by writing @<name> in your response` | Questioner (received an answer) | If no questions: type "END" in terminal. If has questions: write `@<sender>` with your follow-up |
+| `System prompt: Reply via send_message MCP, then END` | Answerer (received a question) | Answer via `send_message`, then END |
+| `System prompt: No questions → output "END" in terminal, DO NOT call any tools; Has questions → reply via send_message MCP` | Questioner (received an answer) | If no questions: type "END" in terminal, NO tools. If has questions: reply via `send_message` |
 
 ### Examples:
 **Answerer receives a question:**
 ```
 {"from":"agent-2","message":"Help me write a quicksort"}
-[System prompt: Reply by writing @agent-2 in your response, then output END]
+[System prompt: Reply via send_message MCP, then END]
 ```
-→ Write `@agent-2` in your response with the answer, then output END.
+→ Answer via `send_message(target_agent_id="agent-2", ...)`, then output END.
 
 **Questioner receives an answer (no questions):**
 ```
 {"from":"agent-3","message":"Here is the result: [1,2,3]"}
-[System prompt: No questions → output "END" in terminal; Has questions → reply by writing @agent-3 in your response]
+[System prompt: No questions → output "END" in terminal, DO NOT call any tools; Has questions → reply via send_message MCP]
 ```
-→ Just type "END" in terminal. Do NOT write @agent-3. Then output END.
+→ Just type "END" in terminal. DO NOT call `send_message` or any other tool. Then output END.
 
 **Questioner receives an answer (has follow-up questions):**
-→ Write `@agent-3` in your response with your follow-up question, then END.
+→ Reply via `send_message(target_agent_id="<from>", message="your question")`, then END.
 
 ## 4. Sending Messages
 
-### Primary: @mention (recommended)
-Simply write `@agent_name` in your terminal output. Ergatai captures it and delivers.
-```
-@agent-2 Here is the quicksort implementation you asked for...
-```
-
-### Fallback: `send_message` MCP tool
 ```
 send_message(target_agent_id="<from field value>", message="your reply")
 ```

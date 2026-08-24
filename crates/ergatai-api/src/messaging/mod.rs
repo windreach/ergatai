@@ -412,18 +412,9 @@ impl MessageSender {
         });
 
         let hint = if is_reply {
-            // Questioner received an answer: if no follow-up, just output END;
-            // if there are more questions, reply by writing @{sender} in the response.
-            format!(
-                "[System prompt: No questions → output \"END\" in terminal; Has questions → reply by writing @{} in your response]",
-                sender_display
-            )
+            "[System prompt: No questions → output \"END\" in terminal, DO NOT call any tools; Has questions → reply via send_message MCP]"
         } else {
-            // Answerer received a question: reply by writing @{sender} in the response.
-            format!(
-                "[System prompt: Reply by writing @{} in your response, then output END]",
-                sender_display
-            )
+            "[System prompt: Reply via send_message MCP, then END]"
         };
 
         // Hint 保持可见 — ANSI conceal 和同色隐藏方案因终端兼容性差被否决
