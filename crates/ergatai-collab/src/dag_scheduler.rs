@@ -3376,10 +3376,10 @@ tasks:
         // (not rolled back to Pending) to prevent zombie DAGs
         let n1 = g.find_node("n1").unwrap();
         assert_eq!(n1.status, TaskStatus::Failed);
-        assert!(n1.metadata.get("recovery_error").is_some());
+        assert!(n1.metadata.contains_key("recovery_error"));
         let n2 = g.find_node("n2").unwrap();
         assert_eq!(n2.status, TaskStatus::Failed);
-        assert!(n2.metadata.get("recovery_error").is_some());
+        assert!(n2.metadata.contains_key("recovery_error"));
         // Completed nodes should not be affected
         assert_eq!(g.find_node("n3").unwrap().status, TaskStatus::Completed);
     }

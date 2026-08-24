@@ -20,8 +20,7 @@ use ergatai_lock::{
 };
 use std::fs;
 use std::io::Write;
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -57,7 +56,7 @@ impl TestPidRegistry {
 
 /// Test fixture: sets up TempDir, FileLockManager, agent tokens, and lock.
 struct TestFixture {
-    temp_dir: TempDir,
+    _temp_dir: TempDir,
     project_root: std::path::PathBuf,
     lock_manager: Arc<FileLockManager>,
     rt: tokio::runtime::Runtime,
@@ -74,7 +73,7 @@ impl TestFixture {
         );
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         Self {
-            temp_dir,
+            _temp_dir: temp_dir,
             project_root,
             lock_manager,
             rt,
@@ -266,7 +265,6 @@ fn test_os_lock_allows_holder_access() {
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     let mut file = fs::OpenOptions::new()
-        .write(true)
         .append(true)
         .open(&test_file)
         .expect("Failed to open");
@@ -307,7 +305,7 @@ fn test_os_lock_scope_outside_project() {
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // Write to a file OUTSIDE project_root — should succeed regardless of locks
-    let outside_file = TempDir::new().unwrap().into_path().join("outside.txt");
+    let outside_file = TempDir::new().unwrap().keep().join("outside.txt");
     fs::write(&outside_file, "outside content").expect("outside write should succeed");
 
     let content = fs::read_to_string(&outside_file).unwrap();
@@ -429,7 +427,6 @@ fn test_os_lock_self_pid_not_blocked() {
 
     // Current process also writes — should succeed
     let mut file = fs::OpenOptions::new()
-        .write(true)
         .append(true)
         .open(&test_file)
         .expect("self-pid write should work");
@@ -666,7 +663,6 @@ fn test_os_lock_concurrent_writers() {
 
     // Holder writes successfully
     let mut file = fs::OpenOptions::new()
-        .write(true)
         .append(true)
         .open(&test_file)
         .expect("holder open failed");
@@ -933,7 +929,6 @@ fn test_os_lock_rapid_lock_unlock_cycle() {
     // Final state: lock is released
     // Holder should be able to write
     let mut file = fs::OpenOptions::new()
-        .write(true)
         .append(true)
         .open(&test_file)
         .expect("holder open after cycling");
@@ -982,7 +977,7 @@ fn test_os_lock_many_blocked_then_release() {
     // Spawn 10 children all trying to write — all should be blocked
     let mut children = vec![];
     for i in 0..10 {
-        let mut child = spawn_writer_child(&test_file, &format!("blocked-{}", i));
+        let child = spawn_writer_child(&test_file, &format!("blocked-{}", i));
         registry.register(
             child.id(),
             &format!("agent-{}", i),
@@ -1075,10 +1070,7 @@ fn test_os_lock_token_expiry() {
     // The enforcer checks check_file_lock_status_fast which checks token expiry.
     // If expired, the lock should be considered released → any writer is "unknown" → Allow
     // OR the lock is still in cache → holder check fails → Deny
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .append(true)
-        .open(&test_file);
+    let file = fs::OpenOptions::new().append(true).open(&test_file);
 
     match file {
         Ok(mut f) => {
@@ -1133,7 +1125,6 @@ fn test_os_lock_two_agents_same_file() {
 
     // Agent A writes — should succeed
     let mut file_a = fs::OpenOptions::new()
-        .write(true)
         .append(true)
         .open(&test_file)
         .expect("agent-a open");
@@ -1143,10 +1134,7 @@ fn test_os_lock_two_agents_same_file() {
     // Agent B tries to write — what happens?
     // If B also got the lock, B should be allowed.
     // If B was denied the lock, B should be blocked.
-    let result_b_write = fs::OpenOptions::new()
-        .write(true)
-        .append(true)
-        .open(&test_file);
+    let result_b_write = fs::OpenOptions::new().append(true).open(&test_file);
 
     match result_b_write {
         Ok(_) => println!("   Agent B open: ALLOWED (B has lock too)"),
@@ -1277,10 +1265,7 @@ fn test_os_lock_rename_locked_file() {
     // not be in cache → fanotify checks DB → DB has lock on "before.txt"
     // but the enforcer normalizes the path from /proc/self/fd → "after.txt"
     // → no lock found → Allow. This tests the path-vs-inode behavior.
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .append(true)
-        .open(&renamed);
+    let file = fs::OpenOptions::new().append(true).open(&renamed);
 
     match file {
         Ok(mut f) => {
@@ -1380,7 +1365,7 @@ os.close(fd)
         test_file.display()
     );
 
-    let mut child = Command::new("bash")
+    let child = Command::new("bash")
         .arg("-c")
         .arg(&script)
         .stdin(Stdio::null())
@@ -1649,7 +1634,6 @@ fn test_os_lock_enforcer_restart_during_active_lock() {
 
     // Holder should still be able to write
     let mut file = fs::OpenOptions::new()
-        .write(true)
         .append(true)
         .open(&test_file)
         .expect("holder open after restart");
@@ -1832,7 +1816,6 @@ fn test_os_lock_nonexistent_file_then_create() {
 
     // Holder should be able to write to the newly created file
     let mut file = fs::OpenOptions::new()
-        .write(true)
         .append(true)
         .open(&future_file)
         .expect("holder open future file");
@@ -1875,10 +1858,10 @@ fn test_os_lock_read_allowed_write_blocked() {
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // Child reads the file — should succeed (fanotify only checks WRITE locks)
-    let content = fs::read_to_string(&test_file);
+    let _content = fs::read_to_string(&test_file);
     // Since self-PID is not registered, this is "unknown PID" → Allow anyway
     // But let's check a registered non-holder child
-    let mut child_reader = spawn_reader_child(&test_file);
+    let child_reader = spawn_reader_child(&test_file);
     registry.register(child_reader.id(), "agent-b", "session-b");
 
     let output = child_reader.wait_with_output().expect("wait failed");
@@ -2106,7 +2089,7 @@ fn test_os_lock_contention_arbitration() {
     }
 
     let fix = TestFixture::new();
-    let test_file = fix.write_file("test.txt", "contested");
+    let _test_file = fix.write_file("test.txt", "contested");
 
     let (_sys_a, token_a) = fix.register_agent("agent-a", "session-a");
     let (_sys_b, token_b) = fix.register_agent("agent-b", "session-b");
@@ -2246,7 +2229,7 @@ os.close(fd)
         test_file.display()
     );
 
-    let mut child = Command::new("bash")
+    let child = Command::new("bash")
         .arg("-c")
         .arg(&script)
         .stdin(Stdio::null())

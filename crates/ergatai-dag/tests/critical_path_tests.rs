@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use ergatai_dag::critical_path::{adjust_priority_with_critical_path, calculate_critical_path};
-use ergatai_dag::dag_topology::{TaskComplexity, TaskGraph, TaskNode, TaskStatus};
+use ergatai_dag::dag_topology::{TaskGraph, TaskNode, TaskStatus};
 
 /// Helper: create a TaskNode with default values
 fn node(id: &str) -> TaskNode {

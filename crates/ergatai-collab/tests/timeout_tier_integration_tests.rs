@@ -59,7 +59,7 @@ fn deadline_from_now_with_1_second_timeout() {
 
 #[test]
 fn deadline_from_now_with_zero_timeout() {
-    let (warn_at, escalate_at, fail_at) = TimeoutTier::deadline_from_now(0);
+    let (warn_at, _escalate_at, fail_at) = TimeoutTier::deadline_from_now(0);
     let now = std::time::Instant::now();
 
     let warn_gap = warn_at.duration_since(now).as_secs_f64();
@@ -77,8 +77,8 @@ fn deadline_from_now_with_large_timeout() {
     let warn_gap = warn_at.duration_since(now).as_secs();
     let fail_gap = fail_at.duration_since(now).as_secs();
 
-    assert!(warn_gap >= 1798 && warn_gap <= 1802);
-    assert!(fail_gap >= 3598 && fail_gap <= 3602);
+    assert!((1798..=1802).contains(&warn_gap));
+    assert!((3598..=3602).contains(&fail_gap));
 }
 
 #[test]

@@ -624,7 +624,7 @@ tasks:
     assert!(!cp.critical_path.is_empty());
 
     // All slack times should be non-negative (u64 guarantees this by type)
-    for (_id, &slack) in &cp.slack_times {
+    for &slack in cp.slack_times.values() {
         let _ = slack;
     }
 
