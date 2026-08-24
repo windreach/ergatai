@@ -17,6 +17,7 @@ rmux = ["dep:rmux-sdk"]
 ergatai-error = { path = "../ergatai-error" }
 ergatai-binary = { path = "../ergatai-binary" }
 tokio.workspace = true
+tokio-util.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

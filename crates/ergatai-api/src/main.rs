@@ -357,17 +357,69 @@ async fn async_main(args: Args) -> Result<()> {
                 Ok(schedulers) if !schedulers.is_empty() => {
                     tracing::info!("🔄 Recovering {} DAG(s) from disk...", schedulers.len());
                     for scheduler in schedulers {
-                        tracing::info!(dag_id = %scheduler.dag_id(), "Recovering DAG...");
+                        let dag_id = scheduler.dag_id().to_string();
+                        tracing::info!(dag_id = %dag_id, "Recovering DAG...");
                         if let Err(e) = scheduler.rollback_running_nodes().await {
-                            tracing::warn!(dag_id = %scheduler.dag_id(), "Failed to rollback: {}", e);
+                            tracing::warn!(dag_id = %dag_id, "Failed to rollback: {}", e);
+                            continue;
                         }
+
+                        // Check if DAG still has viable nodes after rollback
+                        let status_counts = scheduler.count_nodes_by_status().await;
+                        let has_viable = scheduler.has_viable_nodes().await;
+
+                        if !has_viable {
+                            tracing::warn!(
+                                dag_id = %dag_id,
+                                ?status_counts,
+                                "⚠️ DAG has no viable nodes after recovery (all Failed/Completed/Skipped), skipping"
+                            );
+                            // Clean up stale state files to prevent re-loading on next restart.
+                            //
+                            // SECURITY: `dag_id` is user-controlled (parsed from the YAML submitted
+                            // via submit_orchestration). Reject any value that could escape the
+                            // `.ergatai/` directory via path traversal (.. / \ NUL). The YAML parser
+                            // already trims and requires non-empty names, but defense-in-depth here
+                            // protects against a malicious dag_id sneaking through a future change.
+                            let ergatai_dir = project_root.join(".ergatai");
+                            if dag_id.contains("..")
+                                || dag_id.contains('/')
+                                || dag_id.contains('\\')
+                                || dag_id.contains('\0')
+                            {
+                                tracing::warn!(
+                                    dag_id = %dag_id,
+                                    "Refusing to delete DAG state files — dag_id contains path-traversal characters"
+                                );
+                                continue;
+                            }
+                            let state_file = ergatai_dir.join(format!("dag-state-{dag_id}.json"));
+                            let context_file = ergatai_dir.join(format!("dag-context-{dag_id}.json"));
+                            if state_file.exists() {
+                                if let Err(e) = tokio::fs::remove_file(&state_file).await {
+                                    tracing::warn!(dag_id = %dag_id, ?state_file, "Failed to remove stale DAG state file: {}", e);
+                                }
+                            }
+                            if context_file.exists() {
+                                if let Err(e) = tokio::fs::remove_file(&context_file).await {
+                                    tracing::warn!(dag_id = %dag_id, ?context_file, "Failed to remove stale DAG context file: {}", e);
+                                }
+                            }
+                            continue;
+                        }
+
                         match scheduler.submit_graph().await {
                             Ok(submitted) => {
-                                tracing::info!(dag_id = %scheduler.dag_id(), resubmitted = submitted.len(), "✅ DAG recovery complete");
+                                tracing::info!(
+                                    dag_id = %dag_id,
+                                    resubmitted = submitted.len(),
+                                    ?status_counts,
+                                    "✅ DAG recovery complete"
+                                );
                                 set_dag_scheduler(scheduler);
                             }
                             Err(e) => {
-                                tracing::error!(dag_id = %scheduler.dag_id(), "Failed to resubmit: {}", e);
+                                tracing::error!(dag_id = %dag_id, "Failed to resubmit: {}", e);
                             }
                         }
                     }

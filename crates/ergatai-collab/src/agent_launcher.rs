@@ -294,7 +294,7 @@ impl AgentLauncher {
             .await
             .insert(agent_id.clone(), running_agent);
 
-        // Launch agent in tmux pane — pass instruction text as injected prompt
+        // Launch agent — check if it already exists in the registry first.
         // Extract node_id from plan file (DAG nodes use {node_id}.md naming)
         let node_id = plan
             .plan_file
@@ -302,14 +302,60 @@ impl AgentLauncher {
             .and_then(|s| s.to_str())
             .map(|s| s.to_string());
 
-        self.spawn_tmux_session(
-            &agent_id,
-            &work_dir,
-            &assignment.agent_name,
-            &instruction,
-            node_id,
-        )
-        .await?;
+        // Try to find an existing registered agent matching the assignment's agent_name.
+        // This allows DAG tasks to be dispatched to already-running agents (e.g., opencode
+        // instances connected via MCP) instead of always spawning new processes.
+        let runtime = get_agent_runtime();
+        let existing_agent_id = self.find_registered_agent(&runtime, &assignment.agent_name).await;
+
+        if let Some(runtime_agent_id) = existing_agent_id {
+            // Agent already exists — deliver task via message injection instead of launching new process
+            tracing::info!(
+                agent = %agent_id,
+                agent_name = %assignment.agent_name,
+                runtime_agent_id = %runtime_agent_id,
+                "✅ Reusing existing registered agent — delivering task via inject_message"
+            );
+
+            // Update running agent status to Running
+            {
+                let mut agents = self.running_agents.lock().await;
+                if let Some(agent) = agents.get_mut(&agent_id) {
+                    let _ = agent.status.transition_to(AgentSessionStatus::Running);
+                    agent.pane_id = Some(runtime_agent_id.clone());
+                }
+            }
+
+            // Inject the instruction as a message to the existing agent
+            if let Err(e) = runtime.inject_message(&runtime_agent_id, &instruction).await {
+                tracing::error!(
+                    agent = %agent_id,
+                    runtime_agent_id = %runtime_agent_id,
+                    error = %e,
+                    "Failed to inject message into existing agent"
+                );
+                return Err(ErgataiError::AgentSpawnFailed(format!(
+                    "Failed to inject message into existing agent '{}': {}",
+                    agent_id, e
+                )));
+            }
+
+            // Spawn a lightweight watcher that only polls for result file (no process exit monitoring
+            // since the process is shared/reused, not owned by this DAG).
+            if let Some(ref node_id_val) = node_id {
+                self.spawn_result_file_watcher(&agent_id, &runtime_agent_id, node_id_val).await;
+            }
+        } else {
+            // Agent not found in registry — launch a new process
+            self.spawn_tmux_session(
+                &agent_id,
+                &work_dir,
+                &assignment.agent_name,
+                &instruction,
+                node_id,
+            )
+            .await?;
+        }
 
         Ok(agent_id)
     }
@@ -324,6 +370,176 @@ impl AgentLauncher {
     /// Parse a (task_id, agent_name) pair from an agent id produced by `make_agent_id`.
     pub fn parse_agent_id(agent_id: &str) -> Option<(&str, &str)> {
         agent_id.split_once('|')
+    }
+
+    /// Check if an agent with the given name is already registered in the runtime.
+    ///
+    /// Searches by: agent_id, stable_id, and mcp_agent_id.
+    /// Returns the runtime agent_id if found and alive.
+    async fn find_registered_agent(
+        &self,
+        runtime: &ergatai_runtime::AgentRuntime,
+        agent_name: &str,
+    ) -> Option<String> {
+        // List all agents and match by agent_id, stable_id, or mcp_agent_id
+        let agents = runtime.list_agents().await;
+        for info in &agents {
+            let matches = info.agent_id == agent_name
+                || info.stable_id.as_deref() == Some(agent_name)
+                || info.mcp_agent_id.as_deref() == Some(agent_name);
+            if matches && info.lifecycle.is_alive() {
+                tracing::info!(
+                    agent_name = %agent_name,
+                    runtime_id = %info.agent_id,
+                    stable_id = ?info.stable_id,
+                    "Found existing registered agent — will reuse instead of launching new process"
+                );
+                return Some(info.agent_id.clone());
+            }
+        }
+
+        tracing::debug!(
+            agent_name = %agent_name,
+            total_agents = agents.len(),
+            "No existing alive agent found matching name — will launch new process"
+        );
+        None
+    }
+
+    /// Spawn a lightweight watcher that only polls for the result file.
+    ///
+    /// Used for reused agents where we can't monitor process exit (the process is shared).
+    /// When the result file appears, publishes a NATS completion event so DagScheduler
+    /// picks up the node completion.
+    async fn spawn_result_file_watcher(
+        &self,
+        agent_id: &str,
+        _runtime_agent_id: &str,
+        node_id: &str,
+    ) {
+        let agent_id_monitor = agent_id.to_string();
+        let node_id_monitor = node_id.to_string();
+        let running_agents = self.running_agents.clone();
+
+        // Capture agent_name and result file path
+        let (agent_name_monitor, result_file_for_watcher) = {
+            let agents = self.running_agents.lock().await;
+            let a = agents.get(agent_id);
+            (
+                a.map(|a| a.agent_name.clone()).unwrap_or_default(),
+                a.map(|a| a.result_file.clone()),
+            )
+        };
+
+        tracing::info!(
+            agent = %agent_id,
+            node_id = %node_id,
+            result_file = ?result_file_for_watcher,
+            "Spawning result-file-only watcher for reused agent"
+        );
+
+        tokio::spawn(async move {
+            let max_runtime = std::time::Duration::from_secs(3600); // 1h hard cap
+            let result_poll_interval = std::time::Duration::from_secs(5);
+
+            // Only poll for result file + timeout (no process exit monitoring)
+            let result_found = tokio::select! {
+                _ = async {
+                    loop {
+                        tokio::time::sleep(result_poll_interval).await;
+                        if let Some(ref path) = result_file_for_watcher {
+                            if tokio::fs::try_exists(path).await.unwrap_or(false) {
+                                return;
+                            }
+                        }
+                    }
+                } => true,
+                _ = tokio::time::sleep(max_runtime) => false,
+            };
+
+            if result_found {
+                tracing::info!(
+                    agent = %agent_id_monitor,
+                    node_id = %node_id_monitor,
+                    result_file = ?result_file_for_watcher,
+                    "✅ Result file detected for reused agent — node completed"
+                );
+                // Give agent a moment to finish writing
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            } else {
+                tracing::warn!(
+                    agent = %agent_id_monitor,
+                    "Reused agent exceeded max runtime without producing result file"
+                );
+            }
+
+            // Determine success/failure: result file exists → Completed, else → Failed
+            let result_file_path = {
+                let agents = running_agents.lock().await;
+                agents.get(&agent_id_monitor).map(|a| a.result_file.clone())
+            };
+
+            let result_file_exists = match &result_file_path {
+                Some(path) => tokio::fs::try_exists(path).await.unwrap_or(false),
+                None => false,
+            };
+
+            // Update status
+            {
+                let mut agents = running_agents.lock().await;
+                if let Some(agent) = agents.get_mut(&agent_id_monitor) {
+                    if result_file_exists {
+                        let _ = agent.status.transition_to(AgentSessionStatus::Completed);
+                    } else {
+                        let _ = agent.status.transition_to(AgentSessionStatus::Failed);
+                    }
+                }
+            }
+
+            // Publish NATS event so DagScheduler picks up completion (same pattern as spawn_tmux_session watcher)
+            if ergatai_nats::is_nats_initialized().await {
+                if let Some(conn) = ergatai_nats::get_nats_connection().await {
+                    let bus = ergatai_nats::event_bus::EventBus::new(conn);
+                    if result_file_exists {
+                        let payload = ergatai_nats::events::NodeCompletePayload {
+                            node_id: node_id_monitor.clone(),
+                            task_id: node_id_monitor.clone(),
+                            agent_name: agent_name_monitor.clone(),
+                            result_summary: Some("Reused agent completed task".to_string()),
+                            outputs: serde_json::Value::Object(serde_json::Map::new()),
+                            result_file: result_file_path.map(|p| p.to_string_lossy().to_string()),
+                        };
+                        if let Err(e) = bus.publish_node_complete(&payload).await {
+                            tracing::error!(
+                                error = %e,
+                                node_id = %node_id_monitor,
+                                "Failed to publish node_complete for reused agent"
+                            );
+                        } else {
+                            tracing::info!(
+                                node_id = %node_id_monitor,
+                                "📨 Published node_complete for reused agent"
+                            );
+                        }
+                    } else {
+                        let payload = ergatai_nats::events::NodeFailedPayload {
+                            node_id: node_id_monitor.clone(),
+                            task_id: node_id_monitor.clone(),
+                            agent_name: agent_name_monitor.clone(),
+                            error: "Result file not produced within timeout".to_string(),
+                            retryable: false,
+                        };
+                        if let Err(e) = bus.publish_node_failed(&payload).await {
+                            tracing::error!(
+                                error = %e,
+                                node_id = %node_id_monitor,
+                                "Failed to publish node_failed for reused agent"
+                            );
+                        }
+                    }
+                }
+            }
+        });
     }
 
     /// Create instruction for agent (in English for token efficiency)
@@ -372,12 +588,27 @@ Find your assignment section (marked with `@{agent_name}`)
 ## Files
 {files_section}
 
+## Ergatai MCP Tools
+
+You are running as part of a multi-agent orchestration (DAG).
+The DAG dispatcher assigns tasks to **active agents** — agents that are currently
+running and registered in the system.
+
+Available MCP tools:
+- `list_agents` — list all active agents and their IDs. **Call this first** to see
+  who else is participating in this orchestration.
+- `send_message` — send a message to another agent by their ID (from `list_agents`)
+
+Agent IDs returned by `list_agents` are the identifiers you use with `send_message`.
+
 ## Instructions
 
-1. Read the plan file to understand the full context
-2. Work in the project directory (file access control is active)
-3. Complete your assigned task
-4. Write your results to: `{result_file}`
+1. Call `list_agents` to see all active agents — you are one of them
+2. Read the plan file to understand the full context
+3. Work in the project directory (file access control is active)
+4. Complete your assigned task
+5. If you need to communicate with other agents, use `send_message` with their agent ID from `list_agents`
+6. Write your results to: `{result_file}`
 
 ## Result Format
 
@@ -404,6 +635,8 @@ Write your results in markdown:
 
 ## Important Notes
 
+- Call `list_agents` first to discover other active agents and their IDs
+- Use `send_message` with those IDs to communicate — do NOT guess agent IDs
 - File access control is active - the system manages file locks automatically
 - Focus only on your assigned objective
 - If you encounter issues, document them in your result file
@@ -496,20 +729,60 @@ Write your results in markdown:
         // 3. Build the agent launch command.
         //    Default: `claude` (Claude Code CLI). Users can override by setting
         //    ERGATAI_AGENT_CMD env var.
-        let agent_command =
+        let base_command =
             std::env::var("ERGATAI_AGENT_CMD").unwrap_or_else(|_| "claude".to_string());
 
         // Validate agent command — reject obvious injection patterns
-        if agent_command.is_empty() {
+        if base_command.is_empty() {
             return Err(ergatai_error::ErgataiError::AgentSpawnFailed(
                 "ERGATAI_AGENT_CMD is empty".to_string(),
             ));
         }
-        if agent_command.contains('\n') || agent_command.contains('\r') {
+        if base_command.contains('\n') || base_command.contains('\r') {
             return Err(ergatai_error::ErgataiError::AgentSpawnFailed(
                 "ERGATAI_AGENT_CMD contains newline characters".to_string(),
             ));
         }
+
+        // 3b. Generate MCP config so the agent can connect to ergatai's MCP server.
+        //     This gives the agent access to tools like `list_agents`, `send_message`, etc.
+        let api_port = std::env::var("ERGATAI_API_PORT").unwrap_or_else(|_| "3000".to_string());
+        let mcp_url = format!("http://127.0.0.1:{}/mcp", api_port);
+        let mcp_config = serde_json::json!({
+            "mcpServers": {
+                "ergatai": {
+                    "type": "url",
+                    "url": mcp_url
+                }
+            }
+        });
+        let mcp_config_path = worktree_path.join(format!(".ergatai-mcp-{}.json", agent_id.replace('|', "-")));
+        if let Err(e) = tokio::fs::write(&mcp_config_path, mcp_config.to_string()).await {
+            tracing::warn!(
+                agent = %agent_id,
+                error = %e,
+                "Failed to write MCP config file — agent will not have ergatai tools"
+            );
+        }
+
+        // Append --mcp-config and --yes (auto-approve) to the agent command.
+        // DAG-dispatched agents must run fully autonomously — no interactive permission prompts.
+        //
+        // SECURITY: The `worktree_path` (and therefore `mcp_config_path`) may contain spaces
+        // or other shell metacharacters — it is derived from the user's project root, which
+        // we do not control. `agent_command` is passed to `runtime.launch_agent()`, which
+        // spawns via `sh -c`, so unquoted paths break on spaces and are exploitable via
+        // metacharacters ($, `, ;, |, etc.). Wrap the path in single quotes and escape any
+        // embedded single quotes via the standard '\'' trick (close the quote, insert a
+        // literal escaped quote, reopen the quote).
+        let mcp_config_path_escaped = mcp_config_path
+            .display()
+            .to_string()
+            .replace('\'', "'\\''");
+        let agent_command = format!(
+            "{} --yes --mcp-config '{}'",
+            base_command, mcp_config_path_escaped
+        );
 
         // 4. Launch agent via runtime (creates workspace + starts process)
         let runtime_agent_id = runtime
@@ -565,7 +838,13 @@ Write your results in markdown:
             }
         }
 
-        // 7. Background watcher — monitor agent exit, then publish NATS event.
+        // 7. Background watcher — monitor agent exit OR result file appearance,
+        //    then publish NATS event.
+        //
+        //    IMPORTANT: Agents run `claude` (interactive CLI) which stays alive after
+        //    completing the task. We can't rely solely on `wait_for_exit` — we also poll
+        //    for the result file. When the result file appears, the agent has finished
+        //    its work regardless of whether the process has exited.
         if let Some(node_id_val) = node_id {
             let agent_id_monitor = agent_id.to_string();
             let agent_name_monitor = agent_name.to_string();
@@ -574,64 +853,106 @@ Write your results in markdown:
             let runtime_monitor = runtime.clone();
             let runtime_agent_id_monitor = runtime_agent_id.clone();
 
+            // Capture result file path BEFORE spawning — the watcher needs it for polling
+            let result_file_for_watcher = {
+                let agents = self.running_agents.lock().await;
+                agents.get(agent_id).map(|a| a.result_file.clone())
+            };
+
             tracing::info!(
                 agent = %agent_id,
                 node_id = %node_id_val,
-                "Spawning agent-exit watcher for DAG agent"
+                result_file = ?result_file_for_watcher,
+                "Spawning agent-exit + result-file watcher for DAG agent"
             );
 
             tokio::spawn(async move {
-                // Use runtime.wait_for_exit() to monitor agent
                 let max_runtime = std::time::Duration::from_secs(3600); // 1h hard cap
+                let result_poll_interval = std::time::Duration::from_secs(5);
 
-                let wait_result = tokio::select! {
+                // Race three conditions:
+                //   1. Agent process exits (wait_for_exit)
+                //   2. Result file appears (polling — agent finished work but process stayed alive)
+                //   3. Max runtime exceeded (timeout)
+                enum CompletionTrigger {
+                    ProcessExit(ErgataiResult<ergatai_runtime::WaitResult>),
+                    ResultFileAppeared,
+                    TimedOut,
+                }
+
+                let trigger = tokio::select! {
                     result = runtime_monitor.wait_for_exit(&runtime_agent_id_monitor, Some(max_runtime)) => {
-                        result
+                        CompletionTrigger::ProcessExit(result)
+                    }
+                    _ = async {
+                        // Poll for result file every 5 seconds
+                        loop {
+                            tokio::time::sleep(result_poll_interval).await;
+                            if let Some(ref path) = result_file_for_watcher {
+                                if tokio::fs::try_exists(path).await.unwrap_or(false) {
+                                    return;
+                                }
+                            }
+                        }
+                    } => {
+                        CompletionTrigger::ResultFileAppeared
                     }
                     _ = tokio::time::sleep(max_runtime) => {
-                        tracing::warn!(
-                            agent = %agent_id_monitor,
-                            "Agent exceeded max runtime, marking as failed"
-                        );
-                        let _ = runtime_monitor.stop_agent(&runtime_agent_id_monitor).await;
-                        Ok(ergatai_runtime::WaitResult::Timeout)
+                        CompletionTrigger::TimedOut
                     }
                 };
 
-                match wait_result {
-                    Ok(ergatai_runtime::WaitResult::Exited { code: _ }) => {
+                match &trigger {
+                    CompletionTrigger::ProcessExit(Ok(ergatai_runtime::WaitResult::Exited { code: _ })) => {
                         tracing::info!(
                             agent = %agent_id_monitor,
                             node_id = %node_id_monitor,
                             "Agent exited normally"
                         );
                     }
-                    Ok(ergatai_runtime::WaitResult::Signaled { signal }) => {
+                    CompletionTrigger::ProcessExit(Ok(ergatai_runtime::WaitResult::Signaled { signal })) => {
                         tracing::warn!(
                             agent = %agent_id_monitor,
                             signal = signal,
                             "Agent killed by signal"
                         );
                     }
-                    Ok(ergatai_runtime::WaitResult::Timeout) => {
+                    CompletionTrigger::ProcessExit(Ok(ergatai_runtime::WaitResult::Timeout)) => {
                         tracing::warn!(
                             agent = %agent_id_monitor,
                             "Agent wait timed out"
                         );
                     }
-                    Ok(ergatai_runtime::WaitResult::Error(e)) => {
+                    CompletionTrigger::ProcessExit(Ok(ergatai_runtime::WaitResult::Error(e))) => {
                         tracing::error!(
                             agent = %agent_id_monitor,
                             error = %e,
                             "Agent wait error"
                         );
                     }
-                    Err(e) => {
+                    CompletionTrigger::ProcessExit(Err(e)) => {
                         tracing::error!(
                             agent = %agent_id_monitor,
                             error = %e,
                             "Agent wait failed"
                         );
+                    }
+                    CompletionTrigger::ResultFileAppeared => {
+                        tracing::info!(
+                            agent = %agent_id_monitor,
+                            node_id = %node_id_monitor,
+                            result_file = ?result_file_for_watcher,
+                            "✅ Result file detected — agent completed work (process may still be alive)"
+                        );
+                        // Give agent a moment to finish writing, then proceed
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                    CompletionTrigger::TimedOut => {
+                        tracing::warn!(
+                            agent = %agent_id_monitor,
+                            "Agent exceeded max runtime, marking as failed"
+                        );
+                        let _ = runtime_monitor.stop_agent(&runtime_agent_id_monitor).await;
                     }
                 }
 

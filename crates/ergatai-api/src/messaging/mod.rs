@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ergatai_core::agent_registry::{agent_registry, AgentRegistry};
 use ergatai_core::cross_agent::{list_dag_schedulers, CommunicationCheck};
 use ergatai_runtime::{get_agent_runtime, AgentRuntime};
 use tracing::{info, warn};
@@ -64,12 +65,13 @@ pub struct SendRequest {
 /// use identical protection logic.
 pub struct MessageSender {
     conversation_manager: Arc<ConversationManager>,
+    peer_registry: Arc<AgentRegistry>,
 }
 
 impl MessageSender {
-    /// Create a new MessageSender with the given conversation manager.
-    pub fn new(conversation_manager: Arc<ConversationManager>) -> Self {
-        Self { conversation_manager }
+    /// Create a new MessageSender with the given conversation manager and peer registry.
+    pub fn new(conversation_manager: Arc<ConversationManager>, peer_registry: Arc<AgentRegistry>) -> Self {
+        Self { conversation_manager, peer_registry }
     }
 
     /// Send a message through the full pipeline.
@@ -116,17 +118,33 @@ impl MessageSender {
             };
         }
 
-        // ── 4. MeshPolicy ACL ──
+        // ── 4. Resolve stable IDs (needed for MeshPolicy + conversation tracking) ──
+        let from_stable = runtime.resolve_to_stable_id(&req.from, None).await;
+        let to_stable = runtime.resolve_to_stable_id(&resolved_agent_id, None).await;
+
+        // LOW NOTE: REST API messages (from='api') create separate conversations
+        // (e.g., 'conv-api-agent-2') isolated from MCP-tracked conversations
+        // (e.g., 'conv-agent-1-agent-2'). This is expected: REST is for external
+        // tools/CI, not agent-to-agent communication. Rate limiting (step 1)
+        // prevents abuse. Conversation loop prevention still applies, just with
+        // independent tracking per sender.
+
+        // ── 5. MeshPolicy ACL ──
         if let Some(reason) = self
-            .check_mesh_policy(&req.from, &resolved_agent_id, &from_runtime_id)
+            .check_mesh_policy(
+                &req.from,
+                &req.to,
+                &resolved_agent_id,
+                &from_runtime_id,
+                &from_stable,
+                &to_stable,
+            )
             .await
         {
             return SendMessageResult::Rejected { reason };
         }
 
-        // ── 5. is_reply detection ──
-        let from_stable = runtime.resolve_to_stable_id(&req.from, None).await;
-        let to_stable = runtime.resolve_to_stable_id(&resolved_agent_id, None).await;
+        // ── 6. is_reply detection ──
         let from_runtime_id_for_batch =
             from_runtime_id.clone().unwrap_or_else(|| req.from.clone());
 
@@ -148,7 +166,7 @@ impl MessageSender {
             "MessageSender: is_reply check complete"
         );
 
-        // ── 6. Conversation loop prevention ──
+        // ── 7. Conversation loop prevention ──
         if let Err(e) = self
             .conversation_manager
             .check_and_record(&from_stable, &to_stable, &req.message)
@@ -165,7 +183,7 @@ impl MessageSender {
             };
         }
 
-        // ── 7. Batch aggregator record ──
+        // ── 8. Batch aggregator record ──
         let batch_id = get_batch_aggregator()
             .record_send(&from_stable, &to_stable, is_reply)
             .await;
@@ -184,11 +202,11 @@ impl MessageSender {
             .unwrap_or_default()
             .as_secs();
 
-        // ── 8. Message formatting ──
+        // ── 9. Message formatting ──
         let sender_display = self.get_sender_display(&runtime, &req.from).await;
         let formatted_content = Self::format_agent_message(&sender_display, &req.message, is_reply);
 
-        // ── 9. NATS publish or direct inject ──
+        // ── 10. NATS publish or direct inject ──
         if let Some(conn) = ergatai_nats::get_nats_connection().await {
             let bus = ergatai_nats::EventBus::new(conn);
             let mut metadata = std::collections::HashMap::new();
@@ -254,7 +272,15 @@ impl MessageSender {
     }
 
     /// Resolve target agent ID from various identifier formats.
+    /// CRITICAL FIX: Check MCP peer registry first, then fall back to runtime registry.
+    /// This ensures MCP-only agents (not yet fully registered in runtime) can be found.
     async fn resolve_target_agent(&self, runtime: &AgentRuntime, target: &str) -> Option<String> {
+        // Step 1: Check MCP peer registry first
+        if let Some(peer_info) = self.peer_registry.get_agent(target).await {
+            return Some(peer_info.agent_id);
+        }
+
+        // Step 2: Fall back to runtime registry
         let agents = runtime.list_agents().await;
 
         agents
@@ -276,14 +302,29 @@ impl MessageSender {
 
     /// Check MeshPolicy ACL for communication between agents.
     /// Returns Some(reason) if denied, None if allowed.
+    ///
+    /// CRITICAL FIX: Include both stable names AND runtime IDs in sender/receiver
+    /// arrays, because DAG participants are declared as stable names (e.g., "agent-2")
+    /// but messages may carry runtime IDs (e.g., "%16"). Without both, the ACL
+    /// returns NotApplicable and is effectively bypassed.
+    ///
+    /// CRITICAL FIX 2: Include raw target ID in receiver_ids to handle cases where
+    /// the original target identifier differs from resolved_agent_id and to_stable.
     async fn check_mesh_policy(
         &self,
         from: &str,
+        raw_to: &str,
         resolved_to_id: &str,
         from_runtime_id: &Option<String>,
+        from_stable: &str,
+        to_stable: &str,
     ) -> Option<String> {
-        let sender_ids = [from, from_runtime_id.as_deref().unwrap_or("")];
-        let receiver_ids = [resolved_to_id];
+        let sender_ids = [
+            from,
+            from_runtime_id.as_deref().unwrap_or(""),
+            from_stable,
+        ];
+        let receiver_ids = [raw_to, resolved_to_id, to_stable];
 
         'scheduler_loop: for scheduler in list_dag_schedulers() {
             for &s in &sender_ids {
@@ -393,10 +434,12 @@ static MESSAGE_SENDER: OnceLock<MessageSender> = OnceLock::new();
 
 /// Initialize the global MessageSender (called once at startup).
 pub fn init_message_sender(conversation_manager: Arc<ConversationManager>) -> &'static MessageSender {
-    MESSAGE_SENDER.get_or_init(|| MessageSender::new(conversation_manager))
+    MESSAGE_SENDER.get_or_init(|| MessageSender::new(conversation_manager, Arc::new(agent_registry().clone())))
 }
 
 /// Get the global MessageSender reference.
-pub fn get_message_sender() -> &'static MessageSender {
-    MESSAGE_SENDER.get().expect("MessageSender not initialized — call init_message_sender first")
+/// Returns None if `init_message_sender()` was not called at startup.
+/// MEDIUM FIX: Return Option instead of panicking, allowing graceful error handling.
+pub fn get_message_sender() -> Option<&'static MessageSender> {
+    MESSAGE_SENDER.get()
 }

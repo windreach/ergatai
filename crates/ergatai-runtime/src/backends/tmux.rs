@@ -1048,8 +1048,76 @@ impl AgentRuntimeBackend for TmuxBackend {
 
         if let Some(instr) = instruction {
             tokio::time::sleep(INSTRUCTION_DELAY).await;
-            Self::send_to_pane(&pane_id, instr).await?;
-            info!(pane_id = pane_id, "Instruction injected ({}B)", instr.len());
+
+            // CRITICAL: Do NOT send the full instruction through `send-keys -l`.
+            // `sanitize_message()` replaces newlines with spaces, destroying markdown
+            // formatting (headers, lists, code blocks). Instead, write the instruction
+            // to a temp file and send a short command telling the agent (Claude CLI)
+            // to use its Read tool to read the file — preserving full formatting.
+            //
+            // SECURITY: Use `create_new(true)` + pid-unique filename to reject any
+            // pre-existing file/symlink at that path (TOCTOU / symlink attack defense).
+            // /tmp is world-writable, so a predictable name like `ergatai-instr-%15.md`
+            // could be pre-created as a symlink by another local user to overwrite
+            // arbitrary files on our uid. `create_new` maps to O_CREAT|O_EXCL, which
+            // fails with EEXIST if ANY filesystem entry (including a symlink) is there.
+            // The pane `%` is stripped so the filename contains only alphanumerics.
+            let instr_path = format!(
+                "/tmp/ergatai-instr-{}-{}.md",
+                std::process::id(),
+                pane_id.replace('%', "")
+            );
+            {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                let path = instr_path.clone();
+                let content: String = instr.to_owned();
+                tokio::task::spawn_blocking(move || {
+                    let mut f = std::fs::OpenOptions::new()
+                        .create_new(true)
+                        .write(true)
+                        .mode(0o600)
+                        .open(&path)?;
+                    f.write_all(content.as_bytes())?;
+                    Ok::<_, std::io::Error>(())
+                })
+                .await
+                .map_err(|e| ErgataiError::internal(format!("spawn_blocking join error: {e}")))?
+                .map_err(|e| {
+                    tracing::error!(
+                        pane_id = %pane_id,
+                        error = %e,
+                        "Failed to write instruction file"
+                    );
+                    ErgataiError::internal(format!("Failed to write instruction file: {e}"))
+                })?;
+            }
+
+            // Short single-line prompt. Claude CLI will treat this as user input and
+            // use its Read tool to read the referenced file, preserving all formatting.
+            let short_prompt = format!(
+                "Read and follow the instructions in {} — then complete the assigned task.",
+                instr_path
+            );
+            let sanitized = sanitize_message(&short_prompt);
+            Self::run_tmux_cmd_checked(
+                &["send-keys", "-l", "-t", &pane_id, &sanitized],
+                "Failed to send instruction prompt",
+            )
+            .await?;
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            Self::run_tmux_cmd_checked(
+                &["send-keys", "-t", &pane_id, "Enter"],
+                "Failed to send Enter after instruction",
+            )
+            .await?;
+
+            info!(
+                pane_id = pane_id,
+                instr_bytes = instr.len(),
+                instr_path = %instr_path,
+                "Instruction injected via file reference (preserved formatting)"
+            );
         }
 
         // NOTE: Removed auto-kill hooks (`pane-died → kill-session`, `client-detached → kill-session`).
@@ -1275,6 +1343,13 @@ impl AgentRuntimeBackend for TmuxBackend {
         // Check if session has other active panes (agents) before killing.
         // A session may host multiple agents (multi-agent workspace);
         // killing it would terminate all of them, not just the one that exited.
+        //
+        // KNOWN TOCTOU: There is a race window between list-panes and kill-session
+        // where a new pane could be added. This is acceptable for cleanup operations:
+        // - Race window is microseconds
+        // - Worst case: new agent's session is killed (recoverable via re-launch)
+        // - Atomic alternative (tmux if-shell) adds complexity for minimal benefit
+        // - Documented as best-effort cleanup
         match Self::run_tmux_cmd(&["list-panes", "-t", &session, "-F", "#{pane_id}"]).await {
             Ok(output) if output.status.success() => {
                 let pane_count = String::from_utf8_lossy(&output.stdout)

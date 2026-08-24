@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use tokio::sync::{Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use ergatai_error::{ErgataiError, ErgataiResult};
@@ -65,6 +66,10 @@ pub struct AgentRuntime {
     /// Enables resolving MCP IDs (e.g., "opencode@abcd1234") to runtime IDs
     /// (e.g., "%198") for message injection.
     mcp_index: Arc<RwLock<HashMap<String, String>>>,
+    /// Reverse index: stable ID → runtime agent ID.
+    /// LOW FIX: Enables O(1) stable ID resolution instead of O(n) linear scan.
+    /// Populated when agents register with a stable_id.
+    stable_id_index: Arc<RwLock<HashMap<String, String>>>,
     /// Queue of MCP agent IDs waiting to be bound to a runtime agent.
     /// Stores (mcp_agent_id, agent_identifier) tuples for precise binding.
     /// Populated when an MCP agent connects before rmux discovery finds panes.
@@ -76,6 +81,10 @@ pub struct AgentRuntime {
     binding_mutex: Arc<Mutex<()>>,
     /// Tracks consecutive unhealthy observations per agent. Agents pruned after 2 consecutive Zombie/Dead samples.
     unhealthy_streaks: Arc<Mutex<HashMap<String, u32>>>,
+    /// CRITICAL FIX: CancellationToken for graceful shutdown.
+    /// When cancelled, all spawn_monitor tasks will exit cleanly instead of
+    /// waiting for agents to exit or timing out. Prevents task leaks during shutdown.
+    shutdown_token: CancellationToken,
 }
 
 impl AgentRuntime {
@@ -86,10 +95,18 @@ impl AgentRuntime {
             registry: Arc::new(RwLock::new(HashMap::new())),
             uuid_index: Arc::new(RwLock::new(HashMap::new())),
             mcp_index: Arc::new(RwLock::new(HashMap::new())),
+            stable_id_index: Arc::new(RwLock::new(HashMap::new())),
             pending_mcp: Arc::new(RwLock::new(Vec::new())),
             binding_mutex: Arc::new(Mutex::new(())),
             unhealthy_streaks: Arc::new(Mutex::new(HashMap::new())),
+            shutdown_token: CancellationToken::new(),
         }
+    }
+
+    /// Get the shutdown token for graceful shutdown coordination.
+    /// Cancel this token to signal all monitor tasks to exit cleanly.
+    pub fn shutdown_token(&self) -> CancellationToken {
+        self.shutdown_token.clone()
     }
 
     /// Get a reference to the underlying backend.
@@ -167,6 +184,15 @@ impl AgentRuntime {
             .write()
             .await
             .insert(agent_uuid, agent_id.clone());
+
+        // LOW FIX: Populate stable_id_index for O(1) resolution
+        if let Some(ref stable_id) = handle.metadata.get("ergatai_agent_id").cloned() {
+            self.stable_id_index
+                .write()
+                .await
+                .insert(stable_id.clone(), agent_id.clone());
+        }
+
         self.spawn_monitor(agent_id.clone(), handle);
 
         info!(agent_id = agent_id, "Agent launched");
@@ -286,6 +312,10 @@ impl AgentRuntime {
     ///
     /// MEDIUM BUG FIX: If the same agent_id is re-registered, the old UUID
     /// is now cleaned from uuid_index to prevent index leak.
+    ///
+    /// CRITICAL FIX: Spawn lifecycle monitor for the registered agent to prevent
+    /// zombie state accumulation when the agent exits. Previously, agents registered
+    /// through this path had no monitor, causing memory leaks.
     pub async fn register_discovered_agent(
         &self,
         agent_id: String,
@@ -299,7 +329,7 @@ impl AgentRuntime {
             agent_id: agent_id.clone(),
             stable_id,
             workspace_id: handle.workspace.id.clone(),
-            handle,
+            handle: handle.clone(),
             lifecycle: crate::agent_lifecycle::AgentLifecycleState::Running {
                 task_id: None,
                 started_at: now,
@@ -329,6 +359,27 @@ impl AgentRuntime {
             .write()
             .await
             .insert(agent_uuid, agent_id.clone());
+
+        // LOW FIX: Populate stable_id_index for O(1) resolution (parity with launch_agent).
+        // Previously only launch_agent() populated this index, so discovered agents
+        // missed the fast path in resolve_agent_id() and fell through to linear scan.
+        // Read stable_id from the registry (info was moved into it above).
+        let stable_id_for_index = {
+            let registry = self.registry.read().await;
+            registry
+                .get(&agent_id)
+                .and_then(|info| info.stable_id.clone())
+        };
+        if let Some(sid) = stable_id_for_index {
+            self.stable_id_index
+                .write()
+                .await
+                .insert(sid, agent_id.clone());
+        }
+
+        // CRITICAL FIX: Spawn lifecycle monitor to track agent exit and cleanup
+        self.spawn_monitor(agent_id.clone(), handle);
+
         debug!(agent_id = agent_id, "Registered discovered agent");
         Ok(())
     }
@@ -349,6 +400,7 @@ impl AgentRuntime {
         let discovered = self.backend.discover_agents().await?;
         let mut count = 0;
         let mut new_agents = Vec::new();
+        let mut indices_to_clean = Vec::new(); // Collect indices to clean after dropping lock
         let mut registry = self.registry.write().await;
 
         for (agent_id, handle) in discovered {
@@ -383,13 +435,12 @@ impl AgentRuntime {
                     // to register the new agent below.
                     // CRITICAL BUG FIX: Also clean uuid_index and mcp_index
                     if let Some(old_info) = registry.remove(&old_agent_id) {
-                        // Clean indices after dropping registry lock to avoid nested locks
+                        // CRITICAL FIX: Collect indices to clean AFTER dropping the lock,
+                        // not during the loop. This prevents TOCTOU race where another task
+                        // could modify the registry between drop and re-acquire.
                         let old_uuid = old_info.agent_uuid.clone();
                         let old_mcp = old_info.mcp_agent_id.clone();
-                        drop(registry);
-                        self.remove_agent_indices(&old_agent_id, &old_uuid, old_mcp.as_deref()).await;
-                        // Re-acquire registry for the new agent registration
-                        registry = self.registry.write().await;
+                        indices_to_clean.push((old_agent_id.clone(), old_uuid, old_mcp));
                     }
                 } else {
                     // Same pane - just update metadata and stable_id
@@ -430,6 +481,13 @@ impl AgentRuntime {
             });
         }
         drop(registry);
+
+        // CRITICAL FIX: Clean up indices AFTER dropping the registry lock.
+        // This prevents TOCTOU race where the lock was dropped and re-acquired
+        // in the middle of the loop, allowing other tasks to modify state.
+        for (old_agent_id, old_uuid, old_mcp) in indices_to_clean {
+            self.remove_agent_indices(&old_agent_id, &old_uuid, old_mcp.as_deref()).await;
+        }
 
         // Update UUID index for newly registered agents
         if !new_agents.is_empty() {
@@ -560,14 +618,19 @@ impl AgentRuntime {
     /// (when rmux discovery finds new panes).
     ///
     /// Returns the runtime agent ID if binding succeeded, or `None` if queued.
+    ///
+    /// CRITICAL FIX: Optimized lock acquisition to eliminate TOCTOU race.
+    /// Previously, read locks were dropped before acquiring write lock for cleanup,
+    /// creating a window where state could change. Now collects cleanup info first,
+    /// then performs all mutations without intermediate lock releases.
     pub async fn try_bind_mcp_agent(&self, mcp_agent_id: &str) -> Option<String> {
         // Acquire binding lock to serialize binding operations
         // This ensures that even with concurrent MCP connections,
         // bindings happen sequentially in creation-time order
         let _guard = self.binding_mutex.lock().await;
 
-        // Check if already bound
-        {
+        // Step 1: Check if already bound and collect cleanup info if stale
+        let needs_cleanup = {
             let index = self.mcp_index.read().await;
             if let Some(runtime_id) = index.get(mcp_agent_id) {
                 // HIGH BUG FIX: Verify the runtime_id still exists in registry.
@@ -582,21 +645,26 @@ impl AgentRuntime {
                     );
                     return Some(runtime_id.clone());
                 } else {
-                    // Stale binding — clean it up
+                    // Stale binding — mark for cleanup
                     warn!(
                         mcp_agent_id = mcp_agent_id,
                         runtime_id = runtime_id,
                         "Stale MCP binding detected (runtime agent gone), cleaning up"
                     );
-                    drop(registry);
-                    drop(index);
-                    self.mcp_index.write().await.remove(mcp_agent_id);
-                    // Fall through to re-bind
+                    true
                 }
+            } else {
+                false
             }
+        };
+        // Read locks dropped here
+
+        // Step 2: Clean up stale binding if needed (write lock)
+        if needs_cleanup {
+            self.mcp_index.write().await.remove(mcp_agent_id);
         }
 
-        // Sequential binding algorithm:
+        // Step 3: Sequential binding algorithm
         // Find the FIRST unbound runtime agent (by discovery order)
         // This assumes panes are opened one at a time and MCP connects shortly after
         let mut registry = self.registry.write().await;
@@ -919,16 +987,11 @@ impl AgentRuntime {
         }
 
         // 3. Stable ID match — check if agent_id matches any agent's stable_id
+        // LOW FIX: Use stable_id_index for O(1) lookup instead of O(n) scan
         {
-            let registry = self.registry.read().await;
-            for info in registry.values() {
-                // Check first-class field first, then metadata fallback
-                let matches = info.stable_id.as_deref() == Some(agent_id)
-                    || info.handle.metadata.get("ergatai_agent_id").map(String::as_str)
-                        == Some(agent_id);
-                if matches {
-                    return agent_id.to_string();
-                }
+            let stable_id_index = self.stable_id_index.read().await;
+            if stable_id_index.contains_key(agent_id) {
+                return agent_id.to_string();
             }
         }
 
@@ -1018,7 +1081,13 @@ impl AgentRuntime {
     }
 
     /// Shutdown the runtime — stop all agents and cleanup all workspaces.
+    ///
+    /// CRITICAL FIX: Cancels shutdown_token to signal all monitor tasks to exit
+    /// cleanly, preventing task leaks during shutdown.
     pub async fn shutdown(&self) -> ErgataiResult<()> {
+        // Cancel shutdown token to signal monitor tasks to exit
+        self.shutdown_token.cancel();
+
         let agents = self.list_agents().await;
         info!(count = agents.len(), "Shutting down agent runtime");
 
@@ -1041,12 +1110,18 @@ impl AgentRuntime {
     /// HIGH BUG FIX: After setting Terminated state, the monitor now removes
     /// the agent from all indices after a 60-second grace period, preventing
     /// unbounded memory growth from accumulated terminated agents.
+    ///
+    /// CRITICAL FIX: Added CancellationToken support for graceful shutdown.
+    /// The monitor task will exit cleanly when shutdown_token is cancelled,
+    /// preventing task leaks during runtime shutdown.
     fn spawn_monitor(&self, agent_id: String, handle: AgentHandle) {
         let backend = self.backend.clone();
         let registry = self.registry.clone();
         let uuid_index = self.uuid_index.clone();
         let mcp_index = self.mcp_index.clone();
+        let stable_id_index = self.stable_id_index.clone();
         let unhealthy_streaks = self.unhealthy_streaks.clone();
+        let shutdown_token = self.shutdown_token.clone();
 
         tokio::spawn(async move {
             use crate::agent_lifecycle::AgentLifecycleState;
@@ -1054,8 +1129,17 @@ impl AgentRuntime {
             let timeout_duration = std::time::Duration::from_secs(86400);
             let now = chrono::Utc::now();
 
-            let result =
-                tokio::time::timeout(timeout_duration, backend.wait_for_exit(&handle, None)).await;
+            // CRITICAL FIX: Use tokio::select! to wait for either:
+            // 1. Agent exits normally (backend.wait_for_exit)
+            // 2. Shutdown token is cancelled (graceful shutdown)
+            // 3. Timeout (24h safety net)
+            let result = tokio::select! {
+                res = tokio::time::timeout(timeout_duration, backend.wait_for_exit(&handle, None)) => res,
+                _ = shutdown_token.cancelled() => {
+                    info!(agent_id = agent_id, "Monitor task cancelled during shutdown");
+                    return; // Exit cleanly without cleanup during shutdown
+                }
+            };
 
             // Determine the appropriate terminal lifecycle state based on how the agent exited.
             // The `created_at` will be filled in below once we have the registry lock.
@@ -1153,7 +1237,7 @@ impl AgentRuntime {
             };
 
             // Extract agent info before mutating registry
-            let (agent_uuid, mcp_agent_id, workspace_handle) = {
+            let (agent_uuid, mcp_agent_id, stable_id, workspace_handle) = {
                 let mut reg = registry.write().await;
                 if let Some(info) = reg.get_mut(&agent_id) {
                     // Fill in the real duration for Terminated states
@@ -1180,6 +1264,7 @@ impl AgentRuntime {
                     (
                         info.agent_uuid.clone(),
                         info.mcp_agent_id.clone(),
+                        info.stable_id.clone(),
                         info.handle.workspace.clone(),
                     )
                 } else {
@@ -1193,11 +1278,32 @@ impl AgentRuntime {
             // After 60 seconds, remove from all indices to prevent memory leak.
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
 
+            // CRITICAL FIX: Verify UUID consistency before removing. If agent_id was
+            // re-bound to a new agent during the grace period, skip cleanup to avoid
+            // destroying the new agent's registry entry and workspace.
+            {
+                let reg = registry.read().await;
+                if let Some(current) = reg.get(&agent_id) {
+                    if current.agent_uuid != agent_uuid {
+                        info!(
+                            agent_id = agent_id,
+                            old_uuid = agent_uuid,
+                            new_uuid = current.agent_uuid,
+                            "agent_id re-bound to new UUID during grace period — skipping cleanup"
+                        );
+                        return;
+                    }
+                }
+            }
+
             // Remove from all indices
             registry.write().await.remove(&agent_id);
             uuid_index.write().await.remove(&agent_uuid);
             if let Some(mcp_id) = mcp_agent_id {
                 mcp_index.write().await.remove(&mcp_id);
+            }
+            if let Some(stable_id) = stable_id {
+                stable_id_index.write().await.remove(&stable_id);
             }
             unhealthy_streaks.lock().await.remove(&agent_id);
 

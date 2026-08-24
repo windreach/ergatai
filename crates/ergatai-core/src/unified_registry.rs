@@ -84,52 +84,123 @@ impl UnifiedAgentRegistry {
     /// records in `agents_by_uuid`. Without this, re-registering an agent with
     /// the same agent_id but a new UUID would leave the old record unreachable
     /// by any index — a memory leak.
+    ///
+    /// CRITICAL FIX: Use fixed lock acquisition order (agents_by_uuid → mcp_id_to_uuid → agent_id_to_uuid)
+    /// to prevent ABBA deadlock. Previously, different code paths acquired locks in different orders,
+    /// creating deadlock risk under concurrent registration.
     pub async fn register(&self, record: AgentRecord) {
         let uuid = record.agent_uuid.clone();
         let agent_id = record.agent_id.clone();
         let mcp_id = record.mcp_agent_id.clone();
 
-        // MEDIUM BUG FIX: Clean up stale index entries before inserting new ones.
-        // If agent_id was previously bound to a different UUID, remove that old
-        // mapping to prevent orphaned records.
+        // Step 1: Collect cleanup information using read locks (no mutations)
+        let (old_uuid_by_agent_id, old_record_by_agent_id, old_uuid_by_mcp_id) = {
+            let id_to_uuid = self.agent_id_to_uuid.read().await;
+            let old_uuid_by_agent = id_to_uuid.get(&agent_id).cloned();
+
+            let old_record = if let Some(ref old_uuid) = old_uuid_by_agent {
+                if *old_uuid != uuid {
+                    self.agents_by_uuid.read().await.get(old_uuid).cloned()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let mcp_to_uuid = self.mcp_id_to_uuid.read().await;
+            let old_uuid_by_mcp = if let Some(ref mcp) = mcp_id {
+                mcp_to_uuid.get(mcp).cloned()
+            } else {
+                None
+            };
+            let old_uuid_by_mcp = if let Some(ref old_uuid) = old_uuid_by_mcp {
+                if *old_uuid != uuid {
+                    Some(old_uuid.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            (old_uuid_by_agent, old_record, old_uuid_by_mcp)
+        };
+        // All read locks dropped here
+
+        // Step 2: Log warnings before acquiring write locks
+        if let Some(ref old_uuid) = old_uuid_by_agent_id {
+            warn!(
+                old_agent_uuid = %old_uuid,
+                new_agent_uuid = %uuid,
+                agent_id = %agent_id,
+                "agent_id re-bound to different UUID — removing old record"
+            );
+        }
+        if let Some(ref old_uuid) = old_uuid_by_mcp_id {
+            if let Some(ref mcp) = mcp_id {
+                warn!(
+                    old_agent_uuid = %old_uuid,
+                    new_agent_uuid = %uuid,
+                    mcp_agent_id = %mcp,
+                    "mcp_agent_id re-bound to different UUID — removing old record"
+                );
+            }
+        }
+
+        // Step 3: Acquire write locks in FIXED ORDER and perform all mutations
+        // Order: agents_by_uuid → mcp_id_to_uuid → agent_id_to_uuid
+
+        // 3a. Remove old records from agents_by_uuid
+        {
+            let mut agents = self.agents_by_uuid.write().await;
+            if let Some(ref old_uuid) = old_uuid_by_agent_id {
+                agents.remove(old_uuid);
+            }
+            if let Some(ref old_uuid) = old_uuid_by_mcp_id {
+                agents.remove(old_uuid);
+            }
+            // Insert new record
+            agents.insert(uuid.clone(), record);
+        }
+
+        // 3b. Update mcp_id_to_uuid
+        {
+            let mut mcp_to_uuid = self.mcp_id_to_uuid.write().await;
+            // Remove stale mcp_id bindings
+            if let Some(ref old_rec) = old_record_by_agent_id {
+                if let Some(ref old_mcp_id) = old_rec.mcp_agent_id {
+                    if mcp_to_uuid.get(old_mcp_id) == old_uuid_by_agent_id.as_ref() {
+                        mcp_to_uuid.remove(old_mcp_id);
+                    }
+                }
+            }
+            if let Some(ref old_uuid) = old_uuid_by_mcp_id {
+                // Find and remove the mcp_id that pointed to old_uuid
+                if let Some(ref mcp) = mcp_id {
+                    if mcp_to_uuid.get(mcp) == Some(old_uuid) {
+                        mcp_to_uuid.remove(mcp);
+                    }
+                }
+            }
+            // Insert new mcp_id binding
+            if let Some(ref mcp) = mcp_id {
+                mcp_to_uuid.insert(mcp.clone(), uuid.clone());
+            }
+        }
+
+        // 3c. Update agent_id_to_uuid
         {
             let mut id_to_uuid = self.agent_id_to_uuid.write().await;
-            if let Some(old_uuid) = id_to_uuid.get(&agent_id) {
-                if *old_uuid != uuid {
-                    warn!(
-                        old_agent_uuid = %old_uuid,
-                        new_agent_uuid = %uuid,
-                        agent_id = %agent_id,
-                        "agent_id re-bound to different UUID — removing old record"
-                    );
-                    self.agents_by_uuid.write().await.remove(old_uuid);
+            // Remove stale agent_id binding if it pointed to a different UUID
+            if let Some(ref old_uuid) = old_uuid_by_agent_id {
+                if id_to_uuid.get(&agent_id) == Some(old_uuid) {
+                    id_to_uuid.remove(&agent_id);
                 }
             }
+            // Insert new binding
             id_to_uuid.insert(agent_id.clone(), uuid.clone());
         }
-
-        // Clean up stale mcp_id binding if it points to a different UUID
-        if let Some(ref mcp) = mcp_id {
-            let mut mcp_to_uuid = self.mcp_id_to_uuid.write().await;
-            if let Some(old_uuid) = mcp_to_uuid.get(mcp) {
-                if *old_uuid != uuid {
-                    warn!(
-                        old_agent_uuid = %old_uuid,
-                        new_agent_uuid = %uuid,
-                        mcp_agent_id = %mcp,
-                        "mcp_agent_id re-bound to different UUID — removing old record"
-                    );
-                    self.agents_by_uuid.write().await.remove(old_uuid);
-                }
-            }
-            mcp_to_uuid.insert(mcp.clone(), uuid.clone());
-        }
-
-        // Store the record
-        self.agents_by_uuid
-            .write()
-            .await
-            .insert(uuid.clone(), record);
 
         debug!(agent_uuid = %uuid, "Agent registered in unified registry");
     }

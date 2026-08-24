@@ -6,8 +6,8 @@
 //! ## 规则
 //!
 //! 1. **群发检测**: A 在 1 分钟内发给 ≥2 个不同 agent → 开启群发模式
-//! 2. **回复窗口**: 每个目标 agent 从被发送时刻起有 1 分钟回复时间
-//! 3. **超时计算**: 取所有目标中最大的超时时间 (last_send_time + 60s)
+//! 2. **回复窗口**: 每个目标 agent 从被发送时刻起有 30 秒回复时间
+//! 3. **超时计算**: 取所有目标中最大的超时时间 (last_send_time + 30s)
 //! 4. **立即推送**: 收到回复数量 == 发送数量 → 立即合并推送
 //! 5. **超时推送**: 超时后把已收集的回复合并推送
 //! 6. **后续单独**: 超时后到达的回复 → 单独转发给原发送方
@@ -41,8 +41,8 @@ use ergatai_runtime::get_agent_runtime;
 /// 群发检测时间窗口：1 分钟内发给多个不同 agent 视为群发
 const BATCH_DETECTION_WINDOW: Duration = Duration::from_secs(60);
 
-/// 每个目标 agent 的回复等待时间：从发送时刻起 1 分钟
-const REPLY_WINDOW: Duration = Duration::from_secs(60);
+/// 每个目标 agent 的回复等待时间：从发送时刻起 30 秒
+const REPLY_WINDOW: Duration = Duration::from_secs(30);
 
 /// 触发群发检测的最小目标数量
 const MIN_BATCH_TARGETS: usize = 2;
@@ -91,10 +91,23 @@ struct BatchSession {
     /// session 创建时间
     #[allow(dead_code)]
     created_at: Instant,
-    /// 最大超时时间 (最后一个发送时刻 + REPLY_WINDOW)
-    max_timeout: Instant,
+    /// 每个 target 的独立截止时间 = (该 target 被添加的时间) + REPLY_WINDOW
+    /// max_timeout = 所有 deadlines 的最大值
+    /// 修复：添加新 target 不推后已有 target 的截止时间
+    target_deadlines: HashMap<String, Instant>,
     /// 是否已刷新 (合并回复已发送)
     flushed: bool,
+}
+
+impl BatchSession {
+    /// 计算当前 session 的全局超时时间（所有 target deadlines 的最大值）
+    fn effective_timeout(&self) -> Instant {
+        self.target_deadlines
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(self.created_at + REPLY_WINDOW)
+    }
 }
 
 impl BatchAggregator {
@@ -235,17 +248,21 @@ impl BatchAggregator {
                 // 直接内联扩展（无需释放/重获锁，避免竞态窗口）
                 for target in &new_targets {
                     session.targets.insert(target.clone());
-                }
-                let new_timeout = now + REPLY_WINDOW;
-                if new_timeout > session.max_timeout {
-                    session.max_timeout = new_timeout;
+                    // 每个新 target 有独立的截止时间，不推后已有 target 的 deadline
+                    session
+                        .target_deadlines
+                        .insert(target.clone(), now + REPLY_WINDOW);
                 }
 
                 info!(
                     batch_id = %session.batch_id,
                     new_targets = ?new_targets,
                     all_targets = ?session.targets,
-                    "Extended batch session"
+                    effective_timeout_secs = session
+                        .effective_timeout()
+                        .saturating_duration_since(Instant::now())
+                        .as_secs(),
+                    "Extended batch session (per-target deadlines preserved)"
                 );
 
                 return Some(session.batch_id.clone());
@@ -280,7 +297,11 @@ impl BatchAggregator {
         let seq = BATCH_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let batch_id = format!("batch-{}-{}", from_agent, seq);
 
-        let max_timeout = now + REPLY_WINDOW;
+        // 每个 target 的独立截止时间 = now + REPLY_WINDOW
+        let target_deadlines: HashMap<String, Instant> = targets
+            .iter()
+            .map(|t| (t.clone(), now + REPLY_WINDOW))
+            .collect();
 
         let session = BatchSession {
             batch_id: batch_id.clone(),
@@ -288,7 +309,7 @@ impl BatchAggregator {
             targets,
             replies: HashMap::new(),
             created_at: now,
-            max_timeout,
+            target_deadlines,
             flushed: false,
         };
 
@@ -400,7 +421,7 @@ impl BatchAggregator {
 
         info!(
             batch_id = %batch_id,
-            from = from_agent,
+            from = %from_agent,
             reply_count = session.replies.len(),
             "Flushing batch replies"
         );
@@ -412,7 +433,7 @@ impl BatchAggregator {
         let runtime = get_agent_runtime();
         match runtime.inject_message(&from_agent, &merged_content).await {
             Ok(()) => {
-                info!(batch_id = %batch_id, to = from_agent, "Batch replies merged and delivered");
+                info!(batch_id = %batch_id, to = %from_agent, "Batch replies merged and delivered");
             }
             Err(e) => {
                 warn!(batch_id = %batch_id, error = %e, "Failed to deliver merged batch replies");
@@ -439,29 +460,55 @@ impl BatchAggregator {
         let mut sorted_targets: Vec<_> = targets.iter().collect();
         sorted_targets.sort();
 
-        // 输出每条回复（去掉各自的提示词）— 使用 serde_json 确保正确转义
+        // LOW FIX: Deduplicate identical replies to save tokens.
+        // Group agents by their reply content (after stripping hints).
+        let mut content_to_agents: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        let mut no_reply_agents: Vec<String> = Vec::new();
+
         for target in sorted_targets.iter() {
             if let Some(reply) = replies.get(target.as_str()) {
-                let cleaned = Self::strip_hint(reply);
-                let msg_json = serde_json::json!({
-                    "from": target,
-                    "message": cleaned
-                });
-                result.push_str(&msg_json.to_string());
-                result.push('\n');
+                let cleaned = Self::strip_hint(reply).to_string();
+                content_to_agents
+                    .entry(cleaned)
+                    .or_insert_with(Vec::new)
+                    .push(target.to_string());
+            } else {
+                no_reply_agents.push(target.to_string());
             }
         }
 
-        // 检查没有回复的 targets
-        for target in sorted_targets.iter() {
-            if !replies.contains_key(target.as_str()) {
-                let msg_json = serde_json::json!({
-                    "from": target,
-                    "message": "(no reply)"
-                });
-                result.push_str(&msg_json.to_string());
-                result.push('\n');
-            }
+        // Output deduplicated replies
+        for (content, agents) in content_to_agents.iter() {
+            let agents_list = agents.join(", ");
+            // Try to parse content as JSON — agents may reply with structured
+            // {"from":"...","message":"..."} objects. If parsing succeeds and has
+            // a "message" field, extract the inner message to avoid double-wrapping.
+            let message_value = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(content) {
+                if let Some(inner_msg) = parsed.get("message").and_then(|m| m.as_str()) {
+                    serde_json::Value::String(inner_msg.to_string())
+                } else {
+                    serde_json::Value::String(content.clone())
+                }
+            } else {
+                serde_json::Value::String(content.clone())
+            };
+            let msg_json = serde_json::json!({
+                "from": agents_list,
+                "message": message_value
+            });
+            result.push_str(&msg_json.to_string());
+            result.push('\n');
+        }
+
+        // Output agents with no reply
+        for target in no_reply_agents.iter() {
+            let msg_json = serde_json::json!({
+                "from": target,
+                "message": "(no reply)"
+            });
+            result.push_str(&msg_json.to_string());
+            result.push('\n');
         }
 
         // 提示词只注入一次（batch 回复都是发给提问者的 → 用 questioner hint）
@@ -513,7 +560,7 @@ impl BatchAggregator {
                             }
 
                             let now = Instant::now();
-                            now >= session.max_timeout
+                            now >= session.effective_timeout()
                         }
                         None => return, // session 不存在，退出
                     }

@@ -254,7 +254,16 @@ pub async fn send_message(
     Path(id): Path<String>,
     Json(req): Json<SendMessageRequest>,
 ) -> impl IntoResponse {
-    let sender = get_message_sender();
+    let sender = match get_message_sender() {
+        Some(s) => s,
+        None => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "MessageSender not initialized",
+            )
+                .into_response();
+        }
+    };
     let send_req = SendRequest {
         from: req.from.unwrap_or_else(|| "api".to_string()),
         to: id.clone(),

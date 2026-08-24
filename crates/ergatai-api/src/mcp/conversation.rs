@@ -41,6 +41,12 @@ use tracing::{debug, info, warn};
 
 use ergatai_error::{ErgataiError, ErgataiResult};
 
+/// Maximum number of times a conversation can be auto-reset due to timeout.
+/// CRITICAL: Prevents runaway ping-pong loops from cycling indefinitely through
+/// repeated timeout resets. After this limit, the conversation is permanently
+/// terminated with TimedOut status.
+const MAX_TIMEOUT_RESETS: u32 = 3;
+
 /// Maximum number of consecutive cycles the initiator can send without
 /// receiving a response from the non-initiator. After this limit, the
 /// Who holds the conversation token.
@@ -73,7 +79,8 @@ pub struct ConversationConfig {
     pub max_consecutive_auto_reply: u32,
 
     /// Maximum conversation duration before automatic termination.
-    /// Default: 5 minutes (in seconds)
+    /// This is a **sliding window**: resets on every message activity.
+    /// Default: 60 seconds (configurable via ERGATAI_CONVERSATION_TIMEOUT env var)
     pub max_execution_time_secs: u64,
 
     /// Maximum completed rounds (一问一答 = 1 round) before forced termination.
@@ -86,6 +93,12 @@ pub struct ConversationConfig {
     /// Default: 15 seconds
     #[serde(default = "default_cooldown_secs")]
     pub cooldown_secs: u64,
+
+    /// Maximum consecutive messages one agent can send before the other party
+    /// must respond. After reaching this limit, the token transfers to the other agent.
+    /// Default: 2 (allows one agent to send 2 messages in a row)
+    #[serde(default = "default_max_consecutive_sends")]
+    pub max_consecutive_sends: u32,
 }
 
 fn default_max_rounds() -> u32 {
@@ -96,16 +109,25 @@ fn default_cooldown_secs() -> u64 {
     15
 }
 
+fn default_max_consecutive_sends() -> u32 {
+    2
+}
+
 impl Default for ConversationConfig {
     fn default() -> Self {
+        // Read timeout from environment variable, default to 60s (sliding window)
+        let timeout_secs = std::env::var("ERGATAI_CONVERSATION_TIMEOUT")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(60);
+
         Self {
-            // 一问一答: A→B (turn 1) + B→A (turn 2) = one question + one answer.
-            // After reaching max_turns, the conversation auto-restarts (turn_count resets).
             max_turns: 2,
             max_consecutive_auto_reply: 5,
-            max_execution_time_secs: 300,
-            max_rounds: 3,        // Max 3 rounds per conversation
-            cooldown_secs: 15,    // 15s cooldown after conversation ends
+            max_execution_time_secs: timeout_secs,
+            max_rounds: 3,
+            cooldown_secs: 15,
+            max_consecutive_sends: 2,
         }
     }
 }
@@ -173,6 +195,20 @@ pub struct Conversation {
     /// None if still active.
     #[serde(default)]
     pub ended_at: Option<DateTime<Utc>>,
+
+    /// Number of times this conversation has been auto-reset due to timeout.
+    /// CRITICAL FIX: Prevents runaway ping-pong loops from cycling indefinitely
+    /// through repeated timeout resets. After MAX_TIMEOUT_RESETS, the conversation
+    /// is permanently terminated instead of auto-resetting.
+    #[serde(default)]
+    pub reset_count: u32,
+
+    /// Consecutive send count per agent — tracks how many messages each agent
+    /// has sent without the other party responding.
+    /// When an agent reaches `max_consecutive_sends`, the token transfers to the other party.
+    /// Resets when the other agent sends a message.
+    #[serde(default)]
+    pub consecutive_sends: HashMap<String, u32>,
 }
 
 /// Conversation lifecycle states.
@@ -225,6 +261,8 @@ impl Conversation {
             message_count: 0,
             completed_rounds: 0,
             ended_at: None,
+            reset_count: 0,
+            consecutive_sends: HashMap::new(),
         }
     }
 
@@ -323,24 +361,51 @@ impl ConversationManager {
             }
         }
 
-        // ── Timeout check ──
-        // When max_execution_time is exceeded, auto-reset the conversation instead of
-        // permanently blocking. This handles the case where agents restart and reuse
-        // the same conversation ID — the old timer shouldn't block new messages forever.
+        // ── Sliding window timeout check ──
+        // Uses last_activity (not started_at) so the timeout resets on every message.
+        // This prevents killing conversations where agents are actively working.
         let elapsed = Utc::now()
-            .signed_duration_since(conv.started_at)
+            .signed_duration_since(conv.last_activity)
             .num_seconds()
             .unsigned_abs();
         if elapsed > self.config.max_execution_time_secs {
+            if conv.reset_count >= MAX_TIMEOUT_RESETS {
+                // Permanently terminate — runaway loop detected
+                warn!(
+                    conv_id = %conv.id,
+                    elapsed_secs = elapsed,
+                    max_secs = self.config.max_execution_time_secs,
+                    reset_count = conv.reset_count,
+                    max_resets = MAX_TIMEOUT_RESETS,
+                    "Conversation timeout — permanently terminating (runaway loop detected)"
+                );
+                conv.state = ConversationState::Terminated {
+                    reason: TerminationReason::TimedOut,
+                };
+                conv.ended_at = Some(Utc::now());
+                return Err(ErgataiError::internal(format!(
+                    "Conversation {} exceeded max timeout resets ({}) — permanently terminated",
+                    conv.id, MAX_TIMEOUT_RESETS
+                )));
+            }
+
+            // Auto-reset with increment
+            conv.reset_count += 1;
             info!(
                 conv_id = %conv.id,
                 elapsed_secs = elapsed,
                 max_secs = self.config.max_execution_time_secs,
-                "Conversation timeout — auto-resetting for new cycle"
+                reset_count = conv.reset_count,
+                max_resets = MAX_TIMEOUT_RESETS,
+                "Conversation timeout — auto-resetting ({}/{} resets)",
+                conv.reset_count,
+                MAX_TIMEOUT_RESETS
             );
-            // Auto-reset: create fresh conversation with same participants
+            // Reset state but preserve reset_count (already incremented above)
+            let reset_count = conv.reset_count;
             *conv = Conversation::new(from, to);
-            // Continue processing — the new conversation will accept the message
+            conv.reset_count = reset_count;
+            // Continue processing — the reset conversation will accept the message
         }
 
         // ── Consecutive auto-reply check (same agent spamming when token is Free) ──
@@ -413,19 +478,42 @@ impl ConversationManager {
                 "TERMINATE detected — releasing token (会话 cycle complete)"
             );
             conv.token_owner = TokenOwner::Free;
+            conv.consecutive_sends.clear();
             // Reset turn count for new cycle (but keep completed_rounds and auto_reply counters)
             conv.turn_count = 0;
         } else {
-            // Normal send: token transfers to the other party (一问一答).
+            // Normal send: check if agent has reached max_consecutive_sends limit.
+            // If yes: transfer token to other party (they must respond now).
+            // If no: keep token with sender (allow burst sending).
+            let current_sends = conv.consecutive_sends.get(from).copied().unwrap_or(0);
             let other = conv.other_participant(from).map(|s| s.to_string());
-            if let Some(other_id) = other {
+
+            if current_sends + 1 >= self.config.max_consecutive_sends {
+                // Reached limit — transfer token to other party
+                if let Some(ref other_id) = other {
+                    info!(
+                        conv_id = %conv.id,
+                        from = from,
+                        consecutive_sends = current_sends + 1,
+                        max = self.config.max_consecutive_sends,
+                        next_holder = %other_id,
+                        "Max consecutive sends reached — token transferred (对方必须回复)"
+                    );
+                    conv.token_owner = TokenOwner::Held(other_id.clone());
+                }
+                // Reset sender's consecutive counter
+                conv.consecutive_sends.insert(from.to_string(), 0);
+            } else {
+                // Under limit — keep token with sender (allow burst)
+                let new_count = current_sends + 1;
+                conv.consecutive_sends.insert(from.to_string(), new_count);
                 debug!(
                     conv_id = %conv.id,
                     from = from,
-                    next_holder = %other_id,
-                    "Token transferred (一问一答 enforcement)"
+                    consecutive_sends = new_count,
+                    max = self.config.max_consecutive_sends,
+                    "Token retained (burst send allowed)"
                 );
-                conv.token_owner = TokenOwner::Held(other_id);
             }
         }
 

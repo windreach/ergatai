@@ -579,7 +579,15 @@ impl ErgataiMcpServer {
             .unwrap_or_else(|| "unknown-mcp-client".to_string());
 
         // Delegate to the shared MessageSender service (same pipeline as REST API)
-        let sender = crate::messaging::get_message_sender();
+        let sender = match crate::messaging::get_message_sender() {
+            Some(s) => s,
+            None => {
+                return Err(ErrorData::internal_error(
+                    "MessageSender not initialized — call init_message_sender first",
+                    None,
+                ));
+            }
+        };
         let send_req = crate::messaging::SendRequest {
             from: from_agent.clone(),
             to: target_agent_id.to_string(),
@@ -688,6 +696,16 @@ impl ErgataiMcpServer {
             dag_definition.len()
         );
 
+        // ── 获取调度者（提交者）的 agent_id ──
+        let submitter_id = self.session_agent_id.read().await.clone();
+        let submitter_runtime_id = match &submitter_id {
+            Some(id) => {
+                let runtime = ergatai_runtime::get_agent_runtime();
+                runtime.resolve_agent_id(id).await
+            }
+            None => None,
+        };
+
         // Check if a DAG is already running
         if let Some(existing) = ergatai_core::cross_agent::get_dag_scheduler() {
             if !existing.is_complete().await {
@@ -703,6 +721,33 @@ impl ErgataiMcpServer {
             .map_err(|e| {
                 ErrorData::invalid_params(format!("Failed to parse DAG definition: {}", e), None)
             })?;
+
+        // ── 强制校验：调度者禁止参与 DAG 工作 ──
+        // 调度者（submitter）应该是纯协调角色，不应该同时是任务执行者。
+        // 如果调度者在 DAG 的 task 列表中，拒绝提交。
+        if let Some(ref runtime_id) = submitter_runtime_id {
+            let dag_agents: Vec<String> = graph
+                .nodes
+                .iter()
+                .map(|t| t.agent.clone())
+                .collect();
+            if dag_agents.contains(runtime_id) {
+                warn!(
+                    submitter = %runtime_id,
+                    dag_agents = ?dag_agents,
+                    "Submitter is also a worker in DAG — rejecting"
+                );
+                return Err(ErrorData::invalid_params(
+                    format!(
+                        "DAG scheduler (agent '{}') cannot also be a task worker. \
+                         The submitter must be a pure coordinator. \
+                         Please assign tasks to other agents only.",
+                        runtime_id
+                    ),
+                    None,
+                ));
+            }
+        }
 
         // Build DagContext from optional context parameter
         let mut dag_context = ergatai_core::orchestration::DagContext::empty();

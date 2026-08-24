@@ -1295,6 +1295,10 @@ impl DagScheduler {
             ready_nodes.len()
         );
 
+        // Release the agent from the task scheduler's processing list.
+        // Without this, the agent stays "busy" and subsequent DAGs can't dispatch to it.
+        self.scheduler.mark_completed(node_id).await;
+
         let mut newly_submitted = Vec::with_capacity(ready_nodes.len());
         for (node, priority) in ready_nodes {
             match self.generate_and_submit(&node, priority).await {
@@ -1380,6 +1384,13 @@ impl DagScheduler {
             }
         }; // Lock released
 
+        // Release the agent from the task scheduler's processing list when the node
+        // has reached a terminal state (no retry). Without this, the agent stays "busy"
+        // and subsequent DAGs can't dispatch to it.
+        if retry_decision.is_none() {
+            self.scheduler.mark_completed(node_id).await;
+        }
+
         if let Some((node_clone, retry_count)) = retry_decision {
             // Calculate critical path for priority optimization
             let critical_path_result = self.calculate_critical_path().await;
@@ -1445,6 +1456,8 @@ impl DagScheduler {
                             );
                         }
                     }
+                    // Release the agent from the task scheduler's processing list.
+                    self.scheduler.mark_completed(node_id).await;
                     // Propagate failure to downstream dependents
                     self.skip_downstream(node_id).await?;
                     self.save_graph_unlocked().await?;
@@ -1869,23 +1882,144 @@ impl DagScheduler {
     ///
     /// When the server crashes, nodes left in Running state are actually stopped.
     /// This method resets them to Pending so they can be resubmitted on recovery.
+    ///
+    /// Additionally, nodes whose target agents no longer exist are marked as Failed
+    /// to prevent zombie DAGs that can never complete.
     pub async fn rollback_running_nodes(&self) -> ErgataiResult<()> {
+        use ergatai_runtime::get_agent_runtime;
+
+        let runtime = get_agent_runtime();
+
+        // Phase 1: Collect all unique agent IDs referenced by Pending/Running nodes
+        let agents_needed: Vec<String> = {
+            let graph = self.graph.lock().await;
+            graph
+                .nodes
+                .iter()
+                .filter(|n| n.status == TaskStatus::Pending || n.status == TaskStatus::Running)
+                .map(|n| n.agent.clone())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect()
+        };
+
+        // Phase 2: Check which agents exist
+        let mut alive_agents = std::collections::HashSet::new();
+        for agent_id in &agents_needed {
+            // Check if agent exists in runtime (either by ID or as a prefix match)
+            if runtime.get_agent(agent_id).await.is_some() {
+                alive_agents.insert(agent_id.clone());
+            } else {
+                // Also try resolve_agent_id for stable IDs or named agents
+                if runtime.resolve_agent_id(agent_id).await.is_some() {
+                    alive_agents.insert(agent_id.clone());
+                }
+            }
+        }
+
+        // Phase 2.5: Re-check "missing" agents before marking any node Failed.
+        //
+        // Rationale: The startup sequence in main.rs is:
+        //   1. discover_and_register_agents() (blocking, once)
+        //   2. init_nats()
+        //   3. DagScheduler::load_all_from_disk() → rollback_running_nodes()
+        //   4. spawn periodic discovery (every 30s)
+        //
+        // Between step 1 and step 3, some agents may still be starting up
+        // (tmux session created but child process not yet ready to expose
+        // TMUX_PANE via /proc/{pid}/environ). The initial discovery may miss
+        // them. Without this re-check, their Pending nodes would be marked
+        // Failed, and 30s later periodic discovery would find them — too late.
+        //
+        // Fix: trigger one more discovery scan and wait briefly, then re-check.
+        let potentially_missing: Vec<String> = agents_needed
+            .iter()
+            .filter(|a| !alive_agents.contains(*a))
+            .cloned()
+            .collect();
+
+        if !potentially_missing.is_empty() {
+            tracing::info!(
+                dag_id = %self.dag_id,
+                missing_agents = ?potentially_missing,
+                "Re-checking potentially-missing agents (they may still be starting up)"
+            );
+
+            // Trigger a fresh discovery scan
+            if let Err(e) = runtime.discover_and_register_agents().await {
+                tracing::warn!(
+                    dag_id = %self.dag_id,
+                    error = %e,
+                    "Re-discovery scan failed during DAG recovery — proceeding with initial agent list"
+                );
+            }
+
+            // Brief pause to let any in-flight tmux/proc reads settle
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+            // Re-check each previously-missing agent
+            for agent_id in potentially_missing {
+                if runtime.get_agent(&agent_id).await.is_some()
+                    || runtime.resolve_agent_id(&agent_id).await.is_some()
+                {
+                    tracing::info!(
+                        dag_id = %self.dag_id,
+                        agent = %agent_id,
+                        "Agent appeared on re-check — will not mark its nodes as Failed"
+                    );
+                    alive_agents.insert(agent_id);
+                }
+            }
+        }
+
+        // Phase 3: Rollback Running→Pending for alive agents, mark Failed for dead agents
         let mut graph = self.graph.lock().await;
         let mut rolled_back = 0;
+        let mut failed_dead = 0;
+        let mut dead_agents_logged = std::collections::HashSet::new();
+
         for node in &mut graph.nodes {
             if node.status == TaskStatus::Running {
-                node.status = TaskStatus::Pending;
-                node.retry_count = 0; // Reset retry count for fresh start
-                rolled_back += 1;
+                if alive_agents.contains(&node.agent) {
+                    node.status = TaskStatus::Pending;
+                    node.retry_count = 0;
+                    rolled_back += 1;
+                } else {
+                    node.status = TaskStatus::Failed;
+                    node.metadata.insert(
+                        "recovery_error".to_string(),
+                        format!("Target agent '{}' no longer exists after crash recovery", node.agent),
+                    );
+                    failed_dead += 1;
+                    dead_agents_logged.insert(node.agent.clone());
+                }
+            } else if node.status == TaskStatus::Pending && !alive_agents.contains(&node.agent) {
+                // Pending nodes with dead agents should also be marked Failed
+                node.status = TaskStatus::Failed;
+                node.metadata.insert(
+                    "recovery_error".to_string(),
+                    format!("Target agent '{}' no longer exists after crash recovery", node.agent),
+                );
+                failed_dead += 1;
+                dead_agents_logged.insert(node.agent.clone());
             }
         }
         drop(graph);
 
-        if rolled_back > 0 {
+        if rolled_back > 0 || failed_dead > 0 {
+            for agent in &dead_agents_logged {
+                tracing::warn!(
+                    dag_id = %self.dag_id,
+                    agent = %agent,
+                    "Target agent not found during DAG recovery"
+                );
+            }
             tracing::info!(
                 dag_id = %self.dag_id,
                 rolled_back,
-                "Rolled back Running nodes to Pending for recovery"
+                failed_dead,
+                alive_agents = alive_agents.len(),
+                "DAG recovery: rolled back Running nodes, failed nodes with dead agents"
             );
             self.save_graph_unlocked().await?;
         }
@@ -1898,6 +2032,28 @@ impl DagScheduler {
         let graph = self.graph.lock().await;
         serde_json::to_string(&*graph)
             .map_err(|e| ErgataiError::json_with_source("Failed to serialize graph", e))
+    }
+
+    /// Check if the DAG has any viable nodes (Pending or Running) after recovery.
+    ///
+    /// Returns true if at least one node is Pending or Running.
+    /// Returns false if all nodes are Failed, Completed, or Skipped.
+    pub async fn has_viable_nodes(&self) -> bool {
+        let graph = self.graph.lock().await;
+        graph.nodes.iter().any(|n| {
+            n.status == TaskStatus::Pending || n.status == TaskStatus::Running
+        })
+    }
+
+    /// Count nodes by status for diagnostics
+    pub async fn count_nodes_by_status(&self) -> std::collections::HashMap<String, usize> {
+        let graph = self.graph.lock().await;
+        let mut counts = std::collections::HashMap::new();
+        for node in &graph.nodes {
+            let status_str = format!("{:?}", node.status);
+            *counts.entry(status_str).or_insert(0) += 1;
+        }
+        counts
     }
 }
 
@@ -3207,12 +3363,14 @@ tasks:
         scheduler.rollback_running_nodes().await.unwrap();
 
         let g = scheduler.graph.lock().await;
-        // Running nodes should be rolled back to Pending with retry_count reset
+        // When agents don't exist in runtime, Running nodes are marked as Failed
+        // (not rolled back to Pending) to prevent zombie DAGs
         let n1 = g.find_node("n1").unwrap();
-        assert_eq!(n1.status, TaskStatus::Pending);
-        assert_eq!(n1.retry_count, 0);
+        assert_eq!(n1.status, TaskStatus::Failed);
+        assert!(n1.metadata.get("recovery_error").is_some());
         let n2 = g.find_node("n2").unwrap();
-        assert_eq!(n2.status, TaskStatus::Pending);
+        assert_eq!(n2.status, TaskStatus::Failed);
+        assert!(n2.metadata.get("recovery_error").is_some());
         // Completed nodes should not be affected
         assert_eq!(g.find_node("n3").unwrap().status, TaskStatus::Completed);
     }

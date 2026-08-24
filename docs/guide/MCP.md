@@ -118,15 +118,6 @@ List all connected agents.
 }
 ```
 
-### register_agent_name
-
-Register a human-readable name for the calling agent.
-
-```json
-// Input
-{ "display_name": "alice" }
-```
-
 ### send_message
 
 Send a message to another agent.

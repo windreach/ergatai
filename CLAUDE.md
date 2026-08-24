@@ -89,9 +89,8 @@ Agent B 的 tmux pane 中显示消息
 | TMUX_PANE 环境变量 | `%15`, `%16` | **确定性 ID**，tmux 自动注入到 pane 进程，从 `/proc/{pid}/environ` 读取 |
 | fallback | `pane_0`, `pane_1` | 读不到 TMUX_PANE 时按发现顺序编号（不稳定） |
 | MCP client | `opencode@a1b2c3d4` | MCP 连接时自动生成，仅用于 MCP peer registry |
-| 命名注册 | 自定义字符串 | 通过 `register_agent_name` MCP 工具绑定可读名称 |
 
-**关键**: agent 之间发消息使用 TMUX_PANE 值（如 `%15`）或命名注册作为 target_agent_id。
+**关键**: agent 之间发消息使用 TMUX_PANE 值（如 `%15`）作为 target_agent_id。
 
 ---
 
@@ -259,7 +258,7 @@ DELETE /api/v1/workspaces/:id        删除 workspace
 GET  /api/v1/agents                  列出所有 agent
 POST /api/v1/agents                  启动新 agent
 DELETE /api/v1/agents/:id            停止 agent
-POST /api/v1/agents/:id/message      向 agent 发消息 (HTTP 直接注入, 绕过 NATS)
+POST /api/v1/agents/:id/message      向 agent 发消息 (经 MessageSender 路由: 速率限制 + 对话防护 + MeshPolicy + NATS 发布)
 
 # 系统状态
 GET  /api/v1/status                  聚合状态 (agent + workspace + DAG)
@@ -288,7 +287,6 @@ Agent 通过 MCP 协议 (JSON-RPC over Streamable HTTP, protocol 2025-06-18) 调
 | 工具 | 说明 |
 |------|------|
 | `list_agents` | 列出已注册 agent（支持条件过滤） |
-| `register_agent_name` | 为当前 agent 绑定可读名称 |
 | `send_message` | 向目标 agent 发消息（速率限制 + 通信策略校验） |
 | `submit_orchestration` | 提交 DAG 工作流（YAML） |
 | `validate_dag_yaml` | 干跑校验 DAG YAML（不执行，返回摘要或第一个错误） |
