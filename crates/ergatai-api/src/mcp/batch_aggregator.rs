@@ -514,7 +514,8 @@ impl BatchAggregator {
 
         // 提示词只注入一次（batch 回复都是发给提问者的 → 用 questioner hint）
         // 不实现隐藏方案 — ANSI conceal 和同色隐藏兼容性差，hint 保持可见
-        let hint_text = "[System prompt: No questions → output \"END\" in terminal, DO NOT call any tools; Has questions → reply via send_message MCP]";
+        // 多 agent 回复场景：hint 教 agent 用 @agent_name 模式跟进任意回复者
+        let hint_text = "[System prompt: No questions → output \"END\" in terminal; Has questions → reply by writing @agent_name in your response (e.g., @agent-2)]";
         result.push_str(hint_text);
 
         result
@@ -522,16 +523,12 @@ impl BatchAggregator {
 
     /// 清理消息中的提示词，用于内容比较
     fn strip_hint(content: &str) -> &str {
-        // 提示词格式: [Reply via send_message MCP...] 或 [No questions → output "END"...]
+        // 提示词格式: [System prompt: ...] — 统一以 [System prompt: 开头
         // 这些提示词在消息末尾，用 [] 包裹
         let content = content.trim();
         if let Some(idx) = content.rfind('[') {
             let potential_hint = &content[idx..];
-            if potential_hint.starts_with("[System prompt:")
-                || potential_hint.starts_with("[Reply via")
-                || potential_hint.starts_with("[If no questions")
-                || potential_hint.starts_with("[No questions")
-            {
+            if potential_hint.starts_with("[System prompt:") {
                 return content[..idx].trim();
             }
         }
