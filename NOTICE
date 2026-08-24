@@ -15,7 +15,8 @@ limitations under the License.
 
 ---
 
-This product bundles rmux (https://github.com/helvesec/rmux),
-Copyright (c) Helvesec, dual-licensed under the MIT License and
-the Apache License, Version 2.0. Copies of both licenses are
-included at crates/ergatai-binary/resources/linux-x86_64/rmux-0.10.0-linux-x86_64/.
+This product uses tmux (https://github.com/tmux/tmux),
+Copyright (c) Nicholas Marriott <nicholas.marriott@gmail.com>.
+
+tmux is licensed under the ISC License (a permissive open-source license).
+See https://github.com/tmux/tmux/blob/master/COPYING for the full license text.
