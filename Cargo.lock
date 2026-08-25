@@ -966,6 +966,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ergatai-preload"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "once_cell",
+]
+
+[[package]]
 name = "ergatai-pty"
 version = "0.1.0"
 dependencies = [

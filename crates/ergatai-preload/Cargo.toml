@@ -1,0 +1,13 @@
+[package]
+name = "ergatai-preload"
+version = "0.1.0"
+edition = "2021"
+description = "LD_PRELOAD library for transparent snapshot-based file reads"
+
+[lib]
+name = "ergatai_preload"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+once_cell = "1.19"

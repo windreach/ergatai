@@ -147,6 +147,7 @@ crates/
 │       ├── lock_manager.rs        锁管理核心 (SQLite WAL)
 │       ├── token.rs               SystemToken + FileToken 双层 token
 │       ├── enforcer/              内核级强制 (Linux fanotify)
+│       ├── ipc_server.rs          Unix socket IPC（LD_PRELOAD 快照查询）
 │       ├── snapshot.rs            Git-based COW 快照 (TOCTOU 防护)
 │       ├── watchdog.rs            Token 过期 + 心跳监控
 │       ├── watcher.rs             文件系统未授权修改检测
@@ -167,6 +168,8 @@ crates/
 │       └── lib.rs
 ├── ergatai-agent/         Agent 配置和发现 (占位)
 ├── ergatai-binary/        二进制资源 (nats-server 查找/下载)
+├── ergatai-preload/       LD_PRELOAD 库 (透明快照读取, cdylib)
+│   └── src/lib.rs               拦截 open()/openat()，重定向锁文件读取到 Git 快照
 └── ergatai-cli/           CLI 工具 (ergatai 命令)
     └── src/
         ├── main.rs              clap CLI (start/workspace/agent/status)
@@ -461,6 +464,29 @@ JetStream Streams:
 - **File Watcher**: 检测未授权修改
 - **NATS 等待队列**: 阻塞式锁获取
 - **内核级强制**: Linux fanotify 拦截 `open()`，从 advisory 升级到 mandatory（非 Linux 或权限不足时 fail-open）
+- **LD_PRELOAD 快照读取**: `ergatai-preload` 拦截 `open()` 读取被锁文件的 Git 快照版本
+
+### 自动化模型
+
+文件锁现在完全自动化，agent 无需手动调用 `request_file_access`：
+
+| 操作 | 行为 |
+|------|------|
+| **READ** | 直接读取，无需申请锁 |
+| **WRITE** | 首次修改时 fanotify 检测 `FAN_MODIFY`，自动创建 Git 快照 + 授予 WRITE 锁 |
+| **读取被锁文件** | LD_PRELOAD (`ergatai-preload`) 透明拦截 `open()`，返回快照内容 |
+
+**工作原理：**
+1. Agent 写入文件 → fanotify 捕获 `FAN_MODIFY` 事件
+2. `FileLockManager::auto_acquire_write_lock()` 创建 Git 快照（修改前的基线）
+3. 自动授予 WRITE 锁（1 小时 TTL，跳过冲突检查）
+4. 其他 agent 读取该文件 → `libergatai_preload.so` 通过 Unix socket 查询锁状态
+5. 如果文件被锁：从 Git 对象存储读取快照内容，写入临时文件，打开后 unlink
+6. 如果未锁或 IPC 失败：正常打开（fail-open）
+
+**Agent 启动集成：** `PtyBackend::start_agent()` 自动检测 `libergatai_preload.so` 并注入 `LD_PRELOAD` 环境变量。
+
+**IPC 协议：** `ergatai-lock` 在 `/tmp/ergatai-lock-{uid}.sock` 监听 Unix socket，处理 `check_lock` 和 `get_snapshot` 查询。
 
 ---
 

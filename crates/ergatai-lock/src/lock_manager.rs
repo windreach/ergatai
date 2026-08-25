@@ -17,6 +17,7 @@ use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 
 use super::audit::AuditManager;
+use super::snapshot::SnapshotManager;
 use super::token::{FileLock, FileMode, FileToken, SystemToken, TokenId, TokenStatus};
 use ergatai_nats::events::{
     FileAccessApprovePayload, FileAccessEscalatePayload, FileAccessRejectPayload,
@@ -976,6 +977,249 @@ impl FileLockManager {
             token.agent_id, token.mode, file_path
         );
         Ok(())
+    }
+
+    /// Check whether a specific agent currently holds an active WRITE lock on a file.
+    ///
+    /// Uses the in-memory cache first (fast path), falls back to SQLite.
+    /// Returns `true` only if the exact `(agent_id, session_id)` pair holds the lock —
+    /// if a *different* agent holds the lock, returns `false`.
+    ///
+    /// # Arguments
+    /// * `file_path` — file path (relative to project root)
+    /// * `agent_id` — agent identifier to check
+    /// * `session_id` — session identifier to check
+    pub async fn has_write_lock(
+        &self,
+        file_path: &str,
+        agent_id: &str,
+        session_id: &str,
+    ) -> Result<bool, ErgataiError> {
+        let normalized_path = self.validate_and_normalize_path(file_path)?;
+
+        // Fast path: in-memory cache
+        {
+            let cache = self.active_write_locks_cache.read();
+            if let Some(LockCacheEntry::Locked {
+                agent_id: cached_agent,
+                session_id: cached_session,
+            }) = cache.get(&normalized_path)
+            {
+                return Ok(cached_agent == agent_id && cached_session == session_id);
+            }
+        }
+
+        // Slow path: database query (use try_lock to avoid deadlock)
+        let conn = match self.conn.try_lock() {
+            Some(guard) => guard,
+            None => {
+                debug!(
+                    path = %normalized_path,
+                    "has_write_lock: SQLite mutex busy, failing open"
+                );
+                return Ok(false);
+            }
+        };
+
+        match conn.query_row(
+            "SELECT agent_id, session_id FROM file_locks
+             WHERE file_path = ?1 AND mode = 'WRITE' AND status = 'ACTIVE'
+             LIMIT 1",
+            params![normalized_path],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        ) {
+            Ok((holder_agent, holder_session)) => {
+                // Update cache on hit
+                drop(conn);
+                let mut cache = self.active_write_locks_cache.write();
+                cache.insert(
+                    normalized_path,
+                    LockCacheEntry::Locked {
+                        agent_id: holder_agent.clone(),
+                        session_id: holder_session.clone(),
+                    },
+                );
+                Ok(holder_agent == agent_id && holder_session == session_id)
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Err(e) => Err(ErgataiError::internal(format!(
+                "Failed to query WRITE lock status: {}",
+                e
+            ))),
+        }
+    }
+
+    /// Automatically acquire a WRITE lock on first file modification.
+    ///
+    /// Called by the fanotify event loop when a `FAN_MODIFY` event is detected.
+    /// Captures the current file content as a Git snapshot (pre-modification baseline),
+    /// then inserts a WRITE lock record directly — no conflict check, since this is
+    /// the *first* modification by this agent.
+    ///
+    /// # Arguments
+    /// * `file_path` — file path (relative to project root)
+    /// * `agent_id` — agent that performed the modification
+    /// * `session_id` — session of the agent
+    /// * `project_id` — project identifier (used to locate the SnapshotManager)
+    pub async fn auto_acquire_write_lock(
+        &self,
+        file_path: &str,
+        agent_id: &str,
+        session_id: &str,
+        project_id: &str,
+    ) -> Result<(), ErgataiError> {
+        let normalized_path = self.validate_and_normalize_path(file_path)?;
+
+        // Step 1: Create a Git snapshot of the file *before* modification.
+        // This captures the pre-write baseline so other agents can read it later.
+        let snapshot_hash = {
+            let snapshot_mgr = crate::manager::get_snapshot_manager(project_id).await?;
+            let hash = snapshot_mgr.create_snapshot(&normalized_path, agent_id)?;
+            if !hash.is_empty() {
+                // Store the snapshot record in the snapshots table.
+                let conn = self.conn.lock();
+                SnapshotManager::store_snapshot_record(
+                    &conn,
+                    &normalized_path,
+                    &hash,
+                    agent_id,
+                )?;
+            }
+            hash
+        };
+
+        // Step 2: Insert a WRITE lock record directly (no conflict check).
+        //
+        // Rationale: this is triggered by the *first* FAN_MODIFY from this agent,
+        // meaning no WRITE lock existed for this file when the modification started.
+        // The unique index on (file_path, mode=WRITE) in SQLite will still prevent
+        // a race if two agents modify simultaneously — one will succeed, the other
+        // will get a UNIQUE constraint violation, which we log and ignore (the
+        // second agent's lock will be picked up by the normal acquire_lock path).
+        let now = Utc::now();
+        let ttl_secs = 3600u64; // 1 hour default TTL for auto-acquired locks
+        let expires_at = now + chrono::Duration::seconds(ttl_secs as i64);
+
+        let conn = self.conn.lock();
+
+        // Begin IMMEDIATE transaction for atomicity
+        let tx = TransactionGuard::begin(&conn)
+            .map_err(|e| ErgataiError::internal(format!("Failed to begin transaction: {}", e)))?;
+
+        let lock_id = uuid::Uuid::new_v4().to_string();
+        let token_id = TokenId::new().to_string();
+
+        let insert_result = conn.execute(
+            "INSERT INTO file_locks (
+                id, file_path, agent_id, session_id, mode, scope, token_id,
+                reason, approved_by, created_at, expires_at,
+                heartbeat_interval_secs, heartbeat_at, status, priority
+            ) VALUES (?1, ?2, ?3, ?4, 'WRITE', '**', ?5, ?6, 'system-auto', ?7, ?8, ?9, ?10, 'ACTIVE', ?11)",
+            params![
+                lock_id,
+                normalized_path,
+                agent_id,
+                session_id,
+                token_id,
+                format!("auto-acquired on FAN_MODIFY (snapshot: {})", snapshot_hash),
+                now.to_rfc3339(),
+                expires_at.to_rfc3339(),
+                60i64, // heartbeat_interval_secs
+                now.to_rfc3339(),
+                2i64,  // priority: medium
+            ],
+        );
+
+        match insert_result {
+            Ok(_) => {
+                // Audit log
+                conn.execute(
+                    "INSERT INTO audit_log (timestamp, agent_id, session_id, action, file_path, mode, reason)
+                     VALUES (?1, ?2, ?3, 'LOCK_ACQUIRED_AUTO', ?4, 'WRITE', ?5)",
+                    params![
+                        now.to_rfc3339(),
+                        agent_id,
+                        session_id,
+                        normalized_path,
+                        format!("auto-write (snapshot: {})", snapshot_hash),
+                    ],
+                )
+                .map_err(|e| {
+                    ErgataiError::internal(format!("Failed to log auto-acquire audit: {}", e))
+                })?;
+
+                // Update in-memory cache before commit
+                {
+                    let mut cache = self.active_write_locks_cache.write();
+                    cache.insert(
+                        normalized_path.clone(),
+                        LockCacheEntry::Locked {
+                            agent_id: agent_id.to_string(),
+                            session_id: session_id.to_string(),
+                        },
+                    );
+                }
+
+                tx.commit().map_err(|e| {
+                    ErgataiError::internal(format!("Failed to commit auto-acquire: {}", e))
+                })?;
+
+                info!(
+                    file_path = %normalized_path,
+                    agent_id = %agent_id,
+                    snapshot_hash = %snapshot_hash,
+                    lock_id = %lock_id,
+                    "Auto-acquired WRITE lock on FAN_MODIFY"
+                );
+
+                Ok(())
+            }
+            Err(e) if e.to_string().contains("UNIQUE constraint failed") => {
+                // Another agent already has a WRITE lock — this is a race.
+                // Roll back and log; the other agent's lock is authoritative.
+                drop(tx); // rollback via Drop
+                debug!(
+                    file_path = %normalized_path,
+                    agent_id = %agent_id,
+                    "Auto-acquire raced with existing WRITE lock, skipping"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                drop(tx); // rollback via Drop
+                Err(ErgataiError::internal(format!(
+                    "Failed to auto-acquire WRITE lock on {}: {}",
+                    normalized_path, e
+                )))
+            }
+        }
+    }
+
+    /// Look up the latest Git snapshot hash for a file.
+    ///
+    /// Queries the `snapshots` table for the most recent entry matching
+    /// the given (already-normalized) file path. Returns `None` if no
+    /// snapshot exists.
+    ///
+    /// Used by the IPC server to answer `check_lock` queries from the
+    /// LD_PRELOAD library — when a file is locked, the reader needs the
+    /// snapshot hash to fetch the pre-write content.
+    pub fn get_latest_snapshot_hash(
+        &self,
+        normalized_path: &str,
+    ) -> Result<Option<String>, ErgataiError> {
+        let conn = match self.conn.try_lock() {
+            Some(guard) => guard,
+            None => {
+                debug!(
+                    path = normalized_path,
+                    "get_latest_snapshot_hash: SQLite mutex busy, returning None"
+                );
+                return Ok(None);
+            }
+        };
+
+        SnapshotManager::get_latest_snapshot(&conn, normalized_path)
     }
 
     /// Perform local arbitration for a WRITE conflict.

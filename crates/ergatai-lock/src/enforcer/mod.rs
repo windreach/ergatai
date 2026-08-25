@@ -56,7 +56,7 @@ use crate::pid_resolver::PidResolver;
 use ergatai_error::{ErgataiError, ErgataiResult};
 use ergatai_nats::events::{EnforcementAction, FileEnforcementPayload};
 
-use self::backend::{EnforcementResult, EnforcerBackend};
+use self::backend::{EnforcementResult, EnforcerBackend, FileAccessEventType};
 
 /// Configuration for the enforcer.
 #[derive(Debug, Clone)]
@@ -593,69 +593,123 @@ impl Enforcer {
                 None => Decision::Allow, // outside project or resolution failed → allow
             };
 
-            // Write kernel response via the backend.
-            let result = match &decision {
-                Decision::Allow => EnforcementResult::Allow,
-                Decision::Deny { .. } => EnforcementResult::Deny,
-            };
-            if let Err(e) = backend.respond(event.platform_handle.clone(), result).await {
-                // Fail-open: if the backend can't respond, log but continue.
-                // The backend is responsible for ensuring the kernel-blocked
-                // process is released even on error.
-                warn!(error = %e, backend = backend.name(), "backend respond failed");
-            }
+            // Write kernel response via the backend (only for permission events).
+            // Notification events (FAN_MODIFY) don't need kernel response.
+            if event.event_type == FileAccessEventType::Permission {
+                let result = match &decision {
+                    Decision::Allow => EnforcementResult::Allow,
+                    Decision::Deny { .. } => EnforcementResult::Deny,
+                };
+                if let Err(e) = backend.respond(event.platform_handle.clone(), result).await {
+                    // Fail-open: if the backend can't respond, log but continue.
+                    // The backend is responsible for ensuring the kernel-blocked
+                    // process is released even on error.
+                    warn!(error = %e, backend = backend.name(), "backend respond failed");
+                }
 
-            // Audit + NATS publish run in a detached task so the event loop can
-            // return to reading the next event immediately. These are
-            // non-critical: a missed audit is far less harmful than a stalled
-            // event loop (which would block every open() system-wide).
-            if let Decision::Deny {
-                holder_agent,
-                holder_session,
-                caller_agent,
-            } = decision
-            {
-                let rel = relative.as_deref().unwrap_or("?").to_string();
+                // Audit + NATS publish run in a detached task so the event loop can
+                // return to reading the next event immediately. These are
+                // non-critical: a missed audit is far less harmful than a stalled
+                // event loop (which would block every open() system-wide).
+                if let Decision::Deny {
+                    holder_agent,
+                    holder_session,
+                    caller_agent,
+                } = decision
+                {
+                    let rel = relative.as_deref().unwrap_or("?").to_string();
+                    let engine = engine.clone();
+                    let nats_client = nats_client.clone();
+                    let publish_nats = config.publish_nats_events;
+                    let project_id_owned = project_id.to_string();
+                    let pid = event.pid;
+
+                    // Fire-and-forget audit + NATS publish. We intentionally detach
+                    // the JoinHandle: a missed audit is far less harmful than a
+                    // stalled event loop, and the spawned task has its own
+                    // catch_unwind via tokio.
+                    let _audit_handle = tokio::spawn(async move {
+                        // Audit log (fire-and-forget).
+                        if let Err(e) = engine.lock_manager().record_enforced_violation(
+                            &rel,
+                            caller_agent.as_deref(),
+                            Some(&holder_agent),
+                        ) {
+                            warn!(error = %e, "failed to record enforced violation");
+                        }
+                        // NATS event (fire-and-forget).
+                        if publish_nats {
+                            if let Some(client) = nats_client {
+                                let payload = FileEnforcementPayload {
+                                    file_path: rel,
+                                    pid,
+                                    agent_id: caller_agent.clone(),
+                                    session_id: None,
+                                    action: EnforcementAction::Denied,
+                                    holder_agent_id: Some(holder_agent.clone()),
+                                    holder_session_id: Some(holder_session.clone()),
+                                    reason: format!("file locked by {}", holder_agent),
+                                    timestamp: std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_secs())
+                                        .unwrap_or(0),
+                                };
+                                let subject = format!("ergatai.file.enforced.{}", project_id_owned);
+                                if let Ok(json) = serde_json::to_string(&payload) {
+                                    if let Err(e) = client.publish(subject, json.into()).await {
+                                        warn!(error = %e, "failed to publish enforcement event");
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+            } else if event.event_type == FileAccessEventType::Notification {
+                // FAN_MODIFY event: file was modified, trigger automatic WRITE lock acquisition
+                // This runs in a detached task to avoid blocking the event loop
+                let rel = relative.clone();
                 let engine = engine.clone();
-                let nats_client = nats_client.clone();
-                let publish_nats = config.publish_nats_events;
-                let project_id_owned = project_id.to_string();
                 let pid = event.pid;
+                let project_id_owned = project_id.clone();
 
-                // Fire-and-forget audit + NATS publish. We intentionally detach
-                // the JoinHandle: a missed audit is far less harmful than a
-                // stalled event loop, and the spawned task has its own
-                // catch_unwind via tokio.
-                let _audit_handle = tokio::spawn(async move {
-                    // Audit log (fire-and-forget).
-                    if let Err(e) = engine.lock_manager().record_enforced_violation(
-                        &rel,
-                        caller_agent.as_deref(),
-                        Some(&holder_agent),
-                    ) {
-                        warn!(error = %e, "failed to record enforced violation");
-                    }
-                    // NATS event (fire-and-forget).
-                    if publish_nats {
-                        if let Some(client) = nats_client {
-                            let payload = FileEnforcementPayload {
-                                file_path: rel,
-                                pid,
-                                agent_id: caller_agent.clone(),
-                                session_id: None,
-                                action: EnforcementAction::Denied,
-                                holder_agent_id: Some(holder_agent.clone()),
-                                holder_session_id: Some(holder_session.clone()),
-                                reason: format!("file locked by {}", holder_agent),
-                                timestamp: std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_secs())
-                                    .unwrap_or(0),
-                            };
-                            let subject = format!("ergatai.file.enforced.{}", project_id_owned);
-                            if let Ok(json) = serde_json::to_string(&payload) {
-                                if let Err(e) = client.publish(subject, json.into()).await {
-                                    warn!(error = %e, "failed to publish enforcement event");
+                let _auto_lock_handle = tokio::spawn(async move {
+                    if let Some(rel_path) = rel {
+                        // Resolve PID to agent identity
+                        let caller = engine.pid_resolver.resolve(pid);
+                        if let Some((agent_id, session_id)) = caller {
+                            // Check if agent already has a WRITE lock on this file
+                            let has_lock = engine
+                                .lock_manager()
+                                .has_write_lock(&rel_path, &agent_id, &session_id)
+                                .await
+                                .unwrap_or(false);
+
+                            if !has_lock {
+                                // Auto-acquire WRITE lock
+                                info!(
+                                    file_path = %rel_path,
+                                    agent_id = %agent_id,
+                                    pid = pid,
+                                    "Auto-acquiring WRITE lock on first modification"
+                                );
+
+                                // Create snapshot and acquire lock
+                                if let Err(e) = engine
+                                    .lock_manager()
+                                    .auto_acquire_write_lock(
+                                        &rel_path,
+                                        &agent_id,
+                                        &session_id,
+                                        &project_id_owned,
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        error = %e,
+                                        file_path = %rel_path,
+                                        agent_id = %agent_id,
+                                        "Failed to auto-acquire WRITE lock"
+                                    );
                                 }
                             }
                         }
@@ -962,6 +1016,7 @@ mod tests {
         let event = FileAccessEvent {
             absolute_path: project_root.join("target.rs"),
             pid: 99999, // unknown PID → allowed
+            event_type: FileAccessEventType::Permission,
             platform_handle: PlatformHandle::Advisory,
         };
         events_tx.send(event).await.unwrap();
@@ -1140,6 +1195,7 @@ mod tests {
         let event = FileAccessEvent {
             absolute_path: project_root.join("target.rs"),
             pid: 55555,
+            event_type: FileAccessEventType::Permission,
             platform_handle: PlatformHandle::Advisory,
         };
         events_tx.send(event).await.unwrap();

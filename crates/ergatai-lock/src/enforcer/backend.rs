@@ -7,6 +7,15 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
 
+/// Type of file access event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileAccessEventType {
+    /// Permission event (e.g., FAN_OPEN_PERM) - requires kernel response
+    Permission,
+    /// Notification event (e.g., FAN_MODIFY) - no kernel response needed
+    Notification,
+}
+
 /// Events emitted by platform backends to the facade.
 ///
 /// Each platform intercepts file access differently, but all produce
@@ -17,9 +26,12 @@ pub struct FileAccessEvent {
     pub absolute_path: PathBuf,
     /// PID of the process attempting the access.
     pub pid: u32,
+    /// Type of event (permission vs notification).
+    pub event_type: FileAccessEventType,
     /// Opaque platform-specific handle that must be passed to `respond()`.
     /// For fanotify: the event fd. For ES: the message identifier.
     /// For minifilter: the callback data pointer.
+    /// Only used for Permission events.
     pub platform_handle: PlatformHandle,
 }
 

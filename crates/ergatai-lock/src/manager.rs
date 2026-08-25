@@ -19,6 +19,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::enforcer::{Enforcer, EnforcerConfig};
+use crate::ipc_server::{start_ipc_server, IpcServerHandle};
 use crate::pid_resolver::PidResolver;
 use crate::{FileLockManager, SnapshotManager, Watchdog, WatchdogConfig};
 use ergatai_error::ErgataiResult;
@@ -31,6 +32,10 @@ struct ProjectFileAccess {
     watchdog: Arc<RwLock<Watchdog>>,
     /// Optional kernel-level enforcer (Phase 9). `None` in advisory-only mode.
     enforcer: Option<Arc<Enforcer>>,
+    /// IPC server handle for LD_PRELOAD snapshot queries. Cleaned up on drop.
+    /// `None` if IPC server failed to start (non-fatal — agents still work).
+    #[allow(dead_code)] // Used for Drop semantics — socket cleanup on shutdown.
+    ipc_handle: Option<IpcServerHandle>,
 }
 
 /// Global file access state
@@ -125,6 +130,7 @@ pub async fn init_file_access(project_id: &str, project_root: &Path) -> ErgataiR
             snapshot_manager,
             watchdog,
             enforcer: None, // Advisory-only mode; use init_file_access_with_enforcer for enforcement.
+            ipc_handle: None, // IPC server only needed with enforcement.
         },
     );
 
@@ -238,6 +244,23 @@ pub async fn init_file_access_with_enforcer(
         }
     };
 
+    // Start the IPC server for LD_PRELOAD snapshot queries.
+    // Fail-open: if binding fails, log a warning but continue.
+    let ipc_handle = match start_ipc_server(lock_manager.clone(), snapshot_manager.clone(), None) {
+        Ok(handle) => {
+            info!(project_id = project_id, "IPC server started for LD_PRELOAD snapshot reads");
+            Some(handle)
+        }
+        Err(e) => {
+            warn!(
+                project_id = project_id,
+                error = %e,
+                "IPC server failed to start (LD_PRELOAD snapshot reads disabled)"
+            );
+            None
+        }
+    };
+
     manager.projects.insert(
         project_id.to_string(),
         ProjectFileAccess {
@@ -245,6 +268,7 @@ pub async fn init_file_access_with_enforcer(
             snapshot_manager,
             watchdog,
             enforcer,
+            ipc_handle,
         },
     );
 

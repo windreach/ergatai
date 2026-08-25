@@ -13,6 +13,7 @@ members = [
     "crates/ergatai-api",
     "crates/ergatai-cli",
     "crates/ergatai-pty",
+    "crates/ergatai-preload",
     "examples/simple-agent",
 ]
 

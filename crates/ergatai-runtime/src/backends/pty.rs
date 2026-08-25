@@ -301,13 +301,50 @@ impl AgentRuntimeBackend for PtyBackend {
         let args: Vec<String> = parts.map(String::from).collect();
 
         // 3. Build PtyConfig with cwd/env
+        let mut env = env.clone();
+
+        // Inject LD_PRELOAD for transparent snapshot reads if the library exists.
+        // This allows the ergatai-preload library to intercept open() calls and
+        // redirect reads of locked files to Git snapshots.
+        #[cfg(target_os = "linux")]
+        {
+            let preload_paths = [
+                // Release build path
+                work_dir.join("target/release/libergatai_preload.so"),
+                // Debug build path
+                work_dir.join("target/debug/libergatai_preload.so"),
+                // Workspace root (for monorepo setups)
+                work_dir.join("../../target/release/libergatai_preload.so"),
+                work_dir.join("../../target/debug/libergatai_preload.so"),
+            ];
+
+            for path in &preload_paths {
+                if path.exists() {
+                    let path_str = path.to_string_lossy().to_string();
+                    // Append to existing LD_PRELOAD if set.
+                    let existing = env.get("LD_PRELOAD").cloned().unwrap_or_default();
+                    let new_value = if existing.is_empty() {
+                        path_str
+                    } else {
+                        format!("{}:{}", existing, path_str)
+                    };
+                    env.insert("LD_PRELOAD".to_string(), new_value);
+                    info!(
+                        preload_path = %path.display(),
+                        "Injected LD_PRELOAD for snapshot-based reads"
+                    );
+                    break;
+                }
+            }
+        }
+
         let config = PtyConfig {
             command: program.to_string(),
             args,
             rows: self.rows,
             cols: self.cols,
             cwd: Some(work_dir),
-            env: env.clone(),
+            env,
         };
 
         // 4. Spawn PTY process
@@ -369,6 +406,15 @@ impl AgentRuntimeBackend for PtyBackend {
                     // Record exit code
                     let code = reader_process.wait().await.unwrap_or(-1);
                     *reader_exit_code.lock().await = Some(code);
+
+                    // Send terminal reset sequence to restore PTY slave state.
+                    // TUI apps (crossterm/ratatui) enable raw mode, mouse tracking,
+                    // and alternate screen buffer. If the process dies without
+                    // restoring these, the terminal stays corrupted.
+                    // \x1b[!p = soft reset, \x1b[?1000l = disable mouse tracking,
+                    // \x1b[?1049l = exit alternate screen, \x1b[?25h = show cursor
+                    let _ = reader_process.write(b"\x1b[!p\x1b[?1000l\x1b[?1049l\x1b[?25h").await;
+
                     break;
                 }
 
@@ -429,7 +475,7 @@ impl AgentRuntimeBackend for PtyBackend {
 
             // Send prompt referencing the file
             let prompt = format!(
-                "Read and follow the instructions in {} — then complete the assigned task.\n",
+                "Read and follow the instructions in {} — then complete the assigned task.\r\n",
                 path
             );
             process.write(prompt.as_bytes()).await.map_err(|e| {
@@ -522,9 +568,10 @@ impl AgentRuntimeBackend for PtyBackend {
             )));
         }
 
-        // Write message + newline to PTY stdin
+        // Write message + carriage return + newline to PTY stdin
+        // PTY terminals need \r\n (not just \n) to trigger "Enter" behavior
         let mut msg = message.to_string();
-        msg.push('\n');
+        msg.push_str("\r\n");
         process.write(msg.as_bytes()).await.map_err(|e| {
             ErgataiError::internal(format!("Failed to write to PTY stdin: {}", e))
         })?;
@@ -596,6 +643,8 @@ impl AgentRuntimeBackend for PtyBackend {
         while tokio::time::Instant::now() < deadline {
             if process.has_exited().await {
                 info!(pid = %pid_str, "Agent exited after SIGTERM");
+                // Reset terminal state
+                let _ = process.write(b"\x1b[!p\x1b[?1000l\x1b[?1049l\x1b[?25h").await;
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -604,6 +653,8 @@ impl AgentRuntimeBackend for PtyBackend {
         // Escalate to SIGKILL for entire process group
         warn!(pid = %pid_str, "Agent process group did not exit within grace period, sending SIGKILL");
         let _ = process.signal_group(nix::sys::signal::Signal::SIGKILL);
+        // Reset terminal state after SIGKILL (process can't do it itself)
+        let _ = process.write(b"\x1b[!p\x1b[?1000l\x1b[?1049l\x1b[?25h").await;
 
         Ok(())
     }
@@ -613,11 +664,22 @@ impl AgentRuntimeBackend for PtyBackend {
             ErgataiError::internal("Missing PID in agent handle".to_string())
         })?;
 
-        let agents = self.agents.read();
-        if let Some(entry) = agents.get(pid_str) {
+        // Clone process Arc out of lock to avoid holding lock across await
+        let process = {
+            let agents = self.agents.read();
+            agents.get(pid_str).map(|e| e.process.clone())
+        };
+
+        if let Some(process) = process {
             warn!(pid = %pid_str, "Force-killing agent process group (SIGKILL)");
+
+            // Send terminal reset before killing — TUI apps leave the PTY in
+            // raw mode with mouse tracking enabled. Without reset, the parent
+            // terminal shows garbage on mouse movement.
+            let _ = process.write(b"\x1b[!p\x1b[?1000l\x1b[?1049l\x1b[?25h").await;
+
             // Kill entire process group (child + grandchildren)
-            let _ = entry.process.signal_group(nix::sys::signal::Signal::SIGKILL);
+            let _ = process.signal_group(nix::sys::signal::Signal::SIGKILL);
         }
 
         Ok(())

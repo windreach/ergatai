@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tracing::{error, warn};
 
-use super::backend::{EnforcementResult, EnforcerBackend, FileAccessEvent, PlatformHandle};
+use super::backend::{EnforcementResult, EnforcerBackend, FileAccessEvent, FileAccessEventType, PlatformHandle};
 
 /// Read `/proc/self/fd/{fd}` via readlink. Returns `None` on any error.
 pub(crate) fn readlink_proc_fd(fd: i32) -> Option<PathBuf> {
@@ -221,7 +221,9 @@ impl FanotifyBackend {
         }
         let raw_fd = raw_fd as RawFd;
 
-        // Mark the project root mount for permission events.
+        // Mark the project root mount for permission events AND modify events.
+        // FAN_OPEN_PERM: intercept open() for access control decisions
+        // FAN_MODIFY: detect file modifications for automatic WRITE lock acquisition
         let c_path = match std::ffi::CString::new(project_root.to_string_lossy().as_ref()) {
             Ok(c) => c,
             Err(e) => {
@@ -236,15 +238,15 @@ impl FanotifyBackend {
         };
         // SAFETY: `libc::syscall` is used because `libc::fanotify_mark` is not available
         // on all supported libc versions. Arguments: `raw_fd` is a valid open fanotify
-        // group fd; `FAN_MARK_ADD | FAN_MARK_MOUNT` and `FAN_OPEN_PERM` are valid flag
-        // combinations; `AT_FDCWD` is a standard sentinel; `c_path.as_ptr()` points to a
-        // valid NUL-terminated CString that lives until after the syscall returns.
+        // group fd; `FAN_MARK_ADD | FAN_MARK_MOUNT` and `FAN_OPEN_PERM | FAN_MODIFY` are
+        // valid flag combinations; `AT_FDCWD` is a standard sentinel; `c_path.as_ptr()`
+        // points to a valid NUL-terminated CString that lives until after the syscall returns.
         let rc = unsafe {
             libc::syscall(
                 libc::SYS_fanotify_mark,
                 raw_fd,
                 libc::FAN_MARK_ADD | libc::FAN_MARK_MOUNT,
-                libc::FAN_OPEN_PERM,
+                libc::FAN_OPEN_PERM | libc::FAN_MODIFY,  // Added FAN_MODIFY
                 libc::AT_FDCWD,
                 c_path.as_ptr(),
             )
@@ -381,6 +383,7 @@ impl FanotifyBackend {
                         state.pending.push_back(FileAccessEvent {
                             absolute_path: abs_path,
                             pid: meta.pid as u32,
+                            event_type: FileAccessEventType::Permission,
                             platform_handle: PlatformHandle::Fanotify {
                                 group_fd,
                                 event_fd: meta.fd,
@@ -397,6 +400,41 @@ impl FanotifyBackend {
                             "fanotify: readlink failed, failing open"
                         );
                         Self::respond_and_close_raw(group_fd, meta.fd, true);
+                    }
+                }
+            } else if meta.mask & libc::FAN_MODIFY != 0 {
+                // FAN_MODIFY: file modification notification event.
+                // No kernel response needed — this is a notification, not a permission request.
+                // Used for automatic WRITE lock acquisition.
+                match readlink_proc_fd(meta.fd) {
+                    Some(abs_path) => {
+                        // Skip self-PID events (our own file operations)
+                        if meta.pid as u32 == self_pid {
+                            state.offset += event_len;
+                            continue;
+                        }
+
+                        // Scope filter: only process events within project root
+                        if !abs_path.starts_with(project_root) {
+                            state.offset += event_len;
+                            continue;
+                        }
+
+                        state.pending.push_back(FileAccessEvent {
+                            absolute_path: abs_path,
+                            pid: meta.pid as u32,
+                            event_type: FileAccessEventType::Notification,
+                            platform_handle: PlatformHandle::Advisory, // No kernel response needed
+                        });
+                        found_any = true;
+                    }
+                    None => {
+                        // Path resolution failed — just skip this notification event
+                        warn!(
+                            fd = meta.fd,
+                            pid = meta.pid,
+                            "fanotify: readlink failed for FAN_MODIFY event, skipping"
+                        );
                     }
                 }
             }
