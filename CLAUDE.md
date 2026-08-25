@@ -138,7 +138,6 @@ crates/
 │       ├── task_coordinator.rs    跨节点协调
 │       ├── collaboration.rs       CollaborationSession + MeshPolicy
 │       ├── agent_launcher.rs      Agent 启动 + worktree/file-token 管理
-│       ├── message_router.rs      @agent 提及检测 + NATS 路由
 │       ├── plan_watcher.rs        任务计划/结果文件监控
 │       └── timeout_tier.rs        三阶段超时 (Warn/Escalate/Fail)
 ├── ergatai-dag/           DAG 解析和模板引擎
@@ -371,7 +370,7 @@ DAG 编排 + 通信两层抽象。`CollaborationSession`（`ergatai-collab/src/c
 
 | MeshPolicy | 含义 |
 |---|---|
-| `Open`（默认） | 任意参与者可互相 @mention |
+| `Open`（默认） | 任意参与者可互相通信（经 `send_message` ACL 校验） |
 | `Adjacent` | 仅 DAG 中有依赖边的 agent 对可通信 |
 | `Star { hub }` | 所有通信经过指定 hub agent |
 | `Restricted { pairs }` | 显式允许的 pair 列表 |

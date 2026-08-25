@@ -4,7 +4,6 @@
 pub mod agent_launcher;
 pub mod collaboration; // Collaboration session & mesh policy (DAG ↔ messaging glue)
 pub mod dag_scheduler; // DAG-based scheduler
-pub mod message_router;
 pub mod plan_watcher;
 pub mod task_coordinator;
 pub mod task_scheduler; // Agent-to-agent message routing via NATS
@@ -17,7 +16,6 @@ pub use dag_scheduler::{
     clear_dag_scheduler, clear_dag_scheduler_by_id, get_dag_scheduler, get_dag_scheduler_by_id,
     list_dag_schedulers, set_dag_scheduler, DagScheduler,
 };
-pub use message_router::{extract_mentions, route_agent_message, scan_and_route_mentions};
 pub use plan_watcher::PollingWatcher;
 pub use task_coordinator::TaskCoordinator;
 pub use task_scheduler::{
