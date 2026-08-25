@@ -129,7 +129,10 @@ impl PtyProcess {
         Ok(crate::ansi::strip_ansi(raw))
     }
 
-    /// Check if the child process has exited
+    /// Check if the child process has exited.
+    ///
+    /// Thread-safety: `exit_status` is behind a `tokio::sync::Mutex`, so concurrent
+    /// calls serialize correctly — no waitpid race is possible.
     pub async fn has_exited(&self) -> bool {
         let mut exit_status = self.exit_status.lock().await;
         if exit_status.is_some() {
@@ -150,10 +153,13 @@ impl PtyProcess {
             }
             Ok(WaitStatus::StillAlive) => false,
             Ok(_) => false,
-            Err(_) => {
+            // H-2: Only mark exited on ECHILD (child already reaped).
+            // Other errors (e.g. EINTR) are transient — don't set a fake exit code.
+            Err(nix::Error::ECHILD) => {
                 *exit_status = Some(-1);
                 true
             }
+            Err(_) => false,
         }
     }
 
@@ -230,11 +236,13 @@ impl Drop for PtyProcess {
             _ => {}
         }
 
-        // Spawn async cleanup task instead of blocking the runtime
+        // Spawn a detached OS thread for cleanup instead of tokio::spawn.
+        // tokio::spawn panics if the runtime is already shut down (e.g., during
+        // process exit or panic unwinding). std::thread::spawn is safe in any context.
         let pid = self.child_pid;
         let pgid_raw = self.process_group_id.as_raw();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
 
             // Check again after grace period
             if let Ok(WaitStatus::StillAlive) = waitpid(pid, Some(WaitPidFlag::WNOHANG)) {

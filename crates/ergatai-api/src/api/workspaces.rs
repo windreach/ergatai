@@ -15,7 +15,7 @@ pub struct CreateWorkspaceRequest {
     pub id: String,
     pub work_dir: Option<String>,
     pub env: Option<HashMap<String, String>>,
-    /// Whether to keep the tmux session after user detaches (default: false)
+    /// Whether to keep the agent workspace after user detaches (default: false)
     pub persist: Option<bool>,
 }
 
@@ -60,13 +60,15 @@ pub async fn create_workspace(
     Json(req): Json<CreateWorkspaceRequest>,
 ) -> impl IntoResponse {
     let runtime = get_agent_runtime();
+    let env = req.env.unwrap_or_default();
+
     let spec = WorkspaceSpec {
         id: req.id,
         work_dir: req
             .work_dir
             .unwrap_or_else(|| state.default_cwd.clone())
             .into(),
-        env: req.env.unwrap_or_default(),
+        env,
         resources: ResourceLimits::default(),
         backend_config: serde_json::json!({
             "persist": req.persist.unwrap_or(false)
@@ -196,12 +198,12 @@ mod tests {
         metadata.insert("key".to_string(), "value".to_string());
         let resp = WorkspaceResponse {
             id: "ws-1".to_string(),
-            backend: "rmux".to_string(),
+            backend: "pty".to_string(),
             metadata,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["id"], "ws-1");
-        assert_eq!(json["backend"], "rmux");
+        assert_eq!(json["backend"], "pty");
         assert_eq!(json["metadata"]["key"], "value");
     }
 
@@ -209,7 +211,7 @@ mod tests {
     fn test_workspace_response_empty_metadata() {
         let resp = WorkspaceResponse {
             id: "ws-1".to_string(),
-            backend: "tmux".to_string(),
+            backend: "pty".to_string(),
             metadata: HashMap::new(),
         };
         let json = serde_json::to_value(&resp).unwrap();

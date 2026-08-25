@@ -33,7 +33,7 @@ fn is_executable(path: &Path) -> bool {
 
 /// Binary file locator with environment override, bundled resources, and PATH fallback
 pub struct BinaryLocator {
-    /// Binary name (e.g., "nats-server", "rmux-daemon")
+    /// Binary name (e.g., "nats-server")
     pub name: &'static str,
     /// Environment variable override name (e.g., "ERGATAI_NATS_BINARY")
     pub env_override: Option<&'static str>,
@@ -154,7 +154,7 @@ impl BinaryLocator {
             // Try with arch-specific platform name first
             let dir = pattern.replace("{platform}", platform_arch);
             candidates.push(base_dir.join("resources").join(&dir).join(binary_name));
-            // Also check inside extracted archive directory (e.g., rmux-0.10.0-linux-x86_64/bin/rmux)
+            // Also check inside extracted archive directory (e.g., nats-server-v2.10.0-linux-x86_64/nats-server)
             candidates.push(
                 base_dir
                     .join("resources")
@@ -198,7 +198,7 @@ impl BinaryLocator {
                 .join(binary_name),
         );
 
-        // Search for versioned directories (e.g., rmux-0.10.0-linux-x86_64)
+        // Search for versioned directories (e.g., nats-server-v2.10.0-linux-x86_64)
         let resources_dir = base_dir.join("resources").join(platform_arch);
         if resources_dir.exists() {
             if let Ok(entries) = std::fs::read_dir(&resources_dir) {
@@ -326,7 +326,7 @@ mod tests {
     #[test]
     fn test_binary_file_name_unix() {
         if cfg!(not(target_os = "windows")) {
-            assert_eq!(binary_file_name("rmux"), "rmux");
+            assert_eq!(binary_file_name("some-tool"), "some-tool");
             assert_eq!(binary_file_name("nats-server"), "nats-server");
         }
     }
@@ -334,9 +334,9 @@ mod tests {
     #[test]
     fn test_binary_file_name_windows() {
         if cfg!(target_os = "windows") {
-            assert_eq!(binary_file_name("rmux"), "rmux.exe");
+            assert_eq!(binary_file_name("some-tool"), "some-tool.exe");
             // Already has .exe - should not double-add
-            assert_eq!(binary_file_name("rmux.exe"), "rmux.exe");
+            assert_eq!(binary_file_name("some-tool.exe"), "some-tool.exe");
         }
     }
 
@@ -419,12 +419,12 @@ mod tests {
         fs::create_dir_all(&tmp).unwrap();
 
         let locator = BinaryLocator {
-            name: "rmux",
+            name: "example-tool",
             env_override: None,
-            resource_subdir_pattern: Some("rmux-{platform}"),
+            resource_subdir_pattern: Some("example-tool-{platform}"),
         };
 
-        let candidates = locator.bundled_candidate_paths(&tmp, "rmux");
+        let candidates = locator.bundled_candidate_paths(&tmp, "example-tool");
         // Should have multiple candidate paths
         assert!(!candidates.is_empty());
 
@@ -469,19 +469,19 @@ mod tests {
         let versioned_dir = tmp
             .join("resources")
             .join(platform_arch)
-            .join("rmux-0.10.0");
+            .join("example-tool-0.10.0");
         let bin_dir = versioned_dir.join("bin");
         fs::create_dir_all(&bin_dir).unwrap();
-        let binary_path = bin_dir.join("rmux");
+        let binary_path = bin_dir.join("example-tool");
         fs::write(&binary_path, "fake").unwrap();
 
         let locator = BinaryLocator {
-            name: "rmux",
+            name: "example-tool",
             env_override: None,
             resource_subdir_pattern: None,
         };
 
-        let candidates = locator.bundled_candidate_paths(&tmp, "rmux");
+        let candidates = locator.bundled_candidate_paths(&tmp, "example-tool");
         // Should include the versioned binary path
         assert!(
             candidates.iter().any(|c| c == &binary_path),

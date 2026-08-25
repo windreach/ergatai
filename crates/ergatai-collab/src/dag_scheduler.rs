@@ -1930,9 +1930,8 @@ impl DagScheduler {
         //   4. spawn periodic discovery (every 30s)
         //
         // Between step 1 and step 3, some agents may still be starting up
-        // (tmux session created but child process not yet ready to expose
-        // TMUX_PANE via /proc/{pid}/environ). The initial discovery may miss
-        // them. Without this re-check, their Pending nodes would be marked
+        // (agent session created but child process not yet registered in the runtime).
+        // Without this re-check, their Pending nodes would be marked
         // Failed, and 30s later periodic discovery would find them — too late.
         //
         // Fix: trigger one more discovery scan and wait briefly, then re-check.
@@ -1958,7 +1957,7 @@ impl DagScheduler {
                 );
             }
 
-            // Brief pause to let any in-flight tmux/proc reads settle
+            // Brief pause to let any in-flight reads settle
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
             // Re-check each previously-missing agent

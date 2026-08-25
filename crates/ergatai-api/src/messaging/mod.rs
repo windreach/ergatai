@@ -36,7 +36,7 @@ pub enum SendMessageResult {
         stream: String,
         sequence: u64,
     },
-    /// Message delivered directly via tmux injection (NATS unavailable).
+    /// Message delivered directly via PTY injection (NATS unavailable).
     DirectDelivered { target_agent: String },
     /// Message was rejected.
     Rejected { reason: String },
@@ -102,7 +102,7 @@ impl MessageSender {
             None => {
                 return SendMessageResult::Rejected {
                     reason: format!(
-                        "Agent {} not found. Agent must connect via MCP or be running in tmux.",
+                        "Agent {} not found. Agent must connect via MCP or be running in a PTY workspace.",
                         req.to
                     ),
                 };
@@ -255,7 +255,7 @@ impl MessageSender {
             }
         }
 
-        // ── Fallback: direct tmux injection ──
+        // ── Fallback: direct PTY injection ──
         match runtime
             .inject_message(&resolved_agent_id, &formatted_content)
             .await

@@ -26,12 +26,12 @@ static AGENT_RUNTIME: OnceLock<Arc<AgentRuntime>> = OnceLock::new();
 
 /// Get the global AgentRuntime singleton.
 ///
-/// Initializes with `TmuxBackend` using the "ergatai" session prefix.
+/// Initializes with `PtyBackend` (direct PTY, no external dependencies).
 /// Call `init_agent_runtime()` instead if you need a custom backend.
 pub fn get_agent_runtime() -> Arc<AgentRuntime> {
     AGENT_RUNTIME
         .get_or_init(|| {
-            let backend = Arc::new(crate::backends::tmux::TmuxBackend::new("ergatai"));
+            let backend = Arc::new(crate::backends::pty::PtyBackend::new());
             Arc::new(AgentRuntime::new(backend))
         })
         .clone()
@@ -72,7 +72,7 @@ pub struct AgentRuntime {
     stable_id_index: Arc<RwLock<HashMap<String, String>>>,
     /// Queue of MCP agent IDs waiting to be bound to a runtime agent.
     /// Stores (mcp_agent_id, agent_identifier) tuples for precise binding.
-    /// Populated when an MCP agent connects before rmux discovery finds panes.
+    /// Populated when an MCP agent connects before runtime discovery finds agents.
     /// Drained after each successful discovery cycle.
     pending_mcp: Arc<RwLock<Vec<(String, String)>>>,
     /// Mutex to serialize binding operations.
@@ -201,7 +201,7 @@ impl AgentRuntime {
 
     /// Inject a message into a running agent.
     ///
-    /// Uses the backend (rmux) to inject text directly into the agent's pane.
+    /// Uses the backend to inject text directly into the agent's PTY.
     /// Supports both runtime IDs (e.g., "%198") and MCP IDs (e.g., "opencode@abcd1234")
     /// — MCP IDs are resolved to runtime IDs via the `mcp_index` mapping.
     pub async fn inject_message(&self, agent_id: &str, message: &str) -> ErgataiResult<()> {
@@ -219,7 +219,7 @@ impl AgentRuntime {
                 .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", runtime_id)))?
         };
 
-        // Deliver via backend injection (rmux send_text)
+        // Deliver via backend injection (PTY write)
         self.backend.inject_message(&info.handle, message).await
     }
 
@@ -304,10 +304,10 @@ impl AgentRuntime {
         Ok(())
     }
 
-    /// Register an externally-discovered agent (e.g., from rmux pane scan).
+    /// Register an externally-discovered agent.
     ///
     /// This allows agents started outside the normal `launch_agent()` flow
-    /// (e.g., manually in rmux panes) to receive messages via the runtime
+    /// (e.g., externally managed agents) to receive messages via the runtime
     /// delivery chain.
     ///
     /// MEDIUM BUG FIX: If the same agent_id is re-registered, the old UUID
@@ -524,40 +524,24 @@ impl AgentRuntime {
     /// Called from the periodic discovery loop (main.rs). One bad sample isn't
     /// enough — a process briefly in Z state during exit is normal.
     ///
-    /// Backends that don't support health checks are no-ops.
-    /// This method uses `as_any()` downcast to call TmuxBackend's health check;
+    /// This method uses `as_any()` downcast to call PtyBackend's health check;
     /// if the downcast fails, the method returns silently.
     ///
     /// Returns the list of agent IDs that were pruned in this pass, so callers
     /// can perform follow-up cleanup (e.g. dropping rate-limiter windows).
     pub async fn prune_unhealthy_agents(&self) -> Vec<String> {
         use crate::backends::proc_linux::ProcessState;
-        use crate::backends::tmux::TmuxBackend;
 
         let backend_any = self.backend.as_any();
 
-        // Try TmuxBackend first (default).
-        let health = if let Some(tmux_backend) = backend_any.downcast_ref::<TmuxBackend>() {
-            tmux_backend.health_check_agents().await
-        } else if let Some(pty_backend) = backend_any.downcast_ref::<crate::backends::pty::PtyBackend>() {
-            pty_backend.health_check_agents().await
-        } else {
-            // Try RmuxBackend (deprecated but still in use behind feature flag).
-            #[cfg(feature = "rmux")]
-            if let Some(rmux_backend) =
-                backend_any.downcast_ref::<crate::backends::rmux::RmuxBackend>()
+        let health =
+            if let Some(pty_backend) = backend_any.downcast_ref::<crate::backends::pty::PtyBackend>()
             {
-                rmux_backend.health_check_agents().await
+                pty_backend.health_check_agents().await
             } else {
                 debug!("health check not supported by backend, skipping prune");
                 return Vec::new();
-            }
-            #[cfg(not(feature = "rmux"))]
-            {
-                debug!("health check not supported by backend, skipping prune");
-                return Vec::new();
-            }
-        };
+            };
 
         let mut pruned = Vec::new();
         let mut streaks = self.unhealthy_streaks.lock().await;
@@ -600,7 +584,7 @@ impl AgentRuntime {
                 )
                 .await;
 
-                // Also cleanup workspace (tmux session) to prevent resource leak
+                // Also cleanup workspace to prevent resource leak
                 if let Err(e) = self.backend.cleanup_workspace(&info.handle.workspace).await {
                     warn!(
                         agent_id = agent_id,
@@ -623,7 +607,7 @@ impl AgentRuntime {
     /// Uses FIFO strategy: finds the first runtime agent without an MCP binding
     /// and associates it with the given MCP ID. If no unmapped runtime agent
     /// exists, the MCP ID is added to the pending queue for later binding
-    /// (when rmux discovery finds new panes).
+    /// (when discovery finds new agents).
     ///
     /// Returns the runtime agent ID if binding succeeded, or `None` if queued.
     ///
@@ -1319,7 +1303,7 @@ impl AgentRuntime {
             }
             unhealthy_streaks.lock().await.remove(&agent_id);
 
-            // Cleanup workspace (tmux session)
+            // Cleanup workspace
             if let Err(e) = backend.cleanup_workspace(&workspace_handle).await {
                 debug!(
                     agent_id = agent_id,
@@ -1725,9 +1709,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_prune_unhealthy_agents_no_panic_without_rmux() {
-        // With a non-Rmux backend, prune_unhealthy_agents() should be a silent no-op
-        // (the downcast to RmuxBackend fails and the method returns early).
+    async fn test_prune_unhealthy_agents_no_panic_without_matching_backend() {
+        // With a non-PtyBackend, prune_unhealthy_agents() should be a silent no-op
+        // (the downcast to PtyBackend fails and the method returns early).
         let runtime = make_runtime();
         runtime
             .launch_agent(make_spec("ws-1"), "cmd", None)

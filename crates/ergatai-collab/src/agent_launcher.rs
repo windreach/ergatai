@@ -1,4 +1,4 @@
-// Agent Launcher - Starts agents in tmux panes and injects tasks
+// Agent Launcher - Starts agents and injects tasks
 // Manages agent sessions and monitors their completion
 //
 // ARCHITECTURE NOTE (Phase 8 - File Access Control Integration):
@@ -84,7 +84,7 @@ pub struct RunningAgent {
     pub status: AgentSessionStatus,
     /// New unified lifecycle state
     pub lifecycle: Option<ergatai_runtime::AgentLifecycleState>,
-    /// Tmux pane ID where the agent is running (e.g. "ergatai-opencode:0.0")
+    /// Runtime agent ID where the agent is running
     pub pane_id: Option<String>,
     /// File access token ID (for file access control)
     pub token_id: Option<String>,
@@ -120,7 +120,7 @@ fn safe_truncate_utf8(s: &str, max_len: usize) -> String {
     format!("{}\n\n[... truncated ...]", &s[..end])
 }
 
-/// Agent Launcher - manages agent tmux sessions
+/// Agent Launcher - manages agent sessions
 pub struct AgentLauncher {
     coordinator: Arc<TaskCoordinator>,
     running_agents: Arc<Mutex<HashMap<String, RunningAgent>>>,
@@ -353,7 +353,7 @@ impl AgentLauncher {
             }
         } else {
             // Agent not found in registry — launch a new process
-            self.spawn_tmux_session(
+            self.spawn_agent_session(
                 &agent_id,
                 &work_dir,
                 &assignment.agent_name,
@@ -502,7 +502,7 @@ impl AgentLauncher {
                 }
             }
 
-            // Publish NATS event so DagScheduler picks up completion (same pattern as spawn_tmux_session watcher)
+            // Publish NATS event so DagScheduler picks up completion (same pattern as spawn_agent_session watcher)
             if ergatai_nats::is_nats_initialized().await {
                 if let Some(conn) = ergatai_nats::get_nats_connection().await {
                     let bus = ergatai_nats::event_bus::EventBus::new(conn);
@@ -704,7 +704,7 @@ Write your results in markdown:
     ///
     /// If `node_id` is Some, the agent is part of a DAG — completion/failure
     /// automatically triggers `DagScheduler::on_node_completed/failed`.
-    async fn spawn_tmux_session(
+    async fn spawn_agent_session(
         &self,
         agent_id: &str,
         worktree_path: &Path,

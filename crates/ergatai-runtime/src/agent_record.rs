@@ -75,7 +75,7 @@ pub struct AgentRecord {
 ///
 /// ## ID System
 ///
-/// - `agent_id`: **Runtime ID** — dynamic identifier from the backend (e.g., `%15` for tmux).
+/// - `agent_id`: **Runtime ID** — dynamic identifier from the backend (e.g., PTY agent ID).
 ///   Changes when the pane is recreated.
 /// - `metadata["ergatai_agent_id"]`: **Stable ID** — survives restarts (e.g., `agent-1`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,7 +85,7 @@ pub struct AgentHandle {
 
     /// **Runtime ID** — dynamic identifier from the backend.
     ///
-    /// For tmux backend: the `TMUX_PANE` value (e.g., `%15`).
+    /// For PTY backend: the runtime agent ID.
     /// Not stable across pane restarts. For cross-restart identification,
     /// use `metadata["ergatai_agent_id"]`.
     pub agent_id: String,
@@ -97,7 +97,7 @@ pub struct AgentHandle {
     ///
     /// Key entries:
     /// - `ergatai_agent_id`: **Stable ID** — survives pane restarts
-    /// - `pane_id`: tmux pane identifier
+    /// - `pane_id`: runtime agent identifier
     pub metadata: std::collections::HashMap<String, String>,
 }
 

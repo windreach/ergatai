@@ -127,20 +127,20 @@ async fn wait_for_first_signal() {
 /// Orchestrate graceful shutdown of all subsystems.
 ///
 /// Order matters: dependents are shut down before the services they rely on.
-/// 1. Agent runtime (stop all agents, cleanup tmux sessions)
+/// 1. Agent runtime (stop all agents, cleanup workspaces)
 /// 2. File access control (release locks, stop watchdogs)
 /// 3. NATS (last — other shutdowns may publish completion events)
 ///
 /// Each step is wrapped in its own timeout so a single stuck subsystem
 /// cannot block the rest.
 ///
-/// CRITICAL BUG FIX: Previously, graceful_shutdown() did NOT clean up tmux
+/// CRITICAL BUG FIX: Previously, graceful_shutdown() did NOT clean up
 /// sessions, leaving orphaned sessions after server restart.
 async fn graceful_shutdown() -> ErgataiResult<()> {
     use std::time::Duration;
     const STEP_TIMEOUT: Duration = Duration::from_secs(5);
 
-    // 1. Agent runtime (stop all agents + cleanup tmux sessions)
+    // 1. Agent runtime (stop all agents + cleanup workspaces)
     tracing::info!("Step 1/3: shutting down agent runtime...");
     match tokio::time::timeout(STEP_TIMEOUT, async {
         let runtime = crate::runtime::get_agent_runtime();

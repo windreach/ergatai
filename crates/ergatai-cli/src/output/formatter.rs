@@ -80,23 +80,13 @@ pub fn format_status(status: &StatusResponse) {
     println!("Agents:");
     println!("  Active: {}", status.active_agents);
     println!();
-
-    if let Some(info) = &status.backend_info {
-        println!("Tmux Backend:");
-        println!("  Version: {}", info.version);
-        println!("  Total panes: {}", info.total_panes);
-        println!("  Sessions: {}", info.sessions.len());
-        for session in &info.sessions {
-            println!("    - {} ({} panes)", session.name, session.panes);
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::client::http::{
-        AgentInfoResponse, StatusResponse, TmuxBackendInfo, TmuxSessionInfo, WorkspaceResponse,
+        AgentInfoResponse, StatusResponse, WorkspaceResponse,
     };
     use std::collections::HashMap;
 
@@ -180,7 +170,6 @@ mod tests {
             nats_initialized: true,
             nats_port: Some(4222),
             active_agents: 3,
-            backend_info: None,
         };
         format_status(&status);
     }
@@ -191,48 +180,6 @@ mod tests {
             nats_initialized: false,
             nats_port: None,
             active_agents: 0,
-            backend_info: None,
-        };
-        format_status(&status);
-    }
-
-    #[test]
-    fn test_format_status_with_backend_info() {
-        let status = StatusResponse {
-            nats_initialized: true,
-            nats_port: Some(4222),
-            active_agents: 2,
-            backend_info: Some(TmuxBackendInfo {
-                version: "3.4".to_string(),
-                sessions: vec![
-                    TmuxSessionInfo {
-                        name: "ergatai-ws1".to_string(),
-                        panes: 3,
-                        created: "2024-01-01".to_string(),
-                    },
-                    TmuxSessionInfo {
-                        name: "ergatai-ws2".to_string(),
-                        panes: 2,
-                        created: "2024-01-02".to_string(),
-                    },
-                ],
-                total_panes: 5,
-            }),
-        };
-        format_status(&status);
-    }
-
-    #[test]
-    fn test_format_status_backend_empty_sessions() {
-        let status = StatusResponse {
-            nats_initialized: true,
-            nats_port: Some(4222),
-            active_agents: 0,
-            backend_info: Some(TmuxBackendInfo {
-                version: "3.4".to_string(),
-                sessions: vec![],
-                total_panes: 0,
-            }),
         };
         format_status(&status);
     }

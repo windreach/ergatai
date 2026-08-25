@@ -25,6 +25,7 @@
 //! | `FileErrorPayload`           | `ergatai.file.error.{file_hash}`           | FileLockMgr     | Waiters       |
 //! | `SystemTokenPayload`         | `ergatai.system.token.{agent_id}`          | System          | Agent         |
 //! | `AgentLifecycleEventPayload` | `ergatai.agent.lifecycle.{agent_uuid}`     | UnifiedRegistry | TaskScheduler |
+//! | `ApiEventPayload`            | `ergatai.agent.api.{agent_uuid}`           | LlmProxy        | StateInference|
 
 use std::collections::HashMap;
 
@@ -465,6 +466,45 @@ pub enum DagEvent {
     FileEnforcement(FileEnforcementPayload),
     /// Agent lifecycle state change event.
     AgentLifecycle(AgentLifecycleEventPayload),
+    /// LLM API traffic interception event (agent semantic state).
+    ApiEvent(ApiEventPayload),
+}
+
+/// LLM API traffic event published by the MITM proxy.
+///
+/// Published on core NATS (low-latency) for semantic state inference.
+/// Subject: `ergatai.agent.api.{agent_uuid}`
+///
+/// Each variant corresponds to a phase of the LLM request/response lifecycle:
+/// `request_started` → `first_token` → `content_delta*` → `stream_end`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiEventPayload {
+    /// Stable agent UUID for correlation.
+    pub agent_uuid: String,
+    /// Event type: "request_started" | "first_token" | "content_delta" | "stream_end" | "error"
+    pub event_type: String,
+    /// Protocol identifier: "openai" | "anthropic"
+    pub protocol: String,
+    /// Model name (e.g., "claude-sonnet-4-20250514", "gpt-4o")
+    pub model: Option<String>,
+    /// Time-to-first-token latency in milliseconds (first_token only)
+    pub latency_ms: Option<u64>,
+    /// Content delta type: "text" | "thinking" | "tool_call" (content_delta only)
+    pub delta_type: Option<String>,
+    /// Content delta bytes (content_delta only)
+    pub delta_bytes: Option<usize>,
+    /// Stop reason: "end_turn" | "tool_use" | "length" | "content_filter" (stream_end only)
+    pub stop_reason: Option<String>,
+    /// Input token count (stream_end, if reported)
+    pub input_tokens: Option<u64>,
+    /// Output token count (stream_end, if reported)
+    pub output_tokens: Option<u64>,
+    /// HTTP error status code (error only)
+    pub error_status: Option<u16>,
+    /// Error message (error only)
+    pub error_message: Option<String>,
+    /// RFC3339 or unix-seconds timestamp.
+    pub timestamp: String,
 }
 
 #[cfg(test)]

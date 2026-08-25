@@ -1,12 +1,7 @@
 //! Ergatai Runtime — pluggable agent execution backends.
 //!
-//! This crate provides the `AgentRuntimeBackend` trait and concrete implementations
-//! for running agents in different environments:
-//!
-//! - **TmuxBackend**: tmux CLI-based terminal multiplexer (preferred, default)
-//! - **PtyBackend**: direct PTY-based process control (no tmux dependency)
-//! - **RmuxBackend**: rmux SDK-based terminal multiplexer (deprecated)
-//! - **DirectProcessBackend**: direct process spawning (no terminal multiplexer)
+//! This crate provides the `AgentRuntimeBackend` trait and the `PtyBackend`
+//! implementation for running agents with direct PTY-based process control.
 //!
 //! The `AgentRuntime` facade wraps a backend with state tracking and MCP
 //! integration, providing a high-level API for launching, messaging, and
@@ -60,18 +55,7 @@ pub use agent_record::{
     WorkspaceHandle as RecordWorkspaceHandle,
 };
 pub use backend::AgentRuntimeBackend;
-pub use backends::direct_process::DirectProcessBackend;
 pub use backends::pty::PtyBackend;
-#[cfg(feature = "rmux")]
-pub use backends::rmux::{ManagedPaneInfo, RmuxBackend, RmuxDaemonInfo};
-#[deprecated(
-    since = "0.2.0",
-    note = "renamed to TmuxBackend — use TmuxBackend directly"
-)]
-pub use backends::tmux::TmuxBackend as LocalPtyBackend;
-pub use backends::tmux::{TmuxBackend, TmuxPaneInfo, TmuxSessionInfo, TmuxStatus};
-#[cfg(feature = "rmux")]
-pub use rmux_sdk::RmuxEndpoint;
 pub use runtime::{get_agent_runtime, init_agent_runtime, AgentRuntime};
 pub use types::{
     AgentHandle, AgentInfo, BackendCapabilities, ResourceLimits, WaitResult, WorkspaceHandle,

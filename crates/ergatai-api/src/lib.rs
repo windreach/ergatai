@@ -116,6 +116,10 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/agents/:id/message",
             post(api::agents::send_message),
         )
+        .route(
+            "/api/v1/agents/:id/terminal",
+            get(api::terminal::terminal_ws),
+        )
         // Status
         .route("/api/v1/status", get(api::status::get_status))
         // DAG

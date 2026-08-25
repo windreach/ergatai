@@ -1,6 +1,6 @@
 use crate::client::http::ErgataiClient;
+use crate::client::websocket::attach_terminal;
 use anyhow::{Context, Result};
-use std::process::Command;
 
 /// Sanitize a string to be a valid workspace_id.
 /// Converts paths like "./start-opencode-1.sh" to "start-opencode-1"
@@ -99,10 +99,10 @@ pub async fn handle(
     println!("✓ Workspace ready: {} (id: {})", agent_name, workspace.id);
 
     // Step 2: Spawn agent (use absolute path as command, pass work_dir).
-    // Always call spawn — the backend's find_running_pane() does proper tmux-level
+    // Always call spawn — the backend's find_running_pane() does proper PTY-level
     // verification and will reattach to an existing pane or send the command to the
     // default pane as appropriate. The API agent registry can be stale (e.g. after
-    // the tmux session is killed externally), so we must NOT skip spawn based on it.
+    // the PTY session is killed externally), so we must NOT skip spawn based on it.
     println!("✓ Spawning agent: {}", agent_command);
     let response = client
         .spawn_agent(
@@ -115,25 +115,12 @@ pub async fn handle(
         .context("Failed to spawn agent")?;
     println!("✓ Agent spawned: {}", response.agent_id);
 
-    // Step 4: Attach to session
-    let session_name = workspace
-        .metadata
-        .get("session")
-        .context("Workspace metadata missing 'session' key")?;
-
-    println!("✓ Attaching to session: {}", session_name);
-    println!("   (Press Ctrl+B, D to detach)");
+    // Step 3: Attach to agent terminal via WebSocket
+    println!("✓ Connecting to agent terminal via WebSocket...");
+    println!("   (Press Ctrl+C to detach)");
     println!();
 
-    // Call tmux attach
-    let status = Command::new("tmux")
-        .args(["attach-session", "-t", session_name])
-        .status()
-        .context("Failed to execute 'tmux attach-session'. Is tmux installed?")?;
-
-    if !status.success() {
-        anyhow::bail!("tmux attach-session exited with status: {}", status);
-    }
+    attach_terminal(&response.agent_id, api_url, token).await?;
 
     Ok(())
 }

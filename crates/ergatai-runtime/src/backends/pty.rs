@@ -4,12 +4,12 @@
 //! via direct `write()` to the PTY master fd, and output is captured via
 //! background reader tasks that maintain a rolling buffer.
 //!
-//! # Advantages over TmuxBackend
+//! # Advantages
 //!
-//! - No external tmux binary dependency
+//! - No external binary dependencies
 //! - Direct fd-level control (lower latency)
 //! - Precise output capture (raw bytes before terminal rendering)
-//! - Simpler process lifecycle (waitpid vs tmux hooks)
+//! - Simpler process lifecycle (waitpid)
 //!
 //! # Limitations
 //!
@@ -101,6 +101,9 @@ struct AgentEntry {
     #[allow(dead_code)]
     workspace_id: String,
     reader_handle: JoinHandle<()>,
+    /// Flag to pause the background reader when WebSocket terminal is connected.
+    /// When true, the background reader skips reading (leaves data for WebSocket reader).
+    reader_paused: Arc<std::sync::atomic::AtomicBool>,
     exit_code: Arc<TokioMutex<Option<i32>>>,
     /// Path to the instruction temp file, if one was written for this agent.
     /// Cleaned up on drop to avoid leaking files in /tmp.
@@ -128,6 +131,9 @@ struct WorkspaceEntry {
     /// Cgroup controller for resource limits (CPU/memory).
     /// None if cgroups v2 is unavailable or no limits were specified.
     cgroup_controller: Option<CgroupController>,
+    /// Counter for generating deterministic agent IDs within this workspace.
+    /// Each agent gets {workspace_id}-agent-{counter}.
+    agent_counter: u32,
 }
 
 // ── PtyBackend ──
@@ -258,6 +264,7 @@ impl AgentRuntimeBackend for PtyBackend {
             env: spec.env.clone(),
             agent_pids: Vec::new(),
             cgroup_controller,
+            agent_counter: 0,
         };
 
         self.workspaces.write().insert(spec.id.clone(), entry);
@@ -331,14 +338,22 @@ impl AgentRuntimeBackend for PtyBackend {
         // 5. Create output buffer + background reader
         let output = Arc::new(OutputBuffer::new(OUTPUT_BUFFER_MAX_SIZE));
         let exit_code = Arc::new(TokioMutex::new(None));
+        let reader_paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let reader_process = process.clone();
         let reader_output = output.clone();
         let reader_exit_code = exit_code.clone();
         let reader_pid = pid_str.clone();
+        let reader_paused_clone = reader_paused.clone();
         let reader_handle = tokio::spawn(async move {
             let mut buf = [0u8; 4096];
             loop {
+                // Check if background reader is paused (WebSocket terminal connected)
+                if reader_paused_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+
                 // Check if process has exited
                 if reader_process.has_exited().await {
                     // Drain remaining output
@@ -432,7 +447,18 @@ impl AgentRuntimeBackend for PtyBackend {
 
         // 7. Build AgentHandle (before insertion, so it can be stored in AgentEntry
         //    and returned by discover_agents() for registry integration)
-        let agent_id = format!("agent-{}", uuid::Uuid::new_v4());
+        //
+        // Generate deterministic agent ID: {workspace_id}-agent-{counter}
+        // This replaces the old TMUX_PANE-based IDs (%15, %16) with a stable,
+        // workspace-scoped identifier that persists across agent restarts.
+        let agent_id = {
+            let mut workspaces = self.workspaces.write();
+            let ws = workspaces.get_mut(&handle.id).ok_or_else(|| {
+                ErgataiError::internal(format!("Workspace disappeared: {}", handle.id))
+            })?;
+            ws.agent_counter += 1;
+            format!("{}-agent-{}", handle.id, ws.agent_counter)
+        };
         let mut metadata = HashMap::new();
         metadata.insert("ergatai_agent_id".to_string(), agent_id.clone());
 
@@ -451,6 +477,7 @@ impl AgentRuntimeBackend for PtyBackend {
                 output: output.clone(),
                 workspace_id: handle.id.clone(),
                 reader_handle,
+                reader_paused: reader_paused.clone(),
                 exit_code: exit_code.clone(),
                 instr_path,
                 handle: agent_handle.clone(),
@@ -734,6 +761,52 @@ impl AgentRuntimeBackend for PtyBackend {
 
         debug!(count = result.len(), "PtyBackend discover_agents");
         Ok(result)
+    }
+
+    async fn get_pty_process(
+        &self,
+        handle: &AgentHandle,
+    ) -> ErgataiResult<Option<Arc<PtyProcess>>> {
+        let pid_str = handle.process_id.as_ref().ok_or_else(|| {
+            ErgataiError::internal("Agent has no process_id")
+        })?;
+
+        let agents = self.agents.read();
+        let entry = agents.get(pid_str).ok_or_else(|| {
+            ErgataiError::internal(format!("Agent {} not found", pid_str))
+        })?;
+
+        // Pause the background reader so it doesn't compete with the WebSocket reader
+        entry
+            .reader_paused
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        debug!(pid = %pid_str, "Paused background PTY reader for WebSocket terminal");
+
+        Ok(Some(entry.process.clone()))
+    }
+
+    async fn resize_pty(
+        &self,
+        handle: &AgentHandle,
+        rows: u16,
+        cols: u16,
+    ) -> ErgataiResult<()> {
+        let pid_str = handle.process_id.as_ref().ok_or_else(|| {
+            ErgataiError::internal("Agent has no process_id")
+        })?;
+
+        // Clone process Arc out of lock to avoid holding lock across await
+        let process = {
+            let agents = self.agents.read();
+            let entry = agents.get(pid_str).ok_or_else(|| {
+                ErgataiError::internal(format!("Agent {} not found", pid_str))
+            })?;
+            entry.process.clone()
+        };
+
+        process.resize(rows, cols).await.map_err(|e| {
+            ErgataiError::internal(format!("Failed to resize PTY: {}", e))
+        })
     }
 }
 

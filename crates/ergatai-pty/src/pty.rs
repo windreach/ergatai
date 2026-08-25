@@ -98,7 +98,7 @@ impl Pty {
                 // Change working directory (chdir syscall is async-signal-safe).
                 if let Some(dir) = cwd {
                     if let Err(e) = nix::unistd::chdir(dir) {
-                        write_child_error_and_exit("chdir failed", &e);
+                        write_child_error_and_exit("chdir failed", &std::io::Error::from(e));
                     }
                 }
 
@@ -197,7 +197,10 @@ fn resolve_in_path(command: &str) -> anyhow::Result<CString> {
 /// This is the ONLY safe way to report errors between `fork` and `exec` in a
 /// multi-threaded program — `println!`, `eprintln!`, `std::process::exit`, and
 /// any allocator-backed I/O risk deadlock or heap corruption.
-fn write_child_error_and_exit(context: &str, err: &dyn std::fmt::Display) -> ! {
+///
+/// IMPORTANT: No heap allocation is performed here. The `io::Error` is converted to
+/// its raw OS error code (an integer) and formatted via stack-only digit conversion.
+fn write_child_error_and_exit(context: &str, err: &std::io::Error) -> ! {
     use std::os::unix::io::RawFd;
     const STDERR: RawFd = 2;
 
@@ -205,24 +208,59 @@ fn write_child_error_and_exit(context: &str, err: &dyn std::fmt::Display) -> ! {
     let mut buf = [0u8; 256];
     let mut pos = 0;
 
-    // Manual ASCII write helper (never allocates).
-    let mut write_bytes = |bytes: &[u8]| {
+    // Manual ASCII write helper (never allocates). Returns remaining capacity.
+    let write_all = |buf: &mut [u8; 256], pos: &mut usize, bytes: &[u8]| {
         for &b in bytes {
-            if pos < buf.len() {
-                buf[pos] = b;
-                pos += 1;
+            if *pos < buf.len() {
+                buf[*pos] = b;
+                *pos += 1;
             }
         }
     };
 
-    write_bytes(b"ergatai-pty: ");
-    write_bytes(context.as_bytes());
-    write_bytes(b": ");
+    // Write a non-negative integer as decimal digits (stack-only, no allocation).
+    let write_decimal = |buf: &mut [u8; 256], pos: &mut usize, mut val: u32| {
+        if val == 0 {
+            if *pos < buf.len() {
+                buf[*pos] = b'0';
+                *pos += 1;
+            }
+            return;
+        }
+        let mut digits = [0u8; 10];
+        let mut len = 0;
+        while val > 0 {
+            digits[len] = b'0' + (val % 10) as u8;
+            val /= 10;
+            len += 1;
+        }
+        // Write digits in reverse (most significant first).
+        for i in (0..len).rev() {
+            if *pos < buf.len() {
+                buf[*pos] = digits[i];
+                *pos += 1;
+            }
+        }
+    };
 
-    // Format the error Display into the buffer (ASCII-safe truncation).
-    let err_str = format!("{}", err);
-    write_bytes(err_str.as_bytes());
-    write_bytes(b"\n");
+    write_all(&mut buf, &mut pos, b"ergatai-pty: ");
+    write_all(&mut buf, &mut pos, context.as_bytes());
+    write_all(&mut buf, &mut pos, b": ");
+
+    // Extract raw OS error code and format without allocation.
+    match err.raw_os_error() {
+        Some(code) if code < 0 => {
+            write_all(&mut buf, &mut pos, b"errno -");
+            write_decimal(&mut buf, &mut pos, (-code) as u32);
+        }
+        Some(code) => {
+            write_decimal(&mut buf, &mut pos, code as u32);
+        }
+        None => {
+            write_all(&mut buf, &mut pos, b"unknown error");
+        }
+    }
+    write_all(&mut buf, &mut pos, b"\n");
 
     // Best-effort write to stderr; ignore errors (we're exiting anyway).
     unsafe {

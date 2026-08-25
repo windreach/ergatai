@@ -203,13 +203,15 @@ pub async fn spawn_agent(
     }
 
     let runtime = get_agent_runtime();
+    let env = req.env.unwrap_or_default();
+
     let spec = WorkspaceSpec {
         id: req.workspace_id,
         work_dir: req
             .work_dir
             .unwrap_or_else(|| state.default_cwd.clone())
             .into(),
-        env: req.env.unwrap_or_default(),
+        env,
         resources: ResourceLimits::default(),
         backend_config: serde_json::json!({}),
     };

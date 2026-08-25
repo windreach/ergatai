@@ -17,7 +17,7 @@
 //!   ↓ pull
 //! MessageDeliveryConsumer
 //!   ↓ deserialize AgentMessagePayload
-//!   ↓ AgentRuntime injection (rmux/tmux send_text)
+//!   ↓ AgentRuntime injection (PTY send_text)
 //!   ├─ OK → ack
 //!   └─ fail → nak (JetStream retries)
 //! ```
@@ -363,7 +363,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
         }
     }
 
-    // ── Deliver via AgentRuntime injection (rmux/tmux send_text) ──
+    // ── Deliver via AgentRuntime injection (PTY send_text) ──
     // Uses the terminal multiplexer backend to inject text directly into the
     // target agent's pane, simulating keyboard input.
 

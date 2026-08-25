@@ -20,9 +20,9 @@ ergatai-core = { path = "../ergatai-core" }
 ergatai-nats = { path = "../ergatai-nats" }
 # Error types
 ergatai-error = { path = "../ergatai-error" }
-# Agent runtime (pluggable backends) — enable `rmux` feature for deprecated rmux backend support
-ergatai-runtime = { path = "../ergatai-runtime", features = ["rmux"] }
-# Binary locator (NATS, rmux daemon)
+# Agent runtime (PTY backend for agent workspace management)
+ergatai-runtime = { path = "../ergatai-runtime" }
+# Binary locator (NATS server)
 ergatai-binary = { path = "../ergatai-binary" }
 # File access control (locks, tokens)
 ergatai-lock = { path = "../ergatai-lock" }

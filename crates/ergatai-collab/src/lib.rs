@@ -8,7 +8,6 @@ pub mod plan_watcher;
 pub mod task_coordinator;
 pub mod task_scheduler; // Agent-to-agent message routing via NATS
 pub mod timeout_tier; // Three-stage node timeout escalation (warn → escalate → fail)
-pub mod tmux; // Tmux-based agent management
 
 pub use agent_launcher::{AgentLauncher, AgentSessionStatus, RunningAgent};
 pub use collaboration::{CollaborationSession, CommunicationCheck, MeshPolicy};
@@ -21,4 +20,3 @@ pub use task_coordinator::TaskCoordinator;
 pub use task_scheduler::{
     global_scheduler, AgentAvailability, PendingTask, ScheduleStrategy, TaskScheduler,
 };
-pub use tmux::TmuxManager;

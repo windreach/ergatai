@@ -29,6 +29,8 @@ pub use event_bus::EventBus;
 pub use events::{
     AgentLifecycleEventPayload,
     AgentMessagePayload,
+    // LLM API traffic events (agent semantic state)
+    ApiEventPayload,
     DagCompletePayload,
     DagEvent,
     EnforcementAction,

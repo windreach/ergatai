@@ -14,7 +14,7 @@
 //!   ↓
 //! MessageDeliveryConsumer (background task)
 //!   ↓ pull from stream
-//!   ↓ try tmux injection → ack on success
+//!   ↓ try PTY injection → ack on success
 //!   ↓ fallback: MCP notification → ack on success
 //!   ↓ both fail → nak (redeliver after ack_wait timeout)
 //! ```

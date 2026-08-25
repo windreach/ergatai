@@ -4,19 +4,20 @@
 //! launching agents, injecting messages, and capturing output. The runtime facade
 //! (`AgentRuntime`) delegates all backend-specific operations to the selected implementation.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 
 use ergatai_error::ErgataiResult;
+use ergatai_pty::PtyProcess;
 
 use crate::types::{AgentHandle, BackendCapabilities, WaitResult, WorkspaceHandle, WorkspaceSpec};
 
 /// Pluggable execution backend for agents.
 ///
 /// Each backend manages a specific type of execution environment:
-/// - **TmuxBackend**: tmux sessions and panes (current default)
-/// - **DirectProcessBackend**: direct process spawning (no terminal)
+/// - **PtyBackend**: direct PTY-based process control (default)
 /// - **DockerBackend**: Docker containers (future)
 /// - **RemoteSSHBackend**: SSH to remote hosts (future)
 /// - **KubernetesBackend**: K8s pods (future)
@@ -87,7 +88,7 @@ pub trait AgentRuntimeBackend: Send + Sync + 'static {
     /// not allowed (trait objects are not `Sized`).
     fn as_any(&self) -> &dyn std::any::Any;
 
-    /// Discover agents already running in the environment (e.g., tmux panes).
+    /// Discover agents already running in the environment.
     ///
     /// Returns a list of `(agent_id, AgentHandle)` pairs for agents found outside
     /// the normal `launch_agent()` flow. Backends that don't support discovery
@@ -97,6 +98,31 @@ pub trait AgentRuntimeBackend: Send + Sync + 'static {
     /// register externally-started agents so message delivery can reach them.
     async fn discover_agents(&self) -> ErgataiResult<Vec<(String, AgentHandle)>> {
         Ok(Vec::new())
+    }
+
+    /// Get PTY process handle for terminal I/O (PTY backend only).
+    ///
+    /// Returns `Some(Arc<PtyProcess>)` for backends that use PTY (e.g., PtyBackend).
+    /// Returns `None` for backends that don't use PTY.
+    /// Used by WebSocket terminal handlers to stream PTY I/O.
+    async fn get_pty_process(
+        &self,
+        _handle: &AgentHandle,
+    ) -> ErgataiResult<Option<Arc<PtyProcess>>> {
+        Ok(None)
+    }
+
+    /// Resize the agent's PTY (PTY backend only).
+    ///
+    /// Returns `Ok(())` if resize succeeded or backend doesn't support resize.
+    /// Returns `Err` if agent not found or resize failed.
+    async fn resize_pty(
+        &self,
+        _handle: &AgentHandle,
+        _rows: u16,
+        _cols: u16,
+    ) -> ErgataiResult<()> {
+        Ok(())
     }
 }
 

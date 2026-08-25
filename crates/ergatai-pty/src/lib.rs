@@ -2,7 +2,7 @@
 //!
 //! This crate provides precise control over agent processes via PTY (pseudo-terminal),
 //! enabling:
-//! - Direct stdin/stdout control (no tmux dependency)
+//! - Direct stdin/stdout control (no external dependencies)
 //! - Exact output capture (raw bytes before terminal rendering)
 //! - ANSI parsing (extract clean text from agent output)
 //! - Precise process lifecycle management (waitpid, signal forwarding)

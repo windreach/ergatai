@@ -52,7 +52,7 @@ pub struct ErgataiMcpServer {
     #[allow(dead_code)]
     conversation_manager: Arc<ConversationManager>,
     /// Agent identifier from URL path (e.g., "agent-1", "agent-2")
-    /// Used to bind MCP connections to specific rmux panes
+    /// Used to bind MCP connections to specific PTY panes
     agent_identifier: Option<String>,
 }
 
@@ -269,7 +269,7 @@ impl ErgataiMcpServer {
     /// List agents you can communicate with, with optional filtering.
     ///
     /// # Behavior
-    /// - **Without active DAG**: Returns all online agents (discovered via rmux).
+    /// - **Without active DAG**: Returns all online agents (discovered via PTY backend).
     /// - **With active DAG**: Returns only agents allowed by the DAG's MeshPolicy.
     ///   - `Open` — all DAG participants
     ///   - `Adjacent` — only agents directly connected to you in the DAG
@@ -295,7 +295,7 @@ impl ErgataiMcpServer {
         let _include_capabilities = params.0.include_capabilities.unwrap_or(false);
         let filter = params.0.filter;
 
-        // Get runtime agents (discovered via rmux) instead of just MCP agents
+        // Get runtime agents (discovered via PTY backend) instead of just MCP agents
         let runtime = get_agent_runtime();
         let runtime_agents = runtime.list_agents().await;
 
@@ -552,10 +552,10 @@ impl ErgataiMcpServer {
     ///
     /// # Delivery
     /// Messages are persisted to NATS JetStream (`AGENT_MESSAGES` stream) and
-    /// delivered by a background consumer via tmux/rmux injection. Direct tmux
+    /// delivered by a background consumer via PTY injection. Direct PTY
     /// injection is used as a fallback when NATS is unavailable.
     #[tool(
-        description = "Send a message to another agent. Without a DAG, any online agent is reachable. With a DAG, only agents allowed by the MeshPolicy are reachable (use list_agents to see who). Persists via NATS JetStream with tmux fallback."
+        description = "Send a message to another agent. Without a DAG, any online agent is reachable. With a DAG, only agents allowed by the MeshPolicy are reachable (use list_agents to see who). Persists via NATS JetStream with PTY fallback."
     )]
     async fn send_message(
         &self,
@@ -607,7 +607,7 @@ impl ErgataiMcpServer {
                     "delivery_method": "nats_jetstream",
                     "stream": stream,
                     "sequence": sequence,
-                    "note": "Message persisted to NATS JetStream. Background consumer will deliver via tmux injection."
+                    "note": "Message persisted to NATS JetStream. Background consumer will deliver via PTY injection."
                 });
 
                 Ok(CallToolResult::success(vec![ContentBlock::text(
@@ -618,8 +618,8 @@ impl ErgataiMcpServer {
                 let response_json = serde_json::json!({
                     "status": "direct_delivered",
                     "target_agent": target_agent,
-                    "delivery_method": "tmux_injection",
-                    "note": "NATS unavailable. Message delivered directly via tmux injection (no persistence)."
+                    "delivery_method": "pty_injection",
+                    "note": "NATS unavailable. Message delivered directly via PTY injection (no persistence)."
                 });
 
                 Ok(CallToolResult::success(vec![ContentBlock::text(
@@ -1398,7 +1398,7 @@ impl ServerHandler for ErgataiMcpServer {
             unique_agent_id, connection_id
         );
 
-        // Try to bind this MCP agent to a runtime agent (rmux pane).
+        // Try to bind this MCP agent to a runtime agent (PTY pane).
         // If agent_identifier is available (from URL path), use precise binding.
         // Otherwise, fall back to FIFO binding (legacy behavior).
         let runtime = get_agent_runtime();
@@ -1968,7 +1968,7 @@ mod tests {
 
     #[test]
     fn test_message_formatting_prefix() {
-        // The formatted message in try_tmux_injection is:
+        // The formatted message in try_pty_injection is:
         // format!("Message from {}: {}", from_agent, message)
         let from = "agent-A";
         let message = "please review";

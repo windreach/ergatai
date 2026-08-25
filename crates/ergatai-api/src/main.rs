@@ -95,16 +95,16 @@ struct Args {
     #[arg(long, env = "ERGATAI_SSE_KEEP_ALIVE", default_value = "15")]
     sse_keep_alive: u64,
 
-    /// Agent runtime backend. Controls how agent workspaces (sessions/panes) are created.
-    /// Valid values: `tmux` (tmux CLI, default) or `rmux` (rmux SDK, deprecated).
+    /// Agent runtime backend. Controls how agent workspaces (panes) are created.
+    /// Currently only `pty` (direct PTY) is supported.
     /// Can also be set via ERGATAI_RUNTIME_BACKEND environment variable.
-    #[arg(long, env = "ERGATAI_RUNTIME_BACKEND", default_value = "tmux")]
+    #[arg(long, env = "ERGATAI_RUNTIME_BACKEND", default_value = "pty")]
     runtime_backend: String,
 
     /// Session name prefix for the agent runtime backend.
-    /// tmux session names will be `{prefix}-{workspace_id}`.
-    /// Can also be set via ERGATAI_TMUX_SESSION environment variable.
-    #[arg(long, env = "ERGATAI_TMUX_SESSION", default_value = "ergatai")]
+    /// Workspace names will be `{prefix}-{workspace_id}`.
+    /// Can also be set via ERGATAI_SESSION_PREFIX environment variable.
+    #[arg(long, env = "ERGATAI_SESSION_PREFIX", default_value = "ergatai")]
     session_prefix: String,
 }
 
@@ -114,21 +114,10 @@ fn setup_env_before_runtime() -> Args {
 
     if args.verbose {
         // Safety: called before tokio runtime starts, only main thread exists.
-        unsafe { std::env::set_var("RUST_LOG", "debug") };
-    }
-
-    match std::process::Command::new("tmux").arg("-V").output() {
-        Ok(output) if output.status.success() => {
-            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            tracing::info!(version = version, "tmux available");
-        }
-        _ => {
-            tracing::error!(
-                "tmux not found. \
-                 Ergatai requires tmux as its terminal multiplexer infrastructure. \
-                 Install tmux or ensure it is on PATH."
-            );
-        }
+        // Set ergatai=debug specifically to override the ergatai=info baseline
+        // in init_logging(). A bare "debug" would be overridden by the more
+        // specific "ergatai=info" directive.
+        unsafe { std::env::set_var("RUST_LOG", "ergatai=debug,async_nats=info") };
     }
 
     args
@@ -196,29 +185,16 @@ async fn async_main(args: Args) -> Result<()> {
     let mcp_registry = std::sync::Arc::new(ergatai_api::mcp::AgentRegistry::new());
     let peer_registry = ergatai_api::mcp::server::new_peer_registry();
 
-    // Initialize AgentRuntime with selected backend
+    // Initialize AgentRuntime with PTY backend (the only supported backend)
     let runtime_backend_name = args.runtime_backend.to_lowercase();
+    if runtime_backend_name != "pty" {
+        return Err(anyhow::anyhow!(
+            "Unknown runtime backend '{}'. Only 'pty' is supported.",
+            runtime_backend_name
+        ));
+    }
     let runtime_backend: std::sync::Arc<dyn ergatai_runtime::AgentRuntimeBackend> =
-        match runtime_backend_name.as_str() {
-            "tmux" | "local-pty" => {
-                tracing::info!("Using tmux backend (tmux CLI-based terminal multiplexer)");
-                std::sync::Arc::new(ergatai_runtime::TmuxBackend::new(&args.session_prefix))
-            }
-            "pty" => {
-                tracing::info!("Using pty backend (direct PTY-based process control, no tmux dependency)");
-                std::sync::Arc::new(ergatai_runtime::PtyBackend::new())
-            }
-            "rmux" => {
-                tracing::warn!("rmux backend is deprecated, consider using tmux");
-                std::sync::Arc::new(ergatai_runtime::RmuxBackend::new(&args.session_prefix))
-            }
-            other => {
-                return Err(anyhow::anyhow!(
-                    "Unknown runtime backend '{}'. Valid options: tmux, pty, rmux",
-                    other
-                ));
-            }
-        };
+        std::sync::Arc::new(ergatai_runtime::PtyBackend::new());
 
     let mcp_cancellation_token = CancellationToken::new();
 
@@ -226,19 +202,15 @@ async fn async_main(args: Args) -> Result<()> {
         Ok(runtime) => {
             if let Err(e) = runtime.initialize().await {
                 tracing::warn!("AgentRuntime backend initialization warning: {}", e);
-                if runtime_backend_name == "rmux" {
-                    tracing::info!("rmux daemon will be auto-started on first workspace creation");
-                }
             }
             tracing::info!(
-                "AgentRuntime initialized (backend: {}, session prefix: {})",
-                runtime_backend_name,
+                "AgentRuntime initialized (backend: pty, session prefix: {})",
                 args.session_prefix
             );
 
             match runtime.discover_and_register_agents().await {
                 Ok(count) if count > 0 => {
-                    tracing::info!("Discovered {} running agent(s) in tmux sessions", count);
+                    tracing::info!("Discovered {} running agent(s)", count);
                 }
                 Ok(_) => {}
                 Err(e) => {
@@ -470,7 +442,7 @@ async fn async_main(args: Args) -> Result<()> {
             tracing::error!("❌ Failed to initialize NATS: {}", e);
             return Err(anyhow::anyhow!("NATS initialization failed: {}", e));
         }
-    }
+    };
 
     // Build application router
     let state = app_state_with_token(args.api_token.clone()).clone();

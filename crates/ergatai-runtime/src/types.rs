@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 /// Specification for creating a new agent workspace.
 ///
-/// A workspace is the execution environment for an agent — it could be a tmux session,
+/// A workspace is the execution environment for an agent — it is a PTY-backed
 /// a Docker container, an SSH host, or a Kubernetes pod, depending on the backend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceSpec {
@@ -47,7 +47,7 @@ pub struct ResourceLimits {
 
 /// Opaque handle to a created workspace.
 ///
-/// The `metadata` field contains backend-specific identifiers (e.g., tmux session name,
+/// The `metadata` field contains backend-specific identifiers (e.g., workspace ID,
 /// Docker container ID, SSH host).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceHandle {
@@ -69,7 +69,7 @@ pub struct WorkspaceHandle {
 /// ## ID System
 ///
 /// - `agent_id`: **Runtime ID** — dynamic identifier assigned at discovery time.
-///   For tmux backend, this is the `TMUX_PANE` value (e.g., `%15`). Not stable across
+///   For PTY backend, this is the runtime agent ID. Not stable across
 ///   pane restarts. Use `metadata["ergatai_agent_id"]` (stable ID) for cross-restart
 ///   identification when available.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,7 +79,7 @@ pub struct AgentHandle {
 
     /// **Runtime ID** — dynamic identifier from the backend.
     ///
-    /// For tmux backend: the `TMUX_PANE` value (e.g., `%15`).
+    /// For PTY backend: the runtime agent ID.
     /// For fallback: sequential `pane_0`, `pane_1` (unstable).
     ///
     /// This ID changes when the pane is recreated. For a stable identifier
@@ -94,7 +94,7 @@ pub struct AgentHandle {
     ///
     /// Key entries:
     /// - `ergatai_agent_id`: **Stable ID** — survives pane restarts (e.g., `agent-1`)
-    /// - `pane_id`: tmux pane identifier (same as `agent_id` for tmux backend)
+    /// - `pane_id`: runtime agent identifier
     pub metadata: HashMap<String, String>,
 }
 
@@ -125,10 +125,10 @@ pub enum WaitResult {
 /// Callers should check these before attempting operations to provide graceful degradation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BackendCapabilities {
-    /// Can inject messages into a running agent (e.g., tmux send-keys)
+    /// Can inject messages into a running agent (e.g., PTY write)
     pub supports_message_injection: bool,
 
-    /// Can capture agent output (e.g., tmux capture-pane, docker logs)
+    /// Can capture agent output (e.g., PTY read buffer)
     pub supports_output_capture: bool,
 
     /// Can enforce resource limits (e.g., cgroups, Docker limits)

@@ -47,6 +47,32 @@ impl CgroupController {
         cpu_cores: Option<f64>,
         memory_mb: Option<u64>,
     ) -> Self {
+        // H-3: Validate workspace_id to prevent path traversal.
+        // Reject empty, path separators, parent references.
+        if workspace_id.is_empty()
+            || workspace_id.contains('/')
+            || workspace_id.contains('\\')
+            || workspace_id.contains("..")
+        {
+            warn!(
+                workspace_id = %workspace_id,
+                "Invalid workspace_id for cgroup — resource limits disabled"
+            );
+            return Self {
+                cgroup_path: PathBuf::new(),
+                active: false,
+            };
+        }
+
+        // H-4: If no limits are requested, skip all filesystem operations.
+        // This avoids failing in non-root environments where sysfs is read-only.
+        if cpu_cores.is_none() && memory_mb.is_none() {
+            return Self {
+                cgroup_path: PathBuf::new(),
+                active: false,
+            };
+        }
+
         // Check if cgroups v2 is available
         let cgroup_root = Path::new("/sys/fs/cgroup");
         if !Self::cgroups_v2_available() {
@@ -233,16 +259,23 @@ mod tests {
 
     #[test]
     fn test_create_without_limits_returns_inactive() {
-        // No limits = no cgroup operations needed, but we still create the controller.
-        // On systems without cgroups v2, it should be inactive.
+        // No limits = no cgroup operations needed. Controller is inactive.
         let controller = CgroupController::create("test-workspace", None, None);
-        // If cgroups v2 is available, the controller should be active (no limits to set).
-        // If not available, it should be inactive.
-        if CgroupController::cgroups_v2_available() {
-            assert!(controller.is_active());
-        } else {
-            assert!(!controller.is_active());
-        }
+        assert!(!controller.is_active());
+        assert!(controller.cgroup_path.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn test_create_rejects_path_traversal() {
+        // Path separators and parent references are rejected.
+        let controller = CgroupController::create("../etc", None, Some(512));
+        assert!(!controller.is_active());
+
+        let controller = CgroupController::create("foo/bar", None, Some(512));
+        assert!(!controller.is_active());
+
+        let controller = CgroupController::create("", None, Some(512));
+        assert!(!controller.is_active());
     }
 
     #[test]

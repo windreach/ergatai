@@ -209,22 +209,6 @@ pub struct StatusResponse {
     pub nats_initialized: bool,
     pub nats_port: Option<u16>,
     pub active_agents: usize,
-    pub backend_info: Option<TmuxBackendInfo>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TmuxBackendInfo {
-    pub version: String,
-    pub sessions: Vec<TmuxSessionInfo>,
-    pub total_panes: usize,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TmuxSessionInfo {
-    pub name: String,
-    pub panes: usize,
-    #[allow(dead_code)]
-    pub created: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -415,33 +399,11 @@ mod tests {
     #[test]
     fn test_status_response_deserialization() {
         let json =
-            r#"{"nats_initialized":true,"nats_port":4222,"active_agents":3,"backend_info":null}"#;
+            r#"{"nats_initialized":true,"nats_port":4222,"active_agents":3}"#;
         let resp: StatusResponse = serde_json::from_str(json).unwrap();
         assert!(resp.nats_initialized);
         assert_eq!(resp.nats_port, Some(4222));
         assert_eq!(resp.active_agents, 3);
-        assert!(resp.backend_info.is_none());
-    }
-
-    #[test]
-    fn test_status_response_with_backend_info() {
-        let json = r#"{
-            "nats_initialized":true,
-            "nats_port":4222,
-            "active_agents":1,
-            "backend_info":{
-                "version":"3.4",
-                "sessions":[{"name":"ergatai-ws1","panes":2,"created":"2024-01-01"}],
-                "total_panes":2
-            }
-        }"#;
-        let resp: StatusResponse = serde_json::from_str(json).unwrap();
-        let info = resp.backend_info.unwrap();
-        assert_eq!(info.version, "3.4");
-        assert_eq!(info.total_panes, 2);
-        assert_eq!(info.sessions.len(), 1);
-        assert_eq!(info.sessions[0].name, "ergatai-ws1");
-        assert_eq!(info.sessions[0].panes, 2);
     }
 
     #[test]

@@ -20,7 +20,7 @@
 //! - File access control with locking
 //! - NATS-based messaging infrastructure
 //! - Agent configuration and discovery
-//! - Tmux-based agent message injection
+//! - PTY-based agent message injection
 //!
 //! The library is used by both the CLI (ergatai-cli) and API server (ergatai-api).
 
@@ -43,9 +43,6 @@ pub use ergatai_dag as orchestration;
 pub use ergatai_error as error;
 pub use ergatai_lock as file_access;
 pub use ergatai_nats as nats;
-
-// ── Re-export tmux from cross_agent (lives in ergatai-collab) ──
-pub use ergatai_collab::tmux;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -79,14 +76,21 @@ pub fn get_resources_path() -> Option<PathBuf> {
 /// single atomic load.
 pub fn init_logging() {
     INIT_LOGGING.call_once(|| {
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::from_default_env().add_directive(
+        // If RUST_LOG is set (e.g., via --verbose), use it as-is.
+        // Otherwise, default to ergatai=info to suppress noise from dependencies.
+        let filter = if std::env::var("RUST_LOG").is_ok() {
+            tracing_subscriber::EnvFilter::from_default_env()
+        } else {
+            tracing_subscriber::EnvFilter::default()
+                .add_directive(
                     "ergatai=info"
                         .parse()
                         .expect("\"ergatai=info\" is a valid tracing directive"),
-                ),
-            )
+                )
+        };
+
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
             .with_writer(std::io::stderr)
             .init();
         tracing::info!("Ergatai logging initialized");

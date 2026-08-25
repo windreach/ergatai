@@ -172,6 +172,15 @@ impl EventBus {
         self.publish(&subject, payload).await
     }
 
+    /// Publish an LLM API traffic event (agent semantic state).
+    ///
+    /// Published on core NATS (low-latency, not persisted to JetStream).
+    /// Subject: `ergatai.agent.api.{agent_uuid}`
+    pub async fn publish_api_event(&self, payload: &ApiEventPayload) -> ErgataiResult<()> {
+        let subject = format!("ergatai.agent.api.{}", payload.agent_uuid);
+        self.publish(&subject, payload).await
+    }
+
     /// Check whether the AGENT_MESSAGES stream is under the backpressure threshold.
     /// Returns Ok(()) if under threshold, or Err if the stream is overloaded.
     /// Caches the last check result for 5s to avoid per-message NATS round-trips.
@@ -233,7 +242,7 @@ impl EventBus {
     /// Same subject routing as [`publish_agent_message`](Self::publish_agent_message),
     /// but uses JetStream so the message is durably stored before returning.
     /// The consumer pulls from the `AGENT_MESSAGES` stream and delivers via
-    /// tmux injection / MCP notification.
+    /// PTY injection / MCP notification.
     ///
     /// # Returns
     ///
