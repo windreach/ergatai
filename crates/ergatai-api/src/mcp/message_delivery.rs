@@ -1,7 +1,7 @@
 //! Message delivery consumer — reliable agent message delivery via NATS JetStream
 //!
 //! Pulls messages from the `AGENT_MESSAGES` JetStream stream and delivers each
-//! to the target agent via AgentRuntime injection (rmux/tmux send_text).
+//! to the target agent via AgentRuntime injection (PTY write).
 //!
 //! ## Reliability semantics
 //!
@@ -363,9 +363,9 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
         }
     }
 
-    // ── Deliver via AgentRuntime injection (PTY send_text) ──
-    // Uses the terminal multiplexer backend to inject text directly into the
-    // target agent's pane, simulating keyboard input.
+    // ── Deliver via AgentRuntime injection (PTY write) ──
+    // Writes the message directly into the target agent's PTY,
+    // simulating keyboard input.
 
     info!(
         from = from,

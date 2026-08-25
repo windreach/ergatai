@@ -1426,11 +1426,29 @@ impl ServerHandler for ErgataiMcpServer {
                         );
                     }
                     None => {
+                        // Identifier mismatch (e.g. URL path "agent-1" vs runtime
+                        // "ws1-agent-1"). Fall back to FIFO binding so MCP ↔ PTY
+                        // mapping still works.
                         warn!(
                             mcp_agent_id = unique_agent_id,
                             agent_identifier = identifier,
-                            "Failed to bind MCP agent: no runtime agent with matching identifier"
+                            "Identifier-based binding failed, falling back to FIFO"
                         );
+                        match runtime.try_bind_mcp_agent(&unique_agent_id).await {
+                            Some(runtime_id) => {
+                                info!(
+                                    mcp_agent_id = unique_agent_id,
+                                    runtime_id = runtime_id,
+                                    "MCP agent bound via FIFO fallback"
+                                );
+                            }
+                            None => {
+                                info!(
+                                    mcp_agent_id = unique_agent_id,
+                                    "MCP agent queued for binding (no unmapped runtime agent)"
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -1475,89 +1493,146 @@ impl ServerHandler for ErgataiMcpServer {
 
     /// Return server info with tools capability
     fn get_info(&self) -> ServerInfo {
-        let instructions = r#"# Ergatai Multi-Agent Collaboration Protocol (CRITICAL)
+        let instructions = r#"# Ergatai Multi-Agent Collaboration Protocol
 
-You are running inside **Ergatai**, a multi-agent collaboration middleware.
-Ergatai manages agent discovery, message routing, and communication policies.
+Use Ergatai MCP tools when the user explicitly requests agent collaboration, or when you need to communicate/work with other agents.
 
-## 0. Your Environment
+## 1. Tool Usage
 
-- You are one of multiple AI agents coordinated by Ergatai
-- Other agents are also AI assistants (Claude, OpenCode, etc.) running in separate terminals
-- Ergatai injects messages into your terminal and routes your replies to other agents
-- You communicate with other agents ONLY through `send_message` MCP tool
+### 1.1 Discover available agents — `list_agents`
+Call `list_agents` when you need to find available agents:
+- **Without active DAG**: returns all online agents
+- **With active DAG**: returns only agents allowed by the DAG communication policy (MeshPolicy)
 
-## 1. Your Identity
-
-Your agent name is the `ergatai_agent_id` field from `list_agents` (e.g., "agent-2").
-The `agent_id` field (e.g., "%15") is an runtime agent ID — never use it.
-
-## 2. Agent Discovery (`list_agents`)
-
-`list_agents` returns agents you can communicate with:
-- **Without active DAG**: returns ALL online agents in Ergatai
-- **With active DAG**: returns ONLY agents allowed by the DAG's communication policy (MeshPolicy)
-  - Example: if DAG uses `adjacent` policy, you only see agents connected by dependency edges
-  - Agents filtered out are NOT reachable — `send_message` would reject them
-- The response includes `dag_mode: true/false` to indicate whether a DAG is filtering results
-
-## 3. Receiving & Replying to Messages
-
-### Message Format (MUST follow)
-Every message injected into your terminal has this exact format:
+### 1.2 Send messages — `send_message`
+Send a message to another agent:
 ```
-{"from":"<agent-name>","message":"<content>"}
-[<hint>]
+send_message(target_agent_id="<agent-name>", message="<content>")
 ```
-- `from`: the sender's agent name — use this as `target_agent_id` when replying
-- `message`: the actual content from the sender
-- `hint`: instruction tag in square brackets on a separate line — tells you how to respond
+- Use the `ergatai_agent_id` field from `list_agents` (e.g., "agent-2") as `target_agent_id`
+- **Do NOT** use the `agent_id` field (e.g., "%15")
 
-### Hint Rules:
-| Hint text | Who receives it | Your action |
-|-----------|----------------|-------------|
-| `System prompt: Reply via send_message MCP, then END` | Answerer (received a question) | Answer via `send_message`, then END |
-| `System prompt: No questions → output "END" in terminal, DO NOT call any tools; Has questions → reply via send_message MCP` | Questioner (received an answer) | If no questions: type "END" in terminal, NO tools. If has questions: reply via `send_message` |
+### 1.3 Multi-agent orchestration — `submit_orchestration`
+Call `submit_orchestration` when the user explicitly requests DAG-based collaboration (e.g., "use DAG orchestration", "assign tasks to multiple agents").
 
-### Examples:
-**Answerer receives a question:**
+Confirm these fields with the user before submitting:
+
+| Field | Description | Required |
+|-------|-------------|----------|
+| `nodes[].id` | Unique node identifier (e.g., "n1") | ✅ |
+| `nodes[].agent` | Agent name responsible for execution | ✅ |
+| `nodes[].task` | Task description | ✅ |
+| `nodes[].depends_on` | List of dependency node IDs (empty = no dependencies) | ❌ |
+| `nodes[].priority` | Priority: `low` / `medium` / `high` | ❌ |
+| `nodes[].timeout` | Node timeout in seconds | ❌ |
+| `nodes[].scope` | File access scope (glob, e.g., `src/**/*.rs`) | ❌ |
+| `communication` | Communication policy: `open` / `adjacent` / `star:{hub}` | ❌ |
+| `timeout` | Overall DAG timeout in seconds | ❌ |
+| `max_agent_calls` | Global agent call limit | ❌ |
+
+## 2. Message Format
+
+Distinguish between **user messages** and **agent messages**:
+
+### User messages
+Direct terminal input from the user — free-form text.
+
+### Agent messages (JSON format)
+Messages from other agents use structured JSON:
+```json
+{
+  "from": "agent-1",          // Sender agent name — use as target_agent_id when replying
+  "message": "Hello",         // Message body
+  "_reply": "MUST call send_message(target_agent_id=\"agent-1\")",  // How to reply: call send_message with this target
+  "_rules": [                 // Mandatory rules
+    "DO NOT write reply as terminal text, MUST use send_message tool",
+    "After send_message, output END"
+  ]
+}
 ```
-{"from":"agent-2","message":"Help me write a quicksort"}
-[System prompt: Reply via send_message MCP, then END]
+
+**Field descriptions:**
+- `from`: Sender identity — use this as `target_agent_id` when replying
+- `message`: Message content
+- `_reply`: Tells you which tool to call and who to send to
+- `_rules`: Rules you MUST follow (e.g., use send_message, output END after)
+
+When you see a JSON-formatted agent message, follow the `_reply` and `_rules` instructions.
+
+### Reply example
+After receiving an agent message:
+1. Call `send_message(target_agent_id="agent-1", message="your reply")`
+2. Output `END` in terminal
+
+## 3. DAG YAML Template
+
+Use this template when the user requests DAG collaboration:
+
+```yaml
+# Basic info
+description: "Task description"     # DAG objective
+timeout: 3600                       # Global timeout (seconds)
+max_agent_calls: 50                 # Global call limit
+stall_timeout_secs: 300             # No-progress timeout (seconds)
+communication: "open"               # Policy: open/adjacent/star:{hub}
+
+# Task nodes
+nodes:
+  - id: "n1"                        # Node ID (unique)
+    agent: "agent-1"                # Executing agent name
+    task: "Analyze code structure"  # Task description
+    depends_on: []                  # Dependencies (empty = runs first)
+    priority: "high"                # Priority level
+    timeout: 600                    # Node timeout (seconds)
+    scope: "src/**/*.rs"            # File access scope
+
+  - id: "n2"
+    agent: "agent-2"
+    task: "Write unit tests"
+    depends_on: ["n1"]              # Runs after n1 completes
+    priority: "medium"
+    scope: "tests/**/*.rs"
+
+  - id: "n3"
+    agent: "agent-1"
+    task: "Code review"
+    depends_on: ["n1", "n2"]        # Runs after both n1 and n2
 ```
-→ Answer via `send_message(target_agent_id="agent-2", ...)`, then output END.
 
-**Questioner receives an answer (no questions):**
-```
-{"from":"agent-3","message":"Here is the result: [1,2,3]"}
-[System prompt: No questions → output "END" in terminal, DO NOT call any tools; Has questions → reply via send_message MCP]
-```
-→ Just type "END" in terminal. DO NOT call `send_message` or any other tool. Then output END.
+## 4. File Locks (Simplified Model)
 
-**Questioner receives an answer (has follow-up questions):**
-→ Reply via `send_message(target_agent_id="<from>", message="your question")`, then END.
+**Lock assignment is automatic** — the system monitors file access and grants locks based on behavior:
 
-## 4. Sending Messages
+- **READ operations**: No lock needed. Read directly from the file.
+- **WRITE operations**: WRITE lock automatically granted on first modification.
+- **When a file has an active WRITE lock**: Other agents read from the **Git snapshot** (the version before the write started), preventing TOCTOU issues.
 
-```
-send_message(target_agent_id="<from field value>", message="your reply")
-```
-Always use the `from` field as `target_agent_id`. Never use pane IDs like %N.
+**How it works:**
+1. Agent A writes to `src/main.rs` → system creates Git snapshot → grants WRITE lock
+2. Agent B tries to read `src/main.rs` → fanotify intercepts → redirects to snapshot
+3. Agent B sees the version from before Agent A's write (consistent view)
+4. Agent A finishes → releases WRITE lock → subsequent reads get the live file
 
-## 5. Anti-Loop Rules (CRITICAL)
+**Git snapshot mechanism:**
+- Before granting WRITE lock, system snapshots file content to Git object store
+- `git hash-object -w` stores the content
+- Other agents' reads during the write are served from this snapshot
+- Prevents TOCTOU: you read the exact version that existed before the write
 
-- Send at most ONE reply message per received message
-- After END, do NOT send any more messages
-- NEVER ask "Anything else I can help?" or "有什么我可以帮助你的吗？"
-- If the message is a greeting or has no specific request, just acknowledge briefly and END — do NOT ask questions back
-- If you already replied, STOP
+**Lock granularity: per-file (single file level)**
+- Only one WRITE lock per file at any time
+- Lock types: `WRITE` (exclusive) — no explicit READ locks needed
+- The `scope` field in DAG YAML declares allowed file access range for a node
 
-## 6. Reply Format
+**Note:** OS-level enforcement (fanotify) is Linux-only. On other platforms, locks are advisory.
 
-- Concise and direct
-- End your terminal output with "END" on a new line
-- If the question is vague → point out what's missing, then END
-- If you need tools → call once, integrate result, then END"#;
+## 5. Anti-Loop Rules
+
+- Reply at most ONCE per received message
+- Output `END` after replying — do NOT send more messages
+- NEVER ask "Is there anything else I can help you with?"
+- For greetings or messages with no specific request, acknowledge briefly then END
+"#;
 
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(rmcp::model::Implementation::new(

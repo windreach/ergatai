@@ -110,8 +110,17 @@ impl MessageSender {
         };
 
         // ── 3. Self-message check ──
+        // Compare runtime IDs, stable IDs, and raw input to catch all self-send forms.
         let from_runtime_id = runtime.resolve_agent_id(&req.from).await;
-        if from_runtime_id.as_deref() == Some(&resolved_agent_id) {
+
+        // Case 1: runtime ID match (existing check — works when MCP is bound)
+        // Case 2: raw input match (catches "opencode@abc" → "opencode@abc" before resolution)
+        // Case 3: stable ID match (catches different aliases resolving to same agent)
+        let is_self_send = from_runtime_id.as_deref() == Some(&resolved_agent_id)
+            || req.from == resolved_agent_id
+            || req.from == req.to;
+
+        if is_self_send {
             return SendMessageResult::Rejected {
                 reason: format!(
                     "Cannot send message to yourself. Agent '{}' cannot target itself.",
@@ -205,7 +214,9 @@ impl MessageSender {
 
         // ── 9. Message formatting ──
         let sender_display = self.get_sender_display(&runtime, &req.from).await;
-        let formatted_content = Self::format_agent_message(&sender_display, &req.message, is_reply);
+        // reply target = sender's stable ID (so recipient knows who to reply to)
+        let formatted_content =
+            Self::format_agent_message(&sender_display, &req.message, &from_stable, is_reply);
 
         // ── 10. NATS publish or direct inject ──
         if let Some(conn) = ergatai_nats::get_nats_connection().await {
@@ -404,21 +415,41 @@ impl MessageSender {
             .unwrap_or(sender_runtime_id)
     }
 
-    /// Format agent message with JSON structure and hint.
-    pub fn format_agent_message(sender_display: &str, message: &str, is_reply: bool) -> String {
-        let message_json = serde_json::json!({
-            "from": sender_display,
-            "message": message
-        });
-
-        let hint = if is_reply {
-            "[System prompt: No questions → output \"END\" in terminal, DO NOT call any tools; Has questions → reply via send_message MCP]"
+    /// Format agent message as structured JSON.
+    ///
+    /// Distinguishes between new messages (must reply via send_message)
+    /// and replies (output END if no questions, otherwise call send_message).
+    pub fn format_agent_message(
+        sender_display: &str,
+        message: &str,
+        reply_target_stable_id: &str,
+        is_reply: bool,
+    ) -> String {
+        if is_reply {
+            // Reply: agent should output END if no follow-up needed
+            serde_json::json!({
+                "from": sender_display,
+                "message": message,
+                "_reply": format!("If no questions: output END. If has questions: call send_message(target_agent_id=\"{}\")", reply_target_stable_id),
+                "_rules": [
+                    "DO NOT write reply as terminal text unless outputting END",
+                    "No questions → output END, DO NOT call any tools"
+                ]
+            })
+            .to_string()
         } else {
-            "[System prompt: Reply via send_message MCP, then END]"
-        };
-
-        // Hint 保持可见 — ANSI conceal 和同色隐藏方案因终端兼容性差被否决
-        format!("{}\n{}", message_json, hint)
+            // New message: agent must reply via send_message
+            serde_json::json!({
+                "from": sender_display,
+                "message": message,
+                "_reply": format!("MUST call send_message(target_agent_id=\"{}\")", reply_target_stable_id),
+                "_rules": [
+                    "DO NOT write reply as terminal text, MUST use send_message tool",
+                    "After send_message, output END"
+                ]
+            })
+            .to_string()
+        }
     }
 }
 

@@ -287,6 +287,9 @@ impl Conversation {
 pub struct ConversationManager {
     config: ConversationConfig,
     conversations: Arc<RwLock<HashMap<String, Conversation>>>,
+    /// Per-agent send timestamps for global rate limiting (catches multi-agent cycles).
+    /// Key: stable agent ID, Value: Vec of send timestamps (seconds since epoch).
+    agent_send_times: Arc<RwLock<HashMap<String, Vec<u64>>>>,
 }
 
 impl ConversationManager {
@@ -295,6 +298,7 @@ impl ConversationManager {
         Self {
             config,
             conversations: Arc::new(RwLock::new(HashMap::new())),
+            agent_send_times: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -406,6 +410,57 @@ impl ConversationManager {
             *conv = Conversation::new(from, to);
             conv.reset_count = reset_count;
             // Continue processing — the reset conversation will accept the message
+        }
+
+        // ── Global per-agent rate limit (multi-agent cycle breaker) ──
+        // Pair-level tracking (max_rounds) can't stop 3+ agent cycles because each
+        // pair sees few messages. This tracks total sends per agent across ALL pairs.
+        // Only CHECK here — recording happens after all checks pass (near Ok(())).
+        {
+            let now_secs = Utc::now().timestamp() as u64;
+            let window = self.config.max_execution_time_secs; // reuse timeout as window
+            let max_sends: u64 = (self.config.max_rounds as u64) * 4; // 3 rounds × 4 = 12
+
+            let send_times = self.agent_send_times.read().await;
+            if let Some(times) = send_times.get(from) {
+                // Count entries within the window
+                let recent = times.iter().filter(|&&t| now_secs.saturating_sub(t) < window).count();
+                if recent as u64 >= max_sends {
+                    warn!(
+                        from = from,
+                        sends_in_window = recent,
+                        max_sends = max_sends,
+                        window_secs = window,
+                        "Global per-agent rate limit hit — multi-agent cycle detected"
+                    );
+                    // Terminate all conversations involving this agent
+                    let conv_ids_to_terminate: Vec<String> = conversations
+                        .values()
+                        .filter(|c| {
+                            c.participants.0 == from || c.participants.1 == from
+                        })
+                        .map(|c| c.id.clone())
+                        .collect();
+                    for cid in conv_ids_to_terminate {
+                        if let Some(c) = conversations.get_mut(&cid) {
+                            c.state = ConversationState::Terminated {
+                                reason: TerminationReason::TimedOut,
+                            };
+                            c.ended_at = Some(Utc::now());
+                        }
+                    }
+                    // Clear the send counter (reset after cycle break)
+                    drop(send_times);
+                    let mut send_times_w = self.agent_send_times.write().await;
+                    send_times_w.remove(from);
+
+                    return Err(ErgataiError::internal(format!(
+                        "Agent '{}' exceeded global rate limit ({} sends in {}s) — \
+                         multi-agent cycle detected. All conversations cooled down.",
+                        from, max_sends, window
+                    )));
+                }
+            }
         }
 
         // ── Consecutive auto-reply check (same agent spamming when token is Free) ──
@@ -578,6 +633,18 @@ impl ConversationManager {
             "Message recorded in conversation"
         );
 
+        // ── Record this send in the global per-agent counter ──
+        // Only reached if ALL checks passed (message is allowed).
+        {
+            let now_secs = Utc::now().timestamp() as u64;
+            let mut send_times = self.agent_send_times.write().await;
+            let times = send_times.entry(from.to_string()).or_insert_with(Vec::new);
+            times.push(now_secs);
+            // Prune old entries while we're at it
+            let window = self.config.max_execution_time_secs;
+            times.retain(|&t| now_secs.saturating_sub(t) < window);
+        }
+
         Ok(())
     }
 
@@ -642,6 +709,14 @@ impl ConversationManager {
             }
             keep
         });
+
+        // Also prune stale agent send times (entries older than max_age)
+        let mut send_times = self.agent_send_times.write().await;
+        let cutoff = now.timestamp() as u64 - max_age.as_secs();
+        for times in send_times.values_mut() {
+            times.retain(|&t| t > cutoff);
+        }
+        send_times.retain(|_, times| !times.is_empty());
     }
 
     /// Manually terminate a conversation.
