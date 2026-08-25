@@ -44,13 +44,11 @@ impl ErgataiClient {
         &self,
         id: &str,
         work_dir: Option<&str>,
-        persist: bool,
     ) -> Result<WorkspaceResponse> {
         let url = format!("{}/api/v1/workspaces", self.base_url);
         let body = CreateWorkspaceRequest {
             id: id.to_string(),
             work_dir: work_dir.map(|s| s.to_string()),
-            persist: Some(persist),
         };
         let req = self.client.post(&url).json(&body);
         let req = self.add_auth(req);
@@ -215,7 +213,6 @@ pub struct StatusResponse {
 struct CreateWorkspaceRequest {
     id: String,
     work_dir: Option<String>,
-    persist: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -321,7 +318,6 @@ mod tests {
         let req = CreateWorkspaceRequest {
             id: "ws-1".to_string(),
             work_dir: Some("/tmp/work".to_string()),
-            persist: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"id\":\"ws-1\""));
@@ -333,7 +329,6 @@ mod tests {
         let req = CreateWorkspaceRequest {
             id: "ws-2".to_string(),
             work_dir: None,
-            persist: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"id\":\"ws-2\""));

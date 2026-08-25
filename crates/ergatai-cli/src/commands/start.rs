@@ -40,7 +40,6 @@ pub async fn handle(
     work_dir: Option<&str>,
     api_url: &str,
     token: Option<&str>,
-    persist: bool,
 ) -> Result<()> {
     let client = ErgataiClient::new(api_url, token);
 
@@ -93,16 +92,16 @@ pub async fn handle(
         effective_work_dir.as_deref().unwrap_or("<default>")
     );
     let workspace = client
-        .create_workspace(&workspace_id, effective_work_dir.as_deref(), persist)
+        .create_workspace(&workspace_id, effective_work_dir.as_deref())
         .await
         .context("Failed to create workspace")?;
     println!("✓ Workspace ready: {} (id: {})", agent_name, workspace.id);
 
     // Step 2: Spawn agent (use absolute path as command, pass work_dir).
-    // Always call spawn — the backend's find_running_pane() does proper PTY-level
-    // verification and will reattach to an existing pane or send the command to the
-    // default pane as appropriate. The API agent registry can be stale (e.g. after
-    // the PTY session is killed externally), so we must NOT skip spawn based on it.
+    // Always call spawn — the backend verifies the PTY process state and will
+    // reuse an existing process or start a new one as appropriate. The API
+    // agent registry can be stale (e.g. after the PTY process is killed
+    // externally), so we must NOT skip spawn based on it.
     println!("✓ Spawning agent: {}", agent_command);
     let response = client
         .spawn_agent(
@@ -115,9 +114,9 @@ pub async fn handle(
         .context("Failed to spawn agent")?;
     println!("✓ Agent spawned: {}", response.agent_id);
 
-    // Step 3: Attach to agent terminal via WebSocket
+    // Step 3: Connect to agent terminal via WebSocket
     println!("✓ Connecting to agent terminal via WebSocket...");
-    println!("   (Press Ctrl+C to detach)");
+    println!("   (Press Ctrl+C to disconnect)");
     println!();
 
     attach_terminal(&response.agent_id, api_url, token).await?;

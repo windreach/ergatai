@@ -142,7 +142,7 @@ async fn create_workspace_with_valid_id_returns_created_or_bad_request() {
 }
 
 #[tokio::test]
-async fn create_workspace_with_env_and_persist() {
+async fn create_workspace_with_env() {
     let app = build_rest_app(test_state());
     let ws_id = format!("test-ws-env-{}", uuid::Uuid::new_v4());
     let guard = WorkspaceCleanupGuard {
@@ -158,8 +158,7 @@ async fn create_workspace_with_env_and_persist() {
                 .body(Body::from(
                     json!({
                         "id": ws_id,
-                        "env": {"LANG": "en_US.UTF-8"},
-                        "persist": true
+                        "env": {"LANG": "en_US.UTF-8"}
                     })
                     .to_string(),
                 ))

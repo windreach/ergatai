@@ -15,8 +15,6 @@ pub struct CreateWorkspaceRequest {
     pub id: String,
     pub work_dir: Option<String>,
     pub env: Option<HashMap<String, String>>,
-    /// Whether to keep the agent workspace after user detaches (default: false)
-    pub persist: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -70,9 +68,6 @@ pub async fn create_workspace(
             .into(),
         env,
         resources: ResourceLimits::default(),
-        backend_config: serde_json::json!({
-            "persist": req.persist.unwrap_or(false)
-        }),
     };
 
     match runtime.backend().create_workspace(spec).await {

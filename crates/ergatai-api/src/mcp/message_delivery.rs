@@ -251,7 +251,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
     }
 
     // ── Resolve sender and recipient runtime IDs for batch detection ──
-    // Priority: UUID (stable) > pane ID (dynamic, may be stale)
+    // Priority: UUID (stable) > runtime agent ID (dynamic, may be stale)
     let runtime = get_agent_runtime();
 
     // The message content is already formatted by the MCP server (server.rs)
@@ -259,7 +259,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
     let formatted_message = payload.content.as_str();
 
     let to_runtime_id = if let Some(ref to_uuid) = payload.to_uuid {
-        // Try UUID first (stable across pane restarts)
+        // Try UUID first (stable across agent restarts)
         match runtime.resolve_agent_uuid(to_uuid).await {
             Some(id) => {
                 debug!(
@@ -270,11 +270,11 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                 id
             }
             None => {
-                // UUID not found, fall back to pane ID
+                // UUID not found, fall back to runtime agent ID
                 warn!(
                     to_uuid = %to_uuid,
                     to_agent = %payload.to_agent,
-                    "UUID not found, falling back to pane ID"
+                    "UUID not found, falling back to runtime agent ID"
                 );
                 runtime
                     .resolve_agent_id(&payload.to_agent)
@@ -283,7 +283,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
             }
         }
     } else {
-        // No UUID, use pane ID (legacy message)
+        // No UUID, use runtime agent ID (legacy message)
         runtime
             .resolve_agent_id(&payload.to_agent)
             .await
@@ -291,7 +291,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
     };
 
     let from_runtime_id = if let Some(ref from_uuid) = payload.from_uuid {
-        // Try UUID resolution first, fallback to pane ID
+        // Try UUID resolution first, fallback to runtime agent ID
         if let Some(id) = runtime.resolve_agent_uuid(from_uuid).await {
             id
         } else {
@@ -301,7 +301,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                 .unwrap_or_else(|| payload.from_agent.clone())
         }
     } else {
-        // No UUID, use pane ID (legacy message)
+        // No UUID, use runtime agent ID (legacy message)
         runtime
             .resolve_agent_id(&payload.from_agent)
             .await

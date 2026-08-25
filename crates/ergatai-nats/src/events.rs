@@ -112,7 +112,7 @@ pub struct DagCompletePayload {
 pub struct AgentMessagePayload {
     /// Source agent ID (sender) — mixed type (MCP ID or runtime ID), kept for backward compat
     pub from_agent: String,
-    /// Target agent ID (receiver) — runtime ID (pane ID), kept for backward compat
+    /// Target agent ID (receiver) — runtime agent ID
     pub to_agent: String,
     /// Source agent UUID (stable identifier, for routing)
     pub from_uuid: Option<String>,
@@ -416,9 +416,9 @@ pub struct FileEnforcementPayload {
 /// Subject: `ergatai.agent.lifecycle.{agent_uuid}`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentLifecycleEventPayload {
-    /// Stable agent UUID (persistent across pane restarts)
+    /// Stable agent UUID (persistent across agent restarts)
     pub agent_uuid: String,
-    /// Dynamic agent ID (e.g., pane ID like "%72")
+    /// Dynamic agent ID (e.g., "ws1-agent-1")
     pub agent_id: String,
     /// State name before transition (lowercase, e.g., "running")
     pub from_state: String,

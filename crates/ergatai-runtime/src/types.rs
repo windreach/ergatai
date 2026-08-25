@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// Specification for creating a new agent workspace.
 ///
 /// A workspace is the execution environment for an agent — it is a PTY-backed
-/// a Docker container, an SSH host, or a Kubernetes pod, depending on the backend.
+/// container with a working directory, environment variables, and resource limits.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceSpec {
     /// Unique workspace identifier (e.g., "dag-task-123-agent-a")
@@ -23,11 +23,8 @@ pub struct WorkspaceSpec {
     /// Environment variables to set in the workspace
     pub env: HashMap<String, String>,
 
-    /// Resource limits (CPU, memory, disk) — backend-specific enforcement
+    /// Resource limits (CPU, memory, disk)
     pub resources: ResourceLimits,
-
-    /// Backend-specific configuration (JSON for extensibility)
-    pub backend_config: serde_json::Value,
 }
 
 /// Resource limits for a workspace.
@@ -47,8 +44,8 @@ pub struct ResourceLimits {
 
 /// Opaque handle to a created workspace.
 ///
-/// The `metadata` field contains backend-specific identifiers (e.g., workspace ID,
-/// Docker container ID, SSH host).
+/// The `metadata` field contains backend-specific information (e.g., work_dir,
+/// cgroup path).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceHandle {
     /// Workspace ID (matches `WorkspaceSpec.id`)
@@ -57,32 +54,31 @@ pub struct WorkspaceHandle {
     /// Backend name that created this workspace
     pub backend: String,
 
-    /// Backend-specific metadata (e.g., `{"session": "ergatai-abc"}`)
+    /// Backend-specific metadata (e.g., `{"work_dir": "/path/to/project"}`)
     pub metadata: HashMap<String, String>,
 }
 
 /// Opaque handle to a running agent.
-/// Opaque handle to a running agent (backend-specific)
 ///
 /// Contains the workspace handle plus agent-specific identifiers.
 ///
 /// ## ID System
 ///
-/// - `agent_id`: **Runtime ID** — dynamic identifier assigned at discovery time.
-///   For PTY backend, this is the runtime agent ID. Not stable across
-///   pane restarts. Use `metadata["ergatai_agent_id"]` (stable ID) for cross-restart
+/// - `agent_id`: **Runtime ID** — deterministic ID assigned by PTY backend
+///   (`{workspace_id}-agent-{counter}`). Not stable across process restarts.
+///   Use `metadata["ergatai_agent_id"]` (stable ID) for cross-restart
 ///   identification when available.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentHandle {
     /// The workspace this agent runs in
     pub workspace: WorkspaceHandle,
 
-    /// **Runtime ID** — dynamic identifier from the backend.
+    /// **Runtime ID** — deterministic identifier from the backend.
     ///
-    /// For PTY backend: the runtime agent ID.
-    /// For fallback: sequential `pane_0`, `pane_1` (unstable).
+    /// For PTY backend: `{workspace_id}-agent-{counter}` (e.g., `ws1-agent-1`).
+    /// For fallback: sequential `agent_0`, `agent_1` (unstable).
     ///
-    /// This ID changes when the pane is recreated. For a stable identifier
+    /// This ID changes when the process is recreated. For a stable identifier
     /// that survives restarts, use `metadata["ergatai_agent_id"]` (set via
     /// `ERGATAI_AGENT_ID` env var by ergatai agent_launcher).
     pub agent_id: String,
@@ -90,11 +86,11 @@ pub struct AgentHandle {
     /// Process identifier (PID, container ID, etc.) — backend-specific
     pub process_id: Option<String>,
 
-    /// Backend-specific metadata (e.g., `{"pane_id": "%3"}`)
+    /// Backend-specific metadata.
     ///
     /// Key entries:
-    /// - `ergatai_agent_id`: **Stable ID** — survives pane restarts (e.g., `agent-1`)
-    /// - `pane_id`: runtime agent identifier
+    /// - `ergatai_agent_id`: **Stable ID** — survives agent restarts (e.g., `agent-1`)
+    /// - `work_dir`: agent working directory
     pub metadata: HashMap<String, String>,
 }
 
@@ -147,17 +143,17 @@ pub struct BackendCapabilities {
 /// Agent information tracked by the runtime facade.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
-    /// Stable agent UUID (persistent across pane restarts, used for message routing)
+    /// Stable agent UUID (persistent across agent restarts, used for message routing)
     pub agent_uuid: String,
 
-    /// Dynamic pane ID (e.g., "%72", used for terminal injection)
-    /// Changes when the pane dies and a new pane is created.
+    /// Runtime agent ID (e.g., "ws1-agent-1", used for terminal injection)
+    /// Changes when the process dies and a new one is created.
     pub agent_id: String,
 
     /// Human-readable stable identifier (e.g., "agent-1").
     /// Populated from `handle.metadata["ergatai_agent_id"]` during discovery.
     /// Used for user-facing display, conversation tracking, and batch aggregation.
-    /// Unlike `agent_id` (runtime ID), this survives pane restarts.
+    /// Unlike `agent_id` (runtime ID), this survives agent restarts.
     pub stable_id: Option<String>,
 
     /// Workspace ID this agent belongs to
@@ -197,7 +193,6 @@ mod tests {
             work_dir: PathBuf::from("/tmp/ws-1"),
             env: HashMap::new(),
             resources: ResourceLimits::default(),
-            backend_config: serde_json::json!({}),
         }
     }
 
@@ -221,7 +216,6 @@ mod tests {
             work_dir: PathBuf::from("/tmp"),
             env,
             resources: ResourceLimits::default(),
-            backend_config: serde_json::json!({}),
         };
         assert_eq!(spec.env.get("KEY"), Some(&"VALUE".to_string()));
     }
@@ -237,24 +231,10 @@ mod tests {
                 memory_mb: Some(512),
                 disk_mb: Some(1024),
             },
-            backend_config: serde_json::json!({}),
         };
         assert_eq!(spec.resources.cpu_cores, Some(2.5));
         assert_eq!(spec.resources.memory_mb, Some(512));
         assert_eq!(spec.resources.disk_mb, Some(1024));
-    }
-
-    #[test]
-    fn test_workspace_spec_with_backend_config() {
-        let spec = WorkspaceSpec {
-            id: "ws-4".to_string(),
-            work_dir: PathBuf::from("/tmp"),
-            env: HashMap::new(),
-            resources: ResourceLimits::default(),
-            backend_config: serde_json::json!({"image": "alpine", "network": "host"}),
-        };
-        assert_eq!(spec.backend_config["image"], "alpine");
-        assert_eq!(spec.backend_config["network"], "host");
     }
 
     #[test]
@@ -294,7 +274,7 @@ mod tests {
     fn test_workspace_handle_eq() {
         let h1 = WorkspaceHandle {
             id: "ws-1".to_string(),
-            backend: "local-pty".to_string(),
+            backend: "pty".to_string(),
             metadata: HashMap::new(),
         };
         let h2 = h1.clone();
@@ -304,15 +284,15 @@ mod tests {
     #[test]
     fn test_workspace_handle_metadata() {
         let mut metadata = HashMap::new();
-        metadata.insert("session".to_string(), "ergatai-abc".to_string());
+        metadata.insert("work_dir".to_string(), "/tmp/project".to_string());
         let handle = WorkspaceHandle {
             id: "ws-1".to_string(),
-            backend: "local-pty".to_string(),
+            backend: "pty".to_string(),
             metadata,
         };
         assert_eq!(
-            handle.metadata.get("session"),
-            Some(&"ergatai-abc".to_string())
+            handle.metadata.get("work_dir"),
+            Some(&"/tmp/project".to_string())
         );
     }
 
@@ -333,7 +313,7 @@ mod tests {
         let handle = AgentHandle {
             workspace: WorkspaceHandle {
                 id: "ws-1".to_string(),
-                backend: "local-pty".to_string(),
+                backend: "pty".to_string(),
                 metadata: HashMap::new(),
             },
             agent_id: "agent-1".to_string(),
@@ -350,7 +330,7 @@ mod tests {
         let handle = AgentHandle {
             workspace: WorkspaceHandle {
                 id: "ws-1".to_string(),
-                backend: "local-pty".to_string(),
+                backend: "pty".to_string(),
                 metadata: HashMap::new(),
             },
             agent_id: "agent-1".to_string(),
@@ -445,7 +425,7 @@ mod tests {
             handle: AgentHandle {
                 workspace: WorkspaceHandle {
                     id: "ws-1".to_string(),
-                    backend: "local-pty".to_string(),
+                    backend: "pty".to_string(),
                     metadata: HashMap::new(),
                 },
                 agent_id: "agent-1".to_string(),
@@ -480,7 +460,7 @@ mod tests {
             handle: AgentHandle {
                 workspace: WorkspaceHandle {
                     id: "ws-1".to_string(),
-                    backend: "local-pty".to_string(),
+                    backend: "pty".to_string(),
                     metadata: HashMap::new(),
                 },
                 agent_id: "agent-1".to_string(),

@@ -729,7 +729,6 @@ Write your results in markdown:
             work_dir: worktree_path.to_path_buf(),
             env: std::collections::HashMap::new(),
             resources: Default::default(),
-            backend_config: serde_json::json!({}),
         };
 
         // 3. Build the agent launch command.

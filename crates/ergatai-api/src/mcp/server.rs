@@ -1490,7 +1490,7 @@ Ergatai manages agent discovery, message routing, and communication policies.
 ## 1. Your Identity
 
 Your agent name is the `ergatai_agent_id` field from `list_agents` (e.g., "agent-2").
-The `agent_id` field (e.g., "%15") is an internal pane ID — never use it.
+The `agent_id` field (e.g., "%15") is an runtime agent ID — never use it.
 
 ## 2. Agent Discovery (`list_agents`)
 

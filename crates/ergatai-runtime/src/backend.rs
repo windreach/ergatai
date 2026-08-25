@@ -30,7 +30,7 @@ use crate::types::{AgentHandle, BackendCapabilities, WaitResult, WorkspaceHandle
 /// 4. **Async-First** — all operations are async (network, process, container APIs)
 #[async_trait]
 pub trait AgentRuntimeBackend: Send + Sync + 'static {
-    /// Human-readable backend name (e.g., "local-pty", "docker", "ssh").
+    /// Human-readable backend name (e.g., "pty", "docker", "ssh").
     fn name(&self) -> &'static str;
 
     /// Declare what this backend can do.
@@ -271,7 +271,6 @@ mod tests {
             work_dir: PathBuf::from("/tmp"),
             env: HashMap::new(),
             resources: ResourceLimits::default(),
-            backend_config: serde_json::json!({}),
         };
         let handle = backend.create_workspace(spec).await.unwrap();
         assert_eq!(handle.id, "ws-1");

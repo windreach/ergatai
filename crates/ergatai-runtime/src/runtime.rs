@@ -59,12 +59,12 @@ pub fn init_agent_runtime(
 pub struct AgentRuntime {
     backend: Arc<dyn AgentRuntimeBackend>,
     registry: Arc<RwLock<HashMap<String, AgentInfo>>>,
-    /// Reverse index: agent UUID → runtime agent ID (pane ID).
+    /// Reverse index: agent UUID → runtime agent ID.
     /// Enables O(1) UUID resolution for stable message routing.
     uuid_index: Arc<RwLock<HashMap<String, String>>>,
     /// Reverse index: MCP agent ID → runtime agent ID.
     /// Enables resolving MCP IDs (e.g., "opencode@abcd1234") to runtime IDs
-    /// (e.g., "%198") for message injection.
+    /// (e.g., "ws1-agent-1") for message injection.
     mcp_index: Arc<RwLock<HashMap<String, String>>>,
     /// Reverse index: stable ID → runtime agent ID.
     /// LOW FIX: Enables O(1) stable ID resolution instead of O(n) linear scan.
@@ -130,8 +130,7 @@ impl AgentRuntime {
         instruction: Option<&str>,
     ) -> ErgataiResult<String> {
         // Check if workspace already exists (e.g., created by CLI POST /api/v1/workspaces).
-        // Avoid calling create_workspace again to prevent duplicate session creation
-        // via SDK's `new-session -A` which can create a new window.
+        // Avoid calling create_workspace again to prevent duplicate workspace entries.
         let existing_workspaces = self.backend.list_workspaces().await.unwrap_or_default();
         let workspace = if existing_workspaces.iter().any(|w| w.id == spec.id) {
             debug!(workspace_id = spec.id, "Reusing existing workspace");
@@ -405,8 +404,8 @@ impl AgentRuntime {
 
         for (agent_id, handle) in discovered {
             // If this workspace already has an agent registered (e.g., via launch_agent),
-            // validate the pane is still the same and update its handle metadata with
-            // the latest discovery data. If the pane changed, re-register the agent.
+            // validate the agent is still the same and update its handle metadata with
+            // the latest discovery data. If the agent changed, re-register.
             //
             // All mutations happen under the SAME write-lock acquisition to prevent
             // state changes between drop/re-acquire (previously: drop → remove → re-acquire
@@ -417,19 +416,19 @@ impl AgentRuntime {
                 .map(|info| {
                     (
                         info.agent_id.clone(),
-                        info.handle.metadata.get("pane_id").cloned(),
-                        handle.metadata.get("pane_id").cloned(),
+                        info.handle.metadata.get("ergatai_agent_id").cloned(),
+                        handle.metadata.get("ergatai_agent_id").cloned(),
                     )
                 });
 
-            if let Some((old_agent_id, existing_pane_id, new_pane_id)) = existing_match {
-                // Check if pane changed (agent died and pane was recreated)
-                if existing_pane_id != new_pane_id {
+            if let Some((old_agent_id, existing_agent_key, new_agent_key)) = existing_match {
+                // Check if agent changed (process died and was recreated)
+                if existing_agent_key != new_agent_key {
                     warn!(
                         workspace_id = %handle.workspace.id,
-                        old_pane = ?existing_pane_id,
-                        new_pane = ?new_pane_id,
-                        "Pane changed — agent likely died and pane was recreated. Re-registering agent."
+                        old_agent = ?existing_agent_key,
+                        new_agent = ?new_agent_key,
+                        "Agent changed — process likely died and was recreated. Re-registering agent."
                     );
                     // Remove old registration under the SAME lock, then fall through
                     // to register the new agent below.
@@ -443,7 +442,7 @@ impl AgentRuntime {
                         indices_to_clean.push((old_agent_id.clone(), old_uuid, old_mcp));
                     }
                 } else {
-                    // Same pane - just update metadata and stable_id
+                    // Same agent - just update metadata and stable_id
                     if let Some(eai) = handle.metadata.get("ergatai_agent_id") {
                         if let Some(existing) = registry.get_mut(&old_agent_id) {
                             existing
@@ -1008,10 +1007,10 @@ impl AgentRuntime {
             .and_then(|info| info.mcp_agent_id.clone())
     }
 
-    /// Resolve agent UUID to current runtime ID (pane ID).
+    /// Resolve agent UUID to current runtime ID.
     ///
     /// This enables stable message routing: messages are addressed by UUID,
-    /// which survives pane restarts. The UUID maps to the current pane ID.
+    /// which survives agent restarts. The UUID maps to the current runtime agent ID.
     ///
     /// Uses O(1) hash map lookup via uuid_index for efficient resolution.
     pub async fn resolve_agent_uuid(&self, agent_uuid: &str) -> Option<String> {
@@ -1444,7 +1443,6 @@ mod tests {
             work_dir: PathBuf::from("/tmp"),
             env: HashMap::new(),
             resources: Default::default(),
-            backend_config: serde_json::json!({}),
         }
     }
 

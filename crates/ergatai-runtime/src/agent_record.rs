@@ -32,7 +32,7 @@ pub struct AgentRecord {
     /// Unique agent identifier (stable across restarts, used for message routing)
     pub agent_uuid: String,
 
-    /// Dynamic runtime agent ID (e.g., pane ID like "%72", changes on restart)
+    /// Dynamic runtime agent ID (e.g., "ws1-agent-1", changes on restart)
     pub agent_id: String,
 
     /// Human-readable stable identifier (e.g., "agent-1").
@@ -75,18 +75,18 @@ pub struct AgentRecord {
 ///
 /// ## ID System
 ///
-/// - `agent_id`: **Runtime ID** — dynamic identifier from the backend (e.g., PTY agent ID).
-///   Changes when the pane is recreated.
+/// - `agent_id`: **Runtime ID** — deterministic identifier from the backend (e.g., `{ws}-agent-{n}`).
+///   Changes when the process is recreated.
 /// - `metadata["ergatai_agent_id"]`: **Stable ID** — survives restarts (e.g., `agent-1`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentHandle {
     /// Workspace handle
     pub workspace: WorkspaceHandle,
 
-    /// **Runtime ID** — dynamic identifier from the backend.
+    /// **Runtime ID** — deterministic identifier from the backend.
     ///
-    /// For PTY backend: the runtime agent ID.
-    /// Not stable across pane restarts. For cross-restart identification,
+    /// For PTY backend: `{workspace_id}-agent-{counter}` (e.g., `ws1-agent-1`).
+    /// Not stable across process restarts. For cross-restart identification,
     /// use `metadata["ergatai_agent_id"]`.
     pub agent_id: String,
 
@@ -96,8 +96,8 @@ pub struct AgentHandle {
     /// Backend-specific metadata.
     ///
     /// Key entries:
-    /// - `ergatai_agent_id`: **Stable ID** — survives pane restarts
-    /// - `pane_id`: runtime agent identifier
+    /// - `ergatai_agent_id`: **Stable ID** — survives agent restarts
+    /// - `work_dir`: agent working directory
     pub metadata: std::collections::HashMap<String, String>,
 }
 
@@ -110,7 +110,7 @@ pub struct WorkspaceHandle {
     /// Backend name that created this workspace
     pub backend: String,
 
-    /// Backend-specific metadata (e.g., `{"session": "ergatai-abc"}`)
+    /// Backend-specific metadata (e.g., `{"work_dir": "/path/to/project"}`)
     pub metadata: std::collections::HashMap<String, String>,
 }
 

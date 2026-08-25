@@ -23,7 +23,6 @@
 //!     work_dir: PathBuf::from("/tmp/work"),
 //!     env: HashMap::new(),
 //!     resources: Default::default(),
-//!     backend_config: serde_json::json!({}),
 //! };
 //!
 //! let agent_id = runtime.launch_agent(spec, "claude", Some("Read CLAUDE.md")).await?;

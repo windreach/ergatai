@@ -449,8 +449,7 @@ impl AgentRuntimeBackend for PtyBackend {
         //    and returned by discover_agents() for registry integration)
         //
         // Generate deterministic agent ID: {workspace_id}-agent-{counter}
-        // This replaces the old TMUX_PANE-based IDs (%15, %16) with a stable,
-        // workspace-scoped identifier that persists across agent restarts.
+        // Workspace-scoped identifier provides a stable, predictable ID for each agent.
         let agent_id = {
             let mut workspaces = self.workspaces.write();
             let ws = workspaces.get_mut(&handle.id).ok_or_else(|| {
@@ -896,7 +895,6 @@ mod tests {
             work_dir: tmp.path().to_path_buf(),
             env: HashMap::new(),
             resources: crate::types::ResourceLimits::default(),
-            backend_config: serde_json::Value::Null,
         };
         let ws_handle = backend.create_workspace(ws_spec).await.unwrap();
 

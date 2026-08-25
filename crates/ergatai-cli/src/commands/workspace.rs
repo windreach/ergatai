@@ -13,7 +13,7 @@ pub async fn handle(action: WorkspaceAction, api_url: &str, token: Option<&str>)
         }
         WorkspaceAction::Create { id, work_dir } => {
             let workspace = client
-                .create_workspace(&id, work_dir.as_deref(), false)
+                .create_workspace(&id, work_dir.as_deref())
                 .await?;
             println!("Created workspace: {}", workspace.id);
         }

@@ -141,7 +141,6 @@ fn make_spec(id: &str) -> WorkspaceSpec {
         work_dir: PathBuf::from("/tmp"),
         env: HashMap::new(),
         resources: Default::default(),
-        backend_config: serde_json::json!({}),
     }
 }
 

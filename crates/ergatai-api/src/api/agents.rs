@@ -213,7 +213,6 @@ pub async fn spawn_agent(
             .into(),
         env,
         resources: ResourceLimits::default(),
-        backend_config: serde_json::json!({}),
     };
 
     match runtime
