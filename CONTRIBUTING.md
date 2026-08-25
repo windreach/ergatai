@@ -169,7 +169,7 @@ ergatai/
 │   ├── ergatai-agent/     # Agent config, discovery, hosted agents
 │   ├── ergatai-core/      # Core library — business logic facade
 │   ├── ergatai-error/     # Shared error types
-│   └── ergatai-binary/    # Binary resources (rmux, nats-server)
+│   └── ergatai-binary/    # Binary resources (nats-server)
 ├── examples/
 │   └── simple-agent/      # Example MCP agent
 ├── docs/                  # Documentation
