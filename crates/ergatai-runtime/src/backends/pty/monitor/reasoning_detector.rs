@@ -188,7 +188,11 @@ mod tests {
     #[tokio::test]
     async fn test_detect_not_reasoning() {
         let detector = ReasoningDetector::new();
-        let output = b"Hello, how can I help you?";
+        // Need > 100 bytes to trigger the "Responding" branch — shorter output
+        // is treated as not enough evidence to classify as active response.
+        let output = b"Hello, how can I help you today? I'd be happy to assist with your questions. \
+                       Here is a longer response to exceed the minimum byte threshold that the \
+                       reasoning detector uses to distinguish between idle and actively responding.";
 
         let state = detector.detect(output).await;
         assert_eq!(state.phase, ReasoningPhase::Responding);

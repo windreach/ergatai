@@ -47,7 +47,7 @@ impl Default for PtyConfig {
 /// Provides async read/write operations and process lifecycle management.
 pub struct PtyProcess {
     pty: Arc<Mutex<Pty>>,
-    async_fd: Arc<AsyncFd<i32>>,
+    async_fd: Arc<AsyncFd<std::os::unix::io::OwnedFd>>,
     child_pid: nix::unistd::Pid,
     /// Exit status: None = still running, Some = exit code
     exit_status: Arc<Mutex<Option<i32>>>,
@@ -73,9 +73,12 @@ impl PtyProcess {
         // Duplicate the fd for AsyncFd to avoid double-close on drop.
         // Pty owns the original fd via OwnedFd; AsyncFd owns the duplicated fd.
         // Both point to the same underlying file description but are separate fd entries.
+        // Wrap the duplicated fd in OwnedFd so it's closed automatically if AsyncFd::new fails.
+        use std::os::fd::FromRawFd;
         let raw_fd = pty.as_raw_fd();
         let duplicated_fd = nix::unistd::dup(raw_fd)?;
-        let async_fd = AsyncFd::new(duplicated_fd)?;
+        let owned_duplicated = unsafe { std::os::unix::io::OwnedFd::from_raw_fd(duplicated_fd) };
+        let async_fd = AsyncFd::new(owned_duplicated)?;
 
         Ok(PtyProcess {
             pty: Arc::new(Mutex::new(pty)),

@@ -101,6 +101,18 @@ struct AgentEntry {
     workspace_id: String,
     reader_handle: JoinHandle<()>,
     exit_code: Arc<TokioMutex<Option<i32>>>,
+    /// Path to the instruction temp file, if one was written for this agent.
+    /// Cleaned up on drop to avoid leaking files in /tmp.
+    instr_path: Option<String>,
+}
+
+impl Drop for AgentEntry {
+    fn drop(&mut self) {
+        self.reader_handle.abort();
+        if let Some(path) = &self.instr_path {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 /// Logical workspace (no physical resources, just metadata).
@@ -175,9 +187,9 @@ impl PtyBackend {
     /// Remove agent entry and abort its reader task.
     fn remove_agent(&self, pid_str: &str) {
         let mut agents = self.agents.write();
-        if let Some(entry) = agents.remove(pid_str) {
-            entry.reader_handle.abort();
-        }
+        // Drop triggers AgentEntry::drop, which aborts the reader and cleans
+        // up the instruction temp file.
+        agents.remove(pid_str);
     }
 }
 
@@ -329,11 +341,12 @@ impl AgentRuntimeBackend for PtyBackend {
         });
 
         // 6. Inject instruction if provided
+        let mut instr_path: Option<String> = None;
         if let Some(instr) = instruction {
             tokio::time::sleep(INSTRUCTION_DELAY).await;
 
             // Write instruction to temp file (preserves formatting)
-            let instr_path = format!(
+            let path = format!(
                 "/tmp/ergatai-pty-instr-{}-{}.md",
                 std::process::id(),
                 pid_str
@@ -341,14 +354,14 @@ impl AgentRuntimeBackend for PtyBackend {
             {
                 use std::io::Write;
                 use std::os::unix::fs::OpenOptionsExt;
-                let path = instr_path.clone();
+                let write_path = path.clone();
                 let content: String = instr.to_owned();
                 tokio::task::spawn_blocking(move || {
                     let mut f = std::fs::OpenOptions::new()
                         .create_new(true)
                         .write(true)
                         .mode(0o600)
-                        .open(&path)?;
+                        .open(&write_path)?;
                     f.write_all(content.as_bytes())?;
                     Ok::<_, std::io::Error>(())
                 })
@@ -362,7 +375,7 @@ impl AgentRuntimeBackend for PtyBackend {
             // Send prompt referencing the file
             let prompt = format!(
                 "Read and follow the instructions in {} — then complete the assigned task.\n",
-                instr_path
+                path
             );
             process.write(prompt.as_bytes()).await.map_err(|e| {
                 ErgataiError::internal(format!("Failed to write instruction prompt: {}", e))
@@ -371,9 +384,10 @@ impl AgentRuntimeBackend for PtyBackend {
             info!(
                 pid = %pid_str,
                 instr_bytes = instr.len(),
-                instr_path = %instr_path,
+                instr_path = %path,
                 "Instruction injected via file reference"
             );
+            instr_path = Some(path);
         }
 
         // 7. Register agent
@@ -385,6 +399,7 @@ impl AgentRuntimeBackend for PtyBackend {
                 workspace_id: handle.id.clone(),
                 reader_handle,
                 exit_code: exit_code.clone(),
+                instr_path,
             },
         );
 
@@ -397,7 +412,7 @@ impl AgentRuntimeBackend for PtyBackend {
         // 8. Build AgentHandle
         let agent_id = format!("agent-{}", uuid::Uuid::new_v4());
         let mut metadata = HashMap::new();
-        metadata.insert("ergatai_agent_id".to_string(), handle.id.clone());
+        metadata.insert("ergatai_agent_id".to_string(), agent_id.clone());
 
         info!(
             pid = %pid_str,

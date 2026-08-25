@@ -161,18 +161,26 @@ impl CompletionDetector {
             };
         }
 
-        // Signal 2: Working pattern detected → not complete
-        if state.working_detected {
-            return CompletionResult::NotComplete {
-                reason: "Working pattern detected".to_string(),
-            };
-        }
-
-        // Signal 3: Completion pattern detected → complete
+        // Signal 2: Completion pattern detected → complete
+        // Checked BEFORE the working-pattern check because a completion marker
+        // (e.g. "Is there anything else...") is strong evidence that the turn
+        // finished, even if a working pattern ("thinking...") appeared earlier
+        // in the same turn. Previously, working_detected short-circuited this
+        // branch, causing a logic deadlock where the detector would never
+        // declare completion once any "thinking..." was seen.
         if state.completion_detected && state.output_length >= self.config.min_response_length {
             return CompletionResult::Complete {
                 confidence: 0.95,
                 reason: "Completion pattern detected".to_string(),
+            };
+        }
+
+        // Signal 3: Working pattern detected AND output still flowing → not complete
+        // If output has paused longer than the pause threshold, treat working as
+        // stale — the agent has either finished or is blocked, not actively working.
+        if state.working_detected && time_since_output < self.config.pause_threshold_ms {
+            return CompletionResult::NotComplete {
+                reason: "Working pattern detected (output still flowing)".to_string(),
             };
         }
 
@@ -273,21 +281,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_working_pattern_blocks_completion() {
+    async fn test_working_pattern_blocks_while_output_flowing() {
         let detector = CompletionDetector::new();
 
         // Output with working pattern
         detector.on_output(b"thinking... let me analyze").await;
 
-        // Set time to past
+        // last_output_time is NOW (output still flowing) — working pattern
+        // should block completion because the agent is still actively producing.
+        let result = detector.is_complete().await;
+        assert!(
+            !result.is_complete(),
+            "working pattern should block completion while output is flowing"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_working_pattern_stale_after_pause() {
+        let detector = CompletionDetector::new();
+
+        // Output with working pattern then long pause — working becomes stale.
+        detector.on_output(b"thinking... let me analyze").await;
+        detector
+            .on_output(b"some more output to exceed min_response_length threshold for completion detection")
+            .await;
+
+        // Simulate long pause (well past pause_threshold_ms)
         {
             let mut state = detector.state.write().await;
             state.last_output_time = 0;
         }
 
-        // Should not be complete (working pattern detected)
+        // After a long pause, stale working pattern should NOT block completion.
+        // Completion still requires either a completion pattern or sufficient pause
+        // with min_response_length. Here we have the long pause + enough bytes.
         let result = detector.is_complete().await;
-        assert!(!result.is_complete());
+        assert!(
+            result.is_complete(),
+            "stale working pattern should not block completion after pause"
+        );
     }
 
     #[tokio::test]
