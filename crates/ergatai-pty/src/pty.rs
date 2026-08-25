@@ -10,10 +10,13 @@ use nix::pty::{forkpty, Winsize};
 use nix::unistd::{execve, ForkResult};
 use std::ffi::CString;
 
-/// Low-level PTY handle (master fd + child pid)
+/// Low-level PTY handle (master fd + child pid + process group id)
 pub struct Pty {
     master_fd: OwnedFd,
     pub child_pid: nix::unistd::Pid,
+    /// Process group ID (PGID) for signaling the entire process tree.
+    /// Equal to `child_pid` — the child is the process group leader.
+    pub process_group_id: nix::unistd::Pid,
 }
 
 impl Pty {
@@ -84,6 +87,14 @@ impl Pty {
 
         match fork_result.fork_result {
             ForkResult::Child => {
+                // NOTE: No setpgid() call here — forkpty() already called setsid()
+                // in the child, which makes the child a session leader with PGID = PID.
+                // Calling setpgid() on a session leader returns EPERM, so we must NOT
+                // call it here. The PGID is already set correctly.
+                //
+                // Any grandchildren spawned by the child will inherit this session
+                // and process group, so kill(-pgid, sig) will reach the whole tree.
+
                 // Change working directory (chdir syscall is async-signal-safe).
                 if let Some(dir) = cwd {
                     if let Err(e) = nix::unistd::chdir(dir) {
@@ -99,10 +110,15 @@ impl Pty {
                 write_child_error_and_exit("execve failed", &std::io::Error::last_os_error());
             }
             ForkResult::Parent { child } => {
-                // Parent process: return master fd and child pid
+                // After forkpty() returns, the child has already called setsid()
+                // (inside forkpty), which creates a new session with PGID = PID.
+                // No setpgid() needed here — the PGID is already correct.
+                // (Calling setpgid() on a child in a different session would fail
+                // with EPERM/ESRCH anyway.)
                 Ok(Pty {
                     master_fd: fork_result.master,
                     child_pid: child,
+                    process_group_id: child, // PGID = PID after setsid()
                 })
             }
         }

@@ -33,6 +33,7 @@ use ergatai_error::{ErgataiError, ErgataiResult};
 use ergatai_pty::{PtyConfig, PtyProcess};
 
 use crate::backend::AgentRuntimeBackend;
+use crate::cgroups::CgroupController;
 use crate::types::{
     AgentHandle, BackendCapabilities, WaitResult, WorkspaceHandle, WorkspaceSpec,
 };
@@ -124,6 +125,9 @@ struct WorkspaceEntry {
     work_dir: PathBuf,
     env: HashMap<String, String>,
     agent_pids: Vec<String>,
+    /// Cgroup controller for resource limits (CPU/memory).
+    /// None if cgroups v2 is unavailable or no limits were specified.
+    cgroup_controller: Option<CgroupController>,
 }
 
 // ── PtyBackend ──
@@ -216,7 +220,7 @@ impl AgentRuntimeBackend for PtyBackend {
         BackendCapabilities {
             supports_message_injection: true,   // write() to PTY stdin
             supports_output_capture: true,      // background reader buffer
-            supports_resource_limits: false,    // no cgroups (yet)
+            supports_resource_limits: cfg!(target_os = "linux"), // cgroups v2
             supports_workspace_reuse: true,     // logical workspaces
             supports_network_isolation: false,
             max_concurrent_agents: None,
@@ -233,11 +237,27 @@ impl AgentRuntimeBackend for PtyBackend {
         let mut metadata = HashMap::new();
         metadata.insert("work_dir".to_string(), spec.work_dir.to_string_lossy().to_string());
 
+        // Create cgroup controller if resource limits are specified
+        let cgroup_controller = if spec.resources.cpu_cores.is_some() || spec.resources.memory_mb.is_some() {
+            let controller = CgroupController::create(
+                &spec.id,
+                spec.resources.cpu_cores,
+                spec.resources.memory_mb,
+            );
+            if controller.is_active() {
+                metadata.insert("cgroup".to_string(), controller.path().to_string_lossy().to_string());
+            }
+            Some(controller)
+        } else {
+            None
+        };
+
         let entry = WorkspaceEntry {
             id: spec.id.clone(),
             work_dir: spec.work_dir,
             env: spec.env.clone(),
             agent_pids: Vec::new(),
+            cgroup_controller,
         };
 
         self.workspaces.write().insert(spec.id.clone(), entry);
@@ -289,6 +309,23 @@ impl AgentRuntimeBackend for PtyBackend {
         })?;
         let pid = process.pid();
         let pid_str = pid.to_string();
+
+        // 4b. Add process to cgroup (if resource limits are configured)
+        {
+            let workspaces = self.workspaces.read();
+            if let Some(ws) = workspaces.get(&handle.id) {
+                if let Some(ref cgroup) = ws.cgroup_controller {
+                    if let Err(e) = cgroup.add_process(pid.as_raw()) {
+                        warn!(
+                            pid = %pid_str,
+                            error = %e,
+                            "Failed to add agent to cgroup — resource limits may not apply"
+                        );
+                    }
+                }
+            }
+        }
+
         let process = Arc::new(process);
 
         // 5. Create output buffer + background reader
@@ -518,13 +555,14 @@ impl AgentRuntimeBackend for PtyBackend {
             }
         };
 
-        info!(pid = %pid_str, "Sending SIGTERM to agent");
+        info!(pid = %pid_str, "Sending SIGTERM to agent process group");
 
-        // Send SIGTERM
+        // Send SIGTERM to entire process group (not just child PID)
+        // This kills grandchildren too — otherwise they become orphans.
         process
-            .signal(nix::sys::signal::Signal::SIGTERM)
+            .signal_group(nix::sys::signal::Signal::SIGTERM)
             .map_err(|e| {
-                ErgataiError::internal(format!("Failed to send SIGTERM: {}", e))
+                ErgataiError::internal(format!("Failed to send SIGTERM to process group: {}", e))
             })?;
 
         // Wait for grace period
@@ -537,9 +575,9 @@ impl AgentRuntimeBackend for PtyBackend {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
-        // Escalate to SIGKILL
-        warn!(pid = %pid_str, "Agent did not exit within grace period, sending SIGKILL");
-        let _ = process.signal(nix::sys::signal::Signal::SIGKILL);
+        // Escalate to SIGKILL for entire process group
+        warn!(pid = %pid_str, "Agent process group did not exit within grace period, sending SIGKILL");
+        let _ = process.signal_group(nix::sys::signal::Signal::SIGKILL);
 
         Ok(())
     }
@@ -551,8 +589,9 @@ impl AgentRuntimeBackend for PtyBackend {
 
         let agents = self.agents.read();
         if let Some(entry) = agents.get(pid_str) {
-            warn!(pid = %pid_str, "Force-killing agent (SIGKILL)");
-            let _ = entry.process.signal(nix::sys::signal::Signal::SIGKILL);
+            warn!(pid = %pid_str, "Force-killing agent process group (SIGKILL)");
+            // Kill entire process group (child + grandchildren)
+            let _ = entry.process.signal_group(nix::sys::signal::Signal::SIGKILL);
         }
 
         Ok(())
@@ -630,7 +669,8 @@ impl AgentRuntimeBackend for PtyBackend {
         for pid_str in &agent_pids {
             let agents = self.agents.read();
             if let Some(entry) = agents.get(pid_str) {
-                let _ = entry.process.signal(nix::sys::signal::Signal::SIGKILL);
+                // Use signal_group to kill entire process tree (child + grandchildren)
+                let _ = entry.process.signal_group(nix::sys::signal::Signal::SIGKILL);
             }
         }
 
@@ -639,7 +679,7 @@ impl AgentRuntimeBackend for PtyBackend {
             self.remove_agent(pid_str);
         }
 
-        // Remove workspace
+        // Remove workspace (CgroupController::drop will clean up the cgroup directory)
         self.workspaces.write().remove(&handle.id);
 
         info!(
@@ -725,7 +765,8 @@ mod tests {
         assert!(caps.supports_message_injection);
         assert!(caps.supports_output_capture);
         assert!(caps.supports_workspace_reuse);
-        assert!(!caps.supports_resource_limits);
+        // Resource limits are supported on Linux (cgroups v2) when available
+        assert_eq!(caps.supports_resource_limits, cfg!(target_os = "linux"));
     }
 
     #[test]

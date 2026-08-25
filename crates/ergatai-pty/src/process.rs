@@ -49,6 +49,9 @@ pub struct PtyProcess {
     pty: Arc<Mutex<Pty>>,
     async_fd: Arc<AsyncFd<std::os::unix::io::OwnedFd>>,
     child_pid: nix::unistd::Pid,
+    /// Process group ID — equal to child_pid. Used to signal the entire
+    /// process tree (child + grandchildren) via `kill(-pgid, sig)`.
+    process_group_id: nix::unistd::Pid,
     /// Exit status: None = still running, Some = exit code
     exit_status: Arc<Mutex<Option<i32>>>,
 }
@@ -84,6 +87,7 @@ impl PtyProcess {
             pty: Arc::new(Mutex::new(pty)),
             async_fd: Arc::new(async_fd),
             child_pid,
+            process_group_id: child_pid, // PGID = child PID (set in Pty::spawn)
             exit_status: Arc::new(Mutex::new(None)),
         })
     }
@@ -179,9 +183,25 @@ impl PtyProcess {
         Ok(())
     }
 
+    /// Send a signal to the entire process group (child + all grandchildren)
+    ///
+    /// Uses `kill(-pgid, sig)` — a negative PID sends the signal to every
+    /// process in the group. This prevents orphaned grandchildren when the
+    /// main agent process is killed.
+    pub fn signal_group(&self, sig: nix::sys::signal::Signal) -> anyhow::Result<()> {
+        let pgid = nix::unistd::Pid::from_raw(-self.process_group_id.as_raw());
+        nix::sys::signal::kill(pgid, sig)?;
+        Ok(())
+    }
+
     /// Get the child process PID
     pub fn pid(&self) -> nix::unistd::Pid {
         self.child_pid
+    }
+
+    /// Get the process group ID
+    pub fn process_group_id(&self) -> nix::unistd::Pid {
+        self.process_group_id
     }
 
     /// Resize the PTY
@@ -200,8 +220,9 @@ impl Drop for PtyProcess {
     fn drop(&mut self) {
         use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 
-        // Try to terminate the child gracefully
-        let _ = self.signal(nix::sys::signal::Signal::SIGTERM);
+        // Try to terminate the entire process group gracefully (not just child PID).
+        // This kills grandchildren too — otherwise they become orphans.
+        let _ = self.signal_group(nix::sys::signal::Signal::SIGTERM);
 
         // Non-blocking check if already exited
         match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
@@ -211,13 +232,15 @@ impl Drop for PtyProcess {
 
         // Spawn async cleanup task instead of blocking the runtime
         let pid = self.child_pid;
+        let pgid_raw = self.process_group_id.as_raw();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
             // Check again after grace period
             if let Ok(WaitStatus::StillAlive) = waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
-                // Force kill if still alive
-                let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+                // Force kill entire process group (not just child PID)
+                let pgid = nix::unistd::Pid::from_raw(-pgid_raw);
+                let _ = nix::sys::signal::kill(pgid, nix::sys::signal::Signal::SIGKILL);
                 let _ = waitpid(pid, None);
             }
         });

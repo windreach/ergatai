@@ -39,6 +39,7 @@
 // Core types
 pub mod agent_lifecycle;
 pub mod agent_record;
+pub mod cgroups;
 pub mod types;
 
 // Backend trait
