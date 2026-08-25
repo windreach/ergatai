@@ -2,7 +2,9 @@
 //!
 //! Wraps the low-level `Pty` with async I/O and process lifecycle management.
 
+use std::collections::HashMap;
 use std::os::unix::io::AsRawFd;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::io::unix::AsyncFd;
@@ -21,6 +23,10 @@ pub struct PtyConfig {
     pub rows: u16,
     /// Terminal columns
     pub cols: u16,
+    /// Working directory for the child process (None = inherit parent's cwd)
+    pub cwd: Option<PathBuf>,
+    /// Environment variables to set in the child process (merged with parent's env)
+    pub env: HashMap<String, String>,
 }
 
 impl Default for PtyConfig {
@@ -30,6 +36,8 @@ impl Default for PtyConfig {
             args: vec![],
             rows: 24,
             cols: 80,
+            cwd: None,
+            env: HashMap::new(),
         }
     }
 }
@@ -49,15 +57,25 @@ impl PtyProcess {
     /// Spawn a new PTY process with the given configuration
     pub fn spawn(config: PtyConfig) -> anyhow::Result<Self> {
         let args_refs: Vec<&str> = config.args.iter().map(|s| s.as_str()).collect();
-        let pty = Pty::spawn(&config.command, &args_refs, config.rows, config.cols)?;
+        let pty = Pty::spawn(
+            &config.command,
+            &args_refs,
+            config.rows,
+            config.cols,
+            config.cwd.as_deref(),
+            &config.env,
+        )?;
         let child_pid = pty.child_pid;
 
         // Set non-blocking mode for async I/O
         pty.set_nonblocking()?;
 
-        // Get raw fd and wrap in AsyncFd for tokio
+        // Duplicate the fd for AsyncFd to avoid double-close on drop.
+        // Pty owns the original fd via OwnedFd; AsyncFd owns the duplicated fd.
+        // Both point to the same underlying file description but are separate fd entries.
         let raw_fd = pty.as_raw_fd();
-        let async_fd = AsyncFd::new(raw_fd)?;
+        let duplicated_fd = nix::unistd::dup(raw_fd)?;
+        let async_fd = AsyncFd::new(duplicated_fd)?;
 
         Ok(PtyProcess {
             pty: Arc::new(Mutex::new(pty)),
@@ -177,21 +195,28 @@ impl PtyProcess {
 
 impl Drop for PtyProcess {
     fn drop(&mut self) {
+        use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+
         // Try to terminate the child gracefully
         let _ = self.signal(nix::sys::signal::Signal::SIGTERM);
 
-        // Give it a moment to exit
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        // Check if already exited
-        use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+        // Non-blocking check if already exited
         match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
             Ok(WaitStatus::Exited(_, _)) | Ok(WaitStatus::Signaled(_, _, _)) => return,
             _ => {}
         }
 
-        // Force kill if still alive
-        let _ = self.signal(nix::sys::signal::Signal::SIGKILL);
-        let _ = waitpid(self.child_pid, None);
+        // Spawn async cleanup task instead of blocking the runtime
+        let pid = self.child_pid;
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            // Check again after grace period
+            if let Ok(WaitStatus::StillAlive) = waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+                // Force kill if still alive
+                let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+                let _ = waitpid(pid, None);
+            }
+        });
     }
 }

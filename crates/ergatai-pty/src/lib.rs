@@ -36,9 +36,11 @@
 //!         args: vec![],
 //!         rows: 24,
 //!         cols: 80,
+//!         cwd: None,
+//!         env: std::collections::HashMap::new(),
 //!     };
 //!
-//!     let mut process = PtyProcess::spawn(config)?;
+//!     let process = PtyProcess::spawn(config)?;
 //!
 //!     // Write a message to the agent
 //!     process.write(b"Hello, agent!\n").await?;

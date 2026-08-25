@@ -204,13 +204,17 @@ async fn async_main(args: Args) -> Result<()> {
                 tracing::info!("Using tmux backend (tmux CLI-based terminal multiplexer)");
                 std::sync::Arc::new(ergatai_runtime::TmuxBackend::new(&args.session_prefix))
             }
+            "pty" => {
+                tracing::info!("Using pty backend (direct PTY-based process control, no tmux dependency)");
+                std::sync::Arc::new(ergatai_runtime::PtyBackend::new())
+            }
             "rmux" => {
                 tracing::warn!("rmux backend is deprecated, consider using tmux");
                 std::sync::Arc::new(ergatai_runtime::RmuxBackend::new(&args.session_prefix))
             }
             other => {
                 return Err(anyhow::anyhow!(
-                    "Unknown runtime backend '{}'. Valid options: tmux, rmux",
+                    "Unknown runtime backend '{}'. Valid options: tmux, pty, rmux",
                     other
                 ));
             }

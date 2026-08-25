@@ -2,6 +2,7 @@
 //!
 //! These tests spawn real processes via PTY and verify read/write operations.
 
+use std::collections::HashMap;
 use ergatai_pty::{PtyConfig, PtyProcess};
 
 /// Spawn a simple `cat` process, write to it, and read back.
@@ -12,6 +13,8 @@ async fn pty_spawn_cat_and_echo() {
         args: vec![],
         rows: 24,
         cols: 80,
+        cwd: None,
+        env: HashMap::new(),
     };
 
     let process = PtyProcess::spawn(config).expect("failed to spawn cat");
@@ -70,6 +73,8 @@ async fn pty_spawn_echo_exits() {
         args: vec!["pty_test_output".into()],
         rows: 24,
         cols: 80,
+        cwd: None,
+        env: HashMap::new(),
     };
 
     let process = PtyProcess::spawn(config).expect("failed to spawn echo");
@@ -94,6 +99,8 @@ async fn pty_spawn_sh_and_read() {
         args: vec!["-c".into(), "echo pty_shell_test".into()],
         rows: 24,
         cols: 80,
+        cwd: None,
+        env: HashMap::new(),
     };
 
     let process = PtyProcess::spawn(config).expect("failed to spawn sh");

@@ -4,6 +4,7 @@
 //! for running agents in different environments:
 //!
 //! - **TmuxBackend**: tmux CLI-based terminal multiplexer (preferred, default)
+//! - **PtyBackend**: direct PTY-based process control (no tmux dependency)
 //! - **RmuxBackend**: rmux SDK-based terminal multiplexer (deprecated)
 //! - **DirectProcessBackend**: direct process spawning (no terminal multiplexer)
 //!
@@ -59,6 +60,7 @@ pub use agent_record::{
 };
 pub use backend::AgentRuntimeBackend;
 pub use backends::direct_process::DirectProcessBackend;
+pub use backends::pty::PtyBackend;
 #[cfg(feature = "rmux")]
 pub use backends::rmux::{ManagedPaneInfo, RmuxBackend, RmuxDaemonInfo};
 #[deprecated(

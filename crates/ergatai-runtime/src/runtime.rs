@@ -539,6 +539,8 @@ impl AgentRuntime {
         // Try TmuxBackend first (default).
         let health = if let Some(tmux_backend) = backend_any.downcast_ref::<TmuxBackend>() {
             tmux_backend.health_check_agents().await
+        } else if let Some(pty_backend) = backend_any.downcast_ref::<crate::backends::pty::PtyBackend>() {
+            pty_backend.health_check_agents().await
         } else {
             // Try RmuxBackend (deprecated but still in use behind feature flag).
             #[cfg(feature = "rmux")]

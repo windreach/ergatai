@@ -2,7 +2,9 @@
 //!
 //! This module provides low-level PTY operations using `forkpty()` from nix crate.
 
+use std::collections::HashMap;
 use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
+use std::path::Path;
 
 use nix::pty::{forkpty, Winsize};
 use nix::unistd::{execvp, ForkResult};
@@ -19,7 +21,21 @@ impl Pty {
     ///
     /// The child will execute the given command with the given arguments.
     /// The parent gets the master fd for reading/writing.
-    pub fn spawn(command: &str, args: &[&str], rows: u16, cols: u16) -> anyhow::Result<Self> {
+    ///
+    /// # Arguments
+    /// * `command` - Command to execute
+    /// * `args` - Command arguments
+    /// * `rows` / `cols` - Terminal dimensions
+    /// * `cwd` - Working directory for child (None = inherit parent's)
+    /// * `env` - Additional environment variables to set in child
+    pub fn spawn(
+        command: &str,
+        args: &[&str],
+        rows: u16,
+        cols: u16,
+        cwd: Option<&Path>,
+        env: &HashMap<String, String>,
+    ) -> anyhow::Result<Self> {
         let winsize = Winsize {
             ws_row: rows,
             ws_col: cols,
@@ -37,11 +53,32 @@ impl Pty {
 
         match fork_result.fork_result {
             ForkResult::Child => {
-                // Child process: exec the command
-                let cmd = CString::new(command)?;
-                let c_args: Vec<CString> = std::iter::once(cmd.clone())
-                    .chain(args.iter().map(|s| CString::new(*s).unwrap()))
-                    .collect();
+                // Child process: set up environment before exec
+
+                // Set working directory if specified
+                if let Some(dir) = cwd {
+                    if std::env::set_current_dir(dir).is_err() {
+                        std::process::exit(1);
+                    }
+                }
+
+                // Set environment variables (merged with inherited parent env)
+                for (key, value) in env {
+                    std::env::set_var(key, value);
+                }
+
+                // Build c_args with proper error handling — panic after fork is UB
+                let cmd = match CString::new(command) {
+                    Ok(c) => c,
+                    Err(_) => std::process::exit(1),
+                };
+                let c_args: Vec<CString> = match std::iter::once(Ok(cmd.clone()))
+                    .chain(args.iter().map(|s| CString::new(*s)))
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(args) => args,
+                    Err(_) => std::process::exit(1),
+                };
 
                 // execvp replaces the current process with the command
                 execvp(&cmd, &c_args)?;
@@ -99,8 +136,5 @@ impl Pty {
     }
 }
 
-// OwnedFd handles close on drop automatically
-
-// SAFETY: Pty can be sent across threads (master_fd is just an integer)
-unsafe impl Send for Pty {}
-unsafe impl Sync for Pty {}
+// OwnedFd handles close on drop automatically.
+// OwnedFd is already Send + Sync, so Pty auto-derives these traits.
