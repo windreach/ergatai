@@ -27,8 +27,6 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-mod monitor;
-
 use ergatai_error::{ErgataiError, ErgataiResult};
 use ergatai_pty::{PtyConfig, PtyProcess};
 
