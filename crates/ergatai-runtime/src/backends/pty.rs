@@ -13,7 +13,9 @@
 //!
 //! # Limitations
 //!
-//! - No agent discovery (PTYs are internal processes, not externally visible)
+//! - No cross-process agent discovery (PTY agents are internal child processes
+//!   of this backend instance; `discover_agents()` returns only agents started
+//!   by this instance, filtered to those still alive)
 //! - No terminal multiplexing (each agent is a separate process)
 
 use std::collections::HashMap;
@@ -102,6 +104,9 @@ struct AgentEntry {
     /// Path to the instruction temp file, if one was written for this agent.
     /// Cleaned up on drop to avoid leaking files in /tmp.
     instr_path: Option<String>,
+    /// The AgentHandle returned from start_agent. Stored so that
+    /// discover_agents() can return it for registry integration.
+    handle: AgentHandle,
 }
 
 impl Drop for AgentEntry {
@@ -169,7 +174,7 @@ impl PtyBackend {
         let agents = self.agents.read();
         let mut results = Vec::new();
 
-        for (pid_str, _entry) in agents.iter() {
+        for pid_str in agents.keys() {
             let pid: u32 = match pid_str.parse() {
                 Ok(p) => p,
                 Err(_) => continue,
@@ -388,7 +393,20 @@ impl AgentRuntimeBackend for PtyBackend {
             instr_path = Some(path);
         }
 
-        // 7. Register agent
+        // 7. Build AgentHandle (before insertion, so it can be stored in AgentEntry
+        //    and returned by discover_agents() for registry integration)
+        let agent_id = format!("agent-{}", uuid::Uuid::new_v4());
+        let mut metadata = HashMap::new();
+        metadata.insert("ergatai_agent_id".to_string(), agent_id.clone());
+
+        let agent_handle = AgentHandle {
+            workspace: handle.clone(),
+            agent_id: agent_id.clone(),
+            process_id: Some(pid_str.clone()),
+            metadata,
+        };
+
+        // 8. Register agent
         self.agents.write().insert(
             pid_str.clone(),
             AgentEntry {
@@ -398,6 +416,7 @@ impl AgentRuntimeBackend for PtyBackend {
                 reader_handle,
                 exit_code: exit_code.clone(),
                 instr_path,
+                handle: agent_handle.clone(),
             },
         );
 
@@ -407,11 +426,6 @@ impl AgentRuntimeBackend for PtyBackend {
             .entry(handle.id.clone())
             .and_modify(|ws| ws.agent_pids.push(pid_str.clone()));
 
-        // 8. Build AgentHandle
-        let agent_id = format!("agent-{}", uuid::Uuid::new_v4());
-        let mut metadata = HashMap::new();
-        metadata.insert("ergatai_agent_id".to_string(), agent_id.clone());
-
         info!(
             pid = %pid_str,
             agent_id = %agent_id,
@@ -420,12 +434,7 @@ impl AgentRuntimeBackend for PtyBackend {
             "Agent started in PTY"
         );
 
-        Ok(AgentHandle {
-            workspace: handle.clone(),
-            agent_id,
-            process_id: Some(pid_str),
-            metadata,
-        })
+        Ok(agent_handle)
     }
 
     async fn inject_message(&self, handle: &AgentHandle, message: &str) -> ErgataiResult<()> {
@@ -661,9 +670,30 @@ impl AgentRuntimeBackend for PtyBackend {
     }
 
     async fn discover_agents(&self) -> ErgataiResult<Vec<(String, AgentHandle)>> {
-        // PTY backend has no external discovery — agents are only known
-        // if they were started by this backend instance.
-        Ok(Vec::new())
+        // Snapshot (pid, handle, process) triples out of the lock so we can
+        // await on each process without holding the RwLock.
+        let snapshot: Vec<(String, AgentHandle, Arc<PtyProcess>)> = {
+            let agents = self.agents.read();
+            agents
+                .iter()
+                .map(|(pid, entry)| (pid.clone(), entry.handle.clone(), entry.process.clone()))
+                .collect()
+        };
+
+        let mut result = Vec::with_capacity(snapshot.len());
+        for (pid_str, handle, process) in snapshot {
+            // Skip exited agents — they're no longer discoverable.
+            // The entry itself is kept until stop_agent/remove_agent so that
+            // wait_for_exit can still harvest the exit code.
+            if process.has_exited().await {
+                debug!(pid = %pid_str, agent_id = %handle.agent_id, "Skipping exited agent during discovery");
+                continue;
+            }
+            result.push((handle.agent_id.clone(), handle));
+        }
+
+        debug!(count = result.len(), "PtyBackend discover_agents");
+        Ok(result)
     }
 }
 
@@ -738,5 +768,61 @@ mod tests {
         assert!(matches!(exit_code_to_wait_result(1), WaitResult::Exited { code: 1 }));
         assert!(matches!(exit_code_to_wait_result(143), WaitResult::Signaled { signal: 15 }));
         assert!(matches!(exit_code_to_wait_result(137), WaitResult::Signaled { signal: 9 }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_discover_agents_returns_started_agent() {
+        let backend = PtyBackend::new();
+        backend.initialize().await.unwrap();
+
+        // Create a workspace with a real (temporary) working directory
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_spec = WorkspaceSpec {
+            id: "test-ws".to_string(),
+            work_dir: tmp.path().to_path_buf(),
+            env: HashMap::new(),
+            resources: crate::types::ResourceLimits::default(),
+            backend_config: serde_json::Value::Null,
+        };
+        let ws_handle = backend.create_workspace(ws_spec).await.unwrap();
+
+        // Initially, discover_agents should return nothing
+        let discovered = backend.discover_agents().await.unwrap();
+        assert!(discovered.is_empty(), "should be empty before any agent starts");
+
+        // Start an agent with a harmless long-running command
+        let agent_handle = backend
+            .start_agent(&ws_handle, "sleep 60", None)
+            .await
+            .unwrap();
+
+        // Give the reader task a moment to start
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // discover_agents should now return the started agent
+        let discovered = backend.discover_agents().await.unwrap();
+        assert_eq!(discovered.len(), 1);
+        let (agent_id, handle) = &discovered[0];
+        assert_eq!(*agent_id, agent_handle.agent_id);
+        assert_eq!(handle.process_id, agent_handle.process_id);
+        assert_eq!(handle.workspace.id, ws_handle.id);
+
+        // Stop the agent
+        backend.stop_agent(&agent_handle).await.unwrap();
+
+        // Give the reader task time to observe the exit and record the exit
+        // code. (Skipped wait_for_exit deliberately: it has a separate
+        // race-condition issue with the exit_code_slot being populated by the
+        // reader task — out of scope for the discover_agents test.)
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let discovered = backend.discover_agents().await.unwrap();
+        assert!(
+            discovered.is_empty(),
+            "exited agents should not appear in discovery"
+        );
+
+        // Clean up
+        backend.cleanup_workspace(&ws_handle).await.unwrap();
     }
 }

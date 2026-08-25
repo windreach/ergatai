@@ -1000,7 +1000,6 @@ dependencies = [
  "ergatai-pty",
  "nix 0.27.1",
  "parking_lot",
- "regex",
  "rmux-sdk",
  "serde",
  "serde_json",
