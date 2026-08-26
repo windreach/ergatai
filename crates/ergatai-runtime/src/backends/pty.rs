@@ -585,9 +585,12 @@ impl AgentRuntimeBackend for PtyBackend {
             )));
         }
 
+        // Format message: pretty-print JSON if applicable, then add line ending
+        let formatted_msg = format_message_for_pty(message);
+
         // Write message + carriage return + newline to PTY stdin
         // PTY terminals need \r\n (not just \n) to trigger "Enter" behavior
-        let mut msg = message.to_string();
+        let mut msg = formatted_msg;
         msg.push_str("\r\n");
         process
             .write(msg.as_bytes())
@@ -929,6 +932,21 @@ fn exit_code_to_wait_result(code: i32) -> WaitResult {
     }
 }
 
+/// Format a message for PTY injection.
+///
+/// If the message is valid JSON, pretty-print it with 2-space indentation
+/// for better readability in the terminal. Otherwise, return as-is.
+fn format_message_for_pty(message: &str) -> String {
+    // Try to parse as JSON and pretty-print
+    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(message) {
+        if let Ok(pretty) = serde_json::to_string_pretty(&json_value) {
+            return pretty;
+        }
+    }
+    // Not JSON or formatting failed, return original
+    message.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1060,5 +1078,31 @@ mod tests {
 
         // Clean up
         backend.cleanup_workspace(&ws_handle).await.unwrap();
+    }
+
+    #[test]
+    fn test_format_message_for_pty_json() {
+        // JSON should be pretty-printed
+        let json = r#"{"name":"test","value":123}"#;
+        let formatted = format_message_for_pty(json);
+        assert!(formatted.contains('\n'));
+        assert!(formatted.contains("  \"name\""));
+        assert!(formatted.contains("  \"value\""));
+    }
+
+    #[test]
+    fn test_format_message_for_pty_plain_text() {
+        // Plain text should be returned as-is
+        let text = "Hello, world!";
+        let formatted = format_message_for_pty(text);
+        assert_eq!(formatted, text);
+    }
+
+    #[test]
+    fn test_format_message_for_pty_invalid_json() {
+        // Invalid JSON should be returned as-is
+        let invalid = "{not valid json}";
+        let formatted = format_message_for_pty(invalid);
+        assert_eq!(formatted, invalid);
     }
 }

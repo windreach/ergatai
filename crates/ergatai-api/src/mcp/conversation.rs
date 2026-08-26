@@ -502,32 +502,30 @@ impl ConversationManager {
         match &conv.token_owner {
             TokenOwner::Free => {
                 // Either party can claim the token by sending.
-                // After sending: token transfers to the other party (normal),
-                // or releases back to Free (if TERMINATE).
+                // Token will be claimed in the transfer section below.
                 debug!(
                     conv_id = %conv.id,
                     from = from,
-                    "Token free — {} claims and sends",
+                    "Token free — {} will claim",
                     from
                 );
             }
 
-            TokenOwner::Held(holder) if holder == from => {
+            TokenOwner::Held(ref holder) if holder == from => {
                 // Token holder sends — allowed.
             }
 
-            TokenOwner::Held(holder) => {
-                // Non-holder trying to send → BLOCKED
-                warn!(
+            TokenOwner::Held(ref previous_holder) => {
+                // Non-holder sending — this is a reply.
+                // Transfer token to the replier (new last sender).
+                let prev = previous_holder.clone();
+                conv.token_owner = TokenOwner::Held(from.to_string());
+                info!(
                     conv_id = %conv.id,
                     from = from,
-                    holder = %holder,
-                    "Token held by other agent — message blocked"
+                    previous_holder = %prev,
+                    "Reply detected — token transferred to replier"
                 );
-                return Err(ErgataiError::internal(format!(
-                    "Agent '{}' cannot send: token is held by '{}'. Wait for your turn.",
-                    from, holder
-                )));
             }
         }
 
@@ -545,39 +543,35 @@ impl ConversationManager {
             // Reset turn count for new cycle (but keep completed_rounds and auto_reply counters)
             conv.turn_count = 0;
         } else {
-            // Normal send: check if agent has reached max_consecutive_sends limit.
-            // If yes: transfer token to other party (they must respond now).
-            // If no: keep token with sender (allow burst sending).
-            let current_sends = conv.consecutive_sends.get(from).copied().unwrap_or(0);
-            let other = conv.other_participant(from).map(|s| s.to_string());
-
-            if current_sends + 1 >= self.config.max_consecutive_sends {
-                // Reached limit — transfer token to other party
-                if let Some(ref other_id) = other {
-                    info!(
-                        conv_id = %conv.id,
-                        from = from,
-                        consecutive_sends = current_sends + 1,
-                        max = self.config.max_consecutive_sends,
-                        next_holder = %other_id,
-                        "Max consecutive sends reached — token transferred (对方必须回复)"
-                    );
-                    conv.token_owner = TokenOwner::Held(other_id.clone());
-                }
-                // Reset sender's consecutive counter
-                conv.consecutive_sends.insert(from.to_string(), 0);
+            // Normal send: keep token with sender for reply detection.
+            // Token holder = last sender. When other party sends, they're replying.
+            // Do NOT transfer token here — let it stay with the sender.
+            if matches!(&conv.token_owner, TokenOwner::Free) {
+                // First message: claim token
+                conv.token_owner = TokenOwner::Held(from.to_string());
+                info!(
+                    conv_id = %conv.id,
+                    from = from,
+                    "Token claimed by sender (for reply detection)"
+                );
             } else {
-                // Under limit — keep token with sender (allow burst)
-                let new_count = current_sends + 1;
-                conv.consecutive_sends.insert(from.to_string(), new_count);
+                // Token already held — keep it with current sender
                 debug!(
                     conv_id = %conv.id,
                     from = from,
-                    consecutive_sends = new_count,
-                    max = self.config.max_consecutive_sends,
-                    "Token retained (burst send allowed)"
+                    "Token retained by sender"
                 );
             }
+            // Track consecutive sends for monitoring
+            let current_sends = conv.consecutive_sends.get(from).copied().unwrap_or(0);
+            let new_count = current_sends + 1;
+            conv.consecutive_sends.insert(from.to_string(), new_count);
+            debug!(
+                conv_id = %conv.id,
+                from = from,
+                consecutive_sends = new_count,
+                "Consecutive send count updated"
+            );
         }
 
         // ── Record the message ──

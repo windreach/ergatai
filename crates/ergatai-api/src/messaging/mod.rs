@@ -110,12 +110,12 @@ impl MessageSender {
         };
 
         // ── 3. Self-message check ──
-        // Compare runtime IDs, stable IDs, and raw input to catch all self-send forms.
+        // Compare runtime IDs and raw input to catch self-send forms.
         let from_runtime_id = runtime.resolve_agent_id(&req.from).await;
 
-        // Case 1: runtime ID match (existing check — works when MCP is bound)
-        // Case 2: raw input match (catches "opencode@abc" → "opencode@abc" before resolution)
-        // Case 3: stable ID match (catches different aliases resolving to same agent)
+        // Case 1: runtime ID match (works when MCP is bound to PTY agent)
+        // Case 2: raw input match (catches direct ID → ID self-send)
+        // Case 3: from == to (catches literal self-send before any resolution)
         let is_self_send = from_runtime_id.as_deref() == Some(&resolved_agent_id)
             || req.from == resolved_agent_id
             || req.from == req.to;
@@ -213,7 +213,20 @@ impl MessageSender {
             .as_secs();
 
         // ── 9. Message formatting ──
-        let sender_display = self.get_sender_display(&runtime, &req.from).await;
+        // ID Unification: sender must be bound to a runtime agent
+        let sender_display = match self.get_sender_display(&runtime, &req.from).await {
+            Some(display) => display,
+            None => {
+                return SendMessageResult::Rejected {
+                    reason: format!(
+                        "Sender '{}' is not bound to any runtime agent. \
+                         MCP clients must be bound to PTY agents before sending messages. \
+                         This ensures consistent ID usage in message routing.",
+                        req.from
+                    ),
+                };
+            }
+        };
         // reply target = sender's stable ID (so recipient knows who to reply to)
         let formatted_content =
             Self::format_agent_message(&sender_display, &req.message, &from_stable, is_reply);
@@ -370,6 +383,11 @@ impl MessageSender {
     }
 
     /// Check if this message is a reply (recipient previously sent to sender).
+    ///
+    /// Uses the conversation token mechanism to determine reply status:
+    /// - If token holder is the recipient (to_stable), this is a reply
+    /// - If token holder is the sender (from_stable), this is a new message/continuation
+    /// - If no conversation exists or token is free, this is a new message
     async fn is_reply_message(
         &self,
         _from_runtime_id: &str,
@@ -391,19 +409,22 @@ impl MessageSender {
             .get_conversation(&conversation_id)
             .await
         {
-            matches!(&conv.token_owner, crate::mcp::conversation::TokenOwner::Held(holder) if holder.as_str() == from_stable)
+            // If the token holder is the recipient (not the sender), this is a reply
+            matches!(&conv.token_owner, crate::mcp::conversation::TokenOwner::Held(holder) if holder.as_str() != from_stable)
         } else {
             false
         }
     }
 
     /// Get display name for sender (for message formatting).
-    async fn get_sender_display(&self, runtime: &AgentRuntime, from: &str) -> String {
-        let sender_runtime_id = runtime
-            .resolve_agent_id(from)
-            .await
-            .unwrap_or_else(|| from.to_string());
+    ///
+    /// **ID Unification**: Always returns the runtime stable ID for consistency.
+    /// Returns None if the sender is not bound to a runtime agent.
+    async fn get_sender_display(&self, runtime: &AgentRuntime, from: &str) -> Option<String> {
+        // Try to resolve to runtime ID first
+        let sender_runtime_id = runtime.resolve_agent_id(from).await?;
 
+        // Get the agent's stable ID (unified ID for messaging)
         runtime
             .get_agent(&sender_runtime_id)
             .await
@@ -411,8 +432,8 @@ impl MessageSender {
                 info.stable_id
                     .clone()
                     .or_else(|| info.handle.metadata.get("ergatai_agent_id").cloned())
+                    .or(Some(sender_runtime_id))
             })
-            .unwrap_or(sender_runtime_id)
     }
 
     /// Format agent message as structured JSON.
