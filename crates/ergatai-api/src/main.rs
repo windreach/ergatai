@@ -262,6 +262,15 @@ async fn async_main(args: Args) -> Result<()> {
     let conversation_manager = Arc::new(ConversationManager::new(ConversationConfig::default()));
     // Initialize the global MessageSender so both REST API and MCP use the same pipeline.
     init_message_sender(conversation_manager.clone());
+
+    // Initialize persistent binding store for MCP reconnection support
+    // Store bindings in .ergatai directory alongside other ergatai data
+    let binding_db_path = ".ergatai/agent_bindings.db";
+    match ergatai_api::mcp::init_binding_store(binding_db_path) {
+        Ok(_) => tracing::info!("Agent binding store initialized at {}", binding_db_path),
+        Err(e) => tracing::warn!("Failed to initialize binding store: {}", e),
+    }
+
     let mcp_service_1 = create_mcp_service(
         mcp_registry.clone(),
         peer_registry.clone(),

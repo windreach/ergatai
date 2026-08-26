@@ -776,6 +776,7 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "rmcp",
+ "rusqlite",
  "schemars",
  "serde",
  "serde_json",

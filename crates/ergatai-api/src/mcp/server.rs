@@ -1360,12 +1360,24 @@ impl ServerHandler for ErgataiMcpServer {
         let agent_id = request.client_info.name.clone();
         let agent_version = request.client_info.version.clone();
 
-        // Generate a connection ID - use as unique agent key to support
-        // multiple instances of the same client (e.g. 3 OpenCode instances)
+        // Generate a connection ID and unique agent key.
+        // When agent_identifier is present (from URL path), make the ID deterministic
+        // so reconnects to the same URL produce the same ID and can restore bindings.
         let connection_id = uuid::Uuid::new_v4().to_string();
-        // Take first 8 chars of UUID (safe: UUIDs are always 36 chars: 8-4-4-4-12)
-        let id_prefix = connection_id.get(..8).unwrap_or(&connection_id);
-        let unique_agent_id = format!("{}@{}", agent_id, id_prefix);
+        let unique_agent_id = if let Some(identifier) = &self.agent_identifier {
+            // Deterministic ID based on agent identifier (e.g., "agent-1")
+            // Use a hash of the identifier for stability across reconnects
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            identifier.hash(&mut hasher);
+            let hash = hasher.finish();
+            format!("{}@{:x}", agent_id, hash & 0xFFFFFFFF)
+        } else {
+            // Random ID for clients without a stable identifier
+            let id_prefix = connection_id.get(..8).unwrap_or(&connection_id);
+            format!("{}@{}", agent_id, id_prefix)
+        };
 
         info!(
             "Agent connecting: {} (version: {}, protocol: {}) → {}",
@@ -1410,7 +1422,56 @@ impl ServerHandler for ErgataiMcpServer {
             warn!(error = %e, "Immediate discovery on MCP connect failed");
         }
 
-        match &self.agent_identifier {
+        // Reconnection support: Check for stored binding first
+        let mut binding_restored = false;
+        if let (Some(identifier), Some(binding_store)) =
+            (&self.agent_identifier, crate::mcp::get_binding_store())
+        {
+            if let Ok(Some(stored_binding)) =
+                binding_store.get_binding_by_identifier(identifier)
+            {
+                // Verify the runtime agent still exists
+                if runtime.get_agent(&stored_binding.runtime_agent_id).await.is_some() {
+                    // Try to restore the binding
+                    match runtime
+                        .try_bind_mcp_agent_with_identifier(
+                            &unique_agent_id,
+                            &stored_binding.runtime_agent_id,
+                        )
+                        .await
+                    {
+                        Some(runtime_id) => {
+                            info!(
+                                mcp_agent_id = unique_agent_id,
+                                runtime_id = runtime_id,
+                                agent_identifier = identifier,
+                                "Binding restored from persistent storage (reconnection)"
+                            );
+                            binding_restored = true;
+                            // Update last_active timestamp
+                            let _ = binding_store.touch_binding(&unique_agent_id);
+                        }
+                        None => {
+                            warn!(
+                                mcp_agent_id = unique_agent_id,
+                                runtime_id = stored_binding.runtime_agent_id,
+                                "Failed to restore binding, proceeding with normal binding"
+                            );
+                        }
+                    }
+                } else {
+                    info!(
+                        mcp_agent_id = unique_agent_id,
+                        runtime_id = stored_binding.runtime_agent_id,
+                        "Stored runtime agent no longer exists, proceeding with normal binding"
+                    );
+                }
+            }
+        }
+
+        // Normal binding flow (if not restored from storage)
+        if !binding_restored {
+            match &self.agent_identifier {
             Some(identifier) => {
                 // Precise binding based on agent identifier from URL path
                 match runtime
@@ -1468,6 +1529,38 @@ impl ServerHandler for ErgataiMcpServer {
                             "MCP agent queued for binding (no unmapped runtime agent yet)"
                         );
                     }
+                }
+            }
+        }
+        } // End of if !binding_restored
+
+        // Persist the binding for reconnection support
+        if let Some(binding_store) = crate::mcp::get_binding_store() {
+            // Check if we have a successful binding by looking up the runtime ID
+            if let Some(runtime_id) = runtime
+                .resolve_agent_id(&unique_agent_id)
+                .await
+            {
+                let binding = crate::mcp::AgentBinding {
+                    mcp_agent_id: unique_agent_id.clone(),
+                    runtime_agent_id: runtime_id.clone(),
+                    agent_identifier: self.agent_identifier.clone(),
+                    created_at: chrono::Utc::now(),
+                    last_active: chrono::Utc::now(),
+                };
+
+                if let Err(e) = binding_store.save_binding(&binding) {
+                    warn!(
+                        error = %e,
+                        mcp_agent_id = %unique_agent_id,
+                        "Failed to persist agent binding"
+                    );
+                } else {
+                    info!(
+                        mcp_agent_id = %unique_agent_id,
+                        runtime_agent_id = %runtime_id,
+                        "Binding persisted for reconnection"
+                    );
                 }
             }
         }
@@ -1676,10 +1769,11 @@ pub fn create_mcp_service(
         .with_allowed_hosts(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
 
     // Session keep_alive: auto-close sessions after this duration of inactivity.
-    // This catches dead clients (kill, network drop) within 2 minutes.
+    // This catches dead clients (kill, network drop) within 10 minutes.
     // Default is 300s (5 min). Agents that call tools periodically stay alive.
+    // Increased from 120s to 600s to prevent premature disconnection during idle periods.
     let mut session_manager = LocalSessionManager::default();
-    session_manager.session_config.keep_alive = Some(std::time::Duration::from_secs(120));
+    session_manager.session_config.keep_alive = Some(std::time::Duration::from_secs(600));
 
     StreamableHttpService::new(
         move || {

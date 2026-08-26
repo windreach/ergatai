@@ -3,6 +3,7 @@
 //! Implements the MCP server for agent communication using rmcp SDK.
 //! Supports MCP protocol 2025-06-18 with Streamable HTTP transport.
 
+pub mod agent_binding;
 pub mod batch_aggregator;
 pub mod conversation;
 pub mod message_delivery;
@@ -10,6 +11,7 @@ pub mod rate_limiter;
 pub mod server;
 
 // Re-export AgentRegistry for backward compatibility
+pub use agent_binding::{get_binding_store, init_binding_store, AgentBinding};
 pub use batch_aggregator::get_batch_aggregator;
 pub use conversation::start_conversation_reaper;
 pub use ergatai_core::agent_registry::AgentRegistry;

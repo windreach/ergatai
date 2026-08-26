@@ -5342,4 +5342,115 @@ mod tests {
             "P0 BOUNDARY: No unexpected errors should occur"
         );
     }
+
+    #[tokio::test]
+    async fn test_auto_acquire_write_lock() {
+        let (_manager, temp_dir) = create_test_manager();
+
+        // Initialize a git repository in the temp directory
+        git2::Repository::init(temp_dir.path()).unwrap();
+
+        // Create a test file
+        let test_file = "auto_lock_test.txt";
+        std::fs::write(temp_dir.path().join(test_file), "initial content").unwrap();
+
+        // Initialize file access control (which includes snapshot manager)
+        let project_id = "test_project_auto";
+        crate::manager::init_file_access(project_id, temp_dir.path())
+            .await
+            .unwrap();
+
+        // Get the properly initialized FileLockManager from global state
+        let manager = crate::manager::get_lock_manager(project_id).await.unwrap();
+
+        // Auto-acquire WRITE lock (simulating FAN_MODIFY event)
+        let agent_id = "agent-auto";
+        let session_id = "session-auto";
+        let result = manager
+            .auto_acquire_write_lock(test_file, agent_id, session_id, project_id)
+            .await;
+
+        // Should succeed
+        assert!(result.is_ok(), "Auto-acquire should succeed: {:?}", result);
+
+        // Verify WRITE lock exists by querying database directly
+        let conn = manager.conn.lock();
+        let lock_count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_locks WHERE file_path = ?1 AND mode = 'WRITE' AND status = 'ACTIVE'",
+                params![test_file],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        assert_eq!(lock_count, 1, "Should have exactly one WRITE lock");
+
+        // Verify lock details
+        let lock_agent_id: String = conn
+            .query_row(
+                "SELECT agent_id FROM file_locks WHERE file_path = ?1 AND mode = 'WRITE' AND status = 'ACTIVE'",
+                params![test_file],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(lock_agent_id, agent_id, "Lock should belong to correct agent");
+    }
+
+    #[tokio::test]
+    async fn test_auto_acquire_write_lock_idempotent() {
+        let (_manager, temp_dir) = create_test_manager();
+
+        // Initialize a git repository in the temp directory
+        git2::Repository::init(temp_dir.path()).unwrap();
+
+        // Create a test file
+        let test_file = "idempotent_test.txt";
+        std::fs::write(temp_dir.path().join(test_file), "content").unwrap();
+
+        // Initialize file access control
+        let project_id = "test_project_idem";
+        crate::manager::init_file_access(project_id, temp_dir.path())
+            .await
+            .unwrap();
+
+        // Get the properly initialized FileLockManager from global state
+        let manager = crate::manager::get_lock_manager(project_id).await.unwrap();
+
+        let agent_id = "agent-idem";
+        let session_id = "session-idem";
+
+        // First auto-acquire
+        let result1 = manager
+            .auto_acquire_write_lock(test_file, agent_id, session_id, project_id)
+            .await;
+        assert!(result1.is_ok(), "First auto-acquire should succeed");
+
+        // Second auto-acquire (should be handled gracefully)
+        let result2 = manager
+            .auto_acquire_write_lock(test_file, agent_id, session_id, project_id)
+            .await;
+
+        // Should either succeed (idempotent) or get UNIQUE constraint error
+        match result2 {
+            Ok(()) => {
+                // Idempotent case - check only one WRITE lock exists
+                let conn = manager.conn.lock();
+                let lock_count: i32 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM file_locks WHERE file_path = ?1 AND mode = 'WRITE' AND status = 'ACTIVE'",
+                        params![test_file],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+                assert_eq!(lock_count, 1, "Should have exactly one WRITE lock");
+            }
+            Err(ErgataiError::DatabaseError(msg)) if msg.contains("UNIQUE") => {
+                // UNIQUE constraint caught the duplicate - expected behavior
+            }
+            Err(e) => {
+                panic!("Unexpected error on second auto-acquire: {:?}", e);
+            }
+        }
+    }
 }
