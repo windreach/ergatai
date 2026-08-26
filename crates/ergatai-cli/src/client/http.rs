@@ -393,8 +393,7 @@ mod tests {
 
     #[test]
     fn test_status_response_deserialization() {
-        let json =
-            r#"{"nats_initialized":true,"nats_port":4222,"active_agents":3}"#;
+        let json = r#"{"nats_initialized":true,"nats_port":4222,"active_agents":3}"#;
         let resp: StatusResponse = serde_json::from_str(json).unwrap();
         assert!(resp.nats_initialized);
         assert_eq!(resp.nats_port, Some(4222));

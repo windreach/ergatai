@@ -181,7 +181,13 @@ fn resolve_in_path(command: &str) -> anyhow::Result<CString> {
         let candidate = dir.join(command);
         if let Ok(meta) = std::fs::metadata(&candidate) {
             if meta.is_file() && (meta.permissions().mode() & 0o111 != 0) {
-                if let Ok(c) = CString::new(candidate.into_os_string().into_string().ok().unwrap_or_default()) {
+                if let Ok(c) = CString::new(
+                    candidate
+                        .into_os_string()
+                        .into_string()
+                        .ok()
+                        .unwrap_or_default(),
+                ) {
                     return Ok(c);
                 }
             }

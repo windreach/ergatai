@@ -69,7 +69,13 @@ impl Perform for TextPerformer {
     }
 
     /// Called for CSI sequences (cursor movement, colors, etc.)
-    fn csi_dispatch(&mut self, _params: &vte::Params, _intermediates: &[u8], _ignore: bool, _action: char) {
+    fn csi_dispatch(
+        &mut self,
+        _params: &vte::Params,
+        _intermediates: &[u8],
+        _ignore: bool,
+        _action: char,
+    ) {
         // Ignore CSI sequences (we only want printable text)
     }
 
@@ -92,7 +98,7 @@ mod tests {
 
     #[test]
     fn test_strip_ansi_cursor() {
-        let raw = b"\x1b[2J\x1b[HHello";  // Clear screen + home + "Hello"
+        let raw = b"\x1b[2J\x1b[HHello"; // Clear screen + home + "Hello"
         let clean = strip_ansi(raw);
         assert_eq!(clean, "Hello");
     }

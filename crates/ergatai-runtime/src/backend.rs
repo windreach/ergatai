@@ -116,12 +116,17 @@ pub trait AgentRuntimeBackend: Send + Sync + 'static {
     ///
     /// Returns `Ok(())` if resize succeeded or backend doesn't support resize.
     /// Returns `Err` if agent not found or resize failed.
-    async fn resize_pty(
-        &self,
-        _handle: &AgentHandle,
-        _rows: u16,
-        _cols: u16,
-    ) -> ErgataiResult<()> {
+    async fn resize_pty(&self, _handle: &AgentHandle, _rows: u16, _cols: u16) -> ErgataiResult<()> {
+        Ok(())
+    }
+
+    /// Resume the background PTY reader after WebSocket terminal disconnects.
+    ///
+    /// When a WebSocket terminal connects, the background reader is paused to avoid
+    /// competing for PTY output. This method resumes the background reader when the
+    /// WebSocket disconnects. Default implementation is a no-op for backends that
+    /// don't have a background reader.
+    async fn resume_pty_reader(&self, _handle: &AgentHandle) -> ErgataiResult<()> {
         Ok(())
     }
 }

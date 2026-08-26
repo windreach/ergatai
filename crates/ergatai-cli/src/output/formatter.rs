@@ -85,9 +85,7 @@ pub fn format_status(status: &StatusResponse) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::http::{
-        AgentInfoResponse, StatusResponse, WorkspaceResponse,
-    };
+    use crate::client::http::{AgentInfoResponse, StatusResponse, WorkspaceResponse};
     use std::collections::HashMap;
 
     fn make_workspace(id: &str, backend: &str) -> WorkspaceResponse {

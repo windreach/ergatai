@@ -533,14 +533,14 @@ impl AgentRuntime {
 
         let backend_any = self.backend.as_any();
 
-        let health =
-            if let Some(pty_backend) = backend_any.downcast_ref::<crate::backends::pty::PtyBackend>()
-            {
-                pty_backend.health_check_agents().await
-            } else {
-                debug!("health check not supported by backend, skipping prune");
-                return Vec::new();
-            };
+        let health = if let Some(pty_backend) =
+            backend_any.downcast_ref::<crate::backends::pty::PtyBackend>()
+        {
+            pty_backend.health_check_agents().await
+        } else {
+            debug!("health check not supported by backend, skipping prune");
+            return Vec::new();
+        };
 
         let mut pruned = Vec::new();
         let mut streaks = self.unhealthy_streaks.lock().await;

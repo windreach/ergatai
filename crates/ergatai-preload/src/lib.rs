@@ -37,23 +37,25 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use libc::{c_char, c_int, c_void, O_CREAT, O_RDONLY, O_RDWR, O_WRONLY};
-use once_cell::sync::Lazy;
+use libc::{c_char, c_int, c_void, O_CREAT, O_RDWR, O_WRONLY};
+use once_cell::sync::OnceCell;
 use std::ffi::{CStr, CString};
 use std::io::{Read as _, Write as _};
 use std::os::unix::net::UnixStream;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// IPC socket path. Set via `ERGATAI_LOCK_SOCKET` env var, or defaults to
 /// `/tmp/ergatai-lock-{uid}.sock` where `{uid}` is the current user's UID.
 fn socket_path() -> String {
-    static CACHED: Lazy<String> = Lazy::new(|| {
-        std::env::var("ERGATAI_LOCK_SOCKET").unwrap_or_else(|_| {
-            let uid = unsafe { libc::getuid() };
-            format!("/tmp/ergatai-lock-{}.sock", uid)
+    static CACHED: OnceCell<String> = OnceCell::new();
+    CACHED
+        .get_or_init(|| {
+            std::env::var("ERGATAI_LOCK_SOCKET").unwrap_or_else(|_| {
+                let uid = unsafe { libc::getuid() };
+                format!("/tmp/ergatai-lock-{}.sock", uid)
+            })
         })
-    });
-    CACHED.clone()
+        .clone()
 }
 
 /// Real `open` function pointer (resolved via dlsym).
@@ -61,8 +63,8 @@ fn socket_path() -> String {
 type OpenFn = unsafe extern "C" fn(*const c_char, c_int, c_int) -> c_int;
 type OpenatFn = unsafe extern "C" fn(c_int, *const c_char, c_int, c_int) -> c_int;
 
-static REAL_OPEN: Lazy<Mutex<Option<OpenFn>>> = Lazy::new(|| Mutex::new(None));
-static REAL_OPENAT: Lazy<Mutex<Option<OpenatFn>>> = Lazy::new(|| Mutex::new(None));
+static REAL_OPEN: OnceCell<OpenFn> = OnceCell::new();
+static REAL_OPENAT: OnceCell<OpenatFn> = OnceCell::new();
 
 /// Resolve the real libc function via dlsym(RTLD_NEXT, ...).
 ///
@@ -71,33 +73,31 @@ static REAL_OPENAT: Lazy<Mutex<Option<OpenatFn>>> = Lazy::new(|| Mutex::new(None
 /// requested function type — caller must ensure the libc signature matches.
 unsafe fn resolve_symbol(name: &[u8]) -> *mut c_void {
     // SAFETY: name is a valid NUL-terminated C string provided by the caller.
-    let sym = unsafe { libc::dlsym(libc::RTLD_NEXT, name.as_ptr() as *const c_char) };
-    sym
+    unsafe { libc::dlsym(libc::RTLD_NEXT, name.as_ptr() as *const c_char) }
 }
 
 fn ensure_real_open() -> OpenFn {
-    let mut guard = REAL_OPEN.lock().unwrap();
-    if let Some(f) = *guard {
-        return f;
-    }
-    // SAFETY: "open\0" is a valid NUL-terminated C string. The libc `open`
-    // signature matches `unsafe extern "C" fn(*const c_char, c_int, ...) -> c_int`.
-    let ptr = unsafe { resolve_symbol(b"open\0") };
-    let f: OpenFn = unsafe { std::mem::transmute(ptr) };
-    *guard = Some(f);
-    f
+    *REAL_OPEN.get_or_init(|| {
+        // SAFETY: "open\0" is a valid NUL-terminated C string.
+        let ptr = unsafe { resolve_symbol(b"open\0") };
+        if ptr.is_null() {
+            panic!("dlsym: failed to resolve 'open'");
+        }
+        // SAFETY: libc `open` signature matches `unsafe extern "C" fn(*const c_char, c_int, ...) -> c_int`.
+        unsafe { std::mem::transmute(ptr) }
+    })
 }
 
 fn ensure_real_openat() -> OpenatFn {
-    let mut guard = REAL_OPENAT.lock().unwrap();
-    if let Some(f) = *guard {
-        return f;
-    }
-    // SAFETY: "openat\0" is a valid NUL-terminated C string.
-    let ptr = unsafe { resolve_symbol(b"openat\0") };
-    let f: OpenatFn = unsafe { std::mem::transmute(ptr) };
-    *guard = Some(f);
-    f
+    *REAL_OPENAT.get_or_init(|| {
+        // SAFETY: "openat\0" is a valid NUL-terminated C string.
+        let ptr = unsafe { resolve_symbol(b"openat\0") };
+        if ptr.is_null() {
+            panic!("dlsym: failed to resolve 'openat'");
+        }
+        // SAFETY: libc `openat` signature matches.
+        unsafe { std::mem::transmute(ptr) }
+    })
 }
 
 /// Check whether a file has an active WRITE lock via Unix socket IPC.
@@ -195,49 +195,84 @@ fn is_write_flags(flags: c_int) -> bool {
         || (flags & libc::O_APPEND) != 0
 }
 
-/// Atomic counter for unique temp file names.
-static SNAP_COUNTER: Lazy<Mutex<usize>> = Lazy::new(|| Mutex::new(0));
+/// Atomic counter for unique temp file names (lock-free).
+static SNAP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// Redirect a read to a snapshot: write snapshot content to a temp file,
-/// open it, then unlink the temp file (fd remains valid until close).
+/// Redirect a read to a snapshot: write snapshot content to an anonymous memfd,
+/// and return the fd. This avoids predictable temp file paths on disk.
 ///
-/// Returns the temp file fd, or `-1` on failure.
+/// Returns the fd, or `-1` on failure.
 fn redirect_to_snapshot(_path: &str, git_hash: &str) -> c_int {
     let content = match query_snapshot_content(git_hash) {
         Some(c) => c,
         None => return -1,
     };
 
-    // Create a unique temp file path.
-    let pid = unsafe { libc::getpid() };
-    let tid = unsafe { libc::pthread_self() };
-    let counter = SNAP_COUNTER
-        .lock()
-        .map(|mut c| {
-            let v = *c;
-            *c = v.wrapping_add(1);
-            v
-        })
-        .unwrap_or(0);
-    let tmp_path = format!("/tmp/ergatai-snap-{}-{}-{}", pid, tid as u64, counter);
+    // Create an anonymous memory file descriptor (memfd) to avoid filesystem race conditions.
+    // memfd_create is available on Linux 3.17+ and creates a file in RAM with no filesystem path.
+    let name = CString::new("ergatai-snapshot").unwrap_or_else(|_| CString::new("x").unwrap());
+    // SAFETY: memfd_create with MFD_CLOEXEC flag. name is a valid C string.
+    let fd = unsafe { libc::syscall(libc::SYS_memfd_create, name.as_ptr(), libc::MFD_CLOEXEC) };
 
-    // Write snapshot content to temp file.
-    if std::fs::write(&tmp_path, &content).is_err() {
+    if fd < 0 {
+        // Fallback: if memfd_create fails (e.g., old kernel), use a secure temp file.
+        return redirect_to_snapshot_fallback(&content);
+    }
+
+    let fd = fd as c_int;
+
+    // Write snapshot content to the memfd.
+    let content_ptr = content.as_ptr() as *const c_void;
+    let content_len = content.len();
+    // SAFETY: fd is valid, content_ptr is valid for content_len bytes.
+    let written = unsafe { libc::write(fd, content_ptr, content_len) };
+    if written < 0 || written as usize != content_len {
+        unsafe { libc::close(fd) };
         return -1;
     }
 
-    // Open the temp file read-only.
+    // Seek back to start so the reader can read from the beginning.
+    // SAFETY: fd is valid.
+    unsafe { libc::lseek(fd, 0, libc::SEEK_SET) };
+
+    fd
+}
+
+/// Fallback for systems without memfd_create: use O_CREAT | O_EXCL for atomic creation.
+fn redirect_to_snapshot_fallback(content: &[u8]) -> c_int {
+    let pid = unsafe { libc::getpid() };
+    let tid = unsafe { libc::pthread_self() };
+    let counter = SNAP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    // Add randomness to make the path less predictable.
+    let random_bits = unsafe { libc::rand() } as u64;
+    let tmp_path = format!(
+        "/tmp/ergatai-snap-{}-{}-{}-{:x}",
+        pid, tid as u64, counter, random_bits
+    );
+
     let tmp_cstr = match CString::new(tmp_path.as_bytes()) {
         Ok(s) => s,
-        Err(_) => {
-            let _ = std::fs::remove_file(&tmp_path);
-            return -1;
-        }
+        Err(_) => return -1,
     };
 
     let real_open = ensure_real_open();
-    // SAFETY: tmp_cstr is a valid NUL-terminated path. O_RDONLY has no mode arg.
-    let fd = unsafe { real_open(tmp_cstr.as_ptr(), O_RDONLY, 0) };
+    // SAFETY: tmp_cstr is valid. O_CREAT | O_EXCL | O_RDWR for atomic creation.
+    let fd = unsafe { real_open(tmp_cstr.as_ptr(), O_CREAT | libc::O_EXCL | O_RDWR, 0o600) };
+    if fd < 0 {
+        return -1;
+    }
+
+    // Write content.
+    let content_ptr = content.as_ptr() as *const c_void;
+    let written = unsafe { libc::write(fd, content_ptr, content.len()) };
+    if written < 0 || written as usize != content.len() {
+        unsafe { libc::close(fd) };
+        let _ = std::fs::remove_file(&tmp_path);
+        return -1;
+    }
+
+    // Seek back to start.
+    unsafe { libc::lseek(fd, 0, libc::SEEK_SET) };
 
     // Unlink immediately — the fd remains valid until close().
     let _ = std::fs::remove_file(&tmp_path);

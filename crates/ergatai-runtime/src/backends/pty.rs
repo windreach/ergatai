@@ -34,9 +34,7 @@ use ergatai_pty::{PtyConfig, PtyProcess};
 
 use crate::backend::AgentRuntimeBackend;
 use crate::cgroups::CgroupController;
-use crate::types::{
-    AgentHandle, BackendCapabilities, WaitResult, WorkspaceHandle, WorkspaceSpec,
-};
+use crate::types::{AgentHandle, BackendCapabilities, WaitResult, WorkspaceHandle, WorkspaceSpec};
 
 // ── Configuration constants ──
 
@@ -190,7 +188,8 @@ impl PtyBackend {
                 Err(_) => continue,
             };
 
-            let state = read_proc_state(pid).unwrap_or(crate::backends::proc_linux::ProcessState::Unknown);
+            let state =
+                read_proc_state(pid).unwrap_or(crate::backends::proc_linux::ProcessState::Unknown);
             results.push((pid_str.clone(), state));
         }
 
@@ -224,10 +223,10 @@ impl AgentRuntimeBackend for PtyBackend {
 
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities {
-            supports_message_injection: true,   // write() to PTY stdin
-            supports_output_capture: true,      // background reader buffer
+            supports_message_injection: true, // write() to PTY stdin
+            supports_output_capture: true,    // background reader buffer
             supports_resource_limits: cfg!(target_os = "linux"), // cgroups v2
-            supports_workspace_reuse: true,     // logical workspaces
+            supports_workspace_reuse: true,   // logical workspaces
             supports_network_isolation: false,
             max_concurrent_agents: None,
         }
@@ -241,22 +240,29 @@ impl AgentRuntimeBackend for PtyBackend {
 
     async fn create_workspace(&self, spec: WorkspaceSpec) -> ErgataiResult<WorkspaceHandle> {
         let mut metadata = HashMap::new();
-        metadata.insert("work_dir".to_string(), spec.work_dir.to_string_lossy().to_string());
+        metadata.insert(
+            "work_dir".to_string(),
+            spec.work_dir.to_string_lossy().to_string(),
+        );
 
         // Create cgroup controller if resource limits are specified
-        let cgroup_controller = if spec.resources.cpu_cores.is_some() || spec.resources.memory_mb.is_some() {
-            let controller = CgroupController::create(
-                &spec.id,
-                spec.resources.cpu_cores,
-                spec.resources.memory_mb,
-            );
-            if controller.is_active() {
-                metadata.insert("cgroup".to_string(), controller.path().to_string_lossy().to_string());
-            }
-            Some(controller)
-        } else {
-            None
-        };
+        let cgroup_controller =
+            if spec.resources.cpu_cores.is_some() || spec.resources.memory_mb.is_some() {
+                let controller = CgroupController::create(
+                    &spec.id,
+                    spec.resources.cpu_cores,
+                    spec.resources.memory_mb,
+                );
+                if controller.is_active() {
+                    metadata.insert(
+                        "cgroup".to_string(),
+                        controller.path().to_string_lossy().to_string(),
+                    );
+                }
+                Some(controller)
+            } else {
+                None
+            };
 
         let entry = WorkspaceEntry {
             id: spec.id.clone(),
@@ -295,9 +301,9 @@ impl AgentRuntimeBackend for PtyBackend {
 
         // 2. Parse command into program + args
         let mut parts = command.split_whitespace();
-        let program = parts.next().ok_or_else(|| {
-            ErgataiError::internal("Empty command".to_string())
-        })?;
+        let program = parts
+            .next()
+            .ok_or_else(|| ErgataiError::internal("Empty command".to_string()))?;
         let args: Vec<String> = parts.map(String::from).collect();
 
         // 3. Build PtyConfig with cwd/env
@@ -348,9 +354,8 @@ impl AgentRuntimeBackend for PtyBackend {
         };
 
         // 4. Spawn PTY process
-        let process = PtyProcess::spawn(config).map_err(|e| {
-            ErgataiError::internal(format!("Failed to spawn PTY process: {}", e))
-        })?;
+        let process = PtyProcess::spawn(config)
+            .map_err(|e| ErgataiError::internal(format!("Failed to spawn PTY process: {}", e)))?;
         let pid = process.pid();
         let pid_str = pid.to_string();
 
@@ -413,7 +418,9 @@ impl AgentRuntimeBackend for PtyBackend {
                     // restoring these, the terminal stays corrupted.
                     // \x1b[!p = soft reset, \x1b[?1000l = disable mouse tracking,
                     // \x1b[?1049l = exit alternate screen, \x1b[?25h = show cursor
-                    let _ = reader_process.write(b"\x1b[!p\x1b[?1000l\x1b[?1049l\x1b[?25h").await;
+                    let _ = reader_process
+                        .write(b"\x1b[!p\x1b[?1000l\x1b[?1049l\x1b[?25h")
+                        .await;
 
                     break;
                 }
@@ -547,16 +554,17 @@ impl AgentRuntimeBackend for PtyBackend {
     }
 
     async fn inject_message(&self, handle: &AgentHandle, message: &str) -> ErgataiResult<()> {
-        let pid_str = handle.process_id.as_ref().ok_or_else(|| {
-            ErgataiError::internal("Missing PID in agent handle".to_string())
-        })?;
+        let pid_str = handle
+            .process_id
+            .as_ref()
+            .ok_or_else(|| ErgataiError::internal("Missing PID in agent handle".to_string()))?;
 
         // Clone process Arc out of lock to avoid holding lock across await
         let process = {
             let agents = self.agents.read();
-            let entry = agents.get(pid_str).ok_or_else(|| {
-                ErgataiError::internal(format!("Unknown agent PID: {}", pid_str))
-            })?;
+            let entry = agents
+                .get(pid_str)
+                .ok_or_else(|| ErgataiError::internal(format!("Unknown agent PID: {}", pid_str)))?;
             entry.process.clone()
         };
 
@@ -572,23 +580,25 @@ impl AgentRuntimeBackend for PtyBackend {
         // PTY terminals need \r\n (not just \n) to trigger "Enter" behavior
         let mut msg = message.to_string();
         msg.push_str("\r\n");
-        process.write(msg.as_bytes()).await.map_err(|e| {
-            ErgataiError::internal(format!("Failed to write to PTY stdin: {}", e))
-        })?;
+        process
+            .write(msg.as_bytes())
+            .await
+            .map_err(|e| ErgataiError::internal(format!("Failed to write to PTY stdin: {}", e)))?;
 
         debug!(pid = %pid_str, bytes = msg.len(), "Message injected");
         Ok(())
     }
 
     async fn capture_output(&self, handle: &AgentHandle) -> ErgataiResult<Option<String>> {
-        let pid_str = handle.process_id.as_ref().ok_or_else(|| {
-            ErgataiError::internal("Missing PID in agent handle".to_string())
-        })?;
+        let pid_str = handle
+            .process_id
+            .as_ref()
+            .ok_or_else(|| ErgataiError::internal("Missing PID in agent handle".to_string()))?;
 
         let agents = self.agents.read();
-        let entry = agents.get(pid_str).ok_or_else(|| {
-            ErgataiError::internal(format!("Unknown agent PID: {}", pid_str))
-        })?;
+        let entry = agents
+            .get(pid_str)
+            .ok_or_else(|| ErgataiError::internal(format!("Unknown agent PID: {}", pid_str)))?;
 
         let text = entry.output.capture_clean();
         if text.is_empty() {
@@ -599,9 +609,10 @@ impl AgentRuntimeBackend for PtyBackend {
     }
 
     async fn is_alive(&self, handle: &AgentHandle) -> ErgataiResult<bool> {
-        let pid_str = handle.process_id.as_ref().ok_or_else(|| {
-            ErgataiError::internal("Missing PID in agent handle".to_string())
-        })?;
+        let pid_str = handle
+            .process_id
+            .as_ref()
+            .ok_or_else(|| ErgataiError::internal("Missing PID in agent handle".to_string()))?;
 
         // Clone process Arc out of lock to avoid holding lock across await
         let process = {
@@ -615,9 +626,10 @@ impl AgentRuntimeBackend for PtyBackend {
     }
 
     async fn stop_agent(&self, handle: &AgentHandle) -> ErgataiResult<()> {
-        let pid_str = handle.process_id.as_ref().ok_or_else(|| {
-            ErgataiError::internal("Missing PID in agent handle".to_string())
-        })?;
+        let pid_str = handle
+            .process_id
+            .as_ref()
+            .ok_or_else(|| ErgataiError::internal("Missing PID in agent handle".to_string()))?;
 
         // Clone process Arc out of lock to avoid holding lock across await
         let process = {
@@ -644,7 +656,9 @@ impl AgentRuntimeBackend for PtyBackend {
             if process.has_exited().await {
                 info!(pid = %pid_str, "Agent exited after SIGTERM");
                 // Reset terminal state
-                let _ = process.write(b"\x1b[!p\x1b[?1000l\x1b[?1049l\x1b[?25h").await;
+                let _ = process
+                    .write(b"\x1b[!p\x1b[?1000l\x1b[?1049l\x1b[?25h")
+                    .await;
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -654,15 +668,18 @@ impl AgentRuntimeBackend for PtyBackend {
         warn!(pid = %pid_str, "Agent process group did not exit within grace period, sending SIGKILL");
         let _ = process.signal_group(nix::sys::signal::Signal::SIGKILL);
         // Reset terminal state after SIGKILL (process can't do it itself)
-        let _ = process.write(b"\x1b[!p\x1b[?1000l\x1b[?1049l\x1b[?25h").await;
+        let _ = process
+            .write(b"\x1b[!p\x1b[?1000l\x1b[?1049l\x1b[?25h")
+            .await;
 
         Ok(())
     }
 
     async fn kill_agent(&self, handle: &AgentHandle) -> ErgataiResult<()> {
-        let pid_str = handle.process_id.as_ref().ok_or_else(|| {
-            ErgataiError::internal("Missing PID in agent handle".to_string())
-        })?;
+        let pid_str = handle
+            .process_id
+            .as_ref()
+            .ok_or_else(|| ErgataiError::internal("Missing PID in agent handle".to_string()))?;
 
         // Clone process Arc out of lock to avoid holding lock across await
         let process = {
@@ -676,7 +693,9 @@ impl AgentRuntimeBackend for PtyBackend {
             // Send terminal reset before killing — TUI apps leave the PTY in
             // raw mode with mouse tracking enabled. Without reset, the parent
             // terminal shows garbage on mouse movement.
-            let _ = process.write(b"\x1b[!p\x1b[?1000l\x1b[?1049l\x1b[?25h").await;
+            let _ = process
+                .write(b"\x1b[!p\x1b[?1000l\x1b[?1049l\x1b[?25h")
+                .await;
 
             // Kill entire process group (child + grandchildren)
             let _ = process.signal_group(nix::sys::signal::Signal::SIGKILL);
@@ -690,9 +709,10 @@ impl AgentRuntimeBackend for PtyBackend {
         handle: &AgentHandle,
         timeout: Option<Duration>,
     ) -> ErgataiResult<WaitResult> {
-        let pid_str = handle.process_id.as_ref().ok_or_else(|| {
-            ErgataiError::internal("Missing PID in agent handle".to_string())
-        })?;
+        let pid_str = handle
+            .process_id
+            .as_ref()
+            .ok_or_else(|| ErgataiError::internal("Missing PID in agent handle".to_string()))?;
 
         let start = tokio::time::Instant::now();
 
@@ -734,7 +754,10 @@ impl AgentRuntimeBackend for PtyBackend {
             .values()
             .map(|ws| {
                 let mut metadata = HashMap::new();
-                metadata.insert("work_dir".to_string(), ws.work_dir.to_string_lossy().to_string());
+                metadata.insert(
+                    "work_dir".to_string(),
+                    ws.work_dir.to_string_lossy().to_string(),
+                );
                 WorkspaceHandle {
                     id: ws.id.clone(),
                     backend: "pty".to_string(),
@@ -758,7 +781,9 @@ impl AgentRuntimeBackend for PtyBackend {
             let agents = self.agents.read();
             if let Some(entry) = agents.get(pid_str) {
                 // Use signal_group to kill entire process tree (child + grandchildren)
-                let _ = entry.process.signal_group(nix::sys::signal::Signal::SIGKILL);
+                let _ = entry
+                    .process
+                    .signal_group(nix::sys::signal::Signal::SIGKILL);
             }
         }
 
@@ -828,14 +853,15 @@ impl AgentRuntimeBackend for PtyBackend {
         &self,
         handle: &AgentHandle,
     ) -> ErgataiResult<Option<Arc<PtyProcess>>> {
-        let pid_str = handle.process_id.as_ref().ok_or_else(|| {
-            ErgataiError::internal("Agent has no process_id")
-        })?;
+        let pid_str = handle
+            .process_id
+            .as_ref()
+            .ok_or_else(|| ErgataiError::internal("Agent has no process_id"))?;
 
         let agents = self.agents.read();
-        let entry = agents.get(pid_str).ok_or_else(|| {
-            ErgataiError::internal(format!("Agent {} not found", pid_str))
-        })?;
+        let entry = agents
+            .get(pid_str)
+            .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", pid_str)))?;
 
         // Pause the background reader so it doesn't compete with the WebSocket reader
         entry
@@ -846,37 +872,49 @@ impl AgentRuntimeBackend for PtyBackend {
         Ok(Some(entry.process.clone()))
     }
 
-    async fn resize_pty(
-        &self,
-        handle: &AgentHandle,
-        rows: u16,
-        cols: u16,
-    ) -> ErgataiResult<()> {
-        let pid_str = handle.process_id.as_ref().ok_or_else(|| {
-            ErgataiError::internal("Agent has no process_id")
-        })?;
+    async fn resize_pty(&self, handle: &AgentHandle, rows: u16, cols: u16) -> ErgataiResult<()> {
+        let pid_str = handle
+            .process_id
+            .as_ref()
+            .ok_or_else(|| ErgataiError::internal("Agent has no process_id"))?;
 
         // Clone process Arc out of lock to avoid holding lock across await
         let process = {
             let agents = self.agents.read();
-            let entry = agents.get(pid_str).ok_or_else(|| {
-                ErgataiError::internal(format!("Agent {} not found", pid_str))
-            })?;
+            let entry = agents
+                .get(pid_str)
+                .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", pid_str)))?;
             entry.process.clone()
         };
 
-        process.resize(rows, cols).await.map_err(|e| {
-            ErgataiError::internal(format!("Failed to resize PTY: {}", e))
-        })
+        process
+            .resize(rows, cols)
+            .await
+            .map_err(|e| ErgataiError::internal(format!("Failed to resize PTY: {}", e)))
+    }
+
+    async fn resume_pty_reader(&self, handle: &AgentHandle) -> ErgataiResult<()> {
+        let pid_str = handle
+            .process_id
+            .as_ref()
+            .ok_or_else(|| ErgataiError::internal("Agent has no process_id"))?;
+
+        let agents = self.agents.read();
+        if let Some(entry) = agents.get(pid_str) {
+            entry
+                .reader_paused
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            debug!(pid = %pid_str, "Resumed background PTY reader after WebSocket disconnect");
+        }
+
+        Ok(())
     }
 }
 
 /// Convert a shell exit code to a `WaitResult`.
 fn exit_code_to_wait_result(code: i32) -> WaitResult {
     if code > 128 {
-        WaitResult::Signaled {
-            signal: code - 128,
-        }
+        WaitResult::Signaled { signal: code - 128 }
     } else {
         WaitResult::Exited { code }
     }
@@ -939,10 +977,22 @@ mod tests {
 
     #[test]
     fn test_exit_code_to_wait_result() {
-        assert!(matches!(exit_code_to_wait_result(0), WaitResult::Exited { code: 0 }));
-        assert!(matches!(exit_code_to_wait_result(1), WaitResult::Exited { code: 1 }));
-        assert!(matches!(exit_code_to_wait_result(143), WaitResult::Signaled { signal: 15 }));
-        assert!(matches!(exit_code_to_wait_result(137), WaitResult::Signaled { signal: 9 }));
+        assert!(matches!(
+            exit_code_to_wait_result(0),
+            WaitResult::Exited { code: 0 }
+        ));
+        assert!(matches!(
+            exit_code_to_wait_result(1),
+            WaitResult::Exited { code: 1 }
+        ));
+        assert!(matches!(
+            exit_code_to_wait_result(143),
+            WaitResult::Signaled { signal: 15 }
+        ));
+        assert!(matches!(
+            exit_code_to_wait_result(137),
+            WaitResult::Signaled { signal: 9 }
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -962,7 +1012,10 @@ mod tests {
 
         // Initially, discover_agents should return nothing
         let discovered = backend.discover_agents().await.unwrap();
-        assert!(discovered.is_empty(), "should be empty before any agent starts");
+        assert!(
+            discovered.is_empty(),
+            "should be empty before any agent starts"
+        );
 
         // Start an agent with a harmless long-running command
         let agent_handle = backend

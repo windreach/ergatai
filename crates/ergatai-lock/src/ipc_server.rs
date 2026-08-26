@@ -79,17 +79,35 @@ pub fn start_ipc_server(
     let path = match socket_path {
         Some(p) => PathBuf::from(p),
         None => {
+            // SAFETY: getuid() always succeeds, no safety invariants.
             let uid = unsafe { libc::getuid() };
             PathBuf::from(DEFAULT_SOCKET_TEMPLATE.replace("{}", &uid.to_string()))
         }
     };
 
-    // Remove stale socket file if it exists.
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-    }
+    // Bind socket directly — bind() will fail with EADDRINUSE if socket exists.
+    // We handle stale sockets by attempting to remove and retry once.
+    let listener = match UnixListener::bind(&path) {
+        Ok(l) => l,
+        Err(ref e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            // Socket exists — remove stale socket and retry.
+            if let Err(remove_err) = std::fs::remove_file(&path) {
+                if remove_err.kind() != std::io::ErrorKind::NotFound {
+                    return Err(remove_err);
+                }
+            }
+            UnixListener::bind(&path)?
+        }
+        Err(e) => return Err(e),
+    };
 
-    let listener = UnixListener::bind(&path)?;
+    // Set restrictive permissions on the socket (owner-only).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o700);
+        let _ = std::fs::set_permissions(&path, perms);
+    }
     // Set non-blocking so we can poll for cancellation.
     listener.set_nonblocking(true)?;
 
@@ -105,7 +123,7 @@ pub fn start_ipc_server(
         .spawn(move || {
             accept_loop(listener, lock_manager, snapshot_manager, cancel_inner);
         })
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
 
     Ok(IpcServerHandle {
         socket_path: path_clone,
@@ -164,14 +182,75 @@ fn handle_connection(
     stream.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
 
-    // Read request (up to 8 KiB — file paths are short).
-    let mut buf = [0u8; 8192];
-    let n = stream.read(&mut buf)?;
-    if n == 0 {
-        return Ok(()); // EOF
+    // Verify peer credentials (only accept connections from the same user).
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = stream.as_raw_fd();
+        let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: getsockopt with SO_PEERCRED is safe on Unix domain sockets.
+        let ret = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                &mut cred as *mut _ as *mut libc::c_void,
+                &mut len,
+            )
+        };
+        if ret == 0 {
+            let my_uid = unsafe { libc::getuid() };
+            if cred.uid != my_uid {
+                debug!(
+                    peer_uid = cred.uid,
+                    my_uid = my_uid,
+                    "rejecting IPC connection from different user"
+                );
+                return Ok(()); // Silently close — don't leak info to unauthorized users.
+            }
+        }
     }
 
-    let request = std::str::from_utf8(&buf[..n])?;
+    // Read request — loop until we have a complete JSON message or timeout.
+    // Unix stream sockets don't preserve message boundaries, so we must read
+    // until we have a complete JSON object (ends with '}').
+    let mut buf = Vec::with_capacity(8192);
+    let mut tmp = [0u8; 4096];
+    loop {
+        match stream.read(&mut tmp) {
+            Ok(0) => return Ok(()), // EOF
+            Ok(n) => {
+                buf.extend_from_slice(&tmp[..n]);
+                // Check if we have a complete JSON object (simple heuristic: ends with '}').
+                if buf
+                    .iter()
+                    .rev()
+                    .find(|&&b| b != b' ' && b != b'\n' && b != b'\r')
+                    .copied()
+                    == Some(b'}')
+                {
+                    break;
+                }
+                // Cap at 8 KiB to prevent OOM from malicious clients.
+                if buf.len() > 8192 {
+                    warn!("IPC request too large, closing connection");
+                    return Ok(());
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // Timeout — process what we have (may be incomplete).
+                break;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    if buf.is_empty() {
+        return Ok(());
+    }
+
+    let request = std::str::from_utf8(&buf)?;
 
     // Parse action (minimal JSON parsing without serde).
     let action = extract_json_string(request, "action").unwrap_or_default();
@@ -203,16 +282,18 @@ fn handle_check_lock(
     lock_manager: &FileLockManager,
     file_path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Use the canonical check_file_lock_status which normalizes the path internally.
+    // Normalize the path once and use it consistently for both lock check and snapshot lookup.
+    // Remove leading '/' to make it relative (matches how paths are stored in the database).
+    let normalized_path = file_path.trim_start_matches('/').to_string();
+
+    // Check lock status using the normalized path.
     let (is_locked, _holder) = lock_manager
-        .check_file_lock_status(file_path)
+        .check_file_lock_status(&normalized_path)
         .unwrap_or((false, None));
 
     if is_locked {
-        // Normalize for snapshot lookup.
-        let normalized = file_path.trim_start_matches('/').to_string();
-        // Look up the latest snapshot hash for this file.
-        let snapshot_hash = get_latest_snapshot_hash(lock_manager, &normalized);
+        // Look up the latest snapshot hash for this file using the same normalized path.
+        let snapshot_hash = get_latest_snapshot_hash(lock_manager, &normalized_path);
 
         let response = if let Some(hash) = snapshot_hash {
             format!(r#"{{"is_locked":true,"snapshot_hash":"{}"}}"#, hash)
@@ -244,8 +325,18 @@ fn handle_get_snapshot(
 
     match snapshot_manager.read_snapshot(git_hash) {
         Ok(content) => {
-            let len = content.len() as u32;
-            stream.write_all(&len.to_be_bytes())?;
+            // Check for overflow before casting to u32.
+            let len = content.len();
+            if len > u32::MAX as usize {
+                warn!(
+                    git_hash = git_hash,
+                    len = len,
+                    "snapshot too large for IPC protocol"
+                );
+                stream.write_all(&[0u8; 4])?; // Send zero-length on error.
+                return Ok(());
+            }
+            stream.write_all(&(len as u32).to_be_bytes())?;
             stream.write_all(&content)?;
         }
         Err(e) => {
@@ -263,10 +354,7 @@ fn handle_get_snapshot(
 /// Queries the `snapshots` table for the most recent entry matching the file path.
 /// Returns `None` if no snapshot exists (the LD_PRELOAD library will fall through
 /// to reading the actual file in that case).
-fn get_latest_snapshot_hash(
-    lock_manager: &FileLockManager,
-    file_path: &str,
-) -> Option<String> {
+fn get_latest_snapshot_hash(lock_manager: &FileLockManager, file_path: &str) -> Option<String> {
     lock_manager
         .get_latest_snapshot_hash(file_path)
         .unwrap_or(None)

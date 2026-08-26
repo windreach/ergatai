@@ -42,11 +42,7 @@ impl CgroupController {
     /// * `workspace_id` - Unique workspace identifier (used in cgroup path)
     /// * `cpu_cores` - CPU limit in cores (e.g., 2.5 = 2.5 cores). None = no limit.
     /// * `memory_mb` - Memory limit in megabytes. None = no limit.
-    pub fn create(
-        workspace_id: &str,
-        cpu_cores: Option<f64>,
-        memory_mb: Option<u64>,
-    ) -> Self {
+    pub fn create(workspace_id: &str, cpu_cores: Option<f64>, memory_mb: Option<u64>) -> Self {
         // H-3: Validate workspace_id to prevent path traversal.
         // Reject empty, path separators, parent references.
         if workspace_id.is_empty()
@@ -173,8 +169,7 @@ impl CgroupController {
     ///
     /// Returns true if `/sys/fs/cgroup/cgroup.controllers` exists (the v2 signature).
     pub fn cgroups_v2_available() -> bool {
-        cfg!(target_os = "linux")
-            && Path::new("/sys/fs/cgroup/cgroup.controllers").exists()
+        cfg!(target_os = "linux") && Path::new("/sys/fs/cgroup/cgroup.controllers").exists()
     }
 
     /// Whether this controller successfully created a cgroup with limits.

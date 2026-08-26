@@ -81,12 +81,11 @@ pub fn init_logging() {
         let filter = if std::env::var("RUST_LOG").is_ok() {
             tracing_subscriber::EnvFilter::from_default_env()
         } else {
-            tracing_subscriber::EnvFilter::default()
-                .add_directive(
-                    "ergatai=info"
-                        .parse()
-                        .expect("\"ergatai=info\" is a valid tracing directive"),
-                )
+            tracing_subscriber::EnvFilter::default().add_directive(
+                "ergatai=info"
+                    .parse()
+                    .expect("\"ergatai=info\" is a valid tracing directive"),
+            )
         };
 
         tracing_subscriber::fmt()

@@ -23,7 +23,9 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tracing::{error, warn};
 
-use super::backend::{EnforcementResult, EnforcerBackend, FileAccessEvent, FileAccessEventType, PlatformHandle};
+use super::backend::{
+    EnforcementResult, EnforcerBackend, FileAccessEvent, FileAccessEventType, PlatformHandle,
+};
 
 /// Read `/proc/self/fd/{fd}` via readlink. Returns `None` on any error.
 pub(crate) fn readlink_proc_fd(fd: i32) -> Option<PathBuf> {
@@ -246,7 +248,7 @@ impl FanotifyBackend {
                 libc::SYS_fanotify_mark,
                 raw_fd,
                 libc::FAN_MARK_ADD | libc::FAN_MARK_MOUNT,
-                libc::FAN_OPEN_PERM | libc::FAN_MODIFY,  // Added FAN_MODIFY
+                libc::FAN_OPEN_PERM | libc::FAN_MODIFY, // Added FAN_MODIFY
                 libc::AT_FDCWD,
                 c_path.as_ptr(),
             )

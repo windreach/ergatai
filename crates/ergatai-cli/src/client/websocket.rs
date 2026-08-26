@@ -28,12 +28,12 @@ pub async fn attach_terminal(agent_id: &str, api_url: &str, token: Option<&str>)
     let ws_url = build_ws_url(api_url, agent_id)?;
 
     // 2. Build WebSocket request with optional auth header
-    let mut request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(&ws_url)?;
+    let mut request =
+        tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(&ws_url)?;
     if let Some(token) = token {
-        request.headers_mut().insert(
-            "Authorization",
-            format!("Bearer {}", token).parse()?,
-        );
+        request
+            .headers_mut()
+            .insert("Authorization", format!("Bearer {}", token).parse()?);
     }
 
     // 3. Connect to WebSocket
@@ -49,10 +49,7 @@ pub async fn attach_terminal(agent_id: &str, api_url: &str, token: Option<&str>)
     // Send initial terminal size
     let (cols, rows) = crossterm::terminal::size()?;
     let resize_msg = build_resize_message(rows, cols);
-    ws_tx
-        .send(Message::Binary(resize_msg))
-        .await
-        .ok();
+    ws_tx.send(Message::Binary(resize_msg)).await.ok();
 
     // 5. Spawn writer task: stdin → WebSocket
     // Read raw bytes from stdin directly (bypasses crossterm event parser which
@@ -86,7 +83,8 @@ pub async fn attach_terminal(agent_id: &str, api_url: &str, token: Option<&str>)
     let writer_handle = tokio::spawn(async move {
         while let Some(data) = stdin_rx.recv().await {
             // Check for exit keys (Ctrl+C = 0x03, Ctrl+D = 0x04)
-            let should_exit = data.iter().any(|&b| b == 0x03 || b == 0x04);
+            // Only trigger on exact single-byte matches to avoid false positives from pasted content
+            let should_exit = data.len() == 1 && (data[0] == 0x03 || data[0] == 0x04);
 
             // Forward raw bytes to WebSocket
             let mut msg = vec![MSG_TYPE_DATA];
@@ -126,7 +124,9 @@ pub async fn attach_terminal(agent_id: &str, api_url: &str, token: Option<&str>)
                         MSG_TYPE_EXIT => {
                             // Agent exited — parse exit code and break
                             let payload = &data[1..];
-                            if let Ok(exit_json) = serde_json::from_slice::<serde_json::Value>(payload) {
+                            if let Ok(exit_json) =
+                                serde_json::from_slice::<serde_json::Value>(payload)
+                            {
                                 if let Some(code) = exit_json.get("code").and_then(|c| c.as_i64()) {
                                     // Exit code received
                                     let _ = code;

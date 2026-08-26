@@ -110,9 +110,7 @@ async fn handle_terminal_ws(socket: WebSocket, agent_id: String, _state: AppStat
                         }
                         0x02 => {
                             let payload = &data[1..];
-                            if let Ok(resize) =
-                                serde_json::from_slice::<ResizeMessage>(payload)
-                            {
+                            if let Ok(resize) = serde_json::from_slice::<ResizeMessage>(payload) {
                                 debug!(rows = resize.rows, cols = resize.cols, "PTY resize");
                                 if let Err(e) = writer_backend
                                     .resize_pty(&writer_handle, resize.rows, resize.cols)
@@ -196,16 +194,25 @@ async fn handle_terminal_ws(socket: WebSocket, agent_id: String, _state: AppStat
         }
     });
 
+    // Get abort handles before moving into select!
+    let writer_abort = writer_task.abort_handle();
+    let reader_abort = reader_task.abort_handle();
+
     // 6. Wait for either task to exit
     tokio::select! {
         _ = writer_task => {
             debug!("Writer task exited");
-            // reader_task will exit when PTY closes or WebSocket disconnects
+            reader_abort.abort();
         }
         _ = reader_task => {
             debug!("Reader task exited");
-            // writer_task will exit when WebSocket disconnects
+            writer_abort.abort();
         }
+    }
+
+    // 7. Resume background PTY reader (paused when WebSocket connected)
+    if let Err(e) = backend.resume_pty_reader(&agent.handle).await {
+        warn!(agent_id = %agent_id, error = %e, "Failed to resume background PTY reader");
     }
 
     info!(agent_id = %agent_id, "WebSocket terminal connection closed");

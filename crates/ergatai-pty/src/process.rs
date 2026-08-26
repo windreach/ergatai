@@ -97,9 +97,7 @@ impl PtyProcess {
         let mut guard = self.async_fd.writable().await?;
         let fd = self.async_fd.as_raw_fd();
 
-        match guard.try_io(|_| {
-            nix::unistd::write(fd, data).map_err(std::io::Error::from)
-        }) {
+        match guard.try_io(|_| nix::unistd::write(fd, data).map_err(std::io::Error::from)) {
             Ok(result) => Ok(result?),
             Err(_would_block) => Ok(0),
         }
@@ -110,9 +108,7 @@ impl PtyProcess {
         let mut guard = self.async_fd.readable().await?;
         let fd = self.async_fd.as_raw_fd();
 
-        match guard.try_io(|_| {
-            nix::unistd::read(fd, buf).map_err(std::io::Error::from)
-        }) {
+        match guard.try_io(|_| nix::unistd::read(fd, buf).map_err(std::io::Error::from)) {
             Ok(result) => Ok(result?),
             Err(_would_block) => Ok(0),
         }

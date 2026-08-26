@@ -233,6 +233,8 @@ pub enum TerminationReason {
     Failed,
     /// Timed out (max execution time exceeded).
     TimedOut,
+    /// Rate limited (exceeded sends-per-window threshold).
+    RateLimited,
     /// Manually canceled.
     Canceled,
 }
@@ -421,10 +423,14 @@ impl ConversationManager {
             let window = self.config.max_execution_time_secs; // reuse timeout as window
             let max_sends: u64 = (self.config.max_rounds as u64) * 4; // 3 rounds × 4 = 12
 
-            let send_times = self.agent_send_times.read().await;
+            // Use write lock for atomic check-and-record to prevent race conditions
+            let mut send_times = self.agent_send_times.write().await;
             if let Some(times) = send_times.get(from) {
                 // Count entries within the window
-                let recent = times.iter().filter(|&&t| now_secs.saturating_sub(t) < window).count();
+                let recent = times
+                    .iter()
+                    .filter(|&&t| now_secs.saturating_sub(t) < window)
+                    .count();
                 if recent as u64 >= max_sends {
                     warn!(
                         from = from,
@@ -434,25 +440,25 @@ impl ConversationManager {
                         "Global per-agent rate limit hit — multi-agent cycle detected"
                     );
                     // Terminate all conversations involving this agent
-                    let conv_ids_to_terminate: Vec<String> = conversations
-                        .values()
-                        .filter(|c| {
-                            c.participants.0 == from || c.participants.1 == from
-                        })
-                        .map(|c| c.id.clone())
-                        .collect();
+                    let conv_ids_to_terminate: Vec<String> = {
+                        let conversations = self.conversations.read().await;
+                        conversations
+                            .values()
+                            .filter(|c| c.participants.0 == from || c.participants.1 == from)
+                            .map(|c| c.id.clone())
+                            .collect()
+                    };
+                    let mut conversations = self.conversations.write().await;
                     for cid in conv_ids_to_terminate {
                         if let Some(c) = conversations.get_mut(&cid) {
                             c.state = ConversationState::Terminated {
-                                reason: TerminationReason::TimedOut,
+                                reason: TerminationReason::RateLimited,
                             };
                             c.ended_at = Some(Utc::now());
                         }
                     }
                     // Clear the send counter (reset after cycle break)
-                    drop(send_times);
-                    let mut send_times_w = self.agent_send_times.write().await;
-                    send_times_w.remove(from);
+                    send_times.remove(from);
 
                     return Err(ErgataiError::internal(format!(
                         "Agent '{}' exceeded global rate limit ({} sends in {}s) — \
@@ -461,6 +467,8 @@ impl ConversationManager {
                     )));
                 }
             }
+            // Drop write lock early if check passed (will re-acquire later for recording)
+            drop(send_times);
         }
 
         // ── Consecutive auto-reply check (same agent spamming when token is Free) ──

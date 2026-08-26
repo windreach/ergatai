@@ -2,8 +2,8 @@
 //!
 //! These tests spawn real processes via PTY and verify read/write operations.
 
-use std::collections::HashMap;
 use ergatai_pty::{PtyConfig, PtyProcess};
+use std::collections::HashMap;
 
 /// Spawn a simple `cat` process, write to it, and read back.
 #[tokio::test]
@@ -53,13 +53,10 @@ async fn pty_spawn_cat_and_echo() {
         .expect("failed to send SIGTERM");
 
     // Wait for exit
-    let code = tokio::time::timeout(
-        tokio::time::Duration::from_secs(2),
-        process.wait(),
-    )
-    .await
-    .expect("timeout waiting for cat to exit")
-    .expect("failed to wait");
+    let code = tokio::time::timeout(tokio::time::Duration::from_secs(2), process.wait())
+        .await
+        .expect("timeout waiting for cat to exit")
+        .expect("failed to wait");
 
     // SIGTERM → exit code 143 (128 + 15)
     assert_eq!(code, 143, "expected exit code 143 (SIGTERM)");
@@ -80,13 +77,10 @@ async fn pty_spawn_echo_exits() {
     let process = PtyProcess::spawn(config).expect("failed to spawn echo");
 
     // Wait for exit
-    let code = tokio::time::timeout(
-        tokio::time::Duration::from_secs(2),
-        process.wait(),
-    )
-    .await
-    .expect("timeout waiting for echo to exit")
-    .expect("failed to wait");
+    let code = tokio::time::timeout(tokio::time::Duration::from_secs(2), process.wait())
+        .await
+        .expect("timeout waiting for echo to exit")
+        .expect("failed to wait");
 
     assert_eq!(code, 0, "echo should exit with code 0");
 }

@@ -546,51 +546,60 @@ impl Enforcer {
                 .ok()
                 .map(|p| p.to_string_lossy().to_string());
 
-            // CRITICAL DEADLOCK PREVENTION:
-            // `decide()` queries SQLite, which opens locks.db. That open() triggers
-            // a fanotify FAN_OPEN_PERM event. Since the event loop is `.await`-ing
-            // this spawn_blocking, only a CONCURRENT thread can read the fanotify
-            // queue and respond. We spawn a dedicated OS thread that continuously
-            // drains self-PID events while decide() runs.
-            //
-            // Without this, the blocking thread deadlocks:
-            //   decide() → SQLite → open(locks.db) → FAN_OPEN_PERM → kernel blocks
-            //   the thread → nobody reads fanotify queue → nobody responds → DEADLOCK
-            let decision = match relative.as_deref() {
-                Some(rel) => {
-                    let engine = engine.clone();
-                    let backend = backend.clone();
-                    let rel_owned = rel.to_string();
-                    let pid = event.pid;
-                    tokio::task::spawn_blocking(move || {
-                        // Spawn a concurrent thread that drains self-PID events
-                        // while decide() runs. This thread reads the fanotify fd
-                        // non-blocking and immediately responds to any events
-                        // from our own process (SQLite file opens).
-                        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                        let stop2 = stop.clone();
-                        let backend2 = backend.clone();
-                        let drain_handle = std::thread::spawn(move || {
-                            while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
+            // Only run expensive decide() pipeline for Permission events.
+            // Notification events (FAN_MODIFY) don't need a decision — they trigger
+            // auto-lock acquisition in a separate code path below.
+            let decision = if event.event_type == FileAccessEventType::Permission {
+                // CRITICAL DEADLOCK PREVENTION:
+                // `decide()` queries SQLite, which opens locks.db. That open() triggers
+                // a fanotify FAN_OPEN_PERM event. Since the event loop is `.await`-ing
+                // this spawn_blocking, only a CONCURRENT thread can read the fanotify
+                // queue and respond. We spawn a dedicated OS thread that continuously
+                // drains self-PID events while decide() runs.
+                //
+                // Without this, the blocking thread deadlocks:
+                //   decide() → SQLite → open(locks.db) → FAN_OPEN_PERM → kernel blocks
+                //   the thread → nobody reads fanotify queue → nobody responds → DEADLOCK
+                match relative.as_deref() {
+                    Some(rel) => {
+                        let engine = engine.clone();
+                        let backend = backend.clone();
+                        let rel_owned = rel.to_string();
+                        let pid = event.pid;
+                        tokio::task::spawn_blocking(move || {
+                            // Spawn a concurrent thread that drains self-PID events
+                            // while decide() runs. This thread reads the fanotify fd
+                            // non-blocking and immediately responds to any events
+                            // from our own process (SQLite file opens).
+                            let stop =
+                                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                            let stop2 = stop.clone();
+                            let backend2 = backend.clone();
+                            let drain_handle = std::thread::spawn(move || {
+                                while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
+                                    backend2.drain_self_events();
+                                    // 1ms sleep: balances responsiveness (SQLite open()
+                                    // takes ~100μs-1ms) against CPU usage. The previous
+                                    // 100μs interval was a busy-wait that woke the CPU
+                                    // 10× more often without meaningful latency benefit.
+                                    std::thread::sleep(std::time::Duration::from_millis(1));
+                                }
+                                // Final drain after decide() returns
                                 backend2.drain_self_events();
-                                // 1ms sleep: balances responsiveness (SQLite open()
-                                // takes ~100μs-1ms) against CPU usage. The previous
-                                // 100μs interval was a busy-wait that woke the CPU
-                                // 10× more often without meaningful latency benefit.
-                                std::thread::sleep(std::time::Duration::from_millis(1));
-                            }
-                            // Final drain after decide() returns
-                            backend2.drain_self_events();
-                        });
-                        let decision = engine.decide(&rel_owned, pid);
-                        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                        let _ = drain_handle.join();
-                        decision
-                    })
-                    .await
-                    .unwrap_or(Decision::Allow) // join error → fail open
+                            });
+                            let decision = engine.decide(&rel_owned, pid);
+                            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                            let _ = drain_handle.join();
+                            decision
+                        })
+                        .await
+                        .unwrap_or(Decision::Allow) // join error → fail open
+                    }
+                    None => Decision::Allow, // outside project or resolution failed → allow
                 }
-                None => Decision::Allow, // outside project or resolution failed → allow
+            } else {
+                // Notification event — skip expensive decide(), just use Allow placeholder.
+                Decision::Allow
             };
 
             // Write kernel response via the backend (only for permission events).

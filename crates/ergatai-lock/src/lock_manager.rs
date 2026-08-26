@@ -1078,12 +1078,7 @@ impl FileLockManager {
             if !hash.is_empty() {
                 // Store the snapshot record in the snapshots table.
                 let conn = self.conn.lock();
-                SnapshotManager::store_snapshot_record(
-                    &conn,
-                    &normalized_path,
-                    &hash,
-                    agent_id,
-                )?;
+                SnapshotManager::store_snapshot_record(&conn, &normalized_path, &hash, agent_id)?;
             }
             hash
         };

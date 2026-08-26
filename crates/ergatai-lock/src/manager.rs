@@ -248,7 +248,10 @@ pub async fn init_file_access_with_enforcer(
     // Fail-open: if binding fails, log a warning but continue.
     let ipc_handle = match start_ipc_server(lock_manager.clone(), snapshot_manager.clone(), None) {
         Ok(handle) => {
-            info!(project_id = project_id, "IPC server started for LD_PRELOAD snapshot reads");
+            info!(
+                project_id = project_id,
+                "IPC server started for LD_PRELOAD snapshot reads"
+            );
             Some(handle)
         }
         Err(e) => {
