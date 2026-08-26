@@ -9,6 +9,21 @@ use rusqlite::{params, Connection};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, warn};
 
+/// Parse RFC3339 timestamp, logging warning on failure and falling back to current time.
+fn parse_timestamp(s: &str, field_name: &str) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|e| {
+            warn!(
+                error = %e,
+                field = field_name,
+                timestamp = s,
+                "Failed to parse timestamp, using current time"
+            );
+            chrono::Utc::now()
+        })
+}
+
 /// Represents a persistent binding between an MCP agent and a runtime agent.
 #[derive(Debug, Clone)]
 pub struct AgentBinding {
@@ -112,12 +127,8 @@ impl AgentBindingStore {
                     mcp_agent_id: row.get(0)?,
                     runtime_agent_id: row.get(1)?,
                     agent_identifier: row.get(2)?,
-                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
-                        .unwrap_or_else(|_| chrono::Utc::now().into())
-                        .with_timezone(&chrono::Utc),
-                    last_active: chrono::DateTime::parse_from_rfc3339(&last_active)
-                        .unwrap_or_else(|_| chrono::Utc::now().into())
-                        .with_timezone(&chrono::Utc),
+                    created_at: parse_timestamp(&created_at, "created_at"),
+                    last_active: parse_timestamp(&last_active, "last_active"),
                 })
             },
         );
@@ -158,12 +169,8 @@ impl AgentBindingStore {
                     mcp_agent_id: row.get(0)?,
                     runtime_agent_id: row.get(1)?,
                     agent_identifier: row.get(2)?,
-                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
-                        .unwrap_or_else(|_| chrono::Utc::now().into())
-                        .with_timezone(&chrono::Utc),
-                    last_active: chrono::DateTime::parse_from_rfc3339(&last_active)
-                        .unwrap_or_else(|_| chrono::Utc::now().into())
-                        .with_timezone(&chrono::Utc),
+                    created_at: parse_timestamp(&created_at, "created_at"),
+                    last_active: parse_timestamp(&last_active, "last_active"),
                 })
             },
         );
@@ -242,12 +249,8 @@ impl AgentBindingStore {
                     mcp_agent_id: row.get(0)?,
                     runtime_agent_id: row.get(1)?,
                     agent_identifier: row.get(2)?,
-                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
-                        .unwrap_or_else(|_| chrono::Utc::now().into())
-                        .with_timezone(&chrono::Utc),
-                    last_active: chrono::DateTime::parse_from_rfc3339(&last_active)
-                        .unwrap_or_else(|_| chrono::Utc::now().into())
-                        .with_timezone(&chrono::Utc),
+                    created_at: parse_timestamp(&created_at, "created_at"),
+                    last_active: parse_timestamp(&last_active, "last_active"),
                 })
             })
             .map_err(|e| ErgataiError::DatabaseError(format!("Failed to query bindings: {}", e)))?
