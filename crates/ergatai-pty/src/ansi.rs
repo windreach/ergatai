@@ -3,7 +3,7 @@
 //! Uses the `vte` crate (from alacritty) to parse ANSI/ECMA-48 sequences
 //! and extract clean text from agent output.
 //!
-//! Reference: https://github.com/alacritty/vte (Apache-2.0 / MIT)
+//! Reference: <https://github.com/alacritty/vte> (Apache-2.0 / MIT)
 
 use vte::{Parser, Perform};
 
