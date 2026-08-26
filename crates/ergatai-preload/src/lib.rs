@@ -202,6 +202,7 @@ static SNAP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// and return the fd. This avoids predictable temp file paths on disk.
 ///
 /// Returns the fd, or `-1` on failure.
+#[cfg(target_os = "linux")]
 fn redirect_to_snapshot(_path: &str, git_hash: &str) -> c_int {
     let content = match query_snapshot_content(git_hash) {
         Some(c) => c,
@@ -236,6 +237,16 @@ fn redirect_to_snapshot(_path: &str, git_hash: &str) -> c_int {
     unsafe { libc::lseek(fd, 0, libc::SEEK_SET) };
 
     fd
+}
+
+/// Non-Linux fallback: skip memfd, use secure temp file directly.
+#[cfg(not(target_os = "linux"))]
+fn redirect_to_snapshot(_path: &str, git_hash: &str) -> c_int {
+    let content = match query_snapshot_content(git_hash) {
+        Some(c) => c,
+        None => return -1,
+    };
+    redirect_to_snapshot_fallback(&content)
 }
 
 /// Fallback for systems without memfd_create: use O_CREAT | O_EXCL for atomic creation.
