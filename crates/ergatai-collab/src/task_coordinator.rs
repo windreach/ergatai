@@ -109,7 +109,8 @@ pub struct TaskCoordinator {
 impl TaskCoordinator {
     /// Create a new TaskCoordinator
     pub fn new(project_root: PathBuf) -> Self {
-        let ergatai_dir = project_root.join(".ergatai");
+        // Use user home directory for centralized result storage
+        let ergatai_dir = Self::get_ergatai_home_dir();
         let plan_dir = ergatai_dir.join(".plan");
         let results_dir = plan_dir.join("results");
 
@@ -117,6 +118,16 @@ impl TaskCoordinator {
             project_root,
             plan_dir,
             results_dir,
+        }
+    }
+
+    /// Get the global ergatai home directory (~/.ergatai)
+    fn get_ergatai_home_dir() -> PathBuf {
+        if let Some(home) = dirs::home_dir() {
+            home.join(".ergatai")
+        } else {
+            // Fallback to /tmp if home dir not available
+            std::env::temp_dir().join("ergatai")
         }
     }
 
@@ -559,7 +570,13 @@ mod tests {
         let coordinator = TaskCoordinator::new(dir.path().to_path_buf());
         coordinator.init().await.unwrap();
 
-        let plan_dir = dir.path().join(".ergatai").join(".plan");
+        // Results are now stored in user home directory
+        let home_dir = if let Some(home) = dirs::home_dir() {
+            home.join(".ergatai")
+        } else {
+            std::env::temp_dir().join("ergatai")
+        };
+        let plan_dir = home_dir.join(".plan");
         let results_dir = plan_dir.join("results");
         assert!(plan_dir.exists());
         assert!(results_dir.exists());
@@ -648,8 +665,11 @@ Main handles conflicts.
         let coordinator = TaskCoordinator::new(dir.path().to_path_buf());
         coordinator.init().await.unwrap();
 
+        // Use unique task ID to avoid conflicts with other tests
+        let task_id = "task-missing-test";
+
         let plan = TaskPlan {
-            task_id: "task-1".to_string(),
+            task_id: task_id.to_string(),
             task_name: "T".to_string(),
             coordinator: "main".to_string(),
             status: PlanStatus::InProgress,
@@ -677,17 +697,26 @@ Main handles conflicts.
         let coordinator = TaskCoordinator::new(dir.path().to_path_buf());
         coordinator.init().await.unwrap();
 
-        // Create result files for both agents
-        let results_dir = dir.path().join(".ergatai").join(".plan").join("results");
-        tokio::fs::write(results_dir.join("task-1-alice.md"), "ok")
+        // Use unique task ID to avoid conflicts with other tests
+        let task_id = "task-complete-test";
+
+        // Create result files for both agents in user home directory
+        let home_dir = if let Some(home) = dirs::home_dir() {
+            home.join(".ergatai")
+        } else {
+            std::env::temp_dir().join("ergatai")
+        };
+        let results_dir = home_dir.join(".plan").join("results");
+        tokio::fs::create_dir_all(&results_dir).await.unwrap();
+        tokio::fs::write(results_dir.join(format!("{}-alice.md", task_id)), "ok")
             .await
             .unwrap();
-        tokio::fs::write(results_dir.join("task-1-bob.md"), "ok")
+        tokio::fs::write(results_dir.join(format!("{}-bob.md", task_id)), "ok")
             .await
             .unwrap();
 
         let plan = TaskPlan {
-            task_id: "task-1".to_string(),
+            task_id: task_id.to_string(),
             task_name: "T".to_string(),
             coordinator: "main".to_string(),
             status: PlanStatus::InProgress,
@@ -754,9 +783,14 @@ Main handles conflicts.
         let dir = tempfile::tempdir().unwrap();
         let coordinator = TaskCoordinator::new(dir.path().to_path_buf());
         let path = coordinator.get_result_path("task-1", "alice").unwrap();
-        let expected = dir
-            .path()
-            .join(".ergatai")
+
+        // Results are now stored in user home directory
+        let home_dir = if let Some(home) = dirs::home_dir() {
+            home.join(".ergatai")
+        } else {
+            std::env::temp_dir().join("ergatai")
+        };
+        let expected = home_dir
             .join(".plan")
             .join("results")
             .join("task-1-alice.md");
@@ -779,12 +813,19 @@ Main handles conflicts.
         let coordinator = TaskCoordinator::new(dir.path().to_path_buf());
         coordinator.init().await.unwrap();
 
-        // Create a plan file and result files
+        // Create a plan file and result files in user home directory
         coordinator
             .create_plan("task-1", "# Task: x")
             .await
             .unwrap();
-        let results_dir = dir.path().join(".ergatai").join(".plan").join("results");
+
+        let home_dir = if let Some(home) = dirs::home_dir() {
+            home.join(".ergatai")
+        } else {
+            std::env::temp_dir().join("ergatai")
+        };
+        let results_dir = home_dir.join(".plan").join("results");
+        tokio::fs::create_dir_all(&results_dir).await.unwrap();
         tokio::fs::write(results_dir.join("task-1-alice.md"), "ok")
             .await
             .unwrap();
@@ -799,12 +840,8 @@ Main handles conflicts.
         coordinator.cleanup_task("task-1").await.unwrap();
 
         // Plan + task-1-* results should be gone
-        assert!(!dir
-            .path()
-            .join(".ergatai")
-            .join(".plan")
-            .join("task-1.md")
-            .exists());
+        let plan_dir = home_dir.join(".plan");
+        assert!(!plan_dir.join("task-1.md").exists());
         assert!(!results_dir.join("task-1-alice.md").exists());
         assert!(!results_dir.join("task-1-bob.md").exists());
         // Unrelated task untouched

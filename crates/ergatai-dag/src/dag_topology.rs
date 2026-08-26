@@ -268,6 +268,12 @@ impl TaskGraph {
         let node = self
             .find_node_mut(id)
             .with_context(|| format!("Node not found: {}", id))?;
+        // If already in a terminal state (e.g., Failed due to timeout), don't overwrite.
+        // This prevents a race where agent_launcher detects the result file and publishes
+        // node_complete *after* the timeout watcher has already marked the node Failed.
+        if matches!(node.status, TaskStatus::Failed | TaskStatus::Completed) {
+            return Ok(());
+        }
         node.result_path = Some(result_path);
         node.status = TaskStatus::Completed;
         Ok(())

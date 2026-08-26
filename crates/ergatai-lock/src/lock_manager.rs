@@ -2238,6 +2238,38 @@ impl FileLockManager {
         Ok(locks)
     }
 
+    /// Check if an agent has any audit log entries within a time range.
+    ///
+    /// Used as a sanity check to detect "hallucinating agents" — agents that claim
+    /// completion but didn't actually modify any files (no lock history).
+    ///
+    /// # Arguments
+    /// * `agent_id` - The agent identifier to check
+    /// * `since` - Only count entries after this timestamp
+    ///
+    /// # Returns
+    /// `true` if the agent has at least one audit log entry in the time range
+    pub fn has_agent_activity_since(
+        &self,
+        agent_id: &str,
+        since: DateTime<Utc>,
+    ) -> Result<bool, ErgataiError> {
+        let conn = self.conn.lock();
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT COUNT(*) FROM audit_log
+                 WHERE agent_id = ?1 AND timestamp >= ?2",
+            )
+            .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
+
+        let count: i64 = stmt
+            .query_row(params![agent_id, since.to_rfc3339()], |row| row.get(0))
+            .map_err(|e| ErgataiError::internal(format!("Failed to query audit log: {}", e)))?;
+
+        Ok(count > 0)
+    }
+
     /// Acquire a lock with automatic waiting using NATS queue
     ///
     /// This method attempts to acquire a lock immediately. If the lock is already held,

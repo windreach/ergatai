@@ -5,6 +5,7 @@ pub mod agent_launcher;
 pub mod collaboration; // Collaboration session & mesh policy (DAG ↔ messaging glue)
 pub mod dag_scheduler; // DAG-based scheduler
 pub mod plan_watcher;
+pub mod result_monitor; // fanotify-based result file integrity monitor (FAN_CLOSE_WRITE)
 pub mod task_coordinator;
 pub mod task_scheduler; // Agent-to-agent message routing via NATS
 pub mod timeout_tier; // Three-stage node timeout escalation (warn → escalate → fail)

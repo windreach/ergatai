@@ -104,6 +104,71 @@ fn running_agents() -> Arc<Mutex<HashMap<String, RunningAgent>>> {
         .clone()
 }
 
+/// Global `ResultFileMonitor` — kernel-level watcher for result files using
+/// Linux `fanotify` (FAN_CLOSE_WRITE). Initialized lazily on first use.
+///
+/// The monitor watches `~/.ergatai/.plan/results/` so it fires
+/// only when an agent closes a result file it wrote. This replaces the prior
+/// 1-second polling with an instantaneous kernel event, falling back to
+/// polling only if fanotify cannot be initialized (non-Linux, AppArmor DENY,
+/// etc.) or when the agent uses atomic rename (write-temp-then-rename).
+fn result_file_monitor(_project_root: &Path) -> crate::result_monitor::ResultFileMonitor {
+    static MONITOR: OnceLock<crate::result_monitor::ResultFileMonitor> = OnceLock::new();
+    MONITOR
+        .get_or_init(|| {
+            // Use user home directory for centralized result storage
+            let results_dir = if let Some(home) = dirs::home_dir() {
+                home.join(".ergatai").join(".plan").join("results")
+            } else {
+                // Fallback to /tmp if home dir not available
+                std::env::temp_dir()
+                    .join("ergatai")
+                    .join(".plan")
+                    .join("results")
+            };
+            // Ensure directory exists so fanotify_mark doesn't fail on missing path.
+            // (Idempotent — racing creates are fine.)
+            let _ = std::fs::create_dir_all(&results_dir);
+            crate::result_monitor::ResultFileMonitor::start(&results_dir)
+        })
+        .clone()
+}
+
+/// Verify agent actually modified files by checking audit log entries.
+///
+/// This detects "hallucinating agents" that claim completion but didn't do work.
+/// Logs a warning if no audit entries are found in the last hour.
+async fn verify_agent_activity(agent_id: &str, task_id: &str) {
+    if task_id.is_empty() {
+        return;
+    }
+    let task_started_at = chrono::Utc::now() - chrono::Duration::hours(1);
+    if let Ok(lock_manager) = ergatai_lock::get_lock_manager(task_id).await {
+        match lock_manager.has_agent_activity_since(agent_id, task_started_at) {
+            Ok(true) => {
+                tracing::debug!(
+                    agent = %agent_id,
+                    "✅ Lock audit confirms agent modified files"
+                );
+            }
+            Ok(false) => {
+                tracing::warn!(
+                    agent = %agent_id,
+                    task_id = %task_id,
+                    "⚠️ Agent claimed completion but has no lock audit history — possible hallucination"
+                );
+            }
+            Err(e) => {
+                tracing::debug!(
+                    agent = %agent_id,
+                    error = %e,
+                    "Failed to query lock audit log (non-fatal)"
+                );
+            }
+        }
+    }
+}
+
 /// Safely truncate a UTF-8 string to at most max_len bytes,
 /// ensuring we don't split multi-byte characters.
 fn safe_truncate_utf8(s: &str, max_len: usize) -> String {
@@ -241,6 +306,43 @@ impl AgentLauncher {
         {
             let watchdog = watchdog.write().await;
             watchdog.mark_busy(&session_id, 3600).await?;
+        }
+
+        // Also update heartbeat_at in the database so other Watchdog instances
+        // (created by other DAG tasks sharing the same project) see the fresh timestamp.
+        // mark_busy only updates in-memory busy_status which is per-Watchdog.
+        let _ = lock_manager.update_heartbeat(&system_token.id.to_string());
+        let _ = lock_manager.update_heartbeat(&file_token.id.to_string());
+
+        // Spawn a background heartbeat task that keeps heartbeat_at fresh for the
+        // lifetime of this agent task. This is critical for reused agents: the
+        // underlying process doesn't send heartbeats itself, and other DAG tasks'
+        // Watchdog instances check heartbeat_at in the shared SQLite DB. Without
+        // this periodic refresh, those Watchdogs would report spurious heartbeat
+        // timeouts after 90s (= 3x the 30s heartbeat interval).
+        {
+            let heartbeat_session = session_id.clone();
+            let heartbeat_project = project_id.to_string();
+            let heartbeat_sys_token = system_token.id.to_string();
+            let heartbeat_file_token = file_token.id.to_string();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                // First tick fires immediately — skip it (we just updated above).
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    let lm = match ergatai_lock::get_lock_manager(&heartbeat_project).await {
+                        Ok(lm) => lm,
+                        Err(_) => break,
+                    };
+                    let _ = lm.update_heartbeat(&heartbeat_sys_token);
+                    let _ = lm.update_heartbeat(&heartbeat_file_token);
+                    if let Ok(wd) = ergatai_lock::get_watchdog(&heartbeat_project).await {
+                        let wd_guard = wd.write().await;
+                        let _ = wd_guard.mark_busy(&heartbeat_session, 3600).await;
+                    }
+                }
+            });
         }
 
         // Use project root (no worktree)
@@ -444,24 +546,74 @@ impl AgentLauncher {
             "Spawning result-file-only watcher for reused agent"
         );
 
+        let project_root = self.coordinator.project_root.clone();
+        let node_id_for_monitor = node_id_monitor.clone();
+
         tokio::spawn(async move {
             let max_runtime = std::time::Duration::from_secs(3600); // 1h hard cap
-            let result_poll_interval = std::time::Duration::from_secs(5);
+            let result_poll_interval = std::time::Duration::from_secs(1);
 
-            // Only poll for result file + timeout (no process exit monitoring)
+            // Register with fanotify monitor (returns Canceled immediately if
+            // fanotify is unavailable, letting polling take over).
+            let monitor = result_file_monitor(&project_root);
+            let fanotify_rx = monitor.register(&node_id_for_monitor).await;
+
+            // Race: fanotify close_write | polling fallback | max_runtime.
+            // Polling remains as a fallback for agents that use atomic rename
+            // (write-temp-then-rename) — FAN_CLOSE_WRITE doesn't fire on rename.
             let result_found = tokio::select! {
+                // Branch 1: fanotify — file closed after write, instant signal.
+                r = fanotify_rx => {
+                    match r {
+                        Ok(path) => {
+                            tracing::info!(
+                                node_id = %node_id_for_monitor,
+                                path = %path.display(),
+                                "fanotify: result file closed (FAN_CLOSE_WRITE)"
+                            );
+                            true
+                        }
+                        Err(_) => {
+                            // Canceled: monitor unavailable or node unregistered
+                            // before event. Fall through to polling (handled
+                            // below by the loop continuing).
+                            tracing::debug!(
+                                node_id = %node_id_for_monitor,
+                                "fanotify receiver canceled — using polling fallback"
+                            );
+                            loop {
+                                tokio::time::sleep(result_poll_interval).await;
+                                if let Some(ref path) = result_file_for_watcher {
+                                    if tokio::fs::try_exists(path).await.unwrap_or(false) {
+                                        break;
+                                    }
+                                }
+                            }
+                            true
+                        }
+                    }
+                }
+                // Branch 2: polling fallback (also catches atomic rename cases
+                // where fanotify never fires).
                 _ = async {
                     loop {
                         tokio::time::sleep(result_poll_interval).await;
                         if let Some(ref path) = result_file_for_watcher {
                             if tokio::fs::try_exists(path).await.unwrap_or(false) {
-                                return;
+                                return true;
                             }
                         }
                     }
+                    #[allow(unreachable_code)]
+                    false
                 } => true,
+                // Branch 3: hard timeout.
                 _ = tokio::time::sleep(max_runtime) => false,
             };
+
+            // Always unregister — either the event consumed the slot, or we're
+            // bailing out (timeout / no result). Idempotent.
+            monitor.unregister(&node_id_for_monitor);
 
             if result_found {
                 tracing::info!(
@@ -471,7 +623,12 @@ impl AgentLauncher {
                     "✅ Result file detected for reused agent — node completed"
                 );
                 // Give agent a moment to finish writing
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                // Sanity check: verify agent actually modified files (has audit log entries).
+                if let Some(agent_info) = running_agents.lock().await.get(&agent_id_monitor).cloned() {
+                    verify_agent_activity(&agent_id_monitor, &agent_info.task_id).await;
+                }
             } else {
                 tracing::warn!(
                     agent = %agent_id_monitor,
@@ -856,10 +1013,14 @@ Write your results in markdown:
             let runtime_monitor = runtime.clone();
             let runtime_agent_id_monitor = runtime_agent_id.clone();
 
-            // Capture result file path BEFORE spawning — the watcher needs it for polling
-            let result_file_for_watcher = {
+            // Capture result file path and task_id BEFORE spawning — the watcher needs them
+            let (result_file_for_watcher, task_id_for_audit) = {
                 let agents = self.running_agents.lock().await;
-                agents.get(agent_id).map(|a| a.result_file.clone())
+                let agent_info = agents.get(agent_id);
+                (
+                    agent_info.map(|a| a.result_file.clone()),
+                    agent_info.map(|a| a.task_id.clone()).unwrap_or_default(),
+                )
             };
 
             tracing::info!(
@@ -869,16 +1030,25 @@ Write your results in markdown:
                 "Spawning agent-exit + result-file watcher for DAG agent"
             );
 
+            let project_root = self.coordinator.project_root.clone();
+            let node_id_for_monitor = node_id_monitor.clone();
+
             tokio::spawn(async move {
                 let max_runtime = std::time::Duration::from_secs(3600); // 1h hard cap
-                let result_poll_interval = std::time::Duration::from_secs(5);
+                let result_poll_interval = std::time::Duration::from_secs(1);
 
-                // Race three conditions:
+                // Register with fanotify monitor (no-op stub if unavailable).
+                let monitor = result_file_monitor(&project_root);
+                let fanotify_rx = monitor.register(&node_id_for_monitor).await;
+
+                // Race four conditions:
                 //   1. Agent process exits (wait_for_exit)
-                //   2. Result file appears (polling — agent finished work but process stayed alive)
-                //   3. Max runtime exceeded (timeout)
+                //   2. fanotify FAN_CLOSE_WRITE — result file fully written (instant)
+                //   3. Result file polling fallback (1s interval — catches atomic rename)
+                //   4. Max runtime exceeded (timeout)
                 enum CompletionTrigger {
                     ProcessExit(ErgataiResult<ergatai_runtime::WaitResult>),
+                    FanotifyCloseWrite(PathBuf),
                     ResultFileAppeared,
                     TimedOut,
                 }
@@ -887,8 +1057,26 @@ Write your results in markdown:
                     result = runtime_monitor.wait_for_exit(&runtime_agent_id_monitor, Some(max_runtime)) => {
                         CompletionTrigger::ProcessExit(result)
                     }
+                    // fanotify: instant signal on file close after write.
+                    r = fanotify_rx => {
+                        match r {
+                            Ok(path) => CompletionTrigger::FanotifyCloseWrite(path),
+                            Err(_) => {
+                                // Monitor unavailable or canceled — fall through to polling.
+                                loop {
+                                    tokio::time::sleep(result_poll_interval).await;
+                                    if let Some(ref path) = result_file_for_watcher {
+                                        if tokio::fs::try_exists(path).await.unwrap_or(false) {
+                                            break;
+                                        }
+                                    }
+                                }
+                                CompletionTrigger::ResultFileAppeared
+                            }
+                        }
+                    }
+                    // Polling fallback — catches atomic rename and fanotify-unavailable.
                     _ = async {
-                        // Poll for result file every 5 seconds
                         loop {
                             tokio::time::sleep(result_poll_interval).await;
                             if let Some(ref path) = result_file_for_watcher {
@@ -904,6 +1092,9 @@ Write your results in markdown:
                         CompletionTrigger::TimedOut
                     }
                 };
+
+                // Always unregister — idempotent cleanup.
+                monitor.unregister(&node_id_for_monitor);
 
                 match &trigger {
                     CompletionTrigger::ProcessExit(Ok(ergatai_runtime::WaitResult::Exited {
@@ -944,6 +1135,19 @@ Write your results in markdown:
                             "Agent wait failed"
                         );
                     }
+                    CompletionTrigger::FanotifyCloseWrite(path) => {
+                        tracing::info!(
+                            agent = %agent_id_monitor,
+                            node_id = %node_id_monitor,
+                            path = %path.display(),
+                            "✅ Result file closed (FAN_CLOSE_WRITE via fanotify) — instant detection"
+                        );
+                        // FAN_CLOSE_WRITE guarantees the fd is closed and data flushed.
+                        // No additional sleep needed (unlike the polling path).
+
+                        // Sanity check: verify agent actually modified files (has audit log entries).
+                        verify_agent_activity(&agent_id_monitor, &task_id_for_audit).await;
+                    }
                     CompletionTrigger::ResultFileAppeared => {
                         tracing::info!(
                             agent = %agent_id_monitor,
@@ -952,7 +1156,10 @@ Write your results in markdown:
                             "✅ Result file detected — agent completed work (process may still be alive)"
                         );
                         // Give agent a moment to finish writing, then proceed
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                        // Sanity check: verify agent actually modified files (has audit log entries).
+                        verify_agent_activity(&agent_id_monitor, &task_id_for_audit).await;
                     }
                     CompletionTrigger::TimedOut => {
                         tracing::warn!(

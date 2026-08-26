@@ -104,12 +104,80 @@ impl DagScheduler {
     }
 
     /// Create a new DAG scheduler with the given context
-    pub fn with_context(project_root: PathBuf, graph: TaskGraph, context: DagContext) -> Self {
+    pub fn with_context(project_root: PathBuf, mut graph: TaskGraph, context: DagContext) -> Self {
         // Use persisted dag_id if available (for recovery), otherwise generate new one
         let dag_id = graph
             .dag_id
             .clone()
             .unwrap_or_else(|| format!("dag-{}", uuid::Uuid::new_v4()));
+
+        // Build the collaboration session from the graph before moving it into the Arc.
+        // NOTE: `parse_dag_yaml` 已对 `communication` 做前置校验，这里 MeshPolicy::parse
+        // 对 YAML 来源的 DAG 应该必然成功。仅对程序化构造的 TaskGraph 做兜底（error 级别告警）。
+        let policy = graph
+            .communication
+            .as_deref()
+            .map(|s| match MeshPolicy::parse(s) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!(
+                        communication = %s,
+                        error = %e,
+                        dag_id = %dag_id,
+                        "BUG: invalid communication policy slipped past parse-time validation; \
+                         falling back to Open"
+                    );
+                    MeshPolicy::Open
+                }
+            })
+            .unwrap_or_default();
+        let collaboration = CollaborationSession::from_graph(&dag_id, &graph, policy);
+        // Read max_agent_calls before moving graph into the Arc.
+        let max_agent_calls = graph.max_agent_calls;
+
+        // Auto-compute DAG global timeout from critical path if missing or too short.
+        // Critical path = sum of adjusted node timeouts along the longest dependency chain.
+        // Each node's adjusted timeout = base_timeout * complexity_multiplier.
+        // Buffer = 30s to absorb scheduling overhead and agent startup time.
+        {
+            let default_node_timeout = graph.node_timeout_secs.unwrap_or(30);
+            let mut estimated: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+            for node in &graph.nodes {
+                let base = node.timeout.unwrap_or(default_node_timeout);
+                let multiplier = match node.complexity {
+                    ergatai_dag::dag_topology::TaskComplexity::Low => 0.5,
+                    ergatai_dag::dag_topology::TaskComplexity::Medium => 1.0,
+                    ergatai_dag::dag_topology::TaskComplexity::High => 2.0,
+                };
+                let adjusted = ((base as f64) * multiplier).ceil() as u64;
+                estimated.insert(node.id.clone(), adjusted);
+            }
+            if let Some(cpr) = ergatai_dag::critical_path::calculate_critical_path(&graph, &estimated) {
+                let min_timeout = cpr.total_duration.saturating_add(30);
+                match graph.timeout {
+                    None => {
+                        tracing::info!(
+                            dag_id = %dag_id,
+                            critical_path_secs = cpr.total_duration,
+                            auto_timeout_secs = min_timeout,
+                            "Auto-computed DAG global timeout from critical path"
+                        );
+                        graph.timeout = Some(min_timeout);
+                    }
+                    Some(t) if t < min_timeout => {
+                        tracing::warn!(
+                            dag_id = %dag_id,
+                            user_timeout = t,
+                            critical_path_secs = cpr.total_duration,
+                            min_required = min_timeout,
+                            "User-specified DAG timeout too short; auto-adjusted to critical path + 30s"
+                        );
+                        graph.timeout = Some(min_timeout);
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
 
         // Restore deadline from persisted started_at + timeout
         let deadline = if let (Some(ref started_at), Some(timeout)) =
@@ -136,30 +204,6 @@ impl DagScheduler {
                 .timeout
                 .map(|timeout| std::time::Instant::now() + std::time::Duration::from_secs(timeout))
         };
-
-        // Build the collaboration session from the graph before moving it into the Arc.
-        // NOTE: `parse_dag_yaml` 已对 `communication` 做前置校验，这里 MeshPolicy::parse
-        // 对 YAML 来源的 DAG 应该必然成功。仅对程序化构造的 TaskGraph 做兜底（error 级别告警）。
-        let policy = graph
-            .communication
-            .as_deref()
-            .map(|s| match MeshPolicy::parse(s) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::error!(
-                        communication = %s,
-                        error = %e,
-                        dag_id = %dag_id,
-                        "BUG: invalid communication policy slipped past parse-time validation; \
-                         falling back to Open"
-                    );
-                    MeshPolicy::Open
-                }
-            })
-            .unwrap_or_default();
-        let collaboration = CollaborationSession::from_graph(&dag_id, &graph, policy);
-        // Read max_agent_calls before moving graph into the Arc.
-        let max_agent_calls = graph.max_agent_calls;
 
         Self {
             graph: Arc::new(Mutex::new(graph)),
@@ -613,14 +657,30 @@ impl DagScheduler {
             let start = std::time::Instant::now();
             let mut warned = false;
             let mut escalated = false;
+            tracing::info!(
+                node_id = %node_id_clone,
+                dag_id = %scheduler.dag_id,
+                timeout_secs = timeout_secs,
+                "per-node timeout watchdog spawned"
+            );
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(POLL_INTERVAL_SECS)).await;
                 if scheduler.finalized.load(Ordering::SeqCst) {
+                    tracing::info!(
+                        node_id = %node_id_clone,
+                        elapsed_secs = start.elapsed().as_secs(),
+                        "per-node watcher exiting: DAG finalized"
+                    );
                     break;
                 }
                 let now = std::time::Instant::now();
                 if !warned && now >= warn_at {
                     warned = true;
+                    tracing::info!(
+                        node_id = %node_id_clone,
+                        elapsed_secs = start.elapsed().as_secs(),
+                        "per-node watcher: warn threshold crossed"
+                    );
                     if let Some(bus) = scheduler.get_or_init_event_bus().await {
                         let _ = bus
                             .publish_node_warned(
@@ -633,6 +693,11 @@ impl DagScheduler {
                 }
                 if !escalated && now >= escalate_at {
                     escalated = true;
+                    tracing::info!(
+                        node_id = %node_id_clone,
+                        elapsed_secs = start.elapsed().as_secs(),
+                        "per-node watcher: escalate threshold crossed"
+                    );
                     if let Some(bus) = scheduler.get_or_init_event_bus().await {
                         let _ = bus
                             .publish_node_escalated(
@@ -644,6 +709,12 @@ impl DagScheduler {
                     }
                 }
                 if now >= fail_at {
+                    tracing::info!(
+                        node_id = %node_id_clone,
+                        elapsed_secs = start.elapsed().as_secs(),
+                        timeout_secs = timeout_secs,
+                        "per-node watcher: fail threshold crossed — marking node Failed"
+                    );
                     // Mutate the node under the graph lock, then drop it
                     // before invoking on_node_failed (which re-acquires it).
                     {
@@ -715,7 +786,7 @@ impl DagScheduler {
         let mut watchers = self.timeout_watchers.lock().await;
         if let Some(handle) = watchers.remove(node_id) {
             handle.abort();
-            tracing::debug!(node_id = node_id, "Cancelled timeout watchdog");
+            tracing::info!(node_id = node_id, "Cancelled timeout watchdog");
         }
     }
 
@@ -749,9 +820,32 @@ impl DagScheduler {
 
         let scheduler = self.clone();
         let dag_id = self.dag_id.clone();
+        let finalized = self.finalized.clone();
 
         let handle = tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(timeout_secs)).await;
+            // Use select! so we can bail early if the DAG finalizes before the
+            // timeout elapses (avoids spurious "DAG-level timeout reached" logs
+            // after the DAG has already completed successfully).
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(timeout_secs)) => {}
+                _ = async {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(POLL_INTERVAL_SECS))
+                            .await;
+                        if finalized.load(Ordering::SeqCst) {
+                            return;
+                        }
+                    }
+                } => {
+                    return; // DAG finalized before timeout — nothing to do
+                }
+            }
+
+            // Final re-check: in case of near-simultaneous finalize, skip
+            // marking nodes failed if another caller has already finalized.
+            if finalized.load(Ordering::SeqCst) {
+                return;
+            }
 
             tracing::warn!(
                 dag_id = %dag_id,
@@ -1232,11 +1326,15 @@ impl DagScheduler {
         node_id: &str,
         result_path: Option<String>,
     ) -> ErgataiResult<Vec<String>> {
-        // Deadline check: short-circuit if the DAG has exceeded its timeout.
-        if let Some(err) = self.check_deadline() {
-            self.finalize_if_terminal().await;
-            return Err(err);
-        }
+        // Check deadline, but DO NOT reject late-arriving valid results.
+        // If an agent finished its work and wrote a result file, accept it —
+        // discarding completed work just because the global deadline ticked over
+        // is strictly worse than recording the result. Downstream submission is
+        // skipped when deadline has passed (no point starting new work on a
+        // timing-out DAG), but this node's Completed status is persisted so the
+        // DAG can finalize cleanly.
+        let deadline_passed = self.check_deadline().is_some();
+
         // Node completion is observable progress — refresh the stall watchdog timestamp.
         self.touch_progress().await;
         // Cancel timeout watchdog (node completed normally)
@@ -1249,47 +1347,78 @@ impl DagScheduler {
         // within a single lock acquisition to prevent TOCTOU duplicate submission.
         let ready_nodes: Vec<(TaskNode, u32)> = {
             let mut graph = self.graph.lock().await;
+
+            // Guard against late-arriving completion events for nodes that have already
+            // reached a terminal state (e.g., Failed due to timeout). Without this,
+            // agent_launcher's result-file detection can race with timeout watcher and
+            // clobber the Failed status back to Completed.
+            if let Some(node) = graph.find_node(node_id) {
+                if matches!(
+                    node.status,
+                    TaskStatus::Failed | TaskStatus::Completed | TaskStatus::Skipped
+                ) {
+                    tracing::debug!(
+                        node_id = node_id,
+                        status = ?node.status,
+                        "Node already terminal, ignoring late completion event"
+                    );
+                    return Ok(Vec::new());
+                }
+            }
+
             if let Some(result) = result_path {
                 graph.set_result(node_id, result)?;
             } else {
                 graph.update_status(node_id, TaskStatus::Completed)?;
             }
 
-            // Collect and immediately preempt pending ready nodes as Running.
-            // This prevents concurrent on_node_completed calls from submitting
-            // the same node twice.
-            let ready: Vec<TaskNode> = graph
-                .ready_tasks()
-                .into_iter()
-                .filter(|n| n.status == TaskStatus::Pending)
-                .cloned()
-                .collect();
+            // If DAG deadline already passed, record this node's result but skip
+            // downstream submission — no point starting new work on a timing-out DAG.
+            // The remaining pending/running nodes will be failed by finalize or the
+            // DAG timeout watcher.
+            if deadline_passed {
+                tracing::warn!(
+                    node_id = node_id,
+                    "Node completed after DAG deadline — accepting result, skipping downstream"
+                );
+                Vec::new()
+            } else {
+                // Collect and immediately preempt pending ready nodes as Running.
+                // This prevents concurrent on_node_completed calls from submitting
+                // the same node twice.
+                let ready: Vec<TaskNode> = graph
+                    .ready_tasks()
+                    .into_iter()
+                    .filter(|n| n.status == TaskStatus::Pending)
+                    .cloned()
+                    .collect();
 
-            let mut ready_with_priority = Vec::new();
-            for node in ready {
-                // Calculate adjusted priority using CPM
-                let base_priority =
-                    ergatai_lock::conflict_arbitration::priority_to_number(&node.priority)
-                        .map(|p| p as u32)
-                        .unwrap_or(2);
+                let mut ready_with_priority = Vec::new();
+                for node in ready {
+                    // Calculate adjusted priority using CPM
+                    let base_priority =
+                        ergatai_lock::conflict_arbitration::priority_to_number(&node.priority)
+                            .map(|p| p as u32)
+                            .unwrap_or(2);
 
-                let adjusted_priority = if let Some(ref cpm_result) = critical_path_result {
-                    ergatai_dag::critical_path::adjust_priority_with_critical_path(
-                        &node,
-                        cpm_result,
-                        base_priority,
-                    )
-                } else {
-                    base_priority
-                };
+                    let adjusted_priority = if let Some(ref cpm_result) = critical_path_result {
+                        ergatai_dag::critical_path::adjust_priority_with_critical_path(
+                            &node,
+                            cpm_result,
+                            base_priority,
+                        )
+                    } else {
+                        base_priority
+                    };
 
-                ready_with_priority.push((node, adjusted_priority));
+                    ready_with_priority.push((node, adjusted_priority));
+                }
+
+                for (n, _) in &ready_with_priority {
+                    graph.update_status(&n.id, TaskStatus::Running)?;
+                }
+                ready_with_priority
             }
-
-            for (n, _) in &ready_with_priority {
-                graph.update_status(&n.id, TaskStatus::Running)?;
-            }
-            ready_with_priority
         };
 
         tracing::info!(
@@ -1622,6 +1751,25 @@ impl DagScheduler {
             dag_id = %self.dag_id,
             "DAG terminal — collaboration session cleared from registry"
         );
+
+        // Cancel the DAG-level timeout and stall watchdogs now that the DAG has
+        // reached a terminal state. Without this, the timeout task would keep
+        // sleeping past the deadline and log a spurious "DAG-level timeout
+        // reached" after the DAG is already done. Harmless (nodes are already
+        // Completed/Failed and the scheduler is gone from the registry) but
+        // noisy in logs and wastes a tokio task.
+        {
+            let mut w = self.dag_timeout_watcher.lock().await;
+            if let Some(handle) = w.take() {
+                handle.abort();
+            }
+        }
+        {
+            let mut w = self.stall_watcher.lock().await;
+            if let Some(handle) = w.take() {
+                handle.abort();
+            }
+        }
     }
 
     /// Skip all nodes that (transitively) depend on the failed node.
@@ -3540,12 +3688,19 @@ tasks:
     ///
     /// Verifies that submit_graph rejects submission when the deadline is in the past,
     /// rather than hanging or proceeding with invalid state.
+    ///
+    /// Note: DagScheduler auto-adjusts `graph.timeout` upward to critical path + 30s.
+    /// For a single default node, the auto-timeout is 60s (30s base + 30s buffer).
+    /// We set `started_at` 120s in the past so the deadline is past even after the
+    /// auto-adjustment.
     #[tokio::test]
     async fn test_submit_graph_deadline_in_past_returns_error() {
         let mut graph = TaskGraph::new(vec![TaskNode::new("n1", "agent-a", "Task A")]);
-        // Set a deadline that's already passed (1 second timeout, but started 10 seconds ago)
+        // Set a deadline that's already passed (small user timeout, started long ago).
+        // The auto-timeout will bump `timeout` up to 60s, but started_at is 120s ago,
+        // so the effective deadline is still 60s in the past.
         graph.timeout = Some(1);
-        graph.started_at = Some((chrono::Utc::now() - chrono::Duration::seconds(10)).to_rfc3339());
+        graph.started_at = Some((chrono::Utc::now() - chrono::Duration::seconds(120)).to_rfc3339());
 
         let temp_dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(temp_dir.path().join(".ergatai")).unwrap();
