@@ -196,6 +196,15 @@ impl PtyBackend {
         results
     }
 
+    /// Health check is Linux-specific (uses /proc/{pid}/stat).
+    /// On non-Linux platforms, return empty — no agents to prune.
+    #[cfg(not(target_os = "linux"))]
+    pub async fn health_check_agents(
+        &self,
+    ) -> Vec<(String, crate::backends::proc_linux::ProcessState)> {
+        Vec::new()
+    }
+
     /// Remove agent entry and abort its reader task.
     fn remove_agent(&self, pid_str: &str) {
         let mut agents = self.agents.write();

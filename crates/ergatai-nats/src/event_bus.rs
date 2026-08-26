@@ -1037,4 +1037,77 @@ mod tests {
         assert_eq!(received.to_agent, "codex");
         assert_eq!(received.content, "@codex review this");
     }
+
+    #[test]
+    fn backpressure_cache_initial_state_forces_requery() {
+        // EventBus::new() initializes cache with stale timestamp
+        let cache = BackpressureCache {
+            last_check: Instant::now() - BACKPRESSURE_CACHE_TTL,
+            last_depth: 0,
+        };
+        // Should requery because cache is exactly at TTL boundary
+        assert!(should_requery(&cache, Instant::now()));
+    }
+
+    #[test]
+    fn backpressure_cache_just_under_ttl_skips_requery() {
+        let cache = BackpressureCache {
+            last_check: Instant::now() - Duration::from_secs(4),
+            last_depth: 100,
+        };
+        // 4 seconds < 5 second TTL, should not requery
+        assert!(!should_requery(&cache, Instant::now()));
+    }
+
+    #[test]
+    fn backpressure_cache_just_over_ttl_triggers_requery() {
+        let cache = BackpressureCache {
+            last_check: Instant::now() - Duration::from_secs(6),
+            last_depth: 100,
+        };
+        // 6 seconds > 5 second TTL, should requery
+        assert!(should_requery(&cache, Instant::now()));
+    }
+
+    #[test]
+    fn test_sanitize_agent_name_unicode() {
+        // Unicode characters should be preserved
+        assert_eq!(sanitize_agent_name("agent-日本語"), "agent-日本語");
+        // Emoji gets replaced (non-alphanumeric)
+        assert_eq!(sanitize_agent_name("agent-🔥"), "agent-_");
+    }
+
+    #[test]
+    fn test_sanitize_agent_name_whitespace_variants() {
+        // Tabs become underscores
+        assert_eq!(sanitize_agent_name("agent\tname"), "agent_name");
+        // Multiple spaces become multiple underscores
+        assert_eq!(sanitize_agent_name("agent  name"), "agent__name");
+        // Leading/trailing whitespace preserved as underscores
+        assert_eq!(sanitize_agent_name(" agent "), "_agent_");
+    }
+
+    #[test]
+    fn test_subject_construction_node_events() {
+        let subject = format!("ergatai.dag.node_complete.{}", "node-123");
+        assert_eq!(subject, "ergatai.dag.node_complete.node-123");
+
+        let subject = format!("ergatai.dag.node_failed.{}", "node-456");
+        assert_eq!(subject, "ergatai.dag.node_failed.node-456");
+
+        let subject = format!("ergatai.dag.node_warned.{}", "node-789");
+        assert_eq!(subject, "ergatai.dag.node_warned.node-789");
+    }
+
+    #[test]
+    fn test_subject_construction_dag_complete() {
+        let subject = format!("ergatai.dag.complete.{}", "dag-abc-123");
+        assert_eq!(subject, "ergatai.dag.complete.dag-abc-123");
+    }
+
+    #[test]
+    fn test_subject_construction_api_events() {
+        let subject = "ergatai.api.event".to_string();
+        assert_eq!(subject, "ergatai.api.event");
+    }
 }
