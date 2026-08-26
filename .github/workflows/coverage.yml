@@ -62,7 +62,8 @@ jobs:
         run: |
           # Get coverage percentage with error handling
           COVERAGE_OUTPUT=$(cargo llvm-cov --workspace --all-features --summary-only)
-          COVERAGE=$(echo "$COVERAGE_OUTPUT" | grep -oP '\d+\.\d+%' | head -1 | tr -d '%' || echo "")
+          # Extract TOTAL line coverage (line coverage % from the TOTAL row)
+          COVERAGE=$(echo "$COVERAGE_OUTPUT" | grep "^TOTAL" | grep -oP '\d+\.\d+%' | head -1 | tr -d '%' || echo "")
 
           if [ -z "$COVERAGE" ]; then
             echo "❌ Failed to parse coverage output"
