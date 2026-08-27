@@ -31,6 +31,11 @@ pub struct SendMessageRequest {
     /// Defaults to "request" if not provided.
     #[serde(default)]
     pub message_type: Option<String>,
+    /// Correlation ID for linking a response back to its original request.
+    /// Required when `message_type = "response"`. Take from the received
+    /// request's `_meta.correlation_id`. Ignored for request/broadcast.
+    #[serde(default)]
+    pub correlation_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -270,6 +275,7 @@ pub async fn send_message(
         to: id.clone(),
         message: req.message,
         message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
+        correlation_id: req.correlation_id,
     };
 
     match sender.send(send_req).await {

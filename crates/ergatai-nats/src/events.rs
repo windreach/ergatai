@@ -135,6 +135,57 @@ pub struct AgentMessagePayload {
     pub timestamp: u64,
     /// Optional: structured data payload (JSON)
     pub metadata: HashMap<String, String>,
+    /// Unique message ID for tracking (UUID)
+    #[serde(default = "generate_message_id")]
+    pub message_id: String,
+    /// Whether this message requires a read receipt (default: false)
+    #[serde(default)]
+    pub requires_receipt: bool,
+    /// Correlation ID for linking request → response (for reqwatch)
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    /// Request timeout in milliseconds (for reqwatch)
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+/// Generate a default message ID (UUID v4)
+fn generate_message_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+/// Read receipt: confirmation that a message was delivered and read
+///
+/// Sent by the message delivery system after successful PTY injection,
+/// when the original message had `requires_receipt: true`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadReceiptPayload {
+    /// ID of the original message being acknowledged
+    pub message_id: String,
+    /// Agent that read the message (the recipient)
+    pub from_agent: String,
+    /// Original sender of the message
+    pub to_agent: String,
+    /// Timestamp when the message was read (Unix epoch seconds)
+    pub read_at: u64,
+}
+
+/// Request timeout notification: sent when a request message is not responded to within the timeout period
+///
+/// Part of the reqwatch auto-monitoring system. When agent A sends a request to agent B
+/// and no response is received within timeout_ms, this payload is published to notify agent A.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestTimeoutPayload {
+    /// ID of the original request message
+    pub message_id: String,
+    /// Agent that sent the request (will receive this notification)
+    pub from_agent: String,
+    /// Agent that was supposed to respond
+    pub to_agent: String,
+    /// Timeout period in milliseconds
+    pub timeout_ms: u64,
+    /// Timestamp when the request was sent (Unix epoch seconds)
+    pub sent_at: u64,
 }
 
 // ===== File Access Control Payloads =====
@@ -723,6 +774,10 @@ mod tests {
                 thread_id: Some("thread-123".to_string()),
                 timestamp: 1234567890,
                 metadata: HashMap::new(),
+                message_id: "test-msg-id".to_string(),
+                requires_receipt: false,
+                correlation_id: None,
+                timeout_ms: None,
             }),
         ];
 
@@ -750,6 +805,10 @@ mod tests {
             thread_id: Some("thread-123".to_string()),
             timestamp: 1234567890,
             metadata: metadata.clone(),
+            message_id: "msg-roundtrip".to_string(),
+            requires_receipt: true,
+            correlation_id: Some("corr-123".to_string()),
+            timeout_ms: Some(30_000),
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -776,6 +835,10 @@ mod tests {
             thread_id: None,
             timestamp: 0,
             metadata: HashMap::new(),
+            message_id: "msg-optional".to_string(),
+            requires_receipt: false,
+            correlation_id: None,
+            timeout_ms: None,
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -890,6 +953,10 @@ mod tests {
             thread_id: None,
             timestamp: 0,
             metadata: HashMap::new(),
+            message_id: "msg-empty".to_string(),
+            requires_receipt: false,
+            correlation_id: None,
+            timeout_ms: None,
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -911,6 +978,10 @@ mod tests {
             thread_id: None,
             timestamp: 0,
             metadata: HashMap::new(),
+            message_id: "msg-long".to_string(),
+            requires_receipt: false,
+            correlation_id: None,
+            timeout_ms: None,
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -932,6 +1003,10 @@ mod tests {
             thread_id: None,
             timestamp: 0,
             metadata: HashMap::new(),
+            message_id: "msg-special".to_string(),
+            requires_receipt: false,
+            correlation_id: None,
+            timeout_ms: None,
         };
 
         let json = serde_json::to_string(&payload).unwrap();

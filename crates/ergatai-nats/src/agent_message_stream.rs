@@ -53,7 +53,11 @@ pub const BACKPRESSURE_THRESHOLD: u64 = 1000;
 pub fn agent_message_stream_config() -> Config {
     Config {
         name: AGENT_MESSAGES_STREAM.to_string(),
-        subjects: vec!["ergatai.agent.message.*".to_string()],
+        subjects: vec![
+            "ergatai.agent.message.*".to_string(),
+            "ergatai.agent.receipt.*".to_string(),
+            "ergatai.agent.request_timeout.*".to_string(),
+        ],
         retention: RetentionPolicy::WorkQueue,
         max_age: Duration::from_secs(86_400), // 24 hours
         storage: StorageType::File,
@@ -75,7 +79,14 @@ mod tests {
     fn test_agent_message_stream_config() {
         let config = agent_message_stream_config();
         assert_eq!(config.name, AGENT_MESSAGES_STREAM);
-        assert_eq!(config.subjects, vec!["ergatai.agent.message.*"]);
+        assert_eq!(
+            config.subjects,
+            vec![
+                "ergatai.agent.message.*",
+                "ergatai.agent.receipt.*",
+                "ergatai.agent.request_timeout.*",
+            ]
+        );
         assert_eq!(config.retention, RetentionPolicy::WorkQueue);
         assert_eq!(config.max_age, Duration::from_secs(86_400));
         assert_eq!(config.storage, StorageType::File);

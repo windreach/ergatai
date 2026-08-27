@@ -319,6 +319,10 @@ fn agent_message_payload_roundtrip() {
         thread_id: Some("thread-abc".to_string()),
         timestamp: 1700000000,
         metadata: HashMap::from([("priority".to_string(), "high".to_string())]),
+        message_id: "msg-core-test".to_string(),
+        requires_receipt: false,
+        correlation_id: None,
+        timeout_ms: None,
     };
 
     let json = serde_json::to_string(&payload).unwrap();

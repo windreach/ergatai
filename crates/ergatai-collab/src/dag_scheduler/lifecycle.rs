@@ -13,7 +13,7 @@
 //! same struct via separate `impl DagScheduler` blocks.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 
@@ -189,6 +189,45 @@ impl DagScheduler {
         tokio::fs::write(&context_file, context_json.as_bytes()).await?;
 
         Ok(())
+    }
+
+    /// Save collaboration session metadata to disk (for post-completion queries)
+    ///
+    /// Writes `dag-meta-{dag_id}.json` with policy, participants, and created_at.
+    /// Called during finalization before the scheduler is removed from the registry.
+    pub(super) async fn save_collaboration_meta(&self) -> ErgataiResult<()> {
+        let ergatai_dir = self.project_root.join(".ergatai");
+        let dag_id_safe = self
+            .dag_id
+            .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_");
+
+        let collab = self.collaboration.lock().await;
+        let meta = serde_json::json!({
+            "dag_id": collab.dag_id,
+            "policy": format!("{:?}", collab.policy),
+            "participants": collab.participants,
+            "participant_count": collab.participants.len(),
+            "created_at": collab.created_at,
+        });
+        drop(collab);
+
+        let meta_file = ergatai_dir.join(format!("dag-meta-{}.json", dag_id_safe));
+        let meta_json = serde_json::to_string_pretty(&meta)
+            .map_err(|e| ergatai_error::ErgataiError::internal(format!("serialize collaboration metadata: {}", e)))?;
+        tokio::fs::write(&meta_file, meta_json.as_bytes()).await?;
+
+        Ok(())
+    }
+
+    /// Load collaboration metadata from disk (if exists)
+    pub async fn load_collaboration_meta(
+        project_root: &Path,
+        dag_id: &str,
+    ) -> Option<serde_json::Value> {
+        let dag_id_safe = dag_id.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_");
+        let meta_file = project_root.join(".ergatai").join(format!("dag-meta-{}.json", dag_id_safe));
+        let content = tokio::fs::read_to_string(&meta_file).await.ok()?;
+        serde_json::from_str(&content).ok()
     }
 
     /// Load graph and context from disk (for recovery)

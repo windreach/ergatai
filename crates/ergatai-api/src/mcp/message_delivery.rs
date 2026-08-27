@@ -311,6 +311,62 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                 to = to,
                 "Message delivered via AgentRuntime injection"
             );
+
+            // Publish read receipt if required
+            if payload.requires_receipt {
+                if let Some(conn) = ergatai_nats::get_nats_connection().await {
+                    let bus = ergatai_nats::EventBus::new(conn);
+                    let read_at = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+                        Ok(duration) => duration.as_secs(),
+                        Err(e) => {
+                            warn!(
+                                message_id = %payload.message_id,
+                                error = %e,
+                                "System time before UNIX epoch, using 0 for read_at"
+                            );
+                            0
+                        }
+                    };
+
+                    // Note: from_agent is the READER (recipient of original message)
+                    // to_agent is the ORIGINAL SENDER (who receives the receipt)
+                    let receipt = ergatai_nats::ReadReceiptPayload {
+                        message_id: payload.message_id.clone(),
+                        from_agent: to.to_string(), // reader/recipient
+                        to_agent: from.to_string(), // original sender receives receipt
+                        read_at,
+                    };
+
+                    match bus.publish_read_receipt(&receipt).await {
+                        Ok(_) => {
+                            info!(
+                                message_id = %payload.message_id,
+                                "Read receipt published successfully"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                message_id = %payload.message_id,
+                                error = %e,
+                                "Failed to publish read receipt"
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Record pending response for implicit correlation_id tracking
+            // (so when the recipient sends a response, system auto-fills correlation_id)
+            if let Some(corr_id) = &payload.correlation_id {
+                crate::messaging::record_pending_response(to, corr_id);
+                debug!(
+                    message_id = %payload.message_id,
+                    to = %to,
+                    correlation_id = %corr_id,
+                    "Recorded pending response for implicit tracking"
+                );
+            }
+
             if let Err(e) = msg.ack().await {
                 warn!("Failed to ack delivery: {}", e);
             }

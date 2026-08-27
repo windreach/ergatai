@@ -145,8 +145,8 @@ impl DagScheduler {
 
         let checkpoint = crate::dag_scheduler::lifecycle::StateCheckpoint::create(
             &self.dag_id,
-            &*graph,
-            &*context,
+            &graph,
+            &context,
             parent_checkpoint,
             sequence,
         )

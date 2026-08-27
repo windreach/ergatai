@@ -264,6 +264,51 @@ impl EventBus {
         self.connection.publish_jetstream(&subject, json).await
     }
 
+    /// Publish a read receipt via JetStream (reliable, persisted)
+    ///
+    /// Routes to `ergatai.agent.receipt.{original_sender}` on the `AGENT_MESSAGES` stream.
+    /// The original sender can subscribe to this subject to receive delivery confirmations.
+    pub async fn publish_read_receipt(
+        &self,
+        receipt: &ReadReceiptPayload,
+    ) -> ErgataiResult<async_nats::jetstream::publish::PublishAck> {
+        let subject = format!(
+            "ergatai.agent.receipt.{}",
+            sanitize_agent_name(&receipt.to_agent)
+        );
+        debug!(
+            message_id = %receipt.message_id,
+            from = %receipt.from_agent,
+            to = %receipt.to_agent,
+            "Publishing read receipt"
+        );
+        let json = serde_json::to_vec(receipt)?;
+        self.connection.publish_jetstream(&subject, json).await
+    }
+
+    /// Publish a request timeout notification via JetStream (reliable, persisted)
+    ///
+    /// Routes to `ergatai.agent.request_timeout.{requester}` on the `AGENT_MESSAGES` stream.
+    /// The requester can subscribe to this subject to be notified when their requests time out.
+    pub async fn publish_request_timeout(
+        &self,
+        payload: &RequestTimeoutPayload,
+    ) -> ErgataiResult<async_nats::jetstream::publish::PublishAck> {
+        let subject = format!(
+            "ergatai.agent.request_timeout.{}",
+            sanitize_agent_name(&payload.from_agent)
+        );
+        debug!(
+            message_id = %payload.message_id,
+            from = %payload.from_agent,
+            to = %payload.to_agent,
+            timeout_ms = payload.timeout_ms,
+            "Publishing request timeout notification"
+        );
+        let json = serde_json::to_vec(payload)?;
+        self.connection.publish_jetstream(&subject, json).await
+    }
+
     // ── Subscribe helpers ──
 
     /// Subscribe to task submission events for a specific agent
@@ -1023,6 +1068,10 @@ mod tests {
             thread_id: Some("thread-1".to_string()),
             timestamp: 1234567890,
             metadata: HashMap::new(),
+            message_id: "msg-bus-test".to_string(),
+            requires_receipt: false,
+            correlation_id: None,
+            timeout_ms: None,
         };
 
         bus.publish_agent_message(&payload).await.unwrap();

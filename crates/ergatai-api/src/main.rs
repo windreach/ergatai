@@ -20,10 +20,10 @@ use tokio_util::sync::CancellationToken;
 use tower_governor::{governor::GovernorConfigBuilder, key_extractor::KeyExtractor};
 
 use ergatai_api::mcp::{
-    create_mcp_service, start_message_delivery_consumer,
+    create_mcp_service, spawn_request_monitor, start_message_delivery_consumer,
     start_peer_reaper,
 };
-use ergatai_api::messaging::init_message_sender;
+use ergatai_api::messaging::{get_message_sender, init_message_sender};
 use ergatai_api::{app_state_with_token, build_rest_app};
 use ergatai_core::cross_agent::{set_dag_scheduler, DagScheduler};
 use ergatai_core::nats;
@@ -323,6 +323,15 @@ async fn async_main(args: Args) -> Result<()> {
                     _ => {}
                 }
             });
+
+            // Start request monitor background task (reqwatch)
+            if let Some(sender) = get_message_sender() {
+                let monitor = sender.request_monitor.clone();
+                tokio::spawn(async move {
+                    spawn_request_monitor(monitor).await;
+                });
+                tracing::info!("✅ Request monitor (reqwatch) started");
+            }
 
             // File access control
             let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));

@@ -47,7 +47,28 @@ pub struct AgentInfo {
     pub capabilities: Option<Vec<String>>,
     pub connected_at: String,
     pub last_heartbeat: String,
+    /// Enabled subscription presets for this agent (e.g., ["lifecycle", "receipts"])
+    #[serde(default = "default_subscription_presets")]
+    pub subscription_presets: Vec<String>,
 }
+
+/// Default subscription presets for new agents
+fn default_subscription_presets() -> Vec<String> {
+    vec![
+        "lifecycle".to_string(),
+        "receipts".to_string(),
+    ]
+}
+
+/// Available subscription preset definitions
+///
+/// Each preset maps to a set of NATS subject patterns that the agent will receive events from.
+pub const SUBSCRIPTION_PRESETS: &[(&str, &[&str])] = &[
+    ("lifecycle", &["ergatai.agent.lifecycle"]),
+    ("file_events", &["ergatai.file.ready", "ergatai.file.error"]),
+    ("receipts", &["ergatai.agent.receipt.*"]),
+    ("request_timeout", &["ergatai.agent.request_timeout.*"]),
+];
 
 /// Agent status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -86,6 +107,7 @@ impl AgentRegistry {
             capabilities,
             connected_at: now.clone(),
             last_heartbeat: now,
+            subscription_presets: default_subscription_presets(),
         };
 
         let record = AgentRecord {
@@ -635,6 +657,7 @@ mod tests {
             capabilities: Some(vec!["tool1".to_string(), "tool2".to_string()]),
             connected_at: "2024-01-01T00:00:00+00:00".to_string(),
             last_heartbeat: "2024-01-01T00:00:00+00:00".to_string(),
+            subscription_presets: vec!["lifecycle".to_string(), "receipts".to_string()],
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -652,6 +675,7 @@ mod tests {
             capabilities: None,
             connected_at: "2024-01-01T00:00:00+00:00".to_string(),
             last_heartbeat: "2024-01-01T00:00:00+00:00".to_string(),
+            subscription_presets: vec![],
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -667,6 +691,7 @@ mod tests {
             capabilities: Some(vec!["x".to_string()]),
             connected_at: "2024-06-01T12:00:00+00:00".to_string(),
             last_heartbeat: "2024-06-01T12:00:00+00:00".to_string(),
+            subscription_presets: vec!["lifecycle".to_string()],
         };
 
         let json = serde_json::to_string(&info).unwrap();

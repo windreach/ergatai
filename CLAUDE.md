@@ -293,13 +293,16 @@ Agent 通过 MCP 协议 (JSON-RPC over Streamable HTTP, protocol 2025-06-18) 调
 | `AgentLifecycleState` | `runtime/agent_lifecycle.rs` | agent 生命周期状态机 |
 | `Backend` trait | `runtime/backend.rs` | 运行时后端抽象 (PTY) |
 | `PtyBackend` | `runtime/backends/pty.rs` | PTY 实现 (直接 PTY 控制 + 健康检查) |
-| `AgentMessagePayload` | `nats/events.rs` | NATS 消息体 (from, to, content, timestamp) |
+| `AgentMessagePayload` | `nats/events.rs` | NATS 消息体 (from, to, content, timestamp, message_id, requires_receipt, correlation_id, timeout_ms) |
+| `ReadReceiptPayload` | `nats/events.rs` | 已读回执 (message_id, from_agent, to_agent, read_at) |
+| `RequestTimeoutPayload` | `nats/events.rs` | 请求超时通知 (message_id, from_agent, to_agent, timeout_ms, sent_at) |
 | `NatsConnection` | `nats/connection.rs` | NATS 连接 + JetStream 上下文 |
 | `EventBus` | `nats/event_bus.rs` | 事件发布/订阅门面 (含背压检查) |
 | `ErgataiMcpServer` | `api/mcp/server.rs` | MCP 服务器 (工具注册 + 协议处理) |
 | `AgentRateLimiter` | `api/mcp/rate_limiter.rs` | 滑动窗口速率限制 (全局 OnceLock) |
 | `ConversationManager` | `api/mcp/conversation.rs` | AutoGen 风格对话管理 (循环防护) |
 | `BatchAggregator` | `api/mcp/batch_aggregator.rs` | 群发消息聚合器 |
+| `RequestMonitor` | `api/mcp/request_monitor.rs` | reqwatch 请求监控 (追踪 pending requests + 超时检测) |
 | `TaskGraph` | `dag/dag_topology.rs` | DAG 图结构 (nodes + 预算 + 通信) |
 | `TaskNode` | `dag/dag_topology.rs` | DAG 节点 (agent, task, depends_on, priority, complexity...) |
 | `TaskComplexity` | `dag/dag_topology.rs` | 任务复杂度枚举 (Low/Medium/High) |
@@ -409,6 +412,54 @@ DAG 调度器多层防御机制，防止资源失控和 agent 僵死：
 - **ConversationManager**：AutoGen 风格一问一答循环防护，`max_turns` 到达后自动重置。
 - **BatchAggregator**：1 分钟内 A 发给 ≥2 个 agent → 群发模式，收集回复合并推送。
 
+### 消息可观察性（hcom 启发）
+
+借鉴 hcom 项目设计，ergatai 新增三层消息可观察性机制：
+
+#### Read Receipts（已读回执）
+
+追踪消息是否被目标 agent 成功接收。
+
+- **AgentMessagePayload 扩展字段**：
+  - `message_id: String` — 消息唯一 ID（UUID，自动生成）
+  - `requires_receipt: bool` — 是否需要已读回执（request 消息默认为 true）
+- **ReadReceiptPayload**：投递成功后发布的回执
+  - 路由：`ergatai.agent.receipt.{to_agent}`
+  - 由 `message_delivery.rs` 在成功投递后自动发布
+
+#### Auto-subscription Presets（自动订阅预设）
+
+Agent 启动时自动订阅关键事件类型。
+
+- **AgentInfo.subscription_presets**：默认值 `["lifecycle", "receipts"]`
+- **SUBSCRIPTION_PRESETS**：定义可用预设
+  - `lifecycle` → `ergatai.agent.lifecycle`
+  - `receipts` → `ergatai.agent.receipt.*`
+  - `file_events` → `ergatai.file.ready`, `ergatai.file.error`
+
+#### reqwatch Auto-monitoring（请求自动监控）
+
+自动监控 request 类型消息是否被响应，超时则通知发送方。
+
+- **AgentMessagePayload 扩展字段**：
+  - `correlation_id: Option<String>` — 关联 request → response（UUID，request 消息自动生成）
+  - `timeout_ms: Option<u64>` — 请求超时时间（默认 30000ms）
+- **RequestMonitor 服务**：
+  - 位置：`ergatai-api/src/mcp/request_monitor.rs`
+  - 功能：追踪 pending requests，检测超时
+  - 后台任务：每 5 秒检查超时，发布 `RequestTimeoutPayload`
+  - 路由：`ergatai.agent.request_timeout.{from_agent}`
+- **RequestTimeoutPayload**：超时通知
+  - 包含 message_id, from_agent, to_agent, timeout_ms, sent_at
+
+**消息类型与监控行为**：
+
+| message_type | requires_receipt | correlation_id | timeout_ms | 监控行为 |
+|--------------|------------------|----------------|------------|----------|
+| `request` | true | 自动生成 | 30000 | 追踪 + 超时检测 |
+| `response` | false | None | None | 无特殊监控 |
+| `broadcast` | false | None | None | 无特殊监控 |
+
 ### 启动恢复
 
 - **DAG 崩溃恢复**：`DagScheduler::load_all_from_disk()` 在启动时扫描磁盘，恢复崩溃前正在运行的 DAG —— 将 `Running` 节点回滚到 `Pending`，重新提交调度。
@@ -423,6 +474,8 @@ DAG 调度器多层防御机制，防止资源失控和 agent 僵死：
 ```
 ergatai.
 ├── agent.message.{agent_id}        agent 间消息 (JetStream, 持久化)
+├── agent.receipt.{agent_id}        已读回执 (JetStream, 持久化)
+├── agent.request_timeout.{agent_id} 请求超时通知 (JetStream, 持久化)
 ├── task.submit.{agent}             DagScheduler → TaskScheduler
 ├── task.complete.{task_id}         任务完成通知
 ├── dag.node_complete.{node}        DAG 节点完成

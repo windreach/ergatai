@@ -20,6 +20,7 @@ async fn test_self_message_gate_denies_self_send() {
         to: "agent-1".to_string(),
         message: "test".to_string(),
         message_type: "request".to_string(),
+        correlation_id: None,
     };
 
     let result = gate.check(&request, &runtime).await;
@@ -40,6 +41,7 @@ async fn test_self_message_gate_allows_different_agents() {
         to: "agent-2".to_string(),
         message: "test".to_string(),
         message_type: "request".to_string(),
+        correlation_id: None,
     };
 
     let result = gate.check(&request, &runtime).await;
@@ -61,6 +63,7 @@ async fn test_composite_gate_short_circuits() {
         to: "agent-1".to_string(),
         message: "test".to_string(),
         message_type: "request".to_string(),
+        correlation_id: None,
     };
 
     let result = gate.check(&request).await;
@@ -81,6 +84,7 @@ async fn test_composite_gate_empty_allows_all() {
         to: "agent-2".to_string(),
         message: "test".to_string(),
         message_type: "request".to_string(),
+        correlation_id: None,
     };
 
     let result = gate.check(&request).await;

@@ -208,6 +208,10 @@ async fn test_event_bus_agent_message_roundtrip() {
         thread_id: Some("thread-1".to_string()),
         timestamp: 1_700_000_000,
         metadata: HashMap::new(),
+        message_id: "msg-integration".to_string(),
+        requires_receipt: false,
+        correlation_id: None,
+        timeout_ms: None,
     };
 
     bus.publish_agent_message(&payload).await.unwrap();

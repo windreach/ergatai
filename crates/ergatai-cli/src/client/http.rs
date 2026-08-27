@@ -134,6 +134,7 @@ impl ErgataiClient {
         let url = format!("{}/api/v1/agents/{}/message", self.base_url, id);
         let body = SendMessageRequest {
             message: message.to_string(),
+            correlation_id: None,
         };
         let req = self.client.post(&url).json(&body);
         let req = self.add_auth(req);
@@ -226,6 +227,9 @@ struct SpawnAgentRequest {
 #[derive(Debug, Serialize)]
 struct SendMessageRequest {
     message: String,
+    /// Correlation ID for response tracking. Omitted when None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    correlation_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -367,6 +371,7 @@ mod tests {
     fn test_send_message_request_serialization() {
         let req = SendMessageRequest {
             message: "hello world".to_string(),
+            correlation_id: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert_eq!(json, r#"{"message":"hello world"}"#);

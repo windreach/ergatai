@@ -172,17 +172,15 @@ impl StateChannel {
                 None if field.required => {
                     errors.push(format!("missing required field: {}", field.name));
                 }
-                Some(val) => {
-                    if !Self::check_type(val, &field.value_type) {
-                        errors.push(format!(
-                            "field '{}' expected type {}, got {}",
-                            field.name,
-                            field.value_type,
-                            val
-                        ));
-                    }
+                Some(val) if !Self::check_type(val, &field.value_type) => {
+                    errors.push(format!(
+                        "field '{}' expected type {}, got {}",
+                        field.name,
+                        field.value_type,
+                        val
+                    ));
                 }
-                _ => {} // optional field missing is OK
+                _ => {} // type OK or optional field missing
             }
         }
 

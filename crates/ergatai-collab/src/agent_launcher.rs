@@ -1636,17 +1636,18 @@ async fn parse_result_file_outputs(path: &std::path::Path) -> serde_json::Value 
                 Ok(s) => s,
                 Err(_) => return empty,
             };
-            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                if let serde_json::Value::Object(obj) = json_val {
-                    if !obj.is_empty() {
-                        tracing::info!(
-                            path = %path.display(),
-                            num_outputs = obj.len(),
-                            "Extracted structured outputs from result file frontmatter"
-                        );
-                        return serde_json::Value::Object(obj);
-                    }
+            if let Ok(serde_json::Value::Object(obj)) =
+                serde_json::from_str::<serde_json::Value>(&json_str)
+            {
+                if obj.is_empty() {
+                    return empty;
                 }
+                tracing::info!(
+                    path = %path.display(),
+                    num_outputs = obj.len(),
+                    "Extracted structured outputs from result file frontmatter"
+                );
+                return serde_json::Value::Object(obj);
             }
         }
     }

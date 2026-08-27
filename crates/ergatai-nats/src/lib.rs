@@ -50,6 +50,10 @@ pub use events::{
     FileReadyPayload,
     NodeCompletePayload,
     NodeFailedPayload,
+    // Read receipt for message delivery confirmation
+    ReadReceiptPayload,
+    // Request timeout notification (reqwatch)
+    RequestTimeoutPayload,
     SystemTokenPayload,
     TaskSubmitPayload,
 };

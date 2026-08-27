@@ -533,6 +533,11 @@ impl DagScheduler {
             }
         }
 
+        // Save collaboration metadata before clearing (for post-completion queries)
+        if let Err(e) = self.save_collaboration_meta().await {
+            tracing::warn!(error = %e, "Failed to save collaboration metadata");
+        }
+
         // DAG execution finished: remove the scheduler from the global registry.
         clear_dag_scheduler_by_id(Some(&self.dag_id));
         tracing::info!(
