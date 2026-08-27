@@ -1,31 +1,22 @@
 //! MessageSender — unified message sending service for both REST API and MCP.
 //!
-//! This module encapsulates the full message sending pipeline:
-//! 1. Rate limit check
-//! 2. Agent resolution
-//! 3. Self-message check
-//! 4. MeshPolicy ACL
-//! 5. is_reply detection
-//! 6. ConversationManager check
-//! 7. BatchAggregator record
-//! 8. Message formatting (hint injection)
-//! 9. NATS publish / direct inject
+//! This module encapsulates the simplified message sending pipeline:
+//! 1. Agent resolution
+//! 2. Self-message check
+//! 3. Stable ID resolution (for NATS payload enrichment)
+//! 4. Sender display name resolution + message formatting (hint injection)
+//! 5. NATS publish / direct inject
 //!
 //! Both REST API and MCP handlers call `MessageSender::send()` to ensure
-//! consistent protection across all entry points.
+//! consistent behavior across all entry points.
 
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ergatai_core::agent_registry::{agent_registry, AgentRegistry};
-use ergatai_core::cross_agent::{list_dag_schedulers, CommunicationCheck};
 use ergatai_runtime::{get_agent_runtime, AgentRuntime};
 use tracing::{info, warn};
-
-use crate::mcp::batch_aggregator::get_batch_aggregator;
-use crate::mcp::conversation::ConversationManager;
-use crate::mcp::rate_limiter::get_rate_limiter;
 
 /// Result of a message send operation.
 #[derive(Debug)]
@@ -60,20 +51,13 @@ pub struct SendRequest {
 /// Encapsulates the full send pipeline so both REST API and MCP
 /// use identical protection logic.
 pub struct MessageSender {
-    conversation_manager: Arc<ConversationManager>,
     peer_registry: Arc<AgentRegistry>,
 }
 
 impl MessageSender {
-    /// Create a new MessageSender with the given conversation manager and peer registry.
-    pub fn new(
-        conversation_manager: Arc<ConversationManager>,
-        peer_registry: Arc<AgentRegistry>,
-    ) -> Self {
-        Self {
-            conversation_manager,
-            peer_registry,
-        }
+    /// Create a new MessageSender with the given peer registry.
+    pub fn new(peer_registry: Arc<AgentRegistry>) -> Self {
+        Self { peer_registry }
     }
 
     /// Send a message through the full pipeline.
@@ -87,16 +71,7 @@ impl MessageSender {
             "MessageSender: processing send request"
         );
 
-        // ── 1. Rate limit check ──
-        let rl = get_rate_limiter();
-        if let Err(e) = rl.try_acquire(&req.to) {
-            warn!(%e, "MessageSender: rate-limited");
-            return SendMessageResult::Rejected {
-                reason: format!("Rate limited: {}", e),
-            };
-        }
-
-        // ── 2. Agent resolution ──
+        // ── 1. Agent resolution ──
         let resolved_agent_id = match self.resolve_target_agent(&runtime, &req.to).await {
             Some(id) => id,
             None => {
@@ -109,7 +84,7 @@ impl MessageSender {
             }
         };
 
-        // ── 3. Self-message check ──
+        // ── 2. Self-message check ──
         // Compare runtime IDs and raw input to catch self-send forms.
         let from_runtime_id = runtime.resolve_agent_id(&req.from).await;
 
@@ -129,91 +104,14 @@ impl MessageSender {
             };
         }
 
-        // ── 4. Resolve stable IDs (needed for MeshPolicy + conversation tracking) ──
+        // ── 3. Resolve stable IDs (used for NATS payload enrichment + formatting) ──
         let from_stable = runtime.resolve_to_stable_id(&req.from, None).await;
         let to_stable = runtime.resolve_to_stable_id(&resolved_agent_id, None).await;
 
-        // LOW NOTE: REST API messages (from='api') create separate conversations
-        // (e.g., 'conv-api-agent-2') isolated from MCP-tracked conversations
-        // (e.g., 'conv-agent-1-agent-2'). This is expected: REST is for external
-        // tools/CI, not agent-to-agent communication. Rate limiting (step 1)
-        // prevents abuse. Conversation loop prevention still applies, just with
-        // independent tracking per sender.
-
-        // ── 5. MeshPolicy ACL ──
-        if let Some(reason) = self
-            .check_mesh_policy(
-                &req.from,
-                &req.to,
-                &resolved_agent_id,
-                &from_runtime_id,
-                &from_stable,
-                &to_stable,
-            )
-            .await
-        {
-            return SendMessageResult::Rejected { reason };
-        }
-
-        // ── 6. is_reply detection ──
-        let from_runtime_id_for_batch = from_runtime_id.clone().unwrap_or_else(|| req.from.clone());
-
-        let is_reply = self
-            .is_reply_message(
-                &from_runtime_id_for_batch,
-                &resolved_agent_id,
-                &from_stable,
-                &to_stable,
-            )
-            .await;
-
-        info!(
-            from = %req.from,
-            from_stable = %from_stable,
-            to = %resolved_agent_id,
-            to_stable = %to_stable,
-            is_reply = is_reply,
-            "MessageSender: is_reply check complete"
-        );
-
-        // ── 7. Conversation loop prevention ──
-        if let Err(e) = self
-            .conversation_manager
-            .check_and_record(&from_stable, &to_stable, &req.message)
-            .await
-        {
-            warn!(
-                from = %req.from,
-                to = %resolved_agent_id,
-                error = %e,
-                "MessageSender: conversation loop prevention blocked message"
-            );
-            return SendMessageResult::Rejected {
-                reason: format!("Message blocked by conversation loop prevention: {}", e),
-            };
-        }
-
-        // ── 8. Batch aggregator record ──
-        let batch_id = get_batch_aggregator()
-            .record_send(&from_stable, &to_stable, is_reply)
-            .await;
-
-        if let Some(ref bid) = batch_id {
-            info!(
-                from = %req.from,
-                to = %resolved_agent_id,
-                batch_id = %bid,
-                "MessageSender: message is part of a batch"
-            );
-        }
-
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        // ── 9. Message formatting ──
+        // ── 4. Resolve sender display name ──
         // ID Unification: sender must be bound to a runtime agent
+        let from_runtime_id_for_payload = from_runtime_id.clone().unwrap_or_else(|| req.from.clone());
+
         let sender_display = match self.get_sender_display(&runtime, &req.from).await {
             Some(display) => display,
             None => {
@@ -228,19 +126,23 @@ impl MessageSender {
             }
         };
         // reply target = sender's stable ID (so recipient knows who to reply to)
+        // is_reply detection was removed with ConversationManager; always false.
+        let is_reply = false;
         let formatted_content =
             Self::format_agent_message(&sender_display, &req.message, &from_stable, is_reply);
 
-        // ── 10. NATS publish or direct inject ──
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // ── 5. NATS publish or direct inject ──
         if let Some(conn) = ergatai_nats::get_nats_connection().await {
             let bus = ergatai_nats::EventBus::new(conn);
-            let mut metadata = std::collections::HashMap::new();
-            if let Some(ref bid) = batch_id {
-                metadata.insert("batch_id".to_string(), bid.clone());
-            }
+            let metadata = std::collections::HashMap::new();
 
             let from_uuid = runtime
-                .get_agent(&from_runtime_id_for_batch)
+                .get_agent(&from_runtime_id_for_payload)
                 .await
                 .map(|info| info.agent_uuid);
             let to_uuid = runtime
@@ -325,97 +227,6 @@ impl MessageSender {
             .map(|a| a.agent_id.clone())
     }
 
-    /// Check MeshPolicy ACL for communication between agents.
-    /// Returns Some(reason) if denied, None if allowed.
-    ///
-    /// CRITICAL FIX: Include both stable names AND runtime IDs in sender/receiver
-    /// arrays, because DAG participants are declared as stable names (e.g., "agent-2")
-    /// but messages may carry runtime IDs (e.g., "%16"). Without both, the ACL
-    /// returns NotApplicable and is effectively bypassed.
-    ///
-    /// CRITICAL FIX 2: Include raw target ID in receiver_ids to handle cases where
-    /// the original target identifier differs from resolved_agent_id and to_stable.
-    async fn check_mesh_policy(
-        &self,
-        from: &str,
-        raw_to: &str,
-        resolved_to_id: &str,
-        from_runtime_id: &Option<String>,
-        from_stable: &str,
-        to_stable: &str,
-    ) -> Option<String> {
-        let sender_ids = [from, from_runtime_id.as_deref().unwrap_or(""), from_stable];
-        let receiver_ids = [raw_to, resolved_to_id, to_stable];
-
-        'scheduler_loop: for scheduler in list_dag_schedulers() {
-            for &s in &sender_ids {
-                if s.is_empty() {
-                    continue;
-                }
-                for &r in &receiver_ids {
-                    if r.is_empty() {
-                        continue;
-                    }
-                    match scheduler.check_communication(s, r).await {
-                        CommunicationCheck::Denied(reason) => {
-                            warn!(
-                                from = %s,
-                                to = %r,
-                                reason = %reason,
-                                "MessageSender: MeshPolicy denied message"
-                            );
-                            return Some(format!(
-                                "Message rejected by DAG communication policy: {}. \
-                                 Use `list_agents` to see which agents you can message, \
-                                 or `get_collaboration_status` to inspect the active DAG rules.",
-                                reason
-                            ));
-                        }
-                        CommunicationCheck::Allowed => {
-                            continue 'scheduler_loop;
-                        }
-                        CommunicationCheck::NotApplicable => {}
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Check if this message is a reply (recipient previously sent to sender).
-    ///
-    /// Uses the conversation token mechanism to determine reply status:
-    /// - If token holder is the recipient (to_stable), this is a reply
-    /// - If token holder is the sender (from_stable), this is a new message/continuation
-    /// - If no conversation exists or token is free, this is a new message
-    async fn is_reply_message(
-        &self,
-        _from_runtime_id: &str,
-        _to_runtime_id: &str,
-        from_stable: &str,
-        to_stable: &str,
-    ) -> bool {
-        // Build conversation ID (sorted alphabetically)
-        let (a, b) = if from_stable < to_stable {
-            (from_stable, to_stable)
-        } else {
-            (to_stable, from_stable)
-        };
-        let conversation_id = format!("conv-{}-{}", a, b);
-
-        // Check token ownership
-        if let Some(conv) = self
-            .conversation_manager
-            .get_conversation(&conversation_id)
-            .await
-        {
-            // If the token holder is the recipient (not the sender), this is a reply
-            matches!(&conv.token_owner, crate::mcp::conversation::TokenOwner::Held(holder) if holder.as_str() != from_stable)
-        } else {
-            false
-        }
-    }
-
     /// Get display name for sender (for message formatting).
     ///
     /// **ID Unification**: Always returns the runtime stable ID for consistency.
@@ -479,11 +290,9 @@ impl MessageSender {
 static MESSAGE_SENDER: OnceLock<MessageSender> = OnceLock::new();
 
 /// Initialize the global MessageSender (called once at startup).
-pub fn init_message_sender(
-    conversation_manager: Arc<ConversationManager>,
-) -> &'static MessageSender {
+pub fn init_message_sender() -> &'static MessageSender {
     MESSAGE_SENDER.get_or_init(|| {
-        MessageSender::new(conversation_manager, Arc::new(agent_registry().clone()))
+        MessageSender::new(Arc::new(agent_registry().clone()))
     })
 }
 

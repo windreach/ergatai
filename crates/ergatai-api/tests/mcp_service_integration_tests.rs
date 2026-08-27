@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use ergatai_api::mcp::conversation::{ConversationConfig, ConversationManager};
+
 use ergatai_api::mcp::server::{new_peer_registry, ErgataiMcpServer};
 use ergatai_api::mcp::{create_mcp_service, AgentRegistry};
 use tokio_util::sync::CancellationToken;
@@ -14,17 +14,17 @@ use tokio_util::sync::CancellationToken;
 fn test_mcp_deps() -> (
     Arc<AgentRegistry>,
     ergatai_api::mcp::server::PeerRegistry,
-    Arc<ConversationManager>,
+    
     CancellationToken,
 ) {
     let registry = Arc::new(AgentRegistry::new());
     let peer_registry = new_peer_registry();
-    let conversation_manager = Arc::new(ConversationManager::new(ConversationConfig::default()));
+    
     let cancellation_token = CancellationToken::new();
     (
         registry,
         peer_registry,
-        conversation_manager,
+        
         cancellation_token,
     )
 }
@@ -33,12 +33,12 @@ fn test_mcp_deps() -> (
 
 #[test]
 fn create_mcp_service_returns_service_without_panic() {
-    let (registry, peer_registry, conversation_manager, cancellation_token) = test_mcp_deps();
+    let (registry, peer_registry, cancellation_token) = test_mcp_deps();
 
     let _service = create_mcp_service(
         registry,
         peer_registry,
-        conversation_manager,
+        
         cancellation_token,
         15,
         Some("test-agent".to_string()),
@@ -48,12 +48,12 @@ fn create_mcp_service_returns_service_without_panic() {
 
 #[test]
 fn create_mcp_service_with_no_agent_identifier() {
-    let (registry, peer_registry, conversation_manager, cancellation_token) = test_mcp_deps();
+    let (registry, peer_registry, cancellation_token) = test_mcp_deps();
 
     let _service = create_mcp_service(
         registry,
         peer_registry,
-        conversation_manager,
+        
         cancellation_token,
         15,
         None, // default service (no agent identifier)
@@ -63,12 +63,12 @@ fn create_mcp_service_with_no_agent_identifier() {
 
 #[test]
 fn create_mcp_service_with_custom_sse_keep_alive() {
-    let (registry, peer_registry, conversation_manager, cancellation_token) = test_mcp_deps();
+    let (registry, peer_registry, cancellation_token) = test_mcp_deps();
 
     let _service = create_mcp_service(
         registry,
         peer_registry,
-        conversation_manager,
+        
         cancellation_token,
         60, // custom keep-alive
         Some("agent-custom".to_string()),
@@ -79,12 +79,12 @@ fn create_mcp_service_with_custom_sse_keep_alive() {
 
 #[test]
 fn ergatai_mcp_server_new_creates_instance() {
-    let (registry, peer_registry, conversation_manager, _cancel) = test_mcp_deps();
+    let (registry, peer_registry,  _cancel) = test_mcp_deps();
 
     let server = ErgataiMcpServer::new(
         registry,
         peer_registry,
-        conversation_manager,
+        
         Some("test-agent".to_string()),
     );
 
@@ -95,9 +95,9 @@ fn ergatai_mcp_server_new_creates_instance() {
 
 #[test]
 fn ergatai_mcp_server_without_agent_identifier() {
-    let (registry, peer_registry, conversation_manager, _cancel) = test_mcp_deps();
+    let (registry, peer_registry,  _cancel) = test_mcp_deps();
 
-    let server = ErgataiMcpServer::new(registry, peer_registry, conversation_manager, None);
+    let server = ErgataiMcpServer::new(registry, peer_registry,  None);
 
     let debug_str = format!("{:?}", server);
     assert!(debug_str.contains("ErgataiMcpServer"));
@@ -140,25 +140,15 @@ fn agent_registry_creates_successfully() {
     let _ = registry;
 }
 
-// ── ConversationManager ──────────────────────────────────────────────
-
-#[test]
-fn conversation_manager_default_config() {
-    let config = ConversationConfig::default();
-    let manager = ConversationManager::new(config);
-    let _ = manager;
-}
-
 // ── Multiple services share state ────────────────────────────────────
 
 #[test]
 fn create_mcp_service_multiple_services_share_state() {
-    let (registry, peer_registry, conversation_manager, cancellation_token) = test_mcp_deps();
+    let (registry, peer_registry, cancellation_token) = test_mcp_deps();
 
     let _svc1 = create_mcp_service(
         registry.clone(),
         peer_registry.clone(),
-        conversation_manager.clone(),
         cancellation_token.clone(),
         15,
         Some("agent-1".to_string()),
@@ -167,7 +157,6 @@ fn create_mcp_service_multiple_services_share_state() {
     let _svc2 = create_mcp_service(
         registry.clone(),
         peer_registry.clone(),
-        conversation_manager.clone(),
         cancellation_token.clone(),
         15,
         Some("agent-2".to_string()),
@@ -176,7 +165,6 @@ fn create_mcp_service_multiple_services_share_state() {
     let _svc3 = create_mcp_service(
         registry.clone(),
         peer_registry.clone(),
-        conversation_manager.clone(),
         cancellation_token.clone(),
         15,
         Some("agent-3".to_string()),
@@ -187,12 +175,11 @@ fn create_mcp_service_multiple_services_share_state() {
 
 #[test]
 fn create_mcp_service_with_cancellation() {
-    let (registry, peer_registry, conversation_manager, cancellation_token) = test_mcp_deps();
+    let (registry, peer_registry, cancellation_token) = test_mcp_deps();
 
     let _service = create_mcp_service(
         registry,
         peer_registry,
-        conversation_manager,
         cancellation_token.clone(),
         15,
         Some("cancel-test".to_string()),
@@ -204,12 +191,12 @@ fn create_mcp_service_with_cancellation() {
 
 #[test]
 fn create_mcp_service_zero_sse_keep_alive() {
-    let (registry, peer_registry, conversation_manager, cancellation_token) = test_mcp_deps();
+    let (registry, peer_registry, cancellation_token) = test_mcp_deps();
 
     let _service = create_mcp_service(
         registry,
         peer_registry,
-        conversation_manager,
+        
         cancellation_token,
         0, // zero keep-alive (edge case)
         Some("zero-keepalive".to_string()),

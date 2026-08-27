@@ -17,6 +17,7 @@ ergatai-runtime = { path = "../ergatai-runtime" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 chrono.workspace = true
@@ -28,7 +29,6 @@ futures-util = "0.3"
 anyhow.workspace = true
 regex = "1.10"
 libc = "0.2"
-dirs = "5.0"
 
 [dev-dependencies]
 tempfile = "3.10"

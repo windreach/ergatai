@@ -292,6 +292,7 @@ fn task_submit_payload_roundtrip() {
         priority: 5,
         timeout_secs: Some(300),
         dag_id: Some("dag-123".to_string()),
+        expected_outputs: Default::default(),
     };
 
     let json = serde_json::to_string(&payload).unwrap();

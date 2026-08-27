@@ -58,6 +58,7 @@ fn make_payload(task_id: &str, agent: &str) -> TaskSubmitPayload {
         priority: 1,
         timeout_secs: None,
         dag_id: None,
+        expected_outputs: Default::default(),
     }
 }
 

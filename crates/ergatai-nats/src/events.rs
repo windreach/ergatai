@@ -51,6 +51,11 @@ pub struct TaskSubmitPayload {
     pub timeout_secs: Option<u64>,
     /// Correlation: which DAG this task belongs to
     pub dag_id: Option<String>,
+    /// Expected structured outputs (key → description) for this task.
+    /// Passed through to AgentAssignment so the agent instruction can
+    /// tell the agent which keys to produce in the result file frontmatter.
+    #[serde(default)]
+    pub expected_outputs: std::collections::HashMap<String, String>,
 }
 
 /// Node completion: AgentLauncher → DagScheduler
@@ -523,6 +528,7 @@ mod tests {
             priority: 2,
             timeout_secs: Some(300),
             dag_id: Some("dag-abc".to_string()),
+            expected_outputs: Default::default(),
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -545,6 +551,7 @@ mod tests {
             priority: 1,
             timeout_secs: None,
             dag_id: None,
+            expected_outputs: Default::default(),
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -689,6 +696,7 @@ mod tests {
                 priority: 1,
                 timeout_secs: None,
                 dag_id: None,
+                expected_outputs: Default::default(),
             }),
             DagEvent::NodeFailed(NodeFailedPayload {
                 node_id: "n".to_string(),

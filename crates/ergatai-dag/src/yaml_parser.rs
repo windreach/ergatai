@@ -124,6 +124,11 @@ struct YamlTask {
     condition: Option<String>,
     /// 任务复杂度（可选）- 人工标注：low / medium / high（默认 medium）
     complexity: Option<TaskComplexity>,
+    /// 期望的结构化输出（可选）— key → 描述
+    /// Agent 应在 result file 的 YAML frontmatter `outputs:` 中产出这些 key。
+    /// 下游节点可通过 `{{node_id.key}}` 引用。
+    #[serde(default)]
+    expected_outputs: HashMap<String, String>,
     /// 额外自定义字段（通过 flatten 收集）
     #[serde(flatten)]
     metadata: HashMap<String, serde_yaml::Value>,
@@ -476,6 +481,7 @@ pub fn parse_dag_yaml(
                 metadata,
                 condition: task.condition,
                 complexity: task.complexity.unwrap_or_default(),
+                expected_outputs: task.expected_outputs,
             })
         })
         .collect::<ErgataiResult<Vec<_>>>()?;
@@ -1270,5 +1276,47 @@ tasks:
 "#;
         let graph = parse_dag_yaml(yaml, None).unwrap();
         assert_eq!(graph.nodes[0].complexity, TaskComplexity::Medium);
+    }
+
+    #[test]
+    fn test_expected_outputs_parsed() {
+        let yaml = r#"
+tasks:
+  - name: backend
+    agent: claude
+    expected_outputs:
+      api_endpoint: "The API endpoint path"
+      schema_file: "Path to the schema file"
+  - name: frontend
+    agent: claude
+    depends_on:
+      - backend
+"#;
+        let graph = parse_dag_yaml(yaml, None).unwrap();
+        let backend = graph.nodes.iter().find(|n| n.task == "backend").unwrap();
+        assert_eq!(backend.expected_outputs.len(), 2);
+        assert_eq!(
+            backend.expected_outputs.get("api_endpoint").unwrap(),
+            "The API endpoint path"
+        );
+        assert_eq!(
+            backend.expected_outputs.get("schema_file").unwrap(),
+            "Path to the schema file"
+        );
+
+        let frontend = graph.nodes.iter().find(|n| n.task == "frontend").unwrap();
+        assert!(frontend.expected_outputs.is_empty());
+    }
+
+    #[test]
+    fn test_expected_outputs_backward_compat() {
+        // YAML without expected_outputs should still parse (default empty)
+        let yaml = r#"
+tasks:
+  - name: legacy
+    agent: worker
+"#;
+        let graph = parse_dag_yaml(yaml, None).unwrap();
+        assert!(graph.nodes[0].expected_outputs.is_empty());
     }
 }

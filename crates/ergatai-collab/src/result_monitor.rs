@@ -226,7 +226,12 @@ impl ResultFileMonitor {
     ) {
         use std::os::unix::io::AsRawFd;
 
-        let mut buf = vec![0u8; 4096];
+        // Buffer size: fanotify events embed the full path inline. On Linux
+        // PATH_MAX is 4096, and the event header is ~24 bytes. A single event
+        // could approach 4120 bytes. Use 16 KiB to comfortably fit multiple
+        // events or a single event with a very long path (e.g. deep project
+        // directories).
+        let mut buf = vec![0u8; 16 * 1024];
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => {
@@ -260,8 +265,8 @@ impl ResultFileMonitor {
                             break;
                         }
                         Self::dispatch_events(&buf[..n as usize], &inner);
-                        // event struct may be > 4096 if path is long; grow buffer
-                        // if needed. For our short result filenames 4K is plenty.
+                        // event struct may be > buf.len() if path is extremely
+                        // long. 16 KiB handles PATH_MAX (4096) + header + margin.
                     }
                     guard.clear_ready();
                 }

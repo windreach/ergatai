@@ -821,6 +821,7 @@ impl TaskScheduler {
                 task_type: super::task_coordinator::TaskType::CreateNew,
                 depends_on: vec![],
                 priority: None,
+                expected_outputs: payload.expected_outputs.clone(),
             }],
             merge_strategy: "none".to_string(),
             plan_file: canonical,

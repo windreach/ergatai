@@ -19,10 +19,8 @@ use clap::Parser;
 use tokio_util::sync::CancellationToken;
 use tower_governor::{governor::GovernorConfigBuilder, key_extractor::KeyExtractor};
 
-use ergatai_api::mcp::conversation::{ConversationConfig, ConversationManager};
-use ergatai_api::mcp::rate_limiter::get_rate_limiter;
 use ergatai_api::mcp::{
-    create_mcp_service, start_conversation_reaper, start_message_delivery_consumer,
+    create_mcp_service, start_message_delivery_consumer,
     start_peer_reaper,
 };
 use ergatai_api::messaging::init_message_sender;
@@ -241,11 +239,7 @@ async fn async_main(args: Args) -> Result<()> {
                             }
                             let pruned = periodic_runtime.prune_unhealthy_agents().await;
                             if !pruned.is_empty() {
-                                let rl = get_rate_limiter();
-                                for agent_id in &pruned {
-                                    rl.remove_agent(agent_id);
-                                }
-                                tracing::info!(count = pruned.len(), "cleaned up rate-limiter windows for pruned agents");
+                                tracing::info!(count = pruned.len(), "pruned unhealthy agents");
                             }
                         }
                     }
@@ -259,9 +253,8 @@ async fn async_main(args: Args) -> Result<()> {
     }
 
     // Create MCP services
-    let conversation_manager = Arc::new(ConversationManager::new(ConversationConfig::default()));
     // Initialize the global MessageSender so both REST API and MCP use the same pipeline.
-    init_message_sender(conversation_manager.clone());
+    init_message_sender();
 
     // Initialize persistent binding store for MCP reconnection support
     // Store bindings in .ergatai directory alongside other ergatai data
@@ -274,7 +267,6 @@ async fn async_main(args: Args) -> Result<()> {
     let mcp_service_1 = create_mcp_service(
         mcp_registry.clone(),
         peer_registry.clone(),
-        conversation_manager.clone(),
         mcp_cancellation_token.clone(),
         args.sse_keep_alive,
         Some("agent-1".to_string()),
@@ -282,7 +274,6 @@ async fn async_main(args: Args) -> Result<()> {
     let mcp_service_2 = create_mcp_service(
         mcp_registry.clone(),
         peer_registry.clone(),
-        conversation_manager.clone(),
         mcp_cancellation_token.clone(),
         args.sse_keep_alive,
         Some("agent-2".to_string()),
@@ -290,7 +281,6 @@ async fn async_main(args: Args) -> Result<()> {
     let mcp_service_3 = create_mcp_service(
         mcp_registry.clone(),
         peer_registry.clone(),
-        conversation_manager.clone(),
         mcp_cancellation_token.clone(),
         args.sse_keep_alive,
         Some("agent-3".to_string()),
@@ -298,7 +288,6 @@ async fn async_main(args: Args) -> Result<()> {
     let mcp_service_default = create_mcp_service(
         mcp_registry.clone(),
         peer_registry.clone(),
-        conversation_manager.clone(),
         mcp_cancellation_token.clone(),
         args.sse_keep_alive,
         None,
@@ -314,7 +303,6 @@ async fn async_main(args: Args) -> Result<()> {
         peer_registry.clone(),
         mcp_cancellation_token.clone(),
     );
-    start_conversation_reaper(conversation_manager.clone(), mcp_cancellation_token.clone());
 
     // Initialize NATS
     match nats::init_nats().await {

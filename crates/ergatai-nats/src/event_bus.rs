@@ -762,6 +762,7 @@ mod tests {
             priority: 1,
             timeout_secs: Some(60),
             dag_id: Some("dag-1".to_string()),
+            expected_outputs: Default::default(),
         };
 
         bus.publish_task_submit(&payload).await.unwrap();

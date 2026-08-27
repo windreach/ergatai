@@ -305,6 +305,7 @@ async fn test_event_bus_task_submit_via_pull_consumer() {
         priority: 2,
         timeout_secs: Some(300),
         dag_id: Some("dag-7".to_string()),
+        expected_outputs: Default::default(),
     };
 
     let ack = bus
@@ -424,6 +425,7 @@ async fn test_stream_persistence_consumer_after_publish() {
         priority: 1,
         timeout_secs: None,
         dag_id: None,
+        expected_outputs: Default::default(),
     };
     let json = serde_json::to_vec(&payload).expect("serialize");
     let ack = conn

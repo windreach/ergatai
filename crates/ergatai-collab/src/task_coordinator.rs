@@ -1,6 +1,7 @@
 // Task Coordinator - File-based cross-agent collaboration
 // Manages task plans and agent coordination with file access control
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -66,6 +67,11 @@ pub struct AgentAssignment {
     /// Task priority from DAG node ("high", "medium", "low")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,
+
+    /// Expected structured outputs (key → description)
+    /// Agent should produce these in the result file's YAML frontmatter.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub expected_outputs: HashMap<String, String>,
 }
 
 /// Type of task (determines file access level)
@@ -109,8 +115,7 @@ pub struct TaskCoordinator {
 impl TaskCoordinator {
     /// Create a new TaskCoordinator
     pub fn new(project_root: PathBuf) -> Self {
-        // Use user home directory for centralized result storage
-        let ergatai_dir = Self::get_ergatai_home_dir();
+        let ergatai_dir = project_root.join(".ergatai");
         let plan_dir = ergatai_dir.join(".plan");
         let results_dir = plan_dir.join("results");
 
@@ -118,16 +123,6 @@ impl TaskCoordinator {
             project_root,
             plan_dir,
             results_dir,
-        }
-    }
-
-    /// Get the global ergatai home directory (~/.ergatai)
-    fn get_ergatai_home_dir() -> PathBuf {
-        if let Some(home) = dirs::home_dir() {
-            home.join(".ergatai")
-        } else {
-            // Fallback to /tmp if home dir not available
-            std::env::temp_dir().join("ergatai")
         }
     }
 
@@ -453,6 +448,7 @@ struct AgentAssignmentBuilder {
     task_type: Option<TaskType>,
     depends_on: Vec<String>,
     priority: Option<String>,
+    expected_outputs: HashMap<String, String>,
 }
 
 impl AgentAssignmentBuilder {
@@ -466,6 +462,7 @@ impl AgentAssignmentBuilder {
             task_type: None,
             depends_on: Vec::new(),
             priority: None,
+            expected_outputs: HashMap::new(),
         }
     }
 
@@ -484,6 +481,7 @@ impl AgentAssignmentBuilder {
             task_type,
             depends_on: self.depends_on,
             priority: self.priority,
+            expected_outputs: self.expected_outputs,
         })
     }
 }
@@ -570,13 +568,7 @@ mod tests {
         let coordinator = TaskCoordinator::new(dir.path().to_path_buf());
         coordinator.init().await.unwrap();
 
-        // Results are now stored in user home directory
-        let home_dir = if let Some(home) = dirs::home_dir() {
-            home.join(".ergatai")
-        } else {
-            std::env::temp_dir().join("ergatai")
-        };
-        let plan_dir = home_dir.join(".plan");
+        let plan_dir = dir.path().join(".ergatai").join(".plan");
         let results_dir = plan_dir.join("results");
         assert!(plan_dir.exists());
         assert!(results_dir.exists());
@@ -682,6 +674,7 @@ Main handles conflicts.
                 task_type: TaskType::CreateNew,
                 depends_on: vec![],
                 priority: None,
+                expected_outputs: HashMap::new(),
             }],
             merge_strategy: "none".to_string(),
             plan_file: dir.path().join("task-1.md"),
@@ -700,13 +693,12 @@ Main handles conflicts.
         // Use unique task ID to avoid conflicts with other tests
         let task_id = "task-complete-test";
 
-        // Create result files for both agents in user home directory
-        let home_dir = if let Some(home) = dirs::home_dir() {
-            home.join(".ergatai")
-        } else {
-            std::env::temp_dir().join("ergatai")
-        };
-        let results_dir = home_dir.join(".plan").join("results");
+        // Create result files for both agents
+        let results_dir = dir
+            .path()
+            .join(".ergatai")
+            .join(".plan")
+            .join("results");
         tokio::fs::create_dir_all(&results_dir).await.unwrap();
         tokio::fs::write(results_dir.join(format!("{}-alice.md", task_id)), "ok")
             .await
@@ -730,6 +722,7 @@ Main handles conflicts.
                     task_type: TaskType::CreateNew,
                     depends_on: vec![],
                     priority: None,
+                    expected_outputs: HashMap::new(),
                 },
                 AgentAssignment {
                     agent_name: "bob".to_string(),
@@ -740,6 +733,7 @@ Main handles conflicts.
                     task_type: TaskType::CreateNew,
                     depends_on: vec![],
                     priority: None,
+                    expected_outputs: HashMap::new(),
                 },
             ],
             merge_strategy: "none".to_string(),
@@ -770,6 +764,7 @@ Main handles conflicts.
                 task_type: TaskType::CreateNew,
                 depends_on: vec![],
                 priority: None,
+                expected_outputs: HashMap::new(),
             }],
             merge_strategy: "none".to_string(),
             plan_file: dir.path().join("task-1.md"),
@@ -784,13 +779,9 @@ Main handles conflicts.
         let coordinator = TaskCoordinator::new(dir.path().to_path_buf());
         let path = coordinator.get_result_path("task-1", "alice").unwrap();
 
-        // Results are now stored in user home directory
-        let home_dir = if let Some(home) = dirs::home_dir() {
-            home.join(".ergatai")
-        } else {
-            std::env::temp_dir().join("ergatai")
-        };
-        let expected = home_dir
+        let expected = dir
+            .path()
+            .join(".ergatai")
             .join(".plan")
             .join("results")
             .join("task-1-alice.md");
@@ -813,18 +804,17 @@ Main handles conflicts.
         let coordinator = TaskCoordinator::new(dir.path().to_path_buf());
         coordinator.init().await.unwrap();
 
-        // Create a plan file and result files in user home directory
+        // Create a plan file and result files
         coordinator
             .create_plan("task-1", "# Task: x")
             .await
             .unwrap();
 
-        let home_dir = if let Some(home) = dirs::home_dir() {
-            home.join(".ergatai")
-        } else {
-            std::env::temp_dir().join("ergatai")
-        };
-        let results_dir = home_dir.join(".plan").join("results");
+        let results_dir = dir
+            .path()
+            .join(".ergatai")
+            .join(".plan")
+            .join("results");
         tokio::fs::create_dir_all(&results_dir).await.unwrap();
         tokio::fs::write(results_dir.join("task-1-alice.md"), "ok")
             .await
@@ -840,7 +830,7 @@ Main handles conflicts.
         coordinator.cleanup_task("task-1").await.unwrap();
 
         // Plan + task-1-* results should be gone
-        let plan_dir = home_dir.join(".plan");
+        let plan_dir = dir.path().join(".ergatai").join(".plan");
         assert!(!plan_dir.join("task-1.md").exists());
         assert!(!results_dir.join("task-1-alice.md").exists());
         assert!(!results_dir.join("task-1-bob.md").exists());
@@ -964,6 +954,7 @@ Main handles conflicts.
                     task_type: TaskType::CreateNew,
                     depends_on: vec![],
                     priority: None,
+                    expected_outputs: HashMap::new(),
                 },
                 AgentAssignment {
                     agent_name: "bob".to_string(),
@@ -974,6 +965,7 @@ Main handles conflicts.
                     task_type: TaskType::ModifyExisting,
                     depends_on: vec!["alice".to_string()],
                     priority: Some("high".to_string()),
+                    expected_outputs: HashMap::new(),
                 },
             ],
             merge_strategy: "none".to_string(),
@@ -1013,6 +1005,7 @@ Main handles conflicts.
                 task_type: TaskType::CreateNew,
                 depends_on: vec!["ghost".to_string()], // no such agent
                 priority: None,
+                expected_outputs: HashMap::new(),
             }],
             merge_strategy: "none".to_string(),
             plan_file: PathBuf::from("p.md"),

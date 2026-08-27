@@ -124,6 +124,14 @@ pub struct TaskNode {
     /// 调度器可用 `as_score()` 将其转换为数值做优先级计算。
     #[serde(default)]
     pub complexity: TaskComplexity,
+
+    /// Expected structured outputs from this task (key → description)
+    ///
+    /// Agent should produce these in the result file's YAML frontmatter under
+    /// the `outputs:` key. Downstream nodes can reference them via
+    /// `{{node_id.key}}` in their `input` templates.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub expected_outputs: HashMap<String, String>,
 }
 
 /// Task execution status
@@ -485,6 +493,7 @@ impl TaskNode {
             metadata: HashMap::new(),
             condition: None,
             complexity: TaskComplexity::default(),
+            expected_outputs: HashMap::new(),
         }
     }
 

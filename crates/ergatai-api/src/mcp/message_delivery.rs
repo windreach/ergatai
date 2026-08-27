@@ -250,7 +250,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
         }
     }
 
-    // ── Resolve sender and recipient runtime IDs for batch detection ──
+    // ── Resolve sender and recipient runtime IDs for delivery ──
     // Priority: UUID (stable) > runtime agent ID (dynamic, may be stale)
     let runtime = get_agent_runtime();
 
@@ -289,79 +289,6 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
             .await
             .unwrap_or_else(|| payload.to_agent.clone())
     };
-
-    let from_runtime_id = if let Some(ref from_uuid) = payload.from_uuid {
-        // Try UUID resolution first, fallback to runtime agent ID
-        if let Some(id) = runtime.resolve_agent_uuid(from_uuid).await {
-            id
-        } else {
-            runtime
-                .resolve_agent_id(&payload.from_agent)
-                .await
-                .unwrap_or_else(|| payload.from_agent.clone())
-        }
-    } else {
-        // No UUID, use runtime agent ID (legacy message)
-        runtime
-            .resolve_agent_id(&payload.from_agent)
-            .await
-            .unwrap_or_else(|| payload.from_agent.clone())
-    };
-
-    // ── Batch aggregator: check if this reply should be collected ──
-    // If the recipient (to) initiated a batch and the sender (from) is a target,
-    // collect this reply instead of delivering immediately.
-    // Use stable ergatai_agent_id for consistent batch matching with send_message's record_send.
-    // Prefer pre-computed stable IDs from payload (avoids redundant resolution).
-    // Fallback to AgentRuntime::resolve_to_stable_id for backward compat with old messages.
-    let from_stable = match payload.from_stable {
-        Some(ref s) => s.clone(),
-        None => runtime.resolve_to_stable_id(&from_runtime_id, None).await,
-    };
-    let to_stable = match payload.to_stable {
-        Some(ref s) => s.clone(),
-        None => runtime.resolve_to_stable_id(&to_runtime_id, None).await,
-    };
-    let batch_aggregator = super::get_batch_aggregator();
-    let batch_result = batch_aggregator
-        .on_reply(&from_stable, &to_stable, formatted_message)
-        .await;
-
-    match batch_result {
-        Some(true) => {
-            // Reply collected to batch, will be merged later
-            info!(
-                from = from,
-                to = to,
-                from_runtime = %from_runtime_id,
-                to_runtime = %to_runtime_id,
-                "Reply collected to batch, will be merged with other replies"
-            );
-            // Ack the message (it's been "handled" by collecting to batch)
-            if let Err(e) = msg.ack().await {
-                warn!("Failed to ack batch-collected message: {}", e);
-            }
-            return;
-        }
-        Some(false) => {
-            // Batch already flushed, deliver this reply individually
-            info!(
-                from = from,
-                to = to,
-                "Batch already flushed, delivering reply individually"
-            );
-            // Fall through to normal delivery
-        }
-        None => {
-            // Not part of any batch, deliver normally
-            debug!(
-                from = from,
-                to = to,
-                "Message not part of any batch, delivering normally"
-            );
-            // Fall through to normal delivery
-        }
-    }
 
     // ── Deliver via AgentRuntime injection (PTY write) ──
     // Writes the message directly into the target agent's PTY,

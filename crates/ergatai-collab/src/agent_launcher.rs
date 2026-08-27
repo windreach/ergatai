@@ -104,34 +104,54 @@ fn running_agents() -> Arc<Mutex<HashMap<String, RunningAgent>>> {
         .clone()
 }
 
-/// Global `ResultFileMonitor` — kernel-level watcher for result files using
-/// Linux `fanotify` (FAN_CLOSE_WRITE). Initialized lazily on first use.
+/// Global registry of heartbeat cancellation tokens, keyed by session_id.
+/// When an agent task completes, the token is canceled to stop the background
+/// heartbeat task that keeps `heartbeat_at` fresh for reused agents.
+/// Uses std::sync::Mutex (not tokio) so it can be accessed from both sync
+/// and async contexts. The lock is held only briefly for insert/remove.
+fn heartbeat_cancellations(
+) -> Arc<std::sync::Mutex<HashMap<String, tokio_util::sync::CancellationToken>>> {
+    static REGISTRY: OnceLock<
+        Arc<std::sync::Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
+    > = OnceLock::new();
+    REGISTRY
+        .get_or_init(|| Arc::new(std::sync::Mutex::new(HashMap::new())))
+        .clone()
+}
+
+/// Cancel the heartbeat task for the given session_id (if any).
+/// Called when an agent is removed from the running_agents registry.
+fn cancel_heartbeat(session_id: &str) {
+    if let Some(token) = heartbeat_cancellations().lock().unwrap().remove(session_id) {
+        token.cancel();
+    }
+}
+
+/// Per-project `ResultFileMonitor` — kernel-level watcher for result files using
+/// Linux `fanotify` (FAN_CLOSE_WRITE). Initialized lazily per project root.
 ///
-/// The monitor watches `~/.ergatai/.plan/results/` so it fires
+/// The monitor watches `{project_root}/.ergatai/.plan/results/` so it fires
 /// only when an agent closes a result file it wrote. This replaces the prior
 /// 1-second polling with an instantaneous kernel event, falling back to
 /// polling only if fanotify cannot be initialized (non-Linux, AppArmor DENY,
 /// etc.) or when the agent uses atomic rename (write-temp-then-rename).
-fn result_file_monitor(_project_root: &Path) -> crate::result_monitor::ResultFileMonitor {
-    static MONITOR: OnceLock<crate::result_monitor::ResultFileMonitor> = OnceLock::new();
-    MONITOR
-        .get_or_init(|| {
-            // Use user home directory for centralized result storage
-            let results_dir = if let Some(home) = dirs::home_dir() {
-                home.join(".ergatai").join(".plan").join("results")
-            } else {
-                // Fallback to /tmp if home dir not available
-                std::env::temp_dir()
-                    .join("ergatai")
-                    .join(".plan")
-                    .join("results")
-            };
-            // Ensure directory exists so fanotify_mark doesn't fail on missing path.
-            // (Idempotent — racing creates are fine.)
-            let _ = std::fs::create_dir_all(&results_dir);
-            crate::result_monitor::ResultFileMonitor::start(&results_dir)
-        })
-        .clone()
+fn result_file_monitor(project_root: &Path) -> crate::result_monitor::ResultFileMonitor {
+    use std::sync::Mutex;
+    static MONITORS: OnceLock<Mutex<HashMap<PathBuf, crate::result_monitor::ResultFileMonitor>>> =
+        OnceLock::new();
+    let monitors = MONITORS.get_or_init(|| Mutex::new(HashMap::new()));
+
+    let results_dir = project_root.join(".ergatai").join(".plan").join("results");
+    let mut map = monitors.lock().unwrap();
+    if let Some(monitor) = map.get(&results_dir) {
+        return monitor.clone();
+    }
+    // Ensure directory exists so fanotify_mark doesn't fail on missing path.
+    // (Idempotent — racing creates are fine.)
+    let _ = std::fs::create_dir_all(&results_dir);
+    let monitor = crate::result_monitor::ResultFileMonitor::start(&results_dir);
+    map.insert(results_dir, monitor.clone());
+    monitor
 }
 
 /// Verify agent actually modified files by checking audit log entries.
@@ -320,17 +340,31 @@ impl AgentLauncher {
         // Watchdog instances check heartbeat_at in the shared SQLite DB. Without
         // this periodic refresh, those Watchdogs would report spurious heartbeat
         // timeouts after 90s (= 3x the 30s heartbeat interval).
+        // The task is canceled via CancellationToken when the agent is removed
+        // from the running_agents registry (see `cancel_heartbeat`).
         {
             let heartbeat_session = session_id.clone();
             let heartbeat_project = project_id.to_string();
             let heartbeat_sys_token = system_token.id.to_string();
             let heartbeat_file_token = file_token.id.to_string();
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let cancel_inner = cancel.clone();
+            // Register the token so it can be canceled when the agent completes.
+            heartbeat_cancellations()
+                .lock()
+                .unwrap()
+                .insert(session_id.clone(), cancel);
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
                 // First tick fires immediately — skip it (we just updated above).
                 interval.tick().await;
                 loop {
-                    interval.tick().await;
+                    tokio::select! {
+                        _ = interval.tick() => {}
+                        _ = cancel_inner.cancelled() => {
+                            break;
+                        }
+                    }
                     let lm = match ergatai_lock::get_lock_manager(&heartbeat_project).await {
                         Ok(lm) => lm,
                         Err(_) => break,
@@ -669,7 +703,11 @@ impl AgentLauncher {
                             task_id: node_id_monitor.clone(),
                             agent_name: agent_name_monitor.clone(),
                             result_summary: Some("Reused agent completed task".to_string()),
-                            outputs: serde_json::Value::Object(serde_json::Map::new()),
+                            outputs: if let Some(ref path) = result_file_path {
+                                parse_result_file_outputs(path).await
+                            } else {
+                                serde_json::Value::Object(serde_json::Map::new())
+                            },
                             result_file: result_file_path.map(|p| p.to_string_lossy().to_string()),
                         };
                         if let Err(e) = bus.publish_node_complete(&payload).await {
@@ -720,6 +758,33 @@ impl AgentLauncher {
         // Read project context
         let project_context = self.read_project_context().await;
 
+        // Build expected_outputs section (only shown when non-empty)
+        let expected_outputs_section = if assignment.expected_outputs.is_empty() {
+            String::new()
+        } else {
+            let mut lines = Vec::new();
+            lines.push(String::new());
+            lines.push("### Expected Outputs".to_string());
+            lines.push("You MUST include these keys in the `outputs` frontmatter of your result file:"
+                .to_string());
+            for (key, desc) in &assignment.expected_outputs {
+                lines.push(format!("- **{}**: {}", key, desc));
+            }
+            lines.push(String::new());
+            lines.push(
+                "Downstream agents depend on these values — use real, concrete data (paths, \
+                 endpoints, identifiers), not placeholders."
+                    .to_string(),
+            );
+            lines.join("\n")
+        };
+
+        // DAG overview hint — the plan file already has the full DAG picture
+        let dag_overview_hint = "The plan file contains a **DAG Overview** section at the top. \
+             It shows all participants, the dependency graph, the communication policy, \
+             and your position in the DAG. Read it carefully before starting."
+            .to_string();
+
         format!(
             r#"# Project Context
 
@@ -741,6 +806,7 @@ The system manages file locks to prevent conflicts with other agents.
 Read the full plan: `{plan_file}`
 
 Find your assignment section (marked with `@{agent_name}`)
+{dag_overview_hint}
 
 ## Your Objective
 {objective}
@@ -751,33 +817,32 @@ Find your assignment section (marked with `@{agent_name}`)
 ## Files
 {files_section}
 
-## Ergatai MCP Tools
+## Ergatai Workflow
 
 You are running as part of a multi-agent orchestration (DAG).
-The DAG dispatcher assigns tasks to **active agents** — agents that are currently
-running and registered in the system.
-
-Available MCP tools:
-- `list_agents` — list all active agents and their IDs. **Call this first** to see
-  who else is participating in this orchestration.
-- `send_message` — send a message to another agent by their ID (from `list_agents`)
-
-Agent IDs returned by `list_agents` are the identifiers you use with `send_message`.
+The DAG dispatcher assigns tasks to agents, and agents communicate by writing \
+structured results to their result files. Downstream agents automatically receive \
+your outputs via template variables.
 
 ## Instructions
 
-1. Call `list_agents` to see all active agents — you are one of them
-2. Read the plan file to understand the full context
-3. Work in the project directory (file access control is active)
-4. Complete your assigned task
-5. If you need to communicate with other agents, use `send_message` with their agent ID from `list_agents`
-6. Write your results to: `{result_file}`
+1. Read the plan file — it contains the full DAG overview (all participants, \
+   dependencies, your role)
+2. Work in the project directory (file access control is active)
+3. Complete your assigned task
+4. Write your results to: `{result_file}`
 
 ## Result Format
 
-Write your results in markdown:
+Write your result file with YAML frontmatter for structured outputs. Downstream agents \
+can reference your outputs via template variables like `{{{{node_id.key}}}}`:
 
 ```markdown
+---
+outputs:
+  key1: "value1"
+  key2: "value2"
+---
 # Task Result
 
 ## Status
@@ -796,11 +861,14 @@ Write your results in markdown:
 [Any additional notes or issues]
 ```
 
+The `outputs` in frontmatter are automatically passed to downstream tasks.
+Include all structured data that downstream agents might need (file paths, endpoints,
+identifiers, configuration values, etc.).
+{expected_outputs_section}
+
 ## Important Notes
 
-- Call `list_agents` first to discover other active agents and their IDs
-- Use `send_message` with those IDs to communicate — do NOT guess agent IDs
-- File access control is active - the system manages file locks automatically
+- File access control is active — the system manages file locks automatically
 - Focus only on your assigned objective
 - If you encounter issues, document them in your result file
 - Complete your task and write the result file when done
@@ -809,9 +877,11 @@ Write your results in markdown:
             agent_name = agent_name,
             work_dir = work_dir.display(),
             plan_file = plan_file.display(),
+            dag_overview_hint = dag_overview_hint,
             objective = assignment.objective,
             task_type = task_type_dbg,
             files_section = files_section,
+            expected_outputs_section = expected_outputs_section,
             result_file = result_file.display(),
         )
     }
@@ -907,7 +977,7 @@ Write your results in markdown:
         }
 
         // 3b. Generate MCP config so the agent can connect to ergatai's MCP server.
-        //     This gives the agent access to tools like `list_agents`, `send_message`, etc.
+        //     This gives the agent access to tools like `submit_orchestration`, `check_dag_status`, etc.
         let api_port = std::env::var("ERGATAI_API_PORT").unwrap_or_else(|_| "3000".to_string());
         let mcp_url = format!("http://127.0.0.1:{}/mcp", api_port);
         let mcp_config = serde_json::json!({
@@ -1256,7 +1326,11 @@ Write your results in markdown:
                                     task_id: node_id_monitor.clone(),
                                     agent_name: agent_name_monitor.clone(),
                                     result_summary,
-                                    outputs: serde_json::Value::Object(serde_json::Map::new()),
+                                    outputs: if let Some(ref path) = result_file_path {
+                                        parse_result_file_outputs(path).await
+                                    } else {
+                                        serde_json::Value::Object(serde_json::Map::new())
+                                    },
                                     result_file: result_file_path
                                         .map(|p| p.to_string_lossy().to_string()),
                                 };
@@ -1322,6 +1396,8 @@ Write your results in markdown:
     /// Clean up agent resources (runtime agent + file tokens)
     pub async fn cleanup_agent(&self, agent_id: &str) -> ErgataiResult<()> {
         if let Some(agent) = self.running_agents.lock().await.remove(agent_id) {
+            // Cancel the heartbeat task (if any) for this agent.
+            cancel_heartbeat(agent_id);
             // Stop the agent via runtime if still running
             let runtime = get_agent_runtime();
             // Find the runtime agent ID by task_id
@@ -1495,6 +1571,89 @@ Write your results in markdown:
     }
 }
 
+/// Parse YAML frontmatter from a result file and extract structured outputs.
+///
+/// Expected format:
+/// ```markdown
+/// ---
+/// outputs:
+///   key1: value1
+///   key2: value2
+/// ---
+/// # Task Result
+/// ...
+/// ```
+///
+/// Returns `serde_json::Value::Object` with the parsed outputs,
+/// or an empty object if no frontmatter/outputs found or parse fails.
+async fn parse_result_file_outputs(path: &std::path::Path) -> serde_json::Value {
+    let empty = serde_json::Value::Object(serde_json::Map::new());
+
+    let content = match tokio::fs::read_to_string(path).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Failed to read result file for outputs extraction"
+            );
+            return empty;
+        }
+    };
+
+    // Frontmatter must start with --- and end with ---
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return empty;
+    }
+
+    // Find the closing ---
+    let after_open = &trimmed[3..];
+    let Some(end_idx) = after_open.find("\n---") else {
+        return empty;
+    };
+
+    let frontmatter_str = &after_open[..end_idx];
+
+    // Parse as YAML
+    let parsed: serde_yaml::Value = match serde_yaml::from_str(frontmatter_str) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Failed to parse result file frontmatter YAML"
+            );
+            return empty;
+        }
+    };
+
+    // Extract "outputs" key
+    if let serde_yaml::Value::Mapping(map) = parsed {
+        if let Some(outputs_val) = map.get(serde_yaml::Value::String("outputs".to_string())) {
+            // Convert serde_yaml::Value to serde_json::Value via JSON string
+            let json_str = match serde_json::to_string(outputs_val) {
+                Ok(s) => s,
+                Err(_) => return empty,
+            };
+            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                if let serde_json::Value::Object(obj) = json_val {
+                    if !obj.is_empty() {
+                        tracing::info!(
+                            path = %path.display(),
+                            num_outputs = obj.len(),
+                            "Extracted structured outputs from result file frontmatter"
+                        );
+                        return serde_json::Value::Object(obj);
+                    }
+                }
+            }
+        }
+    }
+
+    empty
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1629,6 +1788,7 @@ mod tests {
             task_type: TaskType::CreateNew,
             depends_on: vec![],
             priority: None,
+            expected_outputs: HashMap::new(),
         };
 
         let worktree_path = project_root.join("worktree");
@@ -1670,6 +1830,7 @@ mod tests {
             task_type: TaskType::CreateNew,
             depends_on: vec![],
             priority: None,
+            expected_outputs: HashMap::new(),
         };
 
         let instruction = launcher
@@ -1713,6 +1874,7 @@ mod tests {
             task_type: TaskType::CreateNew,
             depends_on: vec![],
             priority: None,
+            expected_outputs: HashMap::new(),
         };
 
         let instruction = launcher
@@ -1749,6 +1911,7 @@ mod tests {
             task_type: TaskType::CreateNew,
             depends_on: vec![],
             priority: None,
+            expected_outputs: HashMap::new(),
         };
         let section = launcher.format_files_section(&assignment);
         assert_eq!(section, "No specific files assigned");
@@ -1766,6 +1929,7 @@ mod tests {
             task_type: TaskType::CreateNew,
             depends_on: vec![],
             priority: None,
+            expected_outputs: HashMap::new(),
         };
         let section = launcher.format_files_section(&assignment);
         assert!(section.contains("Files to create"));
@@ -1788,6 +1952,7 @@ mod tests {
             task_type: TaskType::CreateNew,
             depends_on: vec![],
             priority: None,
+            expected_outputs: HashMap::new(),
         };
         let section = launcher.format_files_section(&assignment);
         assert!(section.contains("Files to create"));
@@ -1848,6 +2013,7 @@ mod tests {
         assert_eq!(s.status, AgentSessionStatus::Running);
 
         // Clean up the global registry
+        cancel_heartbeat(&agent_id);
         launcher.running_agents.lock().await.remove(&agent_id);
     }
 
@@ -2051,5 +2217,67 @@ mod tests {
         assert!(!AgentSessionStatus::Running.can_transition_to(&AgentSessionStatus::Running));
         assert!(!AgentSessionStatus::Completed.can_transition_to(&AgentSessionStatus::Completed));
         assert!(!AgentSessionStatus::Failed.can_transition_to(&AgentSessionStatus::Failed));
+    }
+
+    #[tokio::test]
+    async fn test_parse_result_file_outputs_normal() {
+        use tempfile::NamedTempFile;
+        use std::io::Write;
+        let mut f = NamedTempFile::new().unwrap();
+        write!(
+            f,
+            "---\noutputs:\n  api_endpoint: \"/api/v1/users\"\n  schema_file: \"src/schema/user.rs\"\n---\n# Task Result\n\nDone."
+        )
+        .unwrap();
+        let result = super::parse_result_file_outputs(f.path()).await;
+        assert_eq!(result["api_endpoint"], "/api/v1/users");
+        assert_eq!(result["schema_file"], "src/schema/user.rs");
+    }
+
+    #[tokio::test]
+    async fn test_parse_result_file_outputs_no_frontmatter() {
+        use tempfile::NamedTempFile;
+        use std::io::Write;
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "# Task Result\n\nNo frontmatter here.").unwrap();
+        let result = super::parse_result_file_outputs(f.path()).await;
+        assert!(result.as_object().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_parse_result_file_outputs_no_outputs_key() {
+        use tempfile::NamedTempFile;
+        use std::io::Write;
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "---\ntitle: test\nauthor: someone\n---\n# Content").unwrap();
+        let result = super::parse_result_file_outputs(f.path()).await;
+        assert!(result.as_object().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_parse_result_file_outputs_malformed_yaml() {
+        use tempfile::NamedTempFile;
+        use std::io::Write;
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "---\n: : bad yaml\n  - [broken\n---\n# Content").unwrap();
+        let result = super::parse_result_file_outputs(f.path()).await;
+        assert!(result.as_object().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_parse_result_file_outputs_empty_outputs_mapping() {
+        use tempfile::NamedTempFile;
+        use std::io::Write;
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "---\noutputs: {{}}\n---\n# Content").unwrap();
+        let result = super::parse_result_file_outputs(f.path()).await;
+        assert!(result.as_object().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_parse_result_file_outputs_missing_file() {
+        let result =
+            super::parse_result_file_outputs(std::path::Path::new("/nonexistent/file.md")).await;
+        assert!(result.as_object().unwrap().is_empty());
     }
 }

@@ -272,6 +272,7 @@ mod tests {
                 metadata: std::collections::HashMap::new(),
                 condition: None,
                 complexity: TaskComplexity::Medium,
+                expected_outputs: std::collections::HashMap::new(),
             },
             TaskNode {
                 id: "B".to_string(),
@@ -290,6 +291,7 @@ mod tests {
                 metadata: std::collections::HashMap::new(),
                 condition: None,
                 complexity: TaskComplexity::Medium,
+                expected_outputs: std::collections::HashMap::new(),
             },
             TaskNode {
                 id: "C".to_string(),
@@ -308,6 +310,7 @@ mod tests {
                 metadata: std::collections::HashMap::new(),
                 condition: None,
                 complexity: TaskComplexity::Medium,
+                expected_outputs: std::collections::HashMap::new(),
             },
             TaskNode {
                 id: "D".to_string(),
@@ -326,6 +329,7 @@ mod tests {
                 metadata: std::collections::HashMap::new(),
                 condition: None,
                 complexity: TaskComplexity::Medium,
+                expected_outputs: std::collections::HashMap::new(),
             },
         ];
 
