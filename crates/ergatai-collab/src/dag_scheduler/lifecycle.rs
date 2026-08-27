@@ -121,6 +121,24 @@ impl DagScheduler {
                 .map(|timeout| std::time::Instant::now() + std::time::Duration::from_secs(timeout))
         };
 
+        // Build the collaboration session from the graph's communication field.
+        // Default to MeshPolicy::Open if no communication mode is specified.
+        let policy = match graph.communication.as_deref() {
+            Some(s) => crate::collaboration::MeshPolicy::parse(s).unwrap_or_else(|e| {
+                tracing::warn!(
+                    dag_id = %dag_id,
+                    communication = s,
+                    error = %e,
+                    "Invalid communication policy, defaulting to Open"
+                );
+                crate::collaboration::MeshPolicy::Open
+            }),
+            None => crate::collaboration::MeshPolicy::Open,
+        };
+        let collaboration = crate::collaboration::CollaborationSession::from_graph(
+            &dag_id, &graph, policy,
+        );
+
         Self {
             graph: Arc::new(Mutex::new(graph)),
             context: Arc::new(Mutex::new(context)),
@@ -137,6 +155,7 @@ impl DagScheduler {
             agent_call_count: Arc::new(AtomicU64::new(0)),
             max_agent_calls,
             event_bus: Arc::new(Mutex::new(None)),
+            collaboration: Arc::new(Mutex::new(collaboration)),
         }
     }
 
@@ -387,7 +406,10 @@ impl DagScheduler {
                 );
             }
 
-            // Brief pause to let any in-flight reads settle
+            // Brief pause to let any in-flight PTY output and agent registry
+            // updates settle before re-probing. 2s is conservative — enough for
+            // a discover_and_register_agents cycle (typically <500ms) but short
+            // enough to not noticeably delay DAG recovery.
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
             // Re-check each previously-missing agent

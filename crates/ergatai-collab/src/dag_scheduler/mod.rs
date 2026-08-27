@@ -78,6 +78,10 @@ pub struct DagScheduler {
     /// NATS initialisation is async; the first watcher tick that needs it
     /// will populate the slot. `None` when NATS is not available (no-ops).
     event_bus: Arc<Mutex<Option<Arc<ergatai_nats::EventBus>>>>,
+
+    /// Collaboration session bound to this DAG execution.
+    /// Defines the communication policy (MeshPolicy) for participants.
+    collaboration: Arc<Mutex<crate::collaboration::CollaborationSession>>,
 }
 
 impl DagScheduler {
@@ -113,6 +117,38 @@ impl DagScheduler {
     /// Get the creation timestamp (for ordering schedulers by recency)
     pub fn created_at(&self) -> std::time::Instant {
         self.created_at
+    }
+
+    /// Get a snapshot of the collaboration session bound to this DAG.
+    pub async fn collaboration(&self) -> crate::collaboration::CollaborationSession {
+        self.collaboration.lock().await.clone()
+    }
+
+    /// Check whether `from → to` messaging is permitted under this DAG's
+    /// communication policy.
+    ///
+    /// Returns:
+    /// - `CommunicationCheck::NotApplicable` if at least one endpoint is not a participant
+    /// - `CommunicationCheck::Allowed` if both are participants and the policy permits
+    /// - `CommunicationCheck::Denied(reason)` if both are participants but the policy forbids
+    pub async fn check_communication(
+        &self,
+        from: &str,
+        to: &str,
+    ) -> crate::collaboration::CommunicationCheck {
+        use crate::collaboration::CommunicationCheck;
+        let session = self.collaboration.lock().await;
+        if !session.participants.contains(from) || !session.participants.contains(to) {
+            return CommunicationCheck::NotApplicable;
+        }
+        if session.allows(from, to) {
+            CommunicationCheck::Allowed
+        } else {
+            CommunicationCheck::Denied(format!(
+                "DAG {} policy ({:?}) does not permit {} → {}",
+                self.dag_id, session.policy, from, to
+            ))
+        }
     }
 
     /// Get elapsed time since DAG creation (for duration reporting)

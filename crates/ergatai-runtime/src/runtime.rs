@@ -916,8 +916,7 @@ impl AgentRuntime {
             }
 
             // Stable ID lookup: search by ergatai_agent_id metadata (e.g. "agent-1").
-            // This enables callers (batch_aggregator, conversation_manager, etc.)
-            // to address agents by their human-readable stable name.
+            // This enables callers to address agents by their human-readable stable name.
             for (runtime_id, info) in registry.iter() {
                 if info
                     .handle

@@ -277,14 +277,10 @@ Agent 通过 MCP 协议 (JSON-RPC over Streamable HTTP, protocol 2025-06-18) 调
 | 工具 | 说明 |
 |------|------|
 | `list_agents` | 列出已注册 agent（支持条件过滤） |
-| `send_message` | 向目标 agent 发消息（速率限制 + 通信策略校验） |
+| `send_message` | 向目标 agent 发消息（速率限制 + 对话防护 + 通信策略校验） |
 | `submit_orchestration` | 提交 DAG 工作流（YAML） |
 | `validate_dag_yaml` | 干跑校验 DAG YAML（不执行，返回摘要或第一个错误） |
-| `check_dag_status` | 查询 DAG 执行状态 |
-| `get_collaboration_status` | 查询当前协作会话 + MeshPolicy |
-| `request_file_access` | 请求文件访问 token |
-| `release_file_access` | 释放文件访问 token |
-| `list_active_locks` | 列出当前所有文件锁 |
+| `get_dag_status` | 查询 DAG 执行状态 + 协作会话信息（MeshPolicy + 参与者） |
 
 ---
 
@@ -468,7 +464,7 @@ JetStream Streams:
 
 ### 自动化模型
 
-文件锁现在完全自动化，agent 无需手动调用 `request_file_access`：
+文件锁完全自动化，无需任何 MCP 工具调用（原 `request_file_access` / `release_file_access` / `list_active_locks` 已删除）：
 
 | 操作 | 行为 |
 |------|------|

@@ -1,8 +1,11 @@
 //! MessageSender — unified message sending service for both REST API and MCP.
 //!
-//! This module encapsulates the simplified message sending pipeline:
+//! This module encapsulates the message sending pipeline:
 //! 1. Agent resolution
 //! 2. Self-message check
+//! 2.5 Rate limit check (per-agent, 60 msg/min)
+//! 2.55 Conversation loop prevention (AutoGen-style)
+//! 2.6 MeshPolicy ACL check (DAG communication policy)
 //! 3. Stable ID resolution (for NATS payload enrichment)
 //! 4. Sender display name resolution + message formatting (hint injection)
 //! 5. NATS publish / direct inject
@@ -17,6 +20,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ergatai_core::agent_registry::{agent_registry, AgentRegistry};
 use ergatai_runtime::{get_agent_runtime, AgentRuntime};
 use tracing::{info, warn};
+
+use crate::mcp::conversation::{ConversationConfig, ConversationManager};
 
 /// Result of a message send operation.
 #[derive(Debug)]
@@ -52,12 +57,19 @@ pub struct SendRequest {
 /// use identical protection logic.
 pub struct MessageSender {
     peer_registry: Arc<AgentRegistry>,
+    conversation_manager: Arc<ConversationManager>,
 }
 
 impl MessageSender {
-    /// Create a new MessageSender with the given peer registry.
-    pub fn new(peer_registry: Arc<AgentRegistry>) -> Self {
-        Self { peer_registry }
+    /// Create a new MessageSender with the given conversation manager and peer registry.
+    pub fn new(
+        conversation_manager: Arc<ConversationManager>,
+        peer_registry: Arc<AgentRegistry>,
+    ) -> Self {
+        Self {
+            peer_registry,
+            conversation_manager,
+        }
     }
 
     /// Send a message through the full pipeline.
@@ -104,6 +116,51 @@ impl MessageSender {
             };
         }
 
+        // ── 2.5 Rate limit check (per-agent, 60 msg/min) ──
+        let sender_id_for_rate = from_runtime_id.clone().unwrap_or_else(|| req.from.clone());
+        if let Err(e) = crate::mcp::get_rate_limiter().try_acquire(&sender_id_for_rate) {
+            return SendMessageResult::Rejected {
+                reason: e.to_string(),
+            };
+        }
+
+        // ── 2.55 Conversation loop prevention ──
+        // AutoGen-style one-question-one-answer cycle breaker.
+        let sender_for_conv = from_runtime_id.clone().unwrap_or_else(|| req.from.clone());
+        let receiver_for_conv = runtime
+            .resolve_agent_id(&resolved_agent_id)
+            .await
+            .unwrap_or_else(|| resolved_agent_id.clone());
+        if let Err(e) = self
+            .conversation_manager
+            .check_and_record(&sender_for_conv, &receiver_for_conv, &req.message)
+            .await
+        {
+            return SendMessageResult::Rejected {
+                reason: format!("Conversation loop prevention: {}", e),
+            };
+        }
+
+        // ── 2.6 MeshPolicy ACL check ──
+        // If both sender and receiver are participants in any active DAG session,
+        // the DAG's communication policy must permit this pair.
+        let sender_for_acl = from_runtime_id.clone().unwrap_or_else(|| req.from.clone());
+        let receiver_for_acl = runtime
+            .resolve_agent_id(&resolved_agent_id)
+            .await
+            .unwrap_or_else(|| resolved_agent_id.clone());
+        for scheduler in ergatai_core::cross_agent::list_dag_schedulers() {
+            let check = scheduler
+                .check_communication(&sender_for_acl, &receiver_for_acl)
+                .await;
+            if check.is_denied() {
+                return SendMessageResult::Rejected {
+                    reason: format!("{:?}", check),
+                };
+            }
+            // NotApplicable: at least one endpoint is not a participant, skip this DAG
+        }
+
         // ── 3. Resolve stable IDs (used for NATS payload enrichment + formatting) ──
         let from_stable = runtime.resolve_to_stable_id(&req.from, None).await;
         let to_stable = runtime.resolve_to_stable_id(&resolved_agent_id, None).await;
@@ -126,10 +183,8 @@ impl MessageSender {
             }
         };
         // reply target = sender's stable ID (so recipient knows who to reply to)
-        // is_reply detection was removed with ConversationManager; always false.
-        let is_reply = false;
         let formatted_content =
-            Self::format_agent_message(&sender_display, &req.message, &from_stable, is_reply);
+            Self::format_agent_message(&sender_display, &req.message, &from_stable);
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -249,39 +304,22 @@ impl MessageSender {
 
     /// Format agent message as structured JSON.
     ///
-    /// Distinguishes between new messages (must reply via send_message)
-    /// and replies (output END if no questions, otherwise call send_message).
+    /// The message instructs the recipient agent to use `send_message` to reply.
     pub fn format_agent_message(
         sender_display: &str,
         message: &str,
         reply_target_stable_id: &str,
-        is_reply: bool,
     ) -> String {
-        if is_reply {
-            // Reply: agent should output END if no follow-up needed
-            serde_json::json!({
-                "from": sender_display,
-                "message": message,
-                "_reply": format!("If no questions: output END. If has questions: call send_message(target_agent_id=\"{}\")", reply_target_stable_id),
-                "_rules": [
-                    "DO NOT write reply as terminal text unless outputting END",
-                    "No questions → output END, DO NOT call any tools"
-                ]
-            })
-            .to_string()
-        } else {
-            // New message: agent must reply via send_message
-            serde_json::json!({
-                "from": sender_display,
-                "message": message,
-                "_reply": format!("MUST call send_message(target_agent_id=\"{}\")", reply_target_stable_id),
-                "_rules": [
-                    "DO NOT write reply as terminal text, MUST use send_message tool",
-                    "After send_message, output END"
-                ]
-            })
-            .to_string()
-        }
+        serde_json::json!({
+            "from": sender_display,
+            "message": message,
+            "_reply": format!("MUST call send_message(target_agent_id=\"{}\")", reply_target_stable_id),
+            "_rules": [
+                "DO NOT write reply as terminal text, MUST use send_message tool",
+                "After send_message, output END"
+            ]
+        })
+        .to_string()
     }
 }
 
@@ -292,7 +330,9 @@ static MESSAGE_SENDER: OnceLock<MessageSender> = OnceLock::new();
 /// Initialize the global MessageSender (called once at startup).
 pub fn init_message_sender() -> &'static MessageSender {
     MESSAGE_SENDER.get_or_init(|| {
-        MessageSender::new(Arc::new(agent_registry().clone()))
+        let config = ConversationConfig::default();
+        let conv_manager = Arc::new(ConversationManager::new(config));
+        MessageSender::new(conv_manager, Arc::new(agent_registry().clone()))
     })
 }
 

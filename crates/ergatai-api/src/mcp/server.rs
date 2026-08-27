@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use rmcp::{elicit_safe, service::ElicitationError};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
@@ -21,7 +20,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use ergatai_core::agent_registry::AgentRegistry;
 use ergatai_runtime::get_agent_runtime;
@@ -201,51 +200,10 @@ struct ValidateDagParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct CheckDagStatusParams {
-    /// DAG ID to check
+struct GetDagStatusParams {
+    /// DAG ID to check (currently unused — there is at most one active DAG)
     dag_id: String,
 }
-
-// ── File Access Control parameter types ──
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct RequestFileAccessParams {
-    /// File path to access (absolute or relative to project root)
-    file_path: String,
-    /// Access mode: "READ" or "WRITE"
-    mode: String,
-    /// Reason for requesting access
-    reason: Option<String>,
-    /// Glob pattern scope (e.g., "src/**" or specific file)
-    #[serde(default = "default_scope")]
-    scope: String,
-}
-
-fn default_scope() -> String {
-    "**".to_string()
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct ReleaseFileAccessParams {
-    /// File path to release
-    file_path: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct ListActiveLocksParams {
-    /// Filter by agent ID (optional)
-    agent_id: Option<String>,
-}
-
-// ── MCP Elicitation types for user approval ──
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct ApprovalResponse {
-    /// User's approval decision: "yes" or "no"
-    decision: String,
-}
-
-elicit_safe!(ApprovalResponse);
 
 // ── Tool implementations ──
 
@@ -269,7 +227,8 @@ impl ErgataiMcpServer {
     ///
     /// Use this to discover which agents are online before calling `send_message`.
     #[tool(
-        description = "List online agents in Ergatai. Returns all online agents discovered via the PTY backend. Supports optional filter: {can_communicate_with (reserved, no-op), in_dag, status}."
+        description = "List online agents in Ergatai. Returns all online agents discovered via the PTY backend. Supports optional filter: {can_communicate_with (reserved, no-op), in_dag, status}.",
+        annotations(read_only_hint = true, idempotent_hint = true)
     )]
     async fn list_agents(
         &self,
@@ -419,7 +378,8 @@ impl ErgataiMcpServer {
     /// delivered by a background consumer via PTY injection. Direct PTY
     /// injection is used as a fallback when NATS is unavailable.
     #[tool(
-        description = "Send a message to another online agent. Persists via NATS JetStream with PTY injection fallback."
+        description = "Send a message to another online agent. Persists via NATS JetStream with PTY injection fallback.",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false)
     )]
     async fn send_message(
         &self,
@@ -543,7 +503,8 @@ impl ErgataiMcpServer {
     /// # Tip
     /// Use the `validate_dag_yaml` tool to dry-run your YAML before submitting.
     #[tool(
-        description = "Submit a DAG workflow for multi-agent collaboration. Accepts YAML with strict validation: `priority` ∈ {low,medium,high}; timeouts > 0; non-empty task names; `communication` ∈ {open,adjacent,star:{hub}} with hub existing in tasks; template vars must match declared parameters; top-level unknown fields rejected (task-level allowed as metadata). Use `validate_dag_yaml` to dry-run first."
+        description = "Submit a DAG workflow for multi-agent collaboration. Accepts YAML with strict validation: `priority` ∈ {low,medium,high}; timeouts > 0; non-empty task names; `communication` ∈ {open,adjacent,star:{hub}} with hub existing in tasks; template vars must match declared parameters; top-level unknown fields rejected (task-level allowed as metadata). Use `validate_dag_yaml` to dry-run first.",
+        annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false)
     )]
     async fn submit_orchestration(
         &self,
@@ -668,7 +629,8 @@ impl ErgataiMcpServer {
     /// zero timeout, empty task name, unresolved template variable, missing
     /// dependency, invalid scope glob.
     #[tool(
-        description = "Dry-run validate a DAG YAML definition. Returns success + summary or the first validation error. Use before `submit_orchestration` to avoid wasting a round-trip on invalid YAML."
+        description = "Dry-run validate a DAG YAML definition. Returns success + summary or the first validation error. Use before `submit_orchestration` to avoid wasting a round-trip on invalid YAML.",
+        annotations(read_only_hint = true, idempotent_hint = true)
     )]
     async fn validate_dag_yaml(
         &self,
@@ -723,15 +685,23 @@ impl ErgataiMcpServer {
         )]))
     }
 
-    /// Check the status of a DAG execution
-    #[tool(description = "Check the status of a DAG execution")]
-    async fn check_dag_status(
+    /// Get the status of a DAG execution, including collaboration policy.
+    ///
+    /// Returns DAG progress, node states, and the active communication policy
+    /// (MeshPolicy) with the set of participating agents. Use this single tool
+    /// for both DAG progress and collaboration status — they are always in sync
+    /// because each DAG execution has exactly one collaboration session.
+    #[tool(
+        description = "Get DAG execution status: progress, node states, collaboration policy (MeshPolicy), and participating agents. Combines former check_dag_status and get_collaboration_status into one call.",
+        annotations(read_only_hint = true, idempotent_hint = true)
+    )]
+    async fn get_dag_status(
         &self,
-        params: Parameters<CheckDagStatusParams>,
+        params: Parameters<GetDagStatusParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let _dag_id = &params.0.dag_id;
 
-        info!("Checking DAG status");
+        info!("Getting DAG status");
 
         match ergatai_core::cross_agent::get_dag_scheduler() {
             None => {
@@ -749,6 +719,11 @@ impl ErgataiMcpServer {
                 let status_text = scheduler.status_prompt().await;
                 let snapshot = scheduler.graph_snapshot().await.ok();
 
+                // Fetch collaboration session info (MeshPolicy + participants)
+                let collab = scheduler.collaboration().await;
+                let policy_str = format!("{:?}", collab.policy);
+                let participants: Vec<&str> = collab.participants.iter().map(|s| s.as_str()).collect();
+
                 let status = if is_complete { "completed" } else { "running" };
 
                 let result = serde_json::json!({
@@ -757,6 +732,13 @@ impl ErgataiMcpServer {
                     "is_complete": is_complete,
                     "graph_status": status_text,
                     "graph_snapshot": snapshot,
+                    "collaboration": {
+                        "dag_id": collab.dag_id,
+                        "policy": policy_str,
+                        "participants": participants,
+                        "participant_count": participants.len(),
+                        "created_at": collab.created_at,
+                    }
                 });
                 Ok(CallToolResult::success(vec![ContentBlock::text(
                     serde_json::to_string_pretty(&result).unwrap_or_default(),
@@ -765,408 +747,6 @@ impl ErgataiMcpServer {
         }
     }
 
-    // ── File Access Control Tools ──
-
-    /// Request file access lock for reading or writing
-    #[tool(
-        description = "Request file access lock. Use this before reading or writing files in multi-agent mode. Returns a lock token if approved."
-    )]
-    async fn request_file_access(
-        &self,
-        params: Parameters<RequestFileAccessParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let file_path = &params.0.file_path;
-        let mode_str = params.0.mode.to_uppercase();
-        let reason = params.0.reason.clone();
-        let scope = params.0.scope.clone();
-
-        // Get agent info from session
-        let agent_id = self
-            .session_agent_id
-            .read()
-            .await
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
-
-        info!(
-            agent_id = %agent_id,
-            file_path = %file_path,
-            mode = %mode_str,
-            "File access request via MCP"
-        );
-
-        // Parse mode
-        let mode = match mode_str.as_str() {
-            "READ" => ergatai_lock::FileMode::Read,
-            "WRITE" => ergatai_lock::FileMode::Write,
-            "ADMIN" => ergatai_lock::FileMode::Admin,
-            _ => {
-                return Err(ErrorData::invalid_params(
-                    format!("Invalid mode '{}'. Must be READ, WRITE, or ADMIN", mode_str),
-                    None,
-                ));
-            }
-        };
-
-        // Try to get lock manager.
-        //
-        // SECURITY: Deny access when the lock manager is unavailable. The project
-        // implements zero-trust file access control — granting access here would
-        // bypass the entire locking subsystem. In single-agent deployments, either
-        // initialize the lock manager at startup or disable file locking explicitly
-        // via a configuration flag (not via silent fail-open).
-        let lock_manager = match ergatai_lock::get_lock_manager("default").await {
-            Ok(lm) => lm,
-            Err(e) => {
-                // SECURITY: Deny access when lock manager is unavailable.
-                // Do NOT grant access — that would bypass file locking entirely.
-                return Err(ErrorData::internal_error(
-                    format!(
-                        "File lock system not available: {}. Cannot grant file access without lock manager.",
-                        e
-                    ),
-                    None,
-                ));
-            }
-        };
-
-        // Create a file token for this request
-        let session_id = format!("mcp-{}", agent_id);
-
-        // SECURITY: Create and register a SystemToken first to update the session counter.
-        // This is critical for is_single_agent_mode() detection to work correctly.
-        // Without this, active_session_count stays at 0 and the system is permanently
-        // stuck in "multi-agent mode" even when there's only one agent.
-        //
-        // Use the atomic `get_or_register_system_token` to eliminate the TOCTOU race
-        // where register fails (UNIQUE collision) and the subsequent get returns None
-        // because the watchdog expired the token in between (CRITICAL #2 fix).
-        let system_token = ergatai_lock::SystemToken::new(
-            agent_id.clone(),
-            session_id.clone(),
-            "default".to_string(), // project_root will be resolved by lock manager
-            7200,                  // 2 hour TTL for system token
-            60,                    // heartbeat every 60s
-        );
-
-        let system_token_id = match lock_manager.get_or_register_system_token(&system_token) {
-            Ok(id) => id,
-            Err(e) => {
-                error!(
-                    agent_id = %agent_id,
-                    session_id = %session_id,
-                    error = %e,
-                    "Failed to get or register system token; cannot create file token"
-                );
-                return Err(ErrorData::internal_error(
-                    format!("Failed to get or register system token for session: {}", e),
-                    None,
-                ));
-            }
-        };
-
-        let file_token = ergatai_lock::FileToken::new(
-            agent_id.clone(),
-            session_id.clone(),
-            system_token_id,
-            scope.clone(),
-            mode,
-            reason.clone(),
-            "mcp-request".to_string(),
-            3600, // 1 hour TTL
-            60,   // heartbeat every 60s
-        );
-
-        // Register the file token — fail early if registration fails so the lock
-        // state stays consistent (otherwise acquire_lock would proceed without
-        // a registered token, and subsequent release/list operations would be broken).
-        if let Err(e) = lock_manager.register_file_token(&file_token) {
-            warn!(
-                agent_id = %agent_id,
-                file_path = %file_path,
-                error = %e,
-                "Failed to register file token, denying access"
-            );
-            return Err(ErrorData::internal_error(
-                format!("Failed to register file access token: {}", e),
-                None,
-            ));
-        }
-
-        // Try to acquire the lock
-        match lock_manager.acquire_lock(&file_token, file_path).await {
-            Ok(()) => {
-                info!(
-                    agent_id = %agent_id,
-                    file_path = %file_path,
-                    token_id = %file_token.id,
-                    "File lock acquired successfully"
-                );
-
-                Ok(CallToolResult::success(vec![ContentBlock::text(
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "status": "granted",
-                        "file_path": file_path,
-                        "mode": mode_str,
-                        "token_id": file_token.id.as_str(),
-                        "scope": scope,
-                        "expires_at": file_token.expires_at.to_rfc3339(),
-                        "note": "File lock acquired. Remember to release when done."
-                    }))
-                    .unwrap_or_default(),
-                )]))
-            }
-            Err(e) => {
-                // Lock acquisition failed (conflict) - try MCP elicitation for user approval
-                warn!(
-                    agent_id = %agent_id,
-                    file_path = %file_path,
-                    error = %e,
-                    "File lock conflict detected, requesting user approval via elicitation"
-                );
-
-                // Try to get the peer for this session and send elicitation
-                {
-                    if let Some(peer) = self.peer_registry.read().await.get(&agent_id).cloned() {
-                        let approval_message = format!(
-                            "🔒 File Access Conflict\n\n\
-                             Agent wants to {} file: {}\n\
-                             Reason: {}\n\
-                             Conflict: {}\n\n\
-                             Approve this access?",
-                            mode_str,
-                            file_path,
-                            reason.as_deref().unwrap_or("not specified"),
-                            e
-                        );
-
-                        match peer.elicit::<ApprovalResponse>(&approval_message).await {
-                            Ok(Some(response)) if response.decision.to_lowercase() == "yes" => {
-                                info!(
-                                    agent_id = %agent_id,
-                                    file_path = %file_path,
-                                    "User approved file access via elicitation"
-                                );
-                                // User approved - grant access directly (bypass lock)
-                                return Ok(CallToolResult::success(vec![ContentBlock::text(
-                                    serde_json::to_string_pretty(&serde_json::json!({
-                                        "status": "granted",
-                                        "file_path": file_path,
-                                        "mode": mode_str,
-                                        "approval": "user_approved",
-                                        "note": "Access granted by user approval despite conflict."
-                                    }))
-                                    .unwrap_or_default(),
-                                )]));
-                            }
-                            Ok(Some(_)) => {
-                                // User declined
-                                info!(
-                                    agent_id = %agent_id,
-                                    file_path = %file_path,
-                                    "User denied file access via elicitation"
-                                );
-                            }
-                            Ok(None) => {
-                                // No response (cancelled)
-                                warn!(
-                                    agent_id = %agent_id,
-                                    file_path = %file_path,
-                                    "User cancelled file access approval"
-                                );
-                            }
-                            Err(ElicitationError::CapabilityNotSupported) => {
-                                // Client doesn't support elicitation — deny rather than auto-approve.
-                                // Auto-approving here would let any agent bypass file locks by connecting
-                                // with a client that doesn't implement elicitation. The user/admin can
-                                // manually grant access or upgrade the client.
-                                warn!(
-                                    agent_id = %agent_id,
-                                    file_path = %file_path,
-                                    "Client does not support elicitation, denying file access (conflict unresolved)"
-                                );
-                            }
-                            Err(e) => {
-                                // Elicitation failed — deny rather than auto-approve.
-                                // Silently granting on failure defeats the purpose of the lock system.
-                                warn!(
-                                    agent_id = %agent_id,
-                                    file_path = %file_path,
-                                    error = %e,
-                                    "Elicitation failed, denying file access (conflict unresolved)"
-                                );
-                            }
-                        }
-                    } else {
-                        // No peer found — deny rather than auto-approve.
-                        // A missing peer session is not a valid reason to bypass file locks.
-                        warn!(
-                            agent_id = %agent_id,
-                            file_path = %file_path,
-                            "No peer found in registry, denying file access (conflict unresolved)"
-                        );
-                    }
-                }
-
-                // No elicitation or user declined - return error
-                Err(ErrorData::internal_error(
-                    format!("File access denied: {}", e),
-                    None,
-                ))
-            }
-        }
-    }
-
-    /// Release a file access lock
-    #[tool(
-        description = "Release a file access lock when done reading/writing. Call this after completing file operations."
-    )]
-    async fn release_file_access(
-        &self,
-        params: Parameters<ReleaseFileAccessParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let file_path = &params.0.file_path;
-
-        let agent_id = self
-            .session_agent_id
-            .read()
-            .await
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
-
-        info!(
-            agent_id = %agent_id,
-            file_path = %file_path,
-            "File lock release request via MCP"
-        );
-
-        let lock_manager = match ergatai_lock::get_lock_manager("default").await {
-            Ok(lm) => lm,
-            Err(_) => {
-                return Ok(CallToolResult::success(vec![ContentBlock::text(
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "status": "released",
-                        "file_path": file_path,
-                        "note": "File lock system not active."
-                    }))
-                    .unwrap_or_default(),
-                )]));
-            }
-        };
-
-        // Find the lock for this agent and file
-        let session_id = format!("mcp-{}", agent_id);
-        let locks = match lock_manager.get_locks_by_session(&session_id) {
-            Ok(locks) => locks,
-            Err(e) => {
-                return Err(ErrorData::internal_error(
-                    format!("Failed to find lock: {}", e),
-                    None,
-                ));
-            }
-        };
-
-        // Find the lock for the specific file
-        let lock = locks.iter().find(|l| l.file_path == *file_path);
-        match lock {
-            Some(lock) => {
-                match lock_manager
-                    .release_lock(lock.token_id.as_str(), file_path)
-                    .await
-                {
-                    Ok(()) => {
-                        info!(
-                            agent_id = %agent_id,
-                            file_path = %file_path,
-                            "File lock released successfully"
-                        );
-
-                        Ok(CallToolResult::success(vec![ContentBlock::text(
-                            serde_json::to_string_pretty(&serde_json::json!({
-                                "status": "released",
-                                "file_path": file_path,
-                                "token_id": &lock.token_id
-                            }))
-                            .unwrap_or_default(),
-                        )]))
-                    }
-                    Err(e) => Err(ErrorData::internal_error(
-                        format!("Failed to release lock: {}", e),
-                        None,
-                    )),
-                }
-            }
-            None => Ok(CallToolResult::success(vec![ContentBlock::text(
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "status": "no_lock",
-                    "file_path": file_path,
-                    "note": "No active lock found for this file."
-                }))
-                .unwrap_or_default(),
-            )])),
-        }
-    }
-
-    /// List all active file locks
-    #[tool(description = "List all active file locks. Shows which agents hold which file locks.")]
-    async fn list_active_locks(
-        &self,
-        params: Parameters<ListActiveLocksParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let agent_filter = params.0.agent_id.clone();
-
-        let lock_manager = match ergatai_lock::get_lock_manager("default").await {
-            Ok(lm) => lm,
-            Err(_) => {
-                return Ok(CallToolResult::success(vec![ContentBlock::text(
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "status": "not_active",
-                        "locks": [],
-                        "note": "File lock system not active."
-                    }))
-                    .unwrap_or_default(),
-                )]));
-            }
-        };
-
-        match lock_manager.get_all_active_locks() {
-            Ok(locks) => {
-                let filtered_locks: Vec<serde_json::Value> = locks
-                    .iter()
-                    .filter(|lock| {
-                        agent_filter
-                            .as_ref()
-                            .is_none_or(|filter| &lock.agent_id == filter)
-                    })
-                    .map(|lock| {
-                        serde_json::json!({
-                            "file_path": lock.file_path,
-                            "agent_id": lock.agent_id,
-                            "session_id": lock.session_id,
-                            "mode": format!("{:?}", lock.mode),
-                            "token_id": lock.token_id,
-                            "reason": lock.reason,
-                            "created_at": lock.created_at.to_rfc3339(),
-                            "expires_at": lock.expires_at.to_rfc3339()
-                        })
-                    })
-                    .collect();
-
-                Ok(CallToolResult::success(vec![ContentBlock::text(
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "status": "ok",
-                        "total": filtered_locks.len(),
-                        "locks": filtered_locks
-                    }))
-                    .unwrap_or_default(),
-                )]))
-            }
-            Err(e) => Err(ErrorData::internal_error(
-                format!("Failed to list locks: {}", e),
-                None,
-            )),
-        }
-    }
 }
 
 // ── ServerHandler implementation ──
@@ -1927,21 +1507,21 @@ mod tests {
     }
 
     #[test]
-    fn test_check_dag_status_params_valid() {
-        let params: CheckDagStatusParams =
+    fn test_get_dag_status_params_valid() {
+        let params: GetDagStatusParams =
             serde_json::from_value(json!({"dag_id": "abc-123"})).unwrap();
         assert_eq!(params.dag_id, "abc-123");
     }
 
     #[test]
-    fn test_check_dag_status_params_empty_string() {
-        let params: CheckDagStatusParams = serde_json::from_value(json!({"dag_id": ""})).unwrap();
+    fn test_get_dag_status_params_empty_string() {
+        let params: GetDagStatusParams = serde_json::from_value(json!({"dag_id": ""})).unwrap();
         assert_eq!(params.dag_id, "");
     }
 
     #[test]
-    fn test_check_dag_status_params_missing_dag_id_fails() {
-        let result: Result<CheckDagStatusParams, _> = serde_json::from_value(json!({}));
+    fn test_get_dag_status_params_missing_dag_id_fails() {
+        let result: Result<GetDagStatusParams, _> = serde_json::from_value(json!({}));
         assert!(result.is_err());
     }
 
@@ -2215,64 +1795,5 @@ mod tests {
             "Registration should succeed even with empty agent_id: {:?}",
             result
         );
-    }
-
-    /// P0: request_file_access should degrade gracefully when lock manager unavailable.
-    ///
-    /// Verifies that when the lock manager is not initialized (e.g., single-agent mode,
-    /// or startup race), request_file_access returns a "granted" response with a warning
-    /// instead of hard-denying access. This is the CRITICAL #1 fix behavior.
-    ///
-    /// Note: This test verifies the degraded mode path by checking the response structure.
-    /// In a real test environment, the lock manager may or may not be initialized.
-    #[tokio::test]
-    async fn test_request_file_access_degraded_mode_grants_with_warning() {
-        use crate::mcp::server::RequestFileAccessParams;
-        use rmcp::handler::server::wrapper::Parameters;
-
-        let server = make_test_server();
-
-        // Set a session agent ID (normally done by initialize)
-        *server.session_agent_id.write().await = Some("test-agent".to_string());
-
-        // Create request params
-        let params = Parameters(RequestFileAccessParams {
-            file_path: "/tmp/test.txt".to_string(),
-            mode: "READ".to_string(),
-            reason: Some("testing".to_string()),
-            scope: "**".to_string(), // Default scope
-        });
-
-        // Call request_file_access
-        let result = server.request_file_access(params).await;
-
-        // The result depends on whether the lock manager is initialized.
-        // In test environment, it's likely NOT initialized, so we expect degraded mode.
-        match result {
-            Ok(call_result) => {
-                // Success path: either granted normally (lock manager available)
-                // or granted in degraded mode (lock manager unavailable)
-                let content_str = format!("{:?}", call_result);
-                // Verify the response contains expected fields
-                assert!(
-                    content_str.contains("granted") || content_str.contains("status"),
-                    "Response should indicate grant status: {}",
-                    content_str
-                );
-            }
-            Err(e) => {
-                // Error path: only acceptable if it's a specific error (not a panic)
-                // This shouldn't happen in degraded mode, but verify it's handled
-                let err_str = e.to_string();
-                assert!(
-                    !err_str.contains("panic") && !err_str.contains("unwrap"),
-                    "Error should not indicate panic or unwrap: {}",
-                    err_str
-                );
-            }
-        }
-
-        // Verify: the call didn't panic and returned a Result (Ok or Err)
-        // The important thing is that it didn't crash or hang
     }
 }

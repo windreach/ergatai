@@ -392,23 +392,48 @@ impl DagScheduler {
                             dag_id = %scheduler.dag_id,
                             stall_secs = age,
                             timeout_secs = timeout_secs,
-                            "DAG stalled — running nodes made no progress, finalizing"
+                            "DAG stalled — running nodes made no progress, failing via on_node_failed"
                         );
-                        let mut graph = scheduler.graph.lock().await;
-                        for node in graph.nodes.iter_mut() {
-                            if node.status == TaskStatus::Running {
-                                node.status = TaskStatus::Failed;
-                                node.metadata.insert(
-                                    "stall_error".to_string(),
-                                    format!(
-                                        "stalled: no progress for {}s (limit {}s)",
+                        // Collect stalled node IDs and record stall_error in metadata.
+                        // Do NOT set status=Failed here — route through on_node_failed()
+                        // to ensure retry budget, mark_completed, skip_downstream, and
+                        // finalize_if_terminal are all properly handled.
+                        let stalled_node_ids: Vec<String> = {
+                            let mut graph = scheduler.graph.lock().await;
+                            let stall_reason = format!(
+                                "stalled: no progress for {}s (limit {}s)",
+                                age, timeout_secs
+                            );
+                            graph
+                                .nodes
+                                .iter_mut()
+                                .filter(|n| n.status == TaskStatus::Running)
+                                .map(|n| {
+                                    n.metadata
+                                        .insert("stall_error".to_string(), stall_reason.clone());
+                                    n.id.clone()
+                                })
+                                .collect()
+                        };
+                        // Route each stalled node through on_node_failed for proper cleanup
+                        for node_id in stalled_node_ids {
+                            if let Err(e) = scheduler
+                                .on_node_failed(
+                                    &node_id,
+                                    &format!(
+                                        "Task stalled: no progress for {}s (limit {}s)",
                                         age, timeout_secs
                                     ),
+                                )
+                                .await
+                            {
+                                tracing::error!(
+                                    node_id = %node_id,
+                                    error = %e,
+                                    "Failed to handle stall for node"
                                 );
                             }
                         }
-                        drop(graph);
-                        scheduler.finalize_if_terminal().await;
                         break;
                     }
                 }
@@ -422,23 +447,48 @@ impl DagScheduler {
                             pending_nodes = pending_count,
                             stall_secs = age,
                             timeout_secs = timeout_secs,
-                            "DAG stalled — pending nodes waiting for agents, no running nodes, finalizing"
+                            "DAG stalled — pending nodes waiting for agents, no running nodes, failing via on_node_failed"
                         );
-                        let mut graph = scheduler.graph.lock().await;
-                        for node in graph.nodes.iter_mut() {
-                            if node.status == TaskStatus::Pending {
-                                node.status = TaskStatus::Failed;
-                                node.metadata.insert(
-                                    "stall_error".to_string(),
-                                    format!(
-                                        "stalled: no agent picked up task for {}s (limit {}s)",
+                        // Collect stalled pending node IDs and record stall_error in metadata.
+                        // Do NOT set status=Failed here — route through on_node_failed()
+                        // to ensure retry budget, mark_completed, skip_downstream, and
+                        // finalize_if_terminal are all properly handled.
+                        let stalled_node_ids: Vec<String> = {
+                            let mut graph = scheduler.graph.lock().await;
+                            let stall_reason = format!(
+                                "stalled: no agent picked up task for {}s (limit {}s)",
+                                age, timeout_secs
+                            );
+                            graph
+                                .nodes
+                                .iter_mut()
+                                .filter(|n| n.status == TaskStatus::Pending)
+                                .map(|n| {
+                                    n.metadata
+                                        .insert("stall_error".to_string(), stall_reason.clone());
+                                    n.id.clone()
+                                })
+                                .collect()
+                        };
+                        // Route each stalled node through on_node_failed for proper cleanup
+                        for node_id in stalled_node_ids {
+                            if let Err(e) = scheduler
+                                .on_node_failed(
+                                    &node_id,
+                                    &format!(
+                                        "Task stalled: no agent picked up task for {}s (limit {}s)",
                                         age, timeout_secs
                                     ),
+                                )
+                                .await
+                            {
+                                tracing::error!(
+                                    node_id = %node_id,
+                                    error = %e,
+                                    "Failed to handle stall for pending node"
                                 );
                             }
                         }
-                        drop(graph);
-                        scheduler.finalize_if_terminal().await;
                         break;
                     }
                 }

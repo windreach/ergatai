@@ -284,7 +284,7 @@ impl DagScheduler {
 
             // Exponential backoff with jitter: base * 2^(retry_count-1) + random(0, base)
             let base_delay = 3u64; // seconds
-            let exponential = base_delay * (1u64 << (retry_count - 1).min(6)); // cap at 2^6 = 64
+            let exponential = base_delay * (1u64 << (retry_count - 1).min(6)); // cap at 3 * 2^6 = 192s
             let jitter = rand_delay(base_delay);
             let delay = std::time::Duration::from_secs(exponential + jitter);
 
@@ -439,9 +439,7 @@ impl DagScheduler {
 
     /// If the DAG has reached a terminal state (all nodes are either
     /// `Completed`, `Failed`, or `Skipped`), publish a `DagCompletePayload`
-    /// event via NATS and remove this scheduler from the global registry so
-    /// the `CollaborationSession` (MeshPolicy ACL) stops applying to
-    /// `send_message` calls. Agents then regain unrestricted communication.
+    /// event via NATS and remove this scheduler from the global registry.
     ///
     /// Idempotent: an internal `AtomicBool` gate ensures only the first
     /// concurrent caller proceeds — subsequent callers return early even if
@@ -498,9 +496,7 @@ impl DagScheduler {
             }
         }
 
-        // DAG execution finished: remove the scheduler from the global registry
-        // so the collaboration session (MeshPolicy ACL) stops applying to
-        // send_message calls. Agents regain unrestricted communication.
+        // DAG execution finished: remove the scheduler from the global registry.
         clear_dag_scheduler_by_id(Some(&self.dag_id));
         tracing::info!(
             dag_id = %self.dag_id,
@@ -553,15 +549,24 @@ impl DagScheduler {
         };
 
         // 2. Batch-update all skipped nodes under a single write lock.
+        //    Re-check status == Pending to avoid racing with submit_graph which
+        //    may have atomically preempted a node from Pending to Running between
+        //    the BFS (phase 1) and this batch update (phase 2).
         if !to_skip.is_empty() {
             let mut graph = self.graph.lock().await;
             let reason = format!("Upstream node '{}' failed: {}", failed_id, error);
             for node_id in &to_skip {
                 if let Some(node) = graph.find_node_mut(node_id) {
-                    node.status = TaskStatus::Skipped;
-                    node.metadata
-                        .insert("skipped_reason".to_string(), reason.clone());
-                    tracing::info!("Skipped node {} (depends on failed {})", node_id, failed_id);
+                    if node.status == TaskStatus::Pending {
+                        node.status = TaskStatus::Skipped;
+                        node.metadata
+                            .insert("skipped_reason".to_string(), reason.clone());
+                        tracing::info!(
+                            "Skipped node {} (depends on failed {})",
+                            node_id,
+                            failed_id
+                        );
+                    }
                 }
             }
         }
