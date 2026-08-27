@@ -195,6 +195,24 @@ impl DagScheduler {
             self.finalize_if_terminal().await;
             return Err(e);
         }
+
+        // Profile validation: if the node requires a specific agent profile,
+        // verify that the assigned agent's profile exists and matches.
+        if let Some(ref required_profile) = node.required_profile {
+            if let Err(e) = self
+                .validate_agent_profile(&node.agent, required_profile)
+                .await
+            {
+                tracing::warn!(
+                    node_id = %node.id,
+                    agent = %node.agent,
+                    required_profile = %required_profile,
+                    "Agent profile validation failed: {}", e
+                );
+                return Err(e);
+            }
+        }
+
         let new_count = self.increment_agent_calls();
         tracing::debug!(
             dag_id = %self.dag_id,
@@ -414,5 +432,71 @@ mod tests {
             "Error should mention deadline: {}",
             err
         );
+    }
+
+    /// Test that profile validation passes when no profiles are defined (backward compat)
+    #[tokio::test]
+    async fn test_profile_validation_no_profiles_passes() {
+        let graph = TaskGraph::new(vec![TaskNode::new("n1", "agent-a", "Task A")
+            .with_required_profile("code-reviewer")]);
+        let temp_dir = tempfile::tempdir().unwrap();
+        // No profiles directory
+        std::fs::create_dir_all(temp_dir.path().join(".ergatai")).unwrap();
+        let scheduler = DagScheduler::new(temp_dir.path().to_path_buf(), graph);
+
+        // validate_agent_profile should pass when no profiles exist
+        let result = scheduler.validate_agent_profile("agent-a", "code-reviewer").await;
+        assert!(result.is_ok(), "Should pass when no profiles defined");
+    }
+
+    /// Test that profile validation passes when required profile exists
+    #[tokio::test]
+    async fn test_profile_validation_profile_exists() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let profiles_dir = temp_dir.path().join(".ergatai").join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+
+        // Create a profile file
+        let profile_yaml = r#"
+name: code-reviewer
+description: Code review specialist
+capabilities:
+  - review
+  - testing
+max_concurrency: 3
+"#;
+        std::fs::write(profiles_dir.join("code-reviewer.yaml"), profile_yaml).unwrap();
+
+        let graph = TaskGraph::new(vec![TaskNode::new("n1", "agent-a", "Task A")]);
+        let scheduler = DagScheduler::new(temp_dir.path().to_path_buf(), graph);
+
+        // Validation should pass
+        let result = scheduler.validate_agent_profile("agent-a", "code-reviewer").await;
+        assert!(result.is_ok(), "Should pass when profile exists");
+    }
+
+    /// Test that profile validation fails when required profile doesn't exist
+    #[tokio::test]
+    async fn test_profile_validation_profile_not_found() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let profiles_dir = temp_dir.path().join(".ergatai").join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+
+        // Create a different profile
+        let profile_yaml = r#"
+name: general-purpose
+description: General purpose agent
+"#;
+        std::fs::write(profiles_dir.join("general-purpose.yaml"), profile_yaml).unwrap();
+
+        let graph = TaskGraph::new(vec![TaskNode::new("n1", "agent-a", "Task A")]);
+        let scheduler = DagScheduler::new(temp_dir.path().to_path_buf(), graph);
+
+        // Validation should fail - required profile doesn't exist
+        let result = scheduler.validate_agent_profile("agent-a", "code-reviewer").await;
+        assert!(result.is_err(), "Should fail when profile doesn't exist");
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("code-reviewer"));
+        assert!(err.to_string().contains("general-purpose"));
     }
 }

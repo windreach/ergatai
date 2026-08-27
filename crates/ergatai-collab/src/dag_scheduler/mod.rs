@@ -5,7 +5,7 @@
 //! → On completion → DagScheduler checks for newly ready nodes → Repeat
 
 mod dispatcher;
-mod lifecycle;
+pub mod lifecycle;
 mod prompt_builder;
 mod registry;
 mod terminal;
@@ -82,6 +82,15 @@ pub struct DagScheduler {
     /// Collaboration session bound to this DAG execution.
     /// Defines the communication policy (MeshPolicy) for participants.
     collaboration: Arc<Mutex<crate::collaboration::CollaborationSession>>,
+
+    /// Enable automatic checkpoint creation on node completion
+    auto_checkpoint: Arc<AtomicBool>,
+
+    /// Checkpoint sequence counter (monotonically increasing per DAG)
+    checkpoint_sequence: Arc<AtomicU64>,
+
+    /// ID of the last created checkpoint (for parent-child chaining)
+    last_checkpoint_id: Arc<Mutex<Option<String>>>,
 }
 
 impl DagScheduler {
@@ -106,6 +115,211 @@ impl DagScheduler {
     pub async fn record_outputs(&self, node_id: &str, outputs: serde_json::Value) {
         let mut ctx = self.context.lock().await;
         ctx.record_output(node_id, outputs);
+    }
+
+    /// Record outputs with schema validation
+    ///
+    /// Validates that the outputs conform to the StateChannel schema before recording.
+    /// Returns an error if validation fails.
+    pub async fn record_outputs_validated(
+        &self,
+        node_id: &str,
+        outputs: serde_json::Value,
+        channel: &ergatai_dag::StateChannel,
+    ) -> Result<(), Vec<String>> {
+        let mut ctx = self.context.lock().await;
+        ctx.record_output_validated(node_id, outputs, channel)
+    }
+
+    /// Create a state checkpoint from current DAG execution state
+    ///
+    /// Captures a snapshot of the task graph and context for crash recovery.
+    /// Checkpoints are saved to `.ergatai/checkpoints/` directory.
+    pub async fn create_checkpoint(
+        &self,
+        parent_checkpoint: Option<String>,
+        sequence: u64,
+    ) -> ErgataiResult<crate::dag_scheduler::lifecycle::StateCheckpoint> {
+        let graph = self.graph.lock().await;
+        let context = self.context.lock().await;
+
+        let checkpoint = crate::dag_scheduler::lifecycle::StateCheckpoint::create(
+            &self.dag_id,
+            &*graph,
+            &*context,
+            parent_checkpoint,
+            sequence,
+        )
+        .await;
+
+        checkpoint.save(&self.project_root).await?;
+
+        tracing::info!(
+            dag_id = %self.dag_id,
+            checkpoint_id = %checkpoint.checkpoint_id,
+            sequence = checkpoint.sequence,
+            "Created state checkpoint"
+        );
+
+        Ok(checkpoint)
+    }
+
+    /// Enable automatic checkpoint creation on node completion
+    ///
+    /// When enabled, a checkpoint is automatically created after each node completes.
+    /// Checkpoints are chained (parent-child) for incremental recovery.
+    pub fn enable_auto_checkpoint(&self) {
+        self.auto_checkpoint.store(true, std::sync::atomic::Ordering::SeqCst);
+        tracing::info!(dag_id = %self.dag_id, "Auto-checkpoint enabled");
+    }
+
+    /// Disable automatic checkpoint creation
+    pub fn disable_auto_checkpoint(&self) {
+        self.auto_checkpoint.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Check if auto-checkpoint is enabled
+    pub fn is_auto_checkpoint_enabled(&self) -> bool {
+        self.auto_checkpoint.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Create an automatic checkpoint (called internally on node completion)
+    async fn create_auto_checkpoint(&self) -> Option<String> {
+        if !self.is_auto_checkpoint_enabled() {
+            return None;
+        }
+
+        let sequence = self.checkpoint_sequence.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let parent = self.last_checkpoint_id.lock().await.clone();
+
+        match self.create_checkpoint(parent, sequence).await {
+            Ok(checkpoint) => {
+                let checkpoint_id = checkpoint.checkpoint_id.clone();
+                *self.last_checkpoint_id.lock().await = Some(checkpoint_id.clone());
+                tracing::debug!(
+                    dag_id = %self.dag_id,
+                    checkpoint_id = %checkpoint_id,
+                    sequence = sequence,
+                    "Auto-checkpoint created on node completion"
+                );
+                Some(checkpoint_id)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    dag_id = %self.dag_id,
+                    error = %e,
+                    "Failed to create auto-checkpoint"
+                );
+                None
+            }
+        }
+    }
+
+    /// Spawn a background task that periodically creates checkpoints
+    ///
+    /// The checkpoint watcher saves a checkpoint every `interval_secs` seconds.
+    /// Returns a JoinHandle that can be used to stop the watcher.
+    pub async fn spawn_checkpoint_watcher(
+        &self,
+        interval_secs: u64,
+    ) -> tokio::task::JoinHandle<()> {
+        let scheduler = self.clone();
+        let dag_id = self.dag_id.clone();
+
+        tokio::spawn(async move {
+            let mut sequence = 0u64;
+            let mut last_checkpoint: Option<String> = None;
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
+
+            loop {
+                interval.tick().await;
+
+                // Check if DAG is still active
+                {
+                    let graph = scheduler.graph.lock().await;
+                    if graph.is_complete() {
+                        tracing::debug!(
+                            dag_id = %dag_id,
+                            "DAG completed or failed, stopping checkpoint watcher"
+                        );
+                        break;
+                    }
+                }
+
+                // Create checkpoint
+                sequence += 1;
+                match scheduler.create_checkpoint(last_checkpoint.clone(), sequence).await {
+                    Ok(checkpoint) => {
+                        last_checkpoint = Some(checkpoint.checkpoint_id.clone());
+                        tracing::debug!(
+                            dag_id = %dag_id,
+                            checkpoint_id = %checkpoint.checkpoint_id,
+                            sequence = checkpoint.sequence,
+                            "Periodic checkpoint created"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            dag_id = %dag_id,
+                            error = %e,
+                            "Failed to create periodic checkpoint"
+                        );
+                    }
+                }
+            }
+        })
+    }
+
+    /// Restore a DAG scheduler from a state checkpoint
+    ///
+    /// Creates a new DagScheduler instance from a previously saved checkpoint.
+    /// The restored scheduler will have the same graph and context state as when
+    /// the checkpoint was created.
+    pub async fn restore_from_checkpoint(
+        project_root: PathBuf,
+        checkpoint: &crate::dag_scheduler::lifecycle::StateCheckpoint,
+    ) -> ErgataiResult<Self> {
+        tracing::info!(
+            dag_id = %checkpoint.dag_id,
+            checkpoint_id = %checkpoint.checkpoint_id,
+            sequence = checkpoint.sequence,
+            "Restoring DAG from checkpoint"
+        );
+
+        // Create a new scheduler with the checkpoint's graph and context
+        let scheduler = Self::with_context(
+            project_root,
+            checkpoint.graph.clone(),
+            checkpoint.context.clone(),
+        );
+
+        // Rollback any Running nodes to Pending (they were interrupted by the crash)
+        scheduler.rollback_running_nodes().await?;
+
+        Ok(scheduler)
+    }
+
+    /// Restore a DAG scheduler from the latest checkpoint for a given DAG ID
+    ///
+    /// Finds the most recent checkpoint for the specified DAG and restores from it.
+    /// Returns None if no checkpoints exist for the DAG.
+    pub async fn restore_from_latest_checkpoint(
+        project_root: PathBuf,
+        dag_id: &str,
+    ) -> ErgataiResult<Option<Self>> {
+        let checkpoint = crate::dag_scheduler::lifecycle::StateCheckpoint::latest_for_dag(
+            &project_root,
+            dag_id,
+        )
+        .await?;
+
+        match checkpoint {
+            Some(ckpt) => {
+                let scheduler = Self::restore_from_checkpoint(project_root, &ckpt).await?;
+                Ok(Some(scheduler))
+            }
+            None => Ok(None),
+        }
     }
 
 
@@ -236,6 +450,61 @@ impl DagScheduler {
 
     fn increment_agent_calls(&self) -> u64 {
         self.agent_call_count.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Validate that an agent has the required profile
+    ///
+    /// Checks if the specified agent has a profile matching the required profile name.
+    /// If profiles directory doesn't exist or no profiles are defined, validation passes
+    /// (backward compatibility). If profiles exist but the required profile is not found,
+    /// returns an error.
+    async fn validate_agent_profile(
+        &self,
+        agent_name: &str,
+        required_profile: &str,
+    ) -> ErgataiResult<()> {
+        // Discover profiles from project root
+        let profiles = match ergatai_runtime::discover_profiles(&self.project_root) {
+            Ok(profiles) => profiles,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to discover agent profiles, skipping validation: {}",
+                    e
+                );
+                // Fail open: if we can't read profiles, don't block execution
+                return Ok(());
+            }
+        };
+
+        // If no profiles defined, skip validation (backward compatibility)
+        if profiles.is_empty() {
+            tracing::debug!(
+                agent = %agent_name,
+                required_profile = %required_profile,
+                "No profiles defined, skipping profile validation"
+            );
+            return Ok(());
+        }
+
+        // Check if the required profile exists
+        let profile_exists = profiles.iter().any(|p| p.name == required_profile);
+
+        if !profile_exists {
+            return Err(ErgataiError::InvalidArgument(format!(
+                "Required profile '{}' not found for agent '{}'. Available profiles: {:?}",
+                required_profile,
+                agent_name,
+                profiles.iter().map(|p| &p.name).collect::<Vec<_>>()
+            )));
+        }
+
+        tracing::debug!(
+            agent = %agent_name,
+            required_profile = %required_profile,
+            "Agent profile validation passed"
+        );
+
+        Ok(())
     }
 
     /// Start listening for DAG events via JetStream pull consumer

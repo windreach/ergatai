@@ -273,6 +273,9 @@ mod tests {
                 condition: None,
                 complexity: TaskComplexity::Medium,
                 expected_outputs: std::collections::HashMap::new(),
+                state_schema: None,
+                conditional_edges: None,
+                required_profile: None,
             },
             TaskNode {
                 id: "B".to_string(),
@@ -292,6 +295,9 @@ mod tests {
                 condition: None,
                 complexity: TaskComplexity::Medium,
                 expected_outputs: std::collections::HashMap::new(),
+                state_schema: None,
+                conditional_edges: None,
+                required_profile: None,
             },
             TaskNode {
                 id: "C".to_string(),
@@ -311,6 +317,9 @@ mod tests {
                 condition: None,
                 complexity: TaskComplexity::Medium,
                 expected_outputs: std::collections::HashMap::new(),
+                state_schema: None,
+                conditional_edges: None,
+                required_profile: None,
             },
             TaskNode {
                 id: "D".to_string(),
@@ -330,6 +339,9 @@ mod tests {
                 condition: None,
                 complexity: TaskComplexity::Medium,
                 expected_outputs: std::collections::HashMap::new(),
+                state_schema: None,
+                conditional_edges: None,
+                required_profile: None,
             },
         ];
 

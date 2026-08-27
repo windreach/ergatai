@@ -33,6 +33,14 @@ impl Condition {
         Self::eval_expression(&rendered)
     }
 
+    /// Evaluate a simple rendered expression (no template variables)
+    ///
+    /// This is a convenience method for evaluating expressions that have
+    /// already been rendered (template variables resolved).
+    pub fn evaluate_simple(expr: &str) -> bool {
+        Self::eval_expression(expr)
+    }
+
     /// Evaluate a rendered expression (no template variables)
     fn eval_expression(expr: &str) -> bool {
         let expr = expr.trim();
@@ -314,5 +322,51 @@ mod tests {
         let ctx = DagContext::empty();
         // Numbers and strings should not be equal
         assert!(!Condition::new("1 == \"1\"").evaluate(&ctx));
+    }
+
+    #[test]
+    fn test_type_aware_numeric_comparison() {
+        let mut ctx = DagContext::empty();
+        // When a template variable renders as a number, it should be compared numerically
+        ctx.set_global("count", "42");
+
+        // Numeric comparison should work (42 parsed as Number)
+        assert!(Condition::new("{{global.count}} > 10").evaluate(&ctx));
+        assert!(Condition::new("{{global.count}} < 100").evaluate(&ctx));
+        assert!(Condition::new("{{global.count}} == 42").evaluate(&ctx));
+
+        // String comparison with quotes should NOT equal number
+        assert!(!Condition::new("{{global.count}} == \"42\"").evaluate(&ctx));
+    }
+
+    #[test]
+    fn test_float_template_comparison() {
+        let mut ctx = DagContext::empty();
+        ctx.set_global("score", "3.14");
+
+        assert!(Condition::new("{{global.score}} > 3.0").evaluate(&ctx));
+        assert!(Condition::new("{{global.score}} < 4.0").evaluate(&ctx));
+        assert!(Condition::new("{{global.score}} == 3.14").evaluate(&ctx));
+    }
+
+    #[test]
+    fn test_string_type_preserved_with_quotes() {
+        let mut ctx = DagContext::empty();
+        ctx.set_global("status", "active");
+
+        // String comparison should work
+        assert!(Condition::new("{{global.status}} == \"active\"").evaluate(&ctx));
+        assert!(!Condition::new("{{global.status}} == \"inactive\"").evaluate(&ctx));
+
+        // Numeric comparison with string should fail gracefully
+        assert!(!Condition::new("{{global.status}} > 10").evaluate(&ctx));
+    }
+
+    #[test]
+    fn test_numeric_string_comparison_ordering() {
+        let ctx = DagContext::empty();
+        // Numeric strings without quotes are parsed as numbers
+        assert!(Condition::new("10 > 2").evaluate(&ctx)); // Numeric: 10 > 2
+        assert!(Condition::new("100 < 999").evaluate(&ctx)); // Numeric: 100 < 999
     }
 }

@@ -13,6 +13,8 @@
 //! Both REST API and MCP handlers call `MessageSender::send()` to ensure
 //! consistent behavior across all entry points.
 
+pub mod admission;
+
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,6 +24,10 @@ use ergatai_runtime::{get_agent_runtime, AgentRuntime};
 use tracing::{info, warn};
 
 use crate::mcp::conversation::{ConversationConfig, ConversationManager};
+use admission::{
+    AgentHealthGate, CompositeGate, ConversationLoopGate, MeshPolicyGate, RateLimitGate,
+    SelfMessageGate,
+};
 
 /// Result of a message send operation.
 #[derive(Debug)]
@@ -57,7 +63,7 @@ pub struct SendRequest {
 /// use identical protection logic.
 pub struct MessageSender {
     peer_registry: Arc<AgentRegistry>,
-    conversation_manager: Arc<ConversationManager>,
+    admission_gate: CompositeGate,
 }
 
 impl MessageSender {
@@ -66,9 +72,19 @@ impl MessageSender {
         conversation_manager: Arc<ConversationManager>,
         peer_registry: Arc<AgentRegistry>,
     ) -> Self {
+        // Build the composite admission gate with all checks in order
+        let admission_gate = CompositeGate::new()
+            .with_gate(Box::new(SelfMessageGate::new()))
+            .with_gate(Box::new(RateLimitGate::new()))
+            .with_gate(Box::new(ConversationLoopGate::new(
+                conversation_manager.clone(),
+            )))
+            .with_gate(Box::new(MeshPolicyGate::new()))
+            .with_gate(Box::new(AgentHealthGate::new()));
+
         Self {
             peer_registry,
-            conversation_manager,
+            admission_gate,
         }
     }
 
@@ -83,7 +99,14 @@ impl MessageSender {
             "MessageSender: processing send request"
         );
 
-        // ── 1. Agent resolution ──
+        // ── Admission control: run all gates ──
+        if let admission::AdmissionResult::Denied { reason } =
+            self.admission_gate.check(&req).await
+        {
+            return SendMessageResult::Rejected { reason };
+        }
+
+        // ── Agent resolution (needed for subsequent steps) ──
         let resolved_agent_id = match self.resolve_target_agent(&runtime, &req.to).await {
             Some(id) => id,
             None => {
@@ -96,70 +119,8 @@ impl MessageSender {
             }
         };
 
-        // ── 2. Self-message check ──
-        // Compare runtime IDs and raw input to catch self-send forms.
+        // ── Resolve sender runtime ID (needed for subsequent steps) ──
         let from_runtime_id = runtime.resolve_agent_id(&req.from).await;
-
-        // Case 1: runtime ID match (works when MCP is bound to PTY agent)
-        // Case 2: raw input match (catches direct ID → ID self-send)
-        // Case 3: from == to (catches literal self-send before any resolution)
-        let is_self_send = from_runtime_id.as_deref() == Some(&resolved_agent_id)
-            || req.from == resolved_agent_id
-            || req.from == req.to;
-
-        if is_self_send {
-            return SendMessageResult::Rejected {
-                reason: format!(
-                    "Cannot send message to yourself. Agent '{}' cannot target itself.",
-                    req.from
-                ),
-            };
-        }
-
-        // ── 2.5 Rate limit check (per-agent, 60 msg/min) ──
-        let sender_id_for_rate = from_runtime_id.clone().unwrap_or_else(|| req.from.clone());
-        if let Err(e) = crate::mcp::get_rate_limiter().try_acquire(&sender_id_for_rate) {
-            return SendMessageResult::Rejected {
-                reason: e.to_string(),
-            };
-        }
-
-        // ── 2.55 Conversation loop prevention ──
-        // AutoGen-style one-question-one-answer cycle breaker.
-        let sender_for_conv = from_runtime_id.clone().unwrap_or_else(|| req.from.clone());
-        let receiver_for_conv = runtime
-            .resolve_agent_id(&resolved_agent_id)
-            .await
-            .unwrap_or_else(|| resolved_agent_id.clone());
-        if let Err(e) = self
-            .conversation_manager
-            .check_and_record(&sender_for_conv, &receiver_for_conv, &req.message)
-            .await
-        {
-            return SendMessageResult::Rejected {
-                reason: format!("Conversation loop prevention: {}", e),
-            };
-        }
-
-        // ── 2.6 MeshPolicy ACL check ──
-        // If both sender and receiver are participants in any active DAG session,
-        // the DAG's communication policy must permit this pair.
-        let sender_for_acl = from_runtime_id.clone().unwrap_or_else(|| req.from.clone());
-        let receiver_for_acl = runtime
-            .resolve_agent_id(&resolved_agent_id)
-            .await
-            .unwrap_or_else(|| resolved_agent_id.clone());
-        for scheduler in ergatai_core::cross_agent::list_dag_schedulers() {
-            let check = scheduler
-                .check_communication(&sender_for_acl, &receiver_for_acl)
-                .await;
-            if check.is_denied() {
-                return SendMessageResult::Rejected {
-                    reason: format!("{:?}", check),
-                };
-            }
-            // NotApplicable: at least one endpoint is not a participant, skip this DAG
-        }
 
         // ── 3. Resolve stable IDs (used for NATS payload enrichment + formatting) ──
         let from_stable = runtime.resolve_to_stable_id(&req.from, None).await;

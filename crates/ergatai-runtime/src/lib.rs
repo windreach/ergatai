@@ -32,6 +32,7 @@
 
 // Core types
 pub mod agent_lifecycle;
+pub mod agent_profile;
 pub mod agent_record;
 pub mod cgroups;
 pub mod types;
@@ -49,6 +50,7 @@ pub mod runtime;
 pub use agent_lifecycle::{
     AgentLifecycleState, ExitOutcome, ProcessingPhase, StopReason, TimeoutType,
 };
+pub use agent_profile::{discover_profiles, load_profile, AgentProfile, ToolPolicy};
 pub use agent_record::{
     AgentHandle as RecordAgentHandle, AgentRecord, StateTransition,
     WorkspaceHandle as RecordWorkspaceHandle,

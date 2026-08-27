@@ -129,6 +129,15 @@ struct YamlTask {
     /// 下游节点可通过 `{{node_id.key}}` 引用。
     #[serde(default)]
     expected_outputs: HashMap<String, String>,
+    /// 状态 schema 定义（可选）— 定义节点的输入/输出状态契约
+    /// 当提供时，验证节点输出是否符合 schema。
+    state_schema: Option<crate::state_channel::StateChannel>,
+    /// 条件路由（可选）— 基于状态表达式动态选择下游节点
+    /// 当节点完成时，调度器会评估条件分支，选择下一个执行的节点。
+    conditional_edges: Option<crate::dag_topology::ConditionalEdge>,
+    /// 必需的 agent profile（可选）— 调度器在分配任务前验证 agent 是否具有此 profile
+    /// 示例: `required_profile: "code-reviewer"`
+    required_profile: Option<String>,
     /// 额外自定义字段（通过 flatten 收集）
     #[serde(flatten)]
     metadata: HashMap<String, serde_yaml::Value>,
@@ -382,6 +391,25 @@ pub fn parse_dag_yaml(
                 )));
             }
         }
+
+        // Rule 10: conditional_edges targets must be known task names
+        if let Some(ref conditional_edges) = task.conditional_edges {
+            for branch in &conditional_edges.branches {
+                if !task_names.contains(branch.target.as_str()) {
+                    return Err(ErgataiError::InvalidArgument(format!(
+                        "Task '{}' conditional_edges branch target '{}' is not a known task",
+                        task.name, branch.target
+                    )));
+                }
+            }
+            // Also validate default_target
+            if !task_names.contains(conditional_edges.default_target.as_str()) {
+                return Err(ErgataiError::InvalidArgument(format!(
+                    "Task '{}' conditional_edges default_target '{}' is not a known task",
+                    task.name, conditional_edges.default_target
+                )));
+            }
+        }
     }
 
     // 构建 name → UUID 映射
@@ -482,6 +510,9 @@ pub fn parse_dag_yaml(
                 condition: task.condition,
                 complexity: task.complexity.unwrap_or_default(),
                 expected_outputs: task.expected_outputs,
+                state_schema: task.state_schema, // Phase 1: State Channel
+                conditional_edges: task.conditional_edges, // Phase 2: Conditional Edges
+                required_profile: task.required_profile, // Phase 3: Agent Profile integration
             })
         })
         .collect::<ErgataiResult<Vec<_>>>()?;
@@ -1318,5 +1349,68 @@ tasks:
 "#;
         let graph = parse_dag_yaml(yaml, None).unwrap();
         assert!(graph.nodes[0].expected_outputs.is_empty());
+    }
+
+    #[test]
+    fn test_conditional_edges_target_validation() {
+        // Rule 10: conditional_edges targets must be known task names
+
+        // Valid: targets are known tasks
+        let yaml_valid = r#"
+tasks:
+  - name: review
+    agent: reviewer
+    conditional_edges:
+      name: deploy-decision
+      branches:
+        - condition: '{{status}} == "approved"'
+          target: deploy-prod
+        - condition: '{{status}} == "rejected"'
+          target: deploy-staging
+      default_target: skip-deploy
+  - name: deploy-prod
+    agent: deployer
+  - name: deploy-staging
+    agent: deployer
+  - name: skip-deploy
+    agent: deployer
+"#;
+        assert!(parse_dag_yaml(yaml_valid, None).is_ok());
+
+        // Invalid: branch target is unknown
+        let yaml_invalid_branch = r#"
+tasks:
+  - name: review
+    agent: reviewer
+    conditional_edges:
+      name: deploy-decision
+      branches:
+        - condition: '{{status}} == "approved"'
+          target: unknown-task
+      default_target: skip
+  - name: skip
+    agent: deployer
+"#;
+        let result = parse_dag_yaml(yaml_invalid_branch, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unknown-task"));
+
+        // Invalid: default_target is unknown
+        let yaml_invalid_default = r#"
+tasks:
+  - name: review
+    agent: reviewer
+    conditional_edges:
+      name: deploy-decision
+      branches:
+        - condition: '{{status}} == "approved"'
+          target: deploy-prod
+      default_target: unknown-default
+  - name: deploy-prod
+    agent: deployer
+"#;
+        let result = parse_dag_yaml(yaml_invalid_default, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unknown-default"));
     }
 }

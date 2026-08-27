@@ -156,6 +156,9 @@ impl DagScheduler {
             max_agent_calls,
             event_bus: Arc::new(Mutex::new(None)),
             collaboration: Arc::new(Mutex::new(collaboration)),
+            auto_checkpoint: Arc::new(AtomicBool::new(false)),
+            checkpoint_sequence: Arc::new(AtomicU64::new(0)),
+            last_checkpoint_id: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -610,5 +613,169 @@ mod tests {
         assert!(n2.metadata.contains_key("recovery_error"));
         // Completed nodes should not be affected
         assert_eq!(g.find_node("n3").unwrap().status, TaskStatus::Completed);
+    }
+}
+
+/// State checkpoint for DAG execution
+///
+/// Represents a point-in-time snapshot of a DAG's execution state,
+/// including the task graph, context, and metadata for checkpoint chaining.
+///
+/// Checkpoints enable:
+/// - Crash recovery with full state restoration
+/// - Incremental checkpointing (parent-child relationships)
+/// - Audit trail of DAG execution progress
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StateCheckpoint {
+    /// Unique identifier for this checkpoint
+    pub checkpoint_id: String,
+
+    /// DAG identifier this checkpoint belongs to
+    pub dag_id: String,
+
+    /// Task graph snapshot (nodes, dependencies, statuses)
+    pub graph: TaskGraph,
+
+    /// Execution context snapshot (variables, outputs, parameters)
+    pub context: DagContext,
+
+    /// When this checkpoint was created
+    pub created_at: String,
+
+    /// Parent checkpoint ID (for incremental checkpointing)
+    pub parent_checkpoint: Option<String>,
+
+    /// Checkpoint sequence number (monotonically increasing per DAG)
+    pub sequence: u64,
+
+    /// Additional metadata (e.g., reason for checkpoint, triggering event)
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+impl StateCheckpoint {
+    /// Create a new checkpoint from current DAG state
+    pub async fn create(
+        dag_id: &str,
+        graph: &TaskGraph,
+        context: &DagContext,
+        parent_checkpoint: Option<String>,
+        sequence: u64,
+    ) -> Self {
+        Self {
+            checkpoint_id: format!("ckpt-{}", uuid::Uuid::new_v4()),
+            dag_id: dag_id.to_string(),
+            graph: graph.clone(),
+            context: context.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            parent_checkpoint,
+            sequence,
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Save checkpoint to disk
+    pub async fn save(&self, project_root: &std::path::Path) -> ErgataiResult<()> {
+        let ergatai_dir = project_root.join(".ergatai").join("checkpoints");
+        tokio::fs::create_dir_all(&ergatai_dir).await?;
+
+        let checkpoint_json = serde_json::to_string_pretty(self)
+            .map_err(|e| ErgataiError::json_with_source("Failed to serialize checkpoint", e))?;
+
+        let checkpoint_file = ergatai_dir.join(format!("{}.json", self.checkpoint_id));
+        tokio::fs::write(&checkpoint_file, checkpoint_json.as_bytes()).await?;
+
+        tracing::debug!(
+            checkpoint_id = %self.checkpoint_id,
+            dag_id = %self.dag_id,
+            sequence = self.sequence,
+            "Saved state checkpoint"
+        );
+
+        Ok(())
+    }
+
+    /// Load checkpoint from disk by ID
+    pub async fn load(
+        project_root: &std::path::Path,
+        checkpoint_id: &str,
+    ) -> ErgataiResult<Self> {
+        let checkpoint_file = project_root
+            .join(".ergatai")
+            .join("checkpoints")
+            .join(format!("{}.json", checkpoint_id));
+
+        if !checkpoint_file.exists() {
+            return Err(ErgataiError::NotFound(format!(
+                "Checkpoint {} not found",
+                checkpoint_id
+            )));
+        }
+
+        let content = tokio::fs::read_to_string(&checkpoint_file).await?;
+        let checkpoint: Self = serde_json::from_str(&content)
+            .map_err(|e| ErgataiError::json_with_source("Failed to deserialize checkpoint", e))?;
+
+        Ok(checkpoint)
+    }
+
+    /// List all checkpoints for a DAG, ordered by sequence number
+    pub async fn list_for_dag(
+        project_root: &std::path::Path,
+        dag_id: &str,
+    ) -> ErgataiResult<Vec<Self>> {
+        let checkpoints_dir = project_root.join(".ergatai").join("checkpoints");
+
+        if !checkpoints_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut checkpoints = Vec::new();
+        let mut entries = tokio::fs::read_dir(&checkpoints_dir).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                    if let Ok(checkpoint) = serde_json::from_str::<Self>(&content) {
+                        if checkpoint.dag_id == dag_id {
+                            checkpoints.push(checkpoint);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by sequence number
+        checkpoints.sort_by_key(|c| c.sequence);
+
+        Ok(checkpoints)
+    }
+
+    /// Get the latest checkpoint for a DAG
+    pub async fn latest_for_dag(
+        project_root: &std::path::Path,
+        dag_id: &str,
+    ) -> ErgataiResult<Option<Self>> {
+        let checkpoints = Self::list_for_dag(project_root, dag_id).await?;
+        Ok(checkpoints.into_iter().last())
+    }
+
+    /// Delete checkpoint from disk
+    pub async fn delete(
+        project_root: &std::path::Path,
+        checkpoint_id: &str,
+    ) -> ErgataiResult<()> {
+        let checkpoint_file = project_root
+            .join(".ergatai")
+            .join("checkpoints")
+            .join(format!("{}.json", checkpoint_id));
+
+        if checkpoint_file.exists() {
+            tokio::fs::remove_file(&checkpoint_file).await?;
+            tracing::debug!(checkpoint_id = %checkpoint_id, "Deleted checkpoint");
+        }
+
+        Ok(())
     }
 }

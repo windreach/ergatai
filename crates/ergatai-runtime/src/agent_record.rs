@@ -52,6 +52,9 @@ pub struct AgentRecord {
     /// MCP agent ID (for MCP-connected agents, e.g., "opencode@abcd1234")
     pub mcp_agent_id: Option<String>,
 
+    /// Agent profile name (e.g., "general-purpose", "explore", "plan")
+    pub profile: Option<String>,
+
     /// Agent capabilities (tools this agent provides)
     pub capabilities: Vec<String>,
 
@@ -132,6 +135,7 @@ impl AgentRecord {
             workspace_id,
             task_id: None,
             mcp_agent_id: None,
+            profile: None,
             capabilities: Vec::new(),
             created_at: now,
             state_changed_at: now,

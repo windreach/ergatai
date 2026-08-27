@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::debug;
 
+use crate::state_channel::{MergeStrategy, StateChannel};
 use crate::template::render_template;
 use ergatai_error::ErgataiResult;
 
@@ -85,6 +86,125 @@ impl DagContext {
         let id = node_id.into();
         debug!(node_id = id, "Recording node outputs as JSON");
         self.node_outputs.insert(id, outputs);
+    }
+
+    /// Record outputs with schema validation
+    ///
+    /// Validates that the outputs conform to the StateChannel schema before recording.
+    /// Returns an error if validation fails (missing required fields or type mismatches).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let channel = StateChannel { /* ... */ };
+    /// ctx.record_output_validated("node-1", outputs, &channel)?;
+    /// ```
+    pub fn record_output_validated(
+        &mut self,
+        node_id: impl Into<String>,
+        outputs: Value,
+        channel: &StateChannel,
+    ) -> Result<(), Vec<String>> {
+        channel.validate_outputs(&outputs)?;
+        self.record_output(node_id, outputs);
+        Ok(())
+    }
+
+    /// Merge outputs according to the specified strategy
+    ///
+    /// For `Overwrite`: replaces existing outputs (same as `record_output`).
+    /// For `Append`: appends new values to existing array outputs.
+    /// For `Max`/`Min`: takes the maximum/minimum numeric value.
+    /// For `Reducer`: evaluates a custom merge expression (not yet implemented).
+    pub fn merge_output(
+        &mut self,
+        node_id: impl Into<String>,
+        outputs: Value,
+        strategy: &MergeStrategy,
+    ) {
+        let id = node_id.into();
+
+        match strategy {
+            MergeStrategy::Overwrite => {
+                debug!(node_id = %id, "Merging outputs (overwrite)");
+                self.node_outputs.insert(id, outputs);
+            }
+            MergeStrategy::Append => {
+                debug!(node_id = %id, "Merging outputs (append)");
+                if let Some(existing) = self.node_outputs.get(&id) {
+                    // If existing is an array, append new values
+                    if let Value::Array(mut existing_arr) = existing.clone() {
+                        if let Value::Array(new_arr) = outputs {
+                            existing_arr.extend(new_arr);
+                            self.node_outputs.insert(id, Value::Array(existing_arr));
+                        } else {
+                            // New value is not an array, just append it
+                            existing_arr.push(outputs);
+                            self.node_outputs.insert(id, Value::Array(existing_arr));
+                        }
+                    } else {
+                        // Existing is not an array, convert to array and append
+                        let mut new_arr = vec![existing.clone()];
+                        if let Value::Array(arr) = outputs {
+                            new_arr.extend(arr);
+                        } else {
+                            new_arr.push(outputs);
+                        }
+                        self.node_outputs.insert(id, Value::Array(new_arr));
+                    }
+                } else {
+                    // No existing value, just record as array
+                    let arr = if let Value::Array(a) = outputs {
+                        a
+                    } else {
+                        vec![outputs]
+                    };
+                    self.node_outputs.insert(id, Value::Array(arr));
+                }
+            }
+            MergeStrategy::Max => {
+                debug!(node_id = %id, "Merging outputs (max)");
+                if let Some(existing) = self.node_outputs.get(&id) {
+                    if let (Some(existing_num), Some(new_num)) =
+                        (existing.as_f64(), outputs.as_f64())
+                    {
+                        if new_num > existing_num {
+                            self.node_outputs.insert(id, outputs);
+                        }
+                        // else keep existing
+                    } else {
+                        // Can't compare, overwrite
+                        self.node_outputs.insert(id, outputs);
+                    }
+                } else {
+                    self.node_outputs.insert(id, outputs);
+                }
+            }
+            MergeStrategy::Min => {
+                debug!(node_id = %id, "Merging outputs (min)");
+                if let Some(existing) = self.node_outputs.get(&id) {
+                    if let (Some(existing_num), Some(new_num)) =
+                        (existing.as_f64(), outputs.as_f64())
+                    {
+                        if new_num < existing_num {
+                            self.node_outputs.insert(id, outputs);
+                        }
+                        // else keep existing
+                    } else {
+                        // Can't compare, overwrite
+                        self.node_outputs.insert(id, outputs);
+                    }
+                } else {
+                    self.node_outputs.insert(id, outputs);
+                }
+            }
+            MergeStrategy::Reducer { expr: _ } => {
+                // TODO: Implement custom reducer expressions
+                // For now, fall back to overwrite
+                debug!(node_id = %id, "Merging outputs (reducer - not implemented, falling back to overwrite)");
+                self.node_outputs.insert(id, outputs);
+            }
+        }
     }
 
     /// Get the outputs of a specific node as a JSON value
@@ -429,5 +549,104 @@ mod tests {
         let ctx = DagContext::new(globals(&[("x", "value")]));
         let rendered = ctx.render_template("before {{global.x}} after");
         assert_eq!(rendered, "before value after");
+    }
+
+    // ── State Channel validation tests ──
+
+    #[test]
+    fn test_record_output_validated_success() {
+        use crate::state_channel::{StateField, StateValueType};
+
+        let mut ctx = DagContext::empty();
+        let channel = StateChannel {
+            name: "test_channel".to_string(),
+            inputs: vec![],
+            outputs: vec![StateField {
+                name: "result".to_string(),
+                value_type: StateValueType::String,
+                required: true,
+                default: None,
+                description: None,
+            }],
+            merge_strategies: std::collections::HashMap::new(),
+        };
+
+        let outputs = serde_json::json!({"result": "success"});
+        assert!(ctx.record_output_validated("node-1", outputs, &channel).is_ok());
+        assert!(ctx.has_node_outputs("node-1"));
+    }
+
+    #[test]
+    fn test_record_output_validated_missing_required() {
+        use crate::state_channel::{StateField, StateValueType};
+
+        let mut ctx = DagContext::empty();
+        let channel = StateChannel {
+            name: "test_channel".to_string(),
+            inputs: vec![],
+            outputs: vec![StateField {
+                name: "result".to_string(),
+                value_type: StateValueType::String,
+                required: true,
+                default: None,
+                description: None,
+            }],
+            merge_strategies: std::collections::HashMap::new(),
+        };
+
+        let outputs = serde_json::json!({});
+        let errors = ctx.record_output_validated("node-1", outputs, &channel).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("missing required field"));
+    }
+
+    #[test]
+    fn test_merge_output_overwrite() {
+        let mut ctx = DagContext::empty();
+        ctx.record_output("node", serde_json::json!({"value": 1}));
+        ctx.merge_output("node", serde_json::json!({"value": 2}), &MergeStrategy::Overwrite);
+
+        let got = ctx.get_node_outputs("node").unwrap();
+        assert_eq!(got.get("value"), Some(&serde_json::json!(2)));
+    }
+
+    #[test]
+    fn test_merge_output_append() {
+        let mut ctx = DagContext::empty();
+        ctx.record_output("node", serde_json::json!([1, 2]));
+        ctx.merge_output("node", serde_json::json!([3, 4]), &MergeStrategy::Append);
+
+        let got = ctx.get_node_outputs("node").unwrap();
+        assert_eq!(got, &serde_json::json!([1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn test_merge_output_max() {
+        let mut ctx = DagContext::empty();
+        ctx.record_output("node", serde_json::json!(10));
+        ctx.merge_output("node", serde_json::json!(20), &MergeStrategy::Max);
+
+        let got = ctx.get_node_outputs("node").unwrap();
+        assert_eq!(got, &serde_json::json!(20));
+
+        // Try smaller value
+        ctx.merge_output("node", serde_json::json!(5), &MergeStrategy::Max);
+        let got = ctx.get_node_outputs("node").unwrap();
+        assert_eq!(got, &serde_json::json!(20)); // Should still be 20
+    }
+
+    #[test]
+    fn test_merge_output_min() {
+        let mut ctx = DagContext::empty();
+        ctx.record_output("node", serde_json::json!(10));
+        ctx.merge_output("node", serde_json::json!(5), &MergeStrategy::Min);
+
+        let got = ctx.get_node_outputs("node").unwrap();
+        assert_eq!(got, &serde_json::json!(5));
+
+        // Try larger value
+        ctx.merge_output("node", serde_json::json!(20), &MergeStrategy::Min);
+        let got = ctx.get_node_outputs("node").unwrap();
+        assert_eq!(got, &serde_json::json!(5)); // Should still be 5
     }
 }

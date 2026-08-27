@@ -121,6 +121,40 @@ impl DagScheduler {
                 graph.update_status(node_id, TaskStatus::Completed)?;
             }
 
+            // Evaluate conditional_edges if the completed node has them
+            // This determines which downstream nodes should be activated
+            if let Some(completed_node) = graph.find_node(node_id) {
+                if let Some(ref conditional_edges) = completed_node.conditional_edges {
+                    let context = self.context.lock().await;
+                    let selected_target = conditional_edges.evaluate(&context);
+                    tracing::info!(
+                        node_id = node_id,
+                        selected_target = %selected_target,
+                        "Conditional edge evaluated, selected target: {}",
+                        selected_target
+                    );
+
+                    // Skip downstream nodes that are not in the selected branch
+                    let all_downstream: Vec<String> = graph
+                        .nodes
+                        .iter()
+                        .filter(|n| n.depends_on.contains(&node_id.to_string()))
+                        .map(|n| n.id.clone())
+                        .collect();
+
+                    for downstream_id in all_downstream {
+                        if downstream_id != selected_target {
+                            tracing::info!(
+                                node_id = %downstream_id,
+                                "Skipping downstream node not in selected conditional branch"
+                            );
+                            graph.update_status(&downstream_id, TaskStatus::Skipped)?;
+                            Self::skip_downstream_nodes(&mut graph, &downstream_id)?;
+                        }
+                    }
+                }
+            }
+
             // If DAG deadline already passed, record this node's result but skip
             // downstream submission — no point starting new work on a timing-out DAG.
             // The remaining pending/running nodes will be failed by finalize or the
@@ -201,6 +235,9 @@ impl DagScheduler {
 
         // Save graph + context together
         self.save_graph_unlocked().await?;
+
+        // Auto-create checkpoint if enabled
+        self.create_auto_checkpoint().await;
 
         // Check if all done
         self.finalize_if_terminal().await;

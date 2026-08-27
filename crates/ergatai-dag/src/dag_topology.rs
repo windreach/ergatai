@@ -56,6 +56,72 @@ impl TaskComplexity {
     }
 }
 
+/// 条件分支：基于状态表达式动态选择下游节点
+///
+/// 用于实现条件路由（conditional edges），类似 LangGraph 的 conditional_edge。
+/// 当节点完成时，调度器会评估所有分支的条件表达式，
+/// 选择第一个为真的分支，将对应的 target 节点标记为 ready。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConditionBranch {
+    /// 条件表达式（复用现有 Condition 语法）
+    /// 示例: "{{review.status}} == \"approved\""
+    pub condition: String,
+
+    /// 满足条件时跳转的目标节点 ID
+    pub target: String,
+}
+
+/// 条件路由：基于状态表达式动态选择下游节点
+///
+/// 当节点配置了 conditional_edges 时，调度器会在节点完成后
+/// 按顺序评估 branches 中的条件表达式，选择第一个为真的分支。
+/// 如果所有条件都不满足，则跳转到 default_target。
+///
+/// # Example
+///
+/// ```yaml
+/// tasks:
+///   - name: review
+///     agent: reviewer
+///     task: tasks/review.md
+///     conditional_edges:
+///       name: deploy-decision
+///       branches:
+///         - condition: '{{review.status}} == "approved"'
+///           target: deploy-prod
+///         - condition: '{{review.status}} == "conditional"'
+///           target: deploy-staging
+///       default_target: skip-deploy
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConditionalEdge {
+    /// 路由名称（用于日志和诊断）
+    pub name: String,
+
+    /// 条件分支列表（按顺序评估，第一个为真的分支被选中）
+    pub branches: Vec<ConditionBranch>,
+
+    /// 默认目标（所有条件都不满足时）
+    pub default_target: String,
+}
+
+impl ConditionalEdge {
+    /// 评估条件分支，返回选中的目标节点 ID
+    ///
+    /// 按顺序评估 branches 中的条件表达式，返回第一个为真的分支的 target。
+    /// 如果所有条件都不满足，返回 default_target。
+    pub fn evaluate(&self, context: &crate::context::DagContext) -> String {
+        for branch in &self.branches {
+            let rendered = context.render_template(&branch.condition);
+            // 简单布尔表达式求值
+            if crate::condition::Condition::evaluate_simple(&rendered) {
+                return branch.target.clone();
+            }
+        }
+        self.default_target.clone()
+    }
+}
+
 /// A task in the DAG
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskNode {
@@ -132,6 +198,30 @@ pub struct TaskNode {
     /// `{{node_id.key}}` in their `input` templates.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub expected_outputs: HashMap<String, String>,
+
+    /// Optional: state schema defining this node's data flow contract
+    ///
+    /// When present, validates that the node's outputs conform to the schema.
+    /// When absent, `expected_outputs` is used for backward compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_schema: Option<crate::state_channel::StateChannel>,
+
+    /// Optional: conditional routing — dynamically select downstream targets
+    /// based on state expressions. When present, overrides depends_on for
+    /// determining which downstream nodes become eligible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conditional_edges: Option<ConditionalEdge>,
+
+    /// Optional: required agent profile for this task
+    ///
+    /// When present, the scheduler validates that the assigned agent's profile
+    /// has the required capabilities before dispatching. If the agent doesn't
+    /// have a matching profile, the task is rejected with an error.
+    ///
+    /// Example: `required_profile: "code-reviewer"` requires the agent to have
+    /// a profile named "code-reviewer" in `.ergatai/profiles/`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_profile: Option<String>,
 }
 
 /// Task execution status
@@ -494,6 +584,9 @@ impl TaskNode {
             condition: None,
             complexity: TaskComplexity::default(),
             expected_outputs: HashMap::new(),
+            state_schema: None,
+            conditional_edges: None,
+            required_profile: None,
         }
     }
 
@@ -518,6 +611,12 @@ impl TaskNode {
     /// Set task complexity (human-annotated)
     pub fn with_complexity(mut self, complexity: TaskComplexity) -> Self {
         self.complexity = complexity;
+        self
+    }
+
+    /// Set required agent profile
+    pub fn with_required_profile(mut self, profile: impl Into<String>) -> Self {
+        self.required_profile = Some(profile.into());
         self
     }
 }
