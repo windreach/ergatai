@@ -572,7 +572,9 @@ mod tests {
         };
 
         let outputs = serde_json::json!({"result": "success"});
-        assert!(ctx.record_output_validated("node-1", outputs, &channel).is_ok());
+        assert!(ctx
+            .record_output_validated("node-1", outputs, &channel)
+            .is_ok());
         assert!(ctx.has_node_outputs("node-1"));
     }
 
@@ -595,7 +597,9 @@ mod tests {
         };
 
         let outputs = serde_json::json!({});
-        let errors = ctx.record_output_validated("node-1", outputs, &channel).unwrap_err();
+        let errors = ctx
+            .record_output_validated("node-1", outputs, &channel)
+            .unwrap_err();
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("missing required field"));
     }
@@ -604,7 +608,11 @@ mod tests {
     fn test_merge_output_overwrite() {
         let mut ctx = DagContext::empty();
         ctx.record_output("node", serde_json::json!({"value": 1}));
-        ctx.merge_output("node", serde_json::json!({"value": 2}), &MergeStrategy::Overwrite);
+        ctx.merge_output(
+            "node",
+            serde_json::json!({"value": 2}),
+            &MergeStrategy::Overwrite,
+        );
 
         let got = ctx.get_node_outputs("node").unwrap();
         assert_eq!(got.get("value"), Some(&serde_json::json!(2)));

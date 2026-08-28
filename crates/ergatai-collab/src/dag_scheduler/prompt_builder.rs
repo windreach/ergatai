@@ -94,34 +94,34 @@ impl DagScheduler {
             // reading. If the file doesn't exist or escapes project_root, fall
             // through to the inline-description treatment.
             let full_path = self.project_root.join(task_value);
-            let safe_path: Option<std::path::PathBuf> =
-                match tokio::fs::canonicalize(&full_path).await {
-                    Ok(resolved) => {
-                        let canonical_root =
-                            tokio::fs::canonicalize(&self.project_root).await.ok();
-                        match canonical_root {
-                            Some(root) if resolved.starts_with(&root) => Some(resolved),
-                            Some(root) => {
-                                tracing::warn!(
-                                    node_id = %node.id,
-                                    task_path = %task_value,
-                                    resolved = %resolved.display(),
-                                    root = %root.display(),
-                                    "Task path escapes project_root — rejected, treating as inline description"
-                                );
-                                None
-                            }
-                            None => {
-                                // Can't resolve root — treat as inline to be safe
-                                None
-                            }
+            let safe_path: Option<std::path::PathBuf> = match tokio::fs::canonicalize(&full_path)
+                .await
+            {
+                Ok(resolved) => {
+                    let canonical_root = tokio::fs::canonicalize(&self.project_root).await.ok();
+                    match canonical_root {
+                        Some(root) if resolved.starts_with(&root) => Some(resolved),
+                        Some(root) => {
+                            tracing::warn!(
+                                node_id = %node.id,
+                                task_path = %task_value,
+                                resolved = %resolved.display(),
+                                root = %root.display(),
+                                "Task path escapes project_root — rejected, treating as inline description"
+                            );
+                            None
+                        }
+                        None => {
+                            // Can't resolve root — treat as inline to be safe
+                            None
                         }
                     }
-                    Err(_) => {
-                        // File doesn't exist — fall through to inline treatment
-                        None
-                    }
-                };
+                }
+                Err(_) => {
+                    // File doesn't exist — fall through to inline treatment
+                    None
+                }
+            };
 
             if let Some(path) = safe_path {
                 tracing::info!(
@@ -241,13 +241,12 @@ impl DagScheduler {
 
         for dep_id in &node.depends_on {
             let dep_node = graph.find_node(dep_id);
-            let dep_name = dep_node
-                .as_ref()
-                .map(|n| n.task.as_str())
-                .unwrap_or(dep_id);
+            let dep_name = dep_node.as_ref().map(|n| n.task.as_str()).unwrap_or(dep_id);
 
             // Check node status first for failed/skipped visibility
-            let status = dep_node.map(|n| n.status.clone()).unwrap_or(TaskStatus::Completed);
+            let status = dep_node
+                .map(|n| n.status.clone())
+                .unwrap_or(TaskStatus::Completed);
             match status {
                 TaskStatus::Failed => {
                     let error_text = dep_node
@@ -329,10 +328,7 @@ impl DagScheduler {
         lines.push("### Dependency Graph".to_string());
         for node in &graph.nodes {
             if node.depends_on.is_empty() {
-                lines.push(format!(
-                    "- **{}** → (root node, no dependencies)",
-                    node.id
-                ));
+                lines.push(format!("- **{}** → (root node, no dependencies)", node.id));
             } else {
                 let deps = node.depends_on.join(", ");
                 lines.push(format!("- **{}** → depends on: {}", node.id, deps));
@@ -444,8 +440,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_dag_overview_block_multi_node() {
         let n1 = TaskNode::new("n1", "agent-a", "Backend API");
-        let n2 =
-            TaskNode::new("n2", "agent-b", "Frontend UI").with_dependencies(vec!["n1".into()]);
+        let n2 = TaskNode::new("n2", "agent-b", "Frontend UI").with_dependencies(vec!["n1".into()]);
         let n3 = TaskNode::new("n3", "agent-c", "Integration tests")
             .with_dependencies(vec!["n1".into()]);
         let graph = TaskGraph::new(vec![n1.clone(), n2.clone(), n3.clone()]);
@@ -475,16 +470,16 @@ mod tests {
     #[tokio::test]
     async fn test_upstream_context_shows_failed_node() {
         let n1 = TaskNode::new("n1", "agent-a", "Backend");
-        let n2 =
-            TaskNode::new("n2", "agent-b", "Frontend").with_dependencies(vec!["n1".into()]);
+        let n2 = TaskNode::new("n2", "agent-b", "Frontend").with_dependencies(vec!["n1".into()]);
         let mut graph = TaskGraph::new(vec![n1.clone(), n2.clone()]);
 
         // Simulate n1 failed with error
         graph.find_node_mut("n1").unwrap().status = TaskStatus::Failed;
-        graph.find_node_mut("n1").unwrap().metadata.insert(
-            "last_error".to_string(),
-            "segfault in parser".to_string(),
-        );
+        graph
+            .find_node_mut("n1")
+            .unwrap()
+            .metadata
+            .insert("last_error".to_string(), "segfault in parser".to_string());
 
         let scheduler = DagScheduler::new(PathBuf::from("/tmp"), graph);
         let ctx = scheduler.build_upstream_context_block(&n2).await;
@@ -504,8 +499,7 @@ mod tests {
     #[tokio::test]
     async fn test_upstream_context_shows_skipped_node() {
         let n1 = TaskNode::new("n1", "agent-a", "Backend");
-        let n2 =
-            TaskNode::new("n2", "agent-b", "Frontend").with_dependencies(vec!["n1".into()]);
+        let n2 = TaskNode::new("n2", "agent-b", "Frontend").with_dependencies(vec!["n1".into()]);
         let mut graph = TaskGraph::new(vec![n1.clone(), n2.clone()]);
 
         // Simulate n1 skipped
@@ -529,8 +523,7 @@ mod tests {
     #[tokio::test]
     async fn test_upstream_context_shows_output_warnings() {
         let n1 = TaskNode::new("n1", "agent-a", "Backend");
-        let n2 =
-            TaskNode::new("n2", "agent-b", "Frontend").with_dependencies(vec!["n1".into()]);
+        let n2 = TaskNode::new("n2", "agent-b", "Frontend").with_dependencies(vec!["n1".into()]);
         let mut graph = TaskGraph::new(vec![n1.clone(), n2.clone()]);
 
         // n1 completed but with output warnings
@@ -560,10 +553,7 @@ mod tests {
     async fn test_result_validation_missing_keys() {
         let mut n1 = TaskNode::new("n1", "agent-a", "Backend");
         n1.expected_outputs = std::collections::HashMap::from([
-            (
-                "api_endpoint".to_string(),
-                "The API endpoint".to_string(),
-            ),
+            ("api_endpoint".to_string(), "The API endpoint".to_string()),
             ("schema_file".to_string(), "Schema file path".to_string()),
         ]);
         let graph = TaskGraph::new(vec![n1]);
@@ -574,10 +564,8 @@ mod tests {
             let mut g = scheduler.graph.lock().await;
             let node = g.find_node_mut("n1").unwrap();
             let json_val = serde_json::json!({"api_endpoint": "/api/v1"});
-            let actual_keys: std::collections::HashSet<&String> = json_val
-                .as_object()
-                .map(|o| o.keys().collect())
-                .unwrap();
+            let actual_keys: std::collections::HashSet<&String> =
+                json_val.as_object().map(|o| o.keys().collect()).unwrap();
             let missing: Vec<&String> = node
                 .expected_outputs
                 .keys()

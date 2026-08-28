@@ -660,7 +660,9 @@ impl AgentLauncher {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
                 // Sanity check: verify agent actually modified files (has audit log entries).
-                if let Some(agent_info) = running_agents.lock().await.get(&agent_id_monitor).cloned() {
+                if let Some(agent_info) =
+                    running_agents.lock().await.get(&agent_id_monitor).cloned()
+                {
                     verify_agent_activity(&agent_id_monitor, &agent_info.task_id).await;
                 }
             } else {
@@ -765,8 +767,10 @@ impl AgentLauncher {
             let mut lines = Vec::new();
             lines.push(String::new());
             lines.push("### Expected Outputs".to_string());
-            lines.push("You MUST include these keys in the `outputs` frontmatter of your result file:"
-                .to_string());
+            lines.push(
+                "You MUST include these keys in the `outputs` frontmatter of your result file:"
+                    .to_string(),
+            );
             for (key, desc) in &assignment.expected_outputs {
                 lines.push(format!("- **{}**: {}", key, desc));
             }
@@ -2222,8 +2226,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_result_file_outputs_normal() {
-        use tempfile::NamedTempFile;
         use std::io::Write;
+        use tempfile::NamedTempFile;
         let mut f = NamedTempFile::new().unwrap();
         write!(
             f,
@@ -2237,8 +2241,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_result_file_outputs_no_frontmatter() {
-        use tempfile::NamedTempFile;
         use std::io::Write;
+        use tempfile::NamedTempFile;
         let mut f = NamedTempFile::new().unwrap();
         write!(f, "# Task Result\n\nNo frontmatter here.").unwrap();
         let result = super::parse_result_file_outputs(f.path()).await;
@@ -2247,8 +2251,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_result_file_outputs_no_outputs_key() {
-        use tempfile::NamedTempFile;
         use std::io::Write;
+        use tempfile::NamedTempFile;
         let mut f = NamedTempFile::new().unwrap();
         write!(f, "---\ntitle: test\nauthor: someone\n---\n# Content").unwrap();
         let result = super::parse_result_file_outputs(f.path()).await;
@@ -2257,8 +2261,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_result_file_outputs_malformed_yaml() {
-        use tempfile::NamedTempFile;
         use std::io::Write;
+        use tempfile::NamedTempFile;
         let mut f = NamedTempFile::new().unwrap();
         write!(f, "---\n: : bad yaml\n  - [broken\n---\n# Content").unwrap();
         let result = super::parse_result_file_outputs(f.path()).await;
@@ -2267,8 +2271,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_result_file_outputs_empty_outputs_mapping() {
-        use tempfile::NamedTempFile;
         use std::io::Write;
+        use tempfile::NamedTempFile;
         let mut f = NamedTempFile::new().unwrap();
         write!(f, "---\noutputs: {{}}\n---\n# Content").unwrap();
         let result = super::parse_result_file_outputs(f.path()).await;

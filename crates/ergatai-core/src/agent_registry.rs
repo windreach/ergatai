@@ -54,10 +54,7 @@ pub struct AgentInfo {
 
 /// Default subscription presets for new agents
 fn default_subscription_presets() -> Vec<String> {
-    vec![
-        "lifecycle".to_string(),
-        "receipts".to_string(),
-    ]
+    vec!["lifecycle".to_string(), "receipts".to_string()]
 }
 
 /// Available subscription preset definitions

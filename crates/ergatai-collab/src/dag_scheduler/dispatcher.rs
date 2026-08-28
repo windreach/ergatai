@@ -267,7 +267,7 @@ impl DagScheduler {
 
                 // Start timeout watchdog if timeout is configured
                 if let Some(timeout_secs) = adjusted_timeout {
-                    self.spawn_timeout_watcher(&task_id, timeout_secs, &node.agent);
+                    self.spawn_timeout_watcher(&task_id, timeout_secs);
                 }
 
                 return Ok(task_id);
@@ -282,7 +282,7 @@ impl DagScheduler {
 
         // Start timeout watchdog if timeout is configured
         if let Some(timeout_secs) = adjusted_timeout {
-            self.spawn_timeout_watcher(&tid, timeout_secs, &node.agent);
+            self.spawn_timeout_watcher(&tid, timeout_secs);
         }
 
         Ok(tid)
@@ -412,8 +412,7 @@ mod tests {
         // The auto-timeout will bump `timeout` up to 60s, but started_at is 120s ago,
         // so the effective deadline is still 60s in the past.
         graph.timeout = Some(1);
-        graph.started_at =
-            Some((chrono::Utc::now() - chrono::Duration::seconds(120)).to_rfc3339());
+        graph.started_at = Some((chrono::Utc::now() - chrono::Duration::seconds(120)).to_rfc3339());
 
         let temp_dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(temp_dir.path().join(".ergatai")).unwrap();
@@ -437,15 +436,18 @@ mod tests {
     /// Test that profile validation passes when no profiles are defined (backward compat)
     #[tokio::test]
     async fn test_profile_validation_no_profiles_passes() {
-        let graph = TaskGraph::new(vec![TaskNode::new("n1", "agent-a", "Task A")
-            .with_required_profile("code-reviewer")]);
+        let graph = TaskGraph::new(vec![
+            TaskNode::new("n1", "agent-a", "Task A").with_required_profile("code-reviewer")
+        ]);
         let temp_dir = tempfile::tempdir().unwrap();
         // No profiles directory
         std::fs::create_dir_all(temp_dir.path().join(".ergatai")).unwrap();
         let scheduler = DagScheduler::new(temp_dir.path().to_path_buf(), graph);
 
         // validate_agent_profile should pass when no profiles exist
-        let result = scheduler.validate_agent_profile("agent-a", "code-reviewer").await;
+        let result = scheduler
+            .validate_agent_profile("agent-a", "code-reviewer")
+            .await;
         assert!(result.is_ok(), "Should pass when no profiles defined");
     }
 
@@ -471,7 +473,9 @@ max_concurrency: 3
         let scheduler = DagScheduler::new(temp_dir.path().to_path_buf(), graph);
 
         // Validation should pass
-        let result = scheduler.validate_agent_profile("agent-a", "code-reviewer").await;
+        let result = scheduler
+            .validate_agent_profile("agent-a", "code-reviewer")
+            .await;
         assert!(result.is_ok(), "Should pass when profile exists");
     }
 
@@ -493,7 +497,9 @@ description: General purpose agent
         let scheduler = DagScheduler::new(temp_dir.path().to_path_buf(), graph);
 
         // Validation should fail - required profile doesn't exist
-        let result = scheduler.validate_agent_profile("agent-a", "code-reviewer").await;
+        let result = scheduler
+            .validate_agent_profile("agent-a", "code-reviewer")
+            .await;
         assert!(result.is_err(), "Should fail when profile doesn't exist");
         let err = result.unwrap_err();
         assert!(err.to_string().contains("code-reviewer"));

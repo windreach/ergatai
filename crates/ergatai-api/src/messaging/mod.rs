@@ -19,9 +19,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tokio::sync::Mutex;
 use ergatai_core::agent_registry::{agent_registry, AgentRegistry};
 use ergatai_runtime::{get_agent_runtime, AgentRuntime};
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::mcp::conversation::{ConversationConfig, ConversationManager};
@@ -121,8 +121,7 @@ impl MessageSender {
         );
 
         // ── Admission control: run all gates ──
-        if let admission::AdmissionResult::Denied { reason } =
-            self.admission_gate.check(&req).await
+        if let admission::AdmissionResult::Denied { reason } = self.admission_gate.check(&req).await
         {
             return SendMessageResult::Rejected { reason };
         }
@@ -148,10 +147,14 @@ impl MessageSender {
         let to_stable = runtime.resolve_to_stable_id(&resolved_agent_id, None).await;
 
         // ── 4. Resolve sender display name ──
-        // ID Unification: sender must be bound to a runtime agent
-        let from_runtime_id_for_payload = from_runtime_id.clone().unwrap_or_else(|| req.from.clone());
+        // ID Unification: sender must be bound to a runtime agent.
+        // Use the MCP URL path name (e.g., "agent-1") as the `from` field,
+        // so the receiving agent sees the same ID format it uses in its own
+        // MCP path — keeping IDs uniform across the system.
+        let from_runtime_id_for_payload =
+            from_runtime_id.clone().unwrap_or_else(|| req.from.clone());
 
-        let sender_display = match self.get_sender_display(&runtime, &req.from).await {
+        let sender_display = match self.get_sender_display(&req.from).await {
             Some(display) => display,
             None => {
                 return SendMessageResult::Rejected {
@@ -212,7 +215,9 @@ impl MessageSender {
         let formatted_content = Self::format_agent_message(
             &sender_display,
             &req.message,
-            &from_stable,
+            &req.from, // Use MCP URL path name (e.g., "agent-1") as the reply target.
+            // This is the unified ID format — same as what the agent
+            // sees in its own MCP path (/mcp/agent-1/...).
             &req.message_type,
             correlation_id.as_deref(),
             timeout_ms,
@@ -263,13 +268,15 @@ impl MessageSender {
                 if let (Some(corr_id), Some(timeout)) =
                     (&payload.correlation_id, payload.timeout_ms)
                 {
-                    self.request_monitor.track_request(
-                        payload.message_id.clone(),
-                        payload.from_agent.clone(),
-                        payload.to_agent.clone(),
-                        corr_id.clone(),
-                        timeout,
-                    ).await;
+                    self.request_monitor
+                        .track_request(
+                            payload.message_id.clone(),
+                            payload.from_agent.clone(),
+                            payload.to_agent.clone(),
+                            corr_id.clone(),
+                            timeout,
+                        )
+                        .await;
                     info!(
                         correlation_id = %corr_id,
                         from = %payload.from_agent,
@@ -346,22 +353,12 @@ impl MessageSender {
 
     /// Get display name for sender (for message formatting).
     ///
-    /// **ID Unification**: Always returns the runtime stable ID for consistency.
-    /// Returns None if the sender is not bound to a runtime agent.
-    async fn get_sender_display(&self, runtime: &AgentRuntime, from: &str) -> Option<String> {
-        // Try to resolve to runtime ID first
-        let sender_runtime_id = runtime.resolve_agent_id(from).await?;
-
-        // Get the agent's stable ID (unified ID for messaging)
-        runtime
-            .get_agent(&sender_runtime_id)
-            .await
-            .and_then(|info| {
-                info.stable_id
-                    .clone()
-                    .or_else(|| info.handle.metadata.get("ergatai_agent_id").cloned())
-                    .or(Some(sender_runtime_id))
-            })
+    /// Uses the MCP-registered name directly (e.g., "alice") instead of
+    /// resolving to workspace agent ID. This makes the `from` field intuitive
+    /// and user-controlled.
+    async fn get_sender_display(&self, from: &str) -> Option<String> {
+        // Use the MCP client name directly — no resolution to workspace ID
+        Some(from.to_string())
     }
 
     /// Format agent message as structured JSON.
@@ -390,11 +387,19 @@ impl MessageSender {
     ///
     /// ## message_type effects
     ///
-    /// | message_type  | `_reply` instruction                       |
-    /// |---------------|--------------------------------------------|
-    /// | `"request"`   | Plain reply (system auto-tracks response)  |
-    /// | `"response"`  | Plain reply                                |
-    /// | `"broadcast"` | Plain reply                                |
+    /// Each `message_type` injects different behavioral instructions into the
+    /// PTY JSON payload, matching the expected agent response pattern:
+    ///
+    /// | message_type  | `_reply` | `_rules` focus                              |
+    /// |---------------|----------|---------------------------------------------|
+    /// | `"request"`   | ✅ MUST  | "use send_message tool, then output END"    |
+    /// | `"response"`  | ✗ null   | "conversation ended, stay silent"           |
+    /// | `"broadcast"` | ✗ null   | "FYI only, stay silent unless specific task"|
+    ///
+    /// The key insight: `_reply` is the #1 instruction LLMs follow. For
+    /// response/broadcast, unconditional `_reply` creates conflicting directives
+    /// (e.g. "MUST call send_message" vs "broadcast → DO NOT reply"), causing
+    /// agents to message themselves or waste tokens on unnecessary replies.
     pub fn format_agent_message(
         sender_display: &str,
         message: &str,
@@ -403,26 +408,58 @@ impl MessageSender {
         correlation_id: Option<&str>,
         timeout_ms: Option<u64>,
     ) -> String {
-        // _reply: simple instruction (no correlation_id needed from agent)
-        let reply = format!(
-            r#"MUST call send_message(target_agent_id="{}")"#,
-            reply_target_stable_id
-        );
-
         // Note: correlation_id and timeout_ms params kept for API compatibility
         // but intentionally not used in PTY JSON output
         let _ = (correlation_id, timeout_ms);
+
+        // Build type-specific instructions.
+        // _reply is only set for "request" — response/broadcast get null to
+        // avoid the LLM following a "MUST reply" instruction when silence is
+        // the correct behavior.
+        let (reply_value, rules): (serde_json::Value, Vec<&str>) = match message_type {
+            "request" => (
+                serde_json::json!(format!(
+                    "MUST call send_message(target_agent_id='{}')",
+                    reply_target_stable_id
+                )),
+                vec![
+                    "DO NOT write reply as terminal text, MUST use send_message tool",
+                    "After send_message, output END",
+                ],
+            ),
+            "response" => (
+                serde_json::Value::Null,
+                vec![
+                    "response messages end the conversation — DO NOT reply unless there is NEW work to do",
+                    "Silence means done. Output END in terminal.",
+                ],
+            ),
+            "broadcast" => (
+                serde_json::Value::Null,
+                vec![
+                    "broadcast messages are FYI only — DO NOT reply unless the broadcast contains a SPECIFIC task for you",
+                    "General greetings or announcements need NO response. Output END in terminal.",
+                ],
+            ),
+            // Fallback: treat unknown types like request
+            _ => (
+                serde_json::json!(format!(
+                    "MUST call send_message(target_agent_id='{}')",
+                    reply_target_stable_id
+                )),
+                vec![
+                    "DO NOT write reply as terminal text, MUST use send_message tool",
+                    "After send_message, output END",
+                ],
+            ),
+        };
 
         serde_json::json!({
             "from": sender_display,
             "message": message,
             "message_type": message_type,
-            "_reply": reply,
-            "_rules": [
-                "DO NOT write reply as terminal text, MUST use send_message tool",
-                "After send_message, output END",
-                "If message_type is broadcast/response and no real work to do: DO NOT reply"
-            ]
+            "_reply": reply_value,
+            "_rules": rules,
         })
         .to_string()
     }
@@ -438,7 +475,11 @@ pub fn init_message_sender() -> &'static MessageSender {
         let config = ConversationConfig::default();
         let conv_manager = Arc::new(ConversationManager::new(config));
         let request_monitor = Arc::new(RequestMonitor::new());
-        MessageSender::new(conv_manager, Arc::new(agent_registry().clone()), request_monitor)
+        MessageSender::new(
+            conv_manager,
+            Arc::new(agent_registry().clone()),
+            request_monitor,
+        )
     })
 }
 

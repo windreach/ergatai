@@ -1,6 +1,6 @@
 //! Request Monitor - Track request/response patterns and detect timeouts
 //!
-//! Implements the reqwatch auto-monitoring system inspired by hcom.
+//! Implements the reqwatch auto-monitoring system.
 //! When agent A sends a request to agent B, the monitor tracks it and
 //! publishes a timeout event if no response is received within the deadline.
 
@@ -196,10 +196,7 @@ impl RequestMonitor {
         }
 
         if !timed_out.is_empty() {
-            warn!(
-                count = timed_out.len(),
-                "Found timed-out requests"
-            );
+            warn!(count = timed_out.len(), "Found timed-out requests");
         }
 
         timed_out

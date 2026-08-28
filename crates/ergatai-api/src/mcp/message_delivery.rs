@@ -316,17 +316,18 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
             if payload.requires_receipt {
                 if let Some(conn) = ergatai_nats::get_nats_connection().await {
                     let bus = ergatai_nats::EventBus::new(conn);
-                    let read_at = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-                        Ok(duration) => duration.as_secs(),
-                        Err(e) => {
-                            warn!(
-                                message_id = %payload.message_id,
-                                error = %e,
-                                "System time before UNIX epoch, using 0 for read_at"
-                            );
-                            0
-                        }
-                    };
+                    let read_at =
+                        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+                            Ok(duration) => duration.as_secs(),
+                            Err(e) => {
+                                warn!(
+                                    message_id = %payload.message_id,
+                                    error = %e,
+                                    "System time before UNIX epoch, using 0 for read_at"
+                                );
+                                0
+                            }
+                        };
 
                     // Note: from_agent is the READER (recipient of original message)
                     // to_agent is the ORIGINAL SENDER (who receives the receipt)

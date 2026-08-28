@@ -94,7 +94,6 @@ pub struct DagScheduler {
 }
 
 impl DagScheduler {
-
     /// Get a clone of the execution context
     pub fn context(&self) -> Arc<Mutex<DagContext>> {
         self.context.clone()
@@ -169,18 +168,21 @@ impl DagScheduler {
     /// When enabled, a checkpoint is automatically created after each node completes.
     /// Checkpoints are chained (parent-child) for incremental recovery.
     pub fn enable_auto_checkpoint(&self) {
-        self.auto_checkpoint.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.auto_checkpoint
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         tracing::info!(dag_id = %self.dag_id, "Auto-checkpoint enabled");
     }
 
     /// Disable automatic checkpoint creation
     pub fn disable_auto_checkpoint(&self) {
-        self.auto_checkpoint.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.auto_checkpoint
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Check if auto-checkpoint is enabled
     pub fn is_auto_checkpoint_enabled(&self) -> bool {
-        self.auto_checkpoint.load(std::sync::atomic::Ordering::SeqCst)
+        self.auto_checkpoint
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Create an automatic checkpoint (called internally on node completion)
@@ -189,7 +191,10 @@ impl DagScheduler {
             return None;
         }
 
-        let sequence = self.checkpoint_sequence.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let sequence = self
+            .checkpoint_sequence
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
         let parent = self.last_checkpoint_id.lock().await.clone();
 
         match self.create_checkpoint(parent, sequence).await {
@@ -229,7 +234,8 @@ impl DagScheduler {
         tokio::spawn(async move {
             let mut sequence = 0u64;
             let mut last_checkpoint: Option<String> = None;
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
+            let mut interval =
+                tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
 
             loop {
                 interval.tick().await;
@@ -248,7 +254,10 @@ impl DagScheduler {
 
                 // Create checkpoint
                 sequence += 1;
-                match scheduler.create_checkpoint(last_checkpoint.clone(), sequence).await {
+                match scheduler
+                    .create_checkpoint(last_checkpoint.clone(), sequence)
+                    .await
+                {
                     Ok(checkpoint) => {
                         last_checkpoint = Some(checkpoint.checkpoint_id.clone());
                         tracing::debug!(
@@ -307,11 +316,9 @@ impl DagScheduler {
         project_root: PathBuf,
         dag_id: &str,
     ) -> ErgataiResult<Option<Self>> {
-        let checkpoint = crate::dag_scheduler::lifecycle::StateCheckpoint::latest_for_dag(
-            &project_root,
-            dag_id,
-        )
-        .await?;
+        let checkpoint =
+            crate::dag_scheduler::lifecycle::StateCheckpoint::latest_for_dag(&project_root, dag_id)
+                .await?;
 
         match checkpoint {
             Some(ckpt) => {
@@ -321,7 +328,6 @@ impl DagScheduler {
             None => Ok(None),
         }
     }
-
 
     /// Get the unique DAG identifier (UUID)
     pub fn dag_id(&self) -> &str {
@@ -584,7 +590,6 @@ impl DagScheduler {
         graph.is_complete()
     }
 
-
     /// Check if the DAG has any viable nodes (Pending or Running) after recovery.
     ///
     /// Returns true if at least one node is Pending or Running.
@@ -697,8 +702,7 @@ async fn handle_dag_event(js_msg: &async_nats::jetstream::Message, scheduler: &D
                             missing_keys = ?missing,
                             "{}", warning
                         );
-                        node.metadata
-                            .insert("output_warnings".to_string(), warning);
+                        node.metadata.insert("output_warnings".to_string(), warning);
                     }
                 }
             }
@@ -951,7 +955,6 @@ mod tests {
         assert!((p - 0.5).abs() < 0.01, "expected ~0.5 progress, got {}", p);
     }
 
-
     #[tokio::test]
     async fn test_status_prompt_returns_non_empty() {
         let graph = sample_graph();
@@ -992,12 +995,13 @@ mod tests {
         );
     }
 
-
     // ===== handle_submission_error tests =====
 
     /// Helper: build a 3-node chain n1 → n2 → n3 in a scheduler.
     /// n1 is set to the given initial status.
-    pub(super) async fn chain_scheduler(n1_status: TaskStatus) -> (DagScheduler, tempfile::TempDir) {
+    pub(super) async fn chain_scheduler(
+        n1_status: TaskStatus,
+    ) -> (DagScheduler, tempfile::TempDir) {
         let graph = TaskGraph::new(vec![
             TaskNode::new("n1", "a", "A"),
             TaskNode::new("n2", "a", "B").with_dependencies(vec!["n1".into()]),

@@ -30,9 +30,14 @@ async fn test_checkpoint_create_with_parent() {
     let context = DagContext::empty();
 
     let ckpt1 = StateCheckpoint::create("dag-1", &graph, &context, None, 1).await;
-    let ckpt2 =
-        StateCheckpoint::create("dag-1", &graph, &context, Some(ckpt1.checkpoint_id.clone()), 2)
-            .await;
+    let ckpt2 = StateCheckpoint::create(
+        "dag-1",
+        &graph,
+        &context,
+        Some(ckpt1.checkpoint_id.clone()),
+        2,
+    )
+    .await;
 
     assert_eq!(ckpt2.parent_checkpoint, Some(ckpt1.checkpoint_id.clone()));
     assert_eq!(ckpt2.sequence, 2);
@@ -98,7 +103,10 @@ async fn test_checkpoint_preserves_context() {
         .unwrap();
 
     // Check global variables
-    assert_eq!(loaded.context.get_global("global_var"), Some("global_value"));
+    assert_eq!(
+        loaded.context.get_global("global_var"),
+        Some("global_value")
+    );
 
     // Check node outputs exist
     assert!(loaded.context.has_node_outputs("n1"));

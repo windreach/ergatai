@@ -48,10 +48,7 @@ pub fn get_dag_scheduler_by_id(dag_id: Option<&str>) -> Option<DagScheduler> {
                 guard.get(id).cloned()
             } else {
                 // Return the most recently created DAG
-                guard
-                    .values()
-                    .max_by_key(|s| s.created_at())
-                    .cloned()
+                guard.values().max_by_key(|s| s.created_at()).cloned()
             }
         }
         Err(poisoned) => {
@@ -60,10 +57,7 @@ pub fn get_dag_scheduler_by_id(dag_id: Option<&str>) -> Option<DagScheduler> {
             if let Some(id) = dag_id {
                 guard.get(id).cloned()
             } else {
-                guard
-                    .values()
-                    .max_by_key(|s| s.created_at())
-                    .cloned()
+                guard.values().max_by_key(|s| s.created_at()).cloned()
             }
         }
     }

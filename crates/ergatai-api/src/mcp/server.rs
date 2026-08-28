@@ -325,11 +325,8 @@ impl ErgataiMcpServer {
                     Some(s) => {
                         // Get participants from the graph nodes (unique agents)
                         let graph = s.graph().lock_owned().await;
-                        let participants: std::collections::HashSet<String> = graph
-                            .nodes
-                            .iter()
-                            .map(|n| n.agent.clone())
-                            .collect();
+                        let participants: std::collections::HashSet<String> =
+                            graph.nodes.iter().map(|n| n.agent.clone()).collect();
                         Some(participants)
                     }
                     None => {
@@ -398,7 +395,12 @@ impl ErgataiMcpServer {
                     "is_idle": info.lifecycle.is_idle(),
                     "is_processing": info.lifecycle.is_processing(),
                     "status": if info.mcp_agent_id.is_some() { "active" } else { "discovered" },
-                    "ergatai_agent_id": info.handle.metadata.get("ergatai_agent_id"),
+                    // ID Unification: prefer MCP URL path name (e.g., "agent-1") when
+                    // the agent is MCP-bound, so it matches the `from` field in messages
+                    // and the `target_agent_id` agents use in send_message.
+                    // Fall back to workspace ID (e.g., "start-opencode-3-agent-1") for
+                    // agents not yet bound to an MCP connection.
+                    "ergatai_agent_id": info.mcp_agent_id.as_ref().or_else(|| info.handle.metadata.get("ergatai_agent_id")),
                     "last_heartbeat": info.last_heartbeat.to_rfc3339(),
                 })
             })
@@ -481,7 +483,11 @@ impl ErgataiMcpServer {
     ///   Wait for the target to consume messages before retrying.
     #[tool(
         description = "Send a message to another online agent. Persists via NATS JetStream with PTY injection fallback.\n\nWHEN TO USE:\n- Need to communicate with another agent (request help, send response, broadcast info)\n- User explicitly asks to message another agent\n- Responding to a received message\n\nWHEN NOT TO USE:\n- Target agent is offline (check list_agents first)\n- Messaging yourself (will be rejected)\n- Sending a reply that is ONLY polite acknowledgment (\"thanks\", \"ok\", \"got it\", \"thanks for the update\")\n- Responding to a broadcast that has no specific task for you\n- Responding to a \"response\" message that is clearly ending the conversation\n\nWHEN NOT TO RESPOND (ANTI-LOOP — CRITICAL):\nEvery unnecessary reply creates a loop. Follow these rules:\n- broadcast with no task/question → DO NOT reply, ignore silently\n- response that says \"thanks\", \"ok\", \"got it\" → DO NOT reply, conversation is done\n- You already replied once → STOP, do not reply again\n- Your message would just be acknowledgment → SUPPRESS IT, silence is better than a loop\n- message_type = \"request\" with real task → DO reply (this is the ONLY case you should reply)\n\nPARAMETERS:\n- target_agent_id (REQUIRED): recipient's ergatai_agent_id from list_agents (e.g., \"agent-2\"). NOT the agent_id field (e.g., \"%15\").\n- message (REQUIRED): message content\n- message_type (OPTIONAL, default \"request\"):\n  * \"request\": expects response; system auto-tracks correlation_id, starts 30s timeout\n  * \"response\": reply to received request; system auto-tracks correlation_id\n  * \"broadcast\": informational; no tracking, no timeout\n- correlation_id (OPTIONAL): system auto-tracks, typically not needed\n\nRECEIVING MESSAGES:\nWhen you receive a message, it's JSON with these fields:\n- from: sender's agent ID (use as target_agent_id when replying)\n- message: the actual content\n- message_type: \"request\" | \"response\" | \"broadcast\"\n- _reply: exact send_message call to make (COPY THIS EXACTLY)\n- _rules: rules you MUST follow\n\nHOW TO RESPOND:\nIf message_type = \"request\" with a concrete task or question:\n1. Do your work\n2. Call send_message(target_agent_id=<from>, message=<reply>, message_type=\"response\")\n3. Output END in terminal\nSystem auto-tracks correlation — no need to pass correlation_id manually.\n\nIf message_type = \"response\": DO NOT reply again unless there is NEW work to do. Most \"response\" messages end the conversation. Silence = done.\n\nIf message_type = \"broadcast\": DO NOT reply unless the broadcast contains a SPECIFIC task for you. General greetings or FYI broadcasts need NO response.\n\nRESPONSE ON SUCCESS:\n{status: \"queued\"|\"direct_delivered\", target_agent: string, delivery_method: string, stream?: string, sequence?: number}\n\nRESPONSE ON ERROR:\nMCP error with reason:\n- \"target agent not found\": call list_agents to verify target is online\n- \"rate limit exceeded\": 60 msg/min/agent, back off and retry\n- \"communication policy denied\": DAG MeshPolicy forbids this pair\n- \"backpressure\": target inbox full (>=1000 pending), wait and retry\n- \"sender not bound to runtime agent\": MCP clients must be bound to PTY agents\n\nRATE LIMITS:\n- 60 messages per minute per agent (sliding window)\n- NATS backpressure: >=1000 pending messages triggers rejection\n- You CANNOT message yourself",
-        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false)
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
     )]
     async fn send_message(
         &self,
@@ -640,7 +646,11 @@ impl ErgataiMcpServer {
     /// (those with all `depends_on` satisfied) as their worker agents become available.
     #[tool(
         description = "Submit a DAG workflow for multi-agent collaboration. BEFORE calling: (1) run `validate_dag_yaml` with the same YAML to dry-run validation; (2) run `list_agents` to confirm every `agent:` in the YAML matches an online agent. YOU CANNOT be a task worker in your own DAG — the scheduler must be a pure coordinator. YAML rules: unknown top-level fields rejected; priority ∈ {low,medium,high}; timeouts > 0; `communication` ∈ {open,adjacent,star:{hub}} with hub existing in tasks; template vars must match declared parameters. Only ONE DAG can run at a time — use `get_dag_status` to check before submitting. RESPONSE: {status: 'submitted', submitted_nodes, progress: {completed, total, percent}, graph_status}. TIP: After submission, poll `get_dag_status` to monitor progress.",
-        annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false)
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
     )]
     async fn submit_orchestration(
         &self,
@@ -965,10 +975,32 @@ impl ErgataiMcpServer {
                 let graph_arc = scheduler.graph();
                 let graph = graph_arc.lock().await;
                 let total = graph.nodes.len();
-                let completed = graph.nodes.iter().filter(|n| matches!(n.status, ergatai_core::orchestration::TaskStatus::Completed)).count();
-                let running = graph.nodes.iter().filter(|n| matches!(n.status, ergatai_core::orchestration::TaskStatus::Running)).count();
-                let failed = graph.nodes.iter().filter(|n| matches!(n.status, ergatai_core::orchestration::TaskStatus::Failed)).count();
-                let pending = graph.nodes.iter().filter(|n| matches!(n.status, ergatai_core::orchestration::TaskStatus::Pending)).count();
+                let completed = graph
+                    .nodes
+                    .iter()
+                    .filter(|n| {
+                        matches!(n.status, ergatai_core::orchestration::TaskStatus::Completed)
+                    })
+                    .count();
+                let running = graph
+                    .nodes
+                    .iter()
+                    .filter(|n| {
+                        matches!(n.status, ergatai_core::orchestration::TaskStatus::Running)
+                    })
+                    .count();
+                let failed = graph
+                    .nodes
+                    .iter()
+                    .filter(|n| matches!(n.status, ergatai_core::orchestration::TaskStatus::Failed))
+                    .count();
+                let pending = graph
+                    .nodes
+                    .iter()
+                    .filter(|n| {
+                        matches!(n.status, ergatai_core::orchestration::TaskStatus::Pending)
+                    })
+                    .count();
                 let percent = if total > 0 {
                     ((completed + failed) as f64 / total as f64 * 100.0).round() as u32
                 } else {
@@ -979,7 +1011,8 @@ impl ErgataiMcpServer {
                 // Fetch collaboration session info (MeshPolicy + participants)
                 let collab = scheduler.collaboration().await;
                 let policy_str = format!("{:?}", collab.policy);
-                let participants: Vec<&str> = collab.participants.iter().map(|s| s.as_str()).collect();
+                let participants: Vec<&str> =
+                    collab.participants.iter().map(|s| s.as_str()).collect();
 
                 let status = if is_complete { "completed" } else { "running" };
 
@@ -1010,7 +1043,6 @@ impl ErgataiMcpServer {
             }
         }
     }
-
 }
 
 // ── Helpers ──
@@ -1113,20 +1145,18 @@ async fn load_completed_dag_from_disk() -> Option<serde_json::Value> {
         .collect();
 
     // Load collaboration metadata from disk (if saved during finalization)
-    let collab_meta = ergatai_core::cross_agent::DagScheduler::load_collaboration_meta(
-        &project_root,
-        &dag_id,
-    )
-    .await
-    .unwrap_or_else(|| {
-        serde_json::json!({
-            "dag_id": dag_id,
-            "policy": "N/A",
-            "participants": [],
-            "participant_count": 0,
-            "created_at": "N/A",
-        })
-    });
+    let collab_meta =
+        ergatai_core::cross_agent::DagScheduler::load_collaboration_meta(&project_root, &dag_id)
+            .await
+            .unwrap_or_else(|| {
+                serde_json::json!({
+                    "dag_id": dag_id,
+                    "policy": "N/A",
+                    "participants": [],
+                    "participant_count": 0,
+                    "created_at": "N/A",
+                })
+            });
 
     Some(serde_json::json!({
         "status": "completed",
@@ -1158,21 +1188,14 @@ impl ServerHandler for ErgataiMcpServer {
         let agent_id = request.client_info.name.clone();
         let agent_version = request.client_info.version.clone();
 
-        // Generate a connection ID and unique agent key.
-        // When agent_identifier is present (from URL path), make the ID deterministic
-        // so reconnects to the same URL produce the same ID and can restore bindings.
+        // Use the MCP URL path component as the unique agent ID.
+        // This is the dynamic name from the URL (e.g., /mcp/agent-1/ → "agent-1").
+        // Falls back to client_info.name if no agent_identifier (default /mcp/ endpoint).
         let connection_id = uuid::Uuid::new_v4().to_string();
-        let unique_agent_id = if let Some(identifier) = &self.agent_identifier {
-            // Deterministic ID based on agent identifier (e.g., "agent-1").
-            // Use the identifier directly — it's already a URL path component
-            // so it's safe and stable across reconnects. Hashing would be
-            // unnecessary and DefaultHasher is not stable across Rust versions.
-            format!("{}@{}", agent_id, identifier)
-        } else {
-            // Random ID for clients without a stable identifier
-            let id_prefix = connection_id.get(..8).unwrap_or(&connection_id);
-            format!("{}@{}", agent_id, id_prefix)
-        };
+        let unique_agent_id = self
+            .agent_identifier
+            .clone()
+            .unwrap_or_else(|| agent_id.clone());
 
         info!(
             "Agent connecting: {} (version: {}, protocol: {}) → {}",
@@ -1222,11 +1245,13 @@ impl ServerHandler for ErgataiMcpServer {
         if let (Some(identifier), Some(binding_store)) =
             (&self.agent_identifier, crate::mcp::get_binding_store())
         {
-            if let Ok(Some(stored_binding)) =
-                binding_store.get_binding_by_identifier(identifier)
-            {
+            if let Ok(Some(stored_binding)) = binding_store.get_binding_by_identifier(identifier) {
                 // Verify the runtime agent still exists
-                if runtime.get_agent(&stored_binding.runtime_agent_id).await.is_some() {
+                if runtime
+                    .get_agent(&stored_binding.runtime_agent_id)
+                    .await
+                    .is_some()
+                {
                     // Try to restore the binding
                     match runtime
                         .try_bind_mcp_agent_with_identifier(
@@ -1267,75 +1292,72 @@ impl ServerHandler for ErgataiMcpServer {
         // Normal binding flow (if not restored from storage)
         if !binding_restored {
             match &self.agent_identifier {
-            Some(identifier) => {
-                // Precise binding based on agent identifier from URL path
-                match runtime
-                    .try_bind_mcp_agent_with_identifier(&unique_agent_id, identifier)
-                    .await
-                {
-                    Some(runtime_id) => {
-                        info!(
-                            mcp_agent_id = unique_agent_id,
-                            runtime_id = runtime_id,
-                            agent_identifier = identifier,
-                            "MCP agent bound to runtime agent by identifier"
-                        );
-                    }
-                    None => {
-                        // Identifier mismatch (e.g. URL path "agent-1" vs runtime
-                        // "ws1-agent-1"). Fall back to FIFO binding so MCP ↔ PTY
-                        // mapping still works.
-                        warn!(
-                            mcp_agent_id = unique_agent_id,
-                            agent_identifier = identifier,
-                            "Identifier-based binding failed, falling back to FIFO"
-                        );
-                        match runtime.try_bind_mcp_agent(&unique_agent_id).await {
-                            Some(runtime_id) => {
-                                info!(
-                                    mcp_agent_id = unique_agent_id,
-                                    runtime_id = runtime_id,
-                                    "MCP agent bound via FIFO fallback"
-                                );
-                            }
-                            None => {
-                                info!(
-                                    mcp_agent_id = unique_agent_id,
-                                    "MCP agent queued for binding (no unmapped runtime agent)"
-                                );
+                Some(identifier) => {
+                    // Precise binding based on agent identifier from URL path
+                    match runtime
+                        .try_bind_mcp_agent_with_identifier(&unique_agent_id, identifier)
+                        .await
+                    {
+                        Some(runtime_id) => {
+                            info!(
+                                mcp_agent_id = unique_agent_id,
+                                runtime_id = runtime_id,
+                                agent_identifier = identifier,
+                                "MCP agent bound to runtime agent by identifier"
+                            );
+                        }
+                        None => {
+                            // Identifier mismatch (e.g. URL path "agent-1" vs runtime
+                            // "ws1-agent-1"). Fall back to FIFO binding so MCP ↔ PTY
+                            // mapping still works.
+                            warn!(
+                                mcp_agent_id = unique_agent_id,
+                                agent_identifier = identifier,
+                                "Identifier-based binding failed, falling back to FIFO"
+                            );
+                            match runtime.try_bind_mcp_agent(&unique_agent_id).await {
+                                Some(runtime_id) => {
+                                    info!(
+                                        mcp_agent_id = unique_agent_id,
+                                        runtime_id = runtime_id,
+                                        "MCP agent bound via FIFO fallback"
+                                    );
+                                }
+                                None => {
+                                    info!(
+                                        mcp_agent_id = unique_agent_id,
+                                        "MCP agent queued for binding (no unmapped runtime agent)"
+                                    );
+                                }
                             }
                         }
                     }
                 }
-            }
-            None => {
-                // Fallback to FIFO binding (legacy behavior)
-                match runtime.try_bind_mcp_agent(&unique_agent_id).await {
-                    Some(runtime_id) => {
-                        info!(
-                            mcp_agent_id = unique_agent_id,
-                            runtime_id = runtime_id,
-                            "MCP agent bound to runtime agent on connect"
-                        );
-                    }
-                    None => {
-                        info!(
-                            mcp_agent_id = unique_agent_id,
-                            "MCP agent queued for binding (no unmapped runtime agent yet)"
-                        );
+                None => {
+                    // Fallback to FIFO binding (legacy behavior)
+                    match runtime.try_bind_mcp_agent(&unique_agent_id).await {
+                        Some(runtime_id) => {
+                            info!(
+                                mcp_agent_id = unique_agent_id,
+                                runtime_id = runtime_id,
+                                "MCP agent bound to runtime agent on connect"
+                            );
+                        }
+                        None => {
+                            info!(
+                                mcp_agent_id = unique_agent_id,
+                                "MCP agent queued for binding (no unmapped runtime agent yet)"
+                            );
+                        }
                     }
                 }
             }
-        }
         } // End of if !binding_restored
 
         // Persist the binding for reconnection support
         if let Some(binding_store) = crate::mcp::get_binding_store() {
             // Check if we have a successful binding by looking up the runtime ID
-            if let Some(runtime_id) = runtime
-                .resolve_agent_id(&unique_agent_id)
-                .await
-            {
+            if let Some(runtime_id) = runtime.resolve_agent_id(&unique_agent_id).await {
                 let binding = crate::mcp::AgentBinding {
                     mcp_agent_id: unique_agent_id.clone(),
                     runtime_agent_id: runtime_id.clone(),
@@ -1401,12 +1423,12 @@ Returns all online agents. Use `ergatai_agent_id` field (e.g., "agent-2") as `ta
 ### 1.2 Send messages — `send_message`
 See tool description for full details.
 
-QUICK REFERENCE:
+QUICK REFERENCE (use the `ergatai_agent_id` from `list_agents` as `target_agent_id`):
 ```
 # Send request (default)
 send_message(target_agent_id="agent-2", message="Please review")
 
-# Reply
+# Reply (use the `from` field of the received message)
 send_message(target_agent_id="agent-1", message="Done", message_type="response")
 
 # Broadcast
@@ -1453,11 +1475,11 @@ MUST distinguish user messages (free-form) from agent messages (JSON).
 ```
 
 Fields:
-- `from`: Sender ID (use as `target_agent_id` when replying)
+- `from`: Sender's MCP agent ID (e.g., "agent-1"). This is the unified ID format — use it as `target_agent_id` when replying. `from` and `_reply` always contain the same ID.
 - `message`: Content
 - `message_type`: "request" | "response" | "broadcast"
-- `_reply`: Exact `send_message` call (MUST follow)
-- `_rules`: Rules you MUST follow
+- `_reply`: (request only) Exact `send_message` call — MUST follow. **Absent (null) for response/broadcast** — do NOT call send_message unless there is new work or a specific task.
+- `_rules`: Type-specific behavioral rules — MUST follow
 
 ### How to respond
 When `message_type = "request"` with a concrete task or question:
@@ -2064,11 +2086,7 @@ mod tests {
             .unwrap();
 
         {
-            let server = ErgataiMcpServer::new(
-                registry.clone(),
-                peer_registry.clone(),
-                None,
-            );
+            let server = ErgataiMcpServer::new(registry.clone(), peer_registry.clone(), None);
             // Simulate initialize having set the session agent ID
             *server.session_agent_id.write().await = Some("drop-agent".to_string());
             // server is dropped here
@@ -2093,11 +2111,7 @@ mod tests {
             .unwrap();
 
         {
-            let _server = ErgataiMcpServer::new(
-                registry.clone(),
-                peer_registry.clone(),
-                None,
-            );
+            let _server = ErgataiMcpServer::new(registry.clone(), peer_registry.clone(), None);
             // session_agent_id is None (not initialized), so drop should not unregister anything
         }
 

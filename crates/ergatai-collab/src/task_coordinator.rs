@@ -694,11 +694,7 @@ Main handles conflicts.
         let task_id = "task-complete-test";
 
         // Create result files for both agents
-        let results_dir = dir
-            .path()
-            .join(".ergatai")
-            .join(".plan")
-            .join("results");
+        let results_dir = dir.path().join(".ergatai").join(".plan").join("results");
         tokio::fs::create_dir_all(&results_dir).await.unwrap();
         tokio::fs::write(results_dir.join(format!("{}-alice.md", task_id)), "ok")
             .await
@@ -810,11 +806,7 @@ Main handles conflicts.
             .await
             .unwrap();
 
-        let results_dir = dir
-            .path()
-            .join(".ergatai")
-            .join(".plan")
-            .join("results");
+        let results_dir = dir.path().join(".ergatai").join(".plan").join("results");
         tokio::fs::create_dir_all(&results_dir).await.unwrap();
         tokio::fs::write(results_dir.join("task-1-alice.md"), "ok")
             .await

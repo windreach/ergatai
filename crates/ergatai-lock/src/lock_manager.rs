@@ -5426,7 +5426,10 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(lock_agent_id, agent_id, "Lock should belong to correct agent");
+        assert_eq!(
+            lock_agent_id, agent_id,
+            "Lock should belong to correct agent"
+        );
     }
 
     #[tokio::test]

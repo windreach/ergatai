@@ -160,7 +160,10 @@ pub fn discover_profiles(project_root: &Path) -> ErgataiResult<Vec<AgentProfile>
     }
 
     if !profiles_dir.is_dir() {
-        warn!("Profiles path exists but is not a directory: {:?}", profiles_dir);
+        warn!(
+            "Profiles path exists but is not a directory: {:?}",
+            profiles_dir
+        );
         return Ok(Vec::new());
     }
 
@@ -188,10 +191,7 @@ pub fn discover_profiles(project_root: &Path) -> ErgataiResult<Vec<AgentProfile>
         })?;
 
         let profile: AgentProfile = serde_yaml::from_str(&content).map_err(|e| {
-            ErgataiError::InvalidArgument(format!(
-                "Failed to parse profile file {:?}: {}",
-                path, e
-            ))
+            ErgataiError::InvalidArgument(format!("Failed to parse profile file {:?}: {}", path, e))
         })?;
 
         // Check for duplicate names
@@ -217,7 +217,10 @@ pub fn discover_profiles(project_root: &Path) -> ErgataiResult<Vec<AgentProfile>
 ///
 /// # Returns
 /// The AgentProfile if found, None otherwise
-pub fn load_profile(project_root: &Path, profile_name: &str) -> ErgataiResult<Option<AgentProfile>> {
+pub fn load_profile(
+    project_root: &Path,
+    profile_name: &str,
+) -> ErgataiResult<Option<AgentProfile>> {
     let profiles = discover_profiles(project_root)?;
     Ok(profiles.into_iter().find(|p| p.name == profile_name))
 }
@@ -364,10 +367,22 @@ max_concurrency: 5
 
         let profile: AgentProfile = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(profile.name, "general-purpose");
-        assert_eq!(profile.description, Some("General purpose coding agent".to_string()));
-        assert_eq!(profile.capabilities, vec!["code-generation", "review", "testing"]);
-        assert_eq!(profile.tool_policy.as_ref().unwrap().allowed, vec!["read", "write", "bash"]);
-        assert_eq!(profile.tool_policy.as_ref().unwrap().denied, vec!["dangerous-tool"]);
+        assert_eq!(
+            profile.description,
+            Some("General purpose coding agent".to_string())
+        );
+        assert_eq!(
+            profile.capabilities,
+            vec!["code-generation", "review", "testing"]
+        );
+        assert_eq!(
+            profile.tool_policy.as_ref().unwrap().allowed,
+            vec!["read", "write", "bash"]
+        );
+        assert_eq!(
+            profile.tool_policy.as_ref().unwrap().denied,
+            vec!["dangerous-tool"]
+        );
         assert_eq!(profile.max_concurrency, 5);
     }
 }

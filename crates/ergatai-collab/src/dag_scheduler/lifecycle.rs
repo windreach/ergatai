@@ -22,8 +22,8 @@ use ergatai_dag::{TaskGraph, TaskStatus};
 use ergatai_error::{ErgataiError, ErgataiResult};
 use tokio::sync::Mutex;
 
-use crate::task_scheduler::global_scheduler;
 use super::DagScheduler;
+use crate::task_scheduler::global_scheduler;
 
 impl DagScheduler {
     /// Create a new DAG scheduler with an empty context
@@ -92,34 +92,33 @@ impl DagScheduler {
         }
 
         // Restore deadline from persisted started_at + timeout
-        let deadline = if let (Some(ref started_at), Some(timeout)) =
-            (&graph.started_at, graph.timeout)
-        {
-            // Parse RFC3339 timestamp and calculate remaining deadline
-            if let Ok(start_time) = chrono::DateTime::parse_from_rfc3339(started_at) {
-                let start_utc = start_time.with_timezone(&chrono::Utc);
-                let elapsed = chrono::Utc::now() - start_utc;
-                let timeout_duration = std::time::Duration::from_secs(timeout);
-                // Clamp to zero: if the system clock was adjusted backward,
-                // elapsed could be negative. num_seconds() returns i64; casting
-                // a negative value to u64 would produce ~u64::MAX.
-                let elapsed_duration =
-                    std::time::Duration::from_secs(elapsed.num_seconds().max(0) as u64);
-                if elapsed_duration < timeout_duration {
-                    Some(std::time::Instant::now() + (timeout_duration - elapsed_duration))
+        let deadline =
+            if let (Some(ref started_at), Some(timeout)) = (&graph.started_at, graph.timeout) {
+                // Parse RFC3339 timestamp and calculate remaining deadline
+                if let Ok(start_time) = chrono::DateTime::parse_from_rfc3339(started_at) {
+                    let start_utc = start_time.with_timezone(&chrono::Utc);
+                    let elapsed = chrono::Utc::now() - start_utc;
+                    let timeout_duration = std::time::Duration::from_secs(timeout);
+                    // Clamp to zero: if the system clock was adjusted backward,
+                    // elapsed could be negative. num_seconds() returns i64; casting
+                    // a negative value to u64 would produce ~u64::MAX.
+                    let elapsed_duration =
+                        std::time::Duration::from_secs(elapsed.num_seconds().max(0) as u64);
+                    if elapsed_duration < timeout_duration {
+                        Some(std::time::Instant::now() + (timeout_duration - elapsed_duration))
+                    } else {
+                        // Already expired
+                        Some(std::time::Instant::now())
+                    }
                 } else {
-                    // Already expired
-                    Some(std::time::Instant::now())
+                    // Fallback: treat as fresh start
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(timeout))
                 }
             } else {
-                // Fallback: treat as fresh start
-                Some(std::time::Instant::now() + std::time::Duration::from_secs(timeout))
-            }
-        } else {
-            graph
-                .timeout
-                .map(|timeout| std::time::Instant::now() + std::time::Duration::from_secs(timeout))
-        };
+                graph.timeout.map(|timeout| {
+                    std::time::Instant::now() + std::time::Duration::from_secs(timeout)
+                })
+            };
 
         // Build the collaboration session from the graph's communication field.
         // Default to MeshPolicy::Open if no communication mode is specified.
@@ -135,9 +134,8 @@ impl DagScheduler {
             }),
             None => crate::collaboration::MeshPolicy::Open,
         };
-        let collaboration = crate::collaboration::CollaborationSession::from_graph(
-            &dag_id, &graph, policy,
-        );
+        let collaboration =
+            crate::collaboration::CollaborationSession::from_graph(&dag_id, &graph, policy);
 
         Self {
             graph: Arc::new(Mutex::new(graph)),
@@ -212,8 +210,12 @@ impl DagScheduler {
         drop(collab);
 
         let meta_file = ergatai_dir.join(format!("dag-meta-{}.json", dag_id_safe));
-        let meta_json = serde_json::to_string_pretty(&meta)
-            .map_err(|e| ergatai_error::ErgataiError::internal(format!("serialize collaboration metadata: {}", e)))?;
+        let meta_json = serde_json::to_string_pretty(&meta).map_err(|e| {
+            ergatai_error::ErgataiError::internal(format!(
+                "serialize collaboration metadata: {}",
+                e
+            ))
+        })?;
         tokio::fs::write(&meta_file, meta_json.as_bytes()).await?;
 
         Ok(())
@@ -224,8 +226,11 @@ impl DagScheduler {
         project_root: &Path,
         dag_id: &str,
     ) -> Option<serde_json::Value> {
-        let dag_id_safe = dag_id.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_");
-        let meta_file = project_root.join(".ergatai").join(format!("dag-meta-{}.json", dag_id_safe));
+        let dag_id_safe =
+            dag_id.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_");
+        let meta_file = project_root
+            .join(".ergatai")
+            .join(format!("dag-meta-{}.json", dag_id_safe));
         let content = tokio::fs::read_to_string(&meta_file).await.ok()?;
         serde_json::from_str(&content).ok()
     }
@@ -735,10 +740,7 @@ impl StateCheckpoint {
     }
 
     /// Load checkpoint from disk by ID
-    pub async fn load(
-        project_root: &std::path::Path,
-        checkpoint_id: &str,
-    ) -> ErgataiResult<Self> {
+    pub async fn load(project_root: &std::path::Path, checkpoint_id: &str) -> ErgataiResult<Self> {
         let checkpoint_file = project_root
             .join(".ergatai")
             .join("checkpoints")
@@ -801,10 +803,7 @@ impl StateCheckpoint {
     }
 
     /// Delete checkpoint from disk
-    pub async fn delete(
-        project_root: &std::path::Path,
-        checkpoint_id: &str,
-    ) -> ErgataiResult<()> {
+    pub async fn delete(project_root: &std::path::Path, checkpoint_id: &str) -> ErgataiResult<()> {
         let checkpoint_file = project_root
             .join(".ergatai")
             .join("checkpoints")

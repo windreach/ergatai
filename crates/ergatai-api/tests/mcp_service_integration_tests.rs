@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 
-
 use ergatai_api::mcp::server::{new_peer_registry, ErgataiMcpServer};
 use ergatai_api::mcp::{create_mcp_service, AgentRegistry};
 use tokio_util::sync::CancellationToken;
@@ -14,19 +13,13 @@ use tokio_util::sync::CancellationToken;
 fn test_mcp_deps() -> (
     Arc<AgentRegistry>,
     ergatai_api::mcp::server::PeerRegistry,
-    
     CancellationToken,
 ) {
     let registry = Arc::new(AgentRegistry::new());
     let peer_registry = new_peer_registry();
-    
+
     let cancellation_token = CancellationToken::new();
-    (
-        registry,
-        peer_registry,
-        
-        cancellation_token,
-    )
+    (registry, peer_registry, cancellation_token)
 }
 
 // ── create_mcp_service ───────────────────────────────────────────────
@@ -38,7 +31,6 @@ fn create_mcp_service_returns_service_without_panic() {
     let _service = create_mcp_service(
         registry,
         peer_registry,
-        
         cancellation_token,
         15,
         Some("test-agent".to_string()),
@@ -53,7 +45,6 @@ fn create_mcp_service_with_no_agent_identifier() {
     let _service = create_mcp_service(
         registry,
         peer_registry,
-        
         cancellation_token,
         15,
         None, // default service (no agent identifier)
@@ -68,7 +59,6 @@ fn create_mcp_service_with_custom_sse_keep_alive() {
     let _service = create_mcp_service(
         registry,
         peer_registry,
-        
         cancellation_token,
         60, // custom keep-alive
         Some("agent-custom".to_string()),
@@ -79,14 +69,9 @@ fn create_mcp_service_with_custom_sse_keep_alive() {
 
 #[test]
 fn ergatai_mcp_server_new_creates_instance() {
-    let (registry, peer_registry,  _cancel) = test_mcp_deps();
+    let (registry, peer_registry, _cancel) = test_mcp_deps();
 
-    let server = ErgataiMcpServer::new(
-        registry,
-        peer_registry,
-        
-        Some("test-agent".to_string()),
-    );
+    let server = ErgataiMcpServer::new(registry, peer_registry, Some("test-agent".to_string()));
 
     // Server created — tool_router should be initialized
     let debug_str = format!("{:?}", server);
@@ -95,9 +80,9 @@ fn ergatai_mcp_server_new_creates_instance() {
 
 #[test]
 fn ergatai_mcp_server_without_agent_identifier() {
-    let (registry, peer_registry,  _cancel) = test_mcp_deps();
+    let (registry, peer_registry, _cancel) = test_mcp_deps();
 
-    let server = ErgataiMcpServer::new(registry, peer_registry,  None);
+    let server = ErgataiMcpServer::new(registry, peer_registry, None);
 
     let debug_str = format!("{:?}", server);
     assert!(debug_str.contains("ErgataiMcpServer"));
@@ -196,7 +181,6 @@ fn create_mcp_service_zero_sse_keep_alive() {
     let _service = create_mcp_service(
         registry,
         peer_registry,
-        
         cancellation_token,
         0, // zero keep-alive (edge case)
         Some("zero-keepalive".to_string()),

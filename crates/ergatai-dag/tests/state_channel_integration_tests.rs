@@ -110,7 +110,9 @@ fn test_state_channel_validate_outputs_success() {
     let valid_outputs_optional_missing = json!({
         "result": "success"
     });
-    assert!(channel.validate_outputs(&valid_outputs_optional_missing).is_ok());
+    assert!(channel
+        .validate_outputs(&valid_outputs_optional_missing)
+        .is_ok());
 }
 
 #[test]
@@ -179,12 +181,16 @@ fn test_dag_context_record_output_validated() {
 
     // Valid output
     let valid_outputs = json!({"result": "success"});
-    assert!(ctx.record_output_validated("node-1", valid_outputs, &channel).is_ok());
+    assert!(ctx
+        .record_output_validated("node-1", valid_outputs, &channel)
+        .is_ok());
     assert!(ctx.has_node_outputs("node-1"));
 
     // Invalid output (missing required field)
     let invalid_outputs = json!({});
-    let errors = ctx.record_output_validated("node-2", invalid_outputs, &channel).unwrap_err();
+    let errors = ctx
+        .record_output_validated("node-2", invalid_outputs, &channel)
+        .unwrap_err();
     assert_eq!(errors.len(), 1);
     assert!(!ctx.has_node_outputs("node-2")); // Should not be recorded
 }

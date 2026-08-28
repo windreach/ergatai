@@ -175,9 +175,7 @@ impl StateChannel {
                 Some(val) if !Self::check_type(val, &field.value_type) => {
                     errors.push(format!(
                         "field '{}' expected type {}, got {}",
-                        field.name,
-                        field.value_type,
-                        val
+                        field.name, field.value_type, val
                     ));
                 }
                 _ => {} // type OK or optional field missing
@@ -343,9 +341,6 @@ mod tests {
             merge_strategies,
         };
 
-        assert_eq!(
-            channel.merge_strategy_for("issues"),
-            MergeStrategy::Append
-        );
+        assert_eq!(channel.merge_strategy_for("issues"), MergeStrategy::Append);
     }
 }

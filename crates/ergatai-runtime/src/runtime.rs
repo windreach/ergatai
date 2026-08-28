@@ -410,6 +410,9 @@ impl AgentRuntime {
             // All mutations happen under the SAME write-lock acquisition to prevent
             // state changes between drop/re-acquire (previously: drop → remove → re-acquire
             // created a window where another task could insert a duplicate workspace entry).
+            //
+            // Track MCP binding from the old entry so we can preserve it across restarts.
+            let mut preserved_mcp_id: Option<String> = None;
             let existing_match: Option<(String, Option<String>, Option<String>)> = registry
                 .values()
                 .find(|info| info.workspace_id == handle.workspace.id)
@@ -432,24 +435,38 @@ impl AgentRuntime {
                     );
                     // Remove old registration under the SAME lock, then fall through
                     // to register the new agent below.
-                    // CRITICAL BUG FIX: Also clean uuid_index and mcp_index
+                    // CRITICAL BUG FIX: Collect indices to clean AFTER dropping the lock,
+                    // not during the loop. This prevents TOCTOU race where another task
+                    // could modify the registry between drop and re-acquire.
                     if let Some(old_info) = registry.remove(&old_agent_id) {
-                        // CRITICAL FIX: Collect indices to clean AFTER dropping the lock,
-                        // not during the loop. This prevents TOCTOU race where another task
-                        // could modify the registry between drop and re-acquire.
                         let old_uuid = old_info.agent_uuid.clone();
                         let old_mcp = old_info.mcp_agent_id.clone();
+                        // Preserve MCP binding across restart — the MCP client is still
+                        // connected, just the underlying PTY process was recreated.
+                        preserved_mcp_id = old_mcp.clone();
                         indices_to_clean.push((old_agent_id.clone(), old_uuid, old_mcp));
                     }
                 } else {
-                    // Same agent - just update metadata and stable_id
+                    // Same agent - update metadata but preserve MCP binding.
+                    // The PTY backend re-discovery returns workspace ID format
+                    // (e.g., "start-opencode-3-agent-1"). If the agent is already
+                    // MCP-bound, keep the MCP URL path name as ergatai_agent_id
+                    // to maintain ID consistency across list_agents and message routing.
                     if let Some(eai) = handle.metadata.get("ergatai_agent_id") {
                         if let Some(existing) = registry.get_mut(&old_agent_id) {
-                            existing
-                                .handle
-                                .metadata
-                                .insert("ergatai_agent_id".to_string(), eai.clone());
-                            existing.stable_id = Some(eai.clone());
+                            if existing.mcp_agent_id.is_none() {
+                                // Not MCP-bound — safe to use workspace ID
+                                existing
+                                    .handle
+                                    .metadata
+                                    .insert("ergatai_agent_id".to_string(), eai.clone());
+                                existing.stable_id = Some(eai.clone());
+                            }
+                            // MCP-bound — keep mcp_agent_id as ergatai_agent_id
+                            // (already set during binding). Update stable_id to match.
+                            else if let Some(ref mcp_id) = existing.mcp_agent_id {
+                                existing.stable_id = Some(mcp_id.clone());
+                            }
                         }
                     }
                     continue;
@@ -461,14 +478,36 @@ impl AgentRuntime {
                 count += 1;
                 let agent_uuid = uuid::Uuid::new_v4().to_string();
                 let now = chrono::Utc::now();
-                let stable_id = handle.metadata.get("ergatai_agent_id").cloned();
-                new_agents.push((agent_id.clone(), agent_uuid.clone(), handle.clone()));
+                // If the previous entry had an MCP binding (process restart case),
+                // preserve it. Use MCP path name as ergatai_agent_id + stable_id
+                // for ID consistency.
+                let (mcp_agent_id, ergatai_id, stable_id) =
+                    if let Some(ref mcp_id) = preserved_mcp_id {
+                        (
+                            Some(mcp_id.clone()),
+                            Some(mcp_id.clone()),
+                            Some(mcp_id.clone()),
+                        )
+                    } else {
+                        (
+                            None,
+                            handle.metadata.get("ergatai_agent_id").cloned(),
+                            handle.metadata.get("ergatai_agent_id").cloned(),
+                        )
+                    };
+                let mut new_handle = handle;
+                if let Some(ref eid) = ergatai_id {
+                    new_handle
+                        .metadata
+                        .insert("ergatai_agent_id".to_string(), eid.clone());
+                }
+                new_agents.push((agent_id.clone(), agent_uuid.clone(), new_handle.clone()));
                 AgentInfo {
                     agent_uuid: agent_uuid.clone(),
                     agent_id: agent_id.clone(),
                     stable_id,
-                    workspace_id: handle.workspace.id.clone(),
-                    handle,
+                    workspace_id: new_handle.workspace.id.clone(),
+                    handle: new_handle,
                     lifecycle: crate::agent_lifecycle::AgentLifecycleState::Running {
                         task_id: None,
                         started_at: now,
@@ -476,7 +515,7 @@ impl AgentRuntime {
                     },
                     task_id: None,
                     created_at: now,
-                    mcp_agent_id: None,
+                    mcp_agent_id,
                     last_heartbeat: now,
                     state_history: Vec::new(),
                 }
@@ -490,6 +529,24 @@ impl AgentRuntime {
         for (old_agent_id, old_uuid, old_mcp) in indices_to_clean {
             self.remove_agent_indices(&old_agent_id, &old_uuid, old_mcp.as_deref())
                 .await;
+        }
+
+        // Reconcile mcp_index with the current registry state.
+        // This handles the case where an MCP binding was preserved across an agent
+        // process restart: the old mcp_index entry was cleaned above, but the new
+        // registry entry still has mcp_agent_id set. Rebuild the mapping so routing
+        // continues to work without requiring the MCP client to reconnect.
+        {
+            let registry = self.registry.read().await;
+            let mut mcp_index = self.mcp_index.write().await;
+            // Remove stale entries (mcp_agent_id points to a non-existent agent)
+            mcp_index.retain(|_mcp_id, runtime_id| registry.contains_key(runtime_id));
+            // Add missing entries (registry has mcp_agent_id but mcp_index doesn't)
+            for info in registry.values() {
+                if let Some(ref mcp_id) = info.mcp_agent_id {
+                    mcp_index.insert(mcp_id.clone(), info.agent_id.clone());
+                }
+            }
         }
 
         // Update UUID index for newly registered agents
@@ -690,6 +747,11 @@ impl AgentRuntime {
         // Update the registry — agent may have been removed between sort and bind
         if let Some(info) = registry.get_mut(&runtime_id) {
             info.mcp_agent_id = Some(mcp_agent_id.to_string());
+            // Unify ergatai_agent_id to MCP URL path name for consistent IDs
+            // across list_agents, message routing, and reply targets.
+            info.handle
+                .metadata
+                .insert("ergatai_agent_id".to_string(), mcp_agent_id.to_string());
         } else {
             warn!(
                 runtime_id = %runtime_id,
@@ -752,13 +814,23 @@ impl AgentRuntime {
             }
         }
 
-        // Find runtime agent with matching ergatai_agent_id
+        // Find runtime agent with matching ergatai_agent_id.
+        // The PTY backend sets ergatai_agent_id to the workspace ID format
+        // (e.g., "start-opencode-3-agent-1"), while agent_identifier comes from
+        // the MCP URL path (e.g., "agent-1"). Match when the workspace ID ends
+        // with "-{agent_identifier}" — this covers the common case where the
+        // MCP URL path name corresponds to the PTY agent counter.
+        //
+        // SAFETY: Suffix matching assumes MCP URL paths are unique per agent instance.
+        // If multiple workspaces have agents with identical names (e.g., "ws1-agent-1"
+        // and "ws2-agent-1"), this could match incorrectly. In practice, the MCP server
+        // generates unique URL paths per agent, so this is safe.
         let registry = self.registry.read().await;
         let matched_agent = registry.values().find(|info| {
             info.handle
                 .metadata
                 .get("ergatai_agent_id")
-                .map(|id| id == agent_identifier)
+                .map(|id| id == agent_identifier || id.ends_with(&format!("-{}", agent_identifier)))
                 .unwrap_or(false)
         });
 
@@ -789,11 +861,21 @@ impl AgentRuntime {
         let runtime_id = matched_agent.agent_id.clone();
         drop(registry);
 
-        // Update the registry
+        // Update the registry: set mcp_agent_id and unify ergatai_agent_id
+        // metadata to the MCP URL path name, so all downstream lookups
+        // (list_agents, resolve_to_stable_id, message routing) see a single
+        // consistent identifier.
         {
             let mut registry = self.registry.write().await;
             if let Some(info) = registry.get_mut(&runtime_id) {
                 info.mcp_agent_id = Some(mcp_agent_id.to_string());
+                // Unify ergatai_agent_id from workspace format
+                // (e.g., "start-opencode-3-agent-1") to MCP URL path name
+                // (e.g., "agent-1"). This makes list_agents, message `from`,
+                // and reply target all use the same ID.
+                info.handle
+                    .metadata
+                    .insert("ergatai_agent_id".to_string(), mcp_agent_id.to_string());
             }
         }
 
@@ -852,14 +934,22 @@ impl AgentRuntime {
                 continue;
             }
 
-            // Match by identifier if available, otherwise use FIFO
+            // Match by identifier if available, otherwise use FIFO.
+            // For identifier matching, accept both exact match and suffix match
+            // (workspace ID format "start-opencode-3-agent-1" ends with "-agent-1").
+            //
+            // SAFETY: Suffix matching assumes MCP URL paths are unique per agent instance.
+            // If multiple workspaces have agents with identical names, this could match
+            // incorrectly. In practice, the MCP server generates unique URL paths per agent.
             let matched_agent = if !agent_identifier.is_empty() {
-                // Find agent with matching ergatai_agent_id
                 unbound_agents.into_iter().find(|info| {
                     info.handle
                         .metadata
                         .get("ergatai_agent_id")
-                        .map(|id| id == &agent_identifier)
+                        .map(|id| {
+                            id == &agent_identifier
+                                || id.ends_with(&format!("-{}", agent_identifier))
+                        })
                         .unwrap_or(false)
                 })
             } else {
@@ -881,6 +971,10 @@ impl AgentRuntime {
 
             if let Some(info) = registry.get_mut(&runtime_id) {
                 info.mcp_agent_id = Some(mcp_id.clone());
+                // Unify ergatai_agent_id to MCP URL path name
+                info.handle
+                    .metadata
+                    .insert("ergatai_agent_id".to_string(), mcp_id.clone());
             }
             index.insert(mcp_id.clone(), runtime_id.clone());
 

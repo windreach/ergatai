@@ -163,12 +163,13 @@ impl ResultFileMonitor {
             ));
         }
 
-        let c_path = CString::new(results_dir.as_os_str().as_bytes())
-            .map_err(|e| {
-                // SAFETY: raw_fd is valid and unowned; close before returning.
-                unsafe { libc::close(raw_fd); }
-                format!("invalid path: {e}")
-            })?;
+        let c_path = CString::new(results_dir.as_os_str().as_bytes()).map_err(|e| {
+            // SAFETY: raw_fd is valid and unowned; close before returning.
+            unsafe {
+                libc::close(raw_fd);
+            }
+            format!("invalid path: {e}")
+        })?;
 
         // Mark the results dir for FAN_CLOSE_WRITE events. We do NOT use
         // FAN_MARK_MOUNT — we want only this specific directory.
@@ -185,19 +186,22 @@ impl ResultFileMonitor {
         if rc < 0 {
             let err = std::io::Error::last_os_error();
             // SAFETY: raw_fd valid and unowned.
-            unsafe { libc::close(raw_fd); }
+            unsafe {
+                libc::close(raw_fd);
+            }
             return Err(format!("fanotify_mark failed: {err}"));
         }
 
         let async_fd = AsyncFd::new(raw_fd).map_err(|e| {
             // SAFETY: raw_fd valid and unowned.
-            unsafe { libc::close(raw_fd); }
+            unsafe {
+                libc::close(raw_fd);
+            }
             format!("AsyncFd::new failed: {e}")
         })?;
 
         let cancel = tokio_util::sync::CancellationToken::new();
-        let watchers: Mutex<HashMap<String, oneshot::Sender<PathBuf>>> =
-            Mutex::new(HashMap::new());
+        let watchers: Mutex<HashMap<String, oneshot::Sender<PathBuf>>> = Mutex::new(HashMap::new());
         let inner = Arc::new(Inner {
             watchers,
             cancel: cancel.clone(),
@@ -296,7 +300,9 @@ impl ResultFileMonitor {
             let link_path = format!("/proc/self/fd/{fd}");
             let path = std::fs::read_link(&link_path).ok();
             // SAFETY: fd from fanotify is owned by us; must close to avoid leak.
-            unsafe { libc::close(fd); }
+            unsafe {
+                libc::close(fd);
+            }
 
             let Some(path) = path else { continue };
             let Some(node_id) = parse_result_filename(&path) else {

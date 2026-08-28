@@ -76,11 +76,9 @@ impl AgentBindingStore {
 
     /// Store or update a binding.
     pub fn save_binding(&self, binding: &AgentBinding) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| {
-            ErgataiError::InternalError {
-                message: "Binding store lock poisoned".to_string(),
-                source: None,
-            }
+        let conn = self.conn.lock().map_err(|_| ErgataiError::InternalError {
+            message: "Binding store lock poisoned".to_string(),
+            source: None,
         })?;
 
         conn.execute(
@@ -108,11 +106,9 @@ impl AgentBindingStore {
 
     /// Get a binding by MCP agent ID.
     pub fn get_binding(&self, mcp_agent_id: &str) -> Result<Option<AgentBinding>> {
-        let conn = self.conn.lock().map_err(|_| {
-            ErgataiError::InternalError {
-                message: "Binding store lock poisoned".to_string(),
-                source: None,
-            }
+        let conn = self.conn.lock().map_err(|_| ErgataiError::InternalError {
+            message: "Binding store lock poisoned".to_string(),
+            source: None,
         })?;
 
         let result = conn.query_row(
@@ -148,11 +144,9 @@ impl AgentBindingStore {
         &self,
         agent_identifier: &str,
     ) -> Result<Option<AgentBinding>> {
-        let conn = self.conn.lock().map_err(|_| {
-            ErgataiError::InternalError {
-                message: "Binding store lock poisoned".to_string(),
-                source: None,
-            }
+        let conn = self.conn.lock().map_err(|_| ErgataiError::InternalError {
+            message: "Binding store lock poisoned".to_string(),
+            source: None,
         })?;
 
         let result = conn.query_row(
@@ -187,11 +181,9 @@ impl AgentBindingStore {
 
     /// Update the last_active timestamp for a binding.
     pub fn touch_binding(&self, mcp_agent_id: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| {
-            ErgataiError::InternalError {
-                message: "Binding store lock poisoned".to_string(),
-                source: None,
-            }
+        let conn = self.conn.lock().map_err(|_| ErgataiError::InternalError {
+            message: "Binding store lock poisoned".to_string(),
+            source: None,
         })?;
 
         let now = chrono::Utc::now().to_rfc3339();
@@ -206,11 +198,9 @@ impl AgentBindingStore {
 
     /// Remove a binding.
     pub fn remove_binding(&self, mcp_agent_id: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| {
-            ErgataiError::InternalError {
-                message: "Binding store lock poisoned".to_string(),
-                source: None,
-            }
+        let conn = self.conn.lock().map_err(|_| ErgataiError::InternalError {
+            message: "Binding store lock poisoned".to_string(),
+            source: None,
         })?;
 
         conn.execute(
@@ -226,11 +216,9 @@ impl AgentBindingStore {
 
     /// List all bindings.
     pub fn list_bindings(&self) -> Result<Vec<AgentBinding>> {
-        let conn = self.conn.lock().map_err(|_| {
-            ErgataiError::InternalError {
-                message: "Binding store lock poisoned".to_string(),
-                source: None,
-            }
+        let conn = self.conn.lock().map_err(|_| ErgataiError::InternalError {
+            message: "Binding store lock poisoned".to_string(),
+            source: None,
         })?;
 
         let mut stmt = conn

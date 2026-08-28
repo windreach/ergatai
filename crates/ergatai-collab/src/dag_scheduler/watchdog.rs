@@ -54,7 +54,7 @@ impl DagScheduler {
     /// inside an async fn produces a `!Send` future (the `MutexGuard` is
     /// `!Send`), which breaks `tokio::spawn` in the caller chain. Instead,
     /// we use `try_lock()` for a sync fast-path and a detached spawn fallback.
-    pub(super) fn spawn_timeout_watcher(&self, node_id: &str, timeout_secs: u64, agent_name: &str) {
+    pub(super) fn spawn_timeout_watcher(&self, node_id: &str, timeout_secs: u64) {
         if timeout_secs == 0 {
             return;
         }
@@ -64,7 +64,6 @@ impl DagScheduler {
 
         let node_id_for_store = node_id.to_string();
         let node_id_clone = node_id.to_string();
-        let agent_name_clone = agent_name.to_string();
         let scheduler = self.clone();
         let watchers = self.timeout_watchers.clone();
 
@@ -105,25 +104,6 @@ impl DagScheduler {
                             )
                             .await;
                     }
-                    // Inject warning into agent PTY so the agent can self-regulate
-                    let warning_msg = format!(
-                        "\r\n⚠️  [TIMEOUT WARNING] You have consumed 50% of your time budget \
-                         ({}s elapsed / {}s total). \
-                         Please wrap up your current work and prepare to submit results.\r\n",
-                        start.elapsed().as_secs(),
-                        timeout_secs
-                    );
-                    if let Err(e) = ergatai_runtime::get_agent_runtime()
-                        .inject_message(&agent_name_clone, &warning_msg)
-                        .await
-                    {
-                        tracing::warn!(
-                            node_id = %node_id_clone,
-                            agent = %agent_name_clone,
-                            error = %e,
-                            "Failed to inject timeout warning into agent PTY"
-                        );
-                    }
                 }
                 if !escalated && now >= escalate_at {
                     escalated = true;
@@ -140,25 +120,6 @@ impl DagScheduler {
                                 start.elapsed().as_secs(),
                             )
                             .await;
-                    }
-                    // Inject escalation into agent PTY — stronger wording
-                    let escalate_msg = format!(
-                        "\r\n🔴 [TIMEOUT ESCALATED] You have consumed 80% of your time budget \
-                         ({}s elapsed / {}s total). \
-                         STOP current work immediately, write your result file NOW.\r\n",
-                        start.elapsed().as_secs(),
-                        timeout_secs
-                    );
-                    if let Err(e) = ergatai_runtime::get_agent_runtime()
-                        .inject_message(&agent_name_clone, &escalate_msg)
-                        .await
-                    {
-                        tracing::warn!(
-                            node_id = %node_id_clone,
-                            agent = %agent_name_clone,
-                            error = %e,
-                            "Failed to inject timeout escalation into agent PTY"
-                        );
                     }
                 }
                 if now >= fail_at {
@@ -578,7 +539,7 @@ mod tests {
         let scheduler = DagScheduler::new(temp_dir.path().to_path_buf(), graph);
 
         // Spawn the three-stage watcher directly (submit_graph is not invoked).
-        scheduler.spawn_timeout_watcher("n1", 2, "agent");
+        scheduler.spawn_timeout_watcher("n1", 2);
 
         // Bound the test at 5s — the fail tier fires at 2s plus one poll tick.
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {

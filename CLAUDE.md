@@ -412,9 +412,9 @@ DAG 调度器多层防御机制，防止资源失控和 agent 僵死：
 - **ConversationManager**：AutoGen 风格一问一答循环防护，`max_turns` 到达后自动重置。
 - **BatchAggregator**：1 分钟内 A 发给 ≥2 个 agent → 群发模式，收集回复合并推送。
 
-### 消息可观察性（hcom 启发）
+### 消息可观察性
 
-借鉴 hcom 项目设计，ergatai 新增三层消息可观察性机制：
+ergatai 提供三层消息可观察性机制：
 
 #### Read Receipts（已读回执）
 

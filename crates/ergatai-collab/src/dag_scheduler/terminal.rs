@@ -383,7 +383,8 @@ impl DagScheduler {
                     // Release the agent from the task scheduler's processing list.
                     self.scheduler.mark_completed(node_id).await;
                     // Propagate failure to downstream dependents
-                    self.skip_downstream(node_id, &format!("retry submit failed: {}", e)).await?;
+                    self.skip_downstream(node_id, &format!("retry submit failed: {}", e))
+                        .await?;
                     self.save_graph_unlocked().await?;
                     // If cascading failures left the DAG fully terminal, finalize.
                     self.finalize_if_terminal().await;
@@ -618,7 +619,10 @@ impl DagScheduler {
 
     /// Skip all nodes that (transitively) depend on the skipped/failed node.
     /// Static helper that works on a mutable graph reference (no self required).
-    pub(super) fn skip_downstream_nodes(graph: &mut TaskGraph, failed_id: &str) -> ErgataiResult<()> {
+    pub(super) fn skip_downstream_nodes(
+        graph: &mut TaskGraph,
+        failed_id: &str,
+    ) -> ErgataiResult<()> {
         // BFS to collect all transitively dependent pending nodes
         let mut queue = vec![failed_id.to_string()];
         let mut seen = std::collections::HashSet::new();
@@ -798,7 +802,10 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let scheduler = DagScheduler::new(temp_dir.path().to_path_buf(), graph);
-        scheduler.skip_downstream("n1", "test failure").await.unwrap();
+        scheduler
+            .skip_downstream("n1", "test failure")
+            .await
+            .unwrap();
 
         let g = scheduler.graph.lock().await;
         assert_eq!(g.find_node("n1").unwrap().status, TaskStatus::Pending); // not touched
@@ -819,7 +826,10 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let scheduler = DagScheduler::new(temp_dir.path().to_path_buf(), graph);
-        scheduler.skip_downstream("n1", "test failure").await.unwrap();
+        scheduler
+            .skip_downstream("n1", "test failure")
+            .await
+            .unwrap();
 
         let g = scheduler.graph.lock().await;
         assert_eq!(g.find_node("n2").unwrap().status, TaskStatus::Skipped);
@@ -1193,7 +1203,10 @@ mod tests {
             let mut g = scheduler.graph.lock().await;
             g.find_node_mut("n1").unwrap().max_retries = 0;
         }
-        scheduler.on_node_failed("n1", "compilation failed: missing semicolon").await.unwrap();
+        scheduler
+            .on_node_failed("n1", "compilation failed: missing semicolon")
+            .await
+            .unwrap();
 
         let g = scheduler.graph.lock().await;
         let node = g.find_node("n1").unwrap();
@@ -1212,14 +1225,24 @@ mod tests {
         ]);
         let scheduler = DagScheduler::new(PathBuf::from("/tmp"), graph);
 
-        scheduler.skip_downstream("n1", "timeout after 60s").await.unwrap();
+        scheduler
+            .skip_downstream("n1", "timeout after 60s")
+            .await
+            .unwrap();
 
         let g = scheduler.graph.lock().await;
         let n2 = g.find_node("n2").unwrap();
         assert_eq!(n2.status, TaskStatus::Skipped);
         let reason = n2.metadata.get("skipped_reason").unwrap();
-        assert!(reason.contains("n1"), "skip reason should mention failed node: {}", reason);
-        assert!(reason.contains("timeout after 60s"), "skip reason should include error: {}", reason);
+        assert!(
+            reason.contains("n1"),
+            "skip reason should mention failed node: {}",
+            reason
+        );
+        assert!(
+            reason.contains("timeout after 60s"),
+            "skip reason should include error: {}",
+            reason
+        );
     }
-
 }
