@@ -30,14 +30,15 @@ COPY crates/ergatai-preload/Cargo.toml ./crates/ergatai-preload/Cargo.toml
 COPY crates/ergatai-cli/Cargo.toml ./crates/ergatai-cli/Cargo.toml
 
 # Create dummy lib.rs files so cargo can resolve the workspace
-RUN for d in ergatai-lock ergatai-core ergatai-error ergatai-nats ergatai-dag \
-             ergatai-runtime ergatai-collab ergatai-api ergatai-agent ergatai-binary \
-             ergatai-preload ergatai-cli; do \
-      mkdir -p crates/$d/src && echo "" > crates/$d/src/lib.rs; \
+# Auto-detect from copied Cargo.toml files (no hardcoded crate list)
+RUN for cargo_toml in crates/*/Cargo.toml; do \
+      crate_dir=$(dirname "$cargo_toml"); \
+      mkdir -p "$crate_dir/src" && echo "" > "$crate_dir/src/lib.rs"; \
     done
 
 # Pre-build dependencies (cached unless Cargo.toml changes)
-RUN cargo build --tests 2>&1 | tail -5 || true
+# Use pipefail to catch build errors; tail for cleaner output
+RUN set -o pipefail && cargo build --tests 2>&1 | tail -20
 
 # Now copy real source (invalidates dep cache only when source changes)
 COPY . .

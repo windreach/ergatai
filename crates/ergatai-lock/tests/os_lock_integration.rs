@@ -2352,21 +2352,17 @@ fn test_os_lock_one_lock_three_writers_one_reader() {
         reader_ok, reader_stdout, reader_stderr
     );
 
-    // Document the result:
-    if reader_ok {
-        println!("✅ T41: reader ALLOWED (file content accessible to non-holder)");
-        // If the reader succeeded, it means either:
-        // - The file wasn't checked for read opens, OR
-        // - The reader's PID wasn't properly resolved
-        // In the pessimistic model, this is unexpected for a registered non-holder.
-    } else {
-        println!(
-            "✅ T41: reader BLOCKED (pessimistic strategy — fanotify can't distinguish read/write)"
-        );
-        println!(
-            "   This is correct behavior: non-holder readers must use LD_PRELOAD snapshot mechanism"
-        );
-    }
+    // Pessimistic strategy: non-holder readers MUST be blocked
+    assert!(
+        !reader_ok,
+        "Reader should be blocked (pessimistic strategy — fanotify can't distinguish read/write). \
+         Non-holder readers must use LD_PRELOAD snapshot mechanism. \
+         Got: success={}, stdout={:?}, stderr={:?}",
+        reader_ok, reader_stdout, reader_stderr
+    );
+    println!(
+        "✅ T41: reader BLOCKED (pessimistic strategy — non-holder readers denied, must use LD_PRELOAD)"
+    );
 
     // No writer should have written to the file
     assert!(
@@ -2376,7 +2372,6 @@ fn test_os_lock_one_lock_three_writers_one_reader() {
 
     rt2.block_on(enforcer.stop());
     println!(
-        "✅ T41: 1 lock + 3 writers (all blocked) + 1 reader ({}) — test complete",
-        if reader_ok { "allowed" } else { "blocked" }
+        "✅ T41: 1 lock + 3 writers (all blocked) + 1 reader (blocked) — pessimistic strategy verified"
     );
 }
