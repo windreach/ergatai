@@ -1035,14 +1035,13 @@ async fn load_completed_dag_from_disk() -> Option<serde_json::Value> {
     let mut entries = tokio::fs::read_dir(&ergatai_dir).await.ok()?;
     while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("json") {
-            if path
+        if path.extension().and_then(|e| e.to_str()) == Some("json")
+            && path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.starts_with("dag-state-"))
-            {
-                dag_files.push(path);
-            }
+        {
+            dag_files.push(path);
         }
     }
 

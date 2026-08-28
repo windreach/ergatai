@@ -358,7 +358,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
             // Record pending response for implicit correlation_id tracking
             // (so when the recipient sends a response, system auto-fills correlation_id)
             if let Some(corr_id) = &payload.correlation_id {
-                crate::messaging::record_pending_response(to, corr_id);
+                crate::messaging::record_pending_response(to, corr_id).await;
                 debug!(
                     message_id = %payload.message_id,
                     to = %to,

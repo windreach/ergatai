@@ -6,9 +6,9 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::RwLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -31,10 +31,19 @@ struct PendingRequest {
     timeout_ms: u64,
 }
 
+/// Maximum number of pending requests to track
+///
+/// Prevents unbounded memory growth if responses never arrive.
+/// When limit is reached, new requests are rejected with a warning.
+const MAX_PENDING_REQUESTS: usize = 10_000;
+
 /// Request monitor service
 ///
 /// Tracks outgoing request messages and detects when they time out
 /// without receiving a response.
+///
+/// **Lock ordering**: Always acquire `pending` before `retry_counts` to prevent deadlock.
+/// This invariant must be maintained across all methods.
 pub struct RequestMonitor {
     /// Pending requests indexed by correlation_id
     pending: Arc<RwLock<HashMap<String, PendingRequest>>>,
@@ -55,7 +64,7 @@ impl RequestMonitor {
     ///
     /// Called when a request message is sent. The monitor will check for
     /// a matching response and publish a timeout event if none arrives.
-    pub fn track_request(
+    pub async fn track_request(
         &self,
         message_id: String,
         from_agent: String,
@@ -63,16 +72,17 @@ impl RequestMonitor {
         correlation_id: String,
         timeout_ms: u64,
     ) {
+        // Use saturating_sub to handle clock skew: if now < sent_at, treat as 0 elapsed
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
             .unwrap_or_else(|e| {
                 warn!(
                     error = %e,
                     "System time before UNIX epoch in track_request, using 0"
                 );
-                Duration::from_secs(0)
-            })
-            .as_secs();
+                0
+            });
 
         let request = PendingRequest {
             message_id,
@@ -88,24 +98,26 @@ impl RequestMonitor {
             "Tracking new request"
         );
 
-        match self.pending.write() {
-            Ok(mut pending) => {
-                let was_duplicate = pending.contains_key(&correlation_id);
-                pending.insert(correlation_id.clone(), request);
-                if was_duplicate {
-                    warn!(
-                        correlation_id = %correlation_id,
-                        "Overwriting existing pending request with same correlation_id"
-                    );
-                }
-            }
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    correlation_id = %correlation_id,
-                    "Failed to acquire write lock on pending map, request not tracked"
-                );
-            }
+        let mut pending = self.pending.write().await;
+
+        // Check if we've reached the maximum capacity
+        if pending.len() >= MAX_PENDING_REQUESTS && !pending.contains_key(&correlation_id) {
+            warn!(
+                correlation_id = %correlation_id,
+                pending_count = pending.len(),
+                max_capacity = MAX_PENDING_REQUESTS,
+                "Pending request map at capacity, rejecting new request tracking"
+            );
+            return;
+        }
+
+        let was_duplicate = pending.contains_key(&correlation_id);
+        pending.insert(correlation_id.clone(), request);
+        if was_duplicate {
+            warn!(
+                correlation_id = %correlation_id,
+                "Overwriting existing pending request with same correlation_id"
+            );
         }
     }
 
@@ -113,67 +125,41 @@ impl RequestMonitor {
     ///
     /// Called when a response message is received with a matching correlation_id.
     /// Removes the request from the pending map and cleans up retry counts.
-    pub fn mark_responded(&self, correlation_id: &str) {
-        match self.pending.write() {
-            Ok(mut pending) => {
-                if pending.remove(correlation_id).is_some() {
-                    // Clean up retry counts
-                    if let Ok(mut retry_counts) = self.retry_counts.write() {
-                        retry_counts.remove(correlation_id);
-                    }
-                    debug!(
-                        correlation_id = %correlation_id,
-                        "Request marked as responded"
-                    );
-                } else {
-                    debug!(
-                        correlation_id = %correlation_id,
-                        "Response received for unknown or already-completed request"
-                    );
-                }
-            }
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    correlation_id = %correlation_id,
-                    "Failed to acquire write lock on pending map"
-                );
-            }
+    pub async fn mark_responded(&self, correlation_id: &str) {
+        let mut pending = self.pending.write().await;
+        if pending.remove(correlation_id).is_some() {
+            // Clean up retry counts
+            let mut retry_counts = self.retry_counts.write().await;
+            retry_counts.remove(correlation_id);
+            debug!(
+                correlation_id = %correlation_id,
+                "Request marked as responded"
+            );
+        } else {
+            debug!(
+                correlation_id = %correlation_id,
+                "Response received for unknown or already-completed request"
+            );
         }
     }
 
     /// Check if a correlation_id is still being tracked
-    pub fn is_pending(&self, correlation_id: &str) -> bool {
-        self.pending
-            .read()
-            .ok()
-            .is_some_and(|pending| pending.contains_key(correlation_id))
+    pub async fn is_pending(&self, correlation_id: &str) -> bool {
+        let pending = self.pending.read().await;
+        pending.contains_key(correlation_id)
     }
 
     /// Get the retry count for a correlation_id
-    pub fn get_retry_count(&self, correlation_id: &str) -> u32 {
-        self.retry_counts
-            .read()
-            .ok()
-            .and_then(|counts| counts.get(correlation_id).copied())
-            .unwrap_or(0)
+    pub async fn get_retry_count(&self, correlation_id: &str) -> u32 {
+        let retry_counts = self.retry_counts.read().await;
+        retry_counts.get(correlation_id).copied().unwrap_or(0)
     }
 
     /// Increment the retry count for a correlation_id
-    pub fn increment_retry_count(&self, correlation_id: &str) {
-        match self.retry_counts.write() {
-            Ok(mut retry_counts) => {
-                let count = retry_counts.entry(correlation_id.to_string()).or_insert(0);
-                *count += 1;
-            }
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    correlation_id = %correlation_id,
-                    "Failed to acquire write lock on retry_counts map"
-                );
-            }
-        }
+    pub async fn increment_retry_count(&self, correlation_id: &str) {
+        let mut retry_counts = self.retry_counts.write().await;
+        let count = retry_counts.entry(correlation_id.to_string()).or_insert(0);
+        *count += 1;
     }
 
     /// Check for timed-out requests and return them
@@ -181,32 +167,29 @@ impl RequestMonitor {
     /// Scans the pending requests map and returns any that have exceeded
     /// their timeout. Does NOT remove them from the map (caller should
     /// decide whether to remove or retry).
-    fn check_timeouts(&self) -> Vec<PendingRequest> {
+    async fn check_timeouts(&self) -> Vec<PendingRequest> {
+        // Use saturating_sub to handle clock skew: if now < sent_at, treat as 0 elapsed
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
             .unwrap_or_else(|e| {
                 warn!(
                     error = %e,
                     "System time before UNIX epoch in check_timeouts, using 0"
                 );
-                Duration::from_secs(0)
-            })
-            .as_secs();
+                0
+            });
 
-        let pending = match self.pending.read() {
-            Ok(guard) => guard,
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    "Failed to acquire read lock on pending map in check_timeouts"
-                );
-                return Vec::new();
-            }
-        };
+        let pending = self.pending.read().await;
         let mut timed_out = Vec::new();
 
         for request in pending.values() {
-            let elapsed_ms = (now - request.sent_at) * 1000;
+            // Use checked arithmetic to prevent overflow/underflow panics
+            // If clock skew causes now < sent_at, or multiplication overflows, treat as not timed out
+            let elapsed_ms = now
+                .checked_sub(request.sent_at)
+                .and_then(|secs| secs.checked_mul(1000))
+                .unwrap_or(0);
             if elapsed_ms >= request.timeout_ms {
                 timed_out.push(request.clone());
             }
@@ -226,26 +209,12 @@ impl RequestMonitor {
     ///
     /// Called after timeout events have been published to clean up.
     /// Also removes associated retry counts.
-    pub fn remove_timeouts(&self, correlation_ids: &[String]) {
-        match (self.pending.write(), self.retry_counts.write()) {
-            (Ok(mut pending), Ok(mut retry_counts)) => {
-                for id in correlation_ids {
-                    pending.remove(id);
-                    retry_counts.remove(id);
-                }
-            }
-            (Err(e), _) => {
-                warn!(
-                    error = %e,
-                    "Failed to acquire write lock on pending map in remove_timeouts"
-                );
-            }
-            (_, Err(e)) => {
-                warn!(
-                    error = %e,
-                    "Failed to acquire write lock on retry_counts in remove_timeouts"
-                );
-            }
+    pub async fn remove_timeouts(&self, correlation_ids: &[String]) {
+        let mut pending = self.pending.write().await;
+        let mut retry_counts = self.retry_counts.write().await;
+        for id in correlation_ids {
+            pending.remove(id);
+            retry_counts.remove(id);
         }
     }
 }
@@ -286,7 +255,7 @@ pub async fn spawn_request_monitor_with_cancel(
             _ = tokio::time::sleep(Duration::from_secs(5)) => {}
         }
 
-        let timed_out = monitor.check_timeouts();
+        let timed_out = monitor.check_timeouts().await;
         if timed_out.is_empty() {
             continue;
         }
@@ -306,7 +275,7 @@ pub async fn spawn_request_monitor_with_cancel(
         for request in timed_out {
             // Re-check: a response may have arrived between check_timeouts() and now,
             // removing this entry from pending. Skip to avoid spurious timeout events.
-            if !monitor.is_pending(&request.correlation_id) {
+            if !monitor.is_pending(&request.correlation_id).await {
                 debug!(
                     correlation_id = %request.correlation_id,
                     "Request already responded, skipping timeout publish"
@@ -315,7 +284,7 @@ pub async fn spawn_request_monitor_with_cancel(
             }
 
             // Track retry attempts per correlation_id
-            let attempt_count = monitor.get_retry_count(&request.correlation_id);
+            let attempt_count = monitor.get_retry_count(&request.correlation_id).await;
             if attempt_count >= MAX_RETRY_ATTEMPTS {
                 warn!(
                     correlation_id = %request.correlation_id,
@@ -352,13 +321,13 @@ pub async fn spawn_request_monitor_with_cancel(
                         max_attempts = MAX_RETRY_ATTEMPTS,
                         "Failed to publish request timeout event, will retry"
                     );
-                    monitor.increment_retry_count(&request.correlation_id);
+                    monitor.increment_retry_count(&request.correlation_id).await;
                 }
             }
         }
 
         // Remove successfully published or dropped requests from pending map
-        monitor.remove_timeouts(&timeout_ids);
+        monitor.remove_timeouts(&timeout_ids).await;
     }
 }
 
@@ -366,44 +335,48 @@ pub async fn spawn_request_monitor_with_cancel(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_track_and_respond() {
+    #[tokio::test]
+    async fn test_track_and_respond() {
         let monitor = RequestMonitor::new();
 
         // Track a request
-        monitor.track_request(
-            "msg-1".to_string(),
-            "agent-1".to_string(),
-            "agent-2".to_string(),
-            "corr-1".to_string(),
-            30_000,
-        );
+        monitor
+            .track_request(
+                "msg-1".to_string(),
+                "agent-1".to_string(),
+                "agent-2".to_string(),
+                "corr-1".to_string(),
+                30_000,
+            )
+            .await;
 
         // Should have 1 pending
-        assert_eq!(monitor.check_timeouts().len(), 0); // not timed out yet
+        assert_eq!(monitor.check_timeouts().await.len(), 0); // not timed out yet
 
         // Mark as responded
-        monitor.mark_responded("corr-1");
+        monitor.mark_responded("corr-1").await;
 
         // Should have 0 pending now
-        assert_eq!(monitor.check_timeouts().len(), 0);
+        assert_eq!(monitor.check_timeouts().await.len(), 0);
     }
 
-    #[test]
-    fn test_timeout_detection() {
+    #[tokio::test]
+    async fn test_timeout_detection() {
         let monitor = RequestMonitor::new();
 
         // Track a request with 0ms timeout (immediate timeout)
-        monitor.track_request(
-            "msg-1".to_string(),
-            "agent-1".to_string(),
-            "agent-2".to_string(),
-            "corr-1".to_string(),
-            0, // 0ms timeout = immediate
-        );
+        monitor
+            .track_request(
+                "msg-1".to_string(),
+                "agent-1".to_string(),
+                "agent-2".to_string(),
+                "corr-1".to_string(),
+                0, // 0ms timeout = immediate
+            )
+            .await;
 
         // Should detect timeout
-        let timeouts = monitor.check_timeouts();
+        let timeouts = monitor.check_timeouts().await;
         assert_eq!(timeouts.len(), 1);
         assert_eq!(timeouts[0].correlation_id, "corr-1");
     }

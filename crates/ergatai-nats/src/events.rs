@@ -158,13 +158,20 @@ fn generate_message_id() -> String {
 ///
 /// Sent by the message delivery system after successful PTY injection,
 /// when the original message had `requires_receipt: true`.
+///
+/// **IMPORTANT**: Field names are from the receipt's perspective, not the original message.
+/// - `from_agent`: The agent WHO READ the message (recipient of original message)
+/// - `to_agent`: The agent WHO SENT the original message (receives this receipt)
+///
+/// This is intentionally "backwards" from the original message flow:
+/// Original message: A → B  |  Read receipt: B → A
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadReceiptPayload {
     /// ID of the original message being acknowledged
     pub message_id: String,
-    /// Agent that read the message (the recipient)
+    /// Agent that read the message (the recipient of the original message)
     pub from_agent: String,
-    /// Original sender of the message
+    /// Original sender of the message (receives this receipt)
     pub to_agent: String,
     /// Timestamp when the message was read (Unix epoch seconds)
     pub read_at: u64,

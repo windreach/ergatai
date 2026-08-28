@@ -16,9 +16,10 @@
 pub mod admission;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use tokio::sync::Mutex;
 use ergatai_core::agent_registry::{agent_registry, AgentRegistry};
 use ergatai_runtime::{get_agent_runtime, AgentRuntime};
 use tracing::{info, warn};
@@ -77,9 +78,10 @@ pub struct MessageSender {
     /// Request monitor for reqwatch auto-monitoring
     pub request_monitor: Arc<RequestMonitor>,
     /// Tracks pending responses: when agent B receives a request from A,
-    /// record `pending_responses[B] = correlation_id`. When B sends a response,
-    /// auto-fill correlation_id from this map (implicit tracking).
-    pending_responses: Mutex<HashMap<String, String>>,
+    /// record `pending_responses[B] = Vec<correlation_id>`. When B sends a response,
+    /// auto-fill correlation_id from this map (implicit tracking, FIFO order).
+    /// Uses Vec to support multiple concurrent requests to the same agent.
+    pending_responses: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl MessageSender {
@@ -172,14 +174,32 @@ impl MessageSender {
             "request" => Some(uuid::Uuid::new_v4().to_string()),
             "response" => {
                 // Auto-fill from pending_responses if agent didn't provide one
+                // Pop the oldest correlation_id (FIFO) from the Vec
                 req.correlation_id.clone().or_else(|| {
-                    match self.pending_responses.lock() {
-                        Ok(mut pending) => pending.remove(&req.from),
-                        Err(e) => {
+                    // Note: We can't use .await in a closure, so we use try_lock()
+                    // This is acceptable because the lock hold time is very short
+                    match self.pending_responses.try_lock() {
+                        Ok(mut pending) => {
+                            // Get the Vec and check if it has elements
+                            if let Some(vec) = pending.get_mut(&req.from) {
+                                if vec.is_empty() {
+                                    // Empty Vec, remove the entry
+                                    pending.remove(&req.from);
+                                    None
+                                } else {
+                                    // Pop the first element (FIFO)
+                                    Some(vec.remove(0))
+                                }
+                            } else {
+                                // No entry for this agent
+                                None
+                            }
+                        }
+                        Err(_) => {
+                            // Lock not available, skip auto-fill
                             warn!(
                                 from = %req.from,
-                                error = %e,
-                                "pending_responses mutex poisoned, cannot auto-fill correlation_id"
+                                "pending_responses lock not available, cannot auto-fill correlation_id"
                             );
                             None
                         }
@@ -249,7 +269,7 @@ impl MessageSender {
                         payload.to_agent.clone(),
                         corr_id.clone(),
                         timeout,
-                    );
+                    ).await;
                     info!(
                         correlation_id = %corr_id,
                         from = %payload.from_agent,
@@ -361,6 +381,13 @@ impl MessageSender {
     /// (`correlation_id`, `timeout_ms`) are NOT exposed — they're handled
     /// transparently by `RequestMonitor` and `MessageSender`.
     ///
+    /// ## Unused parameters
+    ///
+    /// `correlation_id` and `timeout_ms` are retained for future extensibility
+    /// but currently unused. They may be injected into the PTY JSON payload in
+    /// a future version if agents need to see these values for request/response
+    /// correlation or timeout awareness.
+    ///
     /// ## message_type effects
     ///
     /// | message_type  | `_reply` instruction                       |
@@ -427,20 +454,23 @@ pub fn get_message_sender() -> Option<&'static MessageSender> {
 /// the system can auto-fill the correlation_id (implicit tracking).
 ///
 /// Called from `message_delivery.rs` after successful PTY injection.
-pub fn record_pending_response(to_agent: &str, correlation_id: &str) {
+/// Supports multiple concurrent requests by appending to a Vec (FIFO order).
+pub async fn record_pending_response(to_agent: &str, correlation_id: &str) {
     if let Some(sender) = get_message_sender() {
-        if let Ok(mut pending) = sender.pending_responses.lock() {
-            pending.insert(to_agent.to_string(), correlation_id.to_string());
-        }
+        let mut pending = sender.pending_responses.lock().await;
+        pending
+            .entry(to_agent.to_string())
+            .or_insert_with(Vec::new)
+            .push(correlation_id.to_string());
     }
 }
 
-/// Clear a pending response after it's been matched (response sent).
-/// Called internally by `send()` when auto-filling correlation_id.
-pub fn clear_pending_response(from_agent: &str) {
+/// Clear all pending responses for an agent.
+/// Called internally when cleaning up pending responses.
+/// Removes all pending correlation_ids for the specified agent.
+pub async fn clear_pending_response(from_agent: &str) {
     if let Some(sender) = get_message_sender() {
-        if let Ok(mut pending) = sender.pending_responses.lock() {
-            pending.remove(from_agent);
-        }
+        let mut pending = sender.pending_responses.lock().await;
+        pending.remove(from_agent);
     }
 }

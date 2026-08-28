@@ -660,13 +660,6 @@ mod tests {
     use super::super::tests::chain_scheduler;
     use super::super::DagScheduler;
 
-    fn sample_graph() -> TaskGraph {
-        TaskGraph::new(vec![
-            TaskNode::new("n1", "agent-a", "Task A"),
-            TaskNode::new("n2", "agent-b", "Task B").with_dependencies(vec!["n1".into()]),
-        ])
-    }
-
     #[tokio::test]
     async fn test_on_node_failed_marks_downstream_skipped() {
         let graph = TaskGraph::new(vec![

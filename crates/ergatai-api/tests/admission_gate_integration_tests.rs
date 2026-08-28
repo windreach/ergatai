@@ -1,14 +1,10 @@
 //! Integration tests for AdmissionGate
 
-use std::sync::Arc;
-
 use ergatai_api::messaging::admission::{
-    AdmissionGate, AdmissionResult, AgentHealthGate, CompositeGate, ConversationLoopGate,
-    MeshPolicyGate, RateLimitGate, SelfMessageGate,
+    AdmissionGate, AdmissionResult, CompositeGate, RateLimitGate, SelfMessageGate,
 };
 use ergatai_api::messaging::SendRequest;
-use ergatai_core::agent_registry::AgentRegistry;
-use ergatai_runtime::{get_agent_runtime, AgentRuntime};
+use ergatai_runtime::get_agent_runtime;
 
 #[tokio::test]
 async fn test_self_message_gate_denies_self_send() {
@@ -55,8 +51,6 @@ async fn test_composite_gate_short_circuits() {
         .with_gate(Box::new(SelfMessageGate::new()))
         .with_gate(Box::new(RateLimitGate::new()));
 
-    let runtime = get_agent_runtime();
-
     // This should be denied by SelfMessageGate before reaching RateLimitGate
     let request = SendRequest {
         from: "agent-1".to_string(),
@@ -77,7 +71,6 @@ async fn test_composite_gate_short_circuits() {
 #[tokio::test]
 async fn test_composite_gate_empty_allows_all() {
     let gate = CompositeGate::new();
-    let runtime = get_agent_runtime();
 
     let request = SendRequest {
         from: "agent-1".to_string(),
