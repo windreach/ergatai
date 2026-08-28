@@ -31,7 +31,7 @@ docker run --rm \
     --privileged \
     --name ergatai-os-lock-test-$$ \
     "$IMAGE_NAME" \
-    cargo test -p ergatai-lock --test os_lock_integration -- --ignored --nocapture
+    cargo test -p ergatai-lock --test os_lock_integration -- --ignored --nocapture --test-threads=1
 
 echo ""
 echo "✅ Tests complete. Container destroyed."

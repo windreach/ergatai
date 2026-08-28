@@ -281,18 +281,19 @@ impl ErgataiMcpServer {
     ///   indicate the agent may be unresponsive.
     ///
     /// # Usage Patterns
-    /// 1. **Find available agents**: Call with `filter.status = "idle"` to find agents ready
+    /// 1. **Find available agents**: Call with `filter: {"status": "idle"}` (pass filter as a JSON object) to find agents ready
     ///    for new tasks.
-    /// 2. **Check DAG participants**: Call with `filter.in_dag = "<dag_id>"` to see which
+    /// 2. **Check DAG participants**: Call with `filter: {"in_dag": "<dag_id>"}` to see which
     ///    agents are assigned to a specific orchestration.
-    /// 3. **Verify target exists**: Before `send_message`, call this to confirm the target
+    /// 3. **No filter needed**: Omit `filter` entirely (or pass `null`) to list all agents.
+    /// 4. **Verify target exists**: Before `send_message`, call this to confirm the target
     ///    agent is online and `is_alive = true`.
     ///
     /// # Errors
     /// This tool does not return errors under normal operation. If `total = 0`, no agents
     /// are currently online — wait for agents to start or check workspace configuration.
     #[tool(
-        description = "List online agents in Ergatai. Use BEFORE `send_message` to discover valid target_agent_id values, or BEFORE `submit_orchestration` to verify agent availability. Excludes the caller automatically. RESPONSE: JSON with {agents: [{agent_id, state, workspace_id, is_alive, last_heartbeat, ...}], total, filter_applied, note}. Filter by {in_dag, status}. Valid status values: created|initializing|idle|starting|running|processing|stopping|terminated. Use `filter.status = \"idle\"` to find agents available for new tasks.",
+        description = "List online agents in Ergatai. Use BEFORE `send_message` to discover valid target_agent_id values, or BEFORE `submit_orchestration` to verify agent availability. Excludes the caller automatically. RESPONSE: JSON with {agents: [{agent_id, state, workspace_id, is_alive, last_heartbeat, ...}], total, filter_applied, note}. FILTER: pass `filter` as a JSON OBJECT (not a string), e.g. {\"filter\": {\"status\": \"idle\"}} or {\"filter\": {\"in_dag\": \"dag-1\"}}. Valid status values: created|initializing|idle|starting|running|processing|stopping|terminated. Omit `filter` entirely to list all agents.",
         annotations(read_only_hint = true, idempotent_hint = true)
     )]
     async fn list_agents(
@@ -645,7 +646,7 @@ impl ErgataiMcpServer {
     /// Use `get_dag_status` to monitor progress. The scheduler dispatches ready tasks
     /// (those with all `depends_on` satisfied) as their worker agents become available.
     #[tool(
-        description = "Submit a DAG workflow for multi-agent collaboration. BEFORE calling: (1) run `validate_dag_yaml` with the same YAML to dry-run validation; (2) run `list_agents` to confirm every `agent:` in the YAML matches an online agent. YOU CANNOT be a task worker in your own DAG — the scheduler must be a pure coordinator. YAML rules: unknown top-level fields rejected; priority ∈ {low,medium,high}; timeouts > 0; `communication` ∈ {open,adjacent,star:{hub}} with hub existing in tasks; template vars must match declared parameters. Only ONE DAG can run at a time — use `get_dag_status` to check before submitting. RESPONSE: {status: 'submitted', submitted_nodes, progress: {completed, total, percent}, graph_status}. TIP: After submission, poll `get_dag_status` to monitor progress.",
+        description = "Submit a DAG workflow for multi-agent collaboration. BEFORE calling: (1) run `validate_dag_yaml` with the same YAML to dry-run validation; (2) run `list_agents` to confirm every `agent:` in the YAML matches an online agent. YOU CANNOT be a task worker in your own DAG — the scheduler must be a pure coordinator. YAML format: the top-level field MUST be `tasks:` (NOT `nodes:`), each with `name`, `agent`, `task` sub-fields. YAML rules: unknown top-level fields rejected; priority ∈ {low,medium,high}; timeouts > 0; `communication` ∈ {open,adjacent,star:{hub}} with hub existing in tasks; template vars must match declared parameters. Only ONE DAG can run at a time — use `get_dag_status` to check before submitting. RESPONSE: {status: 'submitted', submitted_nodes, progress: {completed, total, percent}, graph_status}. TIP: After submission, poll `get_dag_status` to monitor progress.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -1438,17 +1439,17 @@ send_message(target_agent_id="agent-2", message="FYI", message_type="broadcast")
 ### 1.3 DAG orchestration
 
 **Submit DAG** — `submit_orchestration`:
-Call when user explicitly requests DAG collaboration. Confirm fields before submitting:
+Call when user explicitly requests DAG collaboration. The YAML top-level field MUST be `tasks:` (NOT `nodes:`). Confirm fields before submitting:
 
 | Field | Description | Required |
 |-------|-------------|----------|
-| `nodes[].name` | Unique task name | YES |
-| `nodes[].agent` | Agent name | YES |
-| `nodes[].task` | Task description | YES |
-| `nodes[].depends_on` | Dependency task names | NO |
-| `nodes[].priority` | `low` / `medium` / `high` | NO |
-| `nodes[].timeout` | Node timeout (seconds) | NO |
-| `nodes[].scope` | File access scope (glob) | NO |
+| `tasks[].name` | Unique task name | YES |
+| `tasks[].agent` | Agent name | YES |
+| `tasks[].task` | Task description | YES |
+| `tasks[].depends_on` | Dependency task names | NO |
+| `tasks[].priority` | `low` / `medium` / `high` | NO |
+| `tasks[].timeout` | Node timeout (seconds) | NO |
+| `tasks[].scope` | File access scope (glob) | NO |
 | `communication` | `open` / `adjacent` / `star:{hub}` | NO |
 | `timeout` | DAG timeout (seconds) | NO |
 | `max_agent_calls` | Global call limit | NO |
@@ -1508,7 +1509,7 @@ timeout: 3600
 max_agent_calls: 50
 communication: "open"
 
-nodes:
+tasks:
   - name: "analyze"           # Unique task name (REQUIRED)
     agent: "agent-1"          # Executing agent (REQUIRED)
     task: "Analyze structure" # Task description (REQUIRED)
