@@ -1103,6 +1103,20 @@ async fn load_completed_dag_from_disk() -> Option<serde_json::Value> {
     }
     let (best_path, _) = best?;
 
+    // Guard against excessively large state files (e.g., corrupted or malicious)
+    const MAX_DAG_STATE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
+    if let Ok(meta) = tokio::fs::metadata(&best_path).await {
+        if meta.len() > MAX_DAG_STATE_SIZE {
+            tracing::warn!(
+                path = %best_path.display(),
+                size = meta.len(),
+                limit = MAX_DAG_STATE_SIZE,
+                "DAG state file exceeds size limit, skipping"
+            );
+            return None;
+        }
+    }
+
     let graph = TaskGraph::load_from_file(&best_path).await.ok()?;
 
     // Only report completed if every node is terminal

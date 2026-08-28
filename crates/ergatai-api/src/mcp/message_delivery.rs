@@ -312,7 +312,12 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                 "Message delivered via AgentRuntime injection"
             );
 
-            // Publish read receipt if required
+            // Ack FIRST to prevent duplicates on redelivery
+            if let Err(e) = msg.ack().await {
+                warn!("Failed to ack delivery: {}", e);
+            }
+
+            // Publish read receipt if required (after ack to avoid duplicates)
             if payload.requires_receipt {
                 if let Some(conn) = ergatai_nats::get_nats_connection().await {
                     let bus = ergatai_nats::EventBus::new(conn);
@@ -366,10 +371,6 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                     correlation_id = %corr_id,
                     "Recorded pending response for implicit tracking"
                 );
-            }
-
-            if let Err(e) = msg.ack().await {
-                warn!("Failed to ack delivery: {}", e);
             }
         }
         Err(e) => {

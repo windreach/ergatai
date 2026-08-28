@@ -178,36 +178,15 @@ impl MessageSender {
             "response" => {
                 // Auto-fill from pending_responses if agent didn't provide one
                 // Pop the oldest correlation_id (FIFO) from the Vec
-                req.correlation_id.clone().or_else(|| {
-                    // Note: We can't use .await in a closure, so we use try_lock()
-                    // This is acceptable because the lock hold time is very short
-                    match self.pending_responses.try_lock() {
-                        Ok(mut pending) => {
-                            // Get the Vec and check if it has elements
-                            if let Some(vec) = pending.get_mut(&req.from) {
-                                if vec.is_empty() {
-                                    // Empty Vec, remove the entry
-                                    pending.remove(&req.from);
-                                    None
-                                } else {
-                                    // Pop the first element (FIFO)
-                                    Some(vec.remove(0))
-                                }
-                            } else {
-                                // No entry for this agent
-                                None
-                            }
-                        }
-                        Err(_) => {
-                            // Lock not available, skip auto-fill
-                            warn!(
-                                from = %req.from,
-                                "pending_responses lock not available, cannot auto-fill correlation_id"
-                            );
-                            None
-                        }
-                    }
-                })
+                if let Some(cid) = req.correlation_id.clone() {
+                    Some(cid)
+                } else {
+                    // Use .await instead of try_lock() to avoid silent failures under contention
+                    let mut pending = self.pending_responses.lock().await;
+                    pending.get_mut(&req.from)
+                        .filter(|v| !v.is_empty())
+                        .map(|v| v.remove(0))
+                }
             }
             _ => None,
         };

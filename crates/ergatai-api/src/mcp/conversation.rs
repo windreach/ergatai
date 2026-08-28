@@ -440,15 +440,12 @@ impl ConversationManager {
                         "Global per-agent rate limit hit — multi-agent cycle detected"
                     );
                     // Terminate all conversations involving this agent
-                    let conv_ids_to_terminate: Vec<String> = {
-                        let conversations = self.conversations.read().await;
-                        conversations
-                            .values()
-                            .filter(|c| c.participants.0 == from || c.participants.1 == from)
-                            .map(|c| c.id.clone())
-                            .collect()
-                    };
-                    let mut conversations = self.conversations.write().await;
+                    // Use the already-held write lock instead of re-acquiring (deadlock fix)
+                    let conv_ids_to_terminate: Vec<String> = conversations
+                        .values()
+                        .filter(|c| c.participants.0 == from || c.participants.1 == from)
+                        .map(|c| c.id.clone())
+                        .collect();
                     for cid in conv_ids_to_terminate {
                         if let Some(c) = conversations.get_mut(&cid) {
                             c.state = ConversationState::Terminated {
@@ -498,7 +495,8 @@ impl ConversationManager {
         }
 
         // ── Token check (会话对齐 enforcement) ──
-        let has_terminate = message.contains("TERMINATE");
+        // Use word-boundary match to avoid false positives (e.g., "TERMINATED", "Don't TERMINATE")
+        let has_terminate = message.split_whitespace().any(|w| w == "TERMINATE");
         match &conv.token_owner {
             TokenOwner::Free => {
                 // Either party can claim the token by sending.

@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use tower_governor::{governor::GovernorConfigBuilder, key_extractor::KeyExtractor};
 
 use ergatai_api::mcp::{
-    create_mcp_service, spawn_request_monitor, start_message_delivery_consumer, start_peer_reaper,
+    create_mcp_service, spawn_request_monitor_with_cancel, start_message_delivery_consumer, start_peer_reaper,
 };
 use ergatai_api::messaging::{get_message_sender, init_message_sender};
 use ergatai_api::{app_state_with_token, build_rest_app};
@@ -326,8 +326,9 @@ async fn async_main(args: Args) -> Result<()> {
             // Start request monitor background task (reqwatch)
             if let Some(sender) = get_message_sender() {
                 let monitor = sender.request_monitor.clone();
+                let cancel_monitor = mcp_cancellation_token.clone();
                 tokio::spawn(async move {
-                    spawn_request_monitor(monitor).await;
+                    spawn_request_monitor_with_cancel(monitor, cancel_monitor).await;
                 });
                 tracing::info!("✅ Request monitor (reqwatch) started");
             }

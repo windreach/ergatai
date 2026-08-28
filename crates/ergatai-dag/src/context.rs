@@ -173,8 +173,11 @@ impl DagContext {
                         }
                         // else keep existing
                     } else {
-                        // Can't compare, overwrite
-                        self.node_outputs.insert(id, outputs);
+                        // Type mismatch — can't compare numerically, keep existing
+                        tracing::warn!(
+                            node_id = %id,
+                            "Max merge: type mismatch (existing is not numeric or new is not numeric), keeping existing value"
+                        );
                     }
                 } else {
                     self.node_outputs.insert(id, outputs);
@@ -191,8 +194,11 @@ impl DagContext {
                         }
                         // else keep existing
                     } else {
-                        // Can't compare, overwrite
-                        self.node_outputs.insert(id, outputs);
+                        // Type mismatch — can't compare numerically, keep existing
+                        tracing::warn!(
+                            node_id = %id,
+                            "Min merge: type mismatch (existing is not numeric or new is not numeric), keeping existing value"
+                        );
                     }
                 } else {
                     self.node_outputs.insert(id, outputs);

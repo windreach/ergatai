@@ -521,33 +521,26 @@ impl AgentRuntime {
                 }
             });
         }
-        drop(registry);
 
-        // CRITICAL FIX: Clean up indices AFTER dropping the registry lock.
-        // This prevents TOCTOU race where the lock was dropped and re-acquired
-        // in the middle of the loop, allowing other tasks to modify state.
+        // Clean up indices for removed agents and reconcile mcp_index
+        // WHILE STILL HOLDING the registry write lock to eliminate visibility gaps.
+        // Order matters: remove old indices first, then reconcile to add back correct entries.
         for (old_agent_id, old_uuid, old_mcp) in indices_to_clean {
             self.remove_agent_indices(&old_agent_id, &old_uuid, old_mcp.as_deref())
                 .await;
         }
 
-        // Reconcile mcp_index with the current registry state.
-        // This handles the case where an MCP binding was preserved across an agent
-        // process restart: the old mcp_index entry was cleaned above, but the new
-        // registry entry still has mcp_agent_id set. Rebuild the mapping so routing
-        // continues to work without requiring the MCP client to reconnect.
+        // Reconcile mcp_index: add entries for agents with preserved MCP bindings
         {
-            let registry = self.registry.read().await;
             let mut mcp_index = self.mcp_index.write().await;
-            // Remove stale entries (mcp_agent_id points to a non-existent agent)
-            mcp_index.retain(|_mcp_id, runtime_id| registry.contains_key(runtime_id));
-            // Add missing entries (registry has mcp_agent_id but mcp_index doesn't)
             for info in registry.values() {
                 if let Some(ref mcp_id) = info.mcp_agent_id {
                     mcp_index.insert(mcp_id.clone(), info.agent_id.clone());
                 }
             }
         }
+
+        drop(registry);
 
         // Update UUID index for newly registered agents
         if !new_agents.is_empty() {
@@ -817,21 +810,38 @@ impl AgentRuntime {
         // Find runtime agent with matching ergatai_agent_id.
         // The PTY backend sets ergatai_agent_id to the workspace ID format
         // (e.g., "start-opencode-3-agent-1"), while agent_identifier comes from
-        // the MCP URL path (e.g., "agent-1"). Match when the workspace ID ends
-        // with "-{agent_identifier}" — this covers the common case where the
-        // MCP URL path name corresponds to the PTY agent counter.
+        // the MCP URL path (e.g., "agent-1").
         //
-        // SAFETY: Suffix matching assumes MCP URL paths are unique per agent instance.
-        // If multiple workspaces have agents with identical names (e.g., "ws1-agent-1"
-        // and "ws2-agent-1"), this could match incorrectly. In practice, the MCP server
-        // generates unique URL paths per agent, so this is safe.
+        // Strategy: prefer exact match first; fall back to suffix match only if
+        // unambiguous (exactly one match). Multiple suffix matches are ambiguous
+        // and must NOT silently route to the wrong agent.
         let registry = self.registry.read().await;
+        let suffix = format!("-{}", agent_identifier);
         let matched_agent = registry.values().find(|info| {
             info.handle
                 .metadata
                 .get("ergatai_agent_id")
-                .map(|id| id == agent_identifier || id.ends_with(&format!("-{}", agent_identifier)))
-                .unwrap_or(false)
+                .is_some_and(|id| id == agent_identifier)
+        }).or_else(|| {
+            // Collect suffix matches — only use if exactly one
+            let suffix_matches: Vec<_> = registry.values().filter(|info| {
+                info.handle
+                    .metadata
+                    .get("ergatai_agent_id")
+                    .is_some_and(|id| id.ends_with(&suffix))
+            }).collect();
+            if suffix_matches.len() == 1 {
+                suffix_matches.into_iter().next()
+            } else {
+                if suffix_matches.len() > 1 {
+                    warn!(
+                        agent_identifier = agent_identifier,
+                        match_count = suffix_matches.len(),
+                        "Ambiguous suffix match — multiple agents match, refusing to route"
+                    );
+                }
+                None
+            }
         });
 
         let matched_agent = match matched_agent {
@@ -937,25 +947,41 @@ impl AgentRuntime {
             // Match by identifier if available, otherwise use FIFO.
             // For identifier matching, accept both exact match and suffix match
             // (workspace ID format "start-opencode-3-agent-1" ends with "-agent-1").
-            //
-            // SAFETY: Suffix matching assumes MCP URL paths are unique per agent instance.
-            // If multiple workspaces have agents with identical names, this could match
-            // incorrectly. In practice, the MCP server generates unique URL paths per agent.
-            let matched_agent = if !agent_identifier.is_empty() {
-                unbound_agents.into_iter().find(|info| {
+            // Strategy: prefer exact match first; fall back to suffix match only if
+            // unambiguous (exactly one match). Multiple suffix matches are ambiguous.
+            let suffix = format!("-{}", agent_identifier);
+            let matched_agent: Option<&AgentInfo> = if !agent_identifier.is_empty() {
+                // Exact match first
+                unbound_agents.iter().copied().find(|info| {
                     info.handle
                         .metadata
                         .get("ergatai_agent_id")
-                        .map(|id| {
-                            id == &agent_identifier
-                                || id.ends_with(&format!("-{}", agent_identifier))
-                        })
-                        .unwrap_or(false)
+                        .is_some_and(|id| id == &agent_identifier)
+                }).or_else(|| {
+                    // Suffix match — only if exactly one
+                    let suffix_matches: Vec<_> = unbound_agents.iter().copied().filter(|info| {
+                        info.handle
+                            .metadata
+                            .get("ergatai_agent_id")
+                            .is_some_and(|id| id.ends_with(&suffix))
+                    }).collect();
+                    if suffix_matches.len() == 1 {
+                        suffix_matches.into_iter().next()
+                    } else {
+                        if suffix_matches.len() > 1 {
+                            tracing::warn!(
+                                agent_identifier = %agent_identifier,
+                                match_count = suffix_matches.len(),
+                                "Ambiguous suffix match in drain_pending_bindings — refusing to route"
+                            );
+                        }
+                        None
+                    }
                 })
             } else {
                 // FIFO: sort by creation time and take earliest
                 unbound_agents.sort_by_key(|a| a.created_at);
-                unbound_agents.into_iter().next()
+                unbound_agents.first().copied()
             };
 
             let matched_agent = match matched_agent {

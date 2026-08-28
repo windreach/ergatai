@@ -232,7 +232,6 @@ impl DagScheduler {
         let dag_id = self.dag_id.clone();
 
         tokio::spawn(async move {
-            let mut sequence = 0u64;
             let mut last_checkpoint: Option<String> = None;
             let mut interval =
                 tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
@@ -252,8 +251,9 @@ impl DagScheduler {
                     }
                 }
 
-                // Create checkpoint
-                sequence += 1;
+                // Create checkpoint — use shared sequence counter to avoid
+                // duplication with create_auto_checkpoint
+                let sequence = scheduler.checkpoint_sequence.fetch_add(1, Ordering::SeqCst) + 1;
                 match scheduler
                     .create_checkpoint(last_checkpoint.clone(), sequence)
                     .await
@@ -469,15 +469,25 @@ impl DagScheduler {
         agent_name: &str,
         required_profile: &str,
     ) -> ErgataiResult<()> {
-        // Discover profiles from project root
-        let profiles = match ergatai_runtime::discover_profiles(&self.project_root) {
-            Ok(profiles) => profiles,
-            Err(e) => {
+        // Discover profiles from project root — use spawn_blocking to avoid
+        // blocking the async runtime with filesystem I/O
+        let project_root = self.project_root.clone();
+        let profiles = match tokio::task::spawn_blocking(move || {
+            ergatai_runtime::discover_profiles(&project_root)
+        })
+        .await
+        {
+            Ok(Ok(profiles)) => profiles,
+            Ok(Err(e)) => {
                 tracing::warn!(
                     "Failed to discover agent profiles, skipping validation: {}",
                     e
                 );
                 // Fail open: if we can't read profiles, don't block execution
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!("spawn_blocking failed for profile discovery: {}", e);
                 return Ok(());
             }
         };

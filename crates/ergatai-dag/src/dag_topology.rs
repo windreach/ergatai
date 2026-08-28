@@ -115,9 +115,20 @@ impl ConditionalEdge {
             let rendered = context.render_template(&branch.condition);
             // 简单布尔表达式求值
             if crate::condition::Condition::evaluate_simple(&rendered) {
+                tracing::debug!(
+                    condition = %branch.condition,
+                    rendered = %rendered,
+                    target = %branch.target,
+                    "Conditional edge: branch selected"
+                );
                 return branch.target.clone();
             }
         }
+        tracing::warn!(
+            default_target = %self.default_target,
+            branch_count = self.branches.len(),
+            "Conditional edge: no branch matched, falling through to default target"
+        );
         self.default_target.clone()
     }
 }
