@@ -1,8 +1,10 @@
-# Isolated test environment for fanotify OS lock tests.
-# Runs as root inside a container with its own mount namespace,
-# so FAN_MARK_MOUNT only affects the container's filesystem.
+# Docker container for snapshot read tests with LD_PRELOAD support.
+#
+# Tests the complete flow:
+# - Agent A locks and modifies file
+# - Agent B reads with LD_PRELOAD → should get snapshot content
+# - Verifies LD_PRELOAD interception and IPC query work
 
-# Use Rust image for compatible glibc version with host
 FROM rust:1.96-slim
 
 # Set proxy for apt-get
@@ -26,8 +28,9 @@ ENV https_proxy=
 ENV HTTP_PROXY=
 ENV HTTPS_PROXY=
 
+# Note: git CLI not needed - tests use git2 crate (Rust library) for repo operations
+
 WORKDIR /app
 
-# Test binary will be mounted at runtime via -v flag
-# Default: run the OS lock tests serially (fanotify requires single-threaded)
-CMD ["./os_lock_integration", "--ignored", "--nocapture", "--test-threads=1"]
+# Test binary and preload library will be mounted at runtime
+CMD ["./snapshot_read_integration", "--ignored", "--nocapture", "--test-threads=1"]

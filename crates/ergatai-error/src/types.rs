@@ -48,6 +48,7 @@ pub enum ErrorCode {
     NotFound,
     DagBudgetExhausted,
     DagDeadlineExceeded,
+    ResourceLimitExceeded,
 
     // Internal errors
     Internal,
@@ -89,6 +90,7 @@ impl ErrorCode {
             Self::NotFound => "ERR_NOT_FOUND",
             Self::DagBudgetExhausted => "ERR_DAG_BUDGET_EXHAUSTED",
             Self::DagDeadlineExceeded => "ERR_DAG_DEADLINE_EXCEEDED",
+            Self::ResourceLimitExceeded => "ERR_RESOURCE_LIMIT_EXCEEDED",
 
             Self::Internal => "ERR_INTERNAL",
             Self::Channel => "ERR_CHANNEL",
@@ -234,6 +236,17 @@ pub enum ErgataiError {
     DagDeadlineExceeded {
         dag_id: String,
         exceeded_by_secs: u64,
+    },
+
+    /// Resource limit exceeded (e.g., per-agent lock limit).
+    ///
+    /// Returned when an agent attempts to acquire more resources than allowed.
+    /// The caller should release existing resources or wait for them to expire.
+    #[error("Resource limit exceeded: {resource} ({current}/{limit})")]
+    ResourceLimitExceeded {
+        resource: String,
+        limit: u64,
+        current: u64,
     },
 
     // ===== Internal Errors =====
@@ -419,6 +432,7 @@ impl ErgataiError {
             ErgataiError::NotFound(_) => ErrorCode::NotFound,
             ErgataiError::DagBudgetExhausted { .. } => ErrorCode::DagBudgetExhausted,
             ErgataiError::DagDeadlineExceeded { .. } => ErrorCode::DagDeadlineExceeded,
+            ErgataiError::ResourceLimitExceeded { .. } => ErrorCode::ResourceLimitExceeded,
 
             // Internal errors
             ErgataiError::InternalError { .. } => ErrorCode::Internal,

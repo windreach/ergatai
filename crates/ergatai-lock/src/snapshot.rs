@@ -85,6 +85,33 @@ impl SnapshotManager {
         })
     }
 
+    /// Normalize an absolute file path to a relative path from the project root.
+    ///
+    /// This is used by the IPC server to convert absolute paths (sent by LD_PRELOAD)
+    /// to relative paths (as stored in the database).
+    ///
+    /// # Arguments
+    /// * `absolute_path` - Absolute file path (e.g., `/tmp/.tmpXXX/snapshot_test.txt`)
+    ///
+    /// # Returns
+    /// Relative path (e.g., `snapshot_test.txt`), or the original path if normalization fails
+    pub fn normalize_to_relative(&self, absolute_path: &str) -> String {
+        let abs_path = PathBuf::from(absolute_path);
+
+        // Try to strip the canonical repo path prefix
+        if let Ok(relative) = abs_path.strip_prefix(&self.canonical_repo_path) {
+            return relative.to_string_lossy().to_string();
+        }
+
+        // Fallback: try with the non-canonical repo_path
+        if let Ok(relative) = abs_path.strip_prefix(&self.repo_path) {
+            return relative.to_string_lossy().to_string();
+        }
+
+        // If normalization fails, return the original path (with leading / removed)
+        absolute_path.trim_start_matches('/').to_string()
+    }
+
     /// Create a snapshot of a file before modification (Copy-on-Write)
     ///
     /// This implements the H3 fix: read file → hash content → store in git object store

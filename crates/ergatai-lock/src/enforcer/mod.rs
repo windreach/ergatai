@@ -96,6 +96,18 @@ pub struct DecisionEngine {
     /// PIDs that belong to ergatai's own processes (the API server, NATS, etc.).
     /// Always allowed — we must not block our own operations.
     self_pids: Arc<RwLock<std::collections::HashSet<u32>>>,
+    /// Workspace directory boundaries per agent.
+    ///
+    /// Key: agent_id
+    /// Value: workspace directory path (relative to project root)
+    ///
+    /// When set, agents can only access files within their workspace directory.
+    /// Access to files outside the workspace is denied unless the agent has
+    /// explicitly been granted cross-workspace access.
+    ///
+    /// If an agent has no registered workspace, it can access any file in the
+    /// project root (legacy behavior for backward compatibility).
+    workspace_dirs: Arc<RwLock<std::collections::HashMap<String, String>>>,
 }
 
 impl DecisionEngine {
@@ -107,6 +119,60 @@ impl DecisionEngine {
             lock_manager,
             pid_resolver,
             self_pids: Arc::new(RwLock::new(initial)),
+            workspace_dirs: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        }
+    }
+
+    /// Register a workspace directory for an agent.
+    ///
+    /// When registered, the agent can only access files within `workspace_dir`
+    /// (relative to project root). Files outside the workspace will be denied.
+    ///
+    /// Call this when an agent starts with a specific workspace.
+    pub fn register_workspace(&self, agent_id: &str, workspace_dir: &str) {
+        self.workspace_dirs
+            .write()
+            .insert(agent_id.to_string(), workspace_dir.to_string());
+        debug!(
+            agent_id = %agent_id,
+            workspace_dir = %workspace_dir,
+            "Registered workspace boundary for agent"
+        );
+    }
+
+    /// Remove workspace boundary for an agent.
+    ///
+    /// After this, the agent can access any file in the project root.
+    /// Call this when an agent exits or its workspace is removed.
+    pub fn unregister_workspace(&self, agent_id: &str) {
+        self.workspace_dirs.write().remove(agent_id);
+        debug!(agent_id = %agent_id, "Unregistered workspace boundary for agent");
+    }
+
+    /// Check if a path is within the agent's workspace boundary.
+    ///
+    /// Returns `Ok(())` if access is allowed, or `Err(reason)` if denied.
+    /// If no workspace is registered for the agent, access is allowed (legacy behavior).
+    fn check_workspace_boundary(
+        &self,
+        agent_id: &str,
+        relative_path: &str,
+    ) -> Result<(), String> {
+        let workspace_dirs = self.workspace_dirs.read();
+        let workspace_dir = match workspace_dirs.get(agent_id) {
+            Some(dir) => dir,
+            None => return Ok(()), // No workspace registered, allow access
+        };
+
+        // Check if the path starts with the workspace directory
+        // Both paths are relative to project root
+        if relative_path.starts_with(workspace_dir) {
+            Ok(())
+        } else {
+            Err(format!(
+                "Path '{}' is outside agent's workspace '{}'",
+                relative_path, workspace_dir
+            ))
         }
     }
 
@@ -156,6 +222,7 @@ impl DecisionEngine {
     /// Decision order:
     /// 1. Self-PID allowlist → Allow (ergatai's own processes).
     /// 2. Fail-open on any error → Allow.
+    /// 2.5 Workspace boundary check → Deny if path is outside agent's workspace.
     /// 3. File not locked → Allow.
     /// 4. Caller is the lock holder (same agent_id + session_id) → Allow.
     /// 5. Caller is a *known* non-holder agent → Deny.
@@ -173,6 +240,25 @@ impl DecisionEngine {
 
         // 2. Resolve caller identity.
         let caller = self.pid_resolver.resolve(caller_pid);
+
+        // 2.5 Workspace boundary check (for known agents).
+        // If the agent has a registered workspace, deny access to files outside it.
+        if let Some((ref caller_aid, _)) = caller {
+            if let Err(reason) = self.check_workspace_boundary(caller_aid, relative_path) {
+                info!(
+                    pid = caller_pid,
+                    agent = %caller_aid,
+                    path = relative_path,
+                    reason = %reason,
+                    "fanotify: workspace boundary violation, denying"
+                );
+                return Decision::Deny {
+                    holder_agent: "workspace_boundary".to_string(),
+                    holder_session: String::new(),
+                    caller_agent: Some(caller_aid.clone()),
+                };
+            }
+        }
 
         // 3. Check lock state and get holder info in a single query (fail-open).
         //    Uses the fast path: no canonicalize, try_lock on SQLite, negative
@@ -261,6 +347,9 @@ pub struct Enforcer {
     /// to safely neutralize AsyncFd before closing the fd, preventing
     /// double-close / fd-reuse UB.
     backend: Option<Arc<dyn EnforcerBackend>>,
+    /// Decision engine for access control decisions.
+    /// Shared with the event loop task via Arc.
+    engine: Arc<DecisionEngine>,
     /// Cancellation token for the event loop.
     cancel: CancellationToken,
     /// Join handle for the event loop task. `None` if enforcer is disabled.
@@ -292,6 +381,10 @@ impl Enforcer {
         nats_client: Option<Arc<async_nats::Client>>,
         config: EnforcerConfig,
     ) -> ErgataiResult<Self> {
+        // Clone for potential use in disabled() path
+        let lock_manager_for_disabled = lock_manager.clone();
+        let pid_resolver_for_disabled = pid_resolver.clone();
+
         let engine = Arc::new(DecisionEngine::new(lock_manager, pid_resolver));
 
         // Select and initialize the platform backend.
@@ -299,7 +392,7 @@ impl Enforcer {
             Some(pair) => pair,
             None => {
                 info!("no enforcement backend available; enforcement disabled");
-                return Ok(Self::disabled(project_root, project_id, config));
+                return Ok(Self::disabled(project_root, project_id, config, lock_manager_for_disabled, pid_resolver_for_disabled));
             }
         };
 
@@ -329,11 +422,12 @@ impl Enforcer {
         let project_root_inner = project_root_canonical;
         let project_id_inner = project_id.clone();
         let config_inner = config.clone();
+        let engine_inner = engine.clone();
 
         let task = tokio::spawn(async move {
             Self::event_loop(
                 backend_inner,
-                engine,
+                engine_inner,
                 project_root_inner,
                 project_id_inner,
                 nats_client,
@@ -353,6 +447,7 @@ impl Enforcer {
         Ok(Self {
             backend_fd,
             backend: Some(backend),
+            engine,
             cancel,
             task: Arc::new(parking_lot::Mutex::new(Some(task))),
             active: Arc::new(AtomicBool::new(true)),
@@ -405,11 +500,47 @@ impl Enforcer {
         self.active.load(Ordering::SeqCst)
     }
 
+    /// Register a workspace directory boundary for an agent.
+    ///
+    /// When registered, the agent can only access files within `workspace_dir`
+    /// (relative to project root). Access to files outside the workspace is denied.
+    ///
+    /// Call this when an agent starts with a specific workspace directory.
+    ///
+    /// # Example
+    /// ```ignore
+    /// enforcer.register_workspace("agent-1", "workspaces/ws1");
+    /// // agent-1 can now only access files under workspaces/ws1/
+    /// ```
+    pub fn register_workspace(&self, agent_id: &str, workspace_dir: &str) {
+        self.engine.register_workspace(agent_id, workspace_dir);
+    }
+
+    /// Remove workspace boundary for an agent.
+    ///
+    /// After this, the agent can access any file in the project root.
+    /// Call this when an agent exits or its workspace is removed.
+    pub fn unregister_workspace(&self, agent_id: &str) {
+        self.engine.unregister_workspace(agent_id);
+    }
+
+    /// Get a reference to the decision engine (for advanced use cases).
+    pub fn engine(&self) -> &Arc<DecisionEngine> {
+        &self.engine
+    }
+
     /// Build an enforcer in the disabled state (no event loop).
-    fn disabled(project_root: PathBuf, project_id: String, config: EnforcerConfig) -> Self {
+    fn disabled(
+        project_root: PathBuf,
+        project_id: String,
+        config: EnforcerConfig,
+        lock_manager: Arc<FileLockManager>,
+        pid_resolver: Arc<dyn PidResolver>,
+    ) -> Self {
         Self {
             backend_fd: Arc::new(AtomicI32::new(-1)),
             backend: None,
+            engine: Arc::new(DecisionEngine::new(lock_manager, pid_resolver)),
             cancel: CancellationToken::new(),
             task: Arc::new(parking_lot::Mutex::new(None)),
             active: Arc::new(AtomicBool::new(false)),
@@ -889,8 +1020,14 @@ mod tests {
     fn test_enforcer_disabled_state() {
         let (_temp, lm) = setup_lock_manager();
         let project_root = lm.project_root().to_path_buf();
-        let enforcer =
-            Enforcer::disabled(project_root, "test".to_string(), EnforcerConfig::default());
+        let pid_resolver = Arc::new(NoopPidResolver);
+        let enforcer = Enforcer::disabled(
+            project_root,
+            "test".to_string(),
+            EnforcerConfig::default(),
+            lm,
+            pid_resolver,
+        );
         assert!(!enforcer.is_active());
         // stop() on a disabled enforcer should be a no-op.
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -907,6 +1044,95 @@ mod tests {
         assert!(readlink_proc_fd(-1).is_none());
         // fd 999999 is almost certainly not open.
         assert!(readlink_proc_fd(999_999).is_none());
+    }
+
+    // ── Workspace boundary tests ──────────────────────────────────────
+
+    #[test]
+    fn test_workspace_no_registration_allows_all() {
+        // Agent without registered workspace should be able to access any file
+        let (_temp, lm) = setup_lock_manager();
+        let resolver = Arc::new(crate::pid_resolver::CallbackPidResolver::new(|| {
+            vec![(88888, "agent-no-ws".to_string(), "session-1".to_string())]
+        }));
+        let engine = DecisionEngine::new(lm, resolver);
+
+        // No workspace registered, should allow access to any path
+        let decision = engine.decide("src/main.rs", 88888);
+        assert_eq!(decision, Decision::Allow);
+
+        let decision = engine.decide("crates/other/file.rs", 88888);
+        assert_eq!(decision, Decision::Allow);
+    }
+
+    #[test]
+    fn test_workspace_boundary_allows_inside() {
+        // Agent with registered workspace can access files inside it
+        let (_temp, lm) = setup_lock_manager();
+        let resolver = Arc::new(crate::pid_resolver::CallbackPidResolver::new(|| {
+            vec![(77777, "agent-with-ws".to_string(), "session-1".to_string())]
+        }));
+        let engine = DecisionEngine::new(lm, resolver);
+
+        // Register workspace for agent
+        engine.register_workspace("agent-with-ws", "workspaces/ws1");
+
+        // Should allow access to files inside workspace
+        let decision = engine.decide("workspaces/ws1/src/main.rs", 77777);
+        assert_eq!(decision, Decision::Allow);
+
+        let decision = engine.decide("workspaces/ws1/file.rs", 77777);
+        assert_eq!(decision, Decision::Allow);
+    }
+
+    #[test]
+    fn test_workspace_boundary_denies_outside() {
+        // Agent with registered workspace cannot access files outside it
+        let (_temp, lm) = setup_lock_manager();
+        let resolver = Arc::new(crate::pid_resolver::CallbackPidResolver::new(|| {
+            vec![(66666, "agent-restricted".to_string(), "session-1".to_string())]
+        }));
+        let engine = DecisionEngine::new(lm, resolver);
+
+        // Register workspace for agent
+        engine.register_workspace("agent-restricted", "workspaces/ws2");
+
+        // Should deny access to files outside workspace
+        let decision = engine.decide("src/main.rs", 66666);
+        match decision {
+            Decision::Deny { caller_agent, .. } => {
+                assert_eq!(caller_agent, Some("agent-restricted".to_string()));
+            }
+            _ => panic!("Expected Deny, got {:?}", decision),
+        }
+
+        // Should also deny access to other workspaces
+        let decision = engine.decide("workspaces/ws1/file.rs", 66666);
+        assert!(matches!(decision, Decision::Deny { .. }));
+    }
+
+    #[test]
+    fn test_workspace_unregister_restores_access() {
+        // After unregistering workspace, agent can access any file again
+        let (_temp, lm) = setup_lock_manager();
+        let resolver = Arc::new(crate::pid_resolver::CallbackPidResolver::new(|| {
+            vec![(55555, "agent-temp-ws".to_string(), "session-1".to_string())]
+        }));
+        let engine = DecisionEngine::new(lm, resolver);
+
+        // Register workspace
+        engine.register_workspace("agent-temp-ws", "workspaces/temp");
+
+        // Should deny outside access
+        let decision = engine.decide("src/main.rs", 55555);
+        assert!(matches!(decision, Decision::Deny { .. }));
+
+        // Unregister workspace
+        engine.unregister_workspace("agent-temp-ws");
+
+        // Should now allow access anywhere
+        let decision = engine.decide("src/main.rs", 55555);
+        assert_eq!(decision, Decision::Allow);
     }
 
     // ── MockBackend + event_loop integration tests ──────────────────

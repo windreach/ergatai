@@ -210,12 +210,12 @@ pub async fn spawn_agent(
     let runtime = get_agent_runtime();
     let env = req.env.unwrap_or_default();
 
+    // Save work_dir before it's consumed by WorkspaceSpec
+    let work_dir_str = req.work_dir.clone().unwrap_or_else(|| state.default_cwd.clone());
+
     let spec = WorkspaceSpec {
         id: req.workspace_id,
-        work_dir: req
-            .work_dir
-            .unwrap_or_else(|| state.default_cwd.clone())
-            .into(),
+        work_dir: work_dir_str.clone().into(),
         env,
         resources: ResourceLimits::default(),
     };
@@ -225,6 +225,28 @@ pub async fn spawn_agent(
         .await
     {
         Ok(agent_id) => {
+            // Register workspace boundary with the file access enforcer
+            // so the agent can only access files within its workspace.
+            if let Ok(Some(enforcer)) = ergatai_lock::get_enforcer("default").await {
+                // Convert absolute work_dir to relative path (relative to project root)
+                // For simplicity, use the work_dir as-is if it's already relative,
+                // or strip the project root prefix if absolute.
+                let workspace_dir = if let Ok(relative) = std::path::Path::new(&work_dir_str)
+                    .strip_prefix(&state.default_cwd)
+                {
+                    relative.to_string_lossy().to_string()
+                } else {
+                    work_dir_str.clone()
+                };
+
+                enforcer.register_workspace(&agent_id, &workspace_dir);
+                tracing::debug!(
+                    agent_id = %agent_id,
+                    workspace = %workspace_dir,
+                    "Registered workspace boundary for agent"
+                );
+            }
+
             (StatusCode::CREATED, Json(SpawnAgentResponse { agent_id })).into_response()
         }
         Err(e) => (
@@ -242,6 +264,12 @@ pub async fn kill_agent(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let runtime = get_agent_runtime();
+
+    // Unregister workspace boundary before stopping the agent
+    if let Ok(Some(enforcer)) = ergatai_lock::get_enforcer("default").await {
+        enforcer.unregister_workspace(&id);
+        tracing::debug!(agent_id = %id, "Unregistered workspace boundary for agent");
+    }
 
     match runtime.stop_agent(&id).await {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),

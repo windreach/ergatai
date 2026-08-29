@@ -292,7 +292,7 @@ fn handle_connection(
     match action.as_str() {
         "check_lock" => {
             let file_path = extract_json_string(request, "file_path").unwrap_or_default();
-            handle_check_lock(&mut stream, lock_manager, &file_path)?;
+            handle_check_lock(&mut stream, lock_manager, snapshot_manager, &file_path)?;
         }
         "get_snapshot" => {
             let git_hash = extract_json_string(request, "git_hash").unwrap_or_default();
@@ -314,11 +314,12 @@ fn handle_connection(
 fn handle_check_lock(
     stream: &mut UnixStream,
     lock_manager: &FileLockManager,
+    snapshot_manager: &SnapshotManager,
     file_path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Normalize the path once and use it consistently for both lock check and snapshot lookup.
-    // Remove leading '/' to make it relative (matches how paths are stored in the database).
-    let normalized_path = file_path.trim_start_matches('/').to_string();
+    // Normalize the path: convert absolute path (from LD_PRELOAD) to relative path (as stored in DB).
+    // The SnapshotManager knows the project root and can compute the relative path.
+    let normalized_path = snapshot_manager.normalize_to_relative(file_path);
 
     // Check lock status using the normalized path.
     let (is_locked, _holder) = lock_manager
