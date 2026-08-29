@@ -54,6 +54,9 @@ pub struct PtyProcess {
     process_group_id: nix::unistd::Pid,
     /// Exit status: None = still running, Some = exit code
     exit_status: Arc<Mutex<Option<i32>>>,
+    /// Timestamp of last PTY output. Updated by background reader and WebSocket reader.
+    /// Used by DAG watchdog to detect idle agents.
+    last_output_at: Arc<std::sync::Mutex<std::time::Instant>>,
 }
 
 impl PtyProcess {
@@ -89,6 +92,7 @@ impl PtyProcess {
             child_pid,
             process_group_id: child_pid, // PGID = child PID (set in Pty::spawn)
             exit_status: Arc::new(Mutex::new(None)),
+            last_output_at: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
         })
     }
 
@@ -246,6 +250,18 @@ impl PtyProcess {
         self.signal(nix::sys::signal::Signal::SIGWINCH)?;
 
         Ok(())
+    }
+
+    /// Update the last output timestamp to now.
+    /// Called by background reader and WebSocket reader when PTY output is received.
+    pub fn touch_output(&self) {
+        *self.last_output_at.lock().unwrap() = std::time::Instant::now();
+    }
+
+    /// Get the duration since the last PTY output.
+    /// Used by DAG watchdog to detect idle agents.
+    pub fn last_output_age(&self) -> std::time::Duration {
+        self.last_output_at.lock().unwrap().elapsed()
     }
 }
 

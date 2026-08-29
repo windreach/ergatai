@@ -111,9 +111,6 @@ impl DagScheduler {
         // Cancel timeout watchdog (node completed normally)
         self.cancel_timeout_watcher(node_id).await;
 
-        // Calculate critical path for priority optimization
-        let critical_path_result = self.calculate_critical_path().await;
-
         // Update completed node status AND atomically preempt ready nodes as Running
         // within a single lock acquisition to prevent TOCTOU duplicate submission.
         let ready_nodes: Vec<(TaskNode, u32)> = {
@@ -200,23 +197,13 @@ impl DagScheduler {
 
                 let mut ready_with_priority = Vec::new();
                 for node in ready {
-                    // Calculate adjusted priority using CPM
-                    let base_priority =
+                    // Use YAML priority directly (CPM removed)
+                    let priority =
                         ergatai_lock::conflict_arbitration::priority_to_number(&node.priority)
                             .map(|p| p as u32)
                             .unwrap_or(2);
 
-                    let adjusted_priority = if let Some(ref cpm_result) = critical_path_result {
-                        ergatai_dag::critical_path::adjust_priority_with_critical_path(
-                            &node,
-                            cpm_result,
-                            base_priority,
-                        )
-                    } else {
-                        base_priority
-                    };
-
-                    ready_with_priority.push((node, adjusted_priority));
+                    ready_with_priority.push((node, priority));
                 }
 
                 for (n, _) in &ready_with_priority {
@@ -338,9 +325,6 @@ impl DagScheduler {
         }
 
         if let Some((node_clone, retry_count)) = retry_decision {
-            // Calculate critical path for priority optimization
-            let critical_path_result = self.calculate_critical_path().await;
-
             // Exponential backoff with jitter: base * 2^(retry_count-1) + random(0, base)
             let base_delay = 3u64; // seconds
             let exponential = base_delay * (1u64 << (retry_count - 1).min(6)); // cap at 3 * 2^6 = 192s
@@ -359,21 +343,11 @@ impl DagScheduler {
             // Wait before retrying (no locks held)
             tokio::time::sleep(delay).await;
 
-            // Calculate priority for retry
-            let base_priority =
+            // Use YAML priority directly (CPM removed)
+            let priority =
                 ergatai_lock::conflict_arbitration::priority_to_number(&node_clone.priority)
                     .map(|p| p as u32)
                     .unwrap_or(2);
-
-            let priority = if let Some(ref cpm_result) = critical_path_result {
-                ergatai_dag::critical_path::adjust_priority_with_critical_path(
-                    &node_clone,
-                    cpm_result,
-                    base_priority,
-                )
-            } else {
-                base_priority
-            };
 
             // Submit without holding lock
             match self.generate_and_submit(&node_clone, priority).await {

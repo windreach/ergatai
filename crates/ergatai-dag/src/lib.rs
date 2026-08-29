@@ -4,7 +4,6 @@
 
 pub mod condition;
 pub mod context;
-pub mod critical_path;
 pub mod dag_topology;
 pub mod state_channel;
 pub mod template;

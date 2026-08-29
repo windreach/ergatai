@@ -140,8 +140,7 @@ crates/
 │       ├── tree_topology.rs       TaskTree (树形拓扑)
 │       ├── template.rs            {{var}} 模板展开
 │       ├── condition.rs           条件表达式求值
-│       ├── context.rs             DAG 上下文 (全局变量)
-│       └── critical_path.rs       关键路径分析
+│       └── context.rs             DAG 上下文 (全局变量)
 ├── ergatai-lock/          文件访问控制 (零信任, token-based)
 │   └── src/
 │       ├── lock_manager.rs        锁管理核心 (SQLite WAL)
@@ -348,8 +347,8 @@ YAML 中通过 `complexity: low|medium|high` 标注（默认 Medium）：
 | `Medium` | 正常功能开发、bug 修复、小型重构 | 30 分钟 - 2 小时 |
 | `High` | 架构改动、跨模块重构、大规模迁移 | > 2 小时 |
 
-调度器用 `as_score()` 将复杂度转换为数值参与优先级计算。
-`node_timeout_secs` 按复杂度缩放：Low × 0.5, Medium × 1.0, High × 2.0。
+`complexity` 目前仅作为元数据保留，不参与调度或超时计算。
+超时是纯防御性的 PTY 活性检测（见下方）。
 
 ---
 
@@ -391,11 +390,11 @@ DAG 调度器多层防御机制，防止资源失控和 agent 僵死：
 |------|------|------|
 | `max_agent_calls` | `Option<u64>` | DAG 全局 agent 调用次数上限（所有节点共享） |
 | `stall_timeout_secs` | `Option<u64>` | 节点无进度超时（触发 stall watcher） |
-| `node_timeout_secs` | `Option<u64>` | 节点硬性超时（三阶段：warn → escalate → fail） |
+| `node_timeout_secs` | `Option<u64>` | 节点 idle 超时（默认 900s / 15min），PTY 无输出超过此时间则标记失败 |
 
 - **预算检查**：`DagScheduler::check_budget()` 在 `generate_and_submit()` 中调用，超限则标记 DAG 失败。
 - **僵死检测**：`spawn_stall_watcher()` 每 1 秒检查 `last_progress_age_secs()`，超过 `stall_timeout_secs` 则标记节点失败。
-- **三阶段超时**：`spawn_timeout_watcher()` 在 50%/80%/100% 时分别触发 `publish_node_warned`、`publish_node_escalated`、标记失败。超时错误记录到 `node.metadata["timeout_error"]`。
+- **Idle 超时**：`spawn_timeout_watcher()` 每秒检查 agent 的 PTY 输出年龄（`last_output_age`），超过 `node_timeout_secs`（默认 15 分钟）无输出则标记节点失败。agent 产生任何 PTY 输出都会重置计时器，防止误杀长任务。超时错误记录到 `node.metadata["timeout_error"]`。
 
 ### 中间件控制
 

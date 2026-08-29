@@ -34,7 +34,7 @@ impl DagScheduler {
     }
 
     /// Create a new DAG scheduler with the given context
-    pub fn with_context(project_root: PathBuf, mut graph: TaskGraph, context: DagContext) -> Self {
+    pub fn with_context(project_root: PathBuf, graph: TaskGraph, context: DagContext) -> Self {
         // Use persisted dag_id if available (for recovery), otherwise generate new one
         let dag_id = graph
             .dag_id
@@ -44,52 +44,11 @@ impl DagScheduler {
         // Read max_agent_calls before moving graph into the Arc.
         let max_agent_calls = graph.max_agent_calls;
 
-        // Auto-compute DAG global timeout from critical path if missing or too short.
-        // Critical path = sum of adjusted node timeouts along the longest dependency chain.
-        // Each node's adjusted timeout = base_timeout * complexity_multiplier.
-        // Buffer = 30s to absorb scheduling overhead and agent startup time.
-        {
-            let default_node_timeout = graph.node_timeout_secs.unwrap_or(30);
-            let mut estimated: std::collections::HashMap<String, u64> =
-                std::collections::HashMap::new();
-            for node in &graph.nodes {
-                let base = node.timeout.unwrap_or(default_node_timeout);
-                let multiplier = match node.complexity {
-                    ergatai_dag::dag_topology::TaskComplexity::Low => 0.5,
-                    ergatai_dag::dag_topology::TaskComplexity::Medium => 1.0,
-                    ergatai_dag::dag_topology::TaskComplexity::High => 2.0,
-                };
-                let adjusted = ((base as f64) * multiplier).ceil() as u64;
-                estimated.insert(node.id.clone(), adjusted);
-            }
-            if let Some(cpr) =
-                ergatai_dag::critical_path::calculate_critical_path(&graph, &estimated)
-            {
-                let min_timeout = cpr.total_duration.saturating_add(30);
-                match graph.timeout {
-                    None => {
-                        tracing::info!(
-                            dag_id = %dag_id,
-                            critical_path_secs = cpr.total_duration,
-                            auto_timeout_secs = min_timeout,
-                            "Auto-computed DAG global timeout from critical path"
-                        );
-                        graph.timeout = Some(min_timeout);
-                    }
-                    Some(t) if t < min_timeout => {
-                        tracing::warn!(
-                            dag_id = %dag_id,
-                            user_timeout = t,
-                            critical_path_secs = cpr.total_duration,
-                            min_required = min_timeout,
-                            "User-specified DAG timeout too short; auto-adjusted to critical path + 30s"
-                        );
-                        graph.timeout = Some(min_timeout);
-                    }
-                    Some(_) => {}
-                }
-            }
-        }
+        // Auto-compute DAG global timeout removed — CPM-based estimation was
+        // unreliable (uniform durations make critical path = longest dependency
+        // chain). Users should set `timeout` explicitly in YAML if a global
+        // deadline is needed. Per-node idle timeouts (DEFAULT_NODE_TIMEOUT_SECS)
+        // still provide defense against hung agents regardless.
 
         // Restore deadline from persisted started_at + timeout
         let deadline =

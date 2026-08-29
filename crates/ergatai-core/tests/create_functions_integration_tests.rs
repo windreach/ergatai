@@ -222,18 +222,6 @@ fn dag_context_record_output_and_reference() {
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// 5. TaskComplexity creation + scaling
-// ═════════════════════════════════════════════════════════════════════
-
-#[test]
-fn task_complexity_as_score_ordering() {
-    let low = TaskComplexity::Low.as_score();
-    let med = TaskComplexity::Medium.as_score();
-    let high = TaskComplexity::High.as_score();
-    assert!(low < med);
-    assert!(med < high);
-}
-
 // ═════════════════════════════════════════════════════════════════════
 // 6. Graph operations after creation
 // ═════════════════════════════════════════════════════════════════════

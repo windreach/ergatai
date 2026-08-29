@@ -12,9 +12,15 @@ mod terminal;
 mod watchdog;
 
 pub use registry::*;
-pub use watchdog::adjust_timeout_by_complexity;
 
 use std::collections::HashMap;
+
+/// Default idle timeout for DAG nodes (15 minutes).
+///
+/// This is a defense mechanism — if an agent produces no PTY output for this
+/// duration, it is considered hung and the node is failed. Not a prediction of
+/// actual execution time.
+pub const DEFAULT_NODE_TIMEOUT_SECS: u64 = 900;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -73,10 +79,13 @@ pub struct DagScheduler {
     /// Cap on agent invocations, from TaskGraph.max_agent_calls.
     max_agent_calls: Option<u64>,
 
-    /// Lazily-initialized event bus for the three-stage timeout watcher.
+    /// Lazily-initialized event bus for DAG observability events.
     /// Wrapped in `Arc<Mutex<…>>` because the constructors are sync but
-    /// NATS initialisation is async; the first watcher tick that needs it
-    /// will populate the slot. `None` when NATS is not available (no-ops).
+    /// NATS initialisation is async; the first use will populate the slot.
+    /// `None` when NATS is not available (no-ops).
+    /// Currently unused after the watchdog refactor to idle-based detection,
+    /// kept as infrastructure for future observability events.
+    #[allow(dead_code)]
     event_bus: Arc<Mutex<Option<Arc<ergatai_nats::EventBus>>>>,
 
     /// Collaboration session bound to this DAG execution.
@@ -386,9 +395,12 @@ impl DagScheduler {
         *lp = std::time::Instant::now();
     }
 
-    /// Lazily build (and cache) the `EventBus` for the three-stage timeout
-    /// watcher. Returns `None` when NATS has not been initialised — callers
+    /// Lazily build (and cache) the `EventBus` for DAG observability events.
+    /// Returns `None` when NATS has not been initialised — callers
     /// should treat that as "no-op, just log".
+    /// Currently unused after the watchdog refactor to idle-based detection,
+    /// kept as infrastructure for future observability events.
+    #[allow(dead_code)]
     async fn get_or_init_event_bus(&self) -> Option<Arc<ergatai_nats::EventBus>> {
         // Fast path: already populated.
         {

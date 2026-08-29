@@ -414,7 +414,10 @@ impl AgentRuntimeBackend for PtyBackend {
                     )
                     .await
                     {
-                        Ok(Ok(n)) if n > 0 => reader_output.append(&buf[..n]),
+                        Ok(Ok(n)) if n > 0 => {
+                            reader_output.append(&buf[..n]);
+                            reader_process.touch_output();
+                        }
                         _ => {}
                     }
                     // Record exit code
@@ -441,7 +444,10 @@ impl AgentRuntimeBackend for PtyBackend {
                 )
                 .await
                 {
-                    Ok(Ok(n)) if n > 0 => reader_output.append(&buf[..n]),
+                    Ok(Ok(n)) if n > 0 => {
+                        reader_output.append(&buf[..n]);
+                        reader_process.touch_output();
+                    }
                     Ok(Ok(_)) => {
                         // 0 bytes — EOF, process likely exited
                         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -920,6 +926,12 @@ impl AgentRuntimeBackend for PtyBackend {
         }
 
         Ok(())
+    }
+
+    fn last_output_age(&self, handle: &AgentHandle) -> Option<Duration> {
+        let pid_str = handle.process_id.as_ref()?;
+        let agents = self.agents.read();
+        agents.get(pid_str).map(|e| e.process.last_output_age())
     }
 }
 

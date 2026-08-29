@@ -169,6 +169,7 @@ async fn handle_terminal_ws(socket: WebSocket, agent_id: String, _state: AppStat
             {
                 Ok(Ok(n)) if n > 0 => {
                     debug!(bytes = n, "PTY → WebSocket");
+                    reader_pty.touch_output(); // Keep last_output_at fresh even when bg reader is paused
                     let mut msg = Vec::with_capacity(1 + n);
                     msg.push(0x01); // Type=Data
                     msg.extend_from_slice(&buf[..n]);

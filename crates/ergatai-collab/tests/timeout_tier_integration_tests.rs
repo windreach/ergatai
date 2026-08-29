@@ -1,11 +1,10 @@
-//! Integration tests for timeout_tier and complexity-based timeout adjustment.
+//! Integration tests for the three-stage timeout escalation system.
 //!
-//! These tests cover the three-stage timeout escalation system (Warn → Escalate → Fail)
-//! and the complexity-based timeout scaling used by DagScheduler.
+//! These tests cover TimeoutTier (Warn → Escalate → Fail) used by DagScheduler.
+//! The complexity-based timeout scaling has been removed — node timeouts are now
+//! used directly (per-node override → DAG default → DEFAULT_NODE_TIMEOUT_SECS).
 
-use ergatai_collab::dag_scheduler::adjust_timeout_by_complexity;
 use ergatai_collab::timeout_tier::TimeoutTier;
-use ergatai_dag::dag_topology::TaskComplexity;
 
 // ── TimeoutTier fraction values ──────────────────────────────────────
 
@@ -88,81 +87,6 @@ fn deadlines_are_strictly_ordered_for_any_positive_timeout() {
         assert!(warn_at < escalate_at, "timeout={timeout}");
         assert!(escalate_at < fail_at, "timeout={timeout}");
     }
-}
-
-// ── adjust_timeout_by_complexity ─────────────────────────────────────
-
-#[test]
-fn low_complexity_halves_timeout() {
-    assert_eq!(adjust_timeout_by_complexity(100, TaskComplexity::Low), 50);
-}
-
-#[test]
-fn medium_complexity_keeps_timeout() {
-    assert_eq!(
-        adjust_timeout_by_complexity(100, TaskComplexity::Medium),
-        100
-    );
-}
-
-#[test]
-fn high_complexity_doubles_timeout() {
-    assert_eq!(adjust_timeout_by_complexity(100, TaskComplexity::High), 200);
-}
-
-#[test]
-fn zero_base_always_yields_zero() {
-    assert_eq!(adjust_timeout_by_complexity(0, TaskComplexity::Low), 0);
-    assert_eq!(adjust_timeout_by_complexity(0, TaskComplexity::Medium), 0);
-    assert_eq!(adjust_timeout_by_complexity(0, TaskComplexity::High), 0);
-}
-
-#[test]
-fn small_timeout_low_complexity_rounds_down() {
-    // 1 * 0.5 = 0.5 → truncated to 0 as u64
-    assert_eq!(adjust_timeout_by_complexity(1, TaskComplexity::Low), 0);
-}
-
-#[test]
-fn odd_timeout_high_complexity() {
-    assert_eq!(adjust_timeout_by_complexity(7, TaskComplexity::High), 14);
-}
-
-// ── Combined: complexity → timeout → deadline ────────────────────────
-
-#[test]
-fn complexity_adjusted_timeout_produces_correct_deadlines() {
-    let effective = adjust_timeout_by_complexity(60, TaskComplexity::High);
-    assert_eq!(effective, 120);
-
-    let (warn_at, escalate_at, fail_at) = TimeoutTier::deadline_from_now(effective);
-    let now = std::time::Instant::now();
-
-    let warn_gap = warn_at.duration_since(now).as_secs_f64();
-    let escalate_gap = escalate_at.duration_since(now).as_secs_f64();
-    let fail_gap = fail_at.duration_since(now).as_secs_f64();
-
-    assert!((warn_gap - 60.0).abs() < 2.0, "warn gap was {warn_gap}");
-    assert!(
-        (escalate_gap - 96.0).abs() < 2.0,
-        "escalate gap was {escalate_gap}"
-    );
-    assert!((fail_gap - 120.0).abs() < 2.0, "fail gap was {fail_gap}");
-}
-
-#[test]
-fn low_complexity_short_task_produces_tight_deadlines() {
-    let effective = adjust_timeout_by_complexity(20, TaskComplexity::Low);
-    assert_eq!(effective, 10);
-
-    let (warn_at, _escalate_at, fail_at) = TimeoutTier::deadline_from_now(effective);
-    let now = std::time::Instant::now();
-
-    let warn_gap = warn_at.duration_since(now).as_secs_f64();
-    let fail_gap = fail_at.duration_since(now).as_secs_f64();
-
-    assert!((warn_gap - 5.0).abs() < 1.5);
-    assert!((fail_gap - 10.0).abs() < 1.5);
 }
 
 // ── Tier determination (simulated watcher logic) ─────────────────────

@@ -1262,13 +1262,6 @@ tasks:
     }
 
     #[test]
-    fn test_complexity_scores() {
-        assert_eq!(TaskComplexity::Low.as_score(), 2.0);
-        assert_eq!(TaskComplexity::Medium.as_score(), 5.0);
-        assert_eq!(TaskComplexity::High.as_score(), 8.0);
-    }
-
-    #[test]
     fn test_complexity_case_insensitive_via_serde() {
         // 仅小写 variant 应被接受；大写应被 serde 拒绝（rename_all = "lowercase"）
         let yaml_lower = r#"

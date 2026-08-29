@@ -45,17 +45,6 @@ pub enum TaskComplexity {
     High,
 }
 
-impl TaskComplexity {
-    /// 映射到数值分数（用于调度和优先级计算）
-    pub fn as_score(&self) -> f64 {
-        match self {
-            TaskComplexity::Low => 2.0,
-            TaskComplexity::Medium => 5.0,
-            TaskComplexity::High => 8.0,
-        }
-    }
-}
-
 /// 条件分支：基于状态表达式动态选择下游节点
 ///
 /// 用于实现条件路由（conditional edges），类似 LangGraph 的 conditional_edge。
@@ -198,7 +187,7 @@ pub struct TaskNode {
     /// 任务复杂度（人工标注，默认 Medium）
     ///
     /// 通过 YAML 中的 `complexity: low|medium|high` 显式标注。
-    /// 调度器可用 `as_score()` 将其转换为数值做优先级计算。
+    /// 目前仅作为元数据保留，不参与调度或超时计算。
     #[serde(default)]
     pub complexity: TaskComplexity,
 

@@ -7,6 +7,11 @@
 //!     metadata entry, and `on_node_failed` is invoked.
 //!
 //! Only the Fail tier mutates node state; the first two are observability signals.
+//!
+//! NOTE: The three-stage escalation is currently unused by the watchdog (which
+//! is being refactored to idle-based detection). The module is kept as a future
+//! extension point.
+#![allow(dead_code)]
 
 /// Tier of node-timeout escalation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

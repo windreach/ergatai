@@ -4,7 +4,6 @@
 //!
 //! - `submit_graph`: collect ready nodes, evaluate conditions, submit each
 //! - `generate_and_submit`: build a plan file and dispatch a single node
-//! - `calculate_critical_path`: CPM analysis for priority optimisation
 //!
 //! These methods call into sibling modules (`prompt_builder`, `watchdog`,
 //! `terminal`, `lifecycle`) via `pub(super)` visibility, resolved at crate
@@ -13,7 +12,6 @@
 use ergatai_dag::{TaskNode, TaskStatus};
 use ergatai_error::{ErgataiError, ErgataiResult};
 
-use super::watchdog::adjust_timeout_by_complexity;
 use super::DagScheduler;
 
 impl DagScheduler {
@@ -56,9 +54,6 @@ impl DagScheduler {
         let launcher = crate::agent_launcher::AgentLauncher::new(self.project_root.clone());
         launcher.clear_stale_agents().await?;
 
-        // Calculate critical path for priority optimization
-        let critical_path_result = self.calculate_critical_path().await;
-
         // Atomically collect and preempt ready nodes in a single lock acquisition
         // to prevent TOCTOU race condition where concurrent submit_graph calls
         // could submit the same node twice.
@@ -90,23 +85,13 @@ impl DagScheduler {
                     }
                 }
 
-                // Calculate adjusted priority using CPM
-                let base_priority =
+                // Use YAML priority directly (CPM removed — no dynamic adjustment)
+                let priority =
                     ergatai_lock::conflict_arbitration::priority_to_number(&node.priority)
                         .map(|p| p as u32)
                         .unwrap_or(2);
 
-                let adjusted_priority = if let Some(ref cpm_result) = critical_path_result {
-                    ergatai_dag::critical_path::adjust_priority_with_critical_path(
-                        &node,
-                        cpm_result,
-                        base_priority,
-                    )
-                } else {
-                    base_priority
-                };
-
-                filtered_ready.push((node, adjusted_priority));
+                filtered_ready.push((node, priority));
             }
 
             // Immediately preempt as Running to prevent duplicate submission
@@ -143,32 +128,6 @@ impl DagScheduler {
         self.save_graph_unlocked().await?;
 
         Ok(submitted)
-    }
-
-    /// Calculate critical path for the DAG
-    ///
-    /// Uses estimated durations from node metadata or defaults to 10 seconds per node.
-    /// Returns None if the graph is empty or has no valid start nodes.
-    pub(super) async fn calculate_critical_path(
-        &self,
-    ) -> Option<ergatai_dag::critical_path::CriticalPathResult> {
-        let graph = self.graph.lock().await;
-
-        // Build estimated durations map
-        // Try to use node timeout (complexity-adjusted) as estimate,
-        // then DAG default, then fall back to 10 seconds
-        let dag_default = graph.node_timeout_secs;
-        let mut estimated_durations = std::collections::HashMap::new();
-        for node in &graph.nodes {
-            let base = node.timeout.or(dag_default).unwrap_or(10);
-            let duration = adjust_timeout_by_complexity(base, node.complexity);
-            estimated_durations.insert(node.id.clone(), duration);
-        }
-
-        // Hold the graph lock across the entire computation to prevent graph
-        // mutation between building estimated_durations and computing the
-        // critical path. The CPM computation is pure and fast.
-        ergatai_dag::critical_path::calculate_critical_path(&graph, &estimated_durations)
     }
 
     /// Generate plan and submit to scheduler (no lock acquisition)
@@ -229,23 +188,23 @@ impl DagScheduler {
             "agent call dispatched"
         );
 
-        // Resolve effective base timeout: per-node override or DAG default.
-        let base_timeout: Option<u64> = {
+        // Resolve effective timeout: per-node override, DAG default, or the
+        // built-in DEFAULT_NODE_TIMEOUT_SECS fallback. Complexity no longer
+        // scales the timeout — it is used only for CPM priority adjustment.
+        let adjusted_timeout: Option<u64> = {
             let graph = self.graph.lock().await;
-            node.timeout.or(graph.node_timeout_secs)
+            Some(
+                node.timeout
+                    .or(graph.node_timeout_secs)
+                    .unwrap_or(super::DEFAULT_NODE_TIMEOUT_SECS),
+            )
         };
-        // Scale base timeout by task complexity (Low × 0.5, Medium × 1.0, High × 2.0).
-        let adjusted_timeout: Option<u64> =
-            base_timeout.map(|t| adjust_timeout_by_complexity(t, node.complexity));
 
-        if base_timeout.is_some() {
+        if let Some(timeout_secs) = adjusted_timeout {
             tracing::info!(
                 node_id = %node.id,
-                complexity = ?node.complexity,
-                complexity_score = node.complexity.as_score(),
-                base_timeout_secs = base_timeout,
-                adjusted_timeout_secs = adjusted_timeout,
-                "submitting node with complexity-adjusted timeout"
+                timeout_secs,
+                "submitting node with timeout"
             );
         }
 
@@ -411,17 +370,20 @@ mod tests {
     /// rather than hanging or proceeding with invalid state.
     ///
     /// Note: DagScheduler auto-adjusts `graph.timeout` upward to critical path + 30s.
-    /// For a single default node, the auto-timeout is 60s (30s base + 30s buffer).
-    /// We set `started_at` 120s in the past so the deadline is past even after the
+    /// For a single default node with no explicit timeout, the auto-timeout uses
+    /// DEFAULT_NODE_TIMEOUT_SECS (900s) + 30s buffer = 930s.
+    /// We set `started_at` 2000s in the past so the deadline is past even after the
     /// auto-adjustment.
     #[tokio::test]
     async fn test_submit_graph_deadline_in_past_returns_error() {
         let mut graph = TaskGraph::new(vec![TaskNode::new("n1", "agent-a", "Task A")]);
         // Set a deadline that's already passed (small user timeout, started long ago).
-        // The auto-timeout will bump `timeout` up to 60s, but started_at is 120s ago,
-        // so the effective deadline is still 60s in the past.
+        // The auto-timeout will bump `timeout` up to 930s, but started_at is 2000s ago,
+        // so the effective deadline is still in the past.
         graph.timeout = Some(1);
-        graph.started_at = Some((chrono::Utc::now() - chrono::Duration::seconds(120)).to_rfc3339());
+        graph.started_at = Some(
+            (chrono::Utc::now() - chrono::Duration::seconds(2000)).to_rfc3339(),
+        );
 
         let temp_dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(temp_dir.path().join(".ergatai")).unwrap();

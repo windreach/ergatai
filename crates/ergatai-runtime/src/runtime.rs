@@ -1221,6 +1221,21 @@ impl AgentRuntime {
         self.backend.wait_for_exit(&info.handle, timeout).await
     }
 
+    /// Get how long since the agent last produced PTY output.
+    /// Used by DAG watchdog to detect idle agents.
+    /// Returns None if the agent is not found or the backend doesn't track output.
+    pub async fn agent_last_output_age(
+        &self,
+        agent_id: &str,
+    ) -> Option<std::time::Duration> {
+        let info = {
+            let registry = self.registry.read().await;
+            registry.get(agent_id).cloned()?
+        };
+
+        self.backend.last_output_age(&info.handle)
+    }
+
     /// Shutdown the runtime — stop all agents and cleanup all workspaces.
     ///
     /// CRITICAL FIX: Cancels shutdown_token to signal all monitor tasks to exit

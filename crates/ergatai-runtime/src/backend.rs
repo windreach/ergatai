@@ -129,6 +129,13 @@ pub trait AgentRuntimeBackend: Send + Sync + 'static {
     async fn resume_pty_reader(&self, _handle: &AgentHandle) -> ErgataiResult<()> {
         Ok(())
     }
+
+    /// Returns how long since the agent last produced PTY output.
+    /// None if the agent is not found or the backend doesn't track output.
+    /// Used by DAG watchdog to detect idle agents.
+    fn last_output_age(&self, _handle: &AgentHandle) -> Option<Duration> {
+        None
+    }
 }
 
 #[cfg(test)]

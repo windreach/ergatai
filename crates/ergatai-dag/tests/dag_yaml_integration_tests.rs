@@ -1,13 +1,12 @@
 //! Integration tests for the ergatai-dag crate.
 //!
 //! These tests exercise the FULL pipeline:
-//!   YAML string → parse_dag_yaml → TaskGraph → validate → template expand → critical path
+//!   YAML string → parse_dag_yaml → TaskGraph → validate → template expand
 //!
 //! Each test verifies end-to-end behaviour through the public API surface.
 
 use std::collections::HashMap;
 
-use ergatai_dag::critical_path::calculate_critical_path;
 use ergatai_dag::{
     parse_dag_yaml, render_template, Condition, DagContext, TaskComplexity, TaskGraph, TaskNode,
     TaskStatus,
@@ -518,7 +517,7 @@ tasks:
 // ═════════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn complex_dag_seven_nodes_with_critical_path() {
+fn complex_dag_seven_nodes_mixed_deps() {
     let yaml = r#"
 name: full-project
 description: Complete project with multiple phases
@@ -605,54 +604,6 @@ tasks:
             );
         }
     }
-
-    // Critical path analysis should run without panic
-    let durations: HashMap<String, u64> = graph
-        .nodes
-        .iter()
-        .map(|n| (n.id.clone(), n.timeout.unwrap_or(100)))
-        .collect();
-
-    let cp_result = calculate_critical_path(&graph, &durations);
-    assert!(cp_result.is_some(), "critical path should compute");
-    let cp = cp_result.unwrap();
-
-    // Total duration should be > 0
-    assert!(cp.total_duration > 0);
-
-    // Critical path should contain at least one node
-    assert!(!cp.critical_path.is_empty());
-
-    // All slack times should be non-negative (u64 guarantees this by type)
-    for &slack in cp.slack_times.values() {
-        let _ = slack;
-    }
-
-    // Every node in the graph should have an earliest_start entry
-    for node in &graph.nodes {
-        assert!(
-            cp.earliest_start.contains_key(&node.id),
-            "node {} missing from earliest_start",
-            node.task
-        );
-        assert!(
-            cp.latest_start.contains_key(&node.id),
-            "node {} missing from latest_start",
-            node.task
-        );
-    }
-
-    // Requirements should be on the critical path (it's the root of everything)
-    let req_node = find_by_name(&graph, "Requirements");
-    assert!(
-        cp.critical_path.contains(&req_node.id),
-        "Requirements should be on critical path"
-    );
-    assert_eq!(
-        cp.slack_times.get(&req_node.id),
-        Some(&0),
-        "root of critical path should have 0 slack"
-    );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -885,12 +836,6 @@ tasks:
         find_by_name(&graph, "Default").complexity,
         TaskComplexity::Medium
     );
-}
-
-#[test]
-fn complexity_scores_are_ordered() {
-    assert!(TaskComplexity::Low.as_score() < TaskComplexity::Medium.as_score());
-    assert!(TaskComplexity::Medium.as_score() < TaskComplexity::High.as_score());
 }
 
 #[test]
