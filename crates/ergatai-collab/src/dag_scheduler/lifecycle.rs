@@ -161,6 +161,12 @@ impl DagScheduler {
     }
 
     /// Save graph and context to disk (serializes under lock, writes without holding it)
+    ///
+    /// Concurrency: writes to temp files first, then atomically renames to final names.
+    /// This prevents crash-recovery inconsistency where one file is partially written
+    /// or reflects a different point in time than the other. The load path at line 295
+    /// tolerates missing context (falls back to `DagContext::empty()`), but stale context
+    /// could contradict graph state — atomic rename eliminates this window.
     pub(super) async fn save_graph_unlocked(&self) -> ErgataiResult<()> {
         let ergatai_dir = self.project_root.join(".ergatai");
         // Use per-DAG filenames to support multiple concurrent DAGs
@@ -175,7 +181,9 @@ impl DagScheduler {
                 .map_err(|e| ErgataiError::json_with_source("Failed to serialize graph", e))?
         };
         let graph_file = ergatai_dir.join(format!("dag-state-{}.json", dag_id_safe));
-        tokio::fs::write(&graph_file, graph_json.as_bytes()).await?;
+        let graph_tmp = ergatai_dir.join(format!(".dag-state-{}.tmp", dag_id_safe));
+        tokio::fs::write(&graph_tmp, graph_json.as_bytes()).await?;
+        tokio::fs::rename(&graph_tmp, &graph_file).await?;
 
         // Serialize context
         let context_json = {
@@ -184,7 +192,9 @@ impl DagScheduler {
                 .map_err(|e| ErgataiError::json_with_source("Failed to serialize context", e))?
         };
         let context_file = ergatai_dir.join(format!("dag-context-{}.json", dag_id_safe));
-        tokio::fs::write(&context_file, context_json.as_bytes()).await?;
+        let context_tmp = ergatai_dir.join(format!(".dag-context-{}.tmp", dag_id_safe));
+        tokio::fs::write(&context_tmp, context_json.as_bytes()).await?;
+        tokio::fs::rename(&context_tmp, &context_file).await?;
 
         Ok(())
     }
@@ -719,6 +729,9 @@ impl StateCheckpoint {
     }
 
     /// Save checkpoint to disk
+    ///
+    /// Writes to a temp file first, then atomically renames to prevent partial writes
+    /// from being visible to recovery scans.
     pub async fn save(&self, project_root: &std::path::Path) -> ErgataiResult<()> {
         let ergatai_dir = project_root.join(".ergatai").join("checkpoints");
         tokio::fs::create_dir_all(&ergatai_dir).await?;
@@ -727,7 +740,9 @@ impl StateCheckpoint {
             .map_err(|e| ErgataiError::json_with_source("Failed to serialize checkpoint", e))?;
 
         let checkpoint_file = ergatai_dir.join(format!("{}.json", self.checkpoint_id));
-        tokio::fs::write(&checkpoint_file, checkpoint_json.as_bytes()).await?;
+        let checkpoint_tmp = ergatai_dir.join(format!(".{}.tmp", self.checkpoint_id));
+        tokio::fs::write(&checkpoint_tmp, checkpoint_json.as_bytes()).await?;
+        tokio::fs::rename(&checkpoint_tmp, &checkpoint_file).await?;
 
         tracing::debug!(
             checkpoint_id = %self.checkpoint_id,

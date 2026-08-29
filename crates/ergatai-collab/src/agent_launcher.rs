@@ -147,8 +147,16 @@ fn result_file_monitor(project_root: &Path) -> crate::result_monitor::ResultFile
         return monitor.clone();
     }
     // Ensure directory exists so fanotify_mark doesn't fail on missing path.
-    // (Idempotent — racing creates are fine.)
-    let _ = std::fs::create_dir_all(&results_dir);
+    // (Idempotent — racing creates are fine.) Log failure instead of silently
+    // swallowing — otherwise fanotify_mark fails later with a confusing
+    // "No such file or directory" error that masks the root cause.
+    if let Err(e) = std::fs::create_dir_all(&results_dir) {
+        tracing::warn!(
+            results_dir = %results_dir.display(),
+            error = %e,
+            "Failed to create results directory — fanotify monitoring may fail"
+        );
+    }
     let monitor = crate::result_monitor::ResultFileMonitor::start(&results_dir);
     map.insert(results_dir, monitor.clone());
     monitor
@@ -331,8 +339,20 @@ impl AgentLauncher {
         // Also update heartbeat_at in the database so other Watchdog instances
         // (created by other DAG tasks sharing the same project) see the fresh timestamp.
         // mark_busy only updates in-memory busy_status which is per-Watchdog.
-        let _ = lock_manager.update_heartbeat(&system_token.id.to_string());
-        let _ = lock_manager.update_heartbeat(&file_token.id.to_string());
+        if let Err(e) = lock_manager.update_heartbeat(&system_token.id.to_string()) {
+            tracing::warn!(
+                session_id = %session_id,
+                error = %e,
+                "Failed to update system token heartbeat — Watchdog may consider agent dead"
+            );
+        }
+        if let Err(e) = lock_manager.update_heartbeat(&file_token.id.to_string()) {
+            tracing::warn!(
+                session_id = %session_id,
+                error = %e,
+                "Failed to update file token heartbeat — Watchdog may consider agent dead"
+            );
+        }
 
         // Spawn a background heartbeat task that keeps heartbeat_at fresh for the
         // lifetime of this agent task. This is critical for reused agents: the
@@ -979,6 +999,18 @@ identifiers, configuration values, etc.).
                 "ERGATAI_AGENT_CMD contains newline characters".to_string(),
             ));
         }
+        // SECURITY: Reject shell metacharacters that could enable command injection
+        // when interpolated into `sh -c` via runtime.launch_agent().
+        // Allowed: alphanumeric, dashes, underscores, dots, slashes (for paths),
+        // colons (for env var prefixes like RUST_LOG=debug).
+        const SHELL_META: &str = ";|&$`(){}<>!\\ \t\"'";
+        if base_command.chars().any(|c| SHELL_META.contains(c)) {
+            return Err(ergatai_error::ErgataiError::AgentSpawnFailed(format!(
+                "ERGATAI_AGENT_CMD contains shell metacharacters ({:?}). \
+                 Only alphanumeric, dashes, underscores, dots, slashes, and colons are allowed.",
+                base_command
+            )));
+        }
 
         // 3b. Generate MCP config so the agent can connect to ergatai's MCP server.
         //     This gives the agent access to tools like `submit_orchestration`, `check_dag_status`, etc.
@@ -1490,6 +1522,9 @@ identifiers, configuration values, etc.).
         // Now clean up agents + tokens without holding the lock
         let runtime = get_agent_runtime();
         for (agent_id, task_id, token_id) in &stale_agents {
+            // Cancel the heartbeat task to prevent background task leak
+            cancel_heartbeat(agent_id);
+
             // Find and stop via runtime
             let runtime_agent_id = runtime
                 .list_agents()

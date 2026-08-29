@@ -102,7 +102,13 @@ impl CgroupController {
         // Enable controllers in the parent (ergatai/) so this workspace cgroup
         // can use them. Write "+cpu +memory" to subtree_control.
         let parent_path = cgroup_root.join("ergatai");
-        let _ = std::fs::create_dir_all(&parent_path);
+        if let Err(e) = std::fs::create_dir_all(&parent_path) {
+            tracing::debug!(
+                error = %e,
+                parent_path = %parent_path.display(),
+                "Could not create parent cgroup directory (may already exist)"
+            );
+        }
         if let Err(e) = std::fs::write(parent_path.join("cgroup.subtree_control"), "+cpu +memory") {
             debug!(
                 error = %e,

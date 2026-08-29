@@ -588,7 +588,7 @@ impl FileLockManager {
                         )
                     })?
                     .with_timezone(&Utc),
-                heartbeat_interval_secs: row.get::<_, i64>(6)? as u64,
+                heartbeat_interval_secs: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(30),
                 heartbeat_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
                     .map_err(|e| {
                         rusqlite::Error::FromSqlConversionFailure(
@@ -1093,7 +1093,10 @@ impl FileLockManager {
         // second agent's lock will be picked up by the normal acquire_lock path).
         let now = Utc::now();
         let ttl_secs = 3600u64; // 1 hour default TTL for auto-acquired locks
-        let expires_at = now + chrono::Duration::seconds(ttl_secs as i64);
+        // Checked conversion: ttl_secs as i64 would silently overflow if > i64::MAX,
+        // causing chrono::Duration::seconds() to panic with a negative value.
+        let ttl_i64 = i64::try_from(ttl_secs).unwrap_or(i64::MAX);
+        let expires_at = now + chrono::Duration::seconds(ttl_i64);
 
         let conn = self.conn.lock();
 
@@ -1952,7 +1955,7 @@ impl FileLockManager {
                             )
                         })?
                         .with_timezone(&Utc),
-                    heartbeat_interval_secs: row.get::<_, i64>(6)? as u64,
+                    heartbeat_interval_secs: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(30),
                     heartbeat_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
                         .map_err(|e| {
                             rusqlite::Error::FromSqlConversionFailure(
@@ -2017,7 +2020,7 @@ impl FileLockManager {
                             )
                         })?
                         .with_timezone(&Utc),
-                    heartbeat_interval_secs: row.get::<_, i64>(6)? as u64,
+                    heartbeat_interval_secs: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(30),
                     heartbeat_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
                         .map_err(|e| {
                             rusqlite::Error::FromSqlConversionFailure(
@@ -2088,7 +2091,7 @@ impl FileLockManager {
                             )
                         })?
                         .with_timezone(&Utc),
-                    heartbeat_interval_secs: row.get::<_, i64>(11)? as u64,
+                    heartbeat_interval_secs: u64::try_from(row.get::<_, i64>(11)?).unwrap_or(30),
                     heartbeat_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(12)?)
                         .map_err(|e| {
                             rusqlite::Error::FromSqlConversionFailure(
@@ -2195,7 +2198,7 @@ impl FileLockManager {
                     approved_by: row.get::<_, String>(7)?,
                     issued_at: parse_datetime(&row.get::<_, String>(8)?),
                     expires_at: parse_datetime(&row.get::<_, String>(9)?),
-                    heartbeat_interval_secs: row.get::<_, i64>(10)? as u64,
+                    heartbeat_interval_secs: u64::try_from(row.get::<_, i64>(10)?).unwrap_or(30),
                     heartbeat_at: parse_datetime(&row.get::<_, String>(11)?),
                     status: parse_token_status(&row.get::<_, String>(12)?),
                     priority: None,
@@ -2452,9 +2455,11 @@ impl FileLockManager {
         )
         .map_err(|e| ErgataiError::internal(format!("Failed to expire token: {}", e)))?;
 
-        // Unregister the session if we found it
+        // Unregister the session if we found it.
+        // Use the _locked variant because we already hold conn — calling the
+        // regular unregister_session_with_id would deadlock on conn.lock().
         if let Some(sid) = session_id {
-            self.unregister_session_with_id(&sid);
+            self.unregister_session_with_id_locked(&conn, &sid);
         }
 
         info!("Token {} marked as expired", token_id);
@@ -2498,7 +2503,12 @@ impl FileLockManager {
                     heartbeat_interval_secs: row.get::<_, u64>(10)?,
                     heartbeat_at: parse_datetime(&row.get::<_, String>(11)?),
                     status: parse_token_status(&row.get::<_, String>(12)?),
-                    priority: row.get::<_, Option<i64>>(13)?.map(|p| p as u8),
+                    // SAFETY: priority is stored as i64 (SQLite INTEGER) but must fit u8 (0-255).
+                    // Values outside u8 range are clamped to None to prevent silent truncation
+                    // from `as u8` which would wrap 256 → 0, -1 → 255, etc.
+                    priority: row
+                        .get::<_, Option<i64>>(13)?
+                        .and_then(|p| u8::try_from(p).ok()),
                 })
             })
             .map_err(|e| ErgataiError::NotFound(format!("FileToken not found: {}", e)))?;
@@ -2614,7 +2624,12 @@ impl FileLockManager {
                     heartbeat_interval_secs: row.get::<_, u64>(10)?,
                     heartbeat_at: parse_datetime(&row.get::<_, String>(11)?),
                     status: parse_token_status(&row.get::<_, String>(12)?),
-                    priority: row.get::<_, Option<i64>>(13)?.map(|p| p as u8),
+                    // SAFETY: priority is stored as i64 (SQLite INTEGER) but must fit u8 (0-255).
+                    // Values outside u8 range are clamped to None to prevent silent truncation
+                    // from `as u8` which would wrap 256 → 0, -1 → 255, etc.
+                    priority: row
+                        .get::<_, Option<i64>>(13)?
+                        .and_then(|p| u8::try_from(p).ok()),
                 })
             })
             .map_err(|e| ErgataiError::NotFound(format!("FileToken not found: {}", e)))?;
@@ -2631,7 +2646,12 @@ impl FileLockManager {
     ) -> Result<oneshot::Receiver<Result<(), String>>, ErgataiError> {
         let (tx, rx) = oneshot::channel();
         let mut waiters = self.waiters.lock();
-        waiters.entry(file_path.to_string()).or_default().push(tx);
+        // Prune dead senders (where the receiver was dropped, e.g. agent crashed)
+        // before adding a new one. Without this, entries accumulate when waiters
+        // time out or disconnect before the file operation completes.
+        let entry = waiters.entry(file_path.to_string()).or_default();
+        entry.retain(|tx| !tx.is_closed());
+        entry.push(tx);
         debug!("Added waiter for file {}", file_path);
         Ok(rx)
     }
@@ -2923,7 +2943,57 @@ impl FileLockManager {
             let mut guard = self.disconnected_sessions.lock();
             guard.insert(session_id.to_string(), Instant::now());
         }
+
+        // Clear retry tracker entries for agents belonging to this session.
+        // Without this, if an agent crashes mid-conflict-retry, its retry count
+        // persists forever and could affect future unrelated conflict arbitration
+        // for the same file (stale high retry count → immediate GiveUp).
+        //
+        // Lock conn ourselves — callers that already hold conn (e.g. expire_token)
+        // must use `unregister_session_with_id_locked` instead to avoid deadlock.
+        {
+            let conn = self.conn.lock();
+            self.clear_retry_for_session(&conn, session_id);
+        }
+
         self.unregister_session();
+    }
+
+    /// Variant of `unregister_session_with_id` for callers that already hold `conn`.
+    ///
+    /// Calling the regular `unregister_session_with_id` while holding `conn` would
+    /// deadlock because `Mutex<Connection>` is not reentrant.
+    pub fn unregister_session_with_id_locked(
+        &self,
+        conn: &Connection,
+        session_id: &str,
+    ) {
+        {
+            let mut guard = self.disconnected_sessions.lock();
+            guard.insert(session_id.to_string(), Instant::now());
+        }
+        self.clear_retry_for_session(conn, session_id);
+        self.unregister_session();
+    }
+
+    /// Clear retry tracker entries for agents belonging to a session.
+    ///
+    /// Uses the provided connection to query agent_ids from system_tokens.
+    fn clear_retry_for_session(&self, conn: &Connection, session_id: &str) {
+        let agent_ids: std::collections::HashSet<String> = match conn
+            .prepare("SELECT agent_id FROM system_tokens WHERE session_id = ?1")
+        {
+            Ok(mut stmt) => match stmt.query_map(params![session_id], |row| row.get::<_, String>(0))
+            {
+                Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+                Err(_) => return,
+            },
+            Err(_) => return,
+        };
+        if !agent_ids.is_empty() {
+            let mut tracker = self.retry_tracker.lock();
+            tracker.retain(|(_, agent_id), _| !agent_ids.contains(agent_id));
+        }
     }
 
     /// Clean up expired disconnected sessions (older than SESSION_STICKINESS_SECS).
@@ -3022,6 +3092,16 @@ impl FileLockManager {
         token: &FileToken,
         file_path: &str,
     ) -> Result<(), ErgataiError> {
+        // Reject expired tokens to prevent granting 60s TTL extensions
+        // to already-expired tokens (the watchdog may not have reclaimed yet).
+        let now = chrono::Utc::now();
+        if token.expires_at <= now {
+            return Err(ErgataiError::PermissionDenied(format!(
+                "Cannot upgrade lock: token {} has expired (expired at {}, now is {})",
+                token.id, token.expires_at, now
+            )));
+        }
+
         info!(
             token_id = %token.id,
             file_path = file_path,
@@ -3085,11 +3165,13 @@ impl FileLockManager {
             FileMode::Write,
             token.reason.clone(),
             token.approved_by.clone(),
-            // Compute remaining TTL
+            // Compute remaining TTL (token already verified non-expired above)
             {
                 let now = chrono::Utc::now();
                 let remaining = token.expires_at.signed_duration_since(now);
-                remaining.num_seconds().max(60) as u64
+                // .max(0) — token is non-expired so remaining > 0, but floor at 0
+                // to prevent negative durations from any clock skew
+                remaining.num_seconds().max(0) as u64
             },
             token.heartbeat_interval_secs,
         );
@@ -3123,7 +3205,7 @@ impl FileLockManager {
                     {
                         let now = chrono::Utc::now();
                         let remaining = token.expires_at.signed_duration_since(now);
-                        remaining.num_seconds().max(60) as u64
+                        remaining.num_seconds().max(0) as u64
                     },
                     token.heartbeat_interval_secs,
                 );

@@ -153,7 +153,7 @@ async fn init_pull_consumer_with_retry(
                 warn!(
                     attempt = attempt,
                     error = %e,
-                    delay_ms = delay.as_millis() as u64,
+                    delay_ms = delay.as_millis().min(u64::MAX as u128) as u64,
                     "Consumer init failed, retrying"
                 );
                 tokio::select! {

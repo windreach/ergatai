@@ -93,24 +93,55 @@ impl PtyProcess {
     }
 
     /// Write data to the agent's stdin
+    ///
+    /// Loops on EAGAIN (WouldBlock) until all bytes are written or a real error occurs.
+    /// This prevents silent data loss when the PTY buffer is full and `try_io` returns
+    /// `Err(WouldBlock)` — previously, returning `Ok(0)` caused callers like `inject_message`
+    /// to believe the write succeeded when no bytes were actually sent.
     pub async fn write(&self, data: &[u8]) -> anyhow::Result<usize> {
-        let mut guard = self.async_fd.writable().await?;
-        let fd = self.async_fd.as_raw_fd();
+        let mut written = 0;
+        while written < data.len() {
+            let mut guard = self.async_fd.writable().await?;
+            let fd = self.async_fd.as_raw_fd();
 
-        match guard.try_io(|_| nix::unistd::write(fd, data).map_err(std::io::Error::from)) {
-            Ok(result) => Ok(result?),
-            Err(_would_block) => Ok(0),
+            match guard.try_io(|_| {
+                nix::unistd::write(fd, &data[written..]).map_err(std::io::Error::from)
+            }) {
+                Ok(result) => {
+                    let n = result?;
+                    if n == 0 {
+                        // Kernel returned 0 on a write — treat as transient.
+                        // Continue to re-poll rather than returning a short write.
+                        continue;
+                    }
+                    written += n;
+                }
+                Err(_would_block) => {
+                    // Readiness was stale (kernel EAGAIN). Re-poll via writable().await.
+                    continue;
+                }
+            }
         }
+        Ok(written)
     }
 
     /// Read data from the agent's stdout
+    ///
+    /// Loops on EAGAIN (WouldBlock) until at least some bytes are read or EOF is reached.
+    /// Previously, returning `Ok(0)` on WouldBlock was indistinguishable from EOF for
+    /// callers like `read_clean()`, potentially causing premature stream termination.
     pub async fn read(&self, buf: &mut [u8]) -> anyhow::Result<usize> {
-        let mut guard = self.async_fd.readable().await?;
-        let fd = self.async_fd.as_raw_fd();
+        loop {
+            let mut guard = self.async_fd.readable().await?;
+            let fd = self.async_fd.as_raw_fd();
 
-        match guard.try_io(|_| nix::unistd::read(fd, buf).map_err(std::io::Error::from)) {
-            Ok(result) => Ok(result?),
-            Err(_would_block) => Ok(0),
+            match guard.try_io(|_| nix::unistd::read(fd, buf).map_err(std::io::Error::from)) {
+                Ok(result) => return Ok(result?),
+                Err(_would_block) => {
+                    // Readiness was stale (kernel EAGAIN). Re-poll via readable().await.
+                    continue;
+                }
+            }
         }
     }
 
@@ -245,7 +276,26 @@ impl Drop for PtyProcess {
                 // Force kill entire process group (not just child PID)
                 let pgid = nix::unistd::Pid::from_raw(-pgid_raw);
                 let _ = nix::sys::signal::kill(pgid, nix::sys::signal::Signal::SIGKILL);
-                let _ = waitpid(pid, None);
+
+                // CONCURRENT FIX: Replace blocking `waitpid(pid, None)` with a bounded
+                // non-blocking loop. The original call could block indefinitely if the
+                // child is stuck in uninterruptible I/O (D state), leaking the cleanup
+                // thread forever. Cap at 50 iterations × 100ms = 5s total wait.
+                for _ in 0..50 {
+                    match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+                        Ok(WaitStatus::StillAlive) => {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                        Ok(_) => return, // Exited or signaled — cleanup done
+                        Err(_) => return, // ECHILD or other error — child already reaped
+                    }
+                }
+                // Timed out — log but don't block forever. The zombie will be reaped
+                // by init (PID 1) when this process exits.
+                tracing::warn!(
+                    pid = pid.as_raw(),
+                    "waitpid timed out after 5s — child may be in D state"
+                );
             }
         });
     }

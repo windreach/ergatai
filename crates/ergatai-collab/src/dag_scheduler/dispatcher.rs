@@ -187,10 +187,10 @@ impl DagScheduler {
             self.finalize_if_terminal().await;
             return Err(err);
         }
-        // Budget check: refuse dispatch when DAG-level agent call cap is exhausted.
-        // On exhaustion, defensively nudge terminal finalization so the DAG can
-        // settle (callers already handle the propagated Err by reverting the
-        // node to Pending and logging).
+        // Budget check (fast-fail): refuse dispatch when DAG-level agent call cap
+        // is exhausted. This is a non-atomic peek — the actual reservation happens
+        // atomically via `try_consume_budget()` below after profile validation, to
+        // prevent TOCTOU races under concurrent dispatch.
         if let Err(e) = self.check_budget() {
             self.finalize_if_terminal().await;
             return Err(e);
@@ -213,7 +213,16 @@ impl DagScheduler {
             }
         }
 
-        let new_count = self.increment_agent_calls();
+        // Atomically reserve a budget slot. Under concurrent dispatch, this CAS loop
+        // prevents multiple nodes from racing past the non-atomic `check_budget()`
+        // peek above and all incrementing past the limit.
+        let new_count = match self.try_consume_budget() {
+            Ok(count) => count,
+            Err(e) => {
+                self.finalize_if_terminal().await;
+                return Err(e);
+            }
+        };
         tracing::debug!(
             dag_id = %self.dag_id,
             count = new_count,

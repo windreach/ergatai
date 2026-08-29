@@ -132,12 +132,21 @@ pub fn start_ipc_server(
 }
 
 /// Main accept loop — runs in a dedicated thread.
+///
+/// Concurrency: caps concurrent connection-handling threads via an atomic counter
+/// to prevent unbounded thread spawn under a flood of connections. Over the cap,
+/// connections are dropped (the LD_PRELOAD client retries on its own timeout).
 fn accept_loop(
     listener: UnixListener,
     lock_manager: Arc<FileLockManager>,
     snapshot_manager: Arc<SnapshotManager>,
     cancel: tokio_util::sync::CancellationToken,
 ) {
+    // Cap concurrent connection threads. LD_PRELOAD IPC clients are agents in the
+    // current DAG — typically <50 — so 64 provides headroom while bounding resource use.
+    const MAX_CONCURRENT_CONNECTIONS: usize = 64;
+    let active_connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
     loop {
         if cancel.is_cancelled() {
             break;
@@ -145,13 +154,38 @@ fn accept_loop(
 
         match listener.accept() {
             Ok((stream, _addr)) => {
+                let current = active_connections.load(std::sync::atomic::Ordering::Relaxed);
+                if current >= MAX_CONCURRENT_CONNECTIONS {
+                    // Over capacity — drop the connection immediately.
+                    // The LD_PRELOAD client has a 100ms read timeout and will
+                    // fail-open (fall through to real open()).
+                    debug!(
+                        active = current,
+                        cap = MAX_CONCURRENT_CONNECTIONS,
+                        "IPC connection rejected: over capacity"
+                    );
+                    drop(stream);
+                    continue;
+                }
+
                 let lm = lock_manager.clone();
                 let sm = snapshot_manager.clone();
+                let counter = active_connections.clone();
+                // Increment before spawn so the cap is enforced atomically.
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 // Handle each connection in a dedicated thread to avoid
                 // blocking the accept loop. Connections are short-lived.
                 std::thread::Builder::new()
                     .name("ergatai-ipc-conn".into())
                     .spawn(move || {
+                        // Decrement on exit (success or panic) to release the slot.
+                        struct DecrementOnDrop(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+                        impl Drop for DecrementOnDrop {
+                            fn drop(&mut self) {
+                                self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                        let _guard = DecrementOnDrop(counter);
                         if let Err(e) = handle_connection(stream, &lm, &sm) {
                             debug!(error = %e, "IPC connection error");
                         }

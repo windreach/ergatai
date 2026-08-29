@@ -314,27 +314,38 @@ impl UnifiedAgentRegistry {
     }
 
     /// Update MCP agent ID binding
+    ///
+    /// Concurrency: holds both `agents_by_uuid` and `mcp_id_to_uuid` write locks
+    /// simultaneously to ensure readers never see an intermediate state where the
+    /// record's `mcp_agent_id` disagrees with `mcp_id_to_uuid`. Lock acquisition
+    /// order is `agents_by_uuid → mcp_id_to_uuid` (consistent with doc comment at
+    /// struct definition, line 88).
     pub async fn set_mcp_agent_id(
         &self,
         agent_uuid: &str,
         mcp_agent_id: String,
     ) -> Result<(), String> {
+        // Hold agents_by_uuid write lock for the entire operation.
         let mut agents = self.agents_by_uuid.write().await;
         let record = agents
             .get_mut(agent_uuid)
             .ok_or_else(|| format!("Agent {} not found", agent_uuid))?;
 
-        // Remove old binding if exists
-        if let Some(ref old_mcp) = record.mcp_agent_id {
-            self.mcp_id_to_uuid.write().await.remove(old_mcp);
-        }
+        // Capture old binding BEFORE mutating the record, so we can clean up
+        // mcp_id_to_uuid after acquiring its lock.
+        let old_mcp = record.mcp_agent_id.take();
 
-        // Set new binding
-        record.mcp_agent_id = Some(mcp_agent_id.clone());
-        self.mcp_id_to_uuid
-            .write()
-            .await
-            .insert(mcp_agent_id, agent_uuid.to_string());
+        // Acquire mcp_id_to_uuid write lock (second in the fixed order) and
+        // apply both mutations atomically from the reader's perspective.
+        let mut mcp_map = self.mcp_id_to_uuid.write().await;
+        if let Some(old) = old_mcp {
+            mcp_map.remove(&old);
+        }
+        mcp_map.insert(mcp_agent_id.clone(), agent_uuid.to_string());
+
+        // NOW update the record — both indices are locked, so no reader can
+        // observe the record's new mcp_agent_id before mcp_id_to_uuid is updated.
+        record.mcp_agent_id = Some(mcp_agent_id);
 
         Ok(())
     }

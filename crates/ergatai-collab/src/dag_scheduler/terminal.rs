@@ -65,6 +65,28 @@ impl DagScheduler {
             }
         }
 
+        // Mark any remaining Pending nodes as Skipped. They can never be scheduled
+        // because the DAG has timed out / been cancelled. Without this, Pending nodes
+        // would stay Pending forever, and the DAG timeout watcher would exit without
+        // calling finalize_if_terminal(), leaving the DAG stuck indefinitely.
+        {
+            let mut graph = self.graph.lock().await;
+            for node in graph.nodes.iter_mut() {
+                if node.status == TaskStatus::Pending {
+                    tracing::info!(
+                        node_id = %node.id,
+                        reason = reason,
+                        "Skipping pending node due to DAG-level constraint"
+                    );
+                    node.status = TaskStatus::Skipped;
+                    node.metadata.insert(
+                        "skipped_reason".to_string(),
+                        reason.to_string(),
+                    );
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -961,10 +983,10 @@ mod tests {
 
         let g = scheduler.graph.lock().await;
         assert_eq!(g.find_node("n1").unwrap().status, TaskStatus::Failed);
-        // n2 was Pending (not Running), so on_node_failed skips it.
-        // fail_all_remaining_nodes only transitions Running nodes via on_node_failed.
-        // Pending nodes are left as-is since they haven't started yet.
-        assert_eq!(g.find_node("n2").unwrap().status, TaskStatus::Pending);
+        // n2 was Pending, so on_node_failed skips it (not Running).
+        // But fail_all_remaining_nodes now marks remaining Pending nodes as Skipped
+        // to prevent the DAG from hanging with un-schedulable Pending nodes.
+        assert_eq!(g.find_node("n2").unwrap().status, TaskStatus::Skipped);
         // Completed nodes should not be affected
         assert_eq!(g.find_node("n3").unwrap().status, TaskStatus::Completed);
     }

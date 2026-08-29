@@ -96,8 +96,10 @@ pub fn calculate_critical_path(
             for dep_id in deps {
                 let dep_node = node_map.get(dep_id)?;
 
-                // 跳过已完成的节点
+                // Skip already-skipped nodes, but still insert them into earliest_start
+                // (with EST=0) so successors' all_deps_calculated gate can pass
                 if dep_node.status == TaskStatus::Skipped {
+                    earliest_start.entry(dep_id.clone()).or_insert(0);
                     continue;
                 }
 

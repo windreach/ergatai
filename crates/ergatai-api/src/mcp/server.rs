@@ -1003,7 +1003,11 @@ impl ErgataiMcpServer {
                     })
                     .count();
                 let percent = if total > 0 {
-                    ((completed + failed) as f64 / total as f64 * 100.0).round() as u32
+                    // Clamp to 100.0 to prevent float precision from producing
+                    // values like 100.5 that round up past the logical maximum.
+                    ((completed + failed) as f64 / total as f64 * 100.0)
+                        .round()
+                        .min(100.0) as u32
                 } else {
                     0
                 };
@@ -1136,7 +1140,10 @@ async fn load_completed_dag_from_disk() -> Option<serde_json::Value> {
         .filter(|n| matches!(n.status, TaskStatus::Failed))
         .count();
     let percent = if total > 0 {
-        ((completed + failed) as f64 / total as f64 * 100.0).round() as u32
+        // Clamp to 100.0 to prevent float precision overflow.
+        ((completed + failed) as f64 / total as f64 * 100.0)
+            .round()
+            .min(100.0) as u32
     } else {
         0
     };

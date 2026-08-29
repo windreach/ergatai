@@ -105,6 +105,14 @@ fn ensure_real_openat() -> OpenatFn {
 /// Returns `Some(git_hash)` if the file is locked and a snapshot exists,
 /// `None` otherwise (including any IPC error — fail-open).
 fn query_snapshot_hash(path: &str) -> Option<String> {
+    // SECURITY: Reject paths containing JSON-significant control characters
+    // (U+0000–U+001F). On Linux, filenames can contain anything except / and NUL.
+    // A path with \n, \t, \r etc. could produce malformed JSON or allow injection
+    // when manually escaped below. Fail-open: return None (skip redirect).
+    if path.bytes().any(|b| b < 0x20) {
+        return None;
+    }
+
     let sock_path = socket_path();
 
     // Connect with timeout to avoid blocking the process on a dead socket.
@@ -131,14 +139,20 @@ fn query_snapshot_hash(path: &str) -> Option<String> {
     // Minimal JSON parsing without serde dependency:
     // Expected: {"is_locked":true,"snapshot_hash":"abc123..."}
     // or:       {"is_locked":false}
-    if !response.contains(r#""is_locked":true"#) {
+    // Tolerate whitespace around ':' and after ',' (e.g. pretty-printed JSON).
+    // Strip all whitespace to normalize before matching.
+    let normalized = response.replace([' ', '\t', '\n', '\r'], "");
+    if !normalized.contains(r#""is_locked":true"#) {
         return None;
     }
 
-    // Extract snapshot_hash value
+    // Extract snapshot_hash value from the NORMALIZED response (not the original).
+    // Previously, extraction ran on the raw response, which would fail silently if
+    // the server inserted whitespace around ':' (e.g., `"snapshot_hash": "abc"`).
+    // Using the normalized response ensures consistency with the is_locked check.
     let key = r#""snapshot_hash":""#;
-    let start = response.find(key)? + key.len();
-    let rest = &response[start..];
+    let start = normalized.find(key)? + key.len();
+    let rest = &normalized[start..];
     let end = rest.find('"')?;
     let hash = &rest[..end];
 
@@ -254,11 +268,12 @@ fn redirect_to_snapshot_fallback(content: &[u8]) -> c_int {
     let pid = unsafe { libc::getpid() };
     let tid = unsafe { libc::pthread_self() };
     let counter = SNAP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    // Add randomness to make the path less predictable.
-    let random_bits = unsafe { libc::rand() } as u64;
+    // pid + tid + counter is collision-resistant for temp file names.
+    // Avoid libc::rand() — it uses process-global state and is not thread-safe,
+    // causing data races when LD_PRELOAD is called from multiple threads.
     let tmp_path = format!(
-        "/tmp/ergatai-snap-{}-{}-{}-{:x}",
-        pid, tid as u64, counter, random_bits
+        "/tmp/ergatai-snap-{}-{}-{}",
+        pid, tid as u64, counter
     );
 
     let tmp_cstr = match CString::new(tmp_path.as_bytes()) {

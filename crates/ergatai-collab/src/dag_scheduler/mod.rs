@@ -424,6 +424,10 @@ impl DagScheduler {
     }
 
     /// Returns Ok(()) if budget allows another agent call, or Err if exhausted.
+    ///
+    /// NOTE: This is a non-consuming peek (load-only). It may return Ok spuriously
+    /// under concurrent contention — callers that need to actually reserve a budget
+    /// slot must use `try_consume_budget()` for an atomic check-and-increment.
     fn check_budget(&self) -> Result<(), ErgataiError> {
         let Some(limit) = self.max_agent_calls else {
             return Ok(());
@@ -437,6 +441,36 @@ impl DagScheduler {
             })
         } else {
             Ok(())
+        }
+    }
+
+    /// Atomically check budget and consume one slot.
+    ///
+    /// Uses a CAS loop to prevent TOCTOU races where multiple concurrent dispatches
+    /// could all pass a non-atomic `check_budget()` load and then all increment past
+    /// the limit. Returns the new count (post-increment) on success.
+    fn try_consume_budget(&self) -> Result<u64, ErgataiError> {
+        let Some(limit) = self.max_agent_calls else {
+            return Ok(self.agent_call_count.fetch_add(1, Ordering::SeqCst) + 1);
+        };
+        loop {
+            let current = self.agent_call_count.load(Ordering::SeqCst);
+            if current >= limit {
+                return Err(ErgataiError::DagBudgetExhausted {
+                    dag_id: self.dag_id.clone(),
+                    used: current,
+                    limit,
+                });
+            }
+            match self.agent_call_count.compare_exchange(
+                current,
+                current + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return Ok(current + 1),
+                Err(_) => continue, // Lost race — retry with fresh value
+            }
         }
     }
 
@@ -454,6 +488,7 @@ impl DagScheduler {
         }
     }
 
+    #[cfg(test)]
     fn increment_agent_calls(&self) -> u64 {
         self.agent_call_count.fetch_add(1, Ordering::SeqCst) + 1
     }

@@ -183,9 +183,17 @@ impl MessageSender {
                 } else {
                     // Use .await instead of try_lock() to avoid silent failures under contention
                     let mut pending = self.pending_responses.lock().await;
-                    pending.get_mut(&req.from)
+                    let cid = pending
+                        .get_mut(&req.from)
                         .filter(|v| !v.is_empty())
-                        .map(|v| v.remove(0))
+                        .map(|v| v.remove(0));
+                    // Remove the key if the Vec is now empty to prevent HashMap leak.
+                    // Without this, every agent that ever received a request leaves
+                    // an empty Vec entry behind after its last response is popped.
+                    if pending.get(&req.from).is_some_and(|v| v.is_empty()) {
+                        pending.remove(&req.from);
+                    }
+                    cid
                 }
             }
             _ => None,
@@ -475,13 +483,25 @@ pub fn get_message_sender() -> Option<&'static MessageSender> {
 ///
 /// Called from `message_delivery.rs` after successful PTY injection.
 /// Supports multiple concurrent requests by appending to a Vec (FIFO order).
+/// Maximum pending correlation IDs tracked per agent.
+///
+/// If an agent accumulates more pending requests than this (because it never
+/// sends responses), older entries are silently dropped. This bounds memory
+/// usage in long-running sessions with unresponsive agents.
+const MAX_PENDING_PER_AGENT: usize = 100;
+
 pub async fn record_pending_response(to_agent: &str, correlation_id: &str) {
     if let Some(sender) = get_message_sender() {
         let mut pending = sender.pending_responses.lock().await;
-        pending
+        let vec = pending
             .entry(to_agent.to_string())
-            .or_insert_with(Vec::new)
-            .push(correlation_id.to_string());
+            .or_insert_with(Vec::new);
+        // Bound the Vec to prevent unbounded growth when the target agent
+        // never responds. Drop oldest entries (FIFO) to stay under the cap.
+        while vec.len() >= MAX_PENDING_PER_AGENT {
+            vec.remove(0);
+        }
+        vec.push(correlation_id.to_string());
     }
 }
 

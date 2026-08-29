@@ -721,7 +721,10 @@ impl ConversationManager {
 
         // Also prune stale agent send times (entries older than max_age)
         let mut send_times = self.agent_send_times.write().await;
-        let cutoff = now.timestamp() as u64 - max_age.as_secs();
+        // Use saturating_sub to prevent underflow if max_age exceeds current
+        // epoch seconds (would panic in debug or wrap to ~u64::MAX in release,
+        // causing all entries to be incorrectly pruned).
+        let cutoff = (now.timestamp() as u64).saturating_sub(max_age.as_secs());
         for times in send_times.values_mut() {
             times.retain(|&t| t > cutoff);
         }

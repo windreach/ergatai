@@ -83,7 +83,12 @@ const SYSTEM_SENSITIVE_PATTERNS: &[&str] = &[
     "*.cer",
     // Private keys (generic)
     "*private*key*",
-    "*secret*",
+    // Secret files (narrow patterns to avoid false positives like secrets_manager.rs)
+    "**/.secrets/**",
+    "**/secrets.json",
+    "**/secrets.yaml",
+    "**/secrets.yml",
+    "**/secrets.toml",
 ];
 
 /// Pre-compiled sensitive path patterns (compiled once at first access)
@@ -294,8 +299,8 @@ mod tests {
     #[test]
     fn test_private_key_and_secret_patterns() {
         assert!(is_sensitive_path("my-private-key.pem"));
-        assert!(is_sensitive_path("config/secret.json"));
-        assert!(is_sensitive_path("app-secrets.yaml"));
+        assert!(is_sensitive_path("config/secrets.json"));
+        assert!(is_sensitive_path("secrets.yaml"));
     }
 
     #[test]
@@ -374,18 +379,20 @@ mod tests {
 
     #[test]
     fn test_sensitive_path_json_with_secret_keyword() {
-        // *secret* matches files with "secret" in the name
-        assert!(is_sensitive_path("config/secret.json"));
-        assert!(is_sensitive_path("app-secrets.json"));
+        // **/secrets.json matches files named exactly "secrets.json"
+        assert!(is_sensitive_path("config/secrets.json"));
+        assert!(is_sensitive_path("secrets.json"));
         // "private.json" doesn't contain "secret" or "private*key"
         assert!(!is_sensitive_path("keys/private.json"));
+        // Narrow patterns don't match arbitrary files with "secret" in name
+        assert!(!is_sensitive_path("secrets_manager.rs"));
     }
 
     #[test]
     fn test_sensitive_path_yaml_with_secret_keyword() {
-        // *secret* matches YAML files containing "secret" in name
-        assert!(is_sensitive_path("secret.yaml"));
-        assert!(is_sensitive_path("config/secret.yaml"));
+        // **/secrets.yaml matches files named exactly "secrets.yaml"
+        assert!(is_sensitive_path("secrets.yaml"));
+        assert!(is_sensitive_path("config/secrets.yaml"));
         // "credentials.yml" doesn't match any of the current patterns
         // (only "credentials/**" directory pattern is sensitive, not the file itself)
         assert!(!is_sensitive_path("credentials.yml"));

@@ -85,6 +85,12 @@ pub struct AgentRuntime {
     /// When cancelled, all spawn_monitor tasks will exit cleanly instead of
     /// waiting for agents to exit or timing out. Prevents task leaks during shutdown.
     shutdown_token: CancellationToken,
+    /// CONCURRENT FIX: Track monitor task JoinHandles so `shutdown()` can join them.
+    /// Without this, monitor tasks are detached and may still be running after
+    /// shutdown() returns, racing with process exit or subsequent runtime reuse.
+    /// Uses std::sync::Mutex because `spawn_monitor()` is a sync fn called from
+    /// async contexts — tokio::sync::Mutex::blocking_lock would panic there.
+    monitor_handles: std::sync::Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
 impl AgentRuntime {
@@ -100,6 +106,7 @@ impl AgentRuntime {
             binding_mutex: Arc::new(Mutex::new(())),
             unhealthy_streaks: Arc::new(Mutex::new(HashMap::new())),
             shutdown_token: CancellationToken::new(),
+            monitor_handles: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -232,8 +239,13 @@ impl AgentRuntime {
             .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", agent_id)))?;
 
         // Clean up all indices using unified helper
-        self.remove_agent_indices(agent_id, &info.agent_uuid, info.mcp_agent_id.as_deref())
-            .await;
+        self.remove_agent_indices(
+            agent_id,
+            &info.agent_uuid,
+            info.mcp_agent_id.as_deref(),
+            info.stable_id.as_deref(),
+        )
+        .await;
 
         if let Err(e) = self.backend.stop_agent(&info.handle).await {
             warn!(agent_id = agent_id, error = %e, "Failed to stop agent backend");
@@ -255,14 +267,16 @@ impl AgentRuntime {
     ///
     /// CRITICAL BUG FIX: Previously, `stop_agent()` and `prune_unhealthy_agents()`
     /// only cleaned the main `registry`, leaking entries in `uuid_index`, `mcp_index`,
-    /// and `unhealthy_streaks`. This caused memory leaks and stale routing failures.
+    /// `stable_id_index`, and `unhealthy_streaks`. This caused memory leaks and stale
+    /// routing failures (e.g., `resolve_to_stable_id` could resolve to a dead agent).
     ///
-    /// This helper ensures all four data structures are cleaned consistently.
+    /// This helper ensures all five data structures are cleaned consistently.
     async fn remove_agent_indices(
         &self,
         agent_id: &str,
         agent_uuid: &str,
         mcp_agent_id: Option<&str>,
+        stable_id: Option<&str>,
     ) {
         // 1. Clean uuid_index
         self.uuid_index.write().await.remove(agent_uuid);
@@ -272,13 +286,19 @@ impl AgentRuntime {
             self.mcp_index.write().await.remove(mcp_id);
         }
 
-        // 3. Clean unhealthy_streaks
+        // 3. Clean stable_id_index (if agent had stable ID binding)
+        if let Some(sid) = stable_id {
+            self.stable_id_index.write().await.remove(sid);
+        }
+
+        // 4. Clean unhealthy_streaks
         self.unhealthy_streaks.lock().await.remove(agent_id);
 
         debug!(
             agent_id = agent_id,
             agent_uuid = agent_uuid,
             mcp_agent_id = ?mcp_agent_id,
+            stable_id = ?stable_id,
             "Cleaned all agent indices"
         );
     }
@@ -441,10 +461,11 @@ impl AgentRuntime {
                     if let Some(old_info) = registry.remove(&old_agent_id) {
                         let old_uuid = old_info.agent_uuid.clone();
                         let old_mcp = old_info.mcp_agent_id.clone();
+                        let old_stable = old_info.stable_id.clone();
                         // Preserve MCP binding across restart — the MCP client is still
                         // connected, just the underlying PTY process was recreated.
                         preserved_mcp_id = old_mcp.clone();
-                        indices_to_clean.push((old_agent_id.clone(), old_uuid, old_mcp));
+                        indices_to_clean.push((old_agent_id.clone(), old_uuid, old_mcp, old_stable));
                     }
                 } else {
                     // Same agent - update metadata but preserve MCP binding.
@@ -525,9 +546,14 @@ impl AgentRuntime {
         // Clean up indices for removed agents and reconcile mcp_index
         // WHILE STILL HOLDING the registry write lock to eliminate visibility gaps.
         // Order matters: remove old indices first, then reconcile to add back correct entries.
-        for (old_agent_id, old_uuid, old_mcp) in indices_to_clean {
-            self.remove_agent_indices(&old_agent_id, &old_uuid, old_mcp.as_deref())
-                .await;
+        for (old_agent_id, old_uuid, old_mcp, old_stable) in indices_to_clean {
+            self.remove_agent_indices(
+                &old_agent_id,
+                &old_uuid,
+                old_mcp.as_deref(),
+                old_stable.as_deref(),
+            )
+            .await;
         }
 
         // Reconcile mcp_index: add entries for agents with preserved MCP bindings
@@ -630,6 +656,7 @@ impl AgentRuntime {
                     &agent_id,
                     &info.agent_uuid,
                     info.mcp_agent_id.as_deref(),
+                    info.stable_id.as_deref(),
                 )
                 .await;
 
@@ -1211,6 +1238,26 @@ impl AgentRuntime {
             }
         }
 
+        // CONCURRENT FIX: Join all monitor tasks with a bounded timeout.
+        // This ensures monitors have exited before we return from shutdown,
+        // preventing races with process exit or subsequent runtime reuse.
+        let handles: Vec<_> = {
+            let mut guard = self.monitor_handles.lock().unwrap();
+            std::mem::take(&mut *guard)
+        };
+        if !handles.is_empty() {
+            info!(count = handles.len(), "Joining monitor tasks");
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            for handle in handles {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    warn!("Monitor join deadline exceeded — some monitors may still be running");
+                    break;
+                }
+                let _ = tokio::time::timeout(remaining, handle).await;
+            }
+        }
+
         self.backend.shutdown().await?;
         info!("Agent runtime shutdown complete");
         Ok(())
@@ -1236,8 +1283,9 @@ impl AgentRuntime {
         let stable_id_index = self.stable_id_index.clone();
         let unhealthy_streaks = self.unhealthy_streaks.clone();
         let shutdown_token = self.shutdown_token.clone();
+        let monitor_handles = self.monitor_handles.clone();
 
-        tokio::spawn(async move {
+        let join_handle = tokio::spawn(async move {
             use crate::agent_lifecycle::AgentLifecycleState;
             // Safety timeout: 24 hours to prevent leaked tasks on hung backends
             let timeout_duration = std::time::Duration::from_secs(86400);
@@ -1435,6 +1483,11 @@ impl AgentRuntime {
                 "Terminated agent removed from all indices after grace period"
             );
         });
+
+        // Track the JoinHandle so shutdown() can join it.
+        // Use std::sync::Mutex (not tokio::sync::Mutex) because spawn_monitor is
+        // a sync fn called from async contexts — blocking_lock would panic.
+        monitor_handles.lock().unwrap().push(join_handle);
     }
 }
 
