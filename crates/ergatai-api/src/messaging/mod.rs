@@ -493,9 +493,7 @@ const MAX_PENDING_PER_AGENT: usize = 100;
 pub async fn record_pending_response(to_agent: &str, correlation_id: &str) {
     if let Some(sender) = get_message_sender() {
         let mut pending = sender.pending_responses.lock().await;
-        let vec = pending
-            .entry(to_agent.to_string())
-            .or_insert_with(Vec::new);
+        let vec = pending.entry(to_agent.to_string()).or_insert_with(Vec::new);
         // Bound the Vec to prevent unbounded growth when the target agent
         // never responds. Drop oldest entries (FIFO) to stay under the cap.
         while vec.len() >= MAX_PENDING_PER_AGENT {

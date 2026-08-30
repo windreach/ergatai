@@ -79,10 +79,8 @@ impl DagScheduler {
                         "Skipping pending node due to DAG-level constraint"
                     );
                     node.status = TaskStatus::Skipped;
-                    node.metadata.insert(
-                        "skipped_reason".to_string(),
-                        reason.to_string(),
-                    );
+                    node.metadata
+                        .insert("skipped_reason".to_string(), reason.to_string());
                 }
             }
         }

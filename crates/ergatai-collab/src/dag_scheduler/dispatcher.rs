@@ -381,9 +381,8 @@ mod tests {
         // The auto-timeout will bump `timeout` up to 930s, but started_at is 2000s ago,
         // so the effective deadline is still in the past.
         graph.timeout = Some(1);
-        graph.started_at = Some(
-            (chrono::Utc::now() - chrono::Duration::seconds(2000)).to_rfc3339(),
-        );
+        graph.started_at =
+            Some((chrono::Utc::now() - chrono::Duration::seconds(2000)).to_rfc3339());
 
         let temp_dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(temp_dir.path().join(".ergatai")).unwrap();

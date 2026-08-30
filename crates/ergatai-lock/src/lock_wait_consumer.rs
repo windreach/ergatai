@@ -212,10 +212,10 @@ impl LockWaitConsumer {
             }
         };
 
-        // Try to acquire the lock
+        // Try to acquire the lock (no escalation — just check for conflicts)
         match self
             .lock_manager
-            .acquire_lock(&file_token, &request.file_path)
+            .try_acquire_lock_no_escalation(&file_token, &request.file_path)
             .await
         {
             Ok(()) => {

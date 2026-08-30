@@ -153,20 +153,24 @@ impl DecisionEngine {
     ///
     /// Returns `Ok(())` if access is allowed, or `Err(reason)` if denied.
     /// If no workspace is registered for the agent, access is allowed (legacy behavior).
-    fn check_workspace_boundary(
-        &self,
-        agent_id: &str,
-        relative_path: &str,
-    ) -> Result<(), String> {
+    fn check_workspace_boundary(&self, agent_id: &str, relative_path: &str) -> Result<(), String> {
         let workspace_dirs = self.workspace_dirs.read();
         let workspace_dir = match workspace_dirs.get(agent_id) {
             Some(dir) => dir,
             None => return Ok(()), // No workspace registered, allow access
         };
 
-        // Check if the path starts with the workspace directory
-        // Both paths are relative to project root
-        if relative_path.starts_with(workspace_dir) {
+        // Check if the path is within the workspace boundary using path component matching.
+        // Both paths are relative to project root.
+        // IMPORTANT: Use path component boundaries to prevent prefix attacks like:
+        //   workspace = "workspaces/ws1", path = "workspaces/ws1-evil/file.txt"
+        // A naive string starts_with would incorrectly allow this.
+        use std::path::Path;
+        let ws_path = Path::new(workspace_dir.as_str());
+        let file_path = Path::new(relative_path);
+
+        // file_path must either equal ws_path exactly, or be a descendant of ws_path.
+        if file_path == ws_path || file_path.ancestors().any(|a| a == ws_path) {
             Ok(())
         } else {
             Err(format!(
@@ -222,7 +226,7 @@ impl DecisionEngine {
     /// Decision order:
     /// 1. Self-PID allowlist → Allow (ergatai's own processes).
     /// 2. Fail-open on any error → Allow.
-    /// 2.5 Workspace boundary check → Deny if path is outside agent's workspace.
+    ///    2.5 Workspace boundary check → Deny if path is outside agent's workspace.
     /// 3. File not locked → Allow.
     /// 4. Caller is the lock holder (same agent_id + session_id) → Allow.
     /// 5. Caller is a *known* non-holder agent → Deny.
@@ -362,6 +366,24 @@ pub struct Enforcer {
     project_id: String,
     /// Configuration.
     config: EnforcerConfig,
+    /// Persistent drain thread for self-PID fanotify events.
+    ///
+    /// Replaces the per-event `std::thread::spawn` that caused thread exhaustion
+    /// under heavy I/O load (e.g., `cargo build` triggering thousands of
+    /// `FAN_OPEN_PERM` events). This single thread runs for the lifetime of the
+    /// enforcer, continuously draining self-PID events (SQLite open() calls from
+    /// the decision path) to prevent deadlocks.
+    drain_thread: Option<std::thread::JoinHandle<()>>,
+    /// Semaphore limiting concurrent `decide()` calls (prevents thread exhaustion).
+    /// Permits = 4: enough parallelism for concurrent decisions while bounding
+    /// the number of `spawn_blocking` threads + kernel-blocked processes.
+    decide_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Semaphore limiting concurrent `FAN_MODIFY` auto_acquire tasks.
+    /// Permits = 16: bounds memory usage under heavy file modification load.
+    modify_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Semaphore limiting concurrent audit NATS publish tasks (on deny).
+    /// Permits = 8: audit is non-critical; bounded to prevent resource exhaustion.
+    audit_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl Enforcer {
@@ -392,7 +414,13 @@ impl Enforcer {
             Some(pair) => pair,
             None => {
                 info!("no enforcement backend available; enforcement disabled");
-                return Ok(Self::disabled(project_root, project_id, config, lock_manager_for_disabled, pid_resolver_for_disabled));
+                return Ok(Self::disabled(
+                    project_root,
+                    project_id,
+                    config,
+                    lock_manager_for_disabled,
+                    pid_resolver_for_disabled,
+                ));
             }
         };
 
@@ -424,6 +452,46 @@ impl Enforcer {
         let config_inner = config.clone();
         let engine_inner = engine.clone();
 
+        // Create semaphores for concurrency bounding (prevents resource exhaustion).
+        let decide_semaphore = Arc::new(tokio::sync::Semaphore::new(4));
+        let modify_semaphore = Arc::new(tokio::sync::Semaphore::new(16));
+        let audit_semaphore = Arc::new(tokio::sync::Semaphore::new(8));
+
+        // Start persistent drain thread for self-PID fanotify events.
+        //
+        // This replaces the per-event `std::thread::spawn` that caused thread
+        // exhaustion under heavy I/O (e.g., `cargo build` triggering thousands
+        // of FAN_OPEN_PERM events → thousands of OS threads → system freeze).
+        //
+        // The drain thread continuously reads self-PID events from the fanotify
+        // fd and responds with FAN_ALLOW. This prevents deadlocks when decide()
+        // opens SQLite (locks.db), which triggers a FAN_OPEN_PERM that must be
+        // answered promptly.
+        //
+        // The drain thread shares the fanotify fd with `next_event()` (the main
+        // event loop). Both compete for the state Mutex (drain uses try_lock,
+        // next_event uses .lock().await). Self-PID events are handled inline by
+        // whichever reader gets them first; non-self events go to state.pending
+        // for the event loop.
+        let drain_backend = backend.clone();
+        let drain_cancel = cancel.clone();
+        let drain_thread = std::thread::Builder::new()
+            .name("fanotify-drain".into())
+            .spawn(move || {
+                while !drain_cancel.is_cancelled() {
+                    drain_backend.drain_self_events();
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                // Final drain after cancellation to flush any last events
+                drain_backend.drain_self_events();
+            })
+            .map_err(|e| ErgataiError::internal(format!("failed to spawn drain thread: {}", e)))?;
+
+        // Clone semaphores for the event loop (the originals go into Self)
+        let loop_decide_sem = decide_semaphore.clone();
+        let loop_modify_sem = modify_semaphore.clone();
+        let loop_audit_sem = audit_semaphore.clone();
+
         let task = tokio::spawn(async move {
             Self::event_loop(
                 backend_inner,
@@ -433,6 +501,9 @@ impl Enforcer {
                 nats_client,
                 config_inner,
                 cancel_inner,
+                loop_decide_sem,
+                loop_modify_sem,
+                loop_audit_sem,
             )
             .await;
         });
@@ -441,7 +512,7 @@ impl Enforcer {
             backend = backend.name(),
             project_root = %project_root.display(),
             project_id = %project_id,
-            "enforcer started"
+            "enforcer started (persistent drain thread + semaphore-bounded)"
         );
 
         Ok(Self {
@@ -454,6 +525,10 @@ impl Enforcer {
             project_root,
             project_id,
             config,
+            drain_thread: Some(drain_thread),
+            decide_semaphore,
+            modify_semaphore,
+            audit_semaphore,
         })
     }
 
@@ -513,6 +588,14 @@ impl Enforcer {
     /// // agent-1 can now only access files under workspaces/ws1/
     /// ```
     pub fn register_workspace(&self, agent_id: &str, workspace_dir: &str) {
+        if !self.is_active() {
+            warn!(
+                agent_id = %agent_id,
+                workspace_dir = %workspace_dir,
+                "register_workspace called on disabled enforcer — registration will have no effect"
+            );
+            return;
+        }
         self.engine.register_workspace(agent_id, workspace_dir);
     }
 
@@ -521,6 +604,9 @@ impl Enforcer {
     /// After this, the agent can access any file in the project root.
     /// Call this when an agent exits or its workspace is removed.
     pub fn unregister_workspace(&self, agent_id: &str) {
+        if !self.is_active() {
+            return; // no-op for disabled enforcer
+        }
         self.engine.unregister_workspace(agent_id);
     }
 
@@ -547,6 +633,10 @@ impl Enforcer {
             project_root,
             project_id,
             config,
+            drain_thread: None,
+            decide_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+            modify_semaphore: Arc::new(tokio::sync::Semaphore::new(16)),
+            audit_semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
         }
     }
 
@@ -621,26 +711,34 @@ impl Enforcer {
     /// engine, writes kernel responses, and (on denials) fires background
     /// tasks to record audit entries + NATS events.
     ///
+    /// # Concurrency model (post-fix)
+    ///
+    /// The event loop is **non-blocking**: it reads events and immediately
+    /// dispatches them to spawned tasks, then returns to `backend.next_event()`.
+    /// This prevents the kernel fanotify queue from backing up under heavy I/O.
+    ///
+    /// - **Permission events**: dispatched to `tokio::spawn` with `decide_semaphore`
+    ///   (permits=4) bounding concurrent `decide()` calls. Each task runs
+    ///   `decide()` in `spawn_blocking` (no per-task drain thread — the persistent
+    ///   drain thread handles self-PID events globally).
+    /// - **Notification events (FAN_MODIFY)**: dispatched to `tokio::spawn` with
+    ///   `modify_semaphore` (permits=16). PID resolve + auto_acquire run in
+    ///   `spawn_blocking` to avoid blocking tokio workers with /proc I/O and
+    ///   SQLite/git operations.
+    /// - **Audit on deny**: bounded by `audit_semaphore` (permits=8).
+    ///
     /// # Deadlock prevention
     ///
-    /// The decision path is synchronous and acquires `parking_lot` mutexes
-    /// (SQLite connection, in-memory cache). Running it directly on the tokio
-    /// worker thread would block that thread, and running it under
-    /// `spawn_blocking` with a `timeout` would NOT cancel the inner task —
-    /// the abandoned task would continue to hold the SQLite mutex and
-    /// eventually deadlock every other caller.
+    /// The persistent drain thread (started in `Enforcer::start()`) continuously
+    /// handles self-PID fanotify events. When `decide()` opens SQLite (locks.db),
+    /// the resulting `FAN_OPEN_PERM` is answered by the drain thread, preventing
+    /// the classic deadlock where the event loop waits for decide() which waits
+    /// for a fanotify response that only the event loop can provide.
     ///
-    /// We use `tokio::task::block_in_place` instead. This converts the current
-    /// worker thread into a blocking thread for the duration of the decision;
-    /// tokio compensates by spinning up a replacement worker. The decision is
-    /// guaranteed to run to completion on a dedicated thread, and there is no
-    /// orphaned task to leak mutexes.
-    ///
-    /// The SQLite fallback inside `check_file_lock_status_fast` uses
-    /// `try_lock()` — if the connection mutex is contended, we fail open
-    /// immediately. Combined, these two mechanisms make a deadlock impossible:
-    /// the decision never blocks indefinitely, and it never abandons a task
-    /// that holds a mutex.
+    /// `check_file_lock_status_fast` uses `try_lock()` — if the SQLite connection
+    /// mutex is contended, we fail open immediately. Combined with the persistent
+    /// drain thread, this makes deadlocks impossible.
+    #[allow(clippy::too_many_arguments)]
     async fn event_loop(
         backend: Arc<dyn EnforcerBackend>,
         engine: Arc<DecisionEngine>,
@@ -649,6 +747,9 @@ impl Enforcer {
         nats_client: Option<Arc<async_nats::Client>>,
         config: EnforcerConfig,
         cancel: CancellationToken,
+        decide_semaphore: Arc<tokio::sync::Semaphore>,
+        modify_semaphore: Arc<tokio::sync::Semaphore>,
+        audit_semaphore: Arc<tokio::sync::Semaphore>,
     ) {
         loop {
             // Wait for the next event or cancellation.
@@ -677,182 +778,221 @@ impl Enforcer {
                 .ok()
                 .map(|p| p.to_string_lossy().to_string());
 
-            // Only run expensive decide() pipeline for Permission events.
-            // Notification events (FAN_MODIFY) don't need a decision — they trigger
-            // auto-lock acquisition in a separate code path below.
-            let decision = if event.event_type == FileAccessEventType::Permission {
-                // CRITICAL DEADLOCK PREVENTION:
-                // `decide()` queries SQLite, which opens locks.db. That open() triggers
-                // a fanotify FAN_OPEN_PERM event. Since the event loop is `.await`-ing
-                // this spawn_blocking, only a CONCURRENT thread can read the fanotify
-                // queue and respond. We spawn a dedicated OS thread that continuously
-                // drains self-PID events while decide() runs.
-                //
-                // Without this, the blocking thread deadlocks:
-                //   decide() → SQLite → open(locks.db) → FAN_OPEN_PERM → kernel blocks
-                //   the thread → nobody reads fanotify queue → nobody responds → DEADLOCK
+            // Non-blocking dispatch: the event loop immediately returns to
+            // `backend.next_event()` after spawning a task. This prevents the
+            // kernel fanotify queue from backing up under heavy I/O.
+            //
+            // Previously, the event loop awaited decide() via spawn_blocking,
+            // blocking the loop for the duration. Under heavy I/O (e.g.,
+            // `cargo build`), this caused the kernel queue to fill, blocking
+            // ALL open() syscalls system-wide → server freeze.
+            //
+            // Now: fire-and-forget spawn + semaphore bounding.
+            if event.event_type == FileAccessEventType::Permission {
                 match relative.as_deref() {
                     Some(rel) => {
-                        let engine = engine.clone();
-                        let backend = backend.clone();
+                        let sem = decide_semaphore.clone();
+                        let audit_sem = audit_semaphore.clone();
+                        let task_engine = engine.clone();
+                        let audit_engine = engine.clone(); // clone for audit section
+                        let task_backend = backend.clone();
                         let rel_owned = rel.to_string();
+                        let audit_rel = rel_owned.clone(); // clone for audit section
                         let pid = event.pid;
-                        tokio::task::spawn_blocking(move || {
-                            // Spawn a concurrent thread that drains self-PID events
-                            // while decide() runs. This thread reads the fanotify fd
-                            // non-blocking and immediately responds to any events
-                            // from our own process (SQLite file opens).
-                            let stop =
-                                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                            let stop2 = stop.clone();
-                            let backend2 = backend.clone();
-                            let drain_handle = std::thread::spawn(move || {
-                                while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
-                                    backend2.drain_self_events();
-                                    // 1ms sleep: balances responsiveness (SQLite open()
-                                    // takes ~100μs-1ms) against CPU usage. The previous
-                                    // 100μs interval was a busy-wait that woke the CPU
-                                    // 10× more often without meaningful latency benefit.
-                                    std::thread::sleep(std::time::Duration::from_millis(1));
+                        let handle = event.platform_handle.clone();
+                        let nats_client = nats_client.clone();
+                        let publish_nats = config.publish_nats_events;
+                        let project_id_owned = project_id.to_string();
+
+                        // Fire-and-forget: the event loop does NOT await this task.
+                        // Semaphore bounds concurrent decide() calls to prevent
+                        // thread exhaustion (was: 2 OS threads per event).
+                        tokio::spawn(async move {
+                            // Acquire semaphore permit (blocks if at capacity)
+                            let _permit = match sem.acquire().await {
+                                Ok(p) => p,
+                                Err(_) => {
+                                    // Semaphore closed — enforcer shutting down.
+                                    // Fail open: allow the access.
+                                    let _ = task_backend
+                                        .respond(handle, EnforcementResult::Allow)
+                                        .await;
+                                    return;
                                 }
-                                // Final drain after decide() returns
-                                backend2.drain_self_events();
-                            });
-                            let decision = engine.decide(&rel_owned, pid);
-                            stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                            let _ = drain_handle.join();
-                            decision
-                        })
-                        .await
-                        .unwrap_or(Decision::Allow) // join error → fail open
-                    }
-                    None => Decision::Allow, // outside project or resolution failed → allow
-                }
-            } else {
-                // Notification event — skip expensive decide(), just use Allow placeholder.
-                Decision::Allow
-            };
+                            };
 
-            // Write kernel response via the backend (only for permission events).
-            // Notification events (FAN_MODIFY) don't need kernel response.
-            if event.event_type == FileAccessEventType::Permission {
-                let result = match &decision {
-                    Decision::Allow => EnforcementResult::Allow,
-                    Decision::Deny { .. } => EnforcementResult::Deny,
-                };
-                if let Err(e) = backend.respond(event.platform_handle.clone(), result).await {
-                    // Fail-open: if the backend can't respond, log but continue.
-                    // The backend is responsible for ensuring the kernel-blocked
-                    // process is released even on error.
-                    warn!(error = %e, backend = backend.name(), "backend respond failed");
-                }
+                            // No per-task drain thread needed — the persistent drain
+                            // thread (started in Enforcer::start()) handles all
+                            // self-PID fanotify events globally.
 
-                // Audit + NATS publish run in a detached task so the event loop can
-                // return to reading the next event immediately. These are
-                // non-critical: a missed audit is far less harmful than a stalled
-                // event loop (which would block every open() system-wide).
-                if let Decision::Deny {
-                    holder_agent,
-                    holder_session,
-                    caller_agent,
-                } = decision
-                {
-                    let rel = relative.as_deref().unwrap_or("?").to_string();
-                    let engine = engine.clone();
-                    let nats_client = nats_client.clone();
-                    let publish_nats = config.publish_nats_events;
-                    let project_id_owned = project_id.to_string();
-                    let pid = event.pid;
+                            // Run decide() in spawn_blocking (doesn't block tokio worker)
+                            let decision = tokio::task::spawn_blocking(move || {
+                                task_engine.decide(&rel_owned, pid)
+                            })
+                            .await
+                            .unwrap_or(Decision::Allow); // join error → fail open
 
-                    // Fire-and-forget audit + NATS publish. We intentionally detach
-                    // the JoinHandle: a missed audit is far less harmful than a
-                    // stalled event loop, and the spawned task has its own
-                    // catch_unwind via tokio.
-                    let _audit_handle = tokio::spawn(async move {
-                        // Audit log (fire-and-forget).
-                        if let Err(e) = engine.lock_manager().record_enforced_violation(
-                            &rel,
-                            caller_agent.as_deref(),
-                            Some(&holder_agent),
-                        ) {
-                            warn!(error = %e, "failed to record enforced violation");
-                        }
-                        // NATS event (fire-and-forget).
-                        if publish_nats {
-                            if let Some(client) = nats_client {
-                                let payload = FileEnforcementPayload {
-                                    file_path: rel,
-                                    pid,
-                                    agent_id: caller_agent.clone(),
-                                    session_id: None,
-                                    action: EnforcementAction::Denied,
-                                    holder_agent_id: Some(holder_agent.clone()),
-                                    holder_session_id: Some(holder_session.clone()),
-                                    reason: format!("file locked by {}", holder_agent),
-                                    timestamp: std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .map(|d| d.as_secs())
-                                        .unwrap_or(0),
+                            // Write kernel response
+                            let result = match &decision {
+                                Decision::Allow => EnforcementResult::Allow,
+                                Decision::Deny { .. } => EnforcementResult::Deny,
+                            };
+                            if let Err(e) = task_backend.respond(handle, result).await {
+                                warn!(error = %e, backend = task_backend.name(), "backend respond failed");
+                            }
+
+                            // Drop the decide semaphore permit BEFORE audit/NATS.
+                            // The kernel has its response; holding the permit during
+                            // slow audit I/O would starve new permission events.
+                            drop(_permit);
+
+                            // Audit + NATS publish (bounded by audit_semaphore)
+                            if let Decision::Deny {
+                                holder_agent,
+                                holder_session,
+                                caller_agent,
+                            } = decision
+                            {
+                                let _audit_permit = match audit_sem.acquire().await {
+                                    Ok(p) => p,
+                                    Err(_) => return,
                                 };
-                                let subject = format!("ergatai.file.enforced.{}", project_id_owned);
-                                if let Ok(json) = serde_json::to_string(&payload) {
-                                    if let Err(e) = client.publish(subject, json.into()).await {
-                                        warn!(error = %e, "failed to publish enforcement event");
+
+                                // Audit log — spawn_blocking: record_enforced_violation
+                                // acquires std::sync::Mutex on SQLite (blocking op).
+                                {
+                                    let eng = audit_engine.clone();
+                                    let rel_path = audit_rel.clone();
+                                    let ca = caller_agent.clone();
+                                    let ha = holder_agent.clone();
+                                    if let Err(e) = tokio::task::spawn_blocking(move || {
+                                        eng.lock_manager().record_enforced_violation(
+                                            &rel_path,
+                                            ca.as_deref(),
+                                            Some(&ha),
+                                        )
+                                    })
+                                    .await
+                                    .unwrap_or(Ok(()))
+                                    {
+                                        warn!(error = %e, "failed to record enforced violation");
+                                    }
+                                }
+                                // NATS event
+                                if publish_nats {
+                                    if let Some(client) = nats_client {
+                                        let payload = FileEnforcementPayload {
+                                            file_path: audit_rel,
+                                            pid,
+                                            agent_id: caller_agent.clone(),
+                                            session_id: None,
+                                            action: EnforcementAction::Denied,
+                                            holder_agent_id: Some(holder_agent.clone()),
+                                            holder_session_id: Some(holder_session.clone()),
+                                            reason: format!("file locked by {}", holder_agent),
+                                            timestamp: std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .map(|d| d.as_secs())
+                                                .unwrap_or(0),
+                                        };
+                                        let subject = format!("ergatai.file.enforced.{}", project_id_owned);
+                                        if let Ok(json) = serde_json::to_string(&payload) {
+                                            if let Err(e) = client.publish(subject, json.into()).await {
+                                                warn!(error = %e, "failed to publish enforcement event");
+                                            }
+                                        }
                                     }
                                 }
                             }
+                        });
+                    }
+                    None => {
+                        // Outside project or resolution failed → allow immediately.
+                        // This must be synchronous (the kernel is blocking the process).
+                        if let Err(e) = backend
+                            .respond(event.platform_handle.clone(), EnforcementResult::Allow)
+                            .await
+                        {
+                            warn!(error = %e, "backend respond failed for out-of-project allow");
                         }
-                    });
+                    }
                 }
             } else if event.event_type == FileAccessEventType::Notification {
-                // FAN_MODIFY event: file was modified, trigger automatic WRITE lock acquisition
-                // This runs in a detached task to avoid blocking the event loop
+                // FAN_MODIFY event: file was modified, trigger automatic WRITE lock acquisition.
+                // Runs in a detached task bounded by modify_semaphore.
+                // PID resolve + auto_acquire are moved into spawn_blocking to avoid
+                // blocking tokio workers with /proc I/O and SQLite/git operations.
+                let sem = modify_semaphore.clone();
                 let rel = relative.clone();
                 let engine = engine.clone();
                 let pid = event.pid;
                 let project_id_owned = project_id.clone();
 
                 let _auto_lock_handle = tokio::spawn(async move {
+                    // Acquire semaphore permit (bounds concurrent auto_acquire tasks)
+                    let _permit = match sem.acquire().await {
+                        Ok(p) => p,
+                        Err(_) => return,
+                    };
+
                     if let Some(rel_path) = rel {
-                        // Resolve PID to agent identity
-                        let caller = engine.pid_resolver.resolve(pid);
-                        if let Some((agent_id, session_id)) = caller {
-                            // Check if agent already has a WRITE lock on this file
-                            let has_lock = engine
-                                .lock_manager()
-                                .has_write_lock(&rel_path, &agent_id, &session_id)
-                                .await
-                                .unwrap_or(false);
+                        // Move blocking operations into spawn_blocking:
+                        // - pid_resolver.resolve() reads /proc/{pid}/stat (blocking I/O)
+                        // - auto_acquire_write_lock() holds std::sync::Mutex on SQLite
+                        //   and git repository (blocking tokio workers)
+                        let task_engine = engine.clone();
+                        let project_id_inner = project_id_owned.clone();
+                        let path_inner = rel_path.clone();
 
-                            if !has_lock {
-                                // Auto-acquire WRITE lock
-                                info!(
-                                    file_path = %rel_path,
-                                    agent_id = %agent_id,
-                                    pid = pid,
-                                    "Auto-acquiring WRITE lock on first modification"
-                                );
-
-                                // Create snapshot and acquire lock
-                                if let Err(e) = engine
-                                    .lock_manager()
-                                    .auto_acquire_write_lock(
-                                        &rel_path,
-                                        &agent_id,
-                                        &session_id,
-                                        &project_id_owned,
+                        tokio::task::spawn_blocking(move || {
+                            // Resolve PID to agent identity (blocking /proc I/O)
+                            let caller = task_engine.pid_resolver.resolve(pid);
+                            if let Some((agent_id, session_id)) = caller {
+                                // Check if agent already has a WRITE lock.
+                                // has_write_lock is async but has no .await inside
+                                // (uses try_lock + sync SQLite query). We call it via
+                                // Handle::block_on since we're in spawn_blocking.
+                                let has_lock = tokio::runtime::Handle::current()
+                                    .block_on(
+                                        task_engine
+                                            .lock_manager()
+                                            .has_write_lock(&path_inner, &agent_id, &session_id),
                                     )
-                                    .await
-                                {
-                                    warn!(
-                                        error = %e,
-                                        file_path = %rel_path,
+                                    .unwrap_or(false);
+
+                                if !has_lock {
+                                    info!(
+                                        file_path = %path_inner,
                                         agent_id = %agent_id,
-                                        "Failed to auto-acquire WRITE lock"
+                                        pid = pid,
+                                        "Auto-acquiring WRITE lock on first modification"
                                     );
+
+                                    // auto_acquire_write_lock is async — run via block_on.
+                                    // Inside, it calls get_snapshot_manager().await (tokio
+                                    // RwLock read — non-blocking) and create_snapshot()
+                                    // (std::sync::Mutex on git repo — blocking, but we're
+                                    // on a spawn_blocking thread, so it's safe).
+                                    if let Err(e) = tokio::runtime::Handle::current().block_on(
+                                        task_engine.lock_manager().auto_acquire_write_lock(
+                                            &path_inner,
+                                            &agent_id,
+                                            &session_id,
+                                            &project_id_inner,
+                                        ),
+                                    ) {
+                                        warn!(
+                                            error = %e,
+                                            file_path = %path_inner,
+                                            agent_id = %agent_id,
+                                            "Failed to auto-acquire WRITE lock"
+                                        );
+                                    }
                                 }
                             }
-                        }
+                        })
+                        .await
+                        .ok(); // ignore join errors (task panic → fail open)
                     }
                 });
             }
@@ -1090,7 +1230,11 @@ mod tests {
         // Agent with registered workspace cannot access files outside it
         let (_temp, lm) = setup_lock_manager();
         let resolver = Arc::new(crate::pid_resolver::CallbackPidResolver::new(|| {
-            vec![(66666, "agent-restricted".to_string(), "session-1".to_string())]
+            vec![(
+                66666,
+                "agent-restricted".to_string(),
+                "session-1".to_string(),
+            )]
         }));
         let engine = DecisionEngine::new(lm, resolver);
 
@@ -1133,6 +1277,44 @@ mod tests {
         // Should now allow access anywhere
         let decision = engine.decide("src/main.rs", 55555);
         assert_eq!(decision, Decision::Allow);
+    }
+
+    #[test]
+    fn test_workspace_boundary_rejects_prefix_attack() {
+        // Regression test: a path that is a string-prefix match but NOT a path-component
+        // descendant must be denied. E.g., workspace = "workspaces/ws1" must NOT allow
+        // "workspaces/ws1-evil/file.txt" or "src-private/config".
+        let (_temp, lm) = setup_lock_manager();
+        let resolver = Arc::new(crate::pid_resolver::CallbackPidResolver::new(|| {
+            vec![(
+                44444,
+                "agent-prefix-attack".to_string(),
+                "session-1".to_string(),
+            )]
+        }));
+        let engine = DecisionEngine::new(lm, resolver);
+
+        engine.register_workspace("agent-prefix-attack", "workspaces/ws1");
+
+        // Legitimate access inside workspace — must be allowed
+        let decision = engine.decide("workspaces/ws1/src/main.rs", 44444);
+        assert_eq!(decision, Decision::Allow);
+
+        // String-prefix but not a path-component descendant — must be denied
+        let decision = engine.decide("workspaces/ws1-evil/file.txt", 44444);
+        assert!(
+            matches!(decision, Decision::Deny { .. }),
+            "prefix-attack path 'workspaces/ws1-evil/file.txt' should be denied, got {:?}",
+            decision
+        );
+
+        // Another prefix attack variant
+        let decision = engine.decide("workspaces/ws1extra", 44444);
+        assert!(
+            matches!(decision, Decision::Deny { .. }),
+            "prefix-attack path 'workspaces/ws1extra' should be denied, got {:?}",
+            decision
+        );
     }
 
     // ── MockBackend + event_loop integration tests ──────────────────
@@ -1243,6 +1425,9 @@ mod tests {
                 None,
                 config,
                 cancel_inner,
+                Arc::new(tokio::sync::Semaphore::new(4)),
+                Arc::new(tokio::sync::Semaphore::new(16)),
+                Arc::new(tokio::sync::Semaphore::new(8)),
             )
             .await;
         });
@@ -1302,6 +1487,9 @@ mod tests {
                 None,
                 config,
                 cancel_inner,
+                Arc::new(tokio::sync::Semaphore::new(4)),
+                Arc::new(tokio::sync::Semaphore::new(16)),
+                Arc::new(tokio::sync::Semaphore::new(8)),
             )
             .await;
         });
@@ -1349,6 +1537,9 @@ mod tests {
                 None,
                 config,
                 cancel_inner,
+                Arc::new(tokio::sync::Semaphore::new(4)),
+                Arc::new(tokio::sync::Semaphore::new(16)),
+                Arc::new(tokio::sync::Semaphore::new(8)),
             )
             .await;
         });
@@ -1422,6 +1613,9 @@ mod tests {
                 None,
                 config,
                 cancel_inner,
+                Arc::new(tokio::sync::Semaphore::new(4)),
+                Arc::new(tokio::sync::Semaphore::new(16)),
+                Arc::new(tokio::sync::Semaphore::new(8)),
             )
             .await;
         });

@@ -465,7 +465,12 @@ impl AgentRuntime {
                         // Preserve MCP binding across restart — the MCP client is still
                         // connected, just the underlying PTY process was recreated.
                         preserved_mcp_id = old_mcp.clone();
-                        indices_to_clean.push((old_agent_id.clone(), old_uuid, old_mcp, old_stable));
+                        indices_to_clean.push((
+                            old_agent_id.clone(),
+                            old_uuid,
+                            old_mcp,
+                            old_stable,
+                        ));
                     }
                 } else {
                     // Same agent - update metadata but preserve MCP binding.
@@ -844,32 +849,38 @@ impl AgentRuntime {
         // and must NOT silently route to the wrong agent.
         let registry = self.registry.read().await;
         let suffix = format!("-{}", agent_identifier);
-        let matched_agent = registry.values().find(|info| {
-            info.handle
-                .metadata
-                .get("ergatai_agent_id")
-                .is_some_and(|id| id == agent_identifier)
-        }).or_else(|| {
-            // Collect suffix matches — only use if exactly one
-            let suffix_matches: Vec<_> = registry.values().filter(|info| {
+        let matched_agent = registry
+            .values()
+            .find(|info| {
                 info.handle
                     .metadata
                     .get("ergatai_agent_id")
-                    .is_some_and(|id| id.ends_with(&suffix))
-            }).collect();
-            if suffix_matches.len() == 1 {
-                suffix_matches.into_iter().next()
-            } else {
-                if suffix_matches.len() > 1 {
-                    warn!(
-                        agent_identifier = agent_identifier,
-                        match_count = suffix_matches.len(),
-                        "Ambiguous suffix match — multiple agents match, refusing to route"
-                    );
+                    .is_some_and(|id| id == agent_identifier)
+            })
+            .or_else(|| {
+                // Collect suffix matches — only use if exactly one
+                let suffix_matches: Vec<_> = registry
+                    .values()
+                    .filter(|info| {
+                        info.handle
+                            .metadata
+                            .get("ergatai_agent_id")
+                            .is_some_and(|id| id.ends_with(&suffix))
+                    })
+                    .collect();
+                if suffix_matches.len() == 1 {
+                    suffix_matches.into_iter().next()
+                } else {
+                    if suffix_matches.len() > 1 {
+                        warn!(
+                            agent_identifier = agent_identifier,
+                            match_count = suffix_matches.len(),
+                            "Ambiguous suffix match — multiple agents match, refusing to route"
+                        );
+                    }
+                    None
                 }
-                None
-            }
-        });
+            });
 
         let matched_agent = match matched_agent {
             Some(agent) => agent,
@@ -1224,10 +1235,7 @@ impl AgentRuntime {
     /// Get how long since the agent last produced PTY output.
     /// Used by DAG watchdog to detect idle agents.
     /// Returns None if the agent is not found or the backend doesn't track output.
-    pub async fn agent_last_output_age(
-        &self,
-        agent_id: &str,
-    ) -> Option<std::time::Duration> {
+    pub async fn agent_last_output_age(&self, agent_id: &str) -> Option<std::time::Duration> {
         let info = {
             let registry = self.registry.read().await;
             registry.get(agent_id).cloned()?

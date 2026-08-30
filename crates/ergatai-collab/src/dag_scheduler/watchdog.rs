@@ -525,7 +525,10 @@ mod tests {
         // Verify the watcher handle is stored.
         {
             let w = scheduler.timeout_watchers.lock().await;
-            assert!(w.contains_key("n1"), "watcher handle should be stored for n1");
+            assert!(
+                w.contains_key("n1"),
+                "watcher handle should be stored for n1"
+            );
         }
 
         // Finalize the DAG — the watcher should exit within one poll interval.
@@ -533,23 +536,20 @@ mod tests {
 
         // Wait for the watcher to exit (bounded at 3s).
         let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-            loop {
-                {
-                    let w = scheduler.timeout_watchers.lock().await;
-                    // The watcher doesn't remove itself on finalize-exit;
-                    // cancel_timeout_watcher does. We just verify the task exited.
-                    // Since we can't easily observe JoinHandle completion from
-                    // outside, we rely on the bounded timeout: if the watcher
-                    // didn't exit, it would still be sleeping, and this test
-                    // would pass trivially. The real guarantee is that it
-                    // checks finalized first and breaks.
-                    drop(w);
-                }
-                // Give the watcher a chance to observe finalized and exit.
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                // If we get here without hanging, the watcher cooperated.
-                return;
+            {
+                let w = scheduler.timeout_watchers.lock().await;
+                // The watcher doesn't remove itself on finalize-exit;
+                // cancel_timeout_watcher does. We just verify the task exited.
+                // Since we can't easily observe JoinHandle completion from
+                // outside, we rely on the bounded timeout: if the watcher
+                // didn't exit, it would still be sleeping, and this test
+                // would pass trivially. The real guarantee is that it
+                // checks finalized first and breaks.
+                drop(w);
             }
+            // Give the watcher a chance to observe finalized and exit.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            // If we get here without hanging, the watcher cooperated.
         })
         .await;
 

@@ -211,11 +211,14 @@ pub async fn spawn_agent(
     let env = req.env.unwrap_or_default();
 
     // Save work_dir before it's consumed by WorkspaceSpec
-    let work_dir_str = req.work_dir.clone().unwrap_or_else(|| state.default_cwd.clone());
+    let work_dir_str = req
+        .work_dir
+        .clone()
+        .unwrap_or_else(|| state.default_cwd.clone());
 
     let spec = WorkspaceSpec {
         id: req.workspace_id,
-        work_dir: work_dir_str.clone().into(),
+        work_dir: work_dir_str.as_str().into(),
         env,
         resources: ResourceLimits::default(),
     };
@@ -227,24 +230,68 @@ pub async fn spawn_agent(
         Ok(agent_id) => {
             // Register workspace boundary with the file access enforcer
             // so the agent can only access files within its workspace.
-            if let Ok(Some(enforcer)) = ergatai_lock::get_enforcer("default").await {
-                // Convert absolute work_dir to relative path (relative to project root)
-                // For simplicity, use the work_dir as-is if it's already relative,
-                // or strip the project root prefix if absolute.
-                let workspace_dir = if let Ok(relative) = std::path::Path::new(&work_dir_str)
-                    .strip_prefix(&state.default_cwd)
-                {
-                    relative.to_string_lossy().to_string()
-                } else {
-                    work_dir_str.clone()
-                };
+            // Mandatory enforcement: if enforcer is active but registration
+            // fails, kill the agent and return an error.
+            match ergatai_lock::get_enforcer("default").await {
+                Ok(Some(enforcer)) if enforcer.is_active() => {
+                    // Convert absolute work_dir to relative path (relative to project root)
+                    let workspace_dir = if let Ok(relative) =
+                        std::path::Path::new(&work_dir_str).strip_prefix(&state.default_cwd)
+                    {
+                        relative.to_string_lossy().to_string()
+                    } else {
+                        work_dir_str.clone()
+                    };
 
-                enforcer.register_workspace(&agent_id, &workspace_dir);
-                tracing::debug!(
-                    agent_id = %agent_id,
-                    workspace = %workspace_dir,
-                    "Registered workspace boundary for agent"
-                );
+                    enforcer.register_workspace(&agent_id, &workspace_dir);
+                    tracing::info!(
+                        agent_id = %agent_id,
+                        workspace = %workspace_dir,
+                        "Registered workspace boundary for agent (enforced)"
+                    );
+                }
+                Ok(Some(_enforcer)) => {
+                    // Enforcer exists but not active (non-Linux or no fanotify perms).
+                    // Workspace boundary enforcement is impossible — log warning
+                    // but allow agent to start (progressive enhancement).
+                    tracing::warn!(
+                        agent_id = %agent_id,
+                        "Enforcer not active — workspace boundary NOT enforced for this agent"
+                    );
+                }
+                Ok(None) => {
+                    // No enforcer instance at all — fanotify not initialized.
+                    tracing::warn!(
+                        agent_id = %agent_id,
+                        "No enforcer available — workspace boundary NOT enforced for this agent"
+                    );
+                }
+                Err(e) => {
+                    // Failed to get enforcer — this is a real error.
+                    // Kill the agent we just started and return error.
+                    tracing::error!(
+                        agent_id = %agent_id,
+                        error = %e,
+                        "Failed to get enforcer for workspace registration — killing agent"
+                    );
+                    if let Err(stop_err) = runtime.stop_agent(&agent_id).await {
+                        tracing::error!(
+                            agent_id = %agent_id,
+                            stop_error = %stop_err,
+                            "CRITICAL: failed to stop agent after enforcer registration failure — agent may be running without workspace isolation"
+                        );
+                    }
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "Agent started but workspace boundary enforcement failed: {}. Agent killed.",
+                                e
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
             }
 
             (StatusCode::CREATED, Json(SpawnAgentResponse { agent_id })).into_response()

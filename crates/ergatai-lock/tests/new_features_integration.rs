@@ -205,7 +205,11 @@ fn test_multi_agent_workspace_isolation() {
 
     // Agent A accesses own workspace → Allow
     let decision = engine.decide("workspace-a/file.txt", pid_a);
-    assert_eq!(decision, Decision::Allow, "Agent A should access own workspace");
+    assert_eq!(
+        decision,
+        Decision::Allow,
+        "Agent A should access own workspace"
+    );
 
     // Agent A accesses Agent B's workspace → Deny
     let decision = engine.decide("workspace-b/file.txt", pid_a);
@@ -216,7 +220,11 @@ fn test_multi_agent_workspace_isolation() {
 
     // Agent B accesses own workspace → Allow
     let decision = engine.decide("workspace-b/file.txt", pid_b);
-    assert_eq!(decision, Decision::Allow, "Agent B should access own workspace");
+    assert_eq!(
+        decision,
+        Decision::Allow,
+        "Agent B should access own workspace"
+    );
 
     // Agent B accesses Agent A's workspace → Deny
     let decision = engine.decide("workspace-a/file.txt", pid_b);
@@ -345,7 +353,9 @@ async fn test_auto_acquire_write_lock_full() {
 
     // Add and commit the file
     let mut index = repo.index().unwrap();
-    index.add_path(std::path::Path::new("test_auto.txt")).unwrap();
+    index
+        .add_path(std::path::Path::new("test_auto.txt"))
+        .unwrap();
     index.write().unwrap();
 
     let tree_id = index.write_tree().unwrap();
@@ -377,11 +387,7 @@ async fn test_auto_acquire_write_lock_full() {
         .auto_acquire_write_lock(file_path, agent_id, session_id, project_id)
         .await;
 
-    assert!(
-        result.is_ok(),
-        "Auto-acquire should succeed: {:?}",
-        result
-    );
+    assert!(result.is_ok(), "Auto-acquire should succeed: {:?}", result);
 
     // Now should have WRITE lock
     let has_lock = manager
@@ -391,7 +397,7 @@ async fn test_auto_acquire_write_lock_full() {
     assert!(has_lock, "Should have WRITE lock after auto-acquire");
 
     // Verify snapshot was created by checking snapshot manager
-    let snapshot_mgr = get_snapshot_manager(project_id).await.unwrap();
+    let _snapshot_mgr = get_snapshot_manager(project_id).await.unwrap();
     // Note: We can't easily query which files have snapshots without a direct API,
     // but the auto_acquire_write_lock should have created one internally.
     // The fact that auto_acquire succeeded is sufficient verification.
@@ -501,7 +507,9 @@ async fn test_three_agents_competing_for_same_lock() {
     std::fs::write(&test_file, "original").unwrap();
 
     let mut index = repo.index().unwrap();
-    index.add_path(std::path::Path::new("contested.txt")).unwrap();
+    index
+        .add_path(std::path::Path::new("contested.txt"))
+        .unwrap();
     index.write().unwrap();
 
     let tree_id = index.write_tree().unwrap();
@@ -545,17 +553,29 @@ async fn test_three_agents_competing_for_same_lock() {
     );
 
     // Verify Agent A has the lock
-    let has_lock_a = manager.has_write_lock(file_path, agent_a, "session-a").await.unwrap();
+    let has_lock_a = manager
+        .has_write_lock(file_path, agent_a, "session-a")
+        .await
+        .unwrap();
     assert!(has_lock_a, "Agent A should have the lock");
 
     // Verify Agents B and C do NOT have the lock
-    let has_lock_b = manager.has_write_lock(file_path, agent_b, "session-b").await.unwrap();
-    let has_lock_c = manager.has_write_lock(file_path, agent_c, "session-c").await.unwrap();
+    let has_lock_b = manager
+        .has_write_lock(file_path, agent_b, "session-b")
+        .await
+        .unwrap();
+    let has_lock_c = manager
+        .has_write_lock(file_path, agent_c, "session-c")
+        .await
+        .unwrap();
     assert!(!has_lock_b, "Agent B should not have the lock");
     assert!(!has_lock_c, "Agent C should not have the lock");
 
     // Agent A releases the lock
-    manager.release_lock(token_a.id.as_str(), file_path).await.unwrap();
+    manager
+        .release_lock(token_a.id.as_str(), file_path)
+        .await
+        .unwrap();
 
     // Now Agent B should be able to acquire
     let result_b_retry = manager.acquire_lock(&token_b, file_path).await;
@@ -676,11 +696,7 @@ async fn test_per_agent_lock_limit_exact_boundary() {
     for i in 0..50 {
         let file_path = format!("boundary_file_{}.txt", i);
         let result = manager.acquire_lock(&file_token, &file_path).await;
-        assert!(
-            result.is_ok(),
-            "Lock {} should succeed (exactly 50)",
-            i
-        );
+        assert!(result.is_ok(), "Lock {} should succeed (exactly 50)", i);
     }
 
     // 51st should fail
@@ -730,17 +746,23 @@ fn test_workspace_boundary_exact_match() {
 
     // Access to file in workspace → Allow
     let decision = engine.decide("workspace/file.txt", test_pid);
-    assert_eq!(decision, Decision::Allow, "File in workspace should be allowed");
-
-    // Access to similar but different directory → Deny
-    // Note: Current implementation uses starts_with(), so "workspace-backup" matches "workspace"
-    // This is a known limitation - workspace boundary should use path component matching
-    let decision = engine.decide("workspace-backup/file.txt", test_pid);
-    // For now, this is allowed (starts_with matches). A proper implementation would deny.
     assert_eq!(
         decision,
         Decision::Allow,
-        "Current implementation allows 'workspace-backup' (starts_with limitation)"
+        "File in workspace should be allowed"
+    );
+
+    // Access to similar but different directory → Deny
+    // Path component matching ensures "workspace-backup" is NOT considered inside "workspace"
+    let decision = engine.decide("workspace-backup/file.txt", test_pid);
+    assert_eq!(
+        decision,
+        Decision::Deny {
+            holder_agent: "workspace_boundary".to_string(),
+            holder_session: String::new(),
+            caller_agent: Some("agent-exact-match".to_string()),
+        },
+        "'workspace-backup' should be denied (not a path-component descendant of 'workspace')"
     );
 }
 
@@ -765,7 +787,9 @@ async fn test_auto_acquire_on_already_locked_file() {
     std::fs::write(&test_file, "content").unwrap();
 
     let mut index = repo.index().unwrap();
-    index.add_path(std::path::Path::new("already_locked.txt")).unwrap();
+    index
+        .add_path(std::path::Path::new("already_locked.txt"))
+        .unwrap();
     index.write().unwrap();
 
     let tree_id = index.write_tree().unwrap();
@@ -795,14 +819,17 @@ async fn test_auto_acquire_on_already_locked_file() {
     // the behavior may vary. In practice, the second auto-acquire might succeed
     // (creating a duplicate snapshot) or fail with a constraint violation.
     // For this test, we verify that both agents have lock records (or one failed).
-    let result_b = manager
+    let _result_b = manager
         .auto_acquire_write_lock(file_path, agent_b, "session-b", project_id)
         .await;
 
     // Check the actual behavior - both might have locks due to auto-acquire design
     // The important thing is that the file is locked
     let is_locked = manager.is_file_locked(file_path).unwrap();
-    assert!(is_locked, "File should be locked after auto-acquire attempts");
+    assert!(
+        is_locked,
+        "File should be locked after auto-acquire attempts"
+    );
 
     // At least Agent A should have the lock
     let has_lock_a = manager
@@ -865,7 +892,10 @@ async fn test_three_agent_contention_with_release_chain() {
     assert!(result_c.is_err(), "C should be blocked by A");
 
     // Step 4: A releases
-    manager.release_lock(token_a.id.as_str(), file_path).await.unwrap();
+    manager
+        .release_lock(token_a.id.as_str(), file_path)
+        .await
+        .unwrap();
 
     // Step 5: B acquires
     let result_b_retry = manager.acquire_lock(&token_b, file_path).await;
@@ -876,7 +906,10 @@ async fn test_three_agent_contention_with_release_chain() {
     assert!(result_c_retry.is_err(), "C should still be blocked by B");
 
     // Step 7: B releases
-    manager.release_lock(token_b.id.as_str(), file_path).await.unwrap();
+    manager
+        .release_lock(token_b.id.as_str(), file_path)
+        .await
+        .unwrap();
 
     // Step 8: C acquires
     let result_c_final = manager.acquire_lock(&token_c, file_path).await;

@@ -108,9 +108,9 @@ impl PtyProcess {
             let mut guard = self.async_fd.writable().await?;
             let fd = self.async_fd.as_raw_fd();
 
-            match guard.try_io(|_| {
-                nix::unistd::write(fd, &data[written..]).map_err(std::io::Error::from)
-            }) {
+            match guard
+                .try_io(|_| nix::unistd::write(fd, &data[written..]).map_err(std::io::Error::from))
+            {
                 Ok(result) => {
                     let n = result?;
                     if n == 0 {
@@ -302,7 +302,7 @@ impl Drop for PtyProcess {
                         Ok(WaitStatus::StillAlive) => {
                             std::thread::sleep(std::time::Duration::from_millis(100));
                         }
-                        Ok(_) => return, // Exited or signaled — cleanup done
+                        Ok(_) => return,  // Exited or signaled — cleanup done
                         Err(_) => return, // ECHILD or other error — child already reaped
                     }
                 }

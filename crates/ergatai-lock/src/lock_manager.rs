@@ -291,6 +291,17 @@ impl FileLockManager {
     /// Returns the count of locks with status='ACTIVE' for the given agent_id.
     fn count_active_locks_by_agent(&self, agent_id: &str) -> Result<usize, ErgataiError> {
         let conn = self.conn.lock();
+        Self::count_active_locks_by_agent_with_conn(&conn, agent_id)
+    }
+
+    /// Count active locks for an agent using an already-locked connection.
+    ///
+    /// This avoids re-acquiring the mutex when the caller already holds it
+    /// (e.g., inside a transaction in `auto_acquire_write_lock`).
+    fn count_active_locks_by_agent_with_conn(
+        conn: &rusqlite::Connection,
+        agent_id: &str,
+    ) -> Result<usize, ErgataiError> {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM file_locks WHERE agent_id = ?1 AND status = 'ACTIVE'",
@@ -307,6 +318,11 @@ impl FileLockManager {
     /// `Err(ErgataiError::ResourceLimitExceeded)` if the limit is reached.
     fn check_agent_lock_limit(&self, agent_id: &str) -> Result<(), ErgataiError> {
         let count = self.count_active_locks_by_agent(agent_id)?;
+        Self::check_agent_lock_limit_with_count(agent_id, count)
+    }
+
+    /// Check lock limit using a pre-fetched count (avoids re-locking the connection).
+    fn check_agent_lock_limit_with_count(agent_id: &str, count: usize) -> Result<(), ErgataiError> {
         if count >= MAX_LOCKS_PER_AGENT {
             warn!(
                 agent_id = %agent_id,
@@ -673,6 +689,29 @@ impl FileLockManager {
         token: &FileToken,
         file_path: &str,
     ) -> Result<(), ErgataiError> {
+        self.acquire_lock_internal(token, file_path, true).await
+    }
+
+    /// Try to acquire a lock WITHOUT escalating conflicts to the main agent.
+    ///
+    /// Used by the `LockWaitConsumer` and `acquire_lock_with_wait` to check if a lock
+    /// can be granted without triggering the 30s NATS escalation timeout.
+    /// Returns `LockConflict` immediately if the file is already locked.
+    pub(crate) async fn try_acquire_lock_no_escalation(
+        &self,
+        token: &FileToken,
+        file_path: &str,
+    ) -> Result<(), ErgataiError> {
+        self.acquire_lock_internal(token, file_path, false).await
+    }
+
+    /// Internal lock acquisition with configurable escalation behavior.
+    async fn acquire_lock_internal(
+        &self,
+        token: &FileToken,
+        file_path: &str,
+        allow_escalation: bool,
+    ) -> Result<(), ErgataiError> {
         // Validate and normalize path BEFORE acquiring lock (M1 fix)
         let normalized_path = self.validate_and_normalize_path(file_path)?;
 
@@ -762,6 +801,16 @@ impl FileLockManager {
 
         // If there's a conflict, handle escalation or local arbitration
         if let Some(conflict) = conflict_info {
+            // When escalation is disabled (e.g., called from LockWaitConsumer or
+            // acquire_lock_with_wait), return LockConflict immediately so the caller
+            // can handle it (e.g., enter the wait queue).
+            if !allow_escalation {
+                return Err(ErgataiError::LockConflict(format!(
+                    "File {} is already locked for writing by agent {}",
+                    file_path, conflict.current_holder.agent_id
+                )));
+            }
+
             // Check if we should escalate to main agent via NATS
             if self.should_escalate_to_main_agent() {
                 info!(
@@ -1121,12 +1170,6 @@ impl FileLockManager {
     ) -> Result<(), ErgataiError> {
         let normalized_path = self.validate_and_normalize_path(file_path)?;
 
-        // NOTE: Per-agent lock limit check is intentionally omitted here.
-        // This method runs in an async context (tokio::spawn in fanotify event loop),
-        // and acquiring self.conn.lock() could cause deadlock if other operations
-        // are waiting for the fanotify queue to drain. The limit is enforced in
-        // acquire_lock() which runs in synchronous contexts.
-
         // Step 1: Create a Git snapshot of the file *before* modification.
         // This captures the pre-write baseline so other agents can read it later.
         let snapshot_hash = {
@@ -1150,12 +1193,17 @@ impl FileLockManager {
         // second agent's lock will be picked up by the normal acquire_lock path).
         let now = Utc::now();
         let ttl_secs = 3600u64; // 1 hour default TTL for auto-acquired locks
-        // Checked conversion: ttl_secs as i64 would silently overflow if > i64::MAX,
-        // causing chrono::Duration::seconds() to panic with a negative value.
+                                // Checked conversion: ttl_secs as i64 would silently overflow if > i64::MAX,
+                                // causing chrono::Duration::seconds() to panic with a negative value.
         let ttl_i64 = i64::try_from(ttl_secs).unwrap_or(i64::MAX);
         let expires_at = now + chrono::Duration::seconds(ttl_i64);
 
         let conn = self.conn.lock();
+
+        // Check per-agent lock limit using the already-held connection to avoid
+        // deadlock (re-acquiring the mutex would panic / block).
+        let active_count = Self::count_active_locks_by_agent_with_conn(&conn, agent_id)?;
+        Self::check_agent_lock_limit_with_count(agent_id, active_count)?;
 
         // Begin IMMEDIATE transaction for atomicity
         let tx = TransactionGuard::begin(&conn)
@@ -2363,8 +2411,8 @@ impl FileLockManager {
         use crate::lock_waiter::{LockGrantedNotification, LockWaitRequest};
         use futures_util::StreamExt;
 
-        // Try to acquire immediately
-        match self.acquire_lock(token, file_path).await {
+        // Try to acquire immediately (without escalation — just check for conflicts)
+        match self.try_acquire_lock_no_escalation(token, file_path).await {
             Ok(()) => {
                 tracing::debug!(
                     file_path = file_path,
@@ -2398,14 +2446,14 @@ impl FileLockManager {
         let request_id = wait_request.request_id.clone();
         let reply_subject = wait_request.reply_subject.clone();
 
-        // Publish to NATS
+        // Publish to NATS JetStream (LOCK_WAITERS stream)
         let subject = wait_request.subject();
         let payload = serde_json::to_vec(&wait_request).map_err(|e| {
             ErgataiError::internal(format!("Failed to serialize wait request: {}", e))
         })?;
 
-        nats_connection
-            .publish(&subject, payload)
+        let _ack = nats_connection
+            .publish_jetstream(&subject, payload)
             .await
             .map_err(|e| {
                 ErgataiError::internal(format!("Failed to publish wait request: {}", e))
@@ -2444,29 +2492,12 @@ impl FileLockManager {
                 tracing::info!(
                     request_id = %request_id,
                     file_path = file_path,
-                    "Received lock grant notification"
+                    "Received lock grant notification - consumer already acquired the lock"
                 );
 
-                // Try to acquire the lock now
-                match self.acquire_lock(token, file_path).await {
-                    Ok(()) => {
-                        tracing::info!(
-                            file_path = file_path,
-                            agent_id = %token.agent_id,
-                            "Lock acquired after waiting"
-                        );
-                        Ok(())
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            file_path = file_path,
-                            agent_id = %token.agent_id,
-                            error = %e,
-                            "Failed to acquire lock after grant notification"
-                        );
-                        Err(e)
-                    }
-                }
+                // The LockWaitConsumer already acquired the lock on our behalf.
+                // No need to re-acquire here.
+                Ok(())
             }
             Ok(None) => {
                 tracing::warn!(
@@ -2780,9 +2811,19 @@ impl FileLockManager {
         })?;
 
         let subject = notification.subject();
-        nats_client
-            .publish(subject, payload.into())
+        // Use JetStream publish so the LOCK_WAITERS stream captures the message
+        // and the LockWaitConsumer pull consumer can process it.
+        let js = async_nats::jetstream::new(nats_client.as_ref().clone());
+        let ack_future = js.publish(subject, payload.into()).await.map_err(|e| {
+            ErgataiError::NatsError(format!("Failed to publish lock release: {}", e))
+        })?;
+        let _ack = tokio::time::timeout(Duration::from_secs(10), ack_future)
             .await
+            .map_err(|_| {
+                ErgataiError::NatsError(
+                    "Lock release JetStream ack timed out after 10s".to_string(),
+                )
+            })?
             .map_err(|e| {
                 ErgataiError::NatsError(format!("Failed to publish lock release: {}", e))
             })?;
@@ -2819,9 +2860,16 @@ impl FileLockManager {
         })?;
 
         let subject = cancel.subject();
-        nats_client
-            .publish(subject, payload.into())
+        // Use JetStream publish so the LOCK_WAITERS stream captures the message
+        let js = async_nats::jetstream::new(nats_client.as_ref().clone());
+        let ack_future = js.publish(subject, payload.into()).await.map_err(|e| {
+            ErgataiError::NatsError(format!("Failed to publish lock cancel: {}", e))
+        })?;
+        let _ack = tokio::time::timeout(Duration::from_secs(10), ack_future)
             .await
+            .map_err(|_| {
+                ErgataiError::NatsError("Lock cancel JetStream ack timed out after 10s".to_string())
+            })?
             .map_err(|e| {
                 ErgataiError::NatsError(format!("Failed to publish lock cancel: {}", e))
             })?;
@@ -3020,11 +3068,7 @@ impl FileLockManager {
     ///
     /// Calling the regular `unregister_session_with_id` while holding `conn` would
     /// deadlock because `Mutex<Connection>` is not reentrant.
-    pub fn unregister_session_with_id_locked(
-        &self,
-        conn: &Connection,
-        session_id: &str,
-    ) {
+    pub fn unregister_session_with_id_locked(&self, conn: &Connection, session_id: &str) {
         {
             let mut guard = self.disconnected_sessions.lock();
             guard.insert(session_id.to_string(), Instant::now());
@@ -3037,16 +3081,16 @@ impl FileLockManager {
     ///
     /// Uses the provided connection to query agent_ids from system_tokens.
     fn clear_retry_for_session(&self, conn: &Connection, session_id: &str) {
-        let agent_ids: std::collections::HashSet<String> = match conn
-            .prepare("SELECT agent_id FROM system_tokens WHERE session_id = ?1")
-        {
-            Ok(mut stmt) => match stmt.query_map(params![session_id], |row| row.get::<_, String>(0))
-            {
-                Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        let agent_ids: std::collections::HashSet<String> =
+            match conn.prepare("SELECT agent_id FROM system_tokens WHERE session_id = ?1") {
+                Ok(mut stmt) => {
+                    match stmt.query_map(params![session_id], |row| row.get::<_, String>(0)) {
+                        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+                        Err(_) => return,
+                    }
+                }
                 Err(_) => return,
-            },
-            Err(_) => return,
-        };
+            };
         if !agent_ids.is_empty() {
             let mut tracker = self.retry_tracker.lock();
             tracker.retain(|(_, agent_id), _| !agent_ids.contains(agent_id));
@@ -5661,18 +5705,30 @@ mod tests {
         );
 
         // Initially no locks
-        assert_eq!(manager.count_active_locks_by_agent("test-agent").unwrap(), 0);
+        assert_eq!(
+            manager.count_active_locks_by_agent("test-agent").unwrap(),
+            0
+        );
 
         // Acquire 3 locks
         for i in 0..3 {
-            manager.acquire_lock(&file_token, &format!("file{}.txt", i)).await.unwrap();
+            manager
+                .acquire_lock(&file_token, &format!("file{}.txt", i))
+                .await
+                .unwrap();
         }
 
         // Should count 3 active locks
-        assert_eq!(manager.count_active_locks_by_agent("test-agent").unwrap(), 3);
+        assert_eq!(
+            manager.count_active_locks_by_agent("test-agent").unwrap(),
+            3
+        );
 
         // Different agent should have 0 locks
-        assert_eq!(manager.count_active_locks_by_agent("other-agent").unwrap(), 0);
+        assert_eq!(
+            manager.count_active_locks_by_agent("other-agent").unwrap(),
+            0
+        );
     }
 
     #[tokio::test]
@@ -5685,7 +5741,11 @@ mod tests {
 
         // Create test files
         for i in 0..5 {
-            std::fs::write(temp_dir.path().join(format!("limit_test_{}.txt", i)), "content").unwrap();
+            std::fs::write(
+                temp_dir.path().join(format!("limit_test_{}.txt", i)),
+                "content",
+            )
+            .unwrap();
         }
 
         let system_token = SystemToken::new(
@@ -5711,12 +5771,19 @@ mod tests {
 
         // Acquire a few locks (not reaching the actual limit of 50)
         for i in 0..3 {
-            let result = manager.acquire_lock(&file_token, &format!("limit_test_{}.txt", i)).await;
+            let result = manager
+                .acquire_lock(&file_token, &format!("limit_test_{}.txt", i))
+                .await;
             assert!(result.is_ok(), "Lock {} should succeed", i);
         }
 
         // Verify count
-        assert_eq!(manager.count_active_locks_by_agent("limit-test-agent").unwrap(), 3);
+        assert_eq!(
+            manager
+                .count_active_locks_by_agent("limit-test-agent")
+                .unwrap(),
+            3
+        );
 
         // The check_agent_lock_limit should pass since we're under the limit
         assert!(manager.check_agent_lock_limit("limit-test-agent").is_ok());

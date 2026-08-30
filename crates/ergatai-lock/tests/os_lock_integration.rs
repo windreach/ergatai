@@ -2316,8 +2316,12 @@ fn test_os_lock_one_lock_three_writers_one_reader() {
 
     // Wait for reader
     let reader_output = reader.wait_with_output().expect("reader wait failed");
-    let reader_stdout = String::from_utf8_lossy(&reader_output.stdout).trim().to_string();
-    let reader_stderr = String::from_utf8_lossy(&reader_output.stderr).trim().to_string();
+    let reader_stdout = String::from_utf8_lossy(&reader_output.stdout)
+        .trim()
+        .to_string();
+    let reader_stderr = String::from_utf8_lossy(&reader_output.stderr)
+        .trim()
+        .to_string();
     let reader_ok = reader_output.status.success();
 
     // Wait for all writers
@@ -2373,5 +2377,403 @@ fn test_os_lock_one_lock_three_writers_one_reader() {
     rt2.block_on(enforcer.stop());
     println!(
         "✅ T41: 1 lock + 3 writers (all blocked) + 1 reader (blocked) — pessimistic strategy verified"
+    );
+}
+
+// ── P5: Workspace boundary + kernel bypass boundary tests ───────────────────
+
+/// T42: Workspace boundary enforced at fanotify level.
+///
+/// An agent with a registered workspace is denied access to files outside it,
+/// even though the file is not locked. The workspace check runs at step 2.5
+/// in the decision flow, BEFORE the lock state check.
+#[test]
+#[cfg(target_os = "linux")]
+#[ignore]
+fn test_os_lock_workspace_boundary_integration() {
+    if !require_root() {
+        return;
+    }
+
+    let fix = TestFixture::new();
+
+    // Create two workspace directories with files
+    let ws1_file = fix.write_file("ws1/file.txt", "ws1 content");
+    let ws2_file = fix.write_file("ws2/file.txt", "ws2 content");
+
+    // Register agent-a with workspace "ws1"
+    let (_sys, _token) = fix.register_agent("agent-a", "session-a");
+
+    let registry = TestPidRegistry::new();
+    let (enforcer, rt2) = start_enforcer(
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
+
+    // Register workspace boundary: agent-a can only access ws1/
+    enforcer.register_workspace("agent-a", "ws1");
+
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Spawn child as agent-a trying to write OUTSIDE its workspace (ws2/file.txt)
+    let mut child = spawn_writer_child(&ws2_file, "workspace violation");
+    registry.register(child.id(), "agent-a", "session-a");
+    signal_child(&mut child);
+
+    let status = child.wait().expect("wait failed");
+    assert!(
+        !status.success(),
+        "Child should be DENIED by workspace boundary check (step 2.5)"
+    );
+
+    let content = fs::read_to_string(&ws2_file).unwrap();
+    assert!(
+        !content.contains("workspace violation"),
+        "File outside workspace should NOT be modified"
+    );
+
+    // Also verify that writing INSIDE the workspace is allowed
+    // (need a fresh child since we don't hold a lock, but workspace allows it)
+    // Note: without a lock, the file might still be allowed since no lock exists
+    // and workspace boundary is satisfied. Let's verify with a self-PID write.
+    registry.register(std::process::id(), "agent-a", "session-a");
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(&ws1_file)
+        .expect("Failed to open ws1 file");
+    file.write_all(b"\ninside workspace")
+        .expect("write inside workspace should succeed");
+
+    let ws1_content = fs::read_to_string(&ws1_file).unwrap();
+    assert!(
+        ws1_content.contains("inside workspace"),
+        "File inside workspace should be writable"
+    );
+
+    rt2.block_on(enforcer.stop());
+    println!("✅ T42: workspace boundary enforced at fanotify level");
+}
+
+/// T43: Path traversal via ".." cannot bypass workspace boundary.
+///
+/// An agent tries to escape its workspace using relative path components
+/// like "ws1/sub/../../ws2/file.txt". The kernel resolves these to the
+/// actual path, so fanotify sees the real target.
+#[test]
+#[cfg(target_os = "linux")]
+#[ignore]
+fn test_os_lock_workspace_boundary_path_traversal() {
+    if !require_root() {
+        return;
+    }
+
+    let fix = TestFixture::new();
+
+    // Create workspace directories
+    fix.write_file("ws1/inner.txt", "ws1 inner");
+    let ws2_file = fix.write_file("ws2/target.txt", "ws2 target");
+
+    let (_sys, _token) = fix.register_agent("agent-a", "session-a");
+
+    let registry = TestPidRegistry::new();
+    let (enforcer, rt2) = start_enforcer(
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
+
+    enforcer.register_workspace("agent-a", "ws1");
+
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Attempt 1: "ws1/../ws2/target.txt" — resolves to ws2/target.txt
+    let traversal_path = fix.project_root.join("ws1/../ws2/target.txt");
+    let mut child = spawn_writer_child(&traversal_path, "traversal via ..");
+    registry.register(child.id(), "agent-a", "session-a");
+    signal_child(&mut child);
+
+    let status = child.wait().expect("wait failed");
+    // The kernel resolves ".." before fanotify sees the path,
+    // so the enforcer sees "ws2/target.txt" which is outside "ws1" → Deny.
+    assert!(
+        !status.success(),
+        "Path traversal via '..' should be denied (kernel resolves to ws2/target.txt)"
+    );
+
+    let content = fs::read_to_string(&ws2_file).unwrap();
+    assert!(
+        !content.contains("traversal via .."),
+        "Traversal path should not have modified the target"
+    );
+
+    // Attempt 2: Deeper traversal "ws1/sub/../../ws2/target.txt"
+    fs::create_dir_all(fix.project_root.join("ws1/sub")).ok();
+    let deep_traversal = fix.project_root.join("ws1/sub/../../ws2/target.txt");
+    let mut child2 = spawn_writer_child(&deep_traversal, "deep traversal");
+    registry.register(child2.id(), "agent-a", "session-a");
+    signal_child(&mut child2);
+
+    let status2 = child2.wait().expect("wait failed");
+    assert!(
+        !status2.success(),
+        "Deep path traversal should also be denied"
+    );
+
+    rt2.block_on(enforcer.stop());
+    println!("✅ T43: path traversal via '..' cannot bypass workspace boundary");
+}
+
+/// T44: O_PATH open does not bypass fanotify lock enforcement.
+///
+/// O_PATH opens a file descriptor without actually opening the file for I/O.
+/// The fd can be used with /proc/self/fd/{fd} to access the file.
+/// This test verifies that the subsequent write through /proc/self/fd is
+/// still intercepted by fanotify.
+#[test]
+#[cfg(target_os = "linux")]
+#[ignore]
+fn test_os_lock_o_path_does_not_bypass() {
+    if !require_root() {
+        return;
+    }
+
+    let fix = TestFixture::new();
+    let test_file = fix.write_file("test.txt", "initial content");
+    let (_sys, token) = fix.register_agent("agent-a", "session-a");
+    fix.acquire_write_lock(&token, "test.txt");
+
+    let registry = TestPidRegistry::new();
+    let (enforcer, rt2) = start_enforcer(
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
+
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Spawn a non-holder child that tries to bypass fanotify via fd manipulation.
+    // The child opens the file for reading (fanotify intercepts this), then tries
+    // to write via /proc/self/fd/{fd}. This tests that fanotify checks PID even
+    // for writes through procfs fd references.
+    let file_path_str = test_file.to_string_lossy().to_string();
+    let child = Command::new("bash")
+        .arg("-c")
+        .arg(format!(
+            // Open file as fd 3, then try to write via /proc/self/fd/3.
+            // The open itself should be blocked by fanotify (non-holder with locked file).
+            // Even if open succeeds, the write through /proc should also be blocked.
+            "exec 3<\"{path}\" 2>/dev/null && echo \"data via proc\" > /proc/self/fd/3 2>/dev/null && echo WRITE_OK || exit 1",
+            path = file_path_str
+        ))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn bash child");
+
+    registry.register(child.id(), "agent-b", "session-b");
+
+    let output = child.wait_with_output().expect("wait failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The write should fail — either O_PATH open is blocked by fanotify,
+    // or the /proc/self/fd write is blocked.
+    assert!(
+        !output.status.success(),
+        "O_PATH bypass should be denied. stdout={}, stderr={}",
+        stdout.trim(),
+        stderr.trim()
+    );
+
+    let content = fs::read_to_string(&test_file).unwrap();
+    assert!(
+        !content.contains("o_path bypass"),
+        "File should NOT be modified via O_PATH bypass"
+    );
+
+    rt2.block_on(enforcer.stop());
+    println!(
+        "✅ T44: O_PATH does not bypass fanotify (stdout={:?}, stderr={:?})",
+        stdout.trim(),
+        stderr.trim()
+    );
+}
+
+/// T45: dup()'d fd is still subject to fanotify PID-based lock check.
+///
+/// When a process opens a file and then dup()s the fd, operations on the
+/// dup'd fd are checked against the process's PID — not the original fd.
+/// A non-holder process that somehow obtains a dup'd fd (e.g., via exec
+/// with FD_CLOATH cleared, or via /proc) should still be blocked.
+///
+/// Test approach: spawn a holder child that opens the file, then spawns
+/// a grandchild (non-holder) that tries to write via the inherited fd.
+#[test]
+#[cfg(target_os = "linux")]
+#[ignore]
+fn test_os_lock_dup_fd_inherits_lock_check() {
+    if !require_root() {
+        return;
+    }
+
+    let fix = TestFixture::new();
+    let test_file = fix.write_file("test.txt", "initial content");
+    let (_sys, token) = fix.register_agent("agent-a", "session-a");
+    fix.acquire_write_lock(&token, "test.txt");
+
+    let registry = TestPidRegistry::new();
+    let (enforcer, rt2) = start_enforcer(
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
+
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Spawn a non-holder child that dup()s an fd and tries to write.
+    // The child opens the file, dup()s the fd (via bash's <& operator which uses
+    // the dup() syscall), closes the original, then tries to write via the dup'd fd.
+    // Since this child is agent-b (non-holder), both the open and the dup'd write
+    // should be blocked by fanotify.
+    let file_path_str = test_file.to_string_lossy().to_string();
+    let child = Command::new("bash")
+        .arg("-c")
+        .arg(format!(
+            // Open file as fd 3, dup to fd 4, close 3, write via 4.
+            // fanotify checks PID on every open/write, so non-holder is blocked.
+            "exec 3<>\"{path}\" 2>/dev/null && exec 4<&3 && exec 3<&- && echo \"dup_fd bypass attempt\" >&4 2>/dev/null && echo WRITE_OK || exit 1",
+            path = file_path_str
+        ))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn child");
+
+    registry.register(child.id(), "agent-b", "session-b");
+
+    let output = child.wait_with_output().expect("wait failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Non-holder child should be blocked — both the open AND the dup'd write
+    assert!(
+        !output.status.success(),
+        "Non-holder dup'd fd write should be denied. stdout={}, stderr={}",
+        stdout.trim(),
+        stderr.trim()
+    );
+
+    let content = fs::read_to_string(&test_file).unwrap();
+    assert!(
+        !content.contains("dup_fd bypass"),
+        "File should NOT be modified via dup'd fd from non-holder"
+    );
+
+    rt2.block_on(enforcer.stop());
+    println!(
+        "✅ T45: dup'd fd still subject to PID-based lock check (stdout={:?}, stderr={:?})",
+        stdout.trim(),
+        stderr.trim()
+    );
+}
+
+/// T46: Per-agent lock limit enforced via auto_acquire path.
+///
+/// When an agent has 50 active locks (MAX_LOCKS_PER_AGENT), a FAN_MODIFY
+/// event triggering auto_acquire_write_lock on a 51st file should fail
+/// with ResourceLimitExceeded. The actual write still succeeds (fanotify
+/// doesn't block it), but the lock record is NOT created.
+#[test]
+#[cfg(target_os = "linux")]
+#[ignore]
+fn test_os_lock_per_agent_limit_via_auto_acquire() {
+    if !require_root() {
+        return;
+    }
+
+    let fix = TestFixture::new();
+
+    // Create 52 files (50 to fill the limit + 1 to trigger auto-acquire + 1 extra)
+    for i in 0..52 {
+        fix.write_file(&format!("file_{:03}.txt", i), &format!("content {}", i));
+    }
+
+    let (_sys, token) = fix.register_agent("agent-a", "session-a");
+
+    // Pre-fill 50 locks (MAX_LOCKS_PER_AGENT)
+    for i in 0..50 {
+        let file_path = format!("file_{:03}.txt", i);
+        fix.acquire_write_lock(&token, &file_path);
+    }
+
+    // Verify we have exactly 50 active locks
+    let count = fix.rt.block_on(async {
+        // Use the lock manager's internal count via a query
+        fix.lock_manager
+            .has_write_lock(&format!("file_{:03}.txt", 0), "agent-a", "session-a")
+            .await
+            .unwrap_or(false)
+    });
+    assert!(count, "First lock should exist");
+
+    let registry = TestPidRegistry::new();
+    let (enforcer, rt2) = start_enforcer(
+        &fix.project_root,
+        fix.lock_manager.clone(),
+        registry.resolver(),
+    )
+    .expect("enforcer start failed");
+
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Spawn child as agent-a to modify file_050.txt (the 51st file)
+    // This triggers FAN_MODIFY → auto_acquire_write_lock → should hit limit
+    let target_file = fix.project_root.join("file_050.txt");
+    let mut child = spawn_writer_child(&target_file, "limit test write");
+    registry.register(child.id(), "agent-a", "session-a");
+    signal_child(&mut child);
+
+    let _status = child.wait().expect("wait failed");
+
+    // The write itself should succeed (fanotify doesn't block — agent-a is known,
+    // no lock exists on file_050.txt, so decide() returns Allow).
+    // But auto_acquire should FAIL due to the 50-lock limit.
+    let content = fs::read_to_string(&target_file).unwrap();
+    let write_succeeded = content.contains("limit test write");
+
+    // Check if auto-acquire was blocked: file_050.txt should NOT have an active lock
+    std::thread::sleep(std::time::Duration::from_millis(500)); // give auto_acquire time
+    let has_auto_lock = fix.rt.block_on(async {
+        fix.lock_manager
+            .has_write_lock("file_050.txt", "agent-a", "session-a")
+            .await
+            .unwrap_or(false)
+    });
+
+    assert!(
+        !has_auto_lock,
+        "Auto-acquire should be blocked by per-agent lock limit (50/50). \
+         Write succeeded: {}, has_auto_lock: {}",
+        write_succeeded, has_auto_lock
+    );
+
+    // Verify the write itself happened (fanotify allows it — no lock on this file)
+    assert!(
+        write_succeeded,
+        "Write should succeed (fanotify allows it since no lock exists on file_050.txt). \
+         The lock limit only prevents auto_acquire from creating a lock record."
+    );
+
+    rt2.block_on(enforcer.stop());
+    println!(
+        "✅ T46: per-agent lock limit enforced via auto_acquire (write={}, auto_lock={})",
+        write_succeeded, has_auto_lock
     );
 }

@@ -40,3 +40,4 @@ fanotify-integration = []
 
 [dev-dependencies]
 tempfile = "3.10"
+tracing-subscriber = { workspace = true }

@@ -271,10 +271,7 @@ fn redirect_to_snapshot_fallback(content: &[u8]) -> c_int {
     // pid + tid + counter is collision-resistant for temp file names.
     // Avoid libc::rand() — it uses process-global state and is not thread-safe,
     // causing data races when LD_PRELOAD is called from multiple threads.
-    let tmp_path = format!(
-        "/tmp/ergatai-snap-{}-{}-{}",
-        pid, tid as u64, counter
-    );
+    let tmp_path = format!("/tmp/ergatai-snap-{}-{}-{}", pid, tid as u64, counter);
 
     let tmp_cstr = match CString::new(tmp_path.as_bytes()) {
         Ok(s) => s,

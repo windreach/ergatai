@@ -15,8 +15,8 @@ use tempfile::TempDir;
 
 use ergatai_lock::manager::{get_lock_manager, init_file_access_with_enforcer};
 use ergatai_lock::NoopPidResolver;
-use std::sync::Arc;
 use git2::Repository;
+use std::sync::Arc;
 
 /// Test: Snapshot read via LD_PRELOAD (requires Docker)
 ///
@@ -69,12 +69,14 @@ async fn test_snapshot_read_via_preload() {
     // Initialize file access control with enforcer (required for IPC server)
     let project_id = "test-snapshot-read";
     let pid_resolver = Arc::new(NoopPidResolver);
-    init_file_access_with_enforcer(project_id, &project_root, pid_resolver).await.unwrap();
+    init_file_access_with_enforcer(project_id, &project_root, pid_resolver)
+        .await
+        .unwrap();
 
     let manager = get_lock_manager(project_id).await.unwrap();
 
     let agent_a = "agent-a";
-    let agent_b = "agent-b";
+    let _agent_b = "agent-b";
     let file_path = "snapshot_test.txt";
 
     // Step 1: Agent A auto-acquires lock (creates snapshot of original content)
@@ -94,7 +96,10 @@ async fn test_snapshot_read_via_preload() {
             |row| row.get(0),
         )
         .unwrap();
-    println!("DEBUG: Found {} snapshot records for file_path={}", snapshot_count, file_path);
+    println!(
+        "DEBUG: Found {} snapshot records for file_path={}",
+        snapshot_count, file_path
+    );
 
     if snapshot_count > 0 {
         let (id, git_hash, created_by): (String, String, String) = conn
@@ -104,22 +109,32 @@ async fn test_snapshot_read_via_preload() {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        println!("DEBUG: Snapshot record: id={}, git_hash={}, created_by={}", id, git_hash, created_by);
+        println!(
+            "DEBUG: Snapshot record: id={}, git_hash={}, created_by={}",
+            id, git_hash, created_by
+        );
     }
 
     // Debug: Check if snapshot was created immediately after auto_acquire
     println!("DEBUG: After auto_acquire_write_lock, checking Git blobs...");
     let git_repo = git2::Repository::open(&project_root).unwrap();
     let mut blob_count_after_lock = 0;
-    git_repo.odb().unwrap().foreach(|oid| {
-        let obj = git_repo.find_object(*oid, None).unwrap();
-        if obj.kind() == Some(git2::ObjectType::Blob) {
-            blob_count_after_lock += 1;
-            println!("DEBUG: Found blob: {}", oid);
-        }
-        true
-    }).unwrap();
-    println!("DEBUG: Git repository has {} blobs after auto_acquire", blob_count_after_lock);
+    git_repo
+        .odb()
+        .unwrap()
+        .foreach(|oid| {
+            let obj = git_repo.find_object(*oid, None).unwrap();
+            if obj.kind() == Some(git2::ObjectType::Blob) {
+                blob_count_after_lock += 1;
+                println!("DEBUG: Found blob: {}", oid);
+            }
+            true
+        })
+        .unwrap();
+    println!(
+        "DEBUG: Git repository has {} blobs after auto_acquire",
+        blob_count_after_lock
+    );
 
     // Step 2: Agent A modifies the file
     let modified_content = "MODIFIED CONTENT by Agent A - should NOT be read by Agent B";
@@ -129,14 +144,21 @@ async fn test_snapshot_read_via_preload() {
     println!("DEBUG: Checking Git repository for snapshots...");
     let git_repo = git2::Repository::open(&project_root).unwrap();
     let mut snapshot_count = 0;
-    git_repo.odb().unwrap().foreach(|oid| {
-        let obj = git_repo.find_object(*oid, None).unwrap();
-        if obj.kind() == Some(git2::ObjectType::Blob) {
-            snapshot_count += 1;
-        }
-        true
-    }).unwrap();
-    println!("DEBUG: Git repository has {} blobs (including snapshots)", snapshot_count);
+    git_repo
+        .odb()
+        .unwrap()
+        .foreach(|oid| {
+            let obj = git_repo.find_object(*oid, None).unwrap();
+            if obj.kind() == Some(git2::ObjectType::Blob) {
+                snapshot_count += 1;
+            }
+            true
+        })
+        .unwrap();
+    println!(
+        "DEBUG: Git repository has {} blobs (including snapshots)",
+        snapshot_count
+    );
 
     // Step 3: Agent B reads WITHOUT LD_PRELOAD → gets modified content
     let content_without_preload = fs::read_to_string(&test_file).unwrap();
@@ -147,15 +169,17 @@ async fn test_snapshot_read_via_preload() {
 
     // Step 4: Agent B reads WITH LD_PRELOAD → should get original snapshot
     // Find the preload library
-    let preload_lib = find_preload_library().expect(
-        "LD_PRELOAD library not found. Build with: cargo build -p ergatai-preload",
-    );
+    let preload_lib = find_preload_library()
+        .expect("LD_PRELOAD library not found. Build with: cargo build -p ergatai-preload");
 
     // Debug: Check if IPC socket exists
     let uid = unsafe { libc::getuid() };
     let socket_path = format!("/tmp/ergatai-lock-{}.sock", uid);
     println!("DEBUG: IPC socket path: {}", socket_path);
-    println!("DEBUG: IPC socket exists: {}", std::path::Path::new(&socket_path).exists());
+    println!(
+        "DEBUG: IPC socket exists: {}",
+        std::path::Path::new(&socket_path).exists()
+    );
 
     // Run a subprocess with LD_PRELOAD to read the file
     // The LD_PRELOAD library intercepts open() and redirects to snapshot
@@ -229,7 +253,9 @@ async fn test_snapshot_captures_content_at_lock_time() {
 
     let project_id = "test-multi-modify";
     let pid_resolver = Arc::new(NoopPidResolver);
-    init_file_access_with_enforcer(project_id, &project_root, pid_resolver).await.unwrap();
+    init_file_access_with_enforcer(project_id, &project_root, pid_resolver)
+        .await
+        .unwrap();
 
     let manager = get_lock_manager(project_id).await.unwrap();
 
@@ -315,17 +341,11 @@ fn find_preload_library() -> Option<PathBuf> {
         PathBuf::from("/app/target/debug/libergatai_preload.so"),
     ];
 
-    for path in search_paths {
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    None
+    search_paths.into_iter().find(|path| path.exists())
 }
 
 /// Helper: Check if running in Docker
-fn is_running_in_docker() -> bool {
+fn _is_running_in_docker() -> bool {
     // Check for .dockerenv file (common Docker indicator)
     PathBuf::from("/.dockerenv").exists()
         // Or check cgroup (another Docker indicator)
