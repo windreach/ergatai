@@ -42,9 +42,16 @@ pub fn format_agents_table(agents: &[AgentInfoResponse]) {
             a.last_heartbeat.clone()
         };
 
+        // Display friendly ID: mcp_agent_id > stable_id > agent_id
+        let display_id = a
+            .mcp_agent_id
+            .as_deref()
+            .or(a.stable_id.as_deref())
+            .unwrap_or(&a.agent_id);
+
         println!(
             "{:<30} {:<20} {:<10} {:<10} {:<10} {}",
-            a.agent_id,
+            display_id,
             a.workspace_id,
             a.state,
             if a.is_alive { "yes" } else { "no" },
@@ -99,8 +106,10 @@ mod tests {
     fn make_agent(agent_id: &str, workspace_id: &str, state: &str) -> AgentInfoResponse {
         AgentInfoResponse {
             agent_id: agent_id.to_string(),
+            stable_id: Some(format!("agent-{}", agent_id)),
             agent_uuid: format!("uuid-{}", agent_id),
             workspace_id: workspace_id.to_string(),
+            work_dir: format!("/workspace/{}", workspace_id),
             state: state.to_string(),
             lifecycle_state: state.to_string(),
             task_id: None,
@@ -193,8 +202,10 @@ mod tests {
     fn test_agent_created_at_displayed() {
         let agent = AgentInfoResponse {
             agent_id: "test-agent".to_string(),
+            stable_id: Some("agent-test".to_string()),
             agent_uuid: "uuid-test".to_string(),
             workspace_id: "test-ws".to_string(),
+            work_dir: "/workspace/test-ws".to_string(),
             state: "running".to_string(),
             lifecycle_state: "running".to_string(),
             task_id: None,

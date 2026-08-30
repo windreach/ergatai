@@ -13,8 +13,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use axum::Router;
 use axum::http::HeaderValue;
+use axum::Router;
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 use tower_http::services::ServeDir;
@@ -431,7 +431,7 @@ async fn async_main(args: Args) -> Result<()> {
         }
     };
 
-// Build application router
+    // Build application router
     let state = app_state_with_token(args.api_token.clone()).clone();
 
     // API routes

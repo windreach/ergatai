@@ -493,6 +493,7 @@ mod tests {
             stable_id: Some("agent-1".to_string()),
             agent_uuid: "uuid-1".to_string(),
             workspace_id: "ws-1".to_string(),
+            work_dir: "/workspace/ws-1".to_string(),
             state: "running".to_string(),
             lifecycle_state: "running".to_string(),
             task_id: None,

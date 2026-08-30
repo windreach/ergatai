@@ -130,9 +130,6 @@ struct WorkspaceEntry {
     /// Cgroup controller for resource limits (CPU/memory).
     /// None if cgroups v2 is unavailable or no limits were specified.
     cgroup_controller: Option<CgroupController>,
-    /// Counter for generating stable agent IDs within this workspace.
-    /// Each agent gets stable_id: agent-{counter}
-    agent_counter: u32,
 }
 
 // ── PtyBackend ──
@@ -280,7 +277,6 @@ impl AgentRuntimeBackend for PtyBackend {
             env: spec.env.clone(),
             agent_pids: Vec::new(),
             cgroup_controller,
-            agent_counter: 0,
         };
 
         self.workspaces.write().insert(spec.id.clone(), entry);
@@ -519,18 +515,12 @@ impl AgentRuntimeBackend for PtyBackend {
         //
         // Generate agent ID: {workspace_id}-{uuid_prefix}
         // UUID prefix (first 4 chars) provides unique, non-sequential identifier.
-        // stable_id uses counter format: agent-{counter}
-        let (agent_id, stable_id) = {
-            let mut workspaces = self.workspaces.write();
-            let ws = workspaces.get_mut(&handle.id).ok_or_else(|| {
-                ErgataiError::internal(format!("Workspace disappeared: {}", handle.id))
-            })?;
-            ws.agent_counter += 1;
-            let uuid_prefix = &Uuid::new_v4().simple().to_string()[..4];
-            let agent_id = format!("{}-{}", handle.id, uuid_prefix);
-            let stable_id = format!("agent-{}", ws.agent_counter);
-            (agent_id, stable_id)
-        };
+        // stable_id uses UUID for reliable internal binding (survives restarts).
+        let uuid_prefix = &Uuid::new_v4().simple().to_string()[..4];
+        let agent_id = format!("{}-{}", handle.id, uuid_prefix);
+        // stable_id: UUID-based for reliability (not sequential counter)
+        let stable_uuid = &Uuid::new_v4().simple().to_string()[..8];
+        let stable_id = format!("agent-{}", stable_uuid);
 
         let mut metadata = HashMap::new();
         metadata.insert("ergatai_agent_id".to_string(), stable_id.clone());

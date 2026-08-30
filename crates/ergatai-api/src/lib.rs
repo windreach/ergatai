@@ -101,22 +101,52 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route("/ready", get(readiness_check))
         .route("/metrics", get(metrics_endpoint))
         .route("/api/v1/workspaces", get(api::workspaces::list_workspaces))
-        .route("/api/v1/workspaces", post(api::workspaces::create_workspace))
-        .route("/api/v1/workspaces/:id", delete(api::workspaces::delete_workspace))
+        .route(
+            "/api/v1/workspaces",
+            post(api::workspaces::create_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/:id",
+            delete(api::workspaces::delete_workspace),
+        )
         .route("/api/v1/agents", get(api::agents::list_agents))
         .route("/api/v1/agents", post(api::agents::spawn_agent))
         .route("/api/v1/agents/:id", delete(api::agents::kill_agent))
-        .route("/api/v1/agents/:id/message", post(api::agents::send_message))
-        .route("/api/v1/agents/:id/terminal", get(api::terminal::terminal_ws))
+        .route(
+            "/api/v1/agents/:id/message",
+            post(api::agents::send_message),
+        )
+        .route(
+            "/api/v1/agents/:id/terminal",
+            get(api::terminal::terminal_ws),
+        )
         .route("/api/v1/status", get(api::status::get_status))
         .route("/api/v1/locks", get(api::locks::list_locks))
         .route("/api/v1/locks/audit", get(api::locks::list_audit))
-        .route("/api/v1/locks/contention", get(api::locks::get_lock_contention))
-        .route("/api/v1/conversations", get(api::conversations::list_conversations))
-        .route("/api/v1/conversations/:id", get(api::conversations::get_conversation_detail))
-        .route("/api/v1/stats/message-types", get(api::conversations::get_message_type_stats))
-        .route("/api/v1/activity/recent", get(api::activity_routes::get_recent_events))
-        .route("/api/v1/activity/stream", get(api::activity_routes::stream_events))
+        .route(
+            "/api/v1/locks/contention",
+            get(api::locks::get_lock_contention),
+        )
+        .route(
+            "/api/v1/conversations",
+            get(api::conversations::list_conversations),
+        )
+        .route(
+            "/api/v1/conversations/:id",
+            get(api::conversations::get_conversation_detail),
+        )
+        .route(
+            "/api/v1/stats/message-types",
+            get(api::conversations::get_message_type_stats),
+        )
+        .route(
+            "/api/v1/activity/recent",
+            get(api::activity_routes::get_recent_events),
+        )
+        .route(
+            "/api/v1/activity/stream",
+            get(api::activity_routes::stream_events),
+        )
         .route("/api/v1/dag", post(submit_dag))
         .route("/api/v1/dag/status", get(dag_status))
         .route("/api/v1/dag/visualization", get(dag_visualization))
@@ -604,10 +634,11 @@ async fn dag_visualization(Query(query): Query<DagStatusQuery>) -> impl IntoResp
     }
 
     // Group nodes by layer
-    let mut layer_groups: std::collections::HashMap<u32, Vec<usize>> = std::collections::HashMap::new();
+    let mut layer_groups: std::collections::HashMap<u32, Vec<usize>> =
+        std::collections::HashMap::new();
     for (idx, (id, _, _, _, _)) in nodes.iter().enumerate() {
         let layer = node_layers.get(id).copied().unwrap_or(0);
-        layer_groups.entry(layer).or_insert_with(Vec::new).push(idx);
+        layer_groups.entry(layer).or_default().push(idx);
     }
 
     // Calculate positions

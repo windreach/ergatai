@@ -181,6 +181,7 @@ pub struct AgentInfoResponse {
     pub agent_uuid: String,
     pub workspace_id: String,
     #[serde(default)]
+    #[allow(dead_code)]
     pub work_dir: String,
     pub state: String,
     #[serde(default)]
