@@ -11,13 +11,14 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::Result;
-use axum::http::Request;
+use axum::Router;
+use axum::http::HeaderValue;
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
-use tower_governor::{governor::GovernorConfigBuilder, key_extractor::KeyExtractor};
+use tower_http::services::ServeDir;
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use ergatai_api::mcp::{
     create_mcp_service, spawn_request_monitor_with_cancel, start_message_delivery_consumer,
@@ -27,35 +28,6 @@ use ergatai_api::messaging::{get_message_sender, init_message_sender};
 use ergatai_api::{app_state_with_token, build_rest_app};
 use ergatai_core::cross_agent::{set_dag_scheduler, DagScheduler};
 use ergatai_core::nats;
-
-/// Custom key extractor for rate limiting by Agent ID.
-#[derive(Clone)]
-struct AgentKeyExtractor;
-
-impl KeyExtractor for AgentKeyExtractor {
-    type Key = String;
-
-    fn extract<B>(
-        &self,
-        req: &Request<B>,
-    ) -> Result<Self::Key, tower_governor::errors::GovernorError> {
-        if let Some(session_id) = req.headers().get("mcp-session-id") {
-            if let Ok(session_str) = session_id.to_str() {
-                return Ok(format!("agent:{}", session_str));
-            }
-        }
-        if let Some(connect_info) = req
-            .extensions()
-            .get::<axum::extract::ConnectInfo<SocketAddr>>()
-        {
-            return Ok(format!("ip:{}", connect_info.0.ip()));
-        }
-        if let Some(peer_addr) = req.extensions().get::<SocketAddr>() {
-            return Ok(format!("ip:{}", peer_addr.ip()));
-        }
-        Ok("anonymous".to_string())
-    }
-}
 
 #[derive(Parser)]
 #[command(name = "ergatai-api")]
@@ -334,6 +306,14 @@ async fn async_main(args: Args) -> Result<()> {
                 tracing::info!("✅ Request monitor (reqwatch) started");
             }
 
+            // Initialize activity feed for dashboard
+            let activity_feed = ergatai_api::api::activity::init_activity_feed();
+            if let Err(e) = activity_feed.start_nats_consumers().await {
+                tracing::warn!("Activity feed initialization failed: {}", e);
+            } else {
+                tracing::info!("✅ Activity feed started (dashboard real-time events)");
+            }
+
             // File access control
             let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let runtime_for_resolver = ergatai_runtime::get_agent_runtime();
@@ -451,25 +431,29 @@ async fn async_main(args: Args) -> Result<()> {
         }
     };
 
-    // Build application router
+// Build application router
     let state = app_state_with_token(args.api_token.clone()).clone();
-    let governor_conf = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(1)
-            .burst_size(20)
-            .key_extractor(AgentKeyExtractor)
-            .finish()
-            .expect("Failed to build rate limiter config"),
-    );
 
-    let app = build_rest_app(state)
+    // API routes
+    let api_app = build_rest_app(state);
+
+    // Static files at root, separate from API.
+    // Cache-Control: no-cache forces the browser to revalidate with the server on each
+    // request (ETag/Last-Modified → 304 Not Modified when unchanged). This prevents stale
+    // files from being served indefinitely without needing manual ?v=N cache-busting.
+    let static_router = Router::new()
+        .fallback_service(ServeDir::new("web").append_index_html_on_directories(true))
+        .layer(SetResponseHeaderLayer::overriding(
+            axum::http::header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        ));
+
+    let app = api_app
+        .merge(static_router)
         .nest_service("/mcp/agent-1", mcp_service_1)
         .nest_service("/mcp/agent-2", mcp_service_2)
         .nest_service("/mcp/agent-3", mcp_service_3)
-        .nest_service("/mcp", mcp_service_default)
-        .layer(tower_governor::GovernorLayer {
-            config: governor_conf,
-        });
+        .nest_service("/mcp", mcp_service_default);
 
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)
         .parse()

@@ -2,7 +2,30 @@
 //!
 //! Phase 6 (Plan): fsevents/inotify Fallback
 //! Uses notify crate to monitor file system events and detect writes
-//! that bypass the lock system. Audits and alerts but does not auto-rollback.
+//! that bypass the lock system.
+//!
+//! # Cross-platform auto-locking
+//!
+//! On Linux with fanotify, the enforcer's `FAN_MODIFY` handler auto-acquires
+//! WRITE locks with precise PID-based agent attribution. On other platforms
+//! (macOS, Windows), fanotify is unavailable, and this watcher serves as the
+//! fallback modification detector.
+//!
+//! When a file modification is detected on an unlocked file:
+//! 1. The watcher calls `auto_acquire_write_lock()` with agent_id="system"
+//! 2. A Git snapshot is created + WRITE lock is granted
+//!
+//! **Agent attribution**: Non-Linux platforms cannot determine which agent
+//! modified a file (no PID, no reliable workspace mapping for shared dirs).
+//! All auto-acquired locks are attributed to "system". The lock still prevents
+//! concurrent modifications — we just can't tell who wrote what.
+//!
+//! # Known limitations (non-Linux)
+//!
+//! - **No blocking**: writes complete before detection (post-facto)
+//! - **No agent attribution**: all locks attributed to "system" (no PID available)
+//! - **No LD_PRELOAD**: other agents can't transparently read snapshots
+//! - **Advisory-only**: locks are SQLite records, not kernel-enforced
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,23 +38,40 @@ use tracing::{debug, error, info, warn};
 use crate::lock_manager::FileLockManager;
 use ergatai_error::{ErgataiError, ErgataiResult};
 
+/// Agent ID used for all auto-acquired locks on non-Linux platforms.
+const SYSTEM_AGENT_ID: &str = "system";
+/// Session ID used for all auto-acquired locks on non-Linux platforms.
+const WATCHER_SESSION_ID: &str = "watcher";
+
 /// File system watcher for detecting unauthorized modifications
+/// and auto-acquiring WRITE locks (cross-platform fallback for fanotify).
 pub struct FileSystemWatcher {
     /// Watcher instance
     _watcher: RecommendedWatcher,
     /// Receiver for file system events
     event_rx: Option<mpsc::Receiver<Event>>,
-    /// Lock manager for checking authorized locks
+    /// Lock manager for checking/creating locks
     lock_manager: Arc<FileLockManager>,
     /// Project root directory
     project_root: PathBuf,
+    /// Project ID (used for SnapshotManager lookup)
+    project_id: String,
     /// Shutdown signal
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl FileSystemWatcher {
-    /// Create a new file system watcher
-    pub fn new(lock_manager: Arc<FileLockManager>, project_root: PathBuf) -> ErgataiResult<Self> {
+    /// Create a new file system watcher with auto-locking support.
+    ///
+    /// # Arguments
+    /// * `lock_manager` — the file lock manager for checking/creating locks
+    /// * `project_root` — project root directory for relative path computation
+    /// * `project_id` — project identifier (used for SnapshotManager lookup)
+    pub fn new(
+        lock_manager: Arc<FileLockManager>,
+        project_root: PathBuf,
+        project_id: String,
+    ) -> ErgataiResult<Self> {
         // Create channel for file system events
         let (event_tx, event_rx) = mpsc::channel(1000);
 
@@ -69,6 +109,7 @@ impl FileSystemWatcher {
             event_rx: Some(event_rx),
             lock_manager,
             project_root,
+            project_id,
             shutdown_tx: None,
         })
     }
@@ -91,6 +132,7 @@ impl FileSystemWatcher {
 
         let lock_manager = Arc::clone(&self.lock_manager);
         let project_root = self.project_root.clone();
+        let project_id = self.project_id.clone();
 
         // Spawn background task to process events
         tokio::spawn(async move {
@@ -103,7 +145,12 @@ impl FileSystemWatcher {
                     event = event_rx.recv() => {
                         match event {
                             Some(event) => {
-                                if let Err(e) = Self::handle_event(&lock_manager, &project_root, event).await {
+                                if let Err(e) = Self::handle_event(
+                                    &lock_manager,
+                                    &project_root,
+                                    &project_id,
+                                    event,
+                                ).await {
                                     error!("Failed to handle file system event: {}", e);
                                 }
                             }
@@ -137,10 +184,14 @@ impl FileSystemWatcher {
         Ok(())
     }
 
-    /// Handle a file system event
+    /// Handle a file system event.
+    ///
+    /// On unlocked file modifications, auto-acquires a WRITE lock attributed
+    /// to agent_id="system" (no per-agent attribution on non-Linux).
     async fn handle_event(
         lock_manager: &Arc<FileLockManager>,
         project_root: &Path,
+        project_id: &str,
         event: Event,
     ) -> ErgataiResult<()> {
         // Only process modify/create events
@@ -161,24 +212,52 @@ impl FileSystemWatcher {
                 Err(_) => continue,
             };
 
-            // Check if file is locked
-            let is_locked = lock_manager.is_file_locked(&relative_path)?;
+            // Check if file is already locked
+            let is_locked = match lock_manager.is_file_locked(&relative_path) {
+                Ok(locked) => locked,
+                Err(e) => {
+                    debug!(
+                        error = %e,
+                        file_path = %relative_path,
+                        "watcher: is_file_locked failed, skipping"
+                    );
+                    continue;
+                }
+            };
 
-            if !is_locked {
-                // File was modified without a lock - potential violation
-                warn!(
-                    file_path = relative_path,
-                    "Unauthorized file modification detected (no active lock)"
-                );
-
-                // Log to audit log
-                Self::log_violation(lock_manager, &relative_path, "unauthorized_modification")
-                    .await?;
-            } else {
+            if is_locked {
                 debug!(
                     file_path = relative_path,
-                    "File modification detected (lock exists)"
+                    "watcher: file modification detected (lock exists, no action needed)"
                 );
+                continue;
+            }
+
+            // File is unlocked and was modified → auto-acquire WRITE lock.
+            // Non-Linux platforms have no PID available, so all locks are
+            // attributed to "system". The lock still prevents concurrent writes.
+            info!(
+                file_path = %relative_path,
+                "watcher: auto-acquiring WRITE lock on detected modification"
+            );
+
+            if let Err(e) = lock_manager
+                .auto_acquire_write_lock(
+                    &relative_path,
+                    SYSTEM_AGENT_ID,
+                    WATCHER_SESSION_ID,
+                    project_id,
+                )
+                .await
+            {
+                warn!(
+                    error = %e,
+                    file_path = %relative_path,
+                    "watcher: failed to auto-acquire WRITE lock"
+                );
+                // Fall back to logging the violation
+                Self::log_violation(lock_manager, &relative_path, "unauthorized_modification")
+                    .await?;
             }
         }
 
@@ -213,13 +292,11 @@ mod tests {
     use crate::{FileMode, FileToken, SystemToken};
 
     /// Helper: create a test lock manager in a temp directory.
-    /// Returns the temp dir (keeps it alive), manager, and project root path.
     fn setup() -> (TempDir, Arc<FileLockManager>, PathBuf) {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("locks.db");
         let project_root = temp_dir.path().to_path_buf();
 
-        // Create some test files
         fs::write(project_root.join("main.rs"), "fn main() {}").unwrap();
         fs::create_dir_all(project_root.join("src")).unwrap();
         fs::write(project_root.join("src/lib.rs"), "pub fn lib() {}").unwrap();
@@ -266,6 +343,8 @@ mod tests {
         )
     }
 
+    const PROJECT_ID: &str = "test";
+
     // ─── EventKind filtering ───────────────────────────────────────
 
     #[tokio::test]
@@ -275,8 +354,7 @@ mod tests {
             EventKind::Remove(notify::event::RemoveKind::File),
             vec![root.join("main.rs")],
         );
-        // Remove events should be silently ignored
-        let result = FileSystemWatcher::handle_event(&manager, &root, event).await;
+        let result = FileSystemWatcher::handle_event(&manager, &root, PROJECT_ID, event).await;
         assert!(result.is_ok());
     }
 
@@ -287,36 +365,35 @@ mod tests {
             EventKind::Access(notify::event::AccessKind::Read),
             vec![root.join("main.rs")],
         );
-        let result = FileSystemWatcher::handle_event(&manager, &root, event).await;
+        let result = FileSystemWatcher::handle_event(&manager, &root, PROJECT_ID, event).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn test_handle_event_processes_modify_events() {
         let (_temp, manager, root) = setup();
-        // main.rs is not locked, but processing should still succeed
+        // main.rs is not locked — auto-lock will fail (no SnapshotManager registered),
+        // falls back to log_violation, which succeeds.
         let event = make_event(
             EventKind::Modify(notify::event::ModifyKind::Data(
                 notify::event::DataChange::Content,
             )),
             vec![root.join("main.rs")],
         );
-        let result = FileSystemWatcher::handle_event(&manager, &root, event).await;
+        let result = FileSystemWatcher::handle_event(&manager, &root, PROJECT_ID, event).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn test_handle_event_processes_create_events() {
         let (_temp, manager, root) = setup();
-        // The file must exist on disk because is_file_locked → validate_and_normalize_path
-        // calls canonicalize() which fails on non-existent paths.
         let new_file = root.join("new_file.rs");
         fs::write(&new_file, "new content").unwrap();
         let event = make_event(
             EventKind::Create(notify::event::CreateKind::File),
             vec![new_file],
         );
-        let result = FileSystemWatcher::handle_event(&manager, &root, event).await;
+        let result = FileSystemWatcher::handle_event(&manager, &root, PROJECT_ID, event).await;
         assert!(result.is_ok());
     }
 
@@ -325,27 +402,24 @@ mod tests {
     #[tokio::test]
     async fn test_handle_event_skips_paths_outside_project_root() {
         let (_temp, manager, root) = setup();
-        // Path completely outside project_root — strip_prefix fails
         let event = make_event(
             EventKind::Modify(notify::event::ModifyKind::Any),
             vec![PathBuf::from("/tmp/outside_file.txt")],
         );
-        let result = FileSystemWatcher::handle_event(&manager, &root, event).await;
+        let result = FileSystemWatcher::handle_event(&manager, &root, PROJECT_ID, event).await;
         assert!(result.is_ok());
-        // No violation logged because path is just skipped
     }
 
     #[tokio::test]
     async fn test_handle_event_skips_directories() {
         let (_temp, manager, root) = setup();
-        // Create a real directory so path.is_dir() returns true
         let dir_path = root.join("new_dir");
         fs::create_dir_all(&dir_path).unwrap();
         let event = make_event(
             EventKind::Create(notify::event::CreateKind::Folder),
             vec![dir_path],
         );
-        let result = FileSystemWatcher::handle_event(&manager, &root, event).await;
+        let result = FileSystemWatcher::handle_event(&manager, &root, PROJECT_ID, event).await;
         assert!(result.is_ok());
     }
 
@@ -354,17 +428,17 @@ mod tests {
     #[tokio::test]
     async fn test_handle_event_unlocked_file_records_violation() {
         let (_temp, manager, root) = setup();
-        // main.rs is not locked — should record a violation in audit_log
+        // auto-lock will fail (no SnapshotManager registered for "test" project_id),
+        // so handle_event falls back to log_violation.
         let event = make_event(
             EventKind::Modify(notify::event::ModifyKind::Data(
                 notify::event::DataChange::Content,
             )),
             vec![root.join("main.rs")],
         );
-        let result = FileSystemWatcher::handle_event(&manager, &root, event).await;
+        let result = FileSystemWatcher::handle_event(&manager, &root, PROJECT_ID, event).await;
         assert!(result.is_ok());
 
-        // Verify audit_log has an entry for the violation
         let entries = manager
             .audit_manager()
             .query_audit_log(
@@ -385,7 +459,6 @@ mod tests {
     async fn test_handle_event_locked_file_no_violation() {
         let (_temp, manager, root) = setup();
 
-        // Create a token and acquire a lock on main.rs
         let token =
             make_token_and_register(&manager, "agent-1", "session-1", "**", FileMode::Write);
         manager.acquire_lock(&token, "main.rs").await.unwrap();
@@ -396,7 +469,7 @@ mod tests {
             )),
             vec![root.join("main.rs")],
         );
-        let result = FileSystemWatcher::handle_event(&manager, &root, event).await;
+        let result = FileSystemWatcher::handle_event(&manager, &root, PROJECT_ID, event).await;
         assert!(result.is_ok());
     }
 
@@ -417,7 +490,6 @@ mod tests {
     async fn test_handle_event_multiple_paths_mixed() {
         let (_temp, manager, root) = setup();
 
-        // Mix: one outside project, one dir, one real unlocked file
         let outside = PathBuf::from("/outside/file.txt");
         let dir_path = root.join("a_dir");
         fs::create_dir_all(&dir_path).unwrap();
@@ -427,7 +499,7 @@ mod tests {
             EventKind::Modify(notify::event::ModifyKind::Any),
             vec![outside, dir_path, real_file],
         );
-        let result = FileSystemWatcher::handle_event(&manager, &root, event).await;
+        let result = FileSystemWatcher::handle_event(&manager, &root, PROJECT_ID, event).await;
         assert!(result.is_ok());
     }
 
@@ -437,7 +509,15 @@ mod tests {
     async fn test_handle_event_empty_paths() {
         let (_temp, manager, root) = setup();
         let event = make_event(EventKind::Modify(notify::event::ModifyKind::Any), vec![]);
-        let result = FileSystemWatcher::handle_event(&manager, &root, event).await;
+        let result = FileSystemWatcher::handle_event(&manager, &root, PROJECT_ID, event).await;
         assert!(result.is_ok());
+    }
+
+    // ─── System constants ──────────────────────────────────────────
+
+    #[test]
+    fn test_system_agent_constants() {
+        assert_eq!(SYSTEM_AGENT_ID, "system");
+        assert_eq!(WATCHER_SESSION_ID, "watcher");
     }
 }

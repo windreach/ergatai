@@ -50,6 +50,8 @@ pub struct AgentInfoResponse {
     pub stable_id: Option<String>,
     pub agent_uuid: String,
     pub workspace_id: String,
+    /// Working directory of the agent
+    pub work_dir: String,
     /// Lifecycle state name (lowercase, e.g., "running", "idle", "processing")
     pub state: String,
     /// Detailed lifecycle state from the unified state machine
@@ -77,11 +79,20 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
         .map(|a| {
             // Use lifecycle state_name() which returns lowercase (fixes the bug)
             let lifecycle_state = a.lifecycle.state_name().to_string();
+            // Get work_dir from workspace metadata
+            let work_dir = a
+                .handle
+                .workspace
+                .metadata
+                .get("work_dir")
+                .cloned()
+                .unwrap_or_default();
             AgentInfoResponse {
                 agent_id: a.agent_id,
                 stable_id: a.stable_id,
                 agent_uuid: a.agent_uuid,
                 workspace_id: a.workspace_id,
+                work_dir,
                 // Fix: use lowercase lifecycle state instead of Debug-formatted AgentState
                 state: lifecycle_state.clone(),
                 lifecycle_state,
@@ -228,63 +239,47 @@ pub async fn spawn_agent(
         .await
     {
         Ok(agent_id) => {
-            // Register workspace boundary with the file access enforcer
-            // so the agent can only access files within its workspace.
-            // Mandatory enforcement: if enforcer is active but registration
-            // fails, kill the agent and return an error.
-            match ergatai_lock::get_enforcer("default").await {
-                Ok(Some(enforcer)) if enforcer.is_active() => {
-                    // Convert absolute work_dir to relative path (relative to project root)
-                    let workspace_dir = if let Ok(relative) =
-                        std::path::Path::new(&work_dir_str).strip_prefix(&state.default_cwd)
-                    {
-                        relative.to_string_lossy().to_string()
-                    } else {
-                        work_dir_str.clone()
-                    };
+            // Register workspace boundary for auto-lock attribution.
+            // Routes to both enforcer (fanotify, Linux) and watcher (cross-platform
+            // fallback). If neither is active, registration is a no-op (advisory mode).
+            // Convert absolute work_dir to relative path (relative to project root)
+            let workspace_dir = if let Ok(relative) =
+                std::path::Path::new(&work_dir_str).strip_prefix(&state.default_cwd)
+            {
+                relative.to_string_lossy().to_string()
+            } else {
+                work_dir_str.clone()
+            };
 
-                    enforcer.register_workspace(&agent_id, &workspace_dir);
+            match ergatai_lock::register_workspace_for_project("default", &agent_id, &workspace_dir)
+                .await
+            {
+                Ok(()) => {
                     tracing::info!(
                         agent_id = %agent_id,
                         workspace = %workspace_dir,
-                        "Registered workspace boundary for agent (enforced)"
-                    );
-                }
-                Ok(Some(_enforcer)) => {
-                    // Enforcer exists but not active (non-Linux or no fanotify perms).
-                    // Workspace boundary enforcement is impossible — log warning
-                    // but allow agent to start (progressive enhancement).
-                    tracing::warn!(
-                        agent_id = %agent_id,
-                        "Enforcer not active — workspace boundary NOT enforced for this agent"
-                    );
-                }
-                Ok(None) => {
-                    // No enforcer instance at all — fanotify not initialized.
-                    tracing::warn!(
-                        agent_id = %agent_id,
-                        "No enforcer available — workspace boundary NOT enforced for this agent"
+                        "Registered workspace boundary for agent"
                     );
                 }
                 Err(e) => {
-                    // Failed to get enforcer — this is a real error.
+                    // Failed to register workspace — this is a real error.
                     // Kill the agent we just started and return error.
                     tracing::error!(
                         agent_id = %agent_id,
                         error = %e,
-                        "Failed to get enforcer for workspace registration — killing agent"
+                        "Failed to register workspace boundary — killing agent"
                     );
                     if let Err(stop_err) = runtime.stop_agent(&agent_id).await {
                         tracing::error!(
                             agent_id = %agent_id,
                             stop_error = %stop_err,
-                            "CRITICAL: failed to stop agent after enforcer registration failure — agent may be running without workspace isolation"
+                            "CRITICAL: failed to stop agent after workspace registration failure — agent may be running without workspace isolation"
                         );
                     }
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse {
-                            error: "Agent started but workspace boundary enforcement failed. Agent killed. Check server logs for details.".to_string(),
+                            error: "Agent started but workspace boundary registration failed. Agent killed. Check server logs for details.".to_string(),
                         }),
                     )
                         .into_response();
@@ -309,9 +304,15 @@ pub async fn kill_agent(
 ) -> impl IntoResponse {
     let runtime = get_agent_runtime();
 
-    // Unregister workspace boundary before stopping the agent
-    if let Ok(Some(enforcer)) = ergatai_lock::get_enforcer("default").await {
-        enforcer.unregister_workspace(&id);
+    // Unregister workspace boundary before stopping the agent.
+    // Best-effort: log but don't fail if registration removal errors.
+    if let Err(e) = ergatai_lock::unregister_workspace_for_project("default", &id).await {
+        tracing::debug!(
+            agent_id = %id,
+            error = %e,
+            "Failed to unregister workspace boundary (non-fatal)"
+        );
+    } else {
         tracing::debug!(agent_id = %id, "Unregistered workspace boundary for agent");
     }
 

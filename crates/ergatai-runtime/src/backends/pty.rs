@@ -28,6 +28,7 @@ use parking_lot::RwLock;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 use ergatai_error::{ErgataiError, ErgataiResult};
 use ergatai_pty::{PtyConfig, PtyProcess};
@@ -129,8 +130,8 @@ struct WorkspaceEntry {
     /// Cgroup controller for resource limits (CPU/memory).
     /// None if cgroups v2 is unavailable or no limits were specified.
     cgroup_controller: Option<CgroupController>,
-    /// Counter for generating deterministic agent IDs within this workspace.
-    /// Each agent gets {workspace_id}-agent-{counter}.
+    /// Counter for generating stable agent IDs within this workspace.
+    /// Each agent gets stable_id: agent-{counter}
     agent_counter: u32,
 }
 
@@ -516,18 +517,23 @@ impl AgentRuntimeBackend for PtyBackend {
         // 7. Build AgentHandle (before insertion, so it can be stored in AgentEntry
         //    and returned by discover_agents() for registry integration)
         //
-        // Generate deterministic agent ID: {workspace_id}-agent-{counter}
-        // Workspace-scoped identifier provides a stable, predictable ID for each agent.
-        let agent_id = {
+        // Generate agent ID: {workspace_id}-{uuid_prefix}
+        // UUID prefix (first 4 chars) provides unique, non-sequential identifier.
+        // stable_id uses counter format: agent-{counter}
+        let (agent_id, stable_id) = {
             let mut workspaces = self.workspaces.write();
             let ws = workspaces.get_mut(&handle.id).ok_or_else(|| {
                 ErgataiError::internal(format!("Workspace disappeared: {}", handle.id))
             })?;
             ws.agent_counter += 1;
-            format!("{}-agent-{}", handle.id, ws.agent_counter)
+            let uuid_prefix = &Uuid::new_v4().simple().to_string()[..4];
+            let agent_id = format!("{}-{}", handle.id, uuid_prefix);
+            let stable_id = format!("agent-{}", ws.agent_counter);
+            (agent_id, stable_id)
         };
+
         let mut metadata = HashMap::new();
-        metadata.insert("ergatai_agent_id".to_string(), agent_id.clone());
+        metadata.insert("ergatai_agent_id".to_string(), stable_id.clone());
 
         let agent_handle = AgentHandle {
             workspace: handle.clone(),

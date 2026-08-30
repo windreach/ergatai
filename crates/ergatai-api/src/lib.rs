@@ -27,6 +27,7 @@ use ergatai_core::nats;
 
 pub mod api;
 pub mod mcp;
+
 pub mod messaging;
 
 // ── AppState ─────────────────────────────────────────────────────────
@@ -90,48 +91,43 @@ pub struct ErrorResponse {
 
 // ── Router construction ──────────────────────────────────────────────
 
-/// Build the REST API router (without MCP services).
+/// Build the REST API router (without MCP services and static files).
 /// MCP services are nested separately in main.rs.
+/// Static files are served separately in main.rs to avoid rate limiting.
 pub fn build_rest_app(state: AppState) -> Router {
+    // API routes
     Router::new()
-        // Health / readiness / metrics
         .route("/health", get(health_check))
         .route("/ready", get(readiness_check))
         .route("/metrics", get(metrics_endpoint))
-        // Workspace management
         .route("/api/v1/workspaces", get(api::workspaces::list_workspaces))
-        .route(
-            "/api/v1/workspaces",
-            post(api::workspaces::create_workspace),
-        )
-        .route(
-            "/api/v1/workspaces/:id",
-            delete(api::workspaces::delete_workspace),
-        )
-        // Agent management
+        .route("/api/v1/workspaces", post(api::workspaces::create_workspace))
+        .route("/api/v1/workspaces/:id", delete(api::workspaces::delete_workspace))
         .route("/api/v1/agents", get(api::agents::list_agents))
         .route("/api/v1/agents", post(api::agents::spawn_agent))
         .route("/api/v1/agents/:id", delete(api::agents::kill_agent))
-        .route(
-            "/api/v1/agents/:id/message",
-            post(api::agents::send_message),
-        )
-        .route(
-            "/api/v1/agents/:id/terminal",
-            get(api::terminal::terminal_ws),
-        )
-        // Status
+        .route("/api/v1/agents/:id/message", post(api::agents::send_message))
+        .route("/api/v1/agents/:id/terminal", get(api::terminal::terminal_ws))
         .route("/api/v1/status", get(api::status::get_status))
-        // DAG
+        .route("/api/v1/locks", get(api::locks::list_locks))
+        .route("/api/v1/locks/audit", get(api::locks::list_audit))
+        .route("/api/v1/locks/contention", get(api::locks::get_lock_contention))
+        .route("/api/v1/conversations", get(api::conversations::list_conversations))
+        .route("/api/v1/conversations/:id", get(api::conversations::get_conversation_detail))
+        .route("/api/v1/stats/message-types", get(api::conversations::get_message_type_stats))
+        .route("/api/v1/activity/recent", get(api::activity_routes::get_recent_events))
+        .route("/api/v1/activity/stream", get(api::activity_routes::stream_events))
         .route("/api/v1/dag", post(submit_dag))
         .route("/api/v1/dag/status", get(dag_status))
+        .route("/api/v1/dag/visualization", get(dag_visualization))
+        .route("/api/v1/dag/metrics", get(dag_metrics))
         .route("/api/v1/dags", get(list_dags))
+        .with_state(state.clone())
         // Auth middleware (exempts /health, /ready, /metrics)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
         ))
-        .with_state(state)
 }
 
 // ── Health / readiness / metrics handlers ────────────────────────────
@@ -230,7 +226,16 @@ pub async fn auth_middleware(
     next: Next,
 ) -> impl IntoResponse {
     let path = request.uri().path();
-    if path == "/health" || path == "/ready" || path == "/metrics" {
+    // Exempt: health probes, metrics, and dashboard static assets
+    if path == "/health"
+        || path == "/ready"
+        || path == "/metrics"
+        || path == "/"
+        || path == "/logo.png"
+        || path.starts_with("/css/")
+        || path.starts_with("/js/")
+        || path.starts_with("/favicon")
+    {
         return next.run(request).await.into_response();
     }
 
@@ -491,4 +496,220 @@ async fn list_dags() -> impl IntoResponse {
     }
 
     Json(dags)
+}
+
+#[derive(Serialize)]
+struct DagVisualizationNode {
+    id: String,
+    agent: String,
+    task: String,
+    status: String,
+    depends_on: Vec<String>,
+    x: f32,
+    y: f32,
+    layer: u32,
+}
+
+#[derive(Serialize)]
+struct DagVisualizationResponse {
+    dag_id: String,
+    nodes: Vec<DagVisualizationNode>,
+    edges: Vec<DagEdge>,
+}
+
+#[derive(Serialize)]
+struct DagEdge {
+    from: String,
+    to: String,
+}
+
+async fn dag_visualization(Query(query): Query<DagStatusQuery>) -> impl IntoResponse {
+    let scheduler: Option<DagScheduler> = if let Some(dag_id) = &query.dag_id {
+        get_dag_scheduler_by_id(Some(dag_id))
+    } else {
+        get_dag_scheduler()
+    };
+
+    let Some(scheduler) = scheduler else {
+        return Json(DagVisualizationResponse {
+            dag_id: String::new(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        });
+    };
+
+    let dag_id = scheduler.dag_id().to_string();
+
+    // Parse graph snapshot
+    let nodes = match scheduler.graph_snapshot().await {
+        Ok(snapshot_json) => {
+            if let Ok(snapshot) = serde_json::from_str::<serde_json::Value>(&snapshot_json) {
+                if let Some(nodes_array) = snapshot.get("nodes").and_then(|n| n.as_array()) {
+                    nodes_array
+                        .iter()
+                        .filter_map(|node| {
+                            Some((
+                                node.get("id")?.as_str()?.to_string(),
+                                node.get("agent")?.as_str()?.to_string(),
+                                node.get("task")?.as_str()?.to_string(),
+                                node.get("status")?.as_str()?.to_string(),
+                                node.get("depends_on")
+                                    .and_then(|d| d.as_array())
+                                    .map(|arr| {
+                                        arr.iter()
+                                            .filter_map(|v| v.as_str().map(String::from))
+                                            .collect::<Vec<String>>()
+                                    })
+                                    .unwrap_or_default(),
+                            ))
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        }
+        Err(_) => Vec::new(),
+    };
+
+    // Calculate layers using topological sort (BFS from root nodes)
+    let mut node_layers: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut queue: std::collections::VecDeque<(String, u32)> = std::collections::VecDeque::new();
+
+    // Find root nodes (no dependencies)
+    for (id, _, _, _, deps) in &nodes {
+        if deps.is_empty() {
+            queue.push_back((id.clone(), 0));
+        }
+    }
+
+    // BFS to assign layers — FIFO ensures shortest path (minimum layer) is found first
+    while let Some((id, layer)) = queue.pop_front() {
+        if let Some(&existing_layer) = node_layers.get(&id) {
+            // Skip if we already found a shorter or equal path
+            if existing_layer <= layer {
+                continue;
+            }
+        }
+        node_layers.insert(id.clone(), layer);
+
+        // Find nodes that depend on this one
+        for (other_id, _, _, _, deps) in &nodes {
+            if deps.contains(&id) {
+                queue.push_back((other_id.clone(), layer + 1));
+            }
+        }
+    }
+
+    // Group nodes by layer
+    let mut layer_groups: std::collections::HashMap<u32, Vec<usize>> = std::collections::HashMap::new();
+    for (idx, (id, _, _, _, _)) in nodes.iter().enumerate() {
+        let layer = node_layers.get(id).copied().unwrap_or(0);
+        layer_groups.entry(layer).or_insert_with(Vec::new).push(idx);
+    }
+
+    // Calculate positions
+    let layer_spacing = 150.0;
+    let node_spacing = 100.0;
+    let mut visualization_nodes = Vec::new();
+
+    for (layer, indices) in &layer_groups {
+        let layer_width = indices.len() as f32 * node_spacing;
+        let start_x = -layer_width / 2.0 + node_spacing / 2.0;
+
+        for (pos, idx) in indices.iter().enumerate() {
+            let (id, agent, task, status, deps) = &nodes[*idx];
+            visualization_nodes.push(DagVisualizationNode {
+                id: id.clone(),
+                agent: agent.clone(),
+                task: task.clone(),
+                status: status.clone(),
+                depends_on: deps.clone(),
+                x: start_x + pos as f32 * node_spacing,
+                y: *layer as f32 * layer_spacing,
+                layer: *layer,
+            });
+        }
+    }
+
+    // Build edges
+    let mut edges = Vec::new();
+    for (id, _, _, _, deps) in &nodes {
+        for dep in deps {
+            edges.push(DagEdge {
+                from: dep.clone(),
+                to: id.clone(),
+            });
+        }
+    }
+
+    Json(DagVisualizationResponse {
+        dag_id,
+        nodes: visualization_nodes,
+        edges,
+    })
+}
+
+#[derive(Serialize)]
+struct DagMetrics {
+    total_nodes: u32,
+    completed_nodes: u32,
+    failed_nodes: u32,
+    running_nodes: u32,
+    pending_nodes: u32,
+    avg_completion_time_secs: Option<f32>,
+}
+
+async fn dag_metrics(Query(query): Query<DagStatusQuery>) -> impl IntoResponse {
+    let scheduler: Option<DagScheduler> = if let Some(dag_id) = &query.dag_id {
+        get_dag_scheduler_by_id(Some(dag_id))
+    } else {
+        get_dag_scheduler()
+    };
+
+    let Some(scheduler) = scheduler else {
+        return Json(DagMetrics {
+            total_nodes: 0,
+            completed_nodes: 0,
+            failed_nodes: 0,
+            running_nodes: 0,
+            pending_nodes: 0,
+            avg_completion_time_secs: None,
+        });
+    };
+
+    let nodes = match scheduler.graph_snapshot().await {
+        Ok(snapshot_json) => {
+            if let Ok(snapshot) = serde_json::from_str::<serde_json::Value>(&snapshot_json) {
+                if let Some(nodes_array) = snapshot.get("nodes").and_then(|n| n.as_array()) {
+                    nodes_array
+                        .iter()
+                        .filter_map(|node| node.get("status")?.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<String>>()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        }
+        Err(_) => Vec::new(),
+    };
+
+    let total_nodes = nodes.len() as u32;
+    let completed_nodes = nodes.iter().filter(|s| s.as_str() == "completed").count() as u32;
+    let failed_nodes = nodes.iter().filter(|s| s.as_str() == "failed").count() as u32;
+    let running_nodes = nodes.iter().filter(|s| s.as_str() == "running").count() as u32;
+    let pending_nodes = nodes.iter().filter(|s| s.as_str() == "pending").count() as u32;
+
+    Json(DagMetrics {
+        total_nodes,
+        completed_nodes,
+        failed_nodes,
+        running_nodes,
+        pending_nodes,
+        avg_completion_time_secs: None, // TODO: Calculate from timestamps
+    })
 }

@@ -53,7 +53,8 @@ pub use lock_waiter::{
 };
 pub use manager::{
     get_enforcer, get_lock_manager, get_snapshot_manager, get_watchdog, init_file_access,
-    init_file_access_with_enforcer, shutdown_file_access,
+    init_file_access_with_enforcer, register_workspace_for_project, shutdown_file_access,
+    unregister_workspace_for_project,
 };
 pub use performance::{AsyncLockQueue, AsyncLockRequest, BatchOperations, LockCache};
 pub use pid_resolver::{CallbackPidResolver, NoopPidResolver, PidResolver};

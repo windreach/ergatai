@@ -509,7 +509,7 @@ JetStream Streams:
 - **SQLite WAL**: 高并发锁管理
 - **Git COW 快照**: Copy-on-Write 防止 TOCTOU
 - **Watchdog**: Token 过期 + 心跳监控
-- **File Watcher**: 检测未授权修改
+- **File Watcher**: 跨平台文件修改检测 + 自动上锁（`notify` crate，Linux/macOS/Windows）
 - **NATS 等待队列**: 阻塞式锁获取
 - **内核级强制**: Linux fanotify 拦截 `open()`，从 advisory 升级到 mandatory（非 Linux 或权限不足时 fail-open）
 - **LD_PRELOAD 快照读取**: `ergatai-preload` 拦截 `open()` 读取被锁文件的 Git 快照版本
@@ -518,13 +518,13 @@ JetStream Streams:
 
 文件锁完全自动化，无需任何 MCP 工具调用（原 `request_file_access` / `release_file_access` / `list_active_locks` 已删除）：
 
-| 操作 | 行为 |
-|------|------|
-| **READ** | 直接读取，无需申请锁 |
-| **WRITE** | 首次修改时 fanotify 检测 `FAN_MODIFY`，自动创建 Git 快照 + 授予 WRITE 锁 |
-| **读取被锁文件** | LD_PRELOAD (`ergatai-preload`) 透明拦截 `open()`，返回快照内容 |
+| 操作 | Linux (fanotify) | 其他平台 (FileSystemWatcher) |
+|------|------------------|------------------------------|
+| **READ** | 直接读取，无需申请锁 | 直接读取，无需申请锁 |
+| **WRITE** | fanotify `FAN_MODIFY` 自动上锁 | `notify` 监控修改自动上锁（post-facto） |
+| **读取被锁文件** | LD_PRELOAD 透明拦截返回快照 | 无透传（advisory-only，锁记录在 SQLite） |
 
-**工作原理：**
+**Linux 工作原理（fanotify）：**
 1. Agent 写入文件 → fanotify 捕获 `FAN_MODIFY` 事件
 2. `FileLockManager::auto_acquire_write_lock()` 创建 Git 快照（修改前的基线）
 3. 自动授予 WRITE 锁（1 小时 TTL，跳过冲突检查）
@@ -532,7 +532,24 @@ JetStream Streams:
 5. 如果文件被锁：从 Git 对象存储读取快照内容，写入临时文件，打开后 unlink
 6. 如果未锁或 IPC 失败：正常打开（fail-open）
 
-**Agent 启动集成：** `PtyBackend::start_agent()` 自动检测 `libergatai_preload.so` 并注入 `LD_PRELOAD` 环境变量。
+**跨平台工作原理（FileSystemWatcher）：**
+
+非 Linux 平台（或 fanotify 权限不足时），`init_file_access_with_enforcer()` 自动启动 `FileSystemWatcher` 作为 fallback：
+1. Agent 写入文件 → `notify::RecommendedWatcher` 检测到修改事件
+2. 调用 `auto_acquire_write_lock()` 创建快照 + WRITE 锁
+3. 所有锁统一使用 agent_id=`"system"`, session_id=`"watcher"`（无 per-agent 归属）
+
+**已知限制（非 Linux 平台）：**
+
+| 限制 | 说明 |
+|------|------|
+| 无阻断 | 写入已完成后才检测到，无法阻止并发写入 |
+| Post-facto 快照 | 快照捕获的是修改后的内容（与 Linux FAN_MODIFY 行为一致） |
+| 无 PID | 无法精确识别修改进程，所有锁归属 `"system"`（无法区分 agent） |
+| 无 LD_PRELOAD | `ergatai-preload` 仅 Linux 可用，其他 agent 无法透明读取快照 |
+| Advisory-only | 锁记录在 SQLite，无内核级强制，依赖 agent 查询锁状态 |
+
+**Agent 启动集成：** `PtyBackend::start_agent()` 自动检测 `libergatai_preload.so` 并注入 `LD_PRELOAD` 环境变量。workspace 目录通过 `register_workspace_for_project()` 注册，供 fanotify（PID 归属）使用。FileSystemWatcher 不依赖 workspace 映射（非 Linux 平台无 per-agent 归属）。
 
 **IPC 协议：** `ergatai-lock` 在 `/tmp/ergatai-lock-{uid}.sock` 监听 Unix socket，处理 `check_lock` 和 `get_snapshot` 查询。
 

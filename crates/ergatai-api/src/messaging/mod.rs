@@ -82,6 +82,8 @@ pub struct MessageSender {
     /// auto-fill correlation_id from this map (implicit tracking, FIFO order).
     /// Uses Vec to support multiple concurrent requests to the same agent.
     pending_responses: Mutex<HashMap<String, Vec<String>>>,
+    /// Conversation manager for tracking agent conversations (dashboard access).
+    conversation_manager: Arc<ConversationManager>,
 }
 
 impl MessageSender {
@@ -106,7 +108,13 @@ impl MessageSender {
             admission_gate,
             request_monitor,
             pending_responses: Mutex::new(HashMap::new()),
+            conversation_manager,
         }
+    }
+
+    /// Get a reference to the conversation manager (used by dashboard API).
+    pub fn conversation_manager(&self) -> &Arc<ConversationManager> {
+        &self.conversation_manager
     }
 
     /// Send a message through the full pipeline.

@@ -62,10 +62,7 @@ tokio-util = "0.7"
 axum = { version = "0.7", features = ["ws"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 tower = "0.5"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
-
-# Rate limiting
-tower_governor = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace", "fs", "set-header"] }
 
 # Metrics (Prometheus)
 metrics = "0.24"

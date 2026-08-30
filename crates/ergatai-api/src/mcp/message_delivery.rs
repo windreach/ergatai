@@ -22,6 +22,7 @@
 //!   └─ fail → nak (JetStream retries)
 //! ```
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_nats::jetstream::consumer::{pull, AckPolicy, DeliverPolicy};
@@ -34,6 +35,33 @@ use ergatai_nats::connection::NatsConnection;
 use ergatai_nats::events::AgentMessagePayload;
 use ergatai_nats::AGENT_MESSAGES_STREAM;
 use ergatai_runtime::get_agent_runtime;
+
+/// Global message type counters for statistics
+static MSG_COUNT_REQUEST: AtomicU64 = AtomicU64::new(0);
+static MSG_COUNT_RESPONSE: AtomicU64 = AtomicU64::new(0);
+static MSG_COUNT_BROADCAST: AtomicU64 = AtomicU64::new(0);
+static MSG_COUNT_NOTIFICATION: AtomicU64 = AtomicU64::new(0);
+
+/// Get message type statistics
+pub fn get_message_type_stats() -> Vec<(String, u64)> {
+    vec![
+        ("request".to_string(), MSG_COUNT_REQUEST.load(Ordering::Relaxed)),
+        ("response".to_string(), MSG_COUNT_RESPONSE.load(Ordering::Relaxed)),
+        ("broadcast".to_string(), MSG_COUNT_BROADCAST.load(Ordering::Relaxed)),
+        ("notification".to_string(), MSG_COUNT_NOTIFICATION.load(Ordering::Relaxed)),
+    ]
+}
+
+/// Increment message type counter
+fn increment_message_count(message_type: &str) {
+    match message_type {
+        "request" => MSG_COUNT_REQUEST.fetch_add(1, Ordering::Relaxed),
+        "response" => MSG_COUNT_RESPONSE.fetch_add(1, Ordering::Relaxed),
+        "broadcast" => MSG_COUNT_BROADCAST.fetch_add(1, Ordering::Relaxed),
+        "notification" => MSG_COUNT_NOTIFICATION.fetch_add(1, Ordering::Relaxed),
+        _ => 0,
+    };
+}
 
 /// Consumer name for the message delivery pull consumer.
 /// Durable — survives consumer restarts and resumes from last ack.
@@ -236,6 +264,19 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
 
     let from = &payload.from_agent;
     let to = &payload.to_agent;
+
+    // Increment message type counter for statistics
+    // Detect message type from payload characteristics
+    let msg_type = if payload.to_agent == "*" || payload.to_agent == "all" || payload.to_agent == "broadcast" {
+        "broadcast"
+    } else if payload.correlation_id.is_some() {
+        "request"
+    } else if payload.content.contains("receipt") || payload.content.contains("timeout") {
+        "notification"
+    } else {
+        "response"
+    };
+    increment_message_count(msg_type);
 
     // Warn on redeliveries — indicates a prior delivery attempt may have succeeded
     // but the ack failed, or the consumer restarted mid-delivery.

@@ -232,6 +232,7 @@ impl FileLockManager {
             PRAGMA synchronous=NORMAL;
             PRAGMA cache_size=-64000;
             PRAGMA foreign_keys=ON;
+            PRAGMA wal_autocheckpoint=100;
             ",
         )
         .map_err(|e| ErgataiError::internal(format!("Failed to set pragmas: {}", e)))?;
