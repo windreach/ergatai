@@ -1555,12 +1555,25 @@ impl FileLockManager {
             }
         }; // conn is dropped here
 
-        // Notify waiters after releasing the mutex
+        // Notify waiters after releasing the mutex.
+        // These notifications are best-effort: the lock is already committed,
+        // so notification failures must NOT propagate as errors to the caller
+        // (otherwise the caller would think the release failed when it succeeded).
         release_result?;
         self.notify_file_ready(&normalized_path).await?;
-        // Publish lock release notification to trigger active wake-up in LockWaitConsumer
-        self.publish_lock_release_notification(&normalized_path, token_id)
-            .await?;
+        // Publish lock release notification to trigger active wake-up in LockWaitConsumer.
+        // Log but don't propagate: the lock IS released regardless of NATS delivery.
+        if let Err(e) = self
+            .publish_lock_release_notification(&normalized_path, token_id)
+            .await
+        {
+            warn!(
+                error = %e,
+                file_path = %normalized_path,
+                token_id = %token_id,
+                "failed to publish lock release notification (lock already released in DB)"
+            );
+        }
 
         Ok(())
     }

@@ -284,10 +284,7 @@ pub async fn spawn_agent(
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse {
-                            error: format!(
-                                "Agent started but workspace boundary enforcement failed: {}. Agent killed.",
-                                e
-                            ),
+                            error: "Agent started but workspace boundary enforcement failed. Agent killed. Check server logs for details.".to_string(),
                         }),
                     )
                         .into_response();

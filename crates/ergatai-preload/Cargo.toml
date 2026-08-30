@@ -2,6 +2,7 @@
 name = "ergatai-preload"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.82"
 description = "LD_PRELOAD library for transparent snapshot-based file reads"
 
 [lib]

@@ -74,7 +74,7 @@ jobs:
           echo "Coverage: ${COVERAGE}%"
 
           # Set minimum threshold (adjust as needed)
-          MIN_COVERAGE=50.0
+          MIN_COVERAGE=70.0
 
           if (( $(echo "$COVERAGE < $MIN_COVERAGE" | bc -l) )); then
             echo "❌ Coverage ${COVERAGE}% is below threshold ${MIN_COVERAGE}%"

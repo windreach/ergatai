@@ -2,6 +2,7 @@
 name = "ergatai-lock"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.82"
 authors = ["Ergatai Team"]
 license = "Apache-2.0"
 repository = "https://github.com/windreach/Ergatai"
@@ -41,3 +42,8 @@ fanotify-integration = []
 [dev-dependencies]
 tempfile = "3.10"
 tracing-subscriber = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "lock_manager_bench"
+harness = false

@@ -605,10 +605,10 @@ impl EnforcerBackend for FanotifyBackend {
         Ok(())
     }
 
-    fn drain_self_events(&self) {
+    fn drain_self_events(&self) -> bool {
         let fd: RawFd = self.fd.load(Ordering::SeqCst);
         if fd < 0 {
-            return;
+            return false;
         }
         // FIX: Try to lock state FIRST. If we can't get the lock, skip this
         // iteration — the data stays in the kernel queue and will be picked up
@@ -616,12 +616,12 @@ impl EnforcerBackend for FanotifyBackend {
         // then tried to lock, which could drop the read data if try_lock failed.
         let mut state = match self.state.try_lock() {
             Ok(g) => g,
-            Err(_) => return,
+            Err(_) => return false,
         };
         // Now read directly into state.buf. This way no data is lost.
         let n = unsafe { libc::read(fd, state.buf.as_mut_ptr() as *mut _, state.buf.len()) };
         if n <= 0 {
-            return;
+            return false;
         }
         state.len = n as usize;
         state.offset = 0;
@@ -634,6 +634,7 @@ impl EnforcerBackend for FanotifyBackend {
             self.self_pid,
             &self.project_root,
         );
+        true
     }
 
     fn force_close(&self) {

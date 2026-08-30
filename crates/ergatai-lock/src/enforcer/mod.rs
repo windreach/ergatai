@@ -479,8 +479,13 @@ impl Enforcer {
             .name("fanotify-drain".into())
             .spawn(move || {
                 while !drain_cancel.is_cancelled() {
-                    drain_backend.drain_self_events();
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    // Adaptive sleep: no sleep when events are flowing,
+                    // longer sleep (10ms) when idle. Reduces CPU churn
+                    // during bursts while still responding quickly.
+                    if drain_backend.drain_self_events() {
+                        continue;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 // Final drain after cancellation to flush any last events
                 drain_backend.drain_self_events();
@@ -814,6 +819,9 @@ impl Enforcer {
                                 Err(_) => {
                                     // Semaphore closed — enforcer shutting down.
                                     // Fail open: allow the access.
+                                    tracing::debug!(
+                                        "decide semaphore closed during shutdown — failing open"
+                                    );
                                     let _ = task_backend
                                         .respond(handle, EnforcementResult::Allow)
                                         .await;
@@ -826,11 +834,23 @@ impl Enforcer {
                             // self-PID fanotify events globally.
 
                             // Run decide() in spawn_blocking (doesn't block tokio worker)
-                            let decision = tokio::task::spawn_blocking(move || {
+                            let decision = match tokio::task::spawn_blocking(move || {
                                 task_engine.decide(&rel_owned, pid)
                             })
                             .await
-                            .unwrap_or(Decision::Allow); // join error → fail open
+                            {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    // JoinError (task panic or cancellation) — fail open
+                                    // but log so bugs in decide() are visible.
+                                    tracing::warn!(
+                                        error = %e,
+                                        pid = pid,
+                                        "decide() spawn_blocking failed — failing open"
+                                    );
+                                    Decision::Allow
+                                }
+                            };
 
                             // Write kernel response
                             let result = match &decision {
@@ -855,7 +875,12 @@ impl Enforcer {
                             {
                                 let _audit_permit = match audit_sem.acquire().await {
                                     Ok(p) => p,
-                                    Err(_) => return,
+                                    Err(_) => {
+                                        tracing::debug!(
+                                            "audit semaphore closed during shutdown — skipping audit"
+                                        );
+                                        return;
+                                    }
                                 };
 
                                 // Audit log — spawn_blocking: record_enforced_violation
@@ -873,8 +898,13 @@ impl Enforcer {
                                         )
                                     })
                                     .await
-                                    .unwrap_or(Ok(()))
-                                    {
+                                    .unwrap_or_else(|e| {
+                                        tracing::warn!(
+                                            error = %e,
+                                            "audit record_enforced_violation spawn_blocking failed"
+                                        );
+                                        Ok(())
+                                    }) {
                                         warn!(error = %e, "failed to record enforced violation");
                                     }
                                 }
@@ -895,9 +925,12 @@ impl Enforcer {
                                                 .map(|d| d.as_secs())
                                                 .unwrap_or(0),
                                         };
-                                        let subject = format!("ergatai.file.enforced.{}", project_id_owned);
+                                        let subject =
+                                            format!("ergatai.file.enforced.{}", project_id_owned);
                                         if let Ok(json) = serde_json::to_string(&payload) {
-                                            if let Err(e) = client.publish(subject, json.into()).await {
+                                            if let Err(e) =
+                                                client.publish(subject, json.into()).await
+                                            {
                                                 warn!(error = %e, "failed to publish enforcement event");
                                             }
                                         }
@@ -932,7 +965,12 @@ impl Enforcer {
                     // Acquire semaphore permit (bounds concurrent auto_acquire tasks)
                     let _permit = match sem.acquire().await {
                         Ok(p) => p,
-                        Err(_) => return,
+                        Err(_) => {
+                            tracing::debug!(
+                                "modify semaphore closed during shutdown — skipping auto_acquire"
+                            );
+                            return;
+                        }
                     };
 
                     if let Some(rel_path) = rel {
@@ -953,11 +991,11 @@ impl Enforcer {
                                 // (uses try_lock + sync SQLite query). We call it via
                                 // Handle::block_on since we're in spawn_blocking.
                                 let has_lock = tokio::runtime::Handle::current()
-                                    .block_on(
-                                        task_engine
-                                            .lock_manager()
-                                            .has_write_lock(&path_inner, &agent_id, &session_id),
-                                    )
+                                    .block_on(task_engine.lock_manager().has_write_lock(
+                                        &path_inner,
+                                        &agent_id,
+                                        &session_id,
+                                    ))
                                     .unwrap_or(false);
 
                                 if !has_lock {
@@ -992,7 +1030,13 @@ impl Enforcer {
                             }
                         })
                         .await
-                        .ok(); // ignore join errors (task panic → fail open)
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(
+                                error = %e,
+                                pid = pid,
+                                "auto_acquire spawn_blocking failed"
+                            );
+                        }); // log join errors (task panic → fail open)
                     }
                 });
             }

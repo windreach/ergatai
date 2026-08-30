@@ -137,7 +137,11 @@ pub trait EnforcerBackend: Send + Sync + 'static {
     /// Draining self-PID events from the blocking thread breaks this cycle.
     ///
     /// Default implementation is a no-op (non-fanotify backends don't need this).
-    fn drain_self_events(&self) {}
+    /// Returns `true` if any events were processed (used by the drain thread
+    /// for adaptive sleep: no sleep when events are flowing, longer sleep when idle).
+    fn drain_self_events(&self) -> bool {
+        false
+    }
 
     /// Force-close the backend's kernel resource (e.g., fanotify group fd).
     ///

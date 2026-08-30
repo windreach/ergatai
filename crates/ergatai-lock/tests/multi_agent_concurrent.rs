@@ -517,7 +517,10 @@ fn test_semaphore_saturation_50_concurrent_events() {
         let wait_start = Instant::now();
         loop {
             match child.try_wait() {
-                Ok(Some(_)) => { completed += 1; break; }
+                Ok(Some(_)) => {
+                    completed += 1;
+                    break;
+                }
                 Ok(None) if wait_start.elapsed() > Duration::from_secs(10) => {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -649,7 +652,10 @@ fn test_mixed_read_write_contention() {
         read_success, elapsed
     );
 
-    assert!(read_success >= 3, "most READ locks should succeed (compatible)");
+    assert!(
+        read_success >= 3,
+        "most READ locks should succeed (compatible)"
+    );
     assert!(elapsed < Duration::from_secs(15), "should not deadlock");
 }
 
@@ -801,7 +807,11 @@ fn test_100_concurrent_children_stress() {
             .spawn()
             .expect("spawn reader failed");
         let pid = child.id();
-        registry.register(pid, &format!("agent-{}", i % 10), &format!("session-{}", i % 10));
+        registry.register(
+            pid,
+            &format!("agent-{}", i % 10),
+            &format!("session-{}", i % 10),
+        );
         children.push((child, pid));
     }
 
@@ -821,7 +831,11 @@ fn test_100_concurrent_children_stress() {
             .spawn()
             .expect("spawn writer failed");
         let pid = child.id();
-        registry.register(pid, &format!("agent-{}", i % 10), &format!("session-{}", i % 10));
+        registry.register(
+            pid,
+            &format!("agent-{}", i % 10),
+            &format!("session-{}", i % 10),
+        );
         children.push((child, pid));
     }
 
