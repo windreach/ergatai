@@ -59,8 +59,8 @@ impl NatsServer {
 
             info!(port = port, binary = %binary_path.display(), store = %store_dir.display(), attempt = attempt + 1, "Starting nats-server");
 
-            match Command::new(&binary_path)
-                .args([
+            let mut cmd = Command::new(&binary_path);
+            cmd.args([
                     "-p",
                     &port.to_string(),
                     "-a",
@@ -72,8 +72,9 @@ impl NatsServer {
                     })?,
                 ])
                 .stderr(Stdio::piped())
-                .stdout(Stdio::null())
-                .spawn()
+                .stdout(Stdio::null());
+
+            match cmd.spawn()
             {
                 Ok(mut child) => {
                     sleep(Duration::from_millis(STARTUP_WAIT_MS)).await;
@@ -353,28 +354,30 @@ pub async fn shared_test_server() -> ErgataiResult<&'static NatsServer> {
 
 /// Clean up stale nats-server processes from previous test runs.
 ///
-/// Looks for nats-server processes with store dirs in the test directory
-/// and kills them. This is a safety net for cases where the atexit handler
-/// didn't run (e.g., process was killed with SIGKILL).
+/// Only kills servers whose parent PID no longer exists (truly orphaned).
+/// This avoids killing servers from other concurrently-running test binaries.
+///
+/// Combined with `PR_SET_PDEATHSIG` (which kills NATS when parent dies),
+/// this catches edge cases where the kernel signal didn't fire (e.g. parent
+/// was killed with SIGKILL before prctl took effect, or the child was
+/// reparented to init before the parent died).
+///
+/// Production nats-server processes use store dirs under the user's home
+/// (e.g. `~/.local/share/ergatai/nats-store`) and are NOT touched.
 fn cleanup_stale_test_servers() {
-    use std::process::Command;
+    use std::process::Command as StdCommand;
 
-    let test_dir = std::env::temp_dir().join("ergatai-test-nats");
-    if !test_dir.exists() {
-        return;
-    }
+    let temp_prefix = std::env::temp_dir();
+    let temp_prefix_str = temp_prefix.to_string_lossy();
 
-    // Find nats-server processes with test store dirs
-    let output = match Command::new("pgrep")
-        .args(["-f", "ergatai-test-nats"])
-        .output()
-    {
+    // Find all nats-server processes
+    let output = match StdCommand::new("pgrep").args(["-f", "nats-server"]).output() {
         Ok(o) => o,
         Err(_) => return,
     };
 
     if !output.status.success() {
-        return; // No processes found
+        return;
     }
 
     let pids: Vec<u32> = String::from_utf8_lossy(&output.stdout)
@@ -383,12 +386,44 @@ fn cleanup_stale_test_servers() {
         .collect();
 
     for pid in pids {
-        // Only kill processes that are using test store dirs
         let cmdline_path = format!("/proc/{}/cmdline", pid);
-        if let Ok(cmdline) = std::fs::read_to_string(&cmdline_path) {
-            if cmdline.contains("ergatai-test-nats") {
-                let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+        let cmdline = match std::fs::read_to_string(&cmdline_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // Check if store dir (-sd flag) points to a temp directory
+        let is_test_store = cmdline.contains(&format!("-sd\0{}", temp_prefix_str))
+            || cmdline
+                .split('\0')
+                .any(|seg| seg.starts_with(temp_prefix_str.as_ref()) && seg.contains(".tmp"));
+
+        if !is_test_store {
+            continue;
+        }
+
+        // Only kill if parent PID is dead (orphaned).
+        // Read /proc/{pid}/stat to get ppid (field 4, 1-indexed).
+        let stat_path = format!("/proc/{}/stat", pid);
+        let ppid = match std::fs::read_to_string(&stat_path) {
+            Ok(stat) => stat
+                .split_whitespace()
+                .nth(3) // field 4 (0-indexed = 3)
+                .and_then(|s| s.parse::<u32>().ok()),
+            Err(_) => {
+                // Process gone already — skip
+                continue;
             }
+        };
+
+        let parent_alive = ppid
+            .map(|pp| std::path::Path::new(&format!("/proc/{}", pp)).exists())
+            .unwrap_or(false);
+
+        if !parent_alive {
+            let _ = StdCommand::new("kill")
+                .args(["-9", &pid.to_string()])
+                .output();
         }
     }
 }
