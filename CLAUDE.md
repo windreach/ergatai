@@ -1,6 +1,6 @@
 # CLAUDE.md — Ergatai
 
-多 agent 协作中间件。将独立运行的 AI 编码助手（如 OpenCode）组织成协作团队，通过 ACP 协议实现消息投递。提供 CLI（`ergatai`）、REST API、MCP 协议三种接入方式。
+多 agent 协作工作台。将独立运行的 AI 编码助手（如 Claude Code、Cursor、Codex）组织成协作团队，通过 ACP（Agent Client Protocol）协议实现结构化通信。提供桌面应用（Tauri）、CLI（`ergatai`）、REST API、MCP 协议四种接入方式。核心能力：agent 模板注册与一键启动、文件访问控制（零信任锁 + Git 快照）、DAG 工作流编排、跨 agent 消息投递。
 
 ---
 
