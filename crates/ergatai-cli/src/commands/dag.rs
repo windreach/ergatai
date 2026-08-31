@@ -19,7 +19,10 @@ pub async fn handle(action: DagAction, api_url: &str, token: Option<&str>) -> Re
         DagAction::Submit { file } => {
             let content = fs::read_to_string(&file)?;
             let response = client.submit_dag(&content).await?;
-            println!("DAG submitted: {} ({} nodes)", response.status, response.submitted_nodes);
+            println!(
+                "DAG submitted: {} ({} nodes)",
+                response.status, response.submitted_nodes
+            );
         }
     }
 

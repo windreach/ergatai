@@ -166,7 +166,7 @@ jobs:
 
   # MSRV (Minimum Supported Rust Version) check
   msrv:
-    name: MSRV check (Rust 1.85)
+    name: MSRV check (Rust 1.88)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -175,7 +175,7 @@ jobs:
       - name: Install Rust toolchain (MSRV)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.85"
+          toolchain: "1.88"
 
       - name: Cache cargo dependencies
         uses: actions/cache@v6

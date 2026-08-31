@@ -1,6 +1,6 @@
 use crate::client::http::{
-    AgentInfoResponse, DagInfoResponse, DagStatusResponse, LockContentionResponse, LockInfoResponse,
-    StatusResponse, WorkspaceResponse,
+    AgentInfoResponse, DagInfoResponse, DagStatusResponse, LockContentionResponse,
+    LockInfoResponse, StatusResponse, WorkspaceResponse,
 };
 
 fn truncate_str(s: &str, max_len: usize) -> String {
@@ -204,7 +204,12 @@ pub fn format_dags_table(dags: &[DagInfoResponse]) {
     println!();
     let running = dags.iter().filter(|d| !d.is_complete).count();
     let completed = dags.iter().filter(|d| d.is_complete).count();
-    println!("Total: {} DAGs | Running: {} | Completed: {}", dags.len(), running, completed);
+    println!(
+        "Total: {} DAGs | Running: {} | Completed: {}",
+        dags.len(),
+        running,
+        completed
+    );
 }
 
 pub fn format_dag_status(status: &DagStatusResponse) {
@@ -221,7 +226,10 @@ pub fn format_dag_status(status: &DagStatusResponse) {
     }
 
     if let Some(is_complete) = status.is_complete {
-        println!("Status: {}", if is_complete { "Completed" } else { "Running" });
+        println!(
+            "Status: {}",
+            if is_complete { "Completed" } else { "Running" }
+        );
     }
 
     if let Some(prompt) = &status.status_prompt {

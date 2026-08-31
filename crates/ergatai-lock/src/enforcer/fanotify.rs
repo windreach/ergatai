@@ -680,7 +680,11 @@ impl EnforcerBackend for FanotifyBackend {
         // and close the meta.fd for each pending event.
         if let Ok(mut state) = self.state.try_lock() {
             while let Some(event) = state.pending.pop_front() {
-                if let PlatformHandle::Fanotify { group_fd: grp, event_fd: evt } = event.platform_handle {
+                if let PlatformHandle::Fanotify {
+                    group_fd: grp,
+                    event_fd: evt,
+                } = event.platform_handle
+                {
                     // Fail-open: allow the access and close the per-event fd.
                     let response = libc::fanotify_response {
                         fd: evt,
