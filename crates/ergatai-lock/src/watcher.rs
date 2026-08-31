@@ -75,6 +75,9 @@ impl FileSystemWatcher {
         // Create channel for file system events
         let (event_tx, event_rx) = mpsc::channel(1000);
 
+        // Clone project_root for the closure so we can filter internal dirs
+        let watch_root = project_root.clone();
+
         // Create watcher with config
         let config = Config::default()
             .with_poll_interval(Duration::from_secs(2)) // Poll every 2 seconds
@@ -83,10 +86,25 @@ impl FileSystemWatcher {
         let mut watcher = RecommendedWatcher::new(
             move |res: Result<Event, notify::Error>| {
                 if let Ok(event) = res {
-                    // Use try_send to avoid blocking notify's internal thread pool.
-                    // If the channel is full, the event is dropped with a warning.
-                    if let Err(e) = event_tx.try_send(event) {
-                        warn!("File system event dropped (channel full): {}", e);
+                    // Skip events from internal directories to prevent feedback loops:
+                    // - .git/: git2 creates tmp_object_* files during snapshot, which
+                    //   triggers auto-lock → more snapshots → infinite loop
+                    // - .ergatai/: lock database WAL writes trigger spurious events
+                    // - target/: build artifacts, not user code
+                    if event.paths.iter().all(|p| {
+                        if let Ok(rel) = p.strip_prefix(&watch_root) {
+                            let dominated = rel.components().any(|c| {
+                                let s = c.as_os_str().to_string_lossy();
+                                s == ".git" || s == ".ergatai" || s == "target"
+                            });
+                            !dominated
+                        } else {
+                            true // keep events we can't relativize (shouldn't happen)
+                        }
+                    }) {
+                        if let Err(e) = event_tx.try_send(event) {
+                            warn!("File system event dropped (channel full): {}", e);
+                        }
                     }
                 }
             },
@@ -211,6 +229,22 @@ impl FileSystemWatcher {
                 Ok(p) => p.to_string_lossy().to_string(),
                 Err(_) => continue,
             };
+
+            // Defense-in-depth: skip internal directories.
+            // The callback filter above catches most events, but a race or
+            // path-normalization edge case could still let one through.
+            if relative_path.starts_with(".git/")
+                || relative_path.starts_with(".git\\")
+                || relative_path == ".git"
+                || relative_path.starts_with(".ergatai/")
+                || relative_path.starts_with(".ergatai\\")
+                || relative_path == ".ergatai"
+                || relative_path.starts_with("target/")
+                || relative_path.starts_with("target\\")
+                || relative_path == "target"
+            {
+                continue;
+            }
 
             // Check if file is already locked
             let is_locked = match lock_manager.is_file_locked(&relative_path) {
