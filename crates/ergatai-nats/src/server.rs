@@ -61,21 +61,20 @@ impl NatsServer {
 
             let mut cmd = Command::new(&binary_path);
             cmd.args([
-                    "-p",
-                    &port.to_string(),
-                    "-a",
-                    "127.0.0.1",
-                    "--jetstream",
-                    "-sd",
-                    store_dir.to_str().ok_or_else(|| {
-                        ErgataiError::internal("Invalid NATS store directory path")
-                    })?,
-                ])
-                .stderr(Stdio::piped())
-                .stdout(Stdio::null());
+                "-p",
+                &port.to_string(),
+                "-a",
+                "127.0.0.1",
+                "--jetstream",
+                "-sd",
+                store_dir
+                    .to_str()
+                    .ok_or_else(|| ErgataiError::internal("Invalid NATS store directory path"))?,
+            ])
+            .stderr(Stdio::piped())
+            .stdout(Stdio::null());
 
-            match cmd.spawn()
-            {
+            match cmd.spawn() {
                 Ok(mut child) => {
                     sleep(Duration::from_millis(STARTUP_WAIT_MS)).await;
 
@@ -371,7 +370,10 @@ fn cleanup_stale_test_servers() {
     let temp_prefix_str = temp_prefix.to_string_lossy();
 
     // Find all nats-server processes
-    let output = match StdCommand::new("pgrep").args(["-f", "nats-server"]).output() {
+    let output = match StdCommand::new("pgrep")
+        .args(["-f", "nats-server"])
+        .output()
+    {
         Ok(o) => o,
         Err(_) => return,
     };
