@@ -290,6 +290,7 @@ pub struct StatusResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct LockInfoResponse {
     pub id: String,
     pub file_path: String,
@@ -304,6 +305,7 @@ pub struct LockInfoResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct LockContentionResponse {
     pub file_path: String,
     pub current_holder: String,
@@ -330,6 +332,7 @@ pub struct DagStatusResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct NodeStatusInfo {
     pub id: String,
     pub agent: String,

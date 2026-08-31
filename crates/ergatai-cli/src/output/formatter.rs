@@ -176,8 +176,8 @@ pub fn format_dags_table(dags: &[DagInfoResponse]) {
     }
 
     println!(
-        "{:<50} {:<10} {:<15} {}",
-        "DAG ID", "PROGRESS", "STATUS", "STATUS PROMPT"
+        "{:<50} {:<10} {:<15} STATUS PROMPT",
+        "DAG ID", "PROGRESS", "STATUS"
     );
     println!("{}", "-".repeat(110));
 
@@ -239,7 +239,7 @@ pub fn format_dag_status(status: &DagStatusResponse) {
     if let Some(nodes) = &status.nodes {
         println!();
         println!("Nodes:");
-        println!("{:<30} {:<20} {:<15} {}", "ID", "AGENT", "STATUS", "TASK");
+        println!("{:<30} {:<20} {:<15} TASK", "ID", "AGENT", "STATUS");
         println!("{}", "-".repeat(80));
 
         for node in nodes {
