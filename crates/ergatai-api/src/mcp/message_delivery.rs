@@ -45,10 +45,22 @@ static MSG_COUNT_NOTIFICATION: AtomicU64 = AtomicU64::new(0);
 /// Get message type statistics
 pub fn get_message_type_stats() -> Vec<(String, u64)> {
     vec![
-        ("request".to_string(), MSG_COUNT_REQUEST.load(Ordering::Relaxed)),
-        ("response".to_string(), MSG_COUNT_RESPONSE.load(Ordering::Relaxed)),
-        ("broadcast".to_string(), MSG_COUNT_BROADCAST.load(Ordering::Relaxed)),
-        ("notification".to_string(), MSG_COUNT_NOTIFICATION.load(Ordering::Relaxed)),
+        (
+            "request".to_string(),
+            MSG_COUNT_REQUEST.load(Ordering::Relaxed),
+        ),
+        (
+            "response".to_string(),
+            MSG_COUNT_RESPONSE.load(Ordering::Relaxed),
+        ),
+        (
+            "broadcast".to_string(),
+            MSG_COUNT_BROADCAST.load(Ordering::Relaxed),
+        ),
+        (
+            "notification".to_string(),
+            MSG_COUNT_NOTIFICATION.load(Ordering::Relaxed),
+        ),
     ]
 }
 
@@ -267,7 +279,10 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
 
     // Increment message type counter for statistics
     // Detect message type from payload characteristics
-    let msg_type = if payload.to_agent == "*" || payload.to_agent == "all" || payload.to_agent == "broadcast" {
+    let msg_type = if payload.to_agent == "*"
+        || payload.to_agent == "all"
+        || payload.to_agent == "broadcast"
+    {
         "broadcast"
     } else if payload.correlation_id.is_some() {
         "request"

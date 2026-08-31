@@ -161,6 +161,79 @@ impl ErgataiClient {
 
         Ok(response.json().await?)
     }
+
+    pub async fn list_locks(&self) -> Result<Vec<LockInfoResponse>> {
+        let url = format!("{}/api/v1/locks", self.base_url);
+        let req = self.client.get(&url);
+        let req = self.add_auth(req);
+        let response = req.send().await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            anyhow::bail!("API error: {}", error_text);
+        }
+
+        Ok(response.json().await?)
+    }
+
+    pub async fn get_lock_contention(&self) -> Result<Vec<LockContentionResponse>> {
+        let url = format!("{}/api/v1/locks/contention", self.base_url);
+        let req = self.client.get(&url);
+        let req = self.add_auth(req);
+        let response = req.send().await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            anyhow::bail!("API error: {}", error_text);
+        }
+
+        Ok(response.json().await?)
+    }
+
+    pub async fn list_dags(&self) -> Result<Vec<DagInfoResponse>> {
+        let url = format!("{}/api/v1/dags", self.base_url);
+        let req = self.client.get(&url);
+        let req = self.add_auth(req);
+        let response = req.send().await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            anyhow::bail!("API error: {}", error_text);
+        }
+
+        Ok(response.json().await?)
+    }
+
+    pub async fn get_dag_status(&self, dag_id: Option<&str>) -> Result<DagStatusResponse> {
+        let mut url = format!("{}/api/v1/dag/status", self.base_url);
+        if let Some(id) = dag_id {
+            url.push_str(&format!("?dag_id={}", id));
+        }
+        let req = self.client.get(&url);
+        let req = self.add_auth(req);
+        let response = req.send().await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            anyhow::bail!("API error: {}", error_text);
+        }
+
+        Ok(response.json().await?)
+    }
+
+    pub async fn submit_dag(&self, definition: &str) -> Result<SubmitDagResponse> {
+        let url = format!("{}/api/v1/dag", self.base_url);
+        let req = self.client.post(&url).body(definition.to_string());
+        let req = self.add_auth(req);
+        let response = req.send().await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            anyhow::bail!("API error: {}", error_text);
+        }
+
+        Ok(response.json().await?)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,6 +287,64 @@ pub struct StatusResponse {
     pub nats_initialized: bool,
     pub nats_port: Option<u16>,
     pub active_agents: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LockInfoResponse {
+    pub id: String,
+    pub file_path: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub mode: String,
+    pub scope: String,
+    pub created_at: String,
+    pub expires_at: String,
+    pub heartbeat_at: String,
+    pub status: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LockContentionResponse {
+    pub file_path: String,
+    pub current_holder: String,
+    pub waiting_agents: Vec<String>,
+    pub wait_time_secs: u64,
+    pub conflict_count: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DagInfoResponse {
+    pub dag_id: String,
+    pub progress: f32,
+    pub is_complete: bool,
+    pub status_prompt: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DagStatusResponse {
+    pub running: bool,
+    pub progress: Option<f32>,
+    pub status_prompt: Option<String>,
+    pub is_complete: Option<bool>,
+    pub nodes: Option<Vec<NodeStatusInfo>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NodeStatusInfo {
+    pub id: String,
+    pub agent: String,
+    pub task: String,
+    pub status: String,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub output: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SubmitDagResponse {
+    pub status: String,
+    pub submitted_nodes: usize,
 }
 
 #[derive(Debug, Serialize)]

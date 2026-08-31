@@ -13,12 +13,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use axum::http::HeaderValue;
-use axum::Router;
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
-use tower_http::services::ServeDir;
-use tower_http::set_header::SetResponseHeaderLayer;
 
 use ergatai_api::mcp::{
     create_mcp_service, spawn_request_monitor_with_cancel, start_message_delivery_consumer,
@@ -437,19 +433,7 @@ async fn async_main(args: Args) -> Result<()> {
     // API routes
     let api_app = build_rest_app(state);
 
-    // Static files at root, separate from API.
-    // Cache-Control: no-cache forces the browser to revalidate with the server on each
-    // request (ETag/Last-Modified → 304 Not Modified when unchanged). This prevents stale
-    // files from being served indefinitely without needing manual ?v=N cache-busting.
-    let static_router = Router::new()
-        .fallback_service(ServeDir::new("web").append_index_html_on_directories(true))
-        .layer(SetResponseHeaderLayer::overriding(
-            axum::http::header::CACHE_CONTROL,
-            HeaderValue::from_static("no-cache"),
-        ));
-
     let app = api_app
-        .merge(static_router)
         .nest_service("/mcp/agent-1", mcp_service_1)
         .nest_service("/mcp/agent-2", mcp_service_2)
         .nest_service("/mcp/agent-3", mcp_service_3)

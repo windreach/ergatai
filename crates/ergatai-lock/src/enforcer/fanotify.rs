@@ -408,18 +408,42 @@ impl FanotifyBackend {
                 // FAN_MODIFY: file modification notification event.
                 // No kernel response needed — this is a notification, not a permission request.
                 // Used for automatic WRITE lock acquisition.
+                //
+                // IMPORTANT: Even though FAN_MODIFY doesn't require a kernel response,
+                // the per-event meta.fd MUST be closed to avoid file descriptor leaks.
                 match readlink_proc_fd(meta.fd) {
                     Some(abs_path) => {
                         // Skip self-PID events (our own file operations)
                         if meta.pid as u32 == self_pid {
+                            // SAFETY: meta.fd is a valid open per-event fd provided by the
+                            // kernel. FAN_MODIFY is a notification event (no kernel response
+                            // needed), but the per-event fd must still be closed to release
+                            // the kernel resource. We close it here before continuing.
+                            unsafe {
+                                libc::close(meta.fd);
+                            }
                             state.offset += event_len;
                             continue;
                         }
 
                         // Scope filter: only process events within project root
                         if !abs_path.starts_with(project_root) {
+                            // SAFETY: same as above — close the per-event fd for out-of-scope
+                            // notification events to prevent file descriptor leaks.
+                            unsafe {
+                                libc::close(meta.fd);
+                            }
                             state.offset += event_len;
                             continue;
+                        }
+
+                        // SAFETY: For FAN_MODIFY events pushed to the pending queue, we close
+                        // the per-event fd immediately. Unlike FAN_OPEN_PERM events (which
+                        // keep meta.fd open until the permission response is written),
+                        // FAN_MODIFY is a notification that doesn't require a kernel response.
+                        // The PlatformHandle::Advisory carries no fd, so we must close here.
+                        unsafe {
+                            libc::close(meta.fd);
                         }
 
                         state.pending.push_back(FileAccessEvent {
@@ -437,6 +461,11 @@ impl FanotifyBackend {
                             pid = meta.pid,
                             "fanotify: readlink failed for FAN_MODIFY event, skipping"
                         );
+                        // SAFETY: close the per-event fd even when path resolution fails,
+                        // to prevent file descriptor leaks.
+                        unsafe {
+                            libc::close(meta.fd);
+                        }
                     }
                 }
             }
@@ -643,6 +672,32 @@ impl EnforcerBackend for FanotifyBackend {
             return;
         }
         warn!(fd, "fanotify: force-closing group fd");
+
+        // Close any pending events' meta_fds to prevent file descriptor leaks.
+        // When the enforcer is stopped, events in the pending queue are abandoned.
+        // For FAN_OPEN_PERM events, the per-event meta.fd is still open and must
+        // be closed to release the kernel resource. We respond FAN_ALLOW (fail-open)
+        // and close the meta.fd for each pending event.
+        if let Ok(mut state) = self.state.try_lock() {
+            while let Some(event) = state.pending.pop_front() {
+                if let PlatformHandle::Fanotify { group_fd: grp, event_fd: evt } = event.platform_handle {
+                    // Fail-open: allow the access and close the per-event fd.
+                    let response = libc::fanotify_response {
+                        fd: evt,
+                        response: libc::FAN_ALLOW,
+                    };
+                    unsafe {
+                        libc::write(
+                            grp,
+                            &response as *const _ as *const _,
+                            std::mem::size_of::<libc::fanotify_response>(),
+                        );
+                        libc::close(evt);
+                    }
+                }
+            }
+        }
+
         // SAFETY: `fd` was a valid open fanotify group fd owned by this backend.
         // We swap it to -1 first to prevent any concurrent read/close from using
         // the same fd number.
