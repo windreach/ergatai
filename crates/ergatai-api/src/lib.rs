@@ -117,8 +117,20 @@ pub fn build_rest_app(state: AppState) -> Router {
             post(api::agents::send_message),
         )
         .route(
-            "/api/v1/agents/:id/terminal",
-            get(api::terminal::terminal_ws),
+            "/api/v1/agent-profiles",
+            get(api::agent_profiles::list_profiles),
+        )
+        .route(
+            "/api/v1/agent-profiles",
+            post(api::agent_profiles::register_profile),
+        )
+        .route(
+            "/api/v1/agent-profiles/:name",
+            get(api::agent_profiles::get_profile),
+        )
+        .route(
+            "/api/v1/agent-profiles/:name",
+            delete(api::agent_profiles::delete_profile),
         )
         .route("/api/v1/status", get(api::status::get_status))
         .route("/api/v1/locks", get(api::locks::list_locks))

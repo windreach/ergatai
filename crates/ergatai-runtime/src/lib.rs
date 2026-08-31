@@ -1,7 +1,7 @@
 //! Ergatai Runtime — pluggable agent execution backends.
 //!
-//! This crate provides the `AgentRuntimeBackend` trait and the `PtyBackend`
-//! implementation for running agents with direct PTY-based process control.
+//! This crate provides the `AgentRuntimeBackend` trait and the `AcpBackend`
+//! implementation for running agents via the Agent Client Protocol (ACP).
 //!
 //! The `AgentRuntime` facade wraps a backend with state tracking and MCP
 //! integration, providing a high-level API for launching, messaging, and
@@ -35,6 +35,7 @@ pub mod agent_lifecycle;
 pub mod agent_profile;
 pub mod agent_record;
 pub mod cgroups;
+pub mod profile_registry;
 pub mod types;
 
 // Backend trait
@@ -56,7 +57,7 @@ pub use agent_record::{
     WorkspaceHandle as RecordWorkspaceHandle,
 };
 pub use backend::AgentRuntimeBackend;
-pub use backends::pty::PtyBackend;
+pub use backends::acp::AcpBackend;
 pub use runtime::{get_agent_runtime, init_agent_runtime, AgentRuntime};
 pub use types::{
     AgentHandle, AgentInfo, BackendCapabilities, ResourceLimits, WaitResult, WorkspaceHandle,

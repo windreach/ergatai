@@ -61,12 +61,6 @@ struct Args {
     #[arg(long, env = "ERGATAI_SSE_KEEP_ALIVE", default_value = "15")]
     sse_keep_alive: u64,
 
-    /// Agent runtime backend. Controls how agent workspaces (panes) are created.
-    /// Currently only `pty` (direct PTY) is supported.
-    /// Can also be set via ERGATAI_RUNTIME_BACKEND environment variable.
-    #[arg(long, env = "ERGATAI_RUNTIME_BACKEND", default_value = "pty")]
-    runtime_backend: String,
-
     /// Session name prefix for the agent runtime backend.
     /// Workspace names will be `{prefix}-{workspace_id}`.
     /// Can also be set via ERGATAI_SESSION_PREFIX environment variable.
@@ -151,16 +145,9 @@ async fn async_main(args: Args) -> Result<()> {
     let mcp_registry = std::sync::Arc::new(ergatai_api::mcp::AgentRegistry::new());
     let peer_registry = ergatai_api::mcp::server::new_peer_registry();
 
-    // Initialize AgentRuntime with PTY backend (the only supported backend)
-    let runtime_backend_name = args.runtime_backend.to_lowercase();
-    if runtime_backend_name != "pty" {
-        return Err(anyhow::anyhow!(
-            "Unknown runtime backend '{}'. Only 'pty' is supported.",
-            runtime_backend_name
-        ));
-    }
+    // Initialize AgentRuntime with ACP backend
     let runtime_backend: std::sync::Arc<dyn ergatai_runtime::AgentRuntimeBackend> =
-        std::sync::Arc::new(ergatai_runtime::PtyBackend::new());
+        std::sync::Arc::new(ergatai_runtime::AcpBackend::new());
 
     let mcp_cancellation_token = CancellationToken::new();
 
@@ -170,7 +157,7 @@ async fn async_main(args: Args) -> Result<()> {
                 tracing::warn!("AgentRuntime backend initialization warning: {}", e);
             }
             tracing::info!(
-                "AgentRuntime initialized (backend: pty, session prefix: {})",
+                "AgentRuntime initialized (backend: acp, session prefix: {})",
                 args.session_prefix
             );
 

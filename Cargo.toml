@@ -12,9 +12,10 @@ members = [
     "crates/ergatai-core",
     "crates/ergatai-api",
     "crates/ergatai-cli",
-    "crates/ergatai-pty",
     "crates/ergatai-preload",
-    "examples/simple-agent",
+]
+exclude = [
+    "desktop/src-tauri",
 ]
 
 [workspace.package]
@@ -89,6 +90,9 @@ tokio-util = { version = "0.7", features = ["rt"] }
 
 # Fast synchronization primitives
 parking_lot = "0.12"
+
+# Agent Client Protocol (ACP)
+agent-client-protocol = { git = "https://github.com/agentclientprotocol/rust-sdk.git" }
 
 # Benchmarking
 criterion = { version = "0.5", features = ["html_reports"] }

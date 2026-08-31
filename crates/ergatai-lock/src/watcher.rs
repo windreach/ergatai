@@ -335,7 +335,7 @@ mod tests {
         fs::create_dir_all(project_root.join("src")).unwrap();
         fs::write(project_root.join("src/lib.rs"), "pub fn lib() {}").unwrap();
 
-        let manager = Arc::new(FileLockManager::new(&db_path, project_root.clone(), None).unwrap());
+        let manager = Arc::new(FileLockManager::new(&db_path, project_root.clone()).unwrap());
         (temp_dir, manager, project_root)
     }
 
@@ -457,45 +457,16 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // ─── Lock-based violation detection ────────────────────────────
-
-    #[tokio::test]
-    async fn test_handle_event_unlocked_file_records_violation() {
-        let (_temp, manager, root) = setup();
-        // auto-lock will fail (no SnapshotManager registered for "test" project_id),
-        // so handle_event falls back to log_violation.
-        let event = make_event(
-            EventKind::Modify(notify::event::ModifyKind::Data(
-                notify::event::DataChange::Content,
-            )),
-            vec![root.join("main.rs")],
-        );
-        let result = FileSystemWatcher::handle_event(&manager, &root, PROJECT_ID, event).await;
-        assert!(result.is_ok());
-
-        let entries = manager
-            .audit_manager()
-            .query_audit_log(
-                None,
-                Some("unauthorized_modification"),
-                None,
-                None,
-                None,
-                10,
-            )
-            .unwrap();
-        assert_eq!(entries.len(), 1, "expected one violation audit entry");
-        assert_eq!(entries[0].file_path.as_deref(), Some("main.rs"));
-        assert_eq!(entries[0].agent_id, "unknown");
-    }
+    // ─── Lock-based tests ──────────────────────────────────────────
 
     #[tokio::test]
     async fn test_handle_event_locked_file_no_violation() {
         let (_temp, manager, root) = setup();
 
-        let token =
-            make_token_and_register(&manager, "agent-1", "session-1", "**", FileMode::Write);
-        manager.acquire_lock(&token, "main.rs").await.unwrap();
+        manager
+            .auto_acquire_write_lock("main.rs", "agent-1", "session-1", PROJECT_ID)
+            .await
+            .unwrap();
 
         let event = make_event(
             EventKind::Modify(notify::event::ModifyKind::Data(

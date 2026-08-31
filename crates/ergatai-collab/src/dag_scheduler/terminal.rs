@@ -197,7 +197,7 @@ impl DagScheduler {
                 for node in ready {
                     // Use YAML priority directly (CPM removed)
                     let priority =
-                        ergatai_lock::conflict_arbitration::priority_to_number(&node.priority)
+                        ergatai_lock::priority_to_number(&node.priority)
                             .map(|p| p as u32)
                             .unwrap_or(2);
 
@@ -343,7 +343,7 @@ impl DagScheduler {
 
             // Use YAML priority directly (CPM removed)
             let priority =
-                ergatai_lock::conflict_arbitration::priority_to_number(&node_clone.priority)
+                ergatai_lock::priority_to_number(&node_clone.priority)
                     .map(|p| p as u32)
                     .unwrap_or(2);
 

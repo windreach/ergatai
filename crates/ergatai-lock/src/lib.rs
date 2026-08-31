@@ -18,26 +18,21 @@
 
 pub mod audit;
 pub mod config;
-pub mod conflict_arbitration;
 pub mod enforcer;
 pub mod file_events_consumer;
 pub mod ipc_server;
 pub mod lock_manager;
 pub mod lock_mode;
-pub mod lock_wait_consumer;
-pub mod lock_waiter;
 pub mod manager;
 pub mod performance;
 pub mod pid_resolver;
+pub mod priority;
 pub mod renewal;
 pub mod sensitive_paths;
 pub mod snapshot;
 pub mod token;
 pub mod watchdog;
 pub mod watcher;
-
-#[cfg(test)]
-mod multi_agent_tests;
 
 pub use audit::{AuditEntry, AuditManager, FileAccessStats, SecurityReport};
 pub use config::{ConfigManager, FileAccessConfig};
@@ -46,11 +41,6 @@ pub use file_events_consumer::{FileEvent, FileEventsConsumer};
 pub use ipc_server::{start_ipc_server, IpcServerHandle};
 pub use lock_manager::FileLockManager;
 pub use lock_mode::LockModeManager;
-pub use lock_wait_consumer::LockWaitConsumer;
-pub use lock_waiter::{
-    LockCancelRequest, LockGrantedNotification, LockPriority, LockReleaseNotification,
-    LockWaitRequest,
-};
 pub use manager::{
     get_enforcer, get_lock_manager, get_snapshot_manager, get_watchdog, init_file_access,
     init_file_access_with_enforcer, register_workspace_for_project, shutdown_file_access,
@@ -58,6 +48,7 @@ pub use manager::{
 };
 pub use performance::{AsyncLockQueue, AsyncLockRequest, BatchOperations, LockCache};
 pub use pid_resolver::{CallbackPidResolver, NoopPidResolver, PidResolver};
+pub use priority::priority_to_number;
 pub use renewal::RenewalManager;
 pub use snapshot::SnapshotManager;
 pub use token::{FileLock, FileMode, FileToken, SystemToken, TokenId, TokenStatus};

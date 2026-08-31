@@ -234,6 +234,58 @@ impl ErgataiClient {
 
         Ok(response.json().await?)
     }
+
+    pub async fn list_profiles(&self) -> Result<ListProfilesResponse> {
+        let url = format!("{}/api/v1/agent-profiles", self.base_url);
+        let req = self.client.get(&url);
+        let req = self.add_auth(req);
+        let response = req.send().await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            anyhow::bail!("API error: {}", error_text);
+        }
+
+        Ok(response.json().await?)
+    }
+
+    pub async fn register_profile(
+        &self,
+        name: &str,
+        command: &str,
+        agent_type: &str,
+    ) -> Result<()> {
+        let url = format!("{}/api/v1/agent-profiles", self.base_url);
+        let body = RegisterProfileRequest {
+            name: name.to_string(),
+            command: command.to_string(),
+            agent_type: agent_type.to_string(),
+        };
+        let req = self.client.post(&url).json(&body);
+        let req = self.add_auth(req);
+        let response = req.send().await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            anyhow::bail!("API error: {}", error_text);
+        }
+
+        Ok(())
+    }
+
+    pub async fn delete_profile(&self, name: &str) -> Result<()> {
+        let url = format!("{}/api/v1/agent-profiles/{}", self.base_url, name);
+        let req = self.client.delete(&url);
+        let req = self.add_auth(req);
+        let response = req.send().await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            anyhow::bail!("API error: {}", error_text);
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -370,6 +422,26 @@ struct SendMessageRequest {
     /// Correlation ID for response tracking. Omitted when None.
     #[serde(skip_serializing_if = "Option::is_none")]
     correlation_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProfileResponse {
+    pub name: String,
+    pub command: String,
+    pub agent_type: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListProfilesResponse {
+    pub profiles: Vec<ProfileResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct RegisterProfileRequest {
+    name: String,
+    command: String,
+    agent_type: String,
 }
 
 #[cfg(test)]

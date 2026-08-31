@@ -26,12 +26,12 @@ static AGENT_RUNTIME: OnceLock<Arc<AgentRuntime>> = OnceLock::new();
 
 /// Get the global AgentRuntime singleton.
 ///
-/// Initializes with `PtyBackend` (direct PTY, no external dependencies).
+/// Initializes with `AcpBackend` (ACP protocol, structured communication).
 /// Call `init_agent_runtime()` instead if you need a custom backend.
 pub fn get_agent_runtime() -> Arc<AgentRuntime> {
     AGENT_RUNTIME
         .get_or_init(|| {
-            let backend = Arc::new(crate::backends::pty::PtyBackend::new());
+            let backend = Arc::new(crate::backends::acp::AcpBackend::new());
             Arc::new(AgentRuntime::new(backend))
         })
         .clone()
@@ -604,81 +604,12 @@ impl AgentRuntime {
     /// Called from the periodic discovery loop (main.rs). One bad sample isn't
     /// enough — a process briefly in Z state during exit is normal.
     ///
-    /// This method uses `as_any()` downcast to call PtyBackend's health check;
-    /// if the downcast fails, the method returns silently.
-    ///
     /// Returns the list of agent IDs that were pruned in this pass, so callers
     /// can perform follow-up cleanup (e.g. dropping rate-limiter windows).
     pub async fn prune_unhealthy_agents(&self) -> Vec<String> {
-        use crate::backends::proc_linux::ProcessState;
-
-        let backend_any = self.backend.as_any();
-
-        let health = if let Some(pty_backend) =
-            backend_any.downcast_ref::<crate::backends::pty::PtyBackend>()
-        {
-            pty_backend.health_check_agents().await
-        } else {
-            debug!("health check not supported by backend, skipping prune");
-            return Vec::new();
-        };
-
-        let mut pruned = Vec::new();
-        let mut streaks = self.unhealthy_streaks.lock().await;
-
-        // CRITICAL BUG FIX: Previously, this method only cleaned `registry` and `streaks`,
-        // leaking entries in `uuid_index` and `mcp_index`. Now we collect agents to prune,
-        // drop the streak lock, then use `remove_agent_indices()` for full cleanup.
-        let mut to_prune = Vec::new();
-
-        for (agent_id, state) in health {
-            let is_bad = matches!(state, ProcessState::Zombie | ProcessState::Dead);
-            let entry = streaks.entry(agent_id.clone()).or_insert(0);
-            if is_bad {
-                *entry += 1;
-                if *entry >= 2 {
-                    warn!(
-                        %agent_id,
-                        ?state,
-                        "pruning unhealthy agent (2 consecutive Zombie/Dead samples)"
-                    );
-                    to_prune.push(agent_id.clone());
-                }
-            } else {
-                *entry = 0;
-            }
-        }
-
-        // Drop streak lock before acquiring registry lock to reduce contention
-        drop(streaks);
-
-        // Now prune each agent with full index cleanup
-        for agent_id in to_prune {
-            // Remove from registry and get info for index cleanup
-            if let Some(info) = self.registry.write().await.remove(&agent_id) {
-                // Clean all indices atomically
-                self.remove_agent_indices(
-                    &agent_id,
-                    &info.agent_uuid,
-                    info.mcp_agent_id.as_deref(),
-                    info.stable_id.as_deref(),
-                )
-                .await;
-
-                // Also cleanup workspace to prevent resource leak
-                if let Err(e) = self.backend.cleanup_workspace(&info.handle.workspace).await {
-                    warn!(
-                        agent_id = agent_id,
-                        error = %e,
-                        "Failed to cleanup workspace during prune"
-                    );
-                }
-
-                pruned.push(agent_id);
-            }
-        }
-
-        pruned
+        // Health check not yet implemented for AcpBackend
+        debug!("health check not supported by AcpBackend, skipping prune");
+        Vec::new()
     }
 
     // ── MCP-to-Runtime agent ID binding ──
@@ -1903,8 +1834,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_prune_unhealthy_agents_no_panic_without_matching_backend() {
-        // With a non-PtyBackend, prune_unhealthy_agents() should be a silent no-op
-        // (the downcast to PtyBackend fails and the method returns early).
+        // With AcpBackend, prune_unhealthy_agents() is a no-op
+        // (health check not yet implemented).
         let runtime = make_runtime();
         runtime
             .launch_agent(make_spec("ws-1"), "cmd", None)

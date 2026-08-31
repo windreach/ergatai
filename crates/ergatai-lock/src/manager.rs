@@ -70,21 +70,6 @@ fn file_access_manager() -> &'static RwLock<FileAccessManagerState> {
 /// M11 fix: NATS connection is fetched BEFORE acquiring the write lock
 /// to avoid blocking all file access operations during NATS init.
 pub async fn init_file_access(project_id: &str, project_root: &Path) -> ErgataiResult<()> {
-    // M11 fix: Fetch NATS connection BEFORE acquiring write lock
-    let nats_client = if let Some(conn) = get_nats_connection().await {
-        info!(
-            project_id = project_id,
-            "NATS available, enabling multi-agent approval flow"
-        );
-        Some(Arc::new(conn.client().clone()))
-    } else {
-        warn!(
-            project_id = project_id,
-            "NATS not available, running in degraded mode (no multi-agent approval)"
-        );
-        None
-    };
-
     let manager = file_access_manager();
     let mut manager = manager.write().await;
 
@@ -109,14 +94,9 @@ pub async fn init_file_access(project_id: &str, project_root: &Path) -> ErgataiR
     })?;
     tokio::fs::create_dir_all(lock_db_parent).await?;
 
-    // Create FileLockManager with optional NATS client
+    // Create FileLockManager
     let lock_manager =
-        FileLockManager::new(&lock_db_path, project_root.to_path_buf(), nats_client)?;
-
-    // If NATS is available, subscribe to approval responses
-    if let Err(e) = lock_manager.subscribe_to_nats().await {
-        warn!(project_id = project_id, error = %e, "Failed to subscribe to NATS approval subjects, continuing without approval flow");
-    }
+        FileLockManager::new(&lock_db_path, project_root.to_path_buf())?;
 
     let lock_manager = Arc::new(lock_manager);
 
@@ -207,12 +187,7 @@ pub async fn init_file_access_with_enforcer(
     let lock_manager = FileLockManager::new(
         &lock_db_path,
         project_root.to_path_buf(),
-        nats_client.clone(),
     )?;
-
-    if let Err(e) = lock_manager.subscribe_to_nats().await {
-        warn!(project_id = project_id, error = %e, "Failed to subscribe to NATS approval subjects, continuing without approval flow");
-    }
 
     let lock_manager = Arc::new(lock_manager);
 
@@ -500,9 +475,6 @@ pub async fn shutdown_file_access(project_id: &str) -> ErgataiResult<()> {
         if let Some(enforcer) = project.enforcer.as_ref() {
             enforcer.stop().await;
         }
-
-        // Stop NATS subscription.
-        project.lock_manager.shutdown_nats_subscription();
 
         // Stop watchdog.
         let mut watchdog = project.watchdog.write().await;

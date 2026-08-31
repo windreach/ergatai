@@ -1,8 +1,8 @@
 pub mod activity;
 pub mod activity_routes;
+pub mod agent_profiles;
 pub mod agents;
 pub mod conversations;
 pub mod locks;
 pub mod status;
-pub mod terminal;
 pub mod workspaces;

@@ -1060,7 +1060,7 @@ mod tests {
         let db_path = temp_dir.path().join("locks.db");
         let project_root = temp_dir.path().to_path_buf();
         fs::write(project_root.join("target.rs"), "fn main() {}").unwrap();
-        let lm = Arc::new(FileLockManager::new(&db_path, project_root, None).unwrap());
+        let lm = Arc::new(FileLockManager::new(&db_path, project_root).unwrap());
         (temp_dir, lm)
     }
 
@@ -1070,30 +1070,10 @@ mod tests {
         session_id: &str,
         file_path: &str,
     ) {
-        let sys = SystemToken::new(
-            agent_id.to_string(),
-            session_id.to_string(),
-            "/test".to_string(),
-            3600,
-            30,
-        );
-        lm.register_system_token(&sys).unwrap();
-        let token = FileToken::new(
-            agent_id.to_string(),
-            session_id.to_string(),
-            sys.id.clone(),
-            "**".to_string(),
-            FileMode::Write,
-            None,
-            "test".to_string(),
-            3600,
-            15,
-        );
-        lm.register_file_token(&token).unwrap();
-        // Acquire lock synchronously via a minimal runtime.
+        // Acquire lock via the auto path (replaces old token-based acquire_lock).
         tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(lm.acquire_lock(&token, file_path))
+            .block_on(lm.auto_acquire_write_lock(file_path, agent_id, session_id, "test"))
             .unwrap();
     }
 
@@ -1608,29 +1588,11 @@ mod tests {
         let project_root = temp.path().canonicalize().unwrap();
         let project_root_inner = project_root.clone();
 
-        // Set up a WRITE lock held by agent-a on target.rs (using the test's async runtime).
+        // Set up a WRITE lock held by agent-a on target.rs (using the auto path).
         {
-            let sys = SystemToken::new(
-                "agent-a".to_string(),
-                "session-a".to_string(),
-                "/test".to_string(),
-                3600,
-                30,
-            );
-            lm.register_system_token(&sys).unwrap();
-            let token = FileToken::new(
-                "agent-a".to_string(),
-                "session-a".to_string(),
-                sys.id.clone(),
-                "**".to_string(),
-                FileMode::Write,
-                None,
-                "test".to_string(),
-                3600,
-                15,
-            );
-            lm.register_file_token(&token).unwrap();
-            lm.acquire_lock(&token, "target.rs").await.unwrap();
+            lm.auto_acquire_write_lock("target.rs", "agent-a", "session-a", "test")
+                .await
+                .unwrap();
         }
 
         // Resolver: PID 55555 → agent-b (not the holder).

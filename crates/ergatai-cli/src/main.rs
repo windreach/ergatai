@@ -101,6 +101,17 @@ enum AgentAction {
         #[arg(long)]
         instruction: Option<String>,
     },
+    /// Spawn an agent from a registered profile
+    SpawnFrom {
+        /// Profile name
+        profile: String,
+        /// Workspace ID (optional, defaults to profile name)
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Initial instruction
+        #[arg(long)]
+        instruction: Option<String>,
+    },
     /// Stop an agent
     Kill {
         /// Agent ID
@@ -112,6 +123,24 @@ enum AgentAction {
         id: String,
         /// Message text
         message: String,
+    },
+    /// Register a new agent profile (interactive if arguments omitted)
+    Register {
+        /// Profile name
+        name: Option<String>,
+        /// Command to start the agent
+        #[arg(long)]
+        command: Option<String>,
+        /// Agent type (acp or mcp)
+        #[arg(long)]
+        agent_type: Option<String>,
+    },
+    /// List all registered agent profiles
+    Profiles,
+    /// Delete an agent profile
+    DeleteProfile {
+        /// Profile name
+        name: String,
     },
 }
 
