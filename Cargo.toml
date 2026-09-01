@@ -12,15 +12,16 @@ members = [
     "crates/ergatai-core",
     "crates/ergatai-api",
     "crates/ergatai-cli",
-    "crates/ergatai-pty",
     "crates/ergatai-preload",
-    "examples/simple-agent",
+]
+exclude = [
+    "desktop/src-tauri",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 authors = ["Ergatai Team"]
 license = "Apache-2.0"
 repository = "https://github.com/windreach/Ergatai"
@@ -89,6 +90,9 @@ tokio-util = { version = "0.7", features = ["rt"] }
 
 # Fast synchronization primitives
 parking_lot = "0.12"
+
+# Agent Client Protocol (ACP)
+agent-client-protocol = { git = "https://github.com/agentclientprotocol/rust-sdk.git" }
 
 # Benchmarking
 criterion = { version = "0.5", features = ["html_reports"] }

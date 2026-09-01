@@ -52,7 +52,7 @@ notify = "6.1"
 walkdir = "2.4"
 
 # Git operations for snapshots
-git2 = { version = "0.18" }
+git2 = { version = "0.21" }
 
 # Process management
 nix = { version = "0.29", default-features = false, features = ["signal"] }

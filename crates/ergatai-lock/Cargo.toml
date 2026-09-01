@@ -22,7 +22,7 @@ async-nats.workspace = true
 notify = "6.1"
 md5 = "0.7"
 sha2 = "0.10"
-git2 = "0.18"
+git2 = "0.21"
 walkdir = "2.4"
 rand = "0.8"
 glob = "0.3"
@@ -42,8 +42,3 @@ fanotify-integration = []
 [dev-dependencies]
 tempfile = "3.10"
 tracing-subscriber = { workspace = true }
-criterion = { workspace = true }
-
-[[bench]]
-name = "lock_manager_bench"
-harness = false

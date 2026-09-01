@@ -60,9 +60,7 @@ tokio-util = "0.7"
 
 # HTTP server
 axum = { version = "0.7", features = ["ws"] }
-axum-server = { version = "0.7", features = ["tls-rustls"] }
-tower = "0.5"
-tower-http = { version = "0.5", features = ["cors", "trace", "fs", "set-header"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 
 # Metrics (Prometheus)
 metrics = "0.24"
@@ -74,3 +72,4 @@ chrono.workspace = true
 
 [dev-dependencies]
 tokio-test = "0.4"
+tower = { version = "0.5", features = ["util"] }

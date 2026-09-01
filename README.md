@@ -6,7 +6,7 @@
 
 ### Turn your AI coding assistants into a coordinated team.
 
-*Claude, Cursor, Codex — working together instead of stepping on each other.*
+*Claude Code, Cursor, Codex — working together in one workspace, instead of stepping on each other.*
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 &ensp;
@@ -41,9 +41,17 @@ They're all editing the same files. Nobody knows what the others are doing. Merg
 
 ### What you can do
 
+**🖥️ Desktop app**
+
+A native Tauri app to manage your agents visually — no terminal required. Register profiles, launch agents, and monitor conversations from one workspace.
+
+**🤖 One-click agent launch**
+
+Register an agent profile once (`ergatai agent register`), then spawn it anytime. Interactive CLI guides you through setup if arguments are omitted.
+
 **💬 Agents that talk to each other**
 
-Claude can ask Cursor to review a PR. Codex can report results back to the team. No more copy-pasting between terminals.
+Claude can ask Cursor to review a PR. Codex can report results back to the team. Structured ACP (Agent Client Protocol) communication — no more copy-pasting between terminals.
 
 **📋 Divide and conquer**
 
@@ -51,7 +59,7 @@ Submit a complex task. Ergatai breaks it into steps, assigns them to different a
 
 **🔒 No more merge conflicts**
 
-When two agents try to edit the same file, Ergatai locks it safely. One works while the other waits. No overwritten changes, no lost work.
+When two agents try to edit the same file, Ergatai locks it safely. Automatic Git snapshots capture pre-modification state. One works while the other sees a safe read-only copy. No overwritten changes, no lost work.
 
 ---
 
@@ -66,35 +74,41 @@ curl -sSL https://raw.githubusercontent.com/windreach/ergatai/main/install.sh | 
 **2. Start the server**
 
 ```bash
-ergatai-server
+ergatai start
 ```
 
-**3. Launch your first agent**
+Or launch the desktop app — it handles the server for you.
+
+**3. Register an agent profile**
 
 ```bash
-ega claude
+ergatai agent register --name claude --command "npx -y @anthropic/claude-acp@latest" --agent-type acp
 ```
 
-**4. Add more agents**
+**4. Launch your first agent**
 
-Point your other agents (Cursor, Codex, etc.) to `http://localhost:3000/mcp/<agent-name>` in their MCP config.
+```bash
+ergatai agent spawn-from claude
+```
 
-That's it. Your agents can now collaborate.
+**5. Add more agents**
+
+Register additional profiles, then spawn them. They automatically connect via ACP and can message each other.
 
 📖 [Full installation guide](docs/getting-started/INSTALL.md) · [CLI reference](docs/guide/CLI.md) · [MCP setup](docs/guide/MCP.md)
 
 ---
 
-### Works with your favorite agents
+### Works with any ACP-compatible agent
 
 | Agent | Status |
 |-------|--------|
-| Claude Code | ✅ Verified |
+| Claude Code (via ACP) | ✅ Verified |
 | Cursor | ✅ Verified |
 | Codex | ✅ Supported |
 | Goose | ✅ Supported |
 | Cline | ✅ Supported |
-| Any MCP-compatible agent | ✅ Supported |
+| Any ACP/MCP-compatible agent | ✅ Supported |
 
 ---
 

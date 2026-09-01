@@ -13,12 +13,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use axum::http::HeaderValue;
-use axum::Router;
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
-use tower_http::services::ServeDir;
-use tower_http::set_header::SetResponseHeaderLayer;
 
 use ergatai_api::mcp::{
     create_mcp_service, spawn_request_monitor_with_cancel, start_message_delivery_consumer,
@@ -64,12 +60,6 @@ struct Args {
     /// Can also be set via ERGATAI_SSE_KEEP_ALIVE environment variable.
     #[arg(long, env = "ERGATAI_SSE_KEEP_ALIVE", default_value = "15")]
     sse_keep_alive: u64,
-
-    /// Agent runtime backend. Controls how agent workspaces (panes) are created.
-    /// Currently only `pty` (direct PTY) is supported.
-    /// Can also be set via ERGATAI_RUNTIME_BACKEND environment variable.
-    #[arg(long, env = "ERGATAI_RUNTIME_BACKEND", default_value = "pty")]
-    runtime_backend: String,
 
     /// Session name prefix for the agent runtime backend.
     /// Workspace names will be `{prefix}-{workspace_id}`.
@@ -155,16 +145,9 @@ async fn async_main(args: Args) -> Result<()> {
     let mcp_registry = std::sync::Arc::new(ergatai_api::mcp::AgentRegistry::new());
     let peer_registry = ergatai_api::mcp::server::new_peer_registry();
 
-    // Initialize AgentRuntime with PTY backend (the only supported backend)
-    let runtime_backend_name = args.runtime_backend.to_lowercase();
-    if runtime_backend_name != "pty" {
-        return Err(anyhow::anyhow!(
-            "Unknown runtime backend '{}'. Only 'pty' is supported.",
-            runtime_backend_name
-        ));
-    }
+    // Initialize AgentRuntime with ACP backend
     let runtime_backend: std::sync::Arc<dyn ergatai_runtime::AgentRuntimeBackend> =
-        std::sync::Arc::new(ergatai_runtime::PtyBackend::new());
+        std::sync::Arc::new(ergatai_runtime::AcpBackend::new());
 
     let mcp_cancellation_token = CancellationToken::new();
 
@@ -174,7 +157,7 @@ async fn async_main(args: Args) -> Result<()> {
                 tracing::warn!("AgentRuntime backend initialization warning: {}", e);
             }
             tracing::info!(
-                "AgentRuntime initialized (backend: pty, session prefix: {})",
+                "AgentRuntime initialized (backend: acp, session prefix: {})",
                 args.session_prefix
             );
 
@@ -437,19 +420,7 @@ async fn async_main(args: Args) -> Result<()> {
     // API routes
     let api_app = build_rest_app(state);
 
-    // Static files at root, separate from API.
-    // Cache-Control: no-cache forces the browser to revalidate with the server on each
-    // request (ETag/Last-Modified → 304 Not Modified when unchanged). This prevents stale
-    // files from being served indefinitely without needing manual ?v=N cache-busting.
-    let static_router = Router::new()
-        .fallback_service(ServeDir::new("web").append_index_html_on_directories(true))
-        .layer(SetResponseHeaderLayer::overriding(
-            axum::http::header::CACHE_CONTROL,
-            HeaderValue::from_static("no-cache"),
-        ));
-
     let app = api_app
-        .merge(static_router)
         .nest_service("/mcp/agent-1", mcp_service_1)
         .nest_service("/mcp/agent-2", mcp_service_2)
         .nest_service("/mcp/agent-3", mcp_service_3)

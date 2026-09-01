@@ -4,20 +4,18 @@
 //! launching agents, injecting messages, and capturing output. The runtime facade
 //! (`AgentRuntime`) delegates all backend-specific operations to the selected implementation.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 
 use ergatai_error::ErgataiResult;
-use ergatai_pty::PtyProcess;
 
 use crate::types::{AgentHandle, BackendCapabilities, WaitResult, WorkspaceHandle, WorkspaceSpec};
 
 /// Pluggable execution backend for agents.
 ///
 /// Each backend manages a specific type of execution environment:
-/// - **PtyBackend**: direct PTY-based process control (default)
+/// - **AcpBackend**: Agent Client Protocol (ACP) over stdio (default)
 /// - **DockerBackend**: Docker containers (future)
 /// - **RemoteSSHBackend**: SSH to remote hosts (future)
 /// - **KubernetesBackend**: K8s pods (future)
@@ -100,37 +98,7 @@ pub trait AgentRuntimeBackend: Send + Sync + 'static {
         Ok(Vec::new())
     }
 
-    /// Get PTY process handle for terminal I/O (PTY backend only).
-    ///
-    /// Returns `Some(Arc<PtyProcess>)` for backends that use PTY (e.g., PtyBackend).
-    /// Returns `None` for backends that don't use PTY.
-    /// Used by WebSocket terminal handlers to stream PTY I/O.
-    async fn get_pty_process(
-        &self,
-        _handle: &AgentHandle,
-    ) -> ErgataiResult<Option<Arc<PtyProcess>>> {
-        Ok(None)
-    }
-
-    /// Resize the agent's PTY (PTY backend only).
-    ///
-    /// Returns `Ok(())` if resize succeeded or backend doesn't support resize.
-    /// Returns `Err` if agent not found or resize failed.
-    async fn resize_pty(&self, _handle: &AgentHandle, _rows: u16, _cols: u16) -> ErgataiResult<()> {
-        Ok(())
-    }
-
-    /// Resume the background PTY reader after WebSocket terminal disconnects.
-    ///
-    /// When a WebSocket terminal connects, the background reader is paused to avoid
-    /// competing for PTY output. This method resumes the background reader when the
-    /// WebSocket disconnects. Default implementation is a no-op for backends that
-    /// don't have a background reader.
-    async fn resume_pty_reader(&self, _handle: &AgentHandle) -> ErgataiResult<()> {
-        Ok(())
-    }
-
-    /// Returns how long since the agent last produced PTY output.
+    /// Returns how long since the agent last produced output.
     /// None if the agent is not found or the backend doesn't track output.
     /// Used by DAG watchdog to detect idle agents.
     fn last_output_age(&self, _handle: &AgentHandle) -> Option<Duration> {

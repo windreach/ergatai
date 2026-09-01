@@ -28,9 +28,11 @@ async fn test_consumer_ready_does_not_deadlock_without_nats() {
     let temp_dir = tempdir().unwrap();
     let scheduler = global_scheduler(Some(temp_dir.path().to_path_buf()));
 
-    // Should complete within 2 seconds regardless of NATS state
+    // Should complete within 10 seconds regardless of NATS state.
+    // The internal timeout in wait_for_consumer_ready() is 5 seconds,
+    // so 10 seconds gives enough margin for slow CI environments (e.g., macOS).
     let result = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
+        std::time::Duration::from_secs(10),
         scheduler.wait_for_consumer_ready(),
     )
     .await;

@@ -1,4 +1,17 @@
-use crate::client::http::{AgentInfoResponse, StatusResponse, WorkspaceResponse};
+use crate::client::http::{
+    AgentInfoResponse, DagInfoResponse, DagStatusResponse, LockContentionResponse,
+    LockInfoResponse, StatusResponse, WorkspaceResponse,
+};
+
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else if max_len <= 3 {
+        s[..max_len].to_string()
+    } else {
+        format!("{}...", &s[..max_len - 3])
+    }
+}
 
 pub fn format_workspaces_table(workspaces: &[WorkspaceResponse]) {
     if workspaces.is_empty() {
@@ -6,7 +19,7 @@ pub fn format_workspaces_table(workspaces: &[WorkspaceResponse]) {
         return;
     }
 
-    println!("{:<30} {:<15} METADATA", "ID", "BACKEND");
+    println!("{:<40} {:<15} METADATA", "ID", "BACKEND");
     println!("{}", "-".repeat(70));
 
     for w in workspaces {
@@ -15,7 +28,8 @@ pub fn format_workspaces_table(workspaces: &[WorkspaceResponse]) {
         } else {
             format!("{:?}", w.metadata)
         };
-        println!("{:<30} {:<15} {}", w.id, w.backend, metadata);
+        let id_display = truncate_str(&w.id, 40);
+        println!("{:<40} {:<15} {}", id_display, w.backend, metadata);
     }
 }
 
@@ -26,10 +40,10 @@ pub fn format_agents_table(agents: &[AgentInfoResponse]) {
     }
 
     println!(
-        "{:<30} {:<20} {:<10} {:<10} {:<10} LAST HEARTBEAT",
+        "{:<30} {:<30} {:<10} {:<10} {:<20} LAST HEARTBEAT",
         "AGENT ID", "WORKSPACE", "STATE", "ALIVE", "TASK"
     );
-    println!("{}", "-".repeat(105));
+    println!("{}", "-".repeat(130));
 
     for a in agents {
         let task_display = a.task_id.as_deref().unwrap_or("-");
@@ -49,13 +63,17 @@ pub fn format_agents_table(agents: &[AgentInfoResponse]) {
             .or(a.stable_id.as_deref())
             .unwrap_or(&a.agent_id);
 
+        // Truncate long values to fit column width
+        let workspace_display = truncate_str(&a.workspace_id, 30);
+        let task_truncated = truncate_str(task_display, 20);
+
         println!(
-            "{:<30} {:<20} {:<10} {:<10} {:<10} {}",
+            "{:<30} {:<30} {:<10} {:<10} {:<20} {}",
             display_id,
-            a.workspace_id,
+            workspace_display,
             a.state,
             if a.is_alive { "yes" } else { "no" },
-            task_display,
+            task_truncated,
             heartbeat,
         );
     }
@@ -87,6 +105,166 @@ pub fn format_status(status: &StatusResponse) {
     println!("Agents:");
     println!("  Active: {}", status.active_agents);
     println!();
+}
+
+pub fn format_locks_table(locks: &[LockInfoResponse]) {
+    if locks.is_empty() {
+        println!("No active locks found");
+        return;
+    }
+
+    println!(
+        "{:<40} {:<20} {:<10} {:<10} {:<15}",
+        "FILE PATH", "AGENT", "MODE", "STATUS", "EXPIRES"
+    );
+    println!("{}", "-".repeat(100));
+
+    for lock in locks {
+        let expires = if lock.expires_at.len() >= 19 && lock.expires_at.is_ascii() {
+            // Extract time portion from RFC3339 timestamp
+            lock.expires_at[11..19].to_string()
+        } else {
+            lock.expires_at.clone()
+        };
+
+        println!(
+            "{:<40} {:<20} {:<10} {:<10} {:<15}",
+            lock.file_path, lock.agent_id, lock.mode, lock.status, expires,
+        );
+    }
+
+    println!();
+    println!("Total: {} active locks", locks.len());
+}
+
+pub fn format_contention_table(contentions: &[LockContentionResponse]) {
+    if contentions.is_empty() {
+        println!("No lock contention detected");
+        return;
+    }
+
+    println!(
+        "{:<40} {:<20} {:<10} {:<15}",
+        "FILE PATH", "HOLDER", "WAITING", "WAIT TIME"
+    );
+    println!("{}", "-".repeat(90));
+
+    for contention in contentions {
+        let waiting = if contention.waiting_agents.is_empty() {
+            "-".to_string()
+        } else {
+            format!("{} agents", contention.waiting_agents.len())
+        };
+
+        println!(
+            "{:<40} {:<20} {:<10} {:<15}",
+            contention.file_path,
+            contention.current_holder,
+            waiting,
+            format!("{}s", contention.wait_time_secs),
+        );
+    }
+
+    println!();
+    println!("Total: {} contentions", contentions.len());
+}
+
+pub fn format_dags_table(dags: &[DagInfoResponse]) {
+    if dags.is_empty() {
+        println!("No DAGs found");
+        return;
+    }
+
+    println!(
+        "{:<50} {:<10} {:<15} STATUS PROMPT",
+        "DAG ID", "PROGRESS", "STATUS"
+    );
+    println!("{}", "-".repeat(110));
+
+    for dag in dags {
+        let progress = format!("{:.1}%", dag.progress * 100.0);
+        let status = if dag.is_complete {
+            "Completed"
+        } else {
+            "Running"
+        };
+        let prompt = if dag.status_prompt.len() > 40 {
+            format!("{}...", &dag.status_prompt[..37])
+        } else {
+            dag.status_prompt.clone()
+        };
+        let dag_id_display = truncate_str(&dag.dag_id, 50);
+
+        println!(
+            "{:<50} {:<10} {:<15} {}",
+            dag_id_display, progress, status, prompt,
+        );
+    }
+
+    println!();
+    let running = dags.iter().filter(|d| !d.is_complete).count();
+    let completed = dags.iter().filter(|d| d.is_complete).count();
+    println!(
+        "Total: {} DAGs | Running: {} | Completed: {}",
+        dags.len(),
+        running,
+        completed
+    );
+}
+
+pub fn format_dag_status(status: &DagStatusResponse) {
+    if !status.running {
+        println!("No DAG is currently running");
+        return;
+    }
+
+    println!("DAG Status");
+    println!("{}", "=".repeat(60));
+
+    if let Some(progress) = status.progress {
+        println!("Progress: {:.1}%", progress * 100.0);
+    }
+
+    if let Some(is_complete) = status.is_complete {
+        println!(
+            "Status: {}",
+            if is_complete { "Completed" } else { "Running" }
+        );
+    }
+
+    if let Some(prompt) = &status.status_prompt {
+        println!("Message: {}", prompt);
+    }
+
+    if let Some(nodes) = &status.nodes {
+        println!();
+        println!("Nodes:");
+        println!("{:<30} {:<20} {:<15} TASK", "ID", "AGENT", "STATUS");
+        println!("{}", "-".repeat(80));
+
+        for node in nodes {
+            let task = if node.task.len() > 30 {
+                format!("{}...", &node.task[..27])
+            } else {
+                node.task.clone()
+            };
+
+            println!(
+                "{:<30} {:<20} {:<15} {}",
+                node.id, node.agent, node.status, task,
+            );
+        }
+
+        println!();
+        let total = nodes.len();
+        let completed = nodes.iter().filter(|n| n.status == "completed").count();
+        let running = nodes.iter().filter(|n| n.status == "running").count();
+        let pending = nodes.iter().filter(|n| n.status == "pending").count();
+        println!(
+            "Nodes: {} total | {} completed | {} running | {} pending",
+            total, completed, running, pending
+        );
+    }
 }
 
 #[cfg(test)]

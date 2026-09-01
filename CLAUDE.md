@@ -1,6 +1,6 @@
 # CLAUDE.md — Ergatai
 
-多 agent 协作中间件。将独立运行的 AI 编码助手（如 OpenCode）组织成协作团队，通过 PTY 注入实现消息投递。提供 CLI（`ergatai`）、REST API、MCP 协议三种接入方式。
+多 agent 协作工作台。将独立运行的 AI 编码助手（如 Claude Code、Cursor、Codex）组织成协作团队，通过 ACP（Agent Client Protocol）协议实现结构化通信。提供桌面应用（Tauri）、CLI（`ergatai`）、REST API、MCP 协议四种接入方式。核心能力：agent 模板注册与一键启动、文件访问控制（零信任锁 + Git 快照）、DAG 工作流编排、跨 agent 消息投递。
 
 ---
 
@@ -9,7 +9,7 @@
 ### 消息发送流程
 
 ```
-Agent A (PTY workspace)
+Agent A (ACP workspace)
   │  通过 MCP 协议调用 send_message tool
   ▼
 ┌──────────────────────────────────────────────────────────────────┐
@@ -47,14 +47,13 @@ Agent A (PTY workspace)
   │
   ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│  ⑤ PtyBackend — inject_message()                   [pty.rs]     │
-│     从 agents map 查找 PtyProcess handle                         │
-│     sanitize_message() (去换行, 截断 64KiB)                       │
-│     process.write() → 直接写入 PTY master fd                     │
+│  ⑤ AcpBackend — inject_message()                    [acp.rs]    │
+│     从 agents map 查找 ACP connection handle                     │
+│     通过 ACP 协议发送 session/prompt 请求                         │
 └──────────────────────────────────────────────────────────────────┘
   │
   ▼
-Agent B 的 PTY 终端中显示消息
+Agent B 的 ACP session 中显示消息
 ```
 
 ### Agent 发现与注册
@@ -68,7 +67,7 @@ Agent B 的 PTY 终端中显示消息
   │
   ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│  PtyBackend::discover_agents()                     [pty.rs]      │
+│  AcpBackend::discover_agents()                      [acp.rs]     │
 │     遍历 agents map (由 start_agent() 维护)                       │
 │     过滤: 跳过已退出的进程 (process.has_exited())                  │
 │     对每个存活的 agent:                                            │
@@ -82,7 +81,7 @@ Agent B 的 PTY 终端中显示消息
 
 | ID 来源 | 格式 | 说明 |
 |---------|------|------|
-| PTY workspace | `ws1-agent-1`, `ws1-agent-2` | **确定性 ID**，由 workspace 计数器生成，workspace 内唯一 |
+| ACP workspace | `ws1-agent-1`, `ws1-agent-2` | **确定性 ID**，由 workspace 计数器生成，workspace 内唯一 |
 | MCP client | `opencode@a1b2c3d4` | MCP 连接时自动生成，仅用于 MCP peer registry |
 
 **关键**: agent 之间发消息使用 workspace agent ID（如 `ws1-agent-1`）作为 target_agent_id。
@@ -110,9 +109,13 @@ crates/
 │       ├── runtime.rs             AgentRuntime 门面
 │       ├── agent_record.rs        AgentRecord (统一的 agent 状态记录)
 │       ├── agent_lifecycle.rs     生命周期状态机
+│       ├── agent_profile.rs       AgentProfile (agent 模板定义)
+│       ├── profile_registry.rs    ProfileRegistry (SQLite agent 模板存储)
+│       ├── cgroups.rs             CGroups 资源限制 (可选)
+│       ├── types.rs               AgentHandle / WorkspaceHandle / AgentInfo
 │       ├── backend.rs             Backend trait 定义
 │       └── backends/
-│           ├── pty.rs               PTY backend (直接 PTY 控制, 唯一后端)
+│           ├── acp.rs               ACP backend (Agent Client Protocol, 唯一后端)
 │           └── proc_linux.rs        /proc/{pid}/stat 健康检查
 ├── ergatai-nats/          嵌入式 NATS 服务器 + JetStream 事件总线
 │   └── src/
@@ -150,9 +153,8 @@ crates/
 │       ├── snapshot.rs            Git-based COW 快照 (TOCTOU 防护)
 │       ├── watchdog.rs            Token 过期 + 心跳监控
 │       ├── watcher.rs             文件系统未授权修改检测
-│       ├── lock_waiter.rs         NATS-based 阻塞等待队列
 │       ├── renewal.rs             锁续期
-│       ├── conflict_arbitration.rs 冲突仲裁
+│       ├── pid_resolver.rs        进程 → agent 归属解析
 │       └── sensitive_paths.rs     敏感路径保护
 ├── ergatai-core/          门面 crate，re-export + 跨子系统集成
 │   └── src/
@@ -175,8 +177,9 @@ crates/
         ├── commands/              子命令实现
         ├── client/                HTTP + WebSocket 客户端
         └── output/                输出格式化
-examples/
-└── simple-agent/          示例 MCP agent
+desktop/                   桌面应用 (Tauri + React)
+└── src/                     React 前端 (Vite + TypeScript)
+    └── src-tauri/           Tauri Rust 后端壳
 ```
 
 ---
@@ -252,9 +255,31 @@ POST /api/v1/agents/:id/message      向 agent 发消息 (经 MessageSender 路�
 # 系统状态
 GET  /api/v1/status                  聚合状态 (agent + workspace + DAG)
 
+# Agent Profiles (agent 模板注册表)
+GET  /api/v1/agent-profiles          列出所有 agent profile
+POST /api/v1/agent-profiles          注册新 profile
+GET  /api/v1/agent-profiles/:name    获取指定 profile
+DELETE /api/v1/agent-profiles/:name  删除 profile
+
+# File Locks (文件访问控制)
+GET  /api/v1/locks                   列出活跃锁
+GET  /api/v1/locks/audit             锁审计日志
+GET  /api/v1/locks/contention        锁竞争状态
+
+# Conversations (对话)
+GET  /api/v1/conversations           列出对话
+GET  /api/v1/conversations/:id       对话详情
+GET  /api/v1/stats/message-types     消息类型统计
+
+# Activity (实时活动流)
+GET  /api/v1/activity/recent         最近活动事件
+GET  /api/v1/activity/stream         SSE 实时活动流
+
 # DAG
 POST /api/v1/dag                     提交 DAG
 GET  /api/v1/dag/status              查询 DAG 状态
+GET  /api/v1/dag/visualization       DAG 可视化数据
+GET  /api/v1/dag/metrics             DAG 指标
 GET  /api/v1/dags                    列出所有 DAG
 
 # MCP (Streamable HTTP, 每个 agent 独立路径)
@@ -290,8 +315,10 @@ Agent 通过 MCP 协议 (JSON-RPC over Streamable HTTP, protocol 2025-06-18) 调
 | `AgentRuntime` | `runtime/runtime.rs` | 门面：registry + backend 封装 |
 | `AgentRecord` | `runtime/agent_record.rs` | 统一的 agent 状态记录 (替代旧 AgentInfo) |
 | `AgentLifecycleState` | `runtime/agent_lifecycle.rs` | agent 生命周期状态机 |
-| `Backend` trait | `runtime/backend.rs` | 运行时后端抽象 (PTY) |
-| `PtyBackend` | `runtime/backends/pty.rs` | PTY 实现 (直接 PTY 控制 + 健康检查) |
+| `Backend` trait | `runtime/backend.rs` | 运行时后端抽象 (ACP) |
+| `AcpBackend` | `runtime/backends/acp.rs` | ACP 实现 (Agent Client Protocol) |
+| `AgentProfile` | `runtime/agent_profile.rs` | Agent 模板定义 (command, instruction, env_overrides) |
+| `ProfileRegistry` | `runtime/profile_registry.rs` | Agent 模板 SQLite 存储 (CRUD + discovery) |
 | `AgentMessagePayload` | `nats/events.rs` | NATS 消息体 (from, to, content, timestamp, message_id, requires_receipt, correlation_id, timeout_ms) |
 | `ReadReceiptPayload` | `nats/events.rs` | 已读回执 (message_id, from_agent, to_agent, read_at) |
 | `RequestTimeoutPayload` | `nats/events.rs` | 请求超时通知 (message_id, from_agent, to_agent, timeout_ms, sent_at) |
@@ -348,7 +375,7 @@ YAML 中通过 `complexity: low|medium|high` 标注（默认 Medium）：
 | `High` | 架构改动、跨模块重构、大规模迁移 | > 2 小时 |
 
 `complexity` 目前仅作为元数据保留，不参与调度或超时计算。
-超时是纯防御性的 PTY 活性检测（见下方）。
+超时是纯防御性的 ACP 输出追踪检测（见下方）。
 
 ---
 
@@ -390,11 +417,11 @@ DAG 调度器多层防御机制，防止资源失控和 agent 僵死：
 |------|------|------|
 | `max_agent_calls` | `Option<u64>` | DAG 全局 agent 调用次数上限（所有节点共享） |
 | `stall_timeout_secs` | `Option<u64>` | 节点无进度超时（触发 stall watcher） |
-| `node_timeout_secs` | `Option<u64>` | 节点 idle 超时（默认 900s / 15min），PTY 无输出超过此时间则标记失败 |
+| `node_timeout_secs` | `Option<u64>` | 节点 idle 超时（默认 900s / 15min），无输出超过此时间则标记失败 |
 
 - **预算检查**：`DagScheduler::check_budget()` 在 `generate_and_submit()` 中调用，超限则标记 DAG 失败。
 - **僵死检测**：`spawn_stall_watcher()` 每 1 秒检查 `last_progress_age_secs()`，超过 `stall_timeout_secs` 则标记节点失败。
-- **Idle 超时**：`spawn_timeout_watcher()` 每秒检查 agent 的 PTY 输出年龄（`last_output_age`），超过 `node_timeout_secs`（默认 15 分钟）无输出则标记节点失败。agent 产生任何 PTY 输出都会重置计时器，防止误杀长任务。超时错误记录到 `node.metadata["timeout_error"]`。
+- **Idle 超时**：`spawn_timeout_watcher()` 每秒检查 agent 的输出年龄（`last_output_age`），超过 `node_timeout_secs`（默认 15 分钟）无输出则标记节点失败。agent 产生任何输出都会重置计时器，防止误杀长任务。超时错误记录到 `node.metadata["timeout_error"]`。
 
 ### 中间件控制
 
@@ -497,7 +524,6 @@ JetStream Streams:
 | `FILE_ACCESS_GRANTS` | 文件锁授权 | WorkQueue | 1h |
 | `FILE_ACCESS_ESCALATIONS` | 文件锁升级 | WorkQueue | 30min |
 | `FILE_EVENTS` | 文件就绪/错误通知 | WorkQueue | 1h |
-| `LOCK_WAITERS` | 阻塞式锁获取等待队列 (`ergatai.lock.request.*`, `ergatai.lock.release.*`) | WorkQueue | 2h |
 
 ---
 
@@ -510,7 +536,6 @@ JetStream Streams:
 - **Git COW 快照**: Copy-on-Write 防止 TOCTOU
 - **Watchdog**: Token 过期 + 心跳监控
 - **File Watcher**: 跨平台文件修改检测 + 自动上锁（`notify` crate，Linux/macOS/Windows）
-- **NATS 等待队列**: 阻塞式锁获取
 - **内核级强制**: Linux fanotify 拦截 `open()`，从 advisory 升级到 mandatory（非 Linux 或权限不足时 fail-open）
 - **LD_PRELOAD 快照读取**: `ergatai-preload` 拦截 `open()` 读取被锁文件的 Git 快照版本
 
@@ -549,7 +574,7 @@ JetStream Streams:
 | 无 LD_PRELOAD | `ergatai-preload` 仅 Linux 可用，其他 agent 无法透明读取快照 |
 | Advisory-only | 锁记录在 SQLite，无内核级强制，依赖 agent 查询锁状态 |
 
-**Agent 启动集成：** `PtyBackend::start_agent()` 自动检测 `libergatai_preload.so` 并注入 `LD_PRELOAD` 环境变量。workspace 目录通过 `register_workspace_for_project()` 注册，供 fanotify（PID 归属）使用。FileSystemWatcher 不依赖 workspace 映射（非 Linux 平台无 per-agent 归属）。
+**Agent 启动集成：** `AcpBackend::start_agent()` 自动检测 `libergatai_preload.so` 并注入 `LD_PRELOAD` 环境变量。workspace 目录通过 `register_workspace_for_project()` 注册，供 fanotify（PID 归属）使用。FileSystemWatcher 不依赖 workspace 映射（非 Linux 平台无 per-agent 归属）。
 
 **IPC 协议：** `ergatai-lock` 在 `/tmp/ergatai-lock-{uid}.sock` 监听 Unix socket，处理 `check_lock` 和 `get_snapshot` 查询。
 
@@ -559,6 +584,7 @@ JetStream Streams:
 
 - 主库: `{project_root}/.ergatai/ergatai.db` (SQLite)
 - 锁库: `{project_root}/.ergatai/locks.db` (SQLite, WAL mode)
+- Profile 注册表: `{project_root}/.ergatai/profile_registry.db` (SQLite)
 
 ---
 
@@ -566,14 +592,15 @@ JetStream Streams:
 
 | 层 | 技术 |
 |----|------|
-| 语言 | Rust (100%, edition 2021) |
-| Agent ↔ Ergatai | MCP (JSON-RPC over Streamable HTTP, protocol 2025-06-18) |
+| 语言 | Rust (edition 2021) + TypeScript/React (desktop) |
+| Agent ↔ Ergatai | ACP (Agent Client Protocol, JSON-RPC over stdio) |
 | REST API | axum 0.7 (+ tower-governor 限速) |
 | 内部消息 | NATS (async-nats **0.50**) + JetStream |
-| 终端控制 | PTY (直接进程控制, 无外部依赖) |
+| 进程控制 | ACP 协议 (结构化通信, 无 PTY 依赖) |
 | 数据库 | SQLite (rusqlite 0.31, bundled) |
 | 异步 | tokio 1.36 |
 | CLI | clap 4.5 |
+| 桌面应用 | Tauri 2.x + React + Vite + TypeScript |
 | TUI | ratatui 0.30 + tui-widgets 0.7 |
 | HTTP 客户端 | reqwest 0.12 (rustls-tls) |
 | 序列化 | serde 1.0 + serde_json 1.0 + serde_yaml 0.9 |

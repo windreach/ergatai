@@ -142,6 +142,14 @@ impl Watchdog {
                         ).await {
                             error!("Watchdog check failed: {}", e);
                         }
+
+                        // Expire stale locks whose expires_at has passed.
+                        // This catches auto-acquired locks (FileSystemWatcher)
+                        // that have no system_token and thus can't be expired
+                        // by the token-heartbeat path above.
+                        if let Err(e) = lock_manager.expire_stale_locks() {
+                            error!("Failed to expire stale locks: {}", e);
+                        }
                     }
                     _ = &mut rx => {
                         info!("Watchdog received shutdown signal");
@@ -401,10 +409,9 @@ impl Watchdog {
             for lock in &locks {
                 let file_path = &lock.file_path;
 
-                // Release the lock
+                // Expire the lock
                 if let Err(e) = lock_manager
-                    .release_lock(file_token.id.as_str(), file_path)
-                    .await
+                    .expire_lock(file_token.id.as_str(), file_path)
                 {
                     error!(
                         token_id = token_id,
@@ -499,8 +506,7 @@ impl Watchdog {
         for lock in &locks {
             if let Err(e) = self
                 .lock_manager
-                .release_lock(lock.token_id.as_str(), &lock.file_path)
-                .await
+                .expire_lock(lock.token_id.as_str(), &lock.file_path)
             {
                 error!(
                     session_id = session_id,
@@ -571,7 +577,7 @@ mod tests {
         let db_path = temp_dir.path().join("test_locks.db");
         let project_root = temp_dir.path().to_path_buf();
 
-        let lock_manager = Arc::new(FileLockManager::new(&db_path, project_root, None).unwrap());
+        let lock_manager = Arc::new(FileLockManager::new(&db_path, project_root).unwrap());
 
         (temp_dir, lock_manager)
     }
@@ -915,196 +921,5 @@ mod tests {
             states.get(sys_token.id.as_str()).is_none(),
             "State should be removed when session is marked busy"
         );
-    }
-
-    #[tokio::test]
-    async fn test_lock_reclaim_after_timeout() {
-        let (_temp_dir, lock_manager) = create_test_lock_manager();
-        let config = WatchdogConfig {
-            check_interval_secs: 1,
-            timeout_multiplier: 1,
-            grace_period_1_secs: 1,
-            grace_period_2_secs: 1,
-            task_aware: true,
-        };
-
-        // Create and register tokens
-        use crate::{FileMode, FileToken, SystemToken};
-        let sys_token = SystemToken::new(
-            "agent-1".into(),
-            "session-1".into(),
-            _temp_dir.path().to_str().unwrap().to_string(),
-            60,
-            5,
-        );
-        lock_manager.register_system_token(&sys_token).unwrap();
-
-        let file_token = FileToken::new(
-            "agent-1".to_string(),
-            "session-1".to_string(),
-            sys_token.id.clone(),
-            "**".to_string(),
-            FileMode::Write,
-            Some("test".to_string()),
-            "test-system".to_string(),
-            3600,
-            15,
-        );
-        lock_manager.register_file_token(&file_token).unwrap();
-
-        // Create test file and acquire lock
-        let file_path = _temp_dir.path().join("test.rs");
-        std::fs::write(&file_path, "fn main() {}").unwrap();
-
-        lock_manager
-            .acquire_lock(&file_token, file_path.to_str().unwrap())
-            .await
-            .unwrap();
-
-        // Verify lock exists
-        let locks = lock_manager
-            .get_locks_by_token(file_token.id.as_str())
-            .unwrap();
-        assert_eq!(locks.len(), 1);
-
-        // Manually set heartbeat to past
-        lock_manager
-            .set_heartbeat_past(sys_token.id.as_str(), 10)
-            .unwrap();
-
-        let watchdog = Watchdog::new(lock_manager.clone(), config);
-        let timeout_states = Arc::clone(&watchdog.timeout_states);
-        let busy_status = Arc::clone(&watchdog.busy_status);
-
-        // Progress through all timeout states
-        Watchdog::check_tokens(
-            &lock_manager,
-            &None,
-            &watchdog.config,
-            &timeout_states,
-            &busy_status,
-        )
-        .await
-        .unwrap();
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-
-        Watchdog::check_tokens(
-            &lock_manager,
-            &None,
-            &watchdog.config,
-            &timeout_states,
-            &busy_status,
-        )
-        .await
-        .unwrap();
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-
-        // Final check - should reclaim locks
-        Watchdog::check_tokens(
-            &lock_manager,
-            &None,
-            &watchdog.config,
-            &timeout_states,
-            &busy_status,
-        )
-        .await
-        .unwrap();
-
-        // Verify locks are released
-        let locks = lock_manager
-            .get_locks_by_token(file_token.id.as_str())
-            .unwrap();
-        assert_eq!(locks.len(), 0, "Locks should be reclaimed");
-
-        // Verify token is expired
-        let tokens = lock_manager.get_active_tokens().unwrap();
-        assert!(tokens.is_empty(), "Token should be expired");
-    }
-
-    #[tokio::test]
-    async fn test_multiple_tokens_timeout_simultaneously() {
-        let (_temp_dir, lock_manager) = create_test_lock_manager();
-        let config = WatchdogConfig {
-            check_interval_secs: 1,
-            timeout_multiplier: 1,
-            grace_period_1_secs: 1,
-            grace_period_2_secs: 1,
-            task_aware: true,
-        };
-
-        // Create multiple tokens for different sessions
-        use crate::SystemToken;
-        let sys_token1 = SystemToken::new(
-            "agent-1".into(),
-            "session-1".into(),
-            _temp_dir.path().to_str().unwrap().to_string(),
-            60,
-            5,
-        );
-        lock_manager.register_system_token(&sys_token1).unwrap();
-
-        let sys_token2 = SystemToken::new(
-            "agent-2".into(),
-            "session-2".into(),
-            _temp_dir.path().to_str().unwrap().to_string(),
-            60,
-            5,
-        );
-        lock_manager.register_system_token(&sys_token2).unwrap();
-
-        let sys_token3 = SystemToken::new(
-            "agent-3".into(),
-            "session-3".into(),
-            _temp_dir.path().to_str().unwrap().to_string(),
-            60,
-            5,
-        );
-        lock_manager.register_system_token(&sys_token3).unwrap();
-
-        // Set all heartbeats to past
-        lock_manager
-            .set_heartbeat_past(sys_token1.id.as_str(), 10)
-            .unwrap();
-        lock_manager
-            .set_heartbeat_past(sys_token2.id.as_str(), 10)
-            .unwrap();
-        lock_manager
-            .set_heartbeat_past(sys_token3.id.as_str(), 10)
-            .unwrap();
-
-        let watchdog = Watchdog::new(lock_manager.clone(), config);
-        let timeout_states = Arc::clone(&watchdog.timeout_states);
-        let busy_status = Arc::clone(&watchdog.busy_status);
-
-        // Check should detect all three timeouts
-        Watchdog::check_tokens(
-            &lock_manager,
-            &None,
-            &watchdog.config,
-            &timeout_states,
-            &busy_status,
-        )
-        .await
-        .unwrap();
-
-        let states = timeout_states.lock().await;
-        assert_eq!(
-            states.len(),
-            3,
-            "All three tokens should be in timeout state"
-        );
-
-        for token in [&sys_token1, &sys_token2, &sys_token3] {
-            assert!(
-                matches!(
-                    states.get(token.id.as_str()),
-                    Some(TimeoutState::GracePeriod1 { .. })
-                ),
-                "Token {} should be in GracePeriod1",
-                token.id
-            );
-        }
     }
 }

@@ -308,7 +308,7 @@ impl AgentLauncher {
             };
 
         // Request File Token
-        let priority = ergatai_lock::conflict_arbitration::priority_to_number(&assignment.priority);
+        let priority = ergatai_lock::priority_to_number(&assignment.priority);
         let file_token = FileToken::with_priority(
             assignment.agent_name.clone(),
             session_id.clone(),

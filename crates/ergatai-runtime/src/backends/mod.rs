@@ -1,7 +1,7 @@
 //! Backend implementations for the Agent Runtime.
 //!
 //! Each module provides a concrete `AgentRuntimeBackend` implementation:
-//! - `pty`: direct PTY-based process control (no external dependencies)
+//! - `acp`: ACP (Agent Client Protocol) based process control
 
 pub mod proc_linux;
-pub mod pty;
+pub mod acp;

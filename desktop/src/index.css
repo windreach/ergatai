@@ -1,0 +1,112 @@
+@import "tailwindcss";
+
+:root {
+  --background: oklch(11% 0.006 260);
+  --foreground: oklch(92% 0.008 260);
+  --border: oklch(22% 0.012 260);
+  --muted: oklch(18% 0.01 260);
+  --muted-foreground: oklch(55% 0.012 260);
+  --sidebar: oklch(9% 0.006 260);
+  --sidebar-foreground: oklch(78% 0.008 260);
+  --sidebar-border: oklch(18% 0.01 260);
+  --sidebar-accent: oklch(16% 0.01 260);
+  --card: oklch(15% 0.008 260);
+  --primary: oklch(62% 0.17 245);
+  --primary-foreground: oklch(98% 0 0);
+}
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ========== antd / @ant-design/x overrides ========== */
+
+/* Conversations list items */
+.ant-conversations-list-item {
+  border-radius: 10px !important;
+  margin: 2px 0 !important;
+  padding: 10px 14px !important;
+}
+.ant-conversations-list-item-active {
+  background: var(--sidebar-accent) !important;
+}
+
+/* Bubble — message bubble */
+.x-bubble-content {
+  border-radius: 14px !important;
+  font-size: 14px !important;
+  line-height: 1.7 !important;
+}
+.x-bubble-content pre {
+  border-radius: 10px !important;
+  margin: 12px 0 !important;
+  padding: 14px 16px !important;
+  background: oklch(14% 0.01 260) !important;
+  border: 1px solid var(--border) !important;
+  overflow-x: auto;
+}
+.x-bubble-content code {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace !important;
+  font-size: 13px !important;
+}
+.x-bubble-content p {
+  margin: 6px 0 !important;
+}
+.x-bubble-content strong {
+  color: var(--foreground) !important;
+}
+.x-bubble-content ul,
+.x-bubble-content ol {
+  padding-left: 20px !important;
+  margin: 8px 0 !important;
+}
+.x-bubble-content li {
+  margin: 4px 0 !important;
+}
+
+/* Avatar */
+.ant-avatar {
+  border-radius: 10px !important;
+}
+
+/* Sender — input area */
+.x-sender {
+  border-radius: 16px !important;
+  border-color: var(--border) !important;
+  background: var(--card) !important;
+}
+.x-sender-textarea {
+  border-radius: 12px !important;
+  font-size: 14px !important;
+  background: transparent !important;
+  color: var(--foreground) !important;
+}
+.x-sender-textarea::placeholder {
+  color: var(--muted-foreground) !important;
+}
+.x-sender-actions {
+  padding: 0 4px !important;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: oklch(30% 0.01 260);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(40% 0.01 260);
+}
