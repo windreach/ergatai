@@ -36,7 +36,7 @@ use agent_client_protocol::schema::v1::{
     ToolKind,
 };
 use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::{AcpAgent, Agent, Client, ConnectionTo};
+use agent_client_protocol::{AcpAgent, Agent, ByteStreams, Client, ConnectionTo};
 
 use ergatai_error::{ErgataiError, ErgataiResult};
 
@@ -638,6 +638,11 @@ pub struct AcpBackend {
     /// Optional MCP server factory for MCP-over-ACP. When enabled, agents can call
     /// ergatai's MCP tools through the native ACP transport.
     mcp_server_factory: Option<Arc<dyn crate::mcp_over_acp::McpServerFactory>>,
+    /// PID to agent_id mapping for file lock system.
+    /// Enables detection of which agent modified a file.
+    pid_to_agent: Arc<RwLock<HashMap<u32, String>>>,
+    /// Agent ID to PID reverse mapping for quick lookup.
+    agent_pids: Arc<RwLock<HashMap<String, u32>>>,
 }
 
 impl AcpBackend {
@@ -653,6 +658,8 @@ impl AcpBackend {
             max_auto_continues: 3,
             pending_elicitations: Arc::new(RwLock::new(HashMap::new())),
             mcp_server_factory: None,
+            pid_to_agent: Arc::new(RwLock::new(HashMap::new())),
+            agent_pids: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -714,6 +721,61 @@ impl AcpBackend {
             .map(|ws| ws.agent_counter.fetch_add(1, Ordering::SeqCst))
             .unwrap_or(0);
         format!("{}-agent-{}", workspace_id, count)
+    }
+
+    /// Register a PID to agent_id mapping.
+    /// Called when an agent process is spawned.
+    pub fn register_pid(&self, pid: u32, agent_id: &str) {
+        self.pid_to_agent.write().insert(pid, agent_id.to_string());
+        self.agent_pids.write().insert(agent_id.to_string(), pid);
+        debug!("Registered PID mapping: {} -> {}", pid, agent_id);
+    }
+
+    /// Unregister a PID to agent_id mapping.
+    /// Called when an agent process exits.
+    pub fn unregister_pid(&self, pid: u32, agent_id: &str) {
+        self.pid_to_agent.write().remove(&pid);
+        self.agent_pids.write().remove(agent_id);
+        debug!("Unregistered PID mapping: {} -> {}", pid, agent_id);
+    }
+
+    /// Get agent_id by PID with validation.
+    /// Used by file lock system to detect which agent modified a file.
+    /// Validates that the agent is still alive to prevent PID reuse attacks.
+    pub fn get_agent_by_pid(&self, pid: u32) -> Option<String> {
+        let agent_id = self.pid_to_agent.read().get(&pid).cloned()?;
+
+        // Verify the agent is still alive
+        if !self.is_agent_alive(&agent_id) {
+            // PID was reused or agent died, remove stale mapping
+            debug!(
+                pid = pid,
+                agent_id = %agent_id,
+                "Removing stale PID mapping (agent no longer alive)"
+            );
+            self.pid_to_agent.write().remove(&pid);
+            self.agent_pids.write().remove(&agent_id);
+            return None;
+        }
+
+        Some(agent_id)
+    }
+
+    /// Check if an agent is still alive and running.
+    fn is_agent_alive(&self, agent_id: &str) -> bool {
+        let agents = self.agents.read();
+        if let Some(entry) = agents.get(agent_id) {
+            // Check the alive flag
+            entry.alive.load(std::sync::atomic::Ordering::Relaxed)
+        } else {
+            false
+        }
+    }
+
+    /// Get PID by agent_id.
+    /// Used to check if an agent has a registered PID.
+    pub fn get_pid_by_agent(&self, agent_id: &str) -> Option<u32> {
+        self.agent_pids.read().get(agent_id).copied()
     }
 
     /// Remove agent entry.
@@ -1062,6 +1124,18 @@ impl AgentRuntimeBackend for AcpBackend {
             debug!(?direction, line = %line, "ACP wire debug");
         });
 
+        // Spawn the process manually to get the PID for file lock attribution.
+        // This replaces the implicit spawn inside connect_with().
+        let (child_stdin, child_stdout, child_stderr, child) = acp_agent
+            .spawn_process()
+            .map_err(|e| ErgataiError::internal(format!("Failed to spawn ACP agent process: {}", e)))?;
+
+        let pid = child.id();
+        info!(pid = pid, agent_id = %agent_id, "Spawned ACP agent process");
+
+        // Register PID mapping for file lock system.
+        self.register_pid(pid, &agent_id);
+
         // Shared state between this backend and the connection task.
         let output = Arc::new(OutputBuffer::new(OUTPUT_BUFFER_MAX_SIZE));
         let thoughts = Arc::new(OutputBuffer::new(OUTPUT_BUFFER_MAX_SIZE));
@@ -1157,13 +1231,48 @@ impl AgentRuntimeBackend for AcpBackend {
         // We can't capture `task_agent_id` itself because it's needed after the closure exits.
         let task_agent_id_for_save = task_agent_id.clone();
 
-        // Note: ACP SDK's connect_with() doesn't expose the child process PID.
-        // This limits file lock attribution via fanotify.
-        // TODO: Consider using spawn_process() directly or requesting ACP SDK to expose PID.
-        // For now, file lock enforcement relies on LD_PRELOAD (injected above) rather than PID-based fanotify.
+        // Note: We manually called spawn_process() above to get the PID for file lock attribution.
+        // Now we use ByteStreams to establish the ACP connection with the spawned process.
+
+        // Spawn a task to wait for the child process and clean up PID mapping on exit.
+        let cleanup_pid = pid;
+        let cleanup_agent_id = agent_id.clone();
+        let cleanup_backend = self.pid_to_agent.clone();
+        let cleanup_agent_pids = self.agent_pids.clone();
+        let mut child_for_wait = child;
+        tokio::spawn(async move {
+            let _ = child_for_wait.status().await;
+            info!(pid = cleanup_pid, agent_id = %cleanup_agent_id, "ACP agent process exited");
+            // Clean up PID mapping
+            cleanup_backend.write().remove(&cleanup_pid);
+            cleanup_agent_pids.write().remove(&cleanup_agent_id);
+        });
+
+        // Drain stderr in the background (simplified - just log and discard).
+        // Note: async_process uses futures_io::AsyncRead.
+        let mut child_stderr = child_stderr;
+        tokio::spawn(async move {
+            use futures::io::BufReader;
+            use futures::AsyncBufReadExt;
+            use futures::StreamExt;
+            let reader = BufReader::new(&mut child_stderr);
+            let mut lines = reader.lines();
+            while let Some(line) = lines.next().await {
+                match line {
+                    Ok(line) => debug!(line = %line, "ACP agent stderr"),
+                    Err(e) => {
+                        debug!(error = %e, "Failed to read stderr line");
+                        break;
+                    }
+                }
+            }
+        });
 
         // Spawn the ACP connection task.
         let join_handle = tokio::spawn(async move {
+            // Create ByteStreams transport from the spawned process stdin/stdout.
+            let transport = ByteStreams::new(child_stdin, child_stdout);
+
             // Build the ACP client with notification and permission handlers.
             let result = Client
                 .builder()
@@ -1359,7 +1468,7 @@ impl AgentRuntimeBackend for AcpBackend {
                     },
                     agent_client_protocol::on_receive_request!(),
                 )
-                .connect_with(acp_agent, |connection: ConnectionTo<Agent>| async move {
+                .connect_with(transport, |connection: ConnectionTo<Agent>| async move {
                     // Step 1: Initialize the ACP connection.
                     let init_response = connection
                         .send_request(InitializeRequest::new(ProtocolVersion::V1))
@@ -1806,6 +1915,21 @@ impl AgentRuntimeBackend for AcpBackend {
                 "ACP agent did not stop within grace period, aborting"
             );
             abort_handle.abort();
+
+            // If the task didn't exit cleanly, try to kill the process directly via PID.
+            if let Some(pid) = self.get_pid_by_agent(&handle.agent_id) {
+                info!(pid = pid, agent_id = %handle.agent_id, "Killing agent process directly");
+                #[cfg(unix)]
+                {
+                    let pid = nix::unistd::Pid::from_raw(pid as i32);
+                    let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+                }
+                #[cfg(not(unix))]
+                {
+                    // On non-Unix platforms, we rely on the child wait task to clean up.
+                    debug!(pid = pid, "Direct process kill not supported on this platform");
+                }
+            }
         }
 
         // Mark as not alive and remove entry.
@@ -1826,6 +1950,7 @@ impl AgentRuntimeBackend for AcpBackend {
             }
         }
 
+        // Note: PID mapping is cleaned up by the background wait task spawned in start_agent().
         info!(agent_id = %handle.agent_id, "ACP agent stopped");
         Ok(())
     }
@@ -2007,5 +2132,106 @@ mod tests {
         let handle = backend.create_workspace(spec).await.unwrap();
         assert_eq!(handle.id, "ws-test-1");
         assert_eq!(handle.backend, "acp");
+    }
+
+    /// Helper function to create a mock agent entry for testing
+    fn create_mock_agent_entry(backend: &AcpBackend, agent_id: &str) {
+        use std::sync::atomic::AtomicBool;
+
+        let (command_tx, _) = mpsc::channel(1);
+        let entry = AcpAgentEntry {
+            command_tx,
+            output: Arc::new(OutputBuffer::new(100)),
+            thoughts: Arc::new(OutputBuffer::new(100)),
+            tool_calls: Arc::new(ToolCallTracker::new(1000)),
+            usage: Arc::new(UsageTracker::new()),
+            plan: Arc::new(RwLock::new(None)),
+            elicitations: Arc::new(ElicitationTracker::new(100)),
+            session_title: Arc::new(RwLock::new(None)),
+            stop_reason: Arc::new(RwLock::new(None)),
+            continuation_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            config_options: Arc::new(RwLock::new(Vec::new())),
+            available_commands: Arc::new(RwLock::new(Vec::new())),
+            last_output_at: Arc::new(RwLock::new(Instant::now())),
+            alive: Arc::new(AtomicBool::new(true)),
+            handle: AgentHandle {
+                workspace: WorkspaceHandle {
+                    id: "test-ws".to_string(),
+                    backend: "acp".to_string(),
+                    metadata: HashMap::new(),
+                },
+                agent_id: agent_id.to_string(),
+                process_id: None,
+                metadata: HashMap::new(),
+            },
+            abort_handle: tokio::task::spawn(async {}).abort_handle(),
+            exit_code: Arc::new(RwLock::new(None)),
+        };
+        backend.agents.write().insert(agent_id.to_string(), entry);
+    }
+
+    #[tokio::test]
+    async fn test_pid_registration() {
+        let backend = AcpBackend::new();
+
+        // Create mock agent entry
+        create_mock_agent_entry(&backend, "test-agent-1");
+
+        // Register a PID mapping
+        backend.register_pid(12345, "test-agent-1");
+
+        // Verify bidirectional lookup
+        assert_eq!(backend.get_agent_by_pid(12345), Some("test-agent-1".to_string()));
+        assert_eq!(backend.get_pid_by_agent("test-agent-1"), Some(12345));
+
+        // Verify non-existent lookups
+        assert_eq!(backend.get_agent_by_pid(99999), None);
+        assert_eq!(backend.get_pid_by_agent("non-existent-agent"), None);
+    }
+
+    #[tokio::test]
+    async fn test_pid_unregistration() {
+        let backend = AcpBackend::new();
+
+        // Create mock agent entry
+        create_mock_agent_entry(&backend, "test-agent-2");
+
+        // Register and then unregister
+        backend.register_pid(54321, "test-agent-2");
+        assert_eq!(backend.get_agent_by_pid(54321), Some("test-agent-2".to_string()));
+
+        backend.unregister_pid(54321, "test-agent-2");
+        assert_eq!(backend.get_agent_by_pid(54321), None);
+        assert_eq!(backend.get_pid_by_agent("test-agent-2"), None);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_pid_mappings() {
+        let backend = AcpBackend::new();
+
+        // Create mock agent entries
+        create_mock_agent_entry(&backend, "agent-1");
+        create_mock_agent_entry(&backend, "agent-2");
+        create_mock_agent_entry(&backend, "agent-3");
+
+        // Register multiple agents
+        backend.register_pid(111, "agent-1");
+        backend.register_pid(222, "agent-2");
+        backend.register_pid(333, "agent-3");
+
+        // Verify all mappings
+        assert_eq!(backend.get_agent_by_pid(111), Some("agent-1".to_string()));
+        assert_eq!(backend.get_agent_by_pid(222), Some("agent-2".to_string()));
+        assert_eq!(backend.get_agent_by_pid(333), Some("agent-3".to_string()));
+
+        assert_eq!(backend.get_pid_by_agent("agent-1"), Some(111));
+        assert_eq!(backend.get_pid_by_agent("agent-2"), Some(222));
+        assert_eq!(backend.get_pid_by_agent("agent-3"), Some(333));
+
+        // Unregister one and verify others still work
+        backend.unregister_pid(222, "agent-2");
+        assert_eq!(backend.get_agent_by_pid(222), None);
+        assert_eq!(backend.get_agent_by_pid(111), Some("agent-1".to_string()));
+        assert_eq!(backend.get_agent_by_pid(333), Some("agent-3".to_string()));
     }
 }

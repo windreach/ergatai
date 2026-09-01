@@ -24,6 +24,7 @@ pub mod ipc_server;
 pub mod lock_manager;
 pub mod lock_mode;
 pub mod manager;
+pub mod monitor;
 pub mod performance;
 pub mod pid_resolver;
 pub mod priority;
@@ -46,6 +47,7 @@ pub use manager::{
     init_file_access_with_enforcer, register_workspace_for_project, shutdown_file_access,
     unregister_workspace_for_project,
 };
+pub use monitor::FileMonitor;
 pub use performance::{AsyncLockQueue, AsyncLockRequest, BatchOperations, LockCache};
 pub use pid_resolver::{CallbackPidResolver, NoopPidResolver, PidResolver};
 pub use priority::priority_to_number;

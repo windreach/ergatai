@@ -1396,6 +1396,7 @@ dependencies = [
  "chrono",
  "ergatai-error",
  "ergatai-lock",
+ "futures",
  "libc",
  "nix 0.27.1",
  "parking_lot",

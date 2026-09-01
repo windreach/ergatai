@@ -6,7 +6,7 @@
 use chrono::{DateTime, Utc};
 use ergatai_error::ErgataiError;
 use parking_lot::Mutex;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -366,7 +366,11 @@ impl FileLockManager {
                 heartbeat_at TEXT NOT NULL,
                 status TEXT NOT NULL,
                 updated_at TEXT,
-                priority INTEGER
+                priority INTEGER,
+                -- Phase 2: Hash version control for application-level locks
+                current_hash TEXT,
+                version INTEGER DEFAULT 1,
+                violation_count INTEGER DEFAULT 0
             );
 
             -- Migration: drop the old write-only index if it exists, then create
@@ -772,12 +776,16 @@ impl FileLockManager {
         let lock_id = uuid::Uuid::new_v4().to_string();
         let token_id = TokenId::new().to_string();
 
+        // Compute initial hash of the file at lock creation time
+        let initial_hash = self.compute_file_hash(&normalized_path).ok();
+
         let insert_result = conn.execute(
             "INSERT INTO file_locks (
                 id, file_path, agent_id, session_id, mode, scope, token_id,
                 reason, approved_by, created_at, expires_at,
-                heartbeat_interval_secs, heartbeat_at, status, priority
-            ) VALUES (?1, ?2, ?3, ?4, 'WRITE', '**', ?5, ?6, 'system-auto', ?7, ?8, ?9, ?10, 'ACTIVE', ?11)",
+                heartbeat_interval_secs, heartbeat_at, status, priority,
+                current_hash, version, violation_count
+            ) VALUES (?1, ?2, ?3, ?4, 'WRITE', '**', ?5, ?6, 'system-auto', ?7, ?8, ?9, ?10, 'ACTIVE', ?11, ?12, 1, 0)",
             params![
                 lock_id,
                 normalized_path,
@@ -790,6 +798,7 @@ impl FileLockManager {
                 60i64, // heartbeat_interval_secs
                 now.to_rfc3339(),
                 2i64,  // priority: medium
+                initial_hash,
             ],
         );
 
@@ -1626,6 +1635,9 @@ impl FileLockManager {
                         "EXPIRED" => TokenStatus::Expired,
                         _ => TokenStatus::Expired,
                     },
+                    current_hash: row.get(14)?,
+                    version: row.get(15)?,
+                    violation_count: row.get(16)?,
                 })
             })
             .map_err(|e| ErgataiError::internal(format!("Failed to query locks: {}", e)))?
@@ -2195,6 +2207,165 @@ impl FileLockManager {
     pub fn active_session_count(&self) -> usize {
         self.active_session_count.load(Ordering::Relaxed)
     }
+
+    // ── Phase 2: Hash Version Control ──
+
+    /// Compute SHA-256 hash of a file.
+    ///
+    /// Returns the hash as a hex string prefixed with "sha256:".
+    /// Used for hash-based version control in application-level locks.
+    /// Uses streaming computation to avoid loading entire file into memory.
+    pub fn compute_file_hash(&self, file_path: &str) -> Result<String, ErgataiError> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+
+        let full_path = self.project_root.join(file_path);
+        let mut file = std::fs::File::open(&full_path)
+            .map_err(|e| ErgataiError::internal(format!(
+                "Failed to open file {} for hash computation: {} (file may not exist or be unreadable)",
+                full_path.display(), e
+            )))?;
+
+        let mut hasher = Sha256::new();
+        let mut buffer = [0u8; 8192]; // 8KB chunks
+
+        loop {
+            let bytes_read = file.read(&mut buffer)
+                .map_err(|e| ErgataiError::internal(format!(
+                    "Failed to read file {} for hash computation: {}",
+                    full_path.display(), e
+                )))?;
+            if bytes_read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..bytes_read]);
+        }
+
+        Ok(format!("sha256:{:x}", hasher.finalize()))
+    }
+
+    /// Update the hash and version for a file lock.
+    ///
+    /// Called when an agent modifies a locked file. Increments the version
+    /// and updates the current_hash to reflect the new file content.
+    /// Computes hash within database transaction to prevent TOCTOU race.
+    pub fn update_file_hash(
+        &self,
+        file_path: &str,
+        agent_id: &str,
+    ) -> Result<(), ErgataiError> {
+        let normalized_path = self.validate_and_normalize_path(file_path)?;
+
+        let conn = self.conn.lock();
+        let tx = crate::lock_manager::TransactionGuard::begin(&conn)
+            .map_err(|e| ErgataiError::internal(format!("Failed to begin transaction: {}", e)))?;
+
+        // Compute hash while holding the database lock to prevent TOCTOU race
+        let new_hash = self.compute_file_hash(&normalized_path)?;
+
+        let rows_affected = conn.execute(
+            "UPDATE file_locks
+             SET current_hash = ?1, version = version + 1, updated_at = ?2
+             WHERE file_path = ?3 AND agent_id = ?4 AND status = 'ACTIVE' AND mode = 'WRITE'",
+            params![new_hash, Utc::now().to_rfc3339(), normalized_path, agent_id],
+        ).map_err(|e| ErgataiError::internal(format!("Failed to update file hash: {}", e)))?;
+
+        if rows_affected == 0 {
+            return Err(ErgataiError::internal(format!(
+                "No active WRITE lock found for file {} by agent {}",
+                file_path, agent_id
+            )));
+        }
+
+        tx.commit().map_err(|e| ErgataiError::internal(format!("Failed to commit transaction: {}", e)))?;
+
+        debug!(
+            file_path = %file_path,
+            agent_id = %agent_id,
+            new_hash = %new_hash,
+            "Updated file hash and version"
+        );
+
+        Ok(())
+    }
+
+    /// Check if an agent has permission to modify a file.
+    ///
+    /// Returns true if the agent has an active WRITE lock for the file.
+    /// Used by the file monitor to detect violations.
+    pub fn check_write_permission(
+        &self,
+        file_path: &str,
+        agent_id: &str,
+    ) -> Result<bool, ErgataiError> {
+        let normalized_path = self.validate_and_normalize_path(file_path)?;
+
+        let conn = self.conn.lock();
+        let has_lock: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM file_locks
+             WHERE file_path = ?1 AND agent_id = ?2 AND status = 'ACTIVE' AND mode = 'WRITE'",
+            params![normalized_path, agent_id],
+            |row| row.get(0),
+        ).map_err(|e| ErgataiError::internal(format!("Failed to check write permission: {}", e)))?;
+
+        Ok(has_lock)
+    }
+
+    /// Record a violation for a file lock.
+    ///
+    /// Called when an unauthorized modification is detected.
+    /// Increments the violation_count for the lock.
+    pub fn record_lock_violation(
+        &self,
+        file_path: &str,
+        agent_id: &str,
+    ) -> Result<(), ErgataiError> {
+        let normalized_path = self.validate_and_normalize_path(file_path)?;
+
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE file_locks
+             SET violation_count = violation_count + 1, updated_at = ?1
+             WHERE file_path = ?2 AND agent_id = ?3 AND status = 'ACTIVE'",
+            params![Utc::now().to_rfc3339(), normalized_path, agent_id],
+        ).map_err(|e| ErgataiError::internal(format!("Failed to record violation: {}", e)))?;
+
+        warn!(
+            file_path = %file_path,
+            agent_id = %agent_id,
+            "Recorded file lock violation"
+        );
+
+        Ok(())
+    }
+
+    /// Get the current hash and version for a locked file.
+    ///
+    /// Returns (current_hash, version) if the file has an active lock.
+    pub fn get_file_version(
+        &self,
+        file_path: &str,
+    ) -> Result<Option<(String, i64)>, ErgataiError> {
+        let normalized_path = self.validate_and_normalize_path(file_path)?;
+
+        let conn = self.conn.lock();
+        let result = conn.query_row(
+            "SELECT current_hash, version FROM file_locks
+             WHERE file_path = ?1 AND status = 'ACTIVE' AND mode = 'WRITE'
+             LIMIT 1",
+            params![normalized_path],
+            |row| {
+                let hash: Option<String> = row.get(0)?;
+                let version: i64 = row.get(1)?;
+                Ok((hash, version))
+            },
+        ).optional().map_err(|e| ErgataiError::internal(format!("Failed to get file version: {}", e)))?;
+
+        match result {
+            Some((Some(hash), version)) => Ok(Some((hash, version))),
+            _ => Ok(None),
+        }
+    }
 }
 
 // Helper functions for parsing database values
@@ -2289,5 +2460,46 @@ fn parse_file_lock_row(row: &rusqlite::Row) -> rusqlite::Result<FileLock> {
             "EXPIRED" => TokenStatus::Expired,
             _ => TokenStatus::Expired,
         },
+        current_hash: row.get(14)?,
+        version: row.get(15)?,
+        violation_count: row.get(16)?,
     })
+}
+
+#[cfg(test)]
+mod hash_version_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn create_test_manager() -> (FileLockManager, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("locks.db");
+        let manager = FileLockManager::new(&db_path, temp_dir.path().to_path_buf()).unwrap();
+        (manager, temp_dir)
+    }
+
+    #[test]
+    fn test_compute_file_hash() {
+        let (manager, temp_dir) = create_test_manager();
+
+        // Create a test file
+        let test_file = "test.txt";
+        let file_path = temp_dir.path().join(test_file);
+        fs::write(&file_path, "hello world").unwrap();
+
+        // Compute hash
+        let hash = manager.compute_file_hash(test_file).unwrap();
+        assert!(hash.starts_with("sha256:"));
+        assert_eq!(hash.len(), 71); // "sha256:" + 64 hex chars
+
+        // Same content should produce same hash
+        let hash2 = manager.compute_file_hash(test_file).unwrap();
+        assert_eq!(hash, hash2);
+
+        // Different content should produce different hash
+        fs::write(&file_path, "different content").unwrap();
+        let hash3 = manager.compute_file_hash(test_file).unwrap();
+        assert_ne!(hash, hash3);
+    }
 }

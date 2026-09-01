@@ -326,6 +326,10 @@ pub struct FileLock {
     pub heartbeat_at: DateTime<Utc>,
     /// Lock status.
     pub status: TokenStatus,
+    /// Phase 2: Hash version control
+    pub current_hash: Option<String>,
+    pub version: Option<i64>,
+    pub violation_count: Option<i64>,
 }
 
 /// Normalize a path for scope matching (H2 fix).
