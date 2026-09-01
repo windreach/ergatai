@@ -196,10 +196,9 @@ impl DagScheduler {
                 let mut ready_with_priority = Vec::new();
                 for node in ready {
                     // Use YAML priority directly (CPM removed)
-                    let priority =
-                        ergatai_lock::priority_to_number(&node.priority)
-                            .map(|p| p as u32)
-                            .unwrap_or(2);
+                    let priority = ergatai_lock::priority_to_number(&node.priority)
+                        .map(|p| p as u32)
+                        .unwrap_or(2);
 
                     ready_with_priority.push((node, priority));
                 }
@@ -342,10 +341,9 @@ impl DagScheduler {
             tokio::time::sleep(delay).await;
 
             // Use YAML priority directly (CPM removed)
-            let priority =
-                ergatai_lock::priority_to_number(&node_clone.priority)
-                    .map(|p| p as u32)
-                    .unwrap_or(2);
+            let priority = ergatai_lock::priority_to_number(&node_clone.priority)
+                .map(|p| p as u32)
+                .unwrap_or(2);
 
             // Submit without holding lock
             match self.generate_and_submit(&node_clone, priority).await {

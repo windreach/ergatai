@@ -28,7 +28,7 @@ use crate::types::{AgentHandle, BackendCapabilities, WaitResult, WorkspaceHandle
 /// 4. **Async-First** — all operations are async (network, process, container APIs)
 #[async_trait]
 pub trait AgentRuntimeBackend: Send + Sync + 'static {
-    /// Human-readable backend name (e.g., "pty", "docker", "ssh").
+    /// Human-readable backend name (e.g., "acp", "docker", "ssh").
     fn name(&self) -> &'static str;
 
     /// Declare what this backend can do.
@@ -47,6 +47,10 @@ pub trait AgentRuntimeBackend: Send + Sync + 'static {
         command: &str,
         instruction: Option<&str>,
     ) -> ErgataiResult<AgentHandle>;
+
+    /// Pre-compute the next agent_id for a workspace (for pre-registration).
+    /// This allows workspace registration before agent start to eliminate race conditions.
+    fn next_agent_id(&self, workspace_id: &str) -> String;
 
     /// Inject a message into a running agent.
     async fn inject_message(&self, handle: &AgentHandle, message: &str) -> ErgataiResult<()>;
@@ -163,6 +167,10 @@ mod tests {
             })
         }
 
+        fn next_agent_id(&self, workspace_id: &str) -> String {
+            format!("{}-agent-0", workspace_id)
+        }
+
         async fn start_agent(
             &self,
             handle: &WorkspaceHandle,
@@ -251,6 +259,7 @@ mod tests {
             work_dir: PathBuf::from("/tmp"),
             env: HashMap::new(),
             resources: ResourceLimits::default(),
+            capture_thoughts: false,
         };
         let handle = backend.create_workspace(spec).await.unwrap();
         assert_eq!(handle.id, "ws-1");

@@ -88,7 +88,7 @@ pub struct AgentHandle {
 
     /// **Runtime ID** — deterministic identifier from the backend.
     ///
-    /// For PTY backend: `{workspace_id}-agent-{counter}` (e.g., `ws1-agent-1`).
+    /// For ACP backend: `{workspace_id}-agent-{counter}` (e.g., `ws1-agent-1`).
     /// Not stable across process restarts. For cross-restart identification,
     /// use `metadata["ergatai_agent_id"]`.
     pub agent_id: String,

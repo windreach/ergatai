@@ -146,8 +146,50 @@ async fn async_main(args: Args) -> Result<()> {
     let peer_registry = ergatai_api::mcp::server::new_peer_registry();
 
     // Initialize AgentRuntime with ACP backend
-    let runtime_backend: std::sync::Arc<dyn ergatai_runtime::AgentRuntimeBackend> =
-        std::sync::Arc::new(ergatai_runtime::AcpBackend::new());
+    //
+    // Attach a SessionStore so agent sessions survive API-server restarts.
+    // On next start, `start_agent` will attempt `session/load` before `session/new`.
+    //
+    // Attach a LockPermissionHandler so ACP permission requests for file writes
+    // go through ergatai-lock (zero-trust file access control). Falls back to
+    // YOLO auto-approve when the lock manager isn't initialized.
+    //
+    // ERGATAI_AUTO_CONTINUE=1 enables automatic prompt continuation when the
+    // agent's stop_reason is max_tokens or max_turn_requests (up to 3 retries).
+    let runtime_backend: std::sync::Arc<dyn ergatai_runtime::AgentRuntimeBackend> = {
+        let mut backend = ergatai_runtime::AcpBackend::new()
+            .with_permission_handler(std::sync::Arc::new(
+                ergatai_api::lock_permission::LockPermissionHandler::new("default".to_string()),
+            ));
+        if std::env::var("ERGATAI_AUTO_CONTINUE")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false)
+        {
+            tracing::info!("Auto-continue enabled (ERGATAI_AUTO_CONTINUE=1, max 3 retries)");
+            backend = backend.with_auto_continue(3);
+        }
+        // Configure MCP-over-ACP if enabled
+        if ergatai_runtime::mcp_over_acp::is_enabled() {
+            tracing::info!("MCP-over-ACP enabled (ERGATAI_MCP_OVER_ACP_ENABLED=1)");
+            // Create the MCP server factory for ACP sessions
+            let mcp_factory = ergatai_api::mcp::ErgataiMcpServerFactory::new(
+                mcp_registry.clone(),
+                peer_registry.clone(),
+                "Ergatai MCP Tools".to_string(),
+            );
+            backend = backend.with_mcp_server_factory(mcp_factory);
+        }
+        match ergatai_runtime::SessionStore::open(".ergatai/sessions.db") {
+            Ok(store) => {
+                tracing::info!("Session store opened (.ergatai/sessions.db)");
+                std::sync::Arc::new(backend.with_session_store(store))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to open session store; session persistence disabled");
+                std::sync::Arc::new(backend)
+            }
+        }
+    };
 
     let mcp_cancellation_token = CancellationToken::new();
 
@@ -425,6 +467,10 @@ async fn async_main(args: Args) -> Result<()> {
         .nest_service("/mcp/agent-2", mcp_service_2)
         .nest_service("/mcp/agent-3", mcp_service_3)
         .nest_service("/mcp", mcp_service_default);
+
+    // Mount ACP server endpoint if enabled
+    let runtime = ergatai_runtime::get_agent_runtime();
+    let app = ergatai_api::api::acp_server::mount_acp_server(app, runtime);
 
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)
         .parse()

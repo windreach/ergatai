@@ -31,7 +31,7 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use ergatai_error::{ErgataiError, ErgataiResult};
 
@@ -62,13 +62,19 @@ impl AgentRegistration {
     /// Validate the registration before storing.
     pub fn validate(&self) -> ErgataiResult<()> {
         if self.name.trim().is_empty() {
-            return Err(ErgataiError::InvalidArgument("Profile name cannot be empty".to_string()));
+            return Err(ErgataiError::InvalidArgument(
+                "Profile name cannot be empty".to_string(),
+            ));
         }
         if self.command.trim().is_empty() {
-            return Err(ErgataiError::InvalidArgument("Profile command cannot be empty".to_string()));
+            return Err(ErgataiError::InvalidArgument(
+                "Profile command cannot be empty".to_string(),
+            ));
         }
         if self.agent_type.trim().is_empty() {
-            return Err(ErgataiError::InvalidArgument("Agent type cannot be empty".to_string()));
+            return Err(ErgataiError::InvalidArgument(
+                "Agent type cannot be empty".to_string(),
+            ));
         }
         // Validate agent type
         match self.agent_type.to_lowercase().as_str() {
@@ -112,6 +118,30 @@ impl ProfileRegistry {
             ErgataiError::internal(format!("Failed to open profile registry database: {}", e))
         })?;
 
+        // Enable WAL mode for better concurrent read/write performance
+        conn.execute_batch(
+            "
+            PRAGMA journal_mode=WAL;
+            PRAGMA synchronous=NORMAL;
+            PRAGMA cache_size=-64000;
+            PRAGMA foreign_keys=ON;
+            PRAGMA wal_autocheckpoint=100;
+            ",
+        )
+        .map_err(|e| ErgataiError::internal(format!("Failed to set pragmas: {}", e)))?;
+
+        // Verify WAL mode was actually enabled
+        let journal_mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .map_err(|e| ErgataiError::internal(format!("Failed to query journal mode: {}", e)))?;
+        if journal_mode.to_lowercase() != "wal" {
+            warn!(
+                "Failed to enable WAL journal mode for profile registry (current: {}). \
+                 Concurrent read/write performance may be degraded.",
+                journal_mode
+            );
+        }
+
         conn.execute(
             "CREATE TABLE IF NOT EXISTS agent_registrations (
                 name TEXT PRIMARY KEY,
@@ -125,7 +155,10 @@ impl ProfileRegistry {
             ErgataiError::internal(format!("Failed to create agent_registrations table: {}", e))
         })?;
 
-        debug!("Profile registry initialized at {}", self.db_path);
+        debug!(
+            "Profile registry initialized at {} (WAL mode)",
+            self.db_path
+        );
         Ok(())
     }
 
@@ -173,9 +206,7 @@ impl ProfileRegistry {
                 "SELECT name, command, agent_type, created_at
                  FROM agent_registrations WHERE name = ?1",
             )
-            .map_err(|e| {
-                ErgataiError::internal(format!("Failed to prepare query: {}", e))
-            })?;
+            .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
 
         let result = stmt
             .query_row(params![name], |row| {
@@ -192,9 +223,7 @@ impl ProfileRegistry {
                 })
             })
             .optional()
-            .map_err(|e| {
-                ErgataiError::internal(format!("Failed to get agent profile: {}", e))
-            })?;
+            .map_err(|e| ErgataiError::internal(format!("Failed to get agent profile: {}", e)))?;
 
         Ok(result)
     }
@@ -210,9 +239,7 @@ impl ProfileRegistry {
                 "SELECT name, command, agent_type, created_at
                  FROM agent_registrations ORDER BY created_at DESC",
             )
-            .map_err(|e| {
-                ErgataiError::internal(format!("Failed to prepare query: {}", e))
-            })?;
+            .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
 
         let profiles = stmt
             .query_map([], |row| {
@@ -228,9 +255,7 @@ impl ProfileRegistry {
                     created_at,
                 })
             })
-            .map_err(|e| {
-                ErgataiError::internal(format!("Failed to list agent profiles: {}", e))
-            })?
+            .map_err(|e| ErgataiError::internal(format!("Failed to list agent profiles: {}", e)))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| {
                 ErgataiError::internal(format!("Failed to collect agent profiles: {}", e))
@@ -246,7 +271,10 @@ impl ProfileRegistry {
         })?;
 
         let rows_affected = conn
-            .execute("DELETE FROM agent_registrations WHERE name = ?1", params![name])
+            .execute(
+                "DELETE FROM agent_registrations WHERE name = ?1",
+                params![name],
+            )
             .map_err(|e| {
                 ErgataiError::internal(format!("Failed to delete agent profile: {}", e))
             })?;
@@ -347,10 +375,12 @@ mod tests {
 
     #[test]
     fn test_validate_registration() {
-        let valid = AgentRegistration::new("test".to_string(), "cmd".to_string(), "acp".to_string());
+        let valid =
+            AgentRegistration::new("test".to_string(), "cmd".to_string(), "acp".to_string());
         assert!(valid.validate().is_ok());
 
-        let empty_name = AgentRegistration::new("".to_string(), "cmd".to_string(), "acp".to_string());
+        let empty_name =
+            AgentRegistration::new("".to_string(), "cmd".to_string(), "acp".to_string());
         assert!(empty_name.validate().is_err());
 
         let invalid_type =

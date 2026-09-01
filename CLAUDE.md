@@ -97,13 +97,19 @@ crates/
 │   ├── src/api/                 REST API handlers
 │   │   ├── agents.rs              agent 管理 (list/spawn/kill/message)
 │   │   ├── workspaces.rs          workspace 管理 (list/create/delete)
+│   │   ├── agent_profiles.rs      agent profile 注册表 CRUD
+│   │   ├── conversations.rs       对话查询
+│   │   ├── locks.rs               文件锁状态查询
+│   │   ├── activity.rs            活动事件查询
+│   │   ├── activity_routes.rs     活动 SSE 路由
 │   │   └── status.rs              系统状态聚合
 │   └── src/mcp/                 MCP 协议层
 │       ├── server.rs              MCP 工具实现 (全部 tool handler)
 │       ├── message_delivery.rs    NATS consumer → AgentRuntime 投递
 │       ├── rate_limiter.rs        每 agent 滑动窗口速率限制
 │       ├── conversation.rs        AutoGen 风格对话管理 (一问一答循环防护)
-│       └── batch_aggregator.rs    群发消息聚合器 (1min 窗口合并回复)
+│       ├── agent_binding.rs       MCP peer → runtime agent 绑定
+│       └── request_monitor.rs     reqwatch 请求监控 (追踪 pending + 超时检测)
 ├── ergatai-runtime/       Agent 运行时 (发现、注入、生命周期)
 │   └── src/
 │       ├── runtime.rs             AgentRuntime 门面
@@ -140,7 +146,6 @@ crates/
 │   └── src/
 │       ├── yaml_parser.rs         YAML 解析 + 9 条严格校验规则
 │       ├── dag_topology.rs        TaskNode / TaskGraph / TaskComplexity
-│       ├── tree_topology.rs       TaskTree (树形拓扑)
 │       ├── template.rs            {{var}} 模板展开
 │       ├── condition.rs           条件表达式求值
 │       └── context.rs             DAG 上下文 (全局变量)
@@ -178,8 +183,12 @@ crates/
         ├── client/                HTTP + WebSocket 客户端
         └── output/                输出格式化
 desktop/                   桌面应用 (Tauri + React)
-└── src/                     React 前端 (Vite + TypeScript)
-    └── src-tauri/           Tauri Rust 后端壳
+├── src/                     React 前端 (Vite + TypeScript)
+├── src-tauri/               Tauri Rust 后端壳
+├── index.html               入口 HTML
+├── package.json             Node 依赖
+├── vite.config.ts           Vite 配置
+└── tsconfig.json            TypeScript 配置
 ```
 
 ---
@@ -327,7 +336,6 @@ Agent 通过 MCP 协议 (JSON-RPC over Streamable HTTP, protocol 2025-06-18) 调
 | `ErgataiMcpServer` | `api/mcp/server.rs` | MCP 服务器 (工具注册 + 协议处理) |
 | `AgentRateLimiter` | `api/mcp/rate_limiter.rs` | 滑动窗口速率限制 (全局 OnceLock) |
 | `ConversationManager` | `api/mcp/conversation.rs` | AutoGen 风格对话管理 (循环防护) |
-| `BatchAggregator` | `api/mcp/batch_aggregator.rs` | 群发消息聚合器 |
 | `RequestMonitor` | `api/mcp/request_monitor.rs` | reqwatch 请求监控 (追踪 pending requests + 超时检测) |
 | `TaskGraph` | `dag/dag_topology.rs` | DAG 图结构 (nodes + 预算 + 通信) |
 | `TaskNode` | `dag/dag_topology.rs` | DAG 节点 (agent, task, depends_on, priority, complexity...) |
@@ -436,7 +444,6 @@ DAG 调度器多层防御机制，防止资源失控和 agent 僵死：
 ### 对话防护
 
 - **ConversationManager**：AutoGen 风格一问一答循环防护，`max_turns` 到达后自动重置。
-- **BatchAggregator**：1 分钟内 A 发给 ≥2 个 agent → 群发模式，收集回复合并推送。
 
 ### 消息可观察性
 

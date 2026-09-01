@@ -75,7 +75,6 @@ impl<'a> Drop for TransactionGuard<'a> {
 /// `ErgataiError::ResourceLimitExceeded`.
 const MAX_LOCKS_PER_AGENT: usize = 50;
 
-
 /// File lock manager backed by SQLite.
 ///
 /// Thread-safe via internal Mutex. All operations use BEGIN IMMEDIATE for atomicity.
@@ -107,9 +106,6 @@ pub struct FileLockManager {
     /// Updated by `register_session` / `unregister_session` from the ACP session
     /// lifecycle. Read lock-free via `Ordering::Relaxed`.
     active_session_count: Arc<AtomicUsize>,
-
-
-
 
     /// In-memory cache of active WRITE locks for fast fanotify decision path.
     ///
@@ -153,10 +149,7 @@ impl FileLockManager {
     ///
     /// Enables WAL mode and creates tables if they don't exist.
     /// Optionally accepts a NATS client for multi-agent approval flow.
-    pub fn new(
-        db_path: &Path,
-        project_root: PathBuf,
-    ) -> Result<Self, ErgataiError> {
+    pub fn new(db_path: &Path, project_root: PathBuf) -> Result<Self, ErgataiError> {
         info!("Initializing FileLockManager at {:?}", db_path);
 
         let conn = Connection::open(db_path)
@@ -214,7 +207,10 @@ impl FileLockManager {
         // token-heartbeat path.
         if let Ok(n) = manager.expire_stale_locks() {
             if n > 0 {
-                info!(count = n, "Expired stale locks from previous runs at startup");
+                info!(
+                    count = n,
+                    "Expired stale locks from previous runs at startup"
+                );
             }
         }
 
@@ -623,7 +619,6 @@ impl FileLockManager {
         Ok(result)
     }
 
-
     /// Check whether a specific agent currently holds an active WRITE lock on a file.
     ///
     /// Uses the in-memory cache first (fast path), falls back to SQLite.
@@ -755,9 +750,11 @@ impl FileLockManager {
         // will get a UNIQUE constraint violation, which we log and ignore (the
         // second agent's lock will be picked up by the normal acquire_lock path).
         let now = Utc::now();
-        let ttl_secs = 3600u64; // 1 hour default TTL for auto-acquired locks
-                                // Checked conversion: ttl_secs as i64 would silently overflow if > i64::MAX,
-                                // causing chrono::Duration::seconds() to panic with a negative value.
+        let ttl_secs = 300u64; // 5 minutes default TTL for auto-acquired locks
+                               // Reduced from 1 hour to 5 minutes for faster lock reclamation.
+                               // If agent crashes, locks will be reclaimed within 5 minutes instead of 1 hour.
+                               // Checked conversion: ttl_secs as i64 would silently overflow if > i64::MAX,
+                               // causing chrono::Duration::seconds() to panic with a negative value.
         let ttl_i64 = i64::try_from(ttl_secs).unwrap_or(i64::MAX);
         let expires_at = now + chrono::Duration::seconds(ttl_i64);
 
@@ -887,8 +884,6 @@ impl FileLockManager {
 
         SnapshotManager::get_latest_snapshot(&conn, normalized_path)
     }
-
-
 
     /// Check if a file is locked for writing.
     pub fn is_file_locked(&self, file_path: &str) -> Result<bool, ErgataiError> {
@@ -1358,9 +1353,7 @@ impl FileLockManager {
                  WHERE status = 'ACTIVE' AND expires_at < ?1",
                 params![now],
             )
-            .map_err(|e| {
-                ErgataiError::internal(format!("Failed to expire stale locks: {}", e))
-            })?;
+            .map_err(|e| ErgataiError::internal(format!("Failed to expire stale locks: {}", e)))?;
 
         if expired > 0 {
             info!(
@@ -1409,9 +1402,7 @@ impl FileLockManager {
                  WHERE token_id = ?2 AND file_path = ?3",
                 params![now, token_id, normalized_path],
             )
-            .map_err(|e| {
-                ErgataiError::internal(format!("Failed to expire lock: {}", e))
-            })?;
+            .map_err(|e| ErgataiError::internal(format!("Failed to expire lock: {}", e)))?;
 
             // Audit log
             conn.execute(
@@ -2300,4 +2291,3 @@ fn parse_file_lock_row(row: &rusqlite::Row) -> rusqlite::Result<FileLock> {
         },
     })
 }
-

@@ -1,0 +1,6 @@
+   Compiling ergatai-collab v0.1.0 (/root/ergatai/crates/ergatai-collab)
+   Compiling ergatai-core v0.1.0 (/root/ergatai/crates/ergatai-core)
+   Compiling ergatai-api v0.1.0 (/root/ergatai/crates/ergatai-api)
+error: couldn't create a temp dir: No space left on device (os error 28) at path "/root/ergatai/target/debug/deps/rmetayVtp7N"
+
+error: could not compile `ergatai-api` (lib test) due to 1 previous error

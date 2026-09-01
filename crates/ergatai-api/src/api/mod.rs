@@ -1,3 +1,4 @@
+pub mod acp_server;
 pub mod activity;
 pub mod activity_routes;
 pub mod agent_profiles;

@@ -33,4 +33,3 @@ pub fn prompt_required(prompt: &str) -> String {
         println!("  ⚠ This field is required");
     }
 }
-

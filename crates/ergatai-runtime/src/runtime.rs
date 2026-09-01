@@ -158,9 +158,43 @@ impl AgentRuntime {
             self.backend.create_workspace(spec.clone()).await?
         };
 
+        // Pre-compute agent_id for workspace registration before starting the agent.
+        // This eliminates the race window where agent could modify files before workspace is registered.
+        // Note: next_agent_id() increments the counter, so start_agent() must use this pre-computed ID.
+        let agent_id = self.backend.next_agent_id(&workspace.id);
+
+        // Register workspace boundary BEFORE starting the agent to prevent race condition.
+        // Convert absolute work_dir to relative path (relative to project root)
+        let workspace_dir = if let Ok(relative) =
+            std::path::Path::new(&spec.work_dir).strip_prefix(&std::env::current_dir().unwrap_or_default())
+        {
+            relative.to_string_lossy().to_string()
+        } else {
+            spec.work_dir.to_string_lossy().to_string()
+        };
+
+        if let Err(e) = ergatai_lock::register_workspace_for_project("default", &agent_id, &workspace_dir).await {
+            warn!(
+                agent_id = %agent_id,
+                workspace = %workspace_dir,
+                error = %e,
+                "Failed to pre-register workspace boundary (non-fatal, continuing)"
+            );
+        } else {
+            debug!(
+                agent_id = %agent_id,
+                workspace = %workspace_dir,
+                "Pre-registered workspace boundary before agent start"
+            );
+        }
+
+        // Pass the pre-computed agent_id via workspace metadata
+        let mut workspace_with_id = workspace.clone();
+        workspace_with_id.metadata.insert("precomputed_agent_id".to_string(), agent_id.clone());
+
         let handle = self
             .backend
-            .start_agent(&workspace, command, instruction)
+            .start_agent(&workspace_with_id, command, instruction)
             .await?;
 
         let agent_id = handle.agent_id.clone();
@@ -207,7 +241,7 @@ impl AgentRuntime {
 
     /// Inject a message into a running agent.
     ///
-    /// Uses the backend to inject text directly into the agent's PTY.
+    /// Uses the backend to inject text directly into the agent's input.
     /// Supports both runtime IDs (e.g., "%198") and MCP IDs (e.g., "opencode@abcd1234")
     /// — MCP IDs are resolved to runtime IDs via the `mcp_index` mapping.
     pub async fn inject_message(&self, agent_id: &str, message: &str) -> ErgataiResult<()> {
@@ -225,7 +259,7 @@ impl AgentRuntime {
                 .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", runtime_id)))?
         };
 
-        // Deliver via backend injection (PTY write)
+        // Deliver via backend injection
         self.backend.inject_message(&info.handle, message).await
     }
 
@@ -251,15 +285,11 @@ impl AgentRuntime {
             warn!(agent_id = agent_id, error = %e, "Failed to stop agent backend");
         }
 
-        if let Err(e) = self.backend.cleanup_workspace(&info.handle.workspace).await {
-            warn!(
-                agent_id = agent_id,
-                error = %e,
-                "Failed to cleanup workspace"
-            );
-        }
+        // NOTE: Do NOT call cleanup_workspace here. The workspace may be shared
+        // by multiple agents. Workspace lifecycle should be managed explicitly
+        // via a dedicated delete_workspace API, not implicitly when one agent stops.
 
-        info!(agent_id = agent_id, "Agent stopped and cleaned up");
+        info!(agent_id = agent_id, "Agent stopped");
         Ok(())
     }
 
@@ -463,7 +493,7 @@ impl AgentRuntime {
                         let old_mcp = old_info.mcp_agent_id.clone();
                         let old_stable = old_info.stable_id.clone();
                         // Preserve MCP binding across restart — the MCP client is still
-                        // connected, just the underlying PTY process was recreated.
+                        // connected, just the underlying agent process was recreated.
                         preserved_mcp_id = old_mcp.clone();
                         indices_to_clean.push((
                             old_agent_id.clone(),
@@ -474,7 +504,7 @@ impl AgentRuntime {
                     }
                 } else {
                     // Same agent - update metadata but preserve MCP binding.
-                    // The PTY backend re-discovery returns workspace ID format
+                    // The ACP backend re-discovery returns workspace ID format
                     // (e.g., "start-opencode-3-agent-1"). If the agent is already
                     // MCP-bound, keep the MCP URL path name as ergatai_agent_id
                     // to maintain ID consistency across list_agents and message routing.
@@ -850,7 +880,7 @@ impl AgentRuntime {
         }
 
         // Find runtime agent with matching ergatai_agent_id.
-        // The PTY backend sets ergatai_agent_id to the workspace ID format
+        // The ACP backend sets ergatai_agent_id to the workspace ID format
         // (e.g., "start-opencode-3-agent-1"), while agent_identifier comes from
         // the MCP URL path (e.g., "agent-1").
         //
@@ -1242,7 +1272,7 @@ impl AgentRuntime {
         self.backend.wait_for_exit(&info.handle, timeout).await
     }
 
-    /// Get how long since the agent last produced PTY output.
+    /// Get how long since the agent last produced output.
     /// Used by DAG watchdog to detect idle agents.
     /// Returns None if the agent is not found or the backend doesn't track output.
     pub async fn agent_last_output_age(&self, agent_id: &str) -> Option<std::time::Duration> {
@@ -1432,7 +1462,7 @@ impl AgentRuntime {
             };
 
             // Extract agent info before mutating registry
-            let (agent_uuid, mcp_agent_id, stable_id, workspace_handle) = {
+            let (agent_uuid, mcp_agent_id, stable_id) = {
                 let mut reg = registry.write().await;
                 if let Some(info) = reg.get_mut(&agent_id) {
                     // Fill in the real duration for Terminated states
@@ -1460,7 +1490,6 @@ impl AgentRuntime {
                         info.agent_uuid.clone(),
                         info.mcp_agent_id.clone(),
                         info.stable_id.clone(),
-                        info.handle.workspace.clone(),
                     )
                 } else {
                     // Agent was already removed (e.g., by stop_agent)
@@ -1502,14 +1531,8 @@ impl AgentRuntime {
             }
             unhealthy_streaks.lock().await.remove(&agent_id);
 
-            // Cleanup workspace
-            if let Err(e) = backend.cleanup_workspace(&workspace_handle).await {
-                debug!(
-                    agent_id = agent_id,
-                    error = %e,
-                    "Failed to cleanup workspace after agent exit (may already be gone)"
-                );
-            }
+            // NOTE: Do NOT cleanup workspace here. The workspace may be shared
+            // by multiple agents. Workspace lifecycle is managed explicitly.
 
             info!(
                 agent_id = agent_id,
@@ -1589,6 +1612,9 @@ mod tests {
                 metadata: HashMap::new(),
             })
         }
+        fn next_agent_id(&self, workspace_id: &str) -> String {
+            format!("{}-agent-0", workspace_id)
+        }
         async fn start_agent(
             &self,
             handle: &WorkspaceHandle,
@@ -1648,6 +1674,7 @@ mod tests {
             work_dir: PathBuf::from("/tmp"),
             env: HashMap::new(),
             resources: Default::default(),
+            capture_thoughts: false,
         }
     }
 

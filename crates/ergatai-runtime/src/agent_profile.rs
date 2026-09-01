@@ -233,7 +233,21 @@ pub fn load_profile(
 ///
 /// # Returns
 /// Path to the profile file (may not exist)
+///
+/// # Security
+/// Validates that profile_name doesn't contain path separators or ".." to prevent
+/// path traversal attacks.
 pub fn get_profile_path(project_root: &Path, profile_name: &str) -> PathBuf {
+    // Validate profile_name to prevent path traversal
+    if profile_name.contains('/') || profile_name.contains('\\') || profile_name.contains("..") {
+        // Return a path that won't exist rather than panicking
+        // This is safer than allowing arbitrary path construction
+        return project_root
+            .join(".ergatai")
+            .join("profiles")
+            .join("INVALID_PROFILE_NAME.yaml");
+    }
+
     project_root
         .join(".ergatai")
         .join("profiles")

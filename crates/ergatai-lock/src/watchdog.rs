@@ -410,9 +410,7 @@ impl Watchdog {
                 let file_path = &lock.file_path;
 
                 // Expire the lock
-                if let Err(e) = lock_manager
-                    .expire_lock(file_token.id.as_str(), file_path)
-                {
+                if let Err(e) = lock_manager.expire_lock(file_token.id.as_str(), file_path) {
                     error!(
                         token_id = token_id,
                         file_token_id = file_token.id.as_str(),

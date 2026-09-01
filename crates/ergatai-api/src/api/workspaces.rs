@@ -68,6 +68,7 @@ pub async fn create_workspace(
             .into(),
         env,
         resources: ResourceLimits::default(),
+        capture_thoughts: false,
     };
 
     match runtime.backend().create_workspace(spec).await {

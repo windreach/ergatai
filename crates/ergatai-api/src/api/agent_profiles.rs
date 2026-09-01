@@ -1,11 +1,6 @@
 //! Agent Profile Registry API handlers
 
-use axum::{
-    extract::Path,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::Path, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
 use ergatai_runtime::profile_registry::{AgentRegistration, ProfileRegistry};
@@ -52,9 +47,7 @@ pub struct ListProfilesResponse {
 /// Register a new agent profile
 ///
 /// POST /api/v1/agent-profiles
-pub async fn register_profile(
-    Json(request): Json<RegisterProfileRequest>,
-) -> impl IntoResponse {
+pub async fn register_profile(Json(request): Json<RegisterProfileRequest>) -> impl IntoResponse {
     let registry = match ProfileRegistry::new(profile_registry_db_path()) {
         Ok(r) => r,
         Err(e) => {
@@ -84,7 +77,9 @@ pub async fn register_profile(
         Err(e) => {
             let status = if e.to_string().contains("already exists") {
                 StatusCode::CONFLICT
-            } else if e.to_string().contains("cannot be empty") || e.to_string().contains("Invalid agent type") {
+            } else if e.to_string().contains("cannot be empty")
+                || e.to_string().contains("Invalid agent type")
+            {
                 StatusCode::BAD_REQUEST
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -156,17 +151,15 @@ pub async fn get_profile(Path(name): Path<String>) -> impl IntoResponse {
     };
 
     match registry.get(&name).await {
-        Ok(Some(registration)) => {
-            match serde_json::to_value(ProfileResponse::from(registration)) {
-                Ok(value) => (StatusCode::OK, Json(value)),
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "error": format!("Failed to serialize profile: {}", e)
-                    })),
-                ),
-            }
-        }
+        Ok(Some(registration)) => match serde_json::to_value(ProfileResponse::from(registration)) {
+            Ok(value) => (StatusCode::OK, Json(value)),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to serialize profile: {}", e)
+                })),
+            ),
+        },
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({

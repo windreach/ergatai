@@ -980,6 +980,7 @@ identifiers, configuration values, etc.).
             work_dir: worktree_path.to_path_buf(),
             env: std::collections::HashMap::new(),
             resources: Default::default(),
+            capture_thoughts: false,
         };
 
         // 3. Build the agent launch command.

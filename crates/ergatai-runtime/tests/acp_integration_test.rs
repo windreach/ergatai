@@ -5,8 +5,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ergatai_runtime::backends::acp::AcpBackend;
 use ergatai_runtime::backend::AgentRuntimeBackend;
+use ergatai_runtime::backends::acp::AcpBackend;
 use ergatai_runtime::types::{ResourceLimits, WorkspaceSpec};
 
 /// Build the command string for the mock ACP agent.
@@ -17,12 +17,16 @@ fn mock_agent_command() -> String {
 }
 
 /// Create a test workspace.
-async fn create_test_workspace(backend: &AcpBackend, id: &str) -> ergatai_runtime::types::WorkspaceHandle {
+async fn create_test_workspace(
+    backend: &AcpBackend,
+    id: &str,
+) -> ergatai_runtime::types::WorkspaceHandle {
     let spec = WorkspaceSpec {
         id: id.to_string(),
         work_dir: PathBuf::from("/tmp"),
         env: Default::default(),
         resources: ResourceLimits::default(),
+        capture_thoughts: false,
     };
     backend.create_workspace(spec).await.unwrap()
 }
@@ -40,7 +44,7 @@ async fn test_acp_start_agent_and_inject_message() {
         .await
         .expect("start_agent should succeed");
 
-    assert_eq!(handle.agent_id, "acp-agent-0");
+    assert_eq!(handle.agent_id, "ws-test-acp-1-agent-0");
 
     // Give the agent a moment to fully initialize.
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -129,14 +133,28 @@ async fn test_acp_multiple_agents() {
     assert!(backend.is_alive(&h2).await.unwrap());
 
     // Send messages to both.
-    backend.inject_message(&h1, "msg for agent 1").await.unwrap();
-    backend.inject_message(&h2, "msg for agent 2").await.unwrap();
+    backend
+        .inject_message(&h1, "msg for agent 1")
+        .await
+        .unwrap();
+    backend
+        .inject_message(&h2, "msg for agent 2")
+        .await
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Each should have its own output.
-    let out1 = backend.capture_output(&h1).await.unwrap().unwrap_or_default();
-    let out2 = backend.capture_output(&h2).await.unwrap().unwrap_or_default();
+    let out1 = backend
+        .capture_output(&h1)
+        .await
+        .unwrap()
+        .unwrap_or_default();
+    let out2 = backend
+        .capture_output(&h2)
+        .await
+        .unwrap()
+        .unwrap_or_default();
     assert!(out1.contains("msg for agent 1"));
     assert!(out2.contains("msg for agent 2"));
 

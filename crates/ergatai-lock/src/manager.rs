@@ -95,8 +95,7 @@ pub async fn init_file_access(project_id: &str, project_root: &Path) -> ErgataiR
     tokio::fs::create_dir_all(lock_db_parent).await?;
 
     // Create FileLockManager
-    let lock_manager =
-        FileLockManager::new(&lock_db_path, project_root.to_path_buf())?;
+    let lock_manager = FileLockManager::new(&lock_db_path, project_root.to_path_buf())?;
 
     let lock_manager = Arc::new(lock_manager);
 
@@ -184,10 +183,7 @@ pub async fn init_file_access_with_enforcer(
     })?;
     tokio::fs::create_dir_all(lock_db_parent).await?;
 
-    let lock_manager = FileLockManager::new(
-        &lock_db_path,
-        project_root.to_path_buf(),
-    )?;
+    let lock_manager = FileLockManager::new(&lock_db_path, project_root.to_path_buf())?;
 
     let lock_manager = Arc::new(lock_manager);
 

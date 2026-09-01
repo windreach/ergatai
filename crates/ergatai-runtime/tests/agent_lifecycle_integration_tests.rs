@@ -72,6 +72,10 @@ impl AgentRuntimeBackend for MockBackend {
         })
     }
 
+    fn next_agent_id(&self, workspace_id: &str) -> String {
+        format!("{}-agent-0", workspace_id)
+    }
+
     async fn start_agent(
         &self,
         handle: &WorkspaceHandle,
@@ -141,6 +145,7 @@ fn make_spec(id: &str) -> WorkspaceSpec {
         work_dir: PathBuf::from("/tmp"),
         env: HashMap::new(),
         resources: Default::default(),
+        capture_thoughts: false,
     }
 }
 

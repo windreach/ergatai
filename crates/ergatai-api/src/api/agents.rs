@@ -63,6 +63,13 @@ pub struct AgentInfoResponse {
     pub is_processing: bool,
     pub created_at: String,
     pub last_heartbeat: String,
+    /// Session title reported by the agent via `SessionUpdate::SessionInfoUpdate`.
+    pub session_title: Option<String>,
+    /// Stop reason from the most recent prompt response (e.g., EndTurn, MaxTokens,
+    /// Refusal, Cancelled). `None` if no prompt has completed yet.
+    pub stop_reason: Option<String>,
+    /// Number of automatic prompt continuations performed (when auto-continue is enabled).
+    pub continuation_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,6 +80,12 @@ pub struct ErrorResponse {
 pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
     let runtime = get_agent_runtime();
     let agents = runtime.list_agents().await;
+
+    // Downcast once to fetch per-agent ACP metadata (session_title).
+    let acp_backend = runtime
+        .backend()
+        .as_any()
+        .downcast_ref::<ergatai_runtime::AcpBackend>();
 
     let response: Vec<AgentInfoResponse> = agents
         .into_iter()
@@ -87,6 +100,13 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
                 .get("work_dir")
                 .cloned()
                 .unwrap_or_default();
+            let session_title = acp_backend
+                .and_then(|b| b.get_agent_session_title(&a.agent_id));
+            let stop_reason = acp_backend
+                .and_then(|b| b.get_agent_stop_reason(&a.agent_id));
+            let continuation_count = acp_backend
+                .and_then(|b| b.get_agent_continuation_count(&a.agent_id))
+                .unwrap_or(0);
             AgentInfoResponse {
                 agent_id: a.agent_id,
                 stable_id: a.stable_id,
@@ -103,6 +123,9 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
                 is_processing: a.lifecycle.is_processing(),
                 created_at: a.created_at.to_rfc3339(),
                 last_heartbeat: a.last_heartbeat.to_rfc3339(),
+                session_title,
+                stop_reason,
+                continuation_count,
             }
         })
         .collect();
@@ -232,6 +255,7 @@ pub async fn spawn_agent(
         work_dir: work_dir_str.as_str().into(),
         env,
         resources: ResourceLimits::default(),
+        capture_thoughts: false,
     };
 
     match runtime
@@ -239,52 +263,13 @@ pub async fn spawn_agent(
         .await
     {
         Ok(agent_id) => {
-            // Register workspace boundary for auto-lock attribution.
-            // Routes to both enforcer (fanotify, Linux) and watcher (cross-platform
-            // fallback). If neither is active, registration is a no-op (advisory mode).
-            // Convert absolute work_dir to relative path (relative to project root)
-            let workspace_dir = if let Ok(relative) =
-                std::path::Path::new(&work_dir_str).strip_prefix(&state.default_cwd)
-            {
-                relative.to_string_lossy().to_string()
-            } else {
-                work_dir_str.clone()
-            };
-
-            match ergatai_lock::register_workspace_for_project("default", &agent_id, &workspace_dir)
-                .await
-            {
-                Ok(()) => {
-                    tracing::info!(
-                        agent_id = %agent_id,
-                        workspace = %workspace_dir,
-                        "Registered workspace boundary for agent"
-                    );
-                }
-                Err(e) => {
-                    // Failed to register workspace — this is a real error.
-                    // Kill the agent we just started and return error.
-                    tracing::error!(
-                        agent_id = %agent_id,
-                        error = %e,
-                        "Failed to register workspace boundary — killing agent"
-                    );
-                    if let Err(stop_err) = runtime.stop_agent(&agent_id).await {
-                        tracing::error!(
-                            agent_id = %agent_id,
-                            stop_error = %stop_err,
-                            "CRITICAL: failed to stop agent after workspace registration failure — agent may be running without workspace isolation"
-                        );
-                    }
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: "Agent started but workspace boundary registration failed. Agent killed. Check server logs for details.".to_string(),
-                        }),
-                    )
-                        .into_response();
-                }
-            }
+            // Workspace boundary was already registered in launch_agent() before agent start.
+            // This eliminates the race condition where agent could modify files before registration.
+            tracing::info!(
+                agent_id = %agent_id,
+                workspace = %work_dir_str,
+                "Agent launched successfully (workspace pre-registered)"
+            );
 
             (StatusCode::CREATED, Json(SpawnAgentResponse { agent_id })).into_response()
         }
@@ -318,6 +303,48 @@ pub async fn kill_agent(
 
     match runtime.stop_agent(&id).await {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Cancel the current prompt turn for an agent (sends ACP `session/cancel`).
+///
+/// Does NOT stop the agent — only cancels the in-flight prompt. The agent
+/// will return a response with `stop_reason = "cancelled"`.
+pub async fn cancel_prompt(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let runtime = get_agent_runtime();
+    let backend = runtime.backend();
+    let acp_backend = match backend
+        .as_any()
+        .downcast_ref::<ergatai_runtime::AcpBackend>()
+    {
+        Some(b) => b,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Agent is not using ACP backend".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match acp_backend.cancel_prompt(&id).await {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "cancelled" })),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -380,6 +407,592 @@ pub async fn send_message(
                 "status": "rejected",
                 "reason": reason,
             })),
+        )
+            .into_response(),
+    }
+}
+
+// ── ACP Monitoring Endpoints ──
+
+#[derive(Debug, Serialize)]
+pub struct AgentThoughtsResponse {
+    pub agent_id: String,
+    pub thoughts: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentToolCallsResponse {
+    pub agent_id: String,
+    pub tool_calls: Vec<ToolCallInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ToolCallInfo {
+    /// ACP tool call ID.
+    pub id: String,
+    /// Human-readable description (e.g. "Edit src/main.rs").
+    pub title: Option<String>,
+    /// Tool category (read, edit, delete, execute, search, think, fetch, etc.).
+    pub kind: Option<String>,
+    /// Current status (pending, in_progress, completed, failed).
+    pub status: String,
+    /// When the tool call was first seen (relative, e.g. "5s ago").
+    pub started_at: String,
+    /// Duration in milliseconds (from first_seen to last_updated).
+    pub duration_ms: u64,
+    /// File paths affected (each as "path:line" or just "path").
+    pub locations: Vec<String>,
+    /// Preview of tool arguments (JSON, truncated to 200 chars).
+    pub input_preview: Option<String>,
+    /// Preview of tool results (JSON, truncated to 200 chars).
+    pub output_preview: Option<String>,
+}
+
+/// Serialize a JSON value to string, truncating to `max_chars`.
+/// Appends "…" if truncated.
+fn truncate_json(value: &serde_json::Value, max_chars: usize) -> String {
+    let s = value.to_string();
+    if s.len() <= max_chars {
+        s
+    } else {
+        let mut truncated: String = s.chars().take(max_chars).collect();
+        truncated.push('…');
+        truncated
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentUsageResponse {
+    pub agent_id: String,
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    pub total_tokens: usize,
+}
+
+/// Get captured thoughts for an agent (if capture_thoughts was enabled).
+pub async fn get_agent_thoughts(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let runtime = get_agent_runtime();
+
+    // Get ACP backend
+    let backend = runtime.backend();
+    let acp_backend = match backend
+        .as_any()
+        .downcast_ref::<ergatai_runtime::AcpBackend>()
+    {
+        Some(b) => b,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Agent is not using ACP backend".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match acp_backend.get_agent_thoughts(&id) {
+        Some(thoughts) => (
+            StatusCode::OK,
+            Json(AgentThoughtsResponse {
+                agent_id: id,
+                thoughts: Some(thoughts),
+            }),
+        )
+            .into_response(),
+        None => (
+            StatusCode::OK,
+            Json(AgentThoughtsResponse {
+                agent_id: id,
+                thoughts: None,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Get recent tool calls for an agent (last 100).
+pub async fn get_agent_tool_calls(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let runtime = get_agent_runtime();
+
+    let backend = runtime.backend();
+    let acp_backend = match backend
+        .as_any()
+        .downcast_ref::<ergatai_runtime::AcpBackend>()
+    {
+        Some(b) => b,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Agent is not using ACP backend".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match acp_backend.get_agent_tool_calls(&id) {
+        Some(calls) => {
+            let tool_calls = calls
+                .into_iter()
+                .map(|tc| {
+                    let started_at = tc.first_seen.elapsed();
+                    let duration = tc.last_updated.saturating_duration_since(tc.first_seen);
+                    ToolCallInfo {
+                        id: tc.tool_call_id,
+                        title: tc.title,
+                        kind: tc.kind.map(|k| format!("{k:?}").to_lowercase()),
+                        status: format!("{:?}", tc.status).to_lowercase(),
+                        started_at: format!("{}s ago", started_at.as_secs()),
+                        duration_ms: duration.as_millis() as u64,
+                        locations: tc
+                            .locations
+                            .iter()
+                            .map(|loc| {
+                                let p = loc.path.to_string_lossy();
+                                match loc.line {
+                                    Some(line) => format!("{p}:{line}"),
+                                    None => p.to_string(),
+                                }
+                            })
+                            .collect(),
+                        input_preview: tc.raw_input.as_ref().map(|v| truncate_json(v, 200)),
+                        output_preview: tc.raw_output.as_ref().map(|v| truncate_json(v, 200)),
+                    }
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(AgentToolCallsResponse {
+                    agent_id: id,
+                    tool_calls,
+                }),
+            )
+                .into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Agent {} not found", id),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Response for `GET /api/v1/agents/:id/plan`.
+#[derive(Serialize)]
+struct AgentPlanResponse {
+    agent_id: String,
+    plan: Option<PlanInfo>,
+}
+
+/// Execution plan info for an agent.
+#[derive(Serialize)]
+struct PlanInfo {
+    entries: Vec<PlanEntryInfo>,
+    last_updated: String,
+}
+
+/// A single plan entry.
+#[derive(Serialize)]
+struct PlanEntryInfo {
+    content: String,
+    priority: String,
+    status: String,
+}
+
+/// Get the current execution plan for an agent.
+pub async fn get_agent_plan(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let runtime = get_agent_runtime();
+
+    let backend = runtime.backend();
+    let acp_backend = match backend
+        .as_any()
+        .downcast_ref::<ergatai_runtime::AcpBackend>()
+    {
+        Some(b) => b,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Agent is not using ACP backend".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match acp_backend.get_agent_plan(&id) {
+        Some(tracked) => {
+            let elapsed = tracked.last_updated.elapsed();
+            let plan = PlanInfo {
+                entries: tracked
+                    .entries
+                    .into_iter()
+                    .map(|e| PlanEntryInfo {
+                        content: e.content,
+                        priority: e.priority,
+                        status: e.status,
+                    })
+                    .collect(),
+                last_updated: format!("{}s ago", elapsed.as_secs()),
+            };
+            (
+                StatusCode::OK,
+                Json(AgentPlanResponse {
+                    agent_id: id,
+                    plan: Some(plan),
+                }),
+            )
+                .into_response()
+        }
+        None => (
+            StatusCode::OK,
+            Json(AgentPlanResponse {
+                agent_id: id,
+                plan: None,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Response for `GET /api/v1/agents/:id/elicitations`.
+#[derive(Serialize)]
+struct AgentElicitationsResponse {
+    agent_id: String,
+    elicitations: Vec<ElicitationInfo>,
+}
+
+/// Elicitation info (agent request for user input).
+#[derive(Serialize)]
+struct ElicitationInfo {
+    elicitation_id: String,
+    message: String,
+    mode: String,
+    received_at: String,
+    responded: bool,
+    action: Option<String>,
+}
+
+/// Agent available commands response.
+#[derive(Serialize)]
+struct AgentAvailableCommandsResponse {
+    agent_id: String,
+    commands: Vec<AvailableCommandInfo>,
+}
+
+/// Available command info.
+#[derive(Serialize)]
+struct AvailableCommandInfo {
+    name: String,
+    description: String,
+    has_input: bool,
+}
+
+/// Agent config options response.
+#[derive(Serialize)]
+struct AgentConfigOptionsResponse {
+    agent_id: String,
+    config_options: Vec<ConfigOptionInfo>,
+}
+
+/// Config option info.
+#[derive(Serialize)]
+struct ConfigOptionInfo {
+    id: String,
+    name: String,
+    description: Option<String>,
+    category: Option<String>,
+    kind: Option<serde_json::Value>,
+}
+
+/// Get recent elicitation requests for an agent.
+pub async fn get_agent_elicitations(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let runtime = get_agent_runtime();
+
+    let backend = runtime.backend();
+    let acp_backend = match backend
+        .as_any()
+        .downcast_ref::<ergatai_runtime::AcpBackend>()
+    {
+        Some(b) => b,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Agent is not using ACP backend".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match acp_backend.get_agent_elicitations(&id) {
+        Some(elics) => {
+            let elicitation_infos = elics
+                .into_iter()
+                .map(|e| {
+                    let elapsed = e.received_at.elapsed();
+                    ElicitationInfo {
+                        elicitation_id: e.elicitation_id,
+                        message: e.message,
+                        mode: e.mode,
+                        received_at: format!("{}s ago", elapsed.as_secs()),
+                        responded: e.responded,
+                        action: e.action,
+                    }
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(AgentElicitationsResponse {
+                    agent_id: id,
+                    elicitations: elicitation_infos,
+                }),
+            )
+                .into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Agent {} not found", id),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Get available slash commands reported by the agent.
+pub async fn get_agent_available_commands(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let runtime = get_agent_runtime();
+    let backend = runtime.backend();
+    let acp_backend = match backend
+        .as_any()
+        .downcast_ref::<ergatai_runtime::AcpBackend>()
+    {
+        Some(b) => b,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Agent is not using ACP backend".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match acp_backend.get_agent_available_commands(&id) {
+        Some(cmds) => {
+            let cmd_infos: Vec<AvailableCommandInfo> = cmds
+                .into_iter()
+                .map(|c| AvailableCommandInfo {
+                    name: c.name,
+                    description: c.description,
+                    has_input: c.input.is_some(),
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(AgentAvailableCommandsResponse {
+                    agent_id: id,
+                    commands: cmd_infos,
+                }),
+            )
+                .into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Agent {} not found", id),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Get configuration options reported by the agent.
+pub async fn get_agent_config_options(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let runtime = get_agent_runtime();
+    let backend = runtime.backend();
+    let acp_backend = match backend
+        .as_any()
+        .downcast_ref::<ergatai_runtime::AcpBackend>()
+    {
+        Some(b) => b,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Agent is not using ACP backend".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match acp_backend.get_agent_config_options(&id) {
+        Some(opts) => {
+            let opt_infos: Vec<ConfigOptionInfo> = opts
+                .into_iter()
+                .map(|o| {
+                    let category = o.category.map(|c| format!("{:?}", c));
+                    let description = o.description.clone();
+                    // Serialize the kind as JSON for now (complex type).
+                    let kind_json = serde_json::to_value(&o.kind).ok();
+                    ConfigOptionInfo {
+                        id: o.id.to_string(),
+                        name: o.name,
+                        description,
+                        category,
+                        kind: kind_json,
+                    }
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(AgentConfigOptionsResponse {
+                    agent_id: id,
+                    config_options: opt_infos,
+                }),
+            )
+                .into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Agent {} not found", id),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Request body for responding to an elicitation.
+#[derive(Deserialize)]
+pub struct RespondToElicitationRequest {
+    /// The action: "accept", "decline", or "cancel".
+    pub action: String,
+    /// Optional form data (for form-mode elicitations).
+    pub form_data: Option<serde_json::Value>,
+}
+
+/// Respond to a pending elicitation request from an agent.
+pub async fn respond_to_elicitation(
+    State(_state): State<AppState>,
+    Path((_agent_id, elicitation_id)): Path<(String, String)>,
+    Json(req): Json<RespondToElicitationRequest>,
+) -> impl IntoResponse {
+    let runtime = get_agent_runtime();
+    let backend = runtime.backend();
+    let acp_backend = match backend
+        .as_any()
+        .downcast_ref::<ergatai_runtime::AcpBackend>()
+    {
+        Some(b) => b,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Agent is not using ACP backend".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let response = ergatai_runtime::ElicitationResponse {
+        action: req.action,
+        form_data: req.form_data,
+    };
+
+    match acp_backend
+        .respond_to_elicitation(&elicitation_id, response)
+        .await
+    {
+        Ok(true) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "responded" })),
+        )
+            .into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Elicitation {} not found or already responded", elicitation_id),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Get token usage statistics for an agent.
+pub async fn get_agent_usage(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let runtime = get_agent_runtime();
+
+    let backend = runtime.backend();
+    let acp_backend = match backend
+        .as_any()
+        .downcast_ref::<ergatai_runtime::AcpBackend>()
+    {
+        Some(b) => b,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Agent is not using ACP backend".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match acp_backend.get_agent_usage(&id) {
+        Some((input_tokens, output_tokens)) => (
+            StatusCode::OK,
+            Json(AgentUsageResponse {
+                agent_id: id,
+                input_tokens,
+                output_tokens,
+                total_tokens: input_tokens + output_tokens,
+            }),
+        )
+            .into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Agent {} not found", id),
+            }),
         )
             .into_response(),
     }
@@ -503,6 +1116,9 @@ mod tests {
             is_processing: false,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             last_heartbeat: "2026-01-01T00:00:00Z".to_string(),
+            session_title: Some("Refactoring auth module".to_string()),
+            stop_reason: Some("end_turn".to_string()),
+            continuation_count: 2,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["agent_id"], "a-1");
@@ -513,6 +1129,9 @@ mod tests {
         assert_eq!(json["lifecycle_state"], "running");
         assert_eq!(json["is_alive"], true);
         assert_eq!(json["created_at"], "2026-01-01T00:00:00Z");
+        assert_eq!(json["session_title"], "Refactoring auth module");
+        assert_eq!(json["stop_reason"], "end_turn");
+        assert_eq!(json["continuation_count"], 2);
     }
 
     #[test]

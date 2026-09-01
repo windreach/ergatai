@@ -26,6 +26,7 @@ use ergatai_core::cross_agent::{
 use ergatai_core::nats;
 
 pub mod api;
+pub mod lock_permission;
 pub mod mcp;
 
 pub mod messaging;
@@ -115,6 +116,43 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/agents/:id/message",
             post(api::agents::send_message),
+        )
+        .route(
+            "/api/v1/agents/:id/cancel",
+            post(api::agents::cancel_prompt),
+        )
+        // ACP monitoring endpoints
+        .route(
+            "/api/v1/agents/:id/thoughts",
+            get(api::agents::get_agent_thoughts),
+        )
+        .route(
+            "/api/v1/agents/:id/tool-calls",
+            get(api::agents::get_agent_tool_calls),
+        )
+        .route(
+            "/api/v1/agents/:id/plan",
+            get(api::agents::get_agent_plan),
+        )
+        .route(
+            "/api/v1/agents/:id/elicitations",
+            get(api::agents::get_agent_elicitations),
+        )
+        .route(
+            "/api/v1/agents/:id/elicitations/:elicitation_id/respond",
+            post(api::agents::respond_to_elicitation),
+        )
+        .route(
+            "/api/v1/agents/:id/config-options",
+            get(api::agents::get_agent_config_options),
+        )
+        .route(
+            "/api/v1/agents/:id/commands",
+            get(api::agents::get_agent_available_commands),
+        )
+        .route(
+            "/api/v1/agents/:id/usage",
+            get(api::agents::get_agent_usage),
         )
         .route(
             "/api/v1/agent-profiles",

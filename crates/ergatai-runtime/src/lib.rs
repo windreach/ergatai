@@ -23,6 +23,7 @@
 //!     work_dir: PathBuf::from("/tmp/work"),
 //!     env: HashMap::new(),
 //!     resources: Default::default(),
+//!     capture_thoughts: false,
 //! };
 //!
 //! let agent_id = runtime.launch_agent(spec, "claude", Some("Read CLAUDE.md")).await?;
@@ -35,7 +36,10 @@ pub mod agent_lifecycle;
 pub mod agent_profile;
 pub mod agent_record;
 pub mod cgroups;
+pub mod mcp_over_acp;
+pub mod permission;
 pub mod profile_registry;
+pub mod session_store;
 pub mod types;
 
 // Backend trait
@@ -57,8 +61,13 @@ pub use agent_record::{
     WorkspaceHandle as RecordWorkspaceHandle,
 };
 pub use backend::AgentRuntimeBackend;
-pub use backends::acp::AcpBackend;
+pub use backends::acp::{
+    AcpBackend, ElicitationResponse, TrackedElicitation, TrackedPlan, TrackedPlanEntry,
+    TrackedToolCall,
+};
+pub use permission::{PermissionDecision, PermissionHandler, YoloPermissionHandler};
 pub use runtime::{get_agent_runtime, init_agent_runtime, AgentRuntime};
+pub use session_store::{SessionRecord, SessionStore};
 pub use types::{
     AgentHandle, AgentInfo, BackendCapabilities, ResourceLimits, WaitResult, WorkspaceHandle,
     WorkspaceSpec,

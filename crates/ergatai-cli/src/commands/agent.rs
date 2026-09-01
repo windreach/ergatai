@@ -83,10 +83,16 @@ pub async fn handle(action: AgentAction, api_url: &str, token: Option<&str>) -> 
 
                 (name, command, agent_type)
             } else {
-                (name.unwrap(), command.unwrap(), agent_type.unwrap_or_else(|| "acp".to_string()))
+                (
+                    name.unwrap(),
+                    command.unwrap(),
+                    agent_type.unwrap_or_else(|| "acp".to_string()),
+                )
             };
 
-            client.register_profile(&name, &command, &agent_type).await?;
+            client
+                .register_profile(&name, &command, &agent_type)
+                .await?;
             println!("\n✅ Registered agent profile: {}", name);
         }
         AgentAction::Profiles => {
@@ -94,7 +100,10 @@ pub async fn handle(action: AgentAction, api_url: &str, token: Option<&str>) -> 
             if profiles.profiles.is_empty() {
                 println!("No agent profiles registered");
             } else {
-                println!("{:<20} {:<30} {:<10} {}", "NAME", "COMMAND", "TYPE", "CREATED");
+                println!(
+                    "{:<20} {:<30} {:<10} {}",
+                    "NAME", "COMMAND", "TYPE", "CREATED"
+                );
                 println!("{}", "-".repeat(80));
                 for p in profiles.profiles {
                     println!(

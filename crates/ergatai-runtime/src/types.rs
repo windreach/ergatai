@@ -25,6 +25,9 @@ pub struct WorkspaceSpec {
 
     /// Resource limits (CPU, memory, disk)
     pub resources: ResourceLimits,
+
+    /// Whether to capture agent thoughts (default: false)
+    pub capture_thoughts: bool,
 }
 
 /// Resource limits for a workspace.
@@ -193,6 +196,7 @@ mod tests {
             work_dir: PathBuf::from("/tmp/ws-1"),
             env: HashMap::new(),
             resources: ResourceLimits::default(),
+            capture_thoughts: false,
         }
     }
 
@@ -216,6 +220,7 @@ mod tests {
             work_dir: PathBuf::from("/tmp"),
             env,
             resources: ResourceLimits::default(),
+            capture_thoughts: false,
         };
         assert_eq!(spec.env.get("KEY"), Some(&"VALUE".to_string()));
     }
@@ -231,6 +236,7 @@ mod tests {
                 memory_mb: Some(512),
                 disk_mb: Some(1024),
             },
+            capture_thoughts: false,
         };
         assert_eq!(spec.resources.cpu_cores, Some(2.5));
         assert_eq!(spec.resources.memory_mb, Some(512));
