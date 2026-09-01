@@ -34,19 +34,3 @@ pub fn prompt_required(prompt: &str) -> String {
     }
 }
 
-/// Prompt for confirmation (yes/no)
-pub fn prompt_confirm(prompt: &str, default: bool) -> bool {
-    let default_str = if default { "Y/n" } else { "y/N" };
-    print!("{} [{}]: ", prompt, default_str);
-    io::stdout().flush().unwrap();
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
-    let input = input.trim().to_lowercase();
-
-    if input.is_empty() {
-        default
-    } else {
-        matches!(input.as_str(), "y" | "yes")
-    }
-}

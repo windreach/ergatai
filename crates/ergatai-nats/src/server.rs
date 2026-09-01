@@ -405,12 +405,15 @@ fn cleanup_stale_test_servers() {
         }
 
         // Only kill if parent PID is dead (orphaned).
-        // Read /proc/{pid}/stat to get ppid (field 4, 1-indexed).
+        // Read /proc/{pid}/stat to get ppid. Format: "pid (comm) state ppid ..."
+        // The comm field is in parens and may contain spaces, so find the
+        // closing ')' first and parse fields after it.
         let stat_path = format!("/proc/{}/stat", pid);
         let ppid = match std::fs::read_to_string(&stat_path) {
             Ok(stat) => stat
-                .split_whitespace()
-                .nth(3) // field 4 (0-indexed = 3)
+                .rfind(')')
+                .and_then(|close_idx| stat.get(close_idx + 1..))
+                .and_then(|after_comm| after_comm.split_whitespace().nth(1)) // state=0, ppid=1
                 .and_then(|s| s.parse::<u32>().ok()),
             Err(_) => {
                 // Process gone already — skip

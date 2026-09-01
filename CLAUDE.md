@@ -109,6 +109,10 @@ crates/
 │       ├── runtime.rs             AgentRuntime 门面
 │       ├── agent_record.rs        AgentRecord (统一的 agent 状态记录)
 │       ├── agent_lifecycle.rs     生命周期状态机
+│       ├── agent_profile.rs       AgentProfile (agent 模板定义)
+│       ├── profile_registry.rs    ProfileRegistry (SQLite agent 模板存储)
+│       ├── cgroups.rs             CGroups 资源限制 (可选)
+│       ├── types.rs               AgentHandle / WorkspaceHandle / AgentInfo
 │       ├── backend.rs             Backend trait 定义
 │       └── backends/
 │           ├── acp.rs               ACP backend (Agent Client Protocol, 唯一后端)
@@ -149,9 +153,8 @@ crates/
 │       ├── snapshot.rs            Git-based COW 快照 (TOCTOU 防护)
 │       ├── watchdog.rs            Token 过期 + 心跳监控
 │       ├── watcher.rs             文件系统未授权修改检测
-│       ├── lock_waiter.rs         NATS-based 阻塞等待队列
 │       ├── renewal.rs             锁续期
-│       ├── conflict_arbitration.rs 冲突仲裁
+│       ├── pid_resolver.rs        进程 → agent 归属解析
 │       └── sensitive_paths.rs     敏感路径保护
 ├── ergatai-core/          门面 crate，re-export + 跨子系统集成
 │   └── src/
@@ -174,8 +177,9 @@ crates/
         ├── commands/              子命令实现
         ├── client/                HTTP + WebSocket 客户端
         └── output/                输出格式化
-examples/
-└── simple-agent/          示例 MCP agent
+desktop/                   桌面应用 (Tauri + React)
+└── src/                     React 前端 (Vite + TypeScript)
+    └── src-tauri/           Tauri Rust 后端壳
 ```
 
 ---
@@ -251,9 +255,31 @@ POST /api/v1/agents/:id/message      向 agent 发消息 (经 MessageSender 路�
 # 系统状态
 GET  /api/v1/status                  聚合状态 (agent + workspace + DAG)
 
+# Agent Profiles (agent 模板注册表)
+GET  /api/v1/agent-profiles          列出所有 agent profile
+POST /api/v1/agent-profiles          注册新 profile
+GET  /api/v1/agent-profiles/:name    获取指定 profile
+DELETE /api/v1/agent-profiles/:name  删除 profile
+
+# File Locks (文件访问控制)
+GET  /api/v1/locks                   列出活跃锁
+GET  /api/v1/locks/audit             锁审计日志
+GET  /api/v1/locks/contention        锁竞争状态
+
+# Conversations (对话)
+GET  /api/v1/conversations           列出对话
+GET  /api/v1/conversations/:id       对话详情
+GET  /api/v1/stats/message-types     消息类型统计
+
+# Activity (实时活动流)
+GET  /api/v1/activity/recent         最近活动事件
+GET  /api/v1/activity/stream         SSE 实时活动流
+
 # DAG
 POST /api/v1/dag                     提交 DAG
 GET  /api/v1/dag/status              查询 DAG 状态
+GET  /api/v1/dag/visualization       DAG 可视化数据
+GET  /api/v1/dag/metrics             DAG 指标
 GET  /api/v1/dags                    列出所有 DAG
 
 # MCP (Streamable HTTP, 每个 agent 独立路径)
@@ -291,6 +317,8 @@ Agent 通过 MCP 协议 (JSON-RPC over Streamable HTTP, protocol 2025-06-18) 调
 | `AgentLifecycleState` | `runtime/agent_lifecycle.rs` | agent 生命周期状态机 |
 | `Backend` trait | `runtime/backend.rs` | 运行时后端抽象 (ACP) |
 | `AcpBackend` | `runtime/backends/acp.rs` | ACP 实现 (Agent Client Protocol) |
+| `AgentProfile` | `runtime/agent_profile.rs` | Agent 模板定义 (command, instruction, env_overrides) |
+| `ProfileRegistry` | `runtime/profile_registry.rs` | Agent 模板 SQLite 存储 (CRUD + discovery) |
 | `AgentMessagePayload` | `nats/events.rs` | NATS 消息体 (from, to, content, timestamp, message_id, requires_receipt, correlation_id, timeout_ms) |
 | `ReadReceiptPayload` | `nats/events.rs` | 已读回执 (message_id, from_agent, to_agent, read_at) |
 | `RequestTimeoutPayload` | `nats/events.rs` | 请求超时通知 (message_id, from_agent, to_agent, timeout_ms, sent_at) |
@@ -496,7 +524,6 @@ JetStream Streams:
 | `FILE_ACCESS_GRANTS` | 文件锁授权 | WorkQueue | 1h |
 | `FILE_ACCESS_ESCALATIONS` | 文件锁升级 | WorkQueue | 30min |
 | `FILE_EVENTS` | 文件就绪/错误通知 | WorkQueue | 1h |
-| `LOCK_WAITERS` | 阻塞式锁获取等待队列 (`ergatai.lock.request.*`, `ergatai.lock.release.*`) | WorkQueue | 2h |
 
 ---
 
@@ -509,7 +536,6 @@ JetStream Streams:
 - **Git COW 快照**: Copy-on-Write 防止 TOCTOU
 - **Watchdog**: Token 过期 + 心跳监控
 - **File Watcher**: 跨平台文件修改检测 + 自动上锁（`notify` crate，Linux/macOS/Windows）
-- **NATS 等待队列**: 阻塞式锁获取
 - **内核级强制**: Linux fanotify 拦截 `open()`，从 advisory 升级到 mandatory（非 Linux 或权限不足时 fail-open）
 - **LD_PRELOAD 快照读取**: `ergatai-preload` 拦截 `open()` 读取被锁文件的 Git 快照版本
 
@@ -558,6 +584,7 @@ JetStream Streams:
 
 - 主库: `{project_root}/.ergatai/ergatai.db` (SQLite)
 - 锁库: `{project_root}/.ergatai/locks.db` (SQLite, WAL mode)
+- Profile 注册表: `{project_root}/.ergatai/profile_registry.db` (SQLite)
 
 ---
 
@@ -565,7 +592,7 @@ JetStream Streams:
 
 | 层 | 技术 |
 |----|------|
-| 语言 | Rust (100%, edition 2021) |
+| 语言 | Rust (edition 2021) + TypeScript/React (desktop) |
 | Agent ↔ Ergatai | ACP (Agent Client Protocol, JSON-RPC over stdio) |
 | REST API | axum 0.7 (+ tower-governor 限速) |
 | 内部消息 | NATS (async-nats **0.50**) + JetStream |
@@ -573,6 +600,7 @@ JetStream Streams:
 | 数据库 | SQLite (rusqlite 0.31, bundled) |
 | 异步 | tokio 1.36 |
 | CLI | clap 4.5 |
+| 桌面应用 | Tauri 2.x + React + Vite + TypeScript |
 | TUI | ratatui 0.30 + tui-widgets 0.7 |
 | HTTP 客户端 | reqwest 0.12 (rustls-tls) |
 | 序列化 | serde 1.0 + serde_json 1.0 + serde_yaml 0.9 |

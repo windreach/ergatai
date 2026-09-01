@@ -607,9 +607,88 @@ impl AgentRuntime {
     /// Returns the list of agent IDs that were pruned in this pass, so callers
     /// can perform follow-up cleanup (e.g. dropping rate-limiter windows).
     pub async fn prune_unhealthy_agents(&self) -> Vec<String> {
-        // Health check not yet implemented for AcpBackend
-        debug!("health check not supported by AcpBackend, skipping prune");
-        Vec::new()
+        // Step 1: Snapshot agent IDs + handles (release read lock before async calls)
+        let agents_snapshot: Vec<(String, AgentHandle)> = {
+            let registry = self.registry.read().await;
+            registry
+                .iter()
+                .map(|(id, info)| (id.clone(), info.handle.clone()))
+                .collect()
+        };
+
+        if agents_snapshot.is_empty() {
+            return Vec::new();
+        }
+
+        // Step 2: Check liveness without holding any lock
+        let mut dead_now: Vec<String> = Vec::new();
+        let mut healthy: Vec<String> = Vec::new();
+        for (agent_id, handle) in agents_snapshot {
+            match self.backend.is_alive(&handle).await {
+                Ok(true) => healthy.push(agent_id),
+                Ok(false) => dead_now.push(agent_id),
+                Err(e) => {
+                    warn!(agent_id = %dead_now.last().unwrap_or(&agent_id), error = %e,
+                          "is_alive check failed, treating as dead");
+                    dead_now.push(agent_id);
+                }
+            }
+        }
+
+        // Step 3: Reset streaks for healthy agents, increment for dead
+        {
+            let mut streaks = self.unhealthy_streaks.lock().await;
+            for id in &healthy {
+                streaks.remove(id);
+            }
+            for id in &dead_now {
+                *streaks.entry(id.clone()).or_insert(0) += 1;
+            }
+        }
+
+        // Step 4: Collect agents that reached threshold (2 consecutive dead observations)
+        let pruned: Vec<String> = {
+            let streaks = self.unhealthy_streaks.lock().await;
+            dead_now
+                .into_iter()
+                .filter(|id| streaks.get(id).copied().unwrap_or(0) >= 2)
+                .collect()
+        };
+
+        if pruned.is_empty() {
+            return pruned;
+        }
+
+        // Step 5: Remove pruned agents from registry and clean indices
+        {
+            let mut registry = self.registry.write().await;
+            for agent_id in &pruned {
+                if let Some(info) = registry.remove(agent_id) {
+                    self.remove_agent_indices(
+                        &info.agent_id,
+                        &info.agent_uuid,
+                        info.mcp_agent_id.as_deref(),
+                        info.stable_id.as_deref(),
+                    )
+                    .await;
+                }
+            }
+        }
+
+        // Also reconcile mcp_index in case of stale entries
+        {
+            let mut mcp_index = self.mcp_index.write().await;
+            let registry = self.registry.read().await;
+            mcp_index.retain(|_, runtime_id| registry.contains_key(runtime_id));
+        }
+
+        info!(
+            count = pruned.len(),
+            agents = ?pruned,
+            "Pruned unhealthy agents after 2 consecutive dead observations"
+        );
+
+        pruned
     }
 
     // ── MCP-to-Runtime agent ID binding ──

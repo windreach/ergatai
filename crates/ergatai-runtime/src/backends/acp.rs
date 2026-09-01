@@ -51,9 +51,6 @@ use crate::types::{AgentHandle, BackendCapabilities, WaitResult, WorkspaceHandle
 
 // ── Configuration constants ──
 
-/// Grace period for graceful stop.
-const STOP_GRACE_PERIOD: Duration = Duration::from_secs(5);
-
 /// Poll interval for wait_for_exit.
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -89,10 +86,15 @@ impl OutputBuffer {
         }
     }
 
-    /// Snapshot current buffer contents as text.
+    /// Capture and drain current buffer contents as text (incremental semantics).
+    ///
+    /// Each call returns only the data appended since the last `capture()` call.
+    /// The buffer is cleared after reading so callers receive deltas, not cumulative data.
     fn capture(&self) -> String {
-        let data = self.data.read();
-        String::from_utf8_lossy(&data).to_string()
+        let mut data = self.data.write();
+        let result = String::from_utf8_lossy(&data).to_string();
+        data.clear();
+        result
     }
 }
 
@@ -117,8 +119,6 @@ struct AcpAgentEntry {
     last_output_at: Arc<RwLock<Instant>>,
     /// Whether the agent process is still alive.
     alive: Arc<std::sync::atomic::AtomicBool>,
-    /// Process ID (if available from the spawned child).
-    process_id: Option<u32>,
     /// The AgentHandle for this agent.
     handle: AgentHandle,
     /// Abort handle for the connection task (can be cloned and used to abort the task).
@@ -128,8 +128,8 @@ struct AcpAgentEntry {
 /// Logical workspace (no physical resources, just metadata).
 struct WorkspaceEntry {
     id: String,
-    work_dir: PathBuf,
-    env: HashMap<String, String>,
+    /// Per-workspace counter for deterministic agent IDs.
+    agent_counter: AtomicUsize,
     agent_ids: Vec<String>,
 }
 
@@ -150,8 +150,9 @@ pub struct AcpBackend {
     agents: RwLock<HashMap<String, AcpAgentEntry>>,
     /// Workspace entries keyed by workspace ID.
     workspaces: RwLock<HashMap<String, WorkspaceEntry>>,
-    /// Counter for generating unique agent IDs.
-    agent_counter: AtomicUsize,
+    /// Agent IDs whose connection tasks have exited (crashed or stopped).
+    /// Drained lazily by `reap_dead()` on the next backend operation.
+    dead_agents: Arc<parking_lot::Mutex<Vec<String>>>,
 }
 
 impl AcpBackend {
@@ -160,20 +161,49 @@ impl AcpBackend {
         Self {
             agents: RwLock::new(HashMap::new()),
             workspaces: RwLock::new(HashMap::new()),
-            agent_counter: AtomicUsize::new(0),
+            dead_agents: Arc::new(parking_lot::Mutex::new(Vec::new())),
         }
     }
 
-    /// Generate a unique agent ID.
-    fn next_agent_id(&self) -> String {
-        let count = self.agent_counter.fetch_add(1, Ordering::SeqCst);
-        format!("acp-agent-{}", count)
+    /// Generate a workspace-scoped agent ID: `{workspace_id}-agent-{counter}`.
+    fn next_agent_id(&self, workspace_id: &str) -> String {
+        let workspaces = self.workspaces.read();
+        let count = workspaces
+            .get(workspace_id)
+            .map(|ws| ws.agent_counter.fetch_add(1, Ordering::SeqCst))
+            .unwrap_or(0);
+        format!("{}-agent-{}", workspace_id, count)
     }
 
     /// Remove agent entry.
     fn remove_agent(&self, agent_id: &str) {
         let mut agents = self.agents.write();
         agents.remove(agent_id);
+    }
+
+    /// Reap dead agents whose connection tasks have exited.
+    ///
+    /// Called lazily before public operations. The connection task pushes its
+    /// agent_id to `dead_agents` on exit (crash or normal). This method drains
+    /// the list and removes those entries from the agents map and workspace lists.
+    fn reap_dead(&self) {
+        let dead: Vec<String> = {
+            let mut dead_agents = self.dead_agents.lock();
+            std::mem::take(&mut *dead_agents)
+        };
+        if dead.is_empty() {
+            return;
+        }
+        let mut agents = self.agents.write();
+        for id in &dead {
+            agents.remove(id);
+        }
+        // Also clean from workspace entries.
+        let mut workspaces = self.workspaces.write();
+        for ws in workspaces.values_mut() {
+            ws.agent_ids.retain(|id| !dead.contains(id));
+        }
+        debug!(count = dead.len(), "Reaped dead ACP agents");
     }
 }
 
@@ -213,11 +243,10 @@ impl AgentRuntimeBackend for AcpBackend {
     async fn create_workspace(&self, spec: WorkspaceSpec) -> ErgataiResult<WorkspaceHandle> {
         let workspace_id = spec.id.clone();
 
-        // Create workspace entry.
+        // Create workspace entry with per-workspace agent counter.
         let entry = WorkspaceEntry {
             id: spec.id.clone(),
-            work_dir: spec.work_dir.clone(),
-            env: spec.env.clone(),
+            agent_counter: AtomicUsize::new(0),
             agent_ids: Vec::new(),
         };
 
@@ -225,10 +254,17 @@ impl AgentRuntimeBackend for AcpBackend {
 
         info!(workspace_id = %workspace_id, work_dir = %spec.work_dir.display(), "Created workspace");
 
+        // Include work_dir in metadata so start_agent() can locate the working directory.
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "work_dir".to_string(),
+            spec.work_dir.to_string_lossy().to_string(),
+        );
+
         Ok(WorkspaceHandle {
             id: workspace_id,
             backend: self.name().to_string(),
-            metadata: HashMap::new(),
+            metadata,
         })
     }
 
@@ -238,7 +274,10 @@ impl AgentRuntimeBackend for AcpBackend {
         command: &str,
         instruction: Option<&str>,
     ) -> ErgataiResult<AgentHandle> {
-        let agent_id = self.next_agent_id();
+        // Reap any dead agents before starting a new one.
+        self.reap_dead();
+
+        let agent_id = self.next_agent_id(&handle.id);
 
         // Parse the command string into an AcpAgent.
         // Supports: "python agent.py", "npx -y @agentclientprotocol/claude-agent-acp@latest",
@@ -266,6 +305,7 @@ impl AgentRuntimeBackend for AcpBackend {
         let task_last_output_at = last_output_at.clone();
         let task_alive = alive.clone();
         let task_agent_id = agent_id.clone();
+        let task_dead_agents = self.dead_agents.clone();
         let cwd = handle
             .metadata
             .get("work_dir")
@@ -407,8 +447,9 @@ impl AgentRuntimeBackend for AcpBackend {
                 })
                 .await;
 
-            // Mark agent as not alive when connection task finishes.
+            // Mark agent as not alive and report death for lazy reaping.
             task_alive.store(false, std::sync::atomic::Ordering::SeqCst);
+            task_dead_agents.lock().push(task_agent_id.clone());
 
             if let Err(e) = result {
                 error!(error = %e, "ACP connection task failed");
@@ -446,7 +487,6 @@ impl AgentRuntimeBackend for AcpBackend {
             output,
             last_output_at,
             alive: alive.clone(),
-            process_id: None, // ACP SDK doesn't expose child PID directly
             handle: AgentHandle {
                 workspace: handle.clone(),
                 agent_id: agent_id.clone(),
@@ -509,6 +549,7 @@ impl AgentRuntimeBackend for AcpBackend {
     }
 
     async fn inject_message(&self, handle: &AgentHandle, message: &str) -> ErgataiResult<()> {
+        self.reap_dead();
         let command_tx = {
             let agents = self.agents.read();
             match agents.get(&handle.agent_id) {
@@ -539,7 +580,7 @@ impl AgentRuntimeBackend for AcpBackend {
     }
 
     async fn capture_output(&self, handle: &AgentHandle) -> ErgataiResult<Option<String>> {
-        // TODO: Phase 5 - Implement output capture from ACP notifications
+        self.reap_dead();
         let agents = self.agents.read();
         if let Some(entry) = agents.get(&handle.agent_id) {
             let output = entry.output.capture();
@@ -554,6 +595,7 @@ impl AgentRuntimeBackend for AcpBackend {
     }
 
     async fn is_alive(&self, handle: &AgentHandle) -> ErgataiResult<bool> {
+        self.reap_dead();
         let agents = self.agents.read();
         if let Some(entry) = agents.get(&handle.agent_id) {
             Ok(entry.alive.load(std::sync::atomic::Ordering::Relaxed))
@@ -563,6 +605,7 @@ impl AgentRuntimeBackend for AcpBackend {
     }
 
     async fn stop_agent(&self, handle: &AgentHandle) -> ErgataiResult<()> {
+        self.reap_dead();
         let (command_tx, abort_handle) = {
             let agents = self.agents.read();
             match agents.get(&handle.agent_id) {
@@ -603,6 +646,7 @@ impl AgentRuntimeBackend for AcpBackend {
     }
 
     async fn kill_agent(&self, handle: &AgentHandle) -> ErgataiResult<()> {
+        self.reap_dead();
         let abort_handle = {
             let agents = self.agents.read();
             match agents.get(&handle.agent_id) {
@@ -656,13 +700,19 @@ impl AgentRuntimeBackend for AcpBackend {
     }
 
     async fn list_workspaces(&self) -> ErgataiResult<Vec<WorkspaceHandle>> {
+        self.reap_dead();
         let workspaces = self.workspaces.read();
         Ok(workspaces
             .values()
-            .map(|ws| WorkspaceHandle {
-                id: ws.id.clone(),
-                backend: self.name().to_string(),
-                metadata: HashMap::new(),
+            .map(|ws| {
+                let metadata = HashMap::new();
+                // Note: work_dir is not stored in WorkspaceEntry anymore;
+                // it's carried in the WorkspaceHandle returned by create_workspace().
+                WorkspaceHandle {
+                    id: ws.id.clone(),
+                    backend: self.name().to_string(),
+                    metadata,
+                }
             })
             .collect())
     }
@@ -698,10 +748,11 @@ impl AgentRuntimeBackend for AcpBackend {
     }
 
     async fn discover_agents(&self) -> ErgataiResult<Vec<(String, AgentHandle)>> {
-        // Return all agents we're tracking.
+        self.reap_dead();
         let agents = self.agents.read();
         Ok(agents
             .values()
+            .filter(|entry| entry.alive.load(std::sync::atomic::Ordering::Relaxed))
             .map(|entry| (entry.handle.agent_id.clone(), entry.handle.clone()))
             .collect())
     }
