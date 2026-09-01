@@ -92,7 +92,21 @@ tokio-util = { version = "0.7", features = ["rt"] }
 parking_lot = "0.12"
 
 # Agent Client Protocol (ACP)
-agent-client-protocol = { git = "https://github.com/agentclientprotocol/rust-sdk.git" }
+# Pinned to a specific commit so fresh clones reproduce the same build.
+agent-client-protocol = {
+    git = "https://github.com/agentclientprotocol/rust-sdk.git",
+    rev = "754d5aa1ce2cfa54ba2c2a6d3edc7e7b6bce28eb",
+    features = ["unstable_mcp_over_acp"]
+}
+agent-client-protocol-http = {
+    git = "https://github.com/agentclientprotocol/rust-sdk.git",
+    rev = "754d5aa1ce2cfa54ba2c2a6d3edc7e7b6bce28eb",
+    features = ["client", "server"]
+}
+agent-client-protocol-rmcp = {
+    git = "https://github.com/agentclientprotocol/rust-sdk.git",
+    rev = "754d5aa1ce2cfa54ba2c2a6d3edc7e7b6bce28eb"
+}
 
 # Benchmarking
 criterion = { version = "0.5", features = ["html_reports"] }
