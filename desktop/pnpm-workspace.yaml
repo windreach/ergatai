@@ -1,7 +1,0 @@
-allowBuilds:
-  esbuild: set this to true or false
-minimumReleaseAgeExclude:
-  - '@ai-sdk/gateway@4.0.70'
-  - '@ai-sdk/react@4.0.89'
-  - ai@7.0.86
-  - lucide-react@1.38.0
