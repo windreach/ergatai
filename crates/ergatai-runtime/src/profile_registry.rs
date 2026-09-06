@@ -27,6 +27,7 @@
 //! ```
 
 use std::path::Path;
+use tokio::process::Command;
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -159,6 +160,171 @@ impl ProfileRegistry {
             "Profile registry initialized at {} (WAL mode)",
             self.db_path
         );
+
+        // Register default built-in profiles FIRST (use current version)
+        self.register_default_profiles()?;
+
+        // Then check for updates in BACKGROUND (non-blocking)
+        // Updates will be ready for NEXT startup
+        let db_path = self.db_path.clone();
+        tokio::spawn(async move {
+            // Create a temporary registry instance for background update
+            if let Ok(registry) = ProfileRegistry::new(&db_path) {
+                if let Err(e) = registry.check_and_update_adapters_background().await {
+                    warn!(error = %e, "Background adapter update failed");
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Register built-in default agent profiles.
+    ///
+    /// Commands verified from official documentation:
+    /// - OpenCode: https://opencode.ai/docs/acp/
+    /// - Gemini CLI: https://geminicli.com/docs/cli/acp-mode/
+    /// - Goose: https://goose-docs.ai/docs/guides/acp-clients/
+    /// - ACP Registry: https://agentclientprotocol.com/get-started/agents
+    fn register_default_profiles(&self) -> ErgataiResult<()> {
+        // Resolve adapter paths relative to the executable's parent directory.
+        // Layout: <project_root>/target/<profile>/ergatai-api → <project_root>/adapters/
+        let adapters_base = std::env::var("ERGATAI_ADAPTERS_DIR")
+            .ok()
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                    .map(|d| d.join("../adapters"))
+            })
+            .unwrap_or_else(|| std::path::PathBuf::from("adapters"));
+
+        let codex_cmd = format!(
+            "node {}",
+            adapters_base.join("codex-acp/dist/index.js").display()
+        );
+        let claude_cmd = format!(
+            "node {}",
+            adapters_base.join("claude-agent-acp/dist/acp-agent.js").display()
+        );
+
+        let defaults = vec![
+            // OpenAI Codex CLI adapter (已验证 - adapters/codex-acp)
+            AgentRegistration {
+                name: "codex".to_string(),
+                command: codex_cmd,
+                agent_type: "acp".to_string(),
+                created_at: Utc::now(),
+            },
+            // Anthropic Claude Agent adapter (已验证 - adapters/claude-agent-acp)
+            AgentRegistration {
+                name: "claude".to_string(),
+                command: claude_cmd,
+                agent_type: "acp".to_string(),
+                created_at: Utc::now(),
+            },
+            // OpenCode (已验证 - https://opencode.ai/docs/acp/)
+            AgentRegistration {
+                name: "opencode".to_string(),
+                command: "opencode acp".to_string(),
+                agent_type: "acp".to_string(),
+                created_at: Utc::now(),
+            },
+            // Gemini CLI (已验证 - https://geminicli.com/docs/cli/acp-mode/)
+            AgentRegistration {
+                name: "gemini".to_string(),
+                command: "gemini --acp".to_string(),
+                agent_type: "acp".to_string(),
+                created_at: Utc::now(),
+            },
+            // Goose (已验证 - https://goose-docs.ai/docs/guides/acp-clients/)
+            AgentRegistration {
+                name: "goose".to_string(),
+                command: "goose run --acp".to_string(),
+                agent_type: "acp".to_string(),
+                created_at: Utc::now(),
+            },
+            // Cline (已验证 - ACP registry)
+            AgentRegistration {
+                name: "cline".to_string(),
+                command: "cline --acp".to_string(),
+                agent_type: "acp".to_string(),
+                created_at: Utc::now(),
+            },
+            // Kiro CLI (已验证 - ACP registry)
+            AgentRegistration {
+                name: "kiro".to_string(),
+                command: "kiro-cli acp".to_string(),
+                agent_type: "acp".to_string(),
+                created_at: Utc::now(),
+            },
+            // Auggie CLI (已验证 - ACP registry)
+            AgentRegistration {
+                name: "auggie".to_string(),
+                command: "auggie --acp".to_string(),
+                agent_type: "acp".to_string(),
+                created_at: Utc::now(),
+            },
+            // OpenClaw (已验证 - ACP registry)
+            AgentRegistration {
+                name: "openclaw".to_string(),
+                command: "openclaw acp".to_string(),
+                agent_type: "acp".to_string(),
+                created_at: Utc::now(),
+            },
+            // Hermes Agent (已验证 - ACP registry)
+            AgentRegistration {
+                name: "hermes".to_string(),
+                command: "hermes acp".to_string(),
+                agent_type: "acp".to_string(),
+                created_at: Utc::now(),
+            },
+        ];
+
+        for profile in defaults {
+            // Try to register, ignore if already exists
+            if let Err(e) = self.register_sync(profile.clone()) {
+                if !e.to_string().contains("already exists") {
+                    debug!(name = %profile.name, error = %e, "Failed to register default profile");
+                }
+            } else {
+                info!(name = %profile.name, "Registered default agent profile");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Synchronous version of register for use during initialization.
+    fn register_sync(&self, registration: AgentRegistration) -> ErgataiResult<()> {
+        registration.validate()?;
+
+        let conn = Connection::open(&self.db_path).map_err(|e| {
+            ErgataiError::internal(format!("Failed to open profile registry database: {}", e))
+        })?;
+
+        conn.execute(
+            "INSERT INTO agent_registrations (name, command, agent_type, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                registration.name,
+                registration.command,
+                registration.agent_type,
+                registration.created_at.to_rfc3339()
+            ],
+        )
+        .map_err(|e| {
+            if e.to_string().contains("UNIQUE constraint failed") {
+                ErgataiError::InvalidArgument(format!(
+                    "Agent profile '{}' already exists",
+                    registration.name
+                ))
+            } else {
+                ErgataiError::internal(format!("Failed to register agent profile: {}", e))
+            }
+        })?;
+
         Ok(())
     }
 
@@ -285,6 +451,184 @@ impl ProfileRegistry {
 
         Ok(rows_affected > 0)
     }
+
+    /// Check and update adapters in background (non-blocking).
+    ///
+    /// This method is called after system startup to check for updates.
+    /// Updates happen asynchronously so they don't delay system startup.
+    /// Updated adapters will be used on NEXT system startup.
+    pub async fn check_and_update_adapters_background(&self) -> ErgataiResult<()> {
+        let adapters_dir = std::env::current_dir()
+            .map(|p| p.join("adapters"))
+            .unwrap_or_else(|_| std::path::PathBuf::from("adapters"));
+
+        if !adapters_dir.exists() {
+            debug!("Adapters directory not found, skipping background update");
+            return Ok(());
+        }
+
+        info!("Starting background adapter update check...");
+
+        let mut updated_count = 0;
+        let mut checked_count = 0;
+
+        // Check each adapter directory
+        if let Ok(entries) = std::fs::read_dir(&adapters_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() && path.join("package.json").exists() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        checked_count += 1;
+                        match self.update_adapter_if_needed(&path, name).await {
+                            Ok(true) => {
+                                updated_count += 1;
+                                info!(adapter = %name, "Adapter updated in background");
+                            }
+                            Ok(false) => {
+                                debug!(adapter = %name, "Adapter is up-to-date");
+                            }
+                            Err(e) => {
+                                warn!(adapter = %name, error = %e, "Failed to update adapter");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if updated_count > 0 {
+            info!(
+                updated = updated_count,
+                total = checked_count,
+                "Background adapter updates complete (will use on next startup)"
+            );
+        } else {
+            info!(
+                total = checked_count,
+                "All adapters are up-to-date"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Check and update adapters automatically (blocking version).
+    ///
+    /// This method blocks until all updates are complete.
+    /// Use check_and_update_adapters_background() for non-blocking updates.
+    pub async fn check_and_update_adapters(&self) -> ErgataiResult<()> {
+        self.check_and_update_adapters_background().await
+    }
+
+    /// Check if an adapter needs updating and perform the update.
+    /// Returns Ok(true) if updated, Ok(false) if no update needed.
+    async fn update_adapter_if_needed(
+        &self,
+        adapter_path: &std::path::Path,
+        adapter_name: &str,
+    ) -> ErgataiResult<bool> {
+        // Check if git is available and this is a git repo
+        let git_check = Command::new("git")
+            .arg("rev-parse")
+            .arg("--git-dir")
+            .current_dir(adapter_path)
+            .output()
+            .await;
+
+        if git_check.is_err() || !git_check.unwrap().status.success() {
+            debug!(adapter = %adapter_name, "Not a git repository, skipping update check");
+            return Ok(false);
+        }
+
+        // Fetch latest changes
+        let fetch_result = Command::new("git")
+            .args(["fetch", "--tags", "--quiet"])
+            .current_dir(adapter_path)
+            .output()
+            .await;
+
+        if fetch_result.is_err() || !fetch_result.unwrap().status.success() {
+            warn!(adapter = %adapter_name, "Failed to fetch updates");
+            return Ok(false);
+        }
+
+        // Get current version
+        let current = Command::new("git")
+            .args(["describe", "--tags", "--abbrev=0"])
+            .current_dir(adapter_path)
+            .output()
+            .await
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        // Get latest version
+        let latest = Command::new("git")
+            .args(["describe", "--tags", "--abbrev=0", "origin/HEAD"])
+            .current_dir(adapter_path)
+            .output()
+            .await
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        if current != latest && !latest.is_empty() && latest != "unknown" {
+            info!(
+                adapter = %adapter_name,
+                current = %current,
+                latest = %latest,
+                "Updating adapter"
+            );
+
+            // Pull latest changes
+            let pull_result = Command::new("git")
+                .args(["pull", "--quiet"])
+                .current_dir(adapter_path)
+                .output()
+                .await;
+
+            if pull_result.is_err() || !pull_result.unwrap().status.success() {
+                warn!(adapter = %adapter_name, "Failed to pull updates");
+                return Ok(false);
+            }
+
+            // Reinstall dependencies
+            info!(adapter = %adapter_name, "Installing dependencies...");
+            let npm_install = Command::new("npm")
+                .args(["install"])
+                .current_dir(adapter_path)
+                .output()
+                .await;
+
+            if npm_install.is_err() || !npm_install.unwrap().status.success() {
+                warn!(adapter = %adapter_name, "Failed to install dependencies");
+                return Ok(false);
+            }
+
+            // Rebuild
+            info!(adapter = %adapter_name, "Building...");
+            let npm_build = Command::new("npm")
+                .args(["run", "build"])
+                .current_dir(adapter_path)
+                .output()
+                .await;
+
+            if npm_build.is_err() || !npm_build.unwrap().status.success() {
+                warn!(adapter = %adapter_name, "Failed to build");
+                return Ok(false);
+            }
+
+            info!(adapter = %adapter_name, "Update complete");
+            Ok(true)
+        } else {
+            debug!(adapter = %adapter_name, version = %current, "Adapter is up-to-date");
+            Ok(false)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -335,7 +679,13 @@ mod tests {
             .unwrap();
 
         let profiles = registry.list().await.unwrap();
-        assert_eq!(profiles.len(), 2);
+        // ProfileRegistry::new() registers default built-in profiles, so the
+        // total count is 10 defaults + 2 we just registered. Assert the two
+        // expected profiles are present rather than checking an exact count.
+        let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"agent-1"), "agent-1 not found in {names:?}");
+        assert!(names.contains(&"agent-2"), "agent-2 not found in {names:?}");
+        assert!(profiles.len() >= 2);
     }
 
     #[tokio::test]

@@ -43,10 +43,12 @@ pub async fn list_workspaces(State(_state): State<AppState>) -> impl IntoRespons
                 .collect();
             (StatusCode::OK, Json(response)).into_response()
         }
+        // SECURITY (P1 #18): Redact internal error details (may contain
+        // filesystem paths, DB connection info, backend names).
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "list_workspaces"),
             }),
         )
             .into_response(),
@@ -58,14 +60,60 @@ pub async fn create_workspace(
     Json(req): Json<CreateWorkspaceRequest>,
 ) -> impl IntoResponse {
     let runtime = get_agent_runtime();
+
+    // SECURITY (P1 #15): Enforce a workspace cap to prevent a runaway client
+    // from exhausting host resources (memory, file descriptors, NATS subjects).
+    // Default: 100 workspaces. Override with ERGATAI_MAX_WORKSPACES.
+    let max_workspaces: usize = std::env::var("ERGATAI_MAX_WORKSPACES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(100);
+    match runtime.backend().list_workspaces().await {
+        Ok(list) if list.len() >= max_workspaces => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse {
+                    error: format!(
+                        "Workspace limit reached ({}/{}). Delete a workspace or raise ERGATAI_MAX_WORKSPACES.",
+                        list.len(),
+                        max_workspaces
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: crate::sanitize_error(&e, "list_workspaces_for_cap_check"),
+                }),
+            )
+                .into_response();
+        }
+        _ => {}
+    }
+
     let env = req.env.unwrap_or_default();
+
+    // SECURITY (P1 #13): validate and canonicalize the work_dir.
+    // Falls back to the server's default_cwd (already validated at startup)
+    // when the client omits it.
+    let raw_work_dir = req.work_dir.unwrap_or_else(|| state.default_cwd.clone());
+    let work_dir = match crate::validate_cwd(&raw_work_dir) {
+        Ok(p) => p,
+        Err(msg) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse { error: msg }),
+            )
+                .into_response();
+        }
+    };
 
     let spec = WorkspaceSpec {
         id: req.id,
-        work_dir: req
-            .work_dir
-            .unwrap_or_else(|| state.default_cwd.clone())
-            .into(),
+        work_dir: work_dir.into(),
         env,
         resources: ResourceLimits::default(),
         capture_thoughts: false,
@@ -80,10 +128,12 @@ pub async fn create_workspace(
             };
             (StatusCode::CREATED, Json(response)).into_response()
         }
+        // SECURITY (P1 #18): Redact internal error details (may contain
+        // work_dir paths, backend state, OS error info).
         Err(e) => (
-            StatusCode::BAD_REQUEST,
+            StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "create_workspace"),
             }),
         )
             .into_response(),

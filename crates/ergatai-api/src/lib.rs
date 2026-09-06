@@ -204,10 +204,7 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route("/api/v1/dags", get(list_dags))
         .with_state(state.clone())
         // Auth middleware (exempts /health, /ready, /metrics)
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth_middleware,
-        ))
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
 }
 
 // ── Health / readiness / metrics handlers ────────────────────────────
@@ -328,9 +325,12 @@ pub async fn auth_middleware(
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
 
+    // SECURITY: Constant-time comparison to prevent timing attacks.
+    // The `==` operator on strings short-circuits on first differing byte,
+    // allowing an attacker to recover the token byte-by-byte via RTT measurement.
     let is_valid = auth_header
         .and_then(|h| h.strip_prefix("Bearer "))
-        .map(|token| token == expected_token.as_str())
+        .map(|token| constant_time_eq(token, expected_token.as_str()))
         .unwrap_or(false);
 
     if !is_valid {
@@ -347,24 +347,90 @@ pub async fn auth_middleware(
     next.run(request).await.into_response()
 }
 
-// ── CWD validation ───────────────────────────────────────────────────
+/// Constant-time string comparison to prevent timing side-channel attacks.
+/// Compares all bytes regardless of where they differ, so an attacker cannot
+/// recover the expected value byte-by-byte via round-trip time measurement.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    if a_bytes.len() != b_bytes.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a_bytes.iter().zip(b_bytes.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+// ── Error sanitization ────────────────────────────────────────────────
+
+/// Sanitize an error and return the client-safe message string.
+///
+/// Logs the full error server-side (with its `{:?}` representation) and
+/// returns a generic message suitable for inclusion in an HTTP response.
+/// The caller wraps the returned string in its own `ErrorResponse` type.
+///
+/// # Arguments
+///
+/// * `err` - The internal error. Will be logged at ERROR level.
+/// * `context` - Short description of what was happening when the error
+///   occurred (e.g. `"create_workspace"`, `"spawn_agent"`). Used in the
+///   server-side log and in the generic client message.
+pub fn sanitize_error(err: &dyn std::fmt::Display, context: &str) -> String {
+    // Log the full error server-side for debugging.
+    tracing::error!(
+        error = %err,
+        error_context = context,
+        "Internal error (details redacted from client response)"
+    );
+    format!("Internal error ({})", context)
+}
+
+
 
 /// Validate and canonicalize a working directory path.
-#[allow(dead_code)]
+///
+/// SECURITY (P1 #13):
+///   - Rejects `..` components (path-traversal guard)
+///   - Requires the path to exist and be a directory (no mkdir from user input)
+///   - Returns the canonical absolute path (symlinks resolved)
+///   - When `ERGATAI_WORKSPACE_ROOT` is set, additionally requires the resolved
+///     path to be a descendant of that root (workspace whitelist). This prevents
+///     a client with API access from spawning agents in arbitrary host
+///     directories such as `/etc`, `/root`, or another user's project.
 pub fn validate_cwd(cwd: &str) -> anyhow::Result<PathBuf, String> {
     let path = Path::new(cwd);
 
     for component in path.components() {
         if matches!(component, std::path::Component::ParentDir) {
-            return Err("Path traversal (..) not allowed in cwd".to_string());
+            return Err("Path traversal (..) not allowed in work_dir".to_string());
         }
     }
 
-    let canonical =
-        std::fs::canonicalize(path).map_err(|e| format!("Invalid cwd '{}': {}", cwd, e))?;
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|_| format!("Invalid work_dir '{}': does not exist or is not accessible", cwd))?;
 
     if !canonical.is_dir() {
-        return Err(format!("cwd '{}' is not a directory", cwd));
+        return Err(format!("work_dir '{}' is not a directory", cwd));
+    }
+
+    // Optional whitelist: ERGATAI_WORKSPACE_ROOT restricts where agents may run.
+    if let Ok(root) = std::env::var("ERGATAI_WORKSPACE_ROOT") {
+        let root_path = Path::new(&root);
+        let canonical_root = std::fs::canonicalize(root_path).map_err(|_| {
+            format!(
+                "ERGATAI_WORKSPACE_ROOT '{}' is not a valid directory",
+                root
+            )
+        })?;
+        if !canonical.starts_with(&canonical_root) {
+            return Err(format!(
+                "work_dir '{}' is outside the allowed workspace root '{}'",
+                canonical.display(),
+                canonical_root.display()
+            ));
+        }
     }
 
     Ok(canonical)

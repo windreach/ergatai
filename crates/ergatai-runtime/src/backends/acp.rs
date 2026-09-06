@@ -1424,7 +1424,7 @@ impl AgentRuntimeBackend for AcpBackend {
                                 agent_id = %aid,
                                 elicitation_id = %elicitation_id,
                                 mode = %mode_str,
-                                message = %request.message,
+                                message_bytes = request.message.len(),
                                 "ACP elicitation request received (awaiting frontend response)"
                             );
                             elics.record(elicitation_id.clone(), request.message.clone(), mode_str);

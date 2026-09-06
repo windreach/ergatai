@@ -135,12 +135,13 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
 
 /// Check if strict command validation is enabled.
 ///
-/// When ERGATAI_STRICT_MODE=1, commands are validated against the whitelist.
-/// Otherwise, all commands are allowed (for flexibility).
+/// When ERGATAI_STRICT_MODE=0, command whitelist validation is disabled.
+/// By default, strict mode is ON — commands must match the whitelist.
+/// This prevents arbitrary binary execution via the agent spawn API.
 fn is_strict_mode() -> bool {
     std::env::var("ERGATAI_STRICT_MODE")
-        .map(|v| v == "1" || v.to_lowercase() == "true")
-        .unwrap_or(false)
+        .map(|v| v != "0" && v.to_lowercase() != "false")
+        .unwrap_or(true) // SECURITY: default ON — opt-out via ERGATAI_STRICT_MODE=0
 }
 
 /// Whitelist for strict mode (only used when ERGATAI_STRICT_MODE=1).
@@ -175,12 +176,12 @@ fn is_valid_workspace_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
-/// Validate command (only in strict mode).
+/// Validate command against whitelist.
 ///
-/// By default, all commands are allowed for maximum flexibility.
-/// Set ERGATAI_STRICT_MODE=1 to enable whitelist validation.
+/// Strict mode is enabled by default. Commands must match `STRICT_MODE_ALLOWED_COMMANDS`.
+/// Set `ERGATAI_STRICT_MODE=0` to disable validation (not recommended).
 fn validate_command(command: &str) -> Result<(), String> {
-    // Skip validation unless strict mode is enabled
+    // Skip validation only when strict mode is explicitly disabled
     if !is_strict_mode() {
         return Ok(());
     }
@@ -241,14 +242,53 @@ pub async fn spawn_agent(
             .into_response();
     }
 
+    // SECURITY (P1 #15): Enforce an agent cap to prevent runaway spawning from
+    // exhausting host resources (processes, memory, NATS subjects, ACP sessions).
+    // Default: 50 agents. Override with ERGATAI_MAX_AGENTS.
+    let max_agents: usize = std::env::var("ERGATAI_MAX_AGENTS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50);
+    {
+        let runtime = get_agent_runtime();
+        let list = runtime.list_agents().await;
+        if list.len() >= max_agents {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse {
+                    error: format!(
+                        "Agent limit reached ({}/{}). Stop an agent or raise ERGATAI_MAX_AGENTS.",
+                        list.len(),
+                        max_agents
+                    ),
+                }),
+            )
+                .into_response();
+        }
+    }
+
     let runtime = get_agent_runtime();
     let env = req.env.unwrap_or_default();
 
-    // Save work_dir before it's consumed by WorkspaceSpec
-    let work_dir_str = req
+    // SECURITY (P1 #13): validate and canonicalize the work_dir.
+    // Rejects path traversal, non-existent dirs, and (optionally) paths outside
+    // ERGATAI_WORKSPACE_ROOT. The canonical path is what the agent process will
+    // actually use as its cwd.
+    let raw_work_dir = req
         .work_dir
         .clone()
         .unwrap_or_else(|| state.default_cwd.clone());
+    let work_dir = match crate::validate_cwd(&raw_work_dir) {
+        Ok(p) => p,
+        Err(msg) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse { error: msg }),
+            )
+                .into_response();
+        }
+    };
+    let work_dir_str = work_dir.to_string_lossy().into_owned();
 
     let spec = WorkspaceSpec {
         id: req.workspace_id,
@@ -274,9 +314,11 @@ pub async fn spawn_agent(
             (StatusCode::CREATED, Json(SpawnAgentResponse { agent_id })).into_response()
         }
         Err(e) => (
-            StatusCode::BAD_REQUEST,
+            StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: e.to_string(),
+                // SECURITY (P1 #18): Redact internal error details (may contain
+                // command lines, argv, binary paths, work_dir).
+                error: crate::sanitize_error(&e, "spawn_agent"),
             }),
         )
             .into_response(),
@@ -306,7 +348,8 @@ pub async fn kill_agent(
         Err(e) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: e.to_string(),
+                // SECURITY (P1 #18): Redact runtime internals.
+                error: crate::sanitize_error(&e, "kill_agent"),
             }),
         )
             .into_response(),
@@ -348,7 +391,8 @@ pub async fn cancel_prompt(
         Err(e) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: e.to_string(),
+                // SECURITY (P1 #18): Redact ACP internals.
+                error: crate::sanitize_error(&e, "cancel_prompt"),
             }),
         )
             .into_response(),
@@ -946,7 +990,8 @@ pub async fn respond_to_elicitation(
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: e.to_string(),
+                // SECURITY (P1 #18): Redact internal error details.
+                error: crate::sanitize_error(&e, "respond_elicitation"),
             }),
         )
             .into_response(),

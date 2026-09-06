@@ -23,7 +23,7 @@ pub struct NatsConnection {
 }
 
 impl NatsConnection {
-    /// Connect to a NATS server
+    /// Connect to a NATS server without authentication.
     ///
     /// # Arguments
     ///
@@ -32,8 +32,12 @@ impl NatsConnection {
     /// # Errors
     ///
     /// Returns an error if connection fails.
+    ///
+    /// NOTE: Most callers should use [`connect_with_auth`] or [`connect_to_server`]
+    /// instead. The embedded NATS server requires authentication; unauthenticated
+    /// connections will be rejected.
     pub async fn connect(url: &str) -> ErgataiResult<Self> {
-        info!(url = url, "Connecting to NATS");
+        info!(url = url, "Connecting to NATS (no auth)");
 
         let client = async_nats::connect(url).await.map_err(|e| {
             ErgataiError::NatsError(format!("Failed to connect to NATS at {}: {}", url, e))
@@ -46,9 +50,35 @@ impl NatsConnection {
         Ok(Self { client, jetstream })
     }
 
-    /// Connect to an embedded NatsServer instance
+    /// Connect to a NATS server with token authentication.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - NATS server URL (e.g., "127.0.0.1:4222")
+    /// * `token` - Authentication token (must match the server's `--auth` token)
+    pub async fn connect_with_auth(url: &str, token: &str) -> ErgataiResult<Self> {
+        info!(url = url, "Connecting to NATS (token auth)");
+
+        let client = async_nats::ConnectOptions::with_token(token.to_string())
+            .connect(url)
+            .await
+            .map_err(|e| {
+                ErgataiError::NatsError(format!(
+                    "Failed to connect to NATS at {} with auth: {}",
+                    url, e
+                ))
+            })?;
+
+        let jetstream = jetstream::new(client.clone());
+
+        info!("Connected to NATS (authenticated)");
+
+        Ok(Self { client, jetstream })
+    }
+
+    /// Connect to an embedded NatsServer instance using its auth token.
     pub async fn connect_to_server(server: &NatsServer) -> ErgataiResult<Self> {
-        Self::connect(&server.url()).await
+        Self::connect_with_auth(&server.url(), server.auth_token()).await
     }
 
     /// Get the underlying async-nats Client

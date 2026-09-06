@@ -57,3 +57,8 @@ crates/ergatai-binary/resources/
 # Build output
 build.log
 build_output.txt
+
+# Embedded adapter repos (separate git repos)
+adapters/claude-agent-acp/
+adapters/codex-acp/
+docs/acp/rust-sdk/

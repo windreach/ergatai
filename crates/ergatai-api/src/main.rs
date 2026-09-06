@@ -21,7 +21,7 @@ use ergatai_api::mcp::{
     start_peer_reaper,
 };
 use ergatai_api::messaging::{get_message_sender, init_message_sender};
-use ergatai_api::{app_state_with_token, build_rest_app};
+use ergatai_api::{app_state_with_token, auth_middleware, build_rest_app};
 use ergatai_core::cross_agent::{set_dag_scheduler, DagScheduler};
 use ergatai_core::nats;
 
@@ -66,6 +66,16 @@ struct Args {
     /// Can also be set via ERGATAI_SESSION_PREFIX environment variable.
     #[arg(long, env = "ERGATAI_SESSION_PREFIX", default_value = "ergatai")]
     session_prefix: String,
+
+    /// Explicitly opt out of API authentication.
+    ///
+    /// SECURITY: By default, the server REQUIRES either --api-token or TLS to be
+    /// configured. Without authentication, any client can spawn agents, send
+    /// messages, submit DAGs, and control the entire system.
+    ///
+    /// Only use this flag for local development in trusted environments.
+    #[arg(long, env = "ERGATAI_INSECURE_NO_AUTH")]
+    insecure_no_auth: bool,
 }
 
 /// Parse arguments and set environment variables BEFORE the tokio runtime starts.
@@ -101,14 +111,48 @@ async fn async_main(args: Args) -> Result<()> {
 
     tracing::info!("Starting Ergatai API server on {}:{}", args.host, args.port);
 
-    if args.api_token.is_some() {
-        tracing::info!("API authentication enabled");
+    // SECURITY: Require authentication by default.
+    // The API can spawn agents, execute arbitrary commands, submit DAGs, and control
+    // the entire multi-agent system. Running without auth exposes all of this to any
+    // client with network access.
+    let tls_enabled = args.tls_cert.is_some() || args.tls_key.is_some();
+    let auth_configured = args.api_token.is_some() || tls_enabled;
+
+    if auth_configured {
+        if args.api_token.is_some() {
+            tracing::info!("API authentication enabled (bearer token)");
+        }
+        if tls_enabled {
+            tracing::info!("TLS enabled - token transmitted over encrypted channel");
+        }
+    } else if args.insecure_no_auth {
+        tracing::warn!(
+            "╔══════════════════════════════════════════════════════════════════════╗\n\
+             ║  WARNING: API authentication DISABLED via --insecure-no-auth         ║\n\
+             ║  Any client with network access can:                                 ║\n\
+             ║    • Spawn agents and execute arbitrary commands                     ║\n\
+             ║    • Submit DAG workflows and orchestrate agent collaboration        ║\n\
+             ║    • Send messages between agents and read conversations             ║\n\
+             ║    • Access file locks and workspace contents                        ║\n\
+             ║                                                                      ║\n\
+             ║  For production: set --api-token, configure TLS, or use ERGATAI_     ║\n\
+             ║  API_TOKEN environment variable.                                     ║\n\
+             ╚══════════════════════════════════════════════════════════════════════╝"
+        );
     } else {
-        tracing::info!("API authentication disabled - API is open to all clients");
+        return Err(anyhow::anyhow!(
+            "Refusing to start without authentication.\n\n\
+             The Ergatai API can spawn agents, execute commands, and orchestrate your \
+             entire multi-agent system. Running without auth exposes all of this to any \
+             client with network access.\n\n\
+             To start the server, do ONE of:\n\
+             1. Set an API token:    --api-token <secret> or ERGATAI_API_TOKEN=<secret>\n\
+             2. Enable TLS:          --tls-cert <cert> --tls-key <key>\n\
+             3. Explicit opt-out:    --insecure-no-auth (NOT recommended)"
+        ));
     }
 
-    // Validate TLS configuration
-    let tls_enabled = args.tls_cert.is_some() || args.tls_key.is_some();
+    // Validate TLS configuration (tls_enabled already computed above)
     if tls_enabled {
         match (&args.tls_cert, &args.tls_key) {
             (Some(cert), Some(key)) => {
@@ -460,13 +504,19 @@ async fn async_main(args: Args) -> Result<()> {
     let state = app_state_with_token(args.api_token.clone()).clone();
 
     // API routes
-    let api_app = build_rest_app(state);
+    let api_app = build_rest_app(state.clone());
 
     let app = api_app
         .nest_service("/mcp/agent-1", mcp_service_1)
         .nest_service("/mcp/agent-2", mcp_service_2)
         .nest_service("/mcp/agent-3", mcp_service_3)
-        .nest_service("/mcp", mcp_service_default);
+        .nest_service("/mcp", mcp_service_default)
+        // SECURITY: Apply auth middleware AFTER nesting MCP services.
+        // Previously, MCP endpoints were mounted outside the auth layer,
+        // allowing any client to impersonate any agent by connecting to
+        // `/mcp/agent-N`. Now all routes (REST + MCP) require a valid
+        // Bearer token when --api-token is configured.
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     // Mount ACP server endpoint if enabled
     let runtime = ergatai_runtime::get_agent_runtime();

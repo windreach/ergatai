@@ -1,6 +1,7 @@
 // Task Scheduler - Manages task distribution to agents
 // Global singleton, persistent queue, MCP-based status checking
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -84,6 +85,18 @@ pub struct TaskScheduler {
     consumer_ready: tokio::sync::watch::Sender<bool>,
     /// Receiver clone for awaiting consumer readiness.
     consumer_ready_rx: tokio::sync::watch::Receiver<bool>,
+    /// SECURITY (P1 #16): Task IDs already seen in this process.
+    ///
+    /// Prevents duplicate execution when NATS redelivers a message (e.g. after
+    /// `nak`, consumer restart, or `ack_wait` timeout) or when the same plan is
+    /// submitted twice through the local API. The set is keyed by `task_id` and
+    /// entries are removed when the task reaches a terminal state (`mark_completed`
+    /// / `mark_failed`).
+    ///
+    /// This is an in-process guard only — it does not survive restarts. For
+    /// cross-restart idempotency the JetStream stream's own dedup window is the
+    /// source of truth.
+    seen_task_ids: Arc<Mutex<HashSet<String>>>,
 }
 
 /// Extract the objective from a plan's markdown content.
@@ -126,6 +139,7 @@ impl TaskScheduler {
             semaphore: Arc::new(Semaphore::new(limit)),
             consumer_ready: ready_tx,
             consumer_ready_rx: ready_rx,
+            seen_task_ids: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -261,6 +275,22 @@ impl TaskScheduler {
         let coordinator = TaskCoordinator::new(self.project_root.clone());
         let plan = coordinator.parse_plan(&plan_file).await?;
         let task_id = plan.task_id.clone();
+
+        // SECURITY (P1 #16): Idempotency guard — reject duplicate submissions.
+        // NATS redelivery (after nak, consumer restart, or ack_wait timeout) and
+        // double-submission through the local API can both cause the same task_id
+        // to arrive twice. The set is the single source of truth for "already
+        // processing" within this process.
+        {
+            let mut seen = self.seen_task_ids.lock().await;
+            if !seen.insert(task_id.clone()) {
+                tracing::warn!(
+                    task_id = %task_id,
+                    "Duplicate task submission rejected (already seen in this process)"
+                );
+                return Ok(task_id);
+            }
+        }
 
         // Find target agent (assume single agent for now)
         let target_agent = plan
@@ -515,6 +545,9 @@ impl TaskScheduler {
                 "Task completed, concurrency permit released"
             );
         }
+        // SECURITY (P1 #16): Free the dedup slot so the same task_id can be
+        // legitimately resubmitted in a future DAG run.
+        self.seen_task_ids.lock().await.remove(task_id);
     }
 
     /// Cancel a currently running task (remove from processing, releasing its permit).
@@ -537,6 +570,10 @@ impl TaskScheduler {
 
         let removed = before - processing.len();
         drop(processing); // Release lock before calling external code
+
+        // SECURITY (P1 #16): Free the dedup slot so a cancelled task can be
+        // resubmitted in a subsequent run.
+        self.seen_task_ids.lock().await.remove(task_id);
 
         if removed > 0 {
             tracing::info!(
@@ -789,6 +826,21 @@ impl TaskScheduler {
         }
 
         tokio::fs::write(&canonical, payload.plan_content.as_bytes()).await?;
+
+        // SECURITY (P1 #16): Idempotency guard — same check as submit_task_with_priority.
+        // NATS JetStream redelivers after `nak`, consumer restart, or `ack_wait`
+        // timeout can all cause the same task_id to reach this handler more than
+        // once. Without this guard the task would be launched a second time.
+        {
+            let mut seen = self.seen_task_ids.lock().await;
+            if !seen.insert(payload.task_id.clone()) {
+                tracing::warn!(
+                    task_id = %payload.task_id,
+                    "Duplicate NATS task delivery rejected (already seen in this process)"
+                );
+                return Ok(());
+            }
+        }
 
         // Build a PendingTask
         let now = SystemTime::now()

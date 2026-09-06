@@ -119,12 +119,27 @@ impl MessageSender {
 
     /// Send a message through the full pipeline.
     pub async fn send(&self, req: SendRequest) -> SendMessageResult {
+        // SECURITY: Enforce message size limit before any processing.
+        // Without this, a single agent can send multi-MB messages at 60 msg/min,
+        // exhausting NATS JetStream disk (24h TTL × 60 MB/min = 86 GB/day).
+        const MAX_MESSAGE_BYTES: usize = 64 * 1024; // 64 KB
+        if req.message.len() > MAX_MESSAGE_BYTES {
+            return SendMessageResult::Rejected {
+                reason: format!(
+                    "Message too large: {} bytes exceeds limit of {} bytes",
+                    req.message.len(),
+                    MAX_MESSAGE_BYTES
+                ),
+            };
+        }
+
         let runtime = get_agent_runtime();
 
         info!(
             from = %req.from,
             to = %req.to,
             message_type = %req.message_type,
+            message_bytes = req.message.len(),
             "MessageSender: processing send request"
         );
 

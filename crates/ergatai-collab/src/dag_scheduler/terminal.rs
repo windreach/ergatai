@@ -340,6 +340,28 @@ impl DagScheduler {
             // Wait before retrying (no locks held)
             tokio::time::sleep(delay).await;
 
+            // SECURITY (race fix): Re-check node status before submitting.
+            // During the backoff sleep, another node's completion may have called
+            // `submit_graph` which found this node in Pending and already submitted it.
+            // If the node is no longer Pending (i.e., Running or Failed), skip to
+            // prevent double-execution.
+            {
+                let graph = self.graph.lock().await;
+                if let Some(current_node) = graph.find_node(node_id) {
+                    if current_node.status != TaskStatus::Pending {
+                        tracing::info!(
+                            node_id = node_id,
+                            status = ?current_node.status,
+                            "Retry skipped: node already picked up by submit_graph during backoff"
+                        );
+                        return Ok(());
+                    }
+                } else {
+                    tracing::warn!(node_id = node_id, "Retry skipped: node no longer exists");
+                    return Ok(());
+                }
+            }
+
             // Use YAML priority directly (CPM removed)
             let priority = ergatai_lock::priority_to_number(&node_clone.priority)
                 .map(|p| p as u32)

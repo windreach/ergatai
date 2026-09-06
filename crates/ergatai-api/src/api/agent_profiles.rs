@@ -75,19 +75,34 @@ pub async fn register_profile(Json(request): Json<RegisterProfileRequest>) -> im
             })),
         ),
         Err(e) => {
-            let status = if e.to_string().contains("already exists") {
-                StatusCode::CONFLICT
-            } else if e.to_string().contains("cannot be empty")
-                || e.to_string().contains("Invalid agent type")
-            {
-                StatusCode::BAD_REQUEST
+            let err_text = e.to_string();
+            // Classification based on error content — used to pick an HTTP
+            // status code. These strings are the contract between the profile
+            // registry and the HTTP layer; keep them stable.
+            let is_user_error = err_text.contains("already exists")
+                || err_text.contains("cannot be empty")
+                || err_text.contains("Invalid agent type");
+
+            let (status, message) = if is_user_error {
+                // Validation / conflict errors are safe to forward verbatim.
+                let status = if err_text.contains("already exists") {
+                    StatusCode::CONFLICT
+                } else {
+                    StatusCode::BAD_REQUEST
+                };
+                (status, err_text)
             } else {
-                StatusCode::INTERNAL_SERVER_ERROR
+                // SECURITY (P1 #18): Redact internal DB/storage errors that
+                // may reveal SQLite file paths or constraint messages.
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    crate::sanitize_error(&e, "register_agent_profile"),
+                )
             };
             (
                 status,
                 Json(serde_json::json!({
-                    "error": e.to_string()
+                    "error": message
                 })),
             )
         }

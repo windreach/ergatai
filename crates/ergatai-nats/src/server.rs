@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use tokio::time::{sleep, timeout};
 use tracing::{error, info, warn};
+use uuid::Uuid;
 
 use ergatai_error::{ErgataiError, ErgataiResult};
 
@@ -39,6 +40,10 @@ const READINESS_CHECK_INTERVAL_MS: u64 = 100;
 pub struct NatsServer {
     child: Option<Child>,
     port: u16,
+    /// Authentication token for NATS connections.
+    /// Generated randomly at startup and passed to nats-server via `--auth`.
+    /// All clients must present this token to connect.
+    auth_token: String,
 }
 
 impl NatsServer {
@@ -47,6 +52,13 @@ impl NatsServer {
     /// Used by tests to avoid loading stale persistent data.
     pub async fn start_with_store_dir(store_dir: PathBuf) -> ErgataiResult<Self> {
         let binary_path = ergatai_binary::find_nats_binary()?;
+
+        // SECURITY: Generate a random authentication token for NATS.
+        // Without this, any local process can connect to the embedded NATS server
+        // and publish/subscribe to any subject, intercepting all agent messages
+        // or injecting malicious events. The token is passed to nats-server via
+        // `--auth` and must be presented by all connecting clients.
+        let auth_token = Uuid::new_v4().to_string();
 
         // Ensure store directory exists
         tokio::fs::create_dir_all(&store_dir).await.map_err(|e| {
@@ -57,7 +69,7 @@ impl NatsServer {
         for attempt in 0..MAX_BIND_RETRIES {
             let port = Self::find_available_port().await?;
 
-            info!(port = port, binary = %binary_path.display(), store = %store_dir.display(), attempt = attempt + 1, "Starting nats-server");
+            info!(port = port, binary = %binary_path.display(), store = %store_dir.display(), attempt = attempt + 1, "Starting nats-server (auth enabled)");
 
             let mut cmd = Command::new(&binary_path);
             cmd.args([
@@ -70,6 +82,8 @@ impl NatsServer {
                 store_dir
                     .to_str()
                     .ok_or_else(|| ErgataiError::internal("Invalid NATS store directory path"))?,
+                "--auth",
+                &auth_token,
             ])
             .stderr(Stdio::piped())
             .stdout(Stdio::null());
@@ -111,7 +125,7 @@ impl NatsServer {
                                 "nats-server process started, waiting for readiness..."
                             );
 
-                            match Self::wait_for_ready(port).await {
+                            match Self::wait_for_ready(port, &auth_token).await {
                                 Ok(()) => {
                                     info!(
                                         port = port,
@@ -120,6 +134,7 @@ impl NatsServer {
                                     return Ok(Self {
                                         child: Some(child),
                                         port,
+                                        auth_token: auth_token.clone(),
                                     });
                                 }
                                 Err(e) => {
@@ -160,15 +175,20 @@ impl NatsServer {
     /// Wait for NATS server to be ready to accept connections
     ///
     /// Attempts to connect to the server with retries until timeout.
-    async fn wait_for_ready(port: u16) -> ErgataiResult<()> {
+    /// Uses the provided auth token to authenticate (matches the `--auth` flag
+    /// passed to nats-server at startup).
+    async fn wait_for_ready(port: u16, auth_token: &str) -> ErgataiResult<()> {
         let url = format!("127.0.0.1:{}", port);
         let timeout_duration = Duration::from_secs(READINESS_TIMEOUT_SECS);
         let check_interval = Duration::from_millis(READINESS_CHECK_INTERVAL_MS);
 
         timeout(timeout_duration, async {
             loop {
-                // Try to connect to NATS
-                match async_nats::connect(&url).await {
+                // Try to connect to NATS with auth token
+                match async_nats::ConnectOptions::with_token(auth_token.to_string())
+                    .connect(&url)
+                    .await
+                {
                     Ok(client) => {
                         // Connection succeeded - server is ready
                         client.flush().await.ok();
@@ -221,6 +241,14 @@ impl NatsServer {
     /// Get the connection URL for this server
     pub fn url(&self) -> String {
         format!("127.0.0.1:{}", self.port)
+    }
+
+    /// Get the authentication token for this server.
+    ///
+    /// Clients must present this token when connecting (via
+    /// `ConnectOptions::with_token` or `NatsConnection::connect_with_auth`).
+    pub fn auth_token(&self) -> &str {
+        &self.auth_token
     }
 
     /// Get the NATS JetStream store directory

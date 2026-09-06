@@ -169,10 +169,22 @@ impl Default for RateLimitGate {
 #[async_trait]
 impl AdmissionGate for RateLimitGate {
     async fn check(&self, request: &SendRequest, runtime: &AgentRuntime) -> AdmissionResult {
-        let sender_id = runtime
-            .resolve_agent_id(&request.from)
-            .await
-            .unwrap_or_else(|| request.from.clone());
+        // SECURITY: Resolve sender to a known runtime agent ID. Reject unresolvable
+        // senders instead of falling back to the raw string — otherwise an attacker
+        // could rotate through N unique fake IDs, each getting its own 60 msg/min
+        // rate-limit bucket, amplifying throughput N-fold before later gates catch it.
+        let sender_id = match runtime.resolve_agent_id(&request.from).await {
+            Some(id) => id,
+            None => {
+                return AdmissionResult::Denied {
+                    reason: format!(
+                        "Sender '{}' is not a registered runtime agent. \
+                         Cannot enforce rate limits — message rejected.",
+                        request.from
+                    ),
+                };
+            }
+        };
 
         match crate::mcp::get_rate_limiter().try_acquire(&sender_id) {
             Ok(_) => AdmissionResult::Allowed,

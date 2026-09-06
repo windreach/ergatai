@@ -289,6 +289,20 @@ pub fn parse_dag_yaml(
     content: &str,
     params: Option<HashMap<String, serde_json::Value>>,
 ) -> ErgataiResult<TaskGraph> {
+    // SECURITY: Enforce input size limits to prevent CPU/memory exhaustion.
+    // A 50k-node DAG triggers O(N×(N+D)) cycle detection (~5×10⁹ DFS ops).
+    // Cap YAML at 1 MB and task count at 1000.
+    const MAX_YAML_BYTES: usize = 1_048_576; // 1 MB
+    const MAX_TASK_COUNT: usize = 1000;
+
+    if content.len() > MAX_YAML_BYTES {
+        return Err(ErgataiError::InvalidArgument(format!(
+            "DAG YAML too large: {} bytes exceeds limit of {} bytes (1 MB)",
+            content.len(),
+            MAX_YAML_BYTES
+        )));
+    }
+
     let yaml_dag: YamlDag = serde_yaml::from_str(content)
         .map_err(|e| ErgataiError::InvalidArgument(format!("YAML parse error: {}", e)))?;
 
@@ -296,6 +310,14 @@ pub fn parse_dag_yaml(
         return Err(ErgataiError::InvalidArgument(
             "No tasks found in YAML definition".to_string(),
         ));
+    }
+
+    if yaml_dag.tasks.len() > MAX_TASK_COUNT {
+        return Err(ErgataiError::InvalidArgument(format!(
+            "DAG too large: {} tasks exceeds limit of {} tasks",
+            yaml_dag.tasks.len(),
+            MAX_TASK_COUNT
+        )));
     }
 
     // 验证和合并参数
