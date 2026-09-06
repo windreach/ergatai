@@ -31,7 +31,7 @@ export interface FilesBackend {
   search: (workspace: string, query: string) => Promise<FileStat[]>;
 }
 
-const defaultWorkspace = "/home/yubing/ergatai";
+const defaultWorkspace = runtime.filesDefaultWorkspace ?? "/workspace";
 
 interface MockFileNode extends FileStat {
   children?: MockFileNode[];

@@ -30,19 +30,12 @@ export function FilesPanel({ path }: { path?: string }) {
   const [draft, setDraft] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [prefersLight, setPrefersLight] = useState(() => window.matchMedia("(prefers-color-scheme: light)").matches);
+  const prefersLight = usePrefersLight();
   const requestRef = useRef(0);
   const activePath = path ?? defaultPath;
 
   const dirty = Boolean(content && draft !== content.data);
   const loading = !content;
-
-  useEffect(() => {
-    const media = window.matchMedia("(prefers-color-scheme: light)");
-    const onChange = () => setPrefersLight(media.matches);
-    media.addEventListener("change", onChange);
-    return () => media.removeEventListener("change", onChange);
-  }, []);
 
   useEffect(() => {
     let cancelled = false;

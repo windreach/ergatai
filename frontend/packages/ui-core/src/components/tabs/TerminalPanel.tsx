@@ -7,6 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Folder, RotateCcw, Trash2 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { fallbackUserHome, terminalBackend, runtime, type TerminalSession } from "@ergatai/platform-core";
+import { usePrefersLight } from "../../hooks/usePrefersLight";
 
 type TerminalStatus = "connecting" | "ready" | "closed" | "error";
 
@@ -21,7 +22,7 @@ export function TerminalPanel() {
   const [status, setStatus] = useState<TerminalStatus>("connecting");
   const [statusText, setStatusText] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [prefersLight, setPrefersLight] = useState(() => window.matchMedia("(prefers-color-scheme: light)").matches);
+  const prefersLight = usePrefersLight();
 
   const theme = useMemo(() => {
     return prefersLight
@@ -109,13 +110,6 @@ export function TerminalPanel() {
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    const media = window.matchMedia("(prefers-color-scheme: light)");
-    const onChange = () => setPrefersLight(media.matches);
-    media.addEventListener("change", onChange);
-    return () => media.removeEventListener("change", onChange);
   }, []);
 
   function restart() {

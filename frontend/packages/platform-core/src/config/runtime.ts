@@ -45,4 +45,6 @@ export const runtime = Object.freeze({
   chatApiUrl: readEnv("VITE_CHAT_API_URL") ?? "/api/v1/chat",
   terminalApiUrl: readEnv("VITE_TERMINAL_API_URL") ?? "/api/v1/terminals/ws",
   terminalDefaultCwd: readEnv("VITE_TERMINAL_DEFAULT_CWD"),
+  filesDefaultWorkspace: readEnv("VITE_FILES_DEFAULT_WORKSPACE"),
+  terminalUser: readEnv("VITE_TERMINAL_USER") ?? "user",
 });

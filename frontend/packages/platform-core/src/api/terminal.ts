@@ -124,7 +124,7 @@ class MockTerminalSession implements TerminalSession {
 
   private promptText() {
     const directory = this.cwd === fallbackUserHome ? "~" : this.cwd.split("/").at(-1) || this.cwd;
-    return `yubing@ergatai:${directory}$ `;
+    return `${runtime.terminalUser}@ergatai:${directory}$ `;
   }
 
   private writePrompt() {

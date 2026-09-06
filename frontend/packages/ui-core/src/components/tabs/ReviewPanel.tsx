@@ -15,6 +15,7 @@ import {
   type ReviewDetail,
   type ReviewSummary,
 } from "@ergatai/platform-core";
+import { usePrefersLight } from "../../hooks/usePrefersLight";
 
 const DiffEditor = lazy(() => import("../monaco/DiffEditor"));
 
@@ -27,17 +28,10 @@ export function ReviewPanel() {
   const [actionBusy, setActionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [splitView, setSplitView] = useState(false);
-  const [prefersLight, setPrefersLight] = useState(() => window.matchMedia("(prefers-color-scheme: light)").matches);
+  const prefersLight = usePrefersLight();
 
   const detailLoading = !detail || detail.id !== selectedId;
   const activeFile = detail?.files.find((file) => file.id === selectedFileId) ?? detail?.files[0] ?? null;
-
-  useEffect(() => {
-    const media = window.matchMedia("(prefers-color-scheme: light)");
-    const onChange = () => setPrefersLight(media.matches);
-    media.addEventListener("change", onChange);
-    return () => media.removeEventListener("change", onChange);
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
