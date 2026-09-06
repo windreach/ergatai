@@ -19,7 +19,7 @@
     "clsx": "^2.1.1",
     "i18next": "^26.4.1",
     "lucide-react": "^1.40.0",
-    "monaco-editor": "^0.56.0",
+    "monaco-editor": "^0.53.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-i18next": "^17.0.13",

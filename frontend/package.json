@@ -7,6 +7,10 @@
     "apps/*",
     "packages/*"
   ],
+  "overrides": {
+    "monaco-editor": "^0.53.0",
+    "dompurify": "^3.2.4"
+  },
   "scripts": {
     "dev": "npm run dev --workspace @ergatai/web",
     "build": "npm run build --workspace @ergatai/web",
