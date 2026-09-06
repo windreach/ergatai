@@ -149,15 +149,13 @@ crates/
 │       ├── template.rs            {{var}} 模板展开
 │       ├── condition.rs           条件表达式求值
 │       └── context.rs             DAG 上下文 (全局变量)
-├── ergatai-lock/          文件访问控制 (零信任, token-based)
+├── ergatai-lock/          文件访问控制 (零信任, token-based, advisory)
 │   └── src/
 │       ├── lock_manager.rs        锁管理核心 (SQLite WAL)
 │       ├── token.rs               SystemToken + FileToken 双层 token
-│       ├── enforcer/              内核级强制 (Linux fanotify)
-│       ├── ipc_server.rs          Unix socket IPC（LD_PRELOAD 快照查询）
 │       ├── snapshot.rs            Git-based COW 快照 (TOCTOU 防护)
 │       ├── watchdog.rs            Token 过期 + 心跳监控
-│       ├── watcher.rs             文件系统未授权修改检测
+│       ├── watcher.rs             文件系统未授权修改检测 (notify crate)
 │       ├── renewal.rs             锁续期
 │       ├── pid_resolver.rs        进程 → agent 归属解析
 │       └── sensitive_paths.rs     敏感路径保护
@@ -174,21 +172,18 @@ crates/
 │       └── lib.rs
 ├── ergatai-agent/         Agent 配置和发现 (占位)
 ├── ergatai-binary/        二进制资源 (nats-server 查找/下载)
-├── ergatai-preload/       LD_PRELOAD 库 (透明快照读取, cdylib)
-│   └── src/lib.rs               拦截 open()/openat()，重定向锁文件读取到 Git 快照
 └── ergatai-cli/           CLI 工具 (ergatai 命令)
     └── src/
         ├── main.rs              clap CLI (start/workspace/agent/status)
         ├── commands/              子命令实现
         ├── client/                HTTP + WebSocket 客户端
         └── output/                输出格式化
-desktop/                   桌面应用 (Tauri + React)
-├── src/                     React 前端 (Vite + TypeScript)
-├── src-tauri/               Tauri Rust 后端壳
-├── index.html               入口 HTML
-├── package.json             Node 依赖
-├── vite.config.ts           Vite 配置
-└── tsconfig.json            TypeScript 配置
+frontend/                  Web 前端 (React + Vite + TypeScript, monorepo)
+├── apps/web/              主应用 (Vite + React)
+├── packages/platform-core/ API 客户端层 (terminal, chat, files, review)
+├── packages/ui-core/      UI 组件库 (WorkspaceShell, Monaco editor)
+├── package.json           npm workspaces 配置
+└── README.md
 ```
 
 ---
@@ -543,47 +538,31 @@ JetStream Streams:
 - **Git COW 快照**: Copy-on-Write 防止 TOCTOU
 - **Watchdog**: Token 过期 + 心跳监控
 - **File Watcher**: 跨平台文件修改检测 + 自动上锁（`notify` crate，Linux/macOS/Windows）
-- **内核级强制**: Linux fanotify 拦截 `open()`，从 advisory 升级到 mandatory（非 Linux 或权限不足时 fail-open）
-- **LD_PRELOAD 快照读取**: `ergatai-preload` 拦截 `open()` 读取被锁文件的 Git 快照版本
 
 ### 自动化模型
 
 文件锁完全自动化，无需任何 MCP 工具调用（原 `request_file_access` / `release_file_access` / `list_active_locks` 已删除）：
 
-| 操作 | Linux (fanotify) | 其他平台 (FileSystemWatcher) |
-|------|------------------|------------------------------|
-| **READ** | 直接读取，无需申请锁 | 直接读取，无需申请锁 |
-| **WRITE** | fanotify `FAN_MODIFY` 自动上锁 | `notify` 监控修改自动上锁（post-facto） |
-| **读取被锁文件** | LD_PRELOAD 透明拦截返回快照 | 无透传（advisory-only，锁记录在 SQLite） |
+| 操作 | 行为 |
+|------|------|
+| **READ** | 直接读取，无需申请锁 |
+| **WRITE** | `notify::RecommendedWatcher` 检测到修改事件后自动上锁（post-facto） |
 
-**Linux 工作原理（fanotify）：**
-1. Agent 写入文件 → fanotify 捕获 `FAN_MODIFY` 事件
-2. `FileLockManager::auto_acquire_write_lock()` 创建 Git 快照（修改前的基线）
-3. 自动授予 WRITE 锁（1 小时 TTL，跳过冲突检查）
-4. 其他 agent 读取该文件 → `libergatai_preload.so` 通过 Unix socket 查询锁状态
-5. 如果文件被锁：从 Git 对象存储读取快照内容，写入临时文件，打开后 unlink
-6. 如果未锁或 IPC 失败：正常打开（fail-open）
+**工作原理（FileSystemWatcher）：**
 
-**跨平台工作原理（FileSystemWatcher）：**
-
-非 Linux 平台（或 fanotify 权限不足时），`init_file_access_with_enforcer()` 自动启动 `FileSystemWatcher` 作为 fallback：
+`init_file_access_with_enforcer()` 启动 `FileSystemWatcher`：
 1. Agent 写入文件 → `notify::RecommendedWatcher` 检测到修改事件
 2. 调用 `auto_acquire_write_lock()` 创建快照 + WRITE 锁
 3. 所有锁统一使用 agent_id=`"system"`, session_id=`"watcher"`（无 per-agent 归属）
 
-**已知限制（非 Linux 平台）：**
+**已知限制：**
 
 | 限制 | 说明 |
 |------|------|
 | 无阻断 | 写入已完成后才检测到，无法阻止并发写入 |
-| Post-facto 快照 | 快照捕获的是修改后的内容（与 Linux FAN_MODIFY 行为一致） |
+| Post-facto 快照 | 快照捕获的是修改后的内容 |
 | 无 PID | 无法精确识别修改进程，所有锁归属 `"system"`（无法区分 agent） |
-| 无 LD_PRELOAD | `ergatai-preload` 仅 Linux 可用，其他 agent 无法透明读取快照 |
 | Advisory-only | 锁记录在 SQLite，无内核级强制，依赖 agent 查询锁状态 |
-
-**Agent 启动集成：** `AcpBackend::start_agent()` 自动检测 `libergatai_preload.so` 并注入 `LD_PRELOAD` 环境变量。workspace 目录通过 `register_workspace_for_project()` 注册，供 fanotify（PID 归属）使用。FileSystemWatcher 不依赖 workspace 映射（非 Linux 平台无 per-agent 归属）。
-
-**IPC 协议：** `ergatai-lock` 在 `/tmp/ergatai-lock-{uid}.sock` 监听 Unix socket，处理 `check_lock` 和 `get_snapshot` 查询。
 
 ---
 
@@ -614,7 +593,6 @@ JetStream Streams:
 | 日志 | tracing 0.1 + tracing-subscriber 0.3 |
 | 错误 | thiserror 1.0 + anyhow 1.0 |
 | 指标 | metrics-exporter-prometheus |
-| 内核拦截 | libc 0.2 (fanotify) |
 
 ---
 
