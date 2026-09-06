@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   FolderOpen,
   Globe,
+  MessageCircle,
   Plus,
   ShieldCheck,
   Terminal as TerminalIcon,
@@ -12,6 +13,7 @@ import {
 
 import { ErrorBoundary } from "../ErrorBoundary";
 import { PlaceholderPanel } from "../tabs/PlaceholderPanel";
+import { ChatPanel } from "../tabs/ChatPanel";
 import { LazyFilesPanel as FilesPanel } from "../../panels/lazy-panels";
 import { LazyReviewPanel as ReviewPanel } from "../../panels/lazy-panels";
 import { LazyTerminalPanel as TerminalPanel } from "../../panels/lazy-panels";
@@ -23,9 +25,11 @@ const panelIcons: Record<ToolPanelType, LucideIcon> = {
   browser: Globe,
   files: FolderOpen,
   review: ShieldCheck,
+  sideChat: MessageCircle,
 };
 
 const newTabOptions: Array<{ type: ToolPanelType; singleInstance?: boolean }> = [
+  { type: "sideChat", singleInstance: true },
   { type: "terminal" },
   { type: "browser" },
   { type: "files", singleInstance: true },
@@ -206,6 +210,9 @@ function ToolPanelContent({ tab }: { tab: ToolPanelTab }) {
   }
   if (tab.type === "review") {
     return <ReviewPanel />;
+  }
+  if (tab.type === "sideChat") {
+    return <ChatPanel key={tab.id} conversationId={tab.id} />;
   }
   return <PlaceholderPanel titleKey={`tabs.${tab.type}`} />;
 }

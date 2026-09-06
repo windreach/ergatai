@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type ToolPanelType = "terminal" | "browser" | "files" | "review";
+export type ToolPanelType = "terminal" | "browser" | "files" | "review" | "sideChat";
 
 export interface ToolPanelTab {
   id: string;
@@ -21,7 +21,7 @@ interface ToolPanelActions {
 
 export type ToolPanelStore = ToolPanelState & ToolPanelActions;
 
-const singleInstanceTypes = new Set<ToolPanelType>(["files", "review"]);
+const singleInstanceTypes = new Set<ToolPanelType>(["files", "review", "sideChat"]);
 
 function createId(prefix: string) {
   const uniqueId = typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -34,7 +34,8 @@ function isToolPanelType(value: unknown): value is ToolPanelType {
   return value === "terminal"
     || value === "browser"
     || value === "files"
-    || value === "review";
+    || value === "review"
+    || value === "sideChat";
 }
 
 function isToolPanelTab(value: unknown): value is ToolPanelTab {

@@ -5,6 +5,7 @@
     "browser": "Browser",
     "files": "Files",
     "review": "Review",
+    "sideChat": "AI Chat",
     "comingSoon": "{{title}} panel is coming soon",
     "resizeSplit": "Resize split panes"
   },
