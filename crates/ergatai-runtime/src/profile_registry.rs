@@ -164,17 +164,40 @@ impl ProfileRegistry {
         // Register default built-in profiles FIRST (use current version)
         self.register_default_profiles()?;
 
-        // Then check for updates in BACKGROUND (non-blocking)
-        // Updates will be ready for NEXT startup
-        let db_path = self.db_path.clone();
-        tokio::spawn(async move {
-            // Create a temporary registry instance for background update
-            if let Ok(registry) = ProfileRegistry::new(&db_path) {
-                if let Err(e) = registry.check_and_update_adapters_background().await {
-                    warn!(error = %e, "Background adapter update failed");
+        // SECURITY: Background adapter auto-update is OPT-IN.
+        //
+        // When enabled, every startup runs `git fetch` + `git pull` in each
+        // adapter directory. This is a supply-chain risk: if an upstream adapter
+        // repo is compromised, ergatai pulls malicious code automatically. It
+        // also adds latency on air-gapped or slow networks (git fetch timeout).
+        //
+        // Opt in explicitly with ERGATAI_ADAPTERS_AUTO_UPDATE=1 when you accept
+        // these trade-offs (e.g., dev environments with trusted upstreams).
+        let auto_update = std::env::var("ERGATAI_ADAPTERS_AUTO_UPDATE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        if auto_update {
+            // Check for updates in BACKGROUND (non-blocking).
+            // Updates will be ready for NEXT startup.
+            let adapters_base = Self::resolve_adapters_base();
+            let db_path = self.db_path.clone();
+            tokio::spawn(async move {
+                // Create a temporary registry instance for background update
+                if let Ok(registry) = ProfileRegistry::new(&db_path) {
+                    if let Err(e) = registry
+                        .check_and_update_adapters_background(&adapters_base)
+                        .await
+                    {
+                        warn!(error = %e, "Background adapter update failed");
+                    }
                 }
-            }
-        });
+            });
+        } else {
+            debug!(
+                "Adapter auto-update disabled (set ERGATAI_ADAPTERS_AUTO_UPDATE=1 to enable)"
+            );
+        }
 
         Ok(())
     }
@@ -187,18 +210,10 @@ impl ProfileRegistry {
     /// - Goose: https://goose-docs.ai/docs/guides/acp-clients/
     /// - ACP Registry: https://agentclientprotocol.com/get-started/agents
     fn register_default_profiles(&self) -> ErgataiResult<()> {
-        // Resolve adapter paths relative to the executable's parent directory.
-        // Layout: <project_root>/target/<profile>/ergatai-api → <project_root>/adapters/
-        let adapters_base = std::env::var("ERGATAI_ADAPTERS_DIR")
-            .ok()
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-                    .map(|d| d.join("../adapters"))
-            })
-            .unwrap_or_else(|| std::path::PathBuf::from("adapters"));
+        // Resolve adapter paths via the shared helper (same path used by
+        // check_and_update_adapters_background so auto-update inspects the
+        // same adapters we registered here).
+        let adapters_base = Self::resolve_adapters_base();
 
         let codex_cmd = format!(
             "node {}",
@@ -457,13 +472,20 @@ impl ProfileRegistry {
     /// This method is called after system startup to check for updates.
     /// Updates happen asynchronously so they don't delay system startup.
     /// Updated adapters will be used on NEXT system startup.
-    pub async fn check_and_update_adapters_background(&self) -> ErgataiResult<()> {
-        let adapters_dir = std::env::current_dir()
-            .map(|p| p.join("adapters"))
-            .unwrap_or_else(|_| std::path::PathBuf::from("adapters"));
+    ///
+    /// `adapters_base` must be the same directory that [`register_default_profiles`]
+    /// resolved, so this function inspects the adapters that were actually registered.
+    pub async fn check_and_update_adapters_background(
+        &self,
+        adapters_base: &std::path::Path,
+    ) -> ErgataiResult<()> {
+        let adapters_dir = adapters_base;
 
         if !adapters_dir.exists() {
-            debug!("Adapters directory not found, skipping background update");
+            debug!(
+                path = %adapters_dir.display(),
+                "Adapters directory not found, skipping background update"
+            );
             return Ok(());
         }
 
@@ -512,12 +534,28 @@ impl ProfileRegistry {
         Ok(())
     }
 
-    /// Check and update adapters automatically (blocking version).
+    /// Resolve the base directory for adapters.
     ///
-    /// This method blocks until all updates are complete.
-    /// Use check_and_update_adapters_background() for non-blocking updates.
-    pub async fn check_and_update_adapters(&self) -> ErgataiResult<()> {
-        self.check_and_update_adapters_background().await
+    /// Priority:
+    ///   1. `ERGATAI_ADAPTERS_DIR` env var (explicit override)
+    ///   2. `<current_exe>/../adapters` (production layout: target/<profile>/ergatai-api → adapters/)
+    ///   3. `./adapters` (fallback for source/dev)
+    ///
+    /// This helper is shared by `register_default_profiles` and
+    /// `check_and_update_adapters_background` so they always point at the same
+    /// adapters directory — fixing a prior inconsistency where one used
+    /// `current_exe` and the other used `current_dir`.
+    fn resolve_adapters_base() -> std::path::PathBuf {
+        std::env::var("ERGATAI_ADAPTERS_DIR")
+            .ok()
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                    .map(|d| d.join("../adapters"))
+            })
+            .unwrap_or_else(|| std::path::PathBuf::from("adapters"))
     }
 
     /// Check if an adapter needs updating and perform the update.

@@ -96,8 +96,22 @@ pub struct TaskScheduler {
     /// This is an in-process guard only — it does not survive restarts. For
     /// cross-restart idempotency the JetStream stream's own dedup window is the
     /// source of truth.
+    ///
+    /// Bounded to [`SEEN_IDS_CAP`] entries. If tasks leak (e.g. process crash
+    /// before `mark_completed`), the set would otherwise grow without limit.
+    /// When the cap is hit, the set is cleared with a warning — dedup
+    /// reverts to the JetStream-level dedup window for older IDs.
     seen_task_ids: Arc<Mutex<HashSet<String>>>,
 }
+
+/// SECURITY: Soft cap on the in-process task-id dedup set.
+///
+/// Normal operation removes entries when tasks complete or fail, so the set
+/// stays small. The cap is a defense-in-depth bound for the rare case where
+/// tasks leak (e.g. crash during delivery before `mark_completed` runs).
+/// Hitting the cap is a signal to investigate the leak — we log loudly and
+/// clear, rather than fail open or OOM.
+const SEEN_IDS_CAP: usize = 10_000;
 
 /// Extract the objective from a plan's markdown content.
 ///
@@ -141,6 +155,29 @@ impl TaskScheduler {
             consumer_ready_rx: ready_rx,
             seen_task_ids: Arc::new(Mutex::new(HashSet::new())),
         }
+    }
+
+    /// Insert `task_id` into the in-process dedup set with a soft cap.
+    ///
+    /// Returns `true` if the ID was newly inserted, `false` if it was already
+    /// present (duplicate — caller should skip execution).
+    ///
+    /// If the set has grown past [`SEEN_IDS_CAP`] (defense-in-depth against
+    /// leaked tasks that never reach `mark_completed`), logs a loud warning
+    /// and clears the set before inserting. Dedup for older IDs reverts to
+    /// the JetStream-level dedup window, which is the true source of truth.
+    async fn try_insert_seen(&self, task_id: String) -> bool {
+        let mut seen = self.seen_task_ids.lock().await;
+        if seen.len() >= SEEN_IDS_CAP {
+            tracing::warn!(
+                cap = SEEN_IDS_CAP,
+                "seen_task_ids reached capacity — clearing to bound memory \
+                 (JetStream dedup window remains authoritative). Investigate \
+                 whether tasks are leaking past mark_completed/mark_failed."
+            );
+            seen.clear();
+        }
+        seen.insert(task_id)
     }
 
     /// Wait for the NATS JetStream consumer to be ready.
@@ -281,15 +318,12 @@ impl TaskScheduler {
         // double-submission through the local API can both cause the same task_id
         // to arrive twice. The set is the single source of truth for "already
         // processing" within this process.
-        {
-            let mut seen = self.seen_task_ids.lock().await;
-            if !seen.insert(task_id.clone()) {
-                tracing::warn!(
-                    task_id = %task_id,
-                    "Duplicate task submission rejected (already seen in this process)"
-                );
-                return Ok(task_id);
-            }
+        if !self.try_insert_seen(task_id.clone()).await {
+            tracing::warn!(
+                task_id = %task_id,
+                "Duplicate task submission rejected (already seen in this process)"
+            );
+            return Ok(task_id);
         }
 
         // Find target agent (assume single agent for now)
@@ -831,15 +865,12 @@ impl TaskScheduler {
         // NATS JetStream redelivers after `nak`, consumer restart, or `ack_wait`
         // timeout can all cause the same task_id to reach this handler more than
         // once. Without this guard the task would be launched a second time.
-        {
-            let mut seen = self.seen_task_ids.lock().await;
-            if !seen.insert(payload.task_id.clone()) {
-                tracing::warn!(
-                    task_id = %payload.task_id,
-                    "Duplicate NATS task delivery rejected (already seen in this process)"
-                );
-                return Ok(());
-            }
+        if !self.try_insert_seen(payload.task_id.clone()).await {
+            tracing::warn!(
+                task_id = %payload.task_id,
+                "Duplicate NATS task delivery rejected (already seen in this process)"
+            );
+            return Ok(());
         }
 
         // Build a PendingTask

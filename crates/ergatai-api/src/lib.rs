@@ -348,16 +348,22 @@ pub async fn auth_middleware(
 }
 
 /// Constant-time string comparison to prevent timing side-channel attacks.
-/// Compares all bytes regardless of where they differ, so an attacker cannot
-/// recover the expected value byte-by-byte via round-trip time measurement.
+///
+/// Compares all bytes regardless of where they differ (including length), so an
+/// attacker cannot recover the expected value byte-by-byte — nor its length —
+/// via round-trip time measurement. Uses a `u8` accumulator OR'd with each
+/// XOR'd byte pair so every byte is touched in the same number of cycles.
 fn constant_time_eq(a: &str, b: &str) -> bool {
     let a_bytes = a.as_bytes();
     let b_bytes = b.as_bytes();
-    if a_bytes.len() != b_bytes.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a_bytes.iter().zip(b_bytes.iter()) {
+
+    // Include length difference in the accumulator so early-exit on mismatched
+    // length is not observable — we still walk max(len_a, len_b) bytes.
+    let mut diff = (a_bytes.len() ^ b_bytes.len()) as u8;
+    let max_len = a_bytes.len().max(b_bytes.len());
+    for i in 0..max_len {
+        let x = *a_bytes.get(i).unwrap_or(&0);
+        let y = *b_bytes.get(i).unwrap_or(&0);
         diff |= x ^ y;
     }
     diff == 0
@@ -419,17 +425,25 @@ pub fn validate_cwd(cwd: &str) -> anyhow::Result<PathBuf, String> {
     if let Ok(root) = std::env::var("ERGATAI_WORKSPACE_ROOT") {
         let root_path = Path::new(&root);
         let canonical_root = std::fs::canonicalize(root_path).map_err(|_| {
-            format!(
-                "ERGATAI_WORKSPACE_ROOT '{}' is not a valid directory",
-                root
-            )
+            // SECURITY: Do not echo ERGATAI_WORKSPACE_ROOT's value to the client —
+            // it's a server-side configuration secret (reveals host directory layout).
+            tracing::error!(
+                root = %root,
+                "ERGATAI_WORKSPACE_ROOT is not a valid directory"
+            );
+            "Server workspace root is misconfigured (contact administrator)".to_string()
         })?;
         if !canonical.starts_with(&canonical_root) {
-            return Err(format!(
-                "work_dir '{}' is outside the allowed workspace root '{}'",
-                canonical.display(),
-                canonical_root.display()
-            ));
+            // SECURITY: Do not leak the canonical_root path to the client.
+            // Log the details server-side for debugging.
+            tracing::info!(
+                requested = %canonical.display(),
+                root = %canonical_root.display(),
+                "work_dir rejected: outside ERGATAI_WORKSPACE_ROOT"
+            );
+            return Err(
+                "work_dir is outside the allowed workspace root (see server logs)".to_string(),
+            );
         }
     }
 

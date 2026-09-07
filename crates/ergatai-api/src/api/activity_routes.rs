@@ -108,7 +108,13 @@ pub async fn stream_events(
                 tracing::debug!(active = current + 1, max = max, "SSE connection opened");
                 break;
             }
-            Err(_) => continue, // Lost the race — reload and try again.
+            Err(_) => {
+                // Lost the race — yield a spin-loop hint to the CPU (reduces
+                // power/scheduling pressure under extreme contention), then
+                // reload and try again.
+                std::hint::spin_loop();
+                continue;
+            }
         }
     }
 
