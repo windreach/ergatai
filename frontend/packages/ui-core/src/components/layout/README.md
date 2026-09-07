@@ -63,9 +63,7 @@ ui-core/src/components/layout/
 - lucide-react@1.40.0
 - zustand@5.0.15
 - tailwind-merge@3.6.0
-
-待添加（DAG 可视化）：
-- reactflow
+- @xyflow/react@12.8.6
 
 ## 下一步
 

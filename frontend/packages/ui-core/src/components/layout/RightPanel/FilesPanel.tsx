@@ -1,4 +1,5 @@
 import { FileCode, FileText, Folder } from "lucide-react";
+import { usePanelAutomation } from "../../../core/workspace/panelAutomation";
 
 interface FileChange {
   id: string;
@@ -8,6 +9,7 @@ interface FileChange {
 }
 
 export function FilesPanel() {
+  const requestedPath = usePanelAutomation((state) => state.panelContext.files?.filePath);
   // Mock data
   const changes: FileChange[] = [
     { id: "1", path: "src/App.tsx", type: "modified", status: "staged" },
@@ -62,6 +64,12 @@ export function FilesPanel() {
       {/* File List */}
       <div className="flex-1 overflow-y-auto">
         <div className="p-2">
+          {requestedPath && (
+            <div className="mb-3 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-text">
+              当前上下文：{requestedPath}
+            </div>
+          )}
+
           {/* Staged Changes */}
           <div className="mb-4">
             <div className="mb-2 flex items-center gap-2 px-2">

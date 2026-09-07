@@ -1,166 +1,60 @@
-# 桌面布局实现总结
+# 桌面布局实现状态
 
-已完成 Ergatai 桌面版三栏布局框架搭建。
+桌面版已按三栏布局接入：左侧默认 15% 且展开，右侧默认预留 35% 且初始收起，中间自适应主区。
 
-## 实现状态
+## 当前状态
 
-### 已完成组件
+### 左侧导航栏
 
-#### 左侧导航栏 (LeftPanel - 280px)
+- 群聊 / Agent 模式切换位于侧栏顶部。
+- `对话`、`任务`、`DAG` 作为竖直主视图切换项。
+- 左侧展开态顶部是 Logo + 收缩符号，搜索框位于其下方；收起态不显示 Logo。收缩符号固定在左侧栏头部最右侧并保留间距，图标保持不变。
+- 左右侧栏都有收缩符号，边缘分隔条支持拖拽和方向键调整宽度；右侧符号固定在右侧栏右上角。侧栏宽度切换有 300ms 平滑过渡，拖拽期间自动关闭过渡。
+- 三栏顶部行统一为 56px，左右收缩符号和中间主区头部的垂直中心对齐。
+- 项目群、Agent 会话、任务列表和新建入口集中在侧栏。
+- 搜索实时过滤任务、群聊和会话，支持普通关键词与 `type:`、`agent:`、`status:`、`has:unread` 过滤。
+- 任务右键支持查看看板 / DAG、归档和删除；群聊右键支持已读和真实静音状态。
+- 设置入口已提供。
 
-| 组件 | 文件 | 功能 | 状态 |
-|------|------|------|------|
-| SearchBox | LeftPanel/SearchBox.tsx | 搜索输入框 | ✅ 完成 |
-| ModeTabs | LeftPanel/ModeTabs.tsx | 群聊/Agent 模式切换 | ✅ 完成 |
-| NewButton | LeftPanel/NewButton.tsx | 新建群聊/会话按钮 | ✅ 完成 |
-| TaskList | LeftPanel/TaskList.tsx | 任务列表（持久化） | ✅ 完成 |
-| GroupList | LeftPanel/GroupList.tsx | 群聊列表 | ✅ 完成 |
-| SessionList | LeftPanel/SessionList.tsx | 会话列表 | ✅ 完成 |
-| SettingsButton | LeftPanel/SettingsButton.tsx | 设置按钮 | ✅ 完成 |
+### 中间主区域
 
-**任务列表特性**：
-- 持久化存储（类似会话）
-- 显示：任务标题 + 状态图标 + 时间
-- 不显示 agent 信息
-- 排序：活跃任务置顶，已完成任务下移
+- 对话视图是默认视图，展示群聊或 Agent 会话。
+- 群聊采用“发送立即返回 + 每个被提及 Agent 一个异步 Run”的模型；群聊内没有显式 `@Agent` 时会分发给全部 Agent。
+- 每个 Agent Run 都有独立活动卡、任务记录、流式文本回复和停止动作。
+- 任务看板提供四列状态视图和任务详情。
+- DAG 视图提供基础依赖关系展示。
+- 主区域顶部不再放置视图标签页。
 
-**状态图标**：
-- 进行中：蓝色圆圈（animate-pulse）
-- 等待中：黄色时钟
-- 已完成：绿色对勾
-- 失败：红色叉号
+### 右侧工具面板
 
-#### 中间主区域 (MainArea - flexible)
+| 面板 | 当前状态 |
+|------|----------|
+| ChatPanel | 复用 `components/tabs` 的完整 AI 对话面板 |
+| TerminalPanel | 复用基于 xterm.js 的本地终端面板 |
+| FilesPanel | 复用基于 Monaco Editor 的文件查看 / 编辑面板 |
+| ReviewPanel | 复用代码审查和 diff 面板 |
+| PlaceholderPanel | 复用预留占位面板 |
+| AutomationSettingsPanel | 作为独立设置标签，提供智能 / 全自动 / 手动模式和事件开关 |
 
-| 视图 | 功能 | 状态 |
-|------|------|------|
-| 对话视图 | 显示对话消息 | ✅ 框架完成 |
-| 任务看板 | 四列卡片视图 | ✅ 框架完成 |
-| DAG 视图 | 依赖关系可视化 | ⏳ 待实现 |
-| 空视图 | 默认欢迎页 | ✅ 完成 |
+### 自动化
 
-**任务看板**：
-- 四列：尚未开始、进行中、成功、失败
-- 卡片形式展示任务
-- 点击卡片查看详情
-
-**视图切换**：
-- 顶部标签页切换
-- 图标 + 文字标识
-
-#### 右侧工具面板 (RightPanel - 400px)
-
-| 面板 | 功能 | 状态 |
-|------|------|------|
-| ChatPanel | 对话内容 | ⏳ 占位 |
-| TerminalPanel | 终端输出 | ⏳ 占位 |
-| FilesPanel | 文件变更 | ⏳ 占位 |
-| ReviewPanel | 代码审查 | ⏳ 占位 |
-| PlaceholderPanel | 备用面板 | ⏳ 占位 |
-
-**面板特性**：
-- 标签页切换（可关闭）
-- 新建面板按钮
-- 可折叠（右侧留 48px 展开按钮）
-
-#### 桌面布局容器 (DesktopLayout)
-
-| 组件 | 文件 | 功能 | 状态 |
-|------|------|------|------|
-| DesktopLayout | DesktopLayout/index.tsx | 三栏布局容器 | ✅ 完成 |
-
-**布局结构**：
-```
-DesktopLayout
-├── LeftPanel (280px)
-├── MainArea (flexible)
-└── RightPanel (400px, 可折叠)
-```
-
-## 设计规范
-
-### 禁止使用 Emoji
-- 所有图标使用 SVG（Lucide React）
-- 状态图标、导航图标、工具图标全部 SVG
-
-### 颜色系统
-- 使用 Tailwind CSS 变量
-- 支持亮色/暗色主题
-- 颜色：primary, muted, text, border-subtle, surface, bg
-
-### 组件结构
-- TypeScript + React
-- Tailwind CSS 样式
-- Lucide React 图标库
-- 函数式组件
-
-## 文件结构
-
-```
-ui-core/src/components/layout/
-├── index.ts                          # 统一导出
-├── DesktopLayout/
-│   └── index.tsx                     # 三栏布局容器
-├── LeftPanel/
-│   ├── index.tsx                     # 左侧面板容器
-│   ├── SearchBox.tsx                 # 搜索框
-│   ├── ModeTabs.tsx                  # 模式切换
-│   ├── NewButton.tsx                 # 新建按钮
-│   ├── TaskList.tsx                  # 任务列表
-│   ├── GroupList.tsx                 # 群聊列表
-│   ├── SessionList.tsx               # 会话列表
-│   └── SettingsButton.tsx            # 设置按钮
-├── MainArea/
-│   └── index.tsx                     # 主区域（含视图切换）
-└── RightPanel/
-    └── index.tsx                     # 右侧工具面板
-```
-
-## 待办事项
-
-### 高优先级
-1. 集成到现有 WorkspaceShell 或替换
-2. 实现状态管理（Zustand stores）
-3. 连接后端 API（任务、群聊、会话）
-4. 实现 DAG 可视化（React Flow）
-
-### 中优先级
-5. 实现右侧面板具体功能
-   - ChatPanel：对话消息列表
-   - TerminalPanel：终端输出
-   - FilesPanel：文件差异对比
-   - ReviewPanel：代码审查 UI
-6. 实现主区域行为触发右侧面板自动化
-7. 任务卡片详情弹窗
-
-### 低优先级
-8. 动画和过渡效果
-9. 键盘快捷键
-10. 拖拽排序（任务列表、面板）
-11. 响应式布局优化
+- 审批请求触发 ReviewPanel。
+- 文件 / 产出物触发 FilesPanel。
+- Agent 工具命令触发 TerminalPanel。
+- 消息详情可打开 ChatPanel。
+- 智能模式下审批自动切换，普通事件只创建或提示。
+- 手动模式通过通知交给用户打开。
 
 ## 技术栈
 
-- React 18 + TypeScript
-- Tailwind CSS
-- Lucide React（SVG 图标）
-- 待添加：Zustand（状态管理）
-- 待添加：React Flow（DAG 可视化）
+- React + TypeScript
+- Zustand 管理共享工作区状态
+- Tailwind CSS 设计令牌
+- Lucide React 图标
 
-## Mock 数据
+## 待办
 
-当前所有列表使用 mock 数据：
-- 任务列表：5 个示例任务
-- 群聊列表：3 个示例群聊
-- 会话列表：3 个示例会话
-- 任务看板：4 列示例任务
-
-**TODO**：替换为从后端 API 或 Zustand store 获取的真实数据。
-
-## 下一步
-
-1. 将 DesktopLayout 集成到应用入口
-2. 创建 Zustand stores 管理状态
-3. 实现后端 API 客户端
-4. 连接真实数据
-5. 实现 DAG 可视化
+1. 将本地初始状态替换为后端真实任务、会话、文件和终端数据。
+2. 为文件和审查面板接入真实 diff / 文件内容。
+3. 完善面板拖拽排序与更多上下文持久化。
+4. 继续按任务 DAG 文档补齐实时执行状态和节点详情。

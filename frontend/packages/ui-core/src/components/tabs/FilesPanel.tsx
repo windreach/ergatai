@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { filesBackend, type FileContent } from "@ergatai/platform-core";
+import { usePrefersLight } from "../../hooks/usePrefersLight";
 
 const CodeEditor = lazy(() => import("../monaco/CodeEditor"));
 

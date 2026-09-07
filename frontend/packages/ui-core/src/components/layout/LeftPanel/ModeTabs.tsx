@@ -5,7 +5,7 @@ interface ModeTabsProps {
 
 export function ModeTabs({ mode, onChange }: ModeTabsProps) {
   return (
-    <div className="flex border-b border-border-subtle">
+    <div className="flex items-stretch border-b border-border-subtle">
       <button
         onClick={() => onChange("group")}
         className={`flex-1 px-4 py-2 text-sm font-medium transition-colors ${

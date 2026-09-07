@@ -6,6 +6,7 @@
     "files": "文件",
     "review": "审查",
     "sideChat": "AI 聊天",
+    "placeholder": "占位",
     "comingSoon": "{{title}}面板即将开放",
     "resizeSplit": "调整分屏大小"
   },

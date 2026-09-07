@@ -1,87 +1,76 @@
 import { useState } from "react";
 import { Send } from "lucide-react";
-import { create } from "zustand";
+import {
+  useConversationStore,
+  type ConversationMessagePart,
+} from "../../../core/workspace/conversationStore";
+import { useWorkspaceStore } from "../../../core/workspace/workspaceStore";
 
-interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  timestamp: Date;
+function getPartText(part: ConversationMessagePart) {
+  if (part.type === "text") return part.content;
+  if (part.type === "mention") return `@${part.displayName}`;
+  if (part.type === "system_notice") return part.content;
+  if (part.type === "task_ref") return `[任务] ${part.title}`;
+  if (part.type === "artifact") return `[产出物] ${part.label}`;
+  return "";
 }
-
-interface ChatStore {
-  messages: Message[];
-  addMessage: (role: "user" | "assistant", content: string) => void;
-  clearMessages: () => void;
-}
-
-const useChatStore = create<ChatStore>((set) => ({
-  messages: [
-    {
-      id: "1",
-      role: "assistant",
-      content: "你好！我是你的 AI 助手，有什么可以帮助你的吗？",
-      timestamp: new Date(Date.now() - 60000),
-    },
-  ],
-  addMessage: (role, content) =>
-    set((state) => ({
-      messages: [
-        ...state.messages,
-        {
-          id: Date.now().toString(),
-          role,
-          content,
-          timestamp: new Date(),
-        },
-      ],
-    })),
-  clearMessages: () => set({ messages: [] }),
-}));
 
 export function ChatPanel() {
   const [input, setInput] = useState("");
-  const messages = useChatStore((state) => state.messages);
-  const addMessage = useChatStore((state) => state.addMessage);
+  const mode = useWorkspaceStore((state) => state.mode);
+  const selectedConversationId = useWorkspaceStore((state) => state.selectedConversationId);
+  const conversations = useConversationStore((state) => state.conversations);
+  const allMessages = useConversationStore((state) => state.messages);
+  const sendMessage = useConversationStore((state) => state.sendMessage);
+
+  const conversation = conversations.find((item) => item.id === selectedConversationId)
+    ?? conversations.find((item) => (mode === "group" ? item.kind === "group" : item.kind === "direct"));
+  const messages = conversation
+    ? allMessages.filter((message) => message.conversationId === conversation.id)
+    : [];
 
   const handleSend = () => {
-    if (!input.trim()) return;
+    if (!input.trim() || !conversation) return;
 
-    addMessage("user", input);
+    sendMessage(conversation.id, input);
     setInput("");
-
-    // Simulate assistant response
-    setTimeout(() => {
-      addMessage("assistant", `收到你的消息：${input}`);
-    }, 1000);
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
+  const handleKeyPress = (event: React.KeyboardEvent) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
       handleSend();
     }
   };
 
   return (
     <div className="flex h-full flex-col">
-      {/* Message List */}
+      <header className="border-b border-border-subtle px-4 py-3 text-sm font-medium text-text">
+        {conversation ? `${conversation.title} · 主对话` : "选择对话"}
+      </header>
+
       <div className="flex-1 overflow-y-auto p-4">
-        {messages.map((msg) => (
+        {messages.map((message) => (
           <div
-            key={msg.id}
-            className={`mb-4 flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+            key={message.id}
+            className={`mb-4 flex ${message.senderKind === "user" ? "justify-end" : "justify-start"}`}
           >
             <div
               className={`max-w-[80%] rounded-lg px-4 py-2 ${
-                msg.role === "user"
+                message.senderKind === "user"
                   ? "bg-primary text-white"
                   : "bg-bg text-text"
               }`}
             >
-              <div className="text-sm">{msg.content}</div>
+              <div className="space-y-1 text-left">
+                {message.parts.map((part, index) => (
+                  <div key={`${message.id}-${index}`} className="text-sm">
+                    {getPartText(part)}
+                  </div>
+                ))}
+              </div>
               <div className="mt-1 text-xs opacity-70">
-                {msg.timestamp.toLocaleTimeString("zh-CN", {
+                {new Date(message.createdAt).toLocaleTimeString("zh-CN", {
                   hour: "2-digit",
                   minute: "2-digit",
                 })}
@@ -91,20 +80,20 @@ export function ChatPanel() {
         ))}
       </div>
 
-      {/* Input Area */}
       <div className="border-t border-border-subtle p-4">
         <div className="flex gap-2">
           <textarea
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(event) => setInput(event.target.value)}
             onKeyPress={handleKeyPress}
-            placeholder="输入消息..."
+            placeholder={conversation ? "发送到当前主对话..." : "请先在左侧选择对话"}
+            disabled={!conversation}
             className="flex-1 resize-none rounded-md border border-border-subtle bg-bg px-3 py-2 text-sm text-text placeholder:text-muted focus:border-primary focus:outline-none"
             rows={3}
           />
           <button
             onClick={handleSend}
-            disabled={!input.trim()}
+            disabled={!input.trim() || !conversation}
             className="flex h-10 w-10 items-center justify-center rounded-md bg-primary text-white transition-colors hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Send className="h-4 w-4" />

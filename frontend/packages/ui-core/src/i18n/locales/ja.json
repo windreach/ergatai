@@ -6,6 +6,7 @@
     "files": "ファイル",
     "review": "レビュー",
     "sideChat": "AIチャット",
+    "placeholder": "プレースホルダー",
     "comingSoon": "{{title}}パネルは準備中です",
     "resizeSplit": "分割ペインのサイズを変更"
   },

@@ -6,6 +6,7 @@
     "files": "Files",
     "review": "Review",
     "sideChat": "AI Chat",
+    "placeholder": "Placeholder",
     "comingSoon": "{{title}} panel is coming soon",
     "resizeSplit": "Resize split panes"
   },

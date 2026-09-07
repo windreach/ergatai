@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Terminal as TerminalIcon } from "lucide-react";
+import { usePanelAutomation } from "../../../core/workspace/panelAutomation";
 
 interface TerminalLine {
   id: string;
@@ -24,6 +25,19 @@ export function TerminalPanel() {
     },
   ]);
   const [input, setInput] = useState("");
+  const lastCommand = usePanelAutomation((state) => state.panelContext.terminal);
+
+  const displayedLines = lastCommand?.command
+    ? [
+        ...lines,
+        {
+          id: `agent-${lastCommand.token}`,
+          type: "output" as const,
+          content: `[Agent] ${lastCommand.command}`,
+          timestamp: new Date(),
+        },
+      ]
+    : lines;
 
   const handleCommand = () => {
     if (!input.trim()) return;
@@ -96,7 +110,7 @@ export function TerminalPanel() {
 
       {/* Terminal Output */}
       <div className="flex-1 overflow-y-auto p-4">
-        {lines.map((line) => (
+        {displayedLines.map((line) => (
           <div key={line.id} className="mb-1">
             {line.type === "input" ? (
               <div className="text-green-400">

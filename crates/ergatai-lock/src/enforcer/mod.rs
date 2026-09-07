@@ -1050,7 +1050,6 @@ impl Enforcer {
 mod tests {
     use super::*;
     use crate::pid_resolver::NoopPidResolver;
-    use crate::token::{FileMode, FileToken, SystemToken};
     use std::fs;
     use tempfile::TempDir;
 

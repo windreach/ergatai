@@ -1,9 +1,11 @@
 import { Settings } from "lucide-react";
+import { usePanelAutomation } from "../../../core/workspace/panelAutomation";
 
 export function SettingsButton() {
+  const openPanel = usePanelAutomation((state) => state.openPanel);
+
   const handleClick = () => {
-    // TODO: 打开设置面板
-    console.log("打开设置");
+    openPanel("settings", true);
   };
 
   return (

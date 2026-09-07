@@ -187,7 +187,7 @@ mod tests {
     async fn test_lock_aware_permission_handler() {
         // Test that LockAwarePermissionHandler delegates to YoloPermissionHandler
         // and auto-approves (current simplified implementation)
-        let handler = LockAwarePermissionHandler;
+        let _handler = LockAwarePermissionHandler;
 
         // Create a minimal mock request (using builder pattern if available)
         // For now, we just verify the handler can be instantiated and called
@@ -203,7 +203,7 @@ mod tests {
     #[tokio::test]
     async fn test_yolo_permission_handler_still_works() {
         // Verify YoloPermissionHandler still works after our changes
-        let handler = YoloPermissionHandler;
+        let _handler = YoloPermissionHandler;
 
         // Verify the handler implements PermissionHandler trait
         fn assert_permission_handler<T: PermissionHandler>() {}

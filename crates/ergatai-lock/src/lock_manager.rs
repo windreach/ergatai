@@ -255,6 +255,7 @@ impl FileLockManager {
     /// Returns `Ok(())` if the agent can acquire more locks, or
     /// `Err(ErgataiError::ResourceLimitExceeded)` if the limit is reached.
     #[cfg(test)]
+    #[allow(dead_code)]
     fn check_agent_lock_limit(&self, agent_id: &str) -> Result<(), ErgataiError> {
         let count = self.count_active_locks_by_agent(agent_id)?;
         Self::check_agent_lock_limit_with_count(agent_id, count)

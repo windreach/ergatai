@@ -20,7 +20,7 @@ const monacoEnvironment: MonacoEnvironment = {
   },
 };
 
-globalThis.MonacoEnvironment = monacoEnvironment;
+Object.assign(globalThis, { MonacoEnvironment: monacoEnvironment });
 loader.config({ monaco });
 
 function defineErgataiThemes(instance: typeof monaco) {

@@ -13,6 +13,7 @@
   --color-text: var(--text);
   --color-muted: var(--muted);
   --color-faint: var(--faint);
+  --color-primary: var(--accent);
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
   --color-accent-muted: var(--accent-muted);

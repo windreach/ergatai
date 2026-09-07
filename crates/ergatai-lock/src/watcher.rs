@@ -349,6 +349,7 @@ mod tests {
     }
 
     /// Helper: register a system token and create a file token
+    #[allow(dead_code)]
     fn make_token_and_register(
         manager: &FileLockManager,
         agent_id: &str,
