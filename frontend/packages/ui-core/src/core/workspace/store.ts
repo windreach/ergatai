@@ -269,3 +269,14 @@ export const useAgentTabStore = create<AgentTabStore>()(persist((set, get) => ({
     };
   },
 }));
+
+// New stores for desktop layout
+export { useTaskStore } from "./taskStore";
+export type { Task, TaskStatus } from "./taskStore";
+
+export { useGroupStore } from "./groupStore";
+export type { Group } from "./groupStore";
+
+export { useSessionStore } from "./sessionStore";
+export type { Session } from "./sessionStore";
+
