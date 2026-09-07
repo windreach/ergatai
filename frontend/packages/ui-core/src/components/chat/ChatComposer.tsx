@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import type { ChangeEvent, FormEvent, KeyboardEvent, ClipboardEvent, RefObject } from "react";
-import { ArrowUp, Plus, Shield, Square } from "lucide-react";
+import { ArrowUp, FolderOpen, GitBranch, Plus, Shield, Square } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { AttachmentCard } from "./message-blocks";
 import { permissionModes, type AttachedFile, type PermissionMode } from "./types";
@@ -56,6 +56,22 @@ export function ChatComposer({
       onSubmit={supportsFormSubmit ? onSubmit : undefined}
       className="rounded-2xl border border-border bg-surface shadow-sm"
     >
+      <div className="flex h-9 items-center gap-2 border-b border-border-subtle px-2.5">
+        <button
+          type="button"
+          className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] text-muted transition-colors hover:bg-hover hover:text-text"
+        >
+          <FolderOpen className="h-3.5 w-3.5" />
+          {t("composer.workspace")}
+        </button>
+        <button
+          type="button"
+          className="ml-auto flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] text-muted transition-colors hover:bg-hover hover:text-text"
+        >
+          <GitBranch className="h-3.5 w-3.5" />
+          {t("composer.branch")}
+        </button>
+      </div>
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-2 px-3 pt-3">
           {attachments.map((file) => (

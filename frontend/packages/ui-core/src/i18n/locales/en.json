@@ -100,6 +100,20 @@
     "expand": "Expand right sidebar",
     "selectPanel": "Use the plus button to choose terminal, browser, files, or review"
   },
+  "shell": {
+    "chatGroup": "Chat group name",
+    "breadcrumb": "Breadcrumb",
+    "addAgent": "Add agent",
+    "groupDropdown": "Groups",
+    "chatRecord": "Chat record {{index}}",
+    "agentDropdown": "Agents",
+    "agent": "Agent {{index}}",
+    "rightTools": "The right toolbar opens the project's four tool panels"
+  },
+  "composer": {
+    "workspace": "Select workspace",
+    "branch": "Git branch"
+  },
   "chat": {
     "placeholder": "Send a message…",
     "send": "Send",

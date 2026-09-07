@@ -100,6 +100,20 @@
     "expand": "展开右侧边栏",
     "selectPanel": "使用加号选择终端、浏览器、文件或审查"
   },
+  "shell": {
+    "chatGroup": "聊天组名",
+    "breadcrumb": "地址面包屑",
+    "addAgent": "添加 agent",
+    "groupDropdown": "group 下拉器",
+    "chatRecord": "聊天记录 {{index}}",
+    "agentDropdown": "agent 下拉",
+    "agent": "agent {{index}}",
+    "rightTools": "右侧工具栏对应项目 4 个工具面板"
+  },
+  "composer": {
+    "workspace": "选择工作区",
+    "branch": "git 分支"
+  },
   "chat": {
     "placeholder": "发送消息…",
     "send": "发送",

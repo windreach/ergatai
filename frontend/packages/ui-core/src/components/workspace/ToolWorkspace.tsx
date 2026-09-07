@@ -36,7 +36,7 @@ const newTabOptions: Array<{ type: ToolPanelType; singleInstance?: boolean }> = 
   { type: "review", singleInstance: true },
 ];
 
-export function ToolWorkspace() {
+export function ToolWorkspace({ showTabBar = true }: { showTabBar?: boolean } = {}) {
   const { t } = useTranslation();
   const tabs = useToolPanelStore((state) => state.tabs);
   const activeTabId = useToolPanelStore((state) => state.activeTabId);
@@ -96,79 +96,81 @@ export function ToolWorkspace() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg">
-      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border-subtle bg-surface px-2">
-        <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
-          {tabs.map((tab) => {
-            const active = tab.id === activeTabId;
-            const Icon = panelIcons[tab.type];
+      {showTabBar && (
+        <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border-subtle bg-surface px-2">
+          <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
+            {tabs.map((tab) => {
+              const active = tab.id === activeTabId;
+              const Icon = panelIcons[tab.type];
 
-            return (
-              <div
-                key={tab.id}
-                className={cn(
-                  "group flex h-8 shrink-0 items-center gap-2 rounded-lg border px-2 text-left text-[12px] transition-colors",
-                  active
-                    ? "border-accent/30 bg-bg text-text"
-                    : "border-transparent text-muted hover:bg-hover hover:text-text",
-                )}
-              >
-                <button
-                  type="button"
-                  onClick={() => selectPanel(tab.id)}
-                  className="flex min-w-0 items-center gap-2"
-                >
-                  <Icon
-                    className={cn(
-                      "h-3.5 w-3.5 shrink-0",
-                      active ? "text-accent" : "text-faint",
-                    )}
-                  />
-                  <span className="min-w-0 truncate">{t(`tabs.${tab.type}`)}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => closePanel(tab.id)}
-                  aria-label={t("panelBrowser.closeTab")}
-                  title={t("panelBrowser.closeTab")}
+              return (
+                <div
+                  key={tab.id}
                   className={cn(
-                    "flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted transition-colors hover:bg-hover hover:text-text",
-                    active ? "opacity-70" : "opacity-0 group-hover:opacity-70",
+                    "group flex h-8 shrink-0 items-center gap-2 rounded-lg border px-2 text-left text-[12px] transition-colors",
+                    active
+                      ? "border-accent/30 bg-bg text-text"
+                      : "border-transparent text-muted hover:bg-hover hover:text-text",
                   )}
                 >
-                  <X className="h-3 w-3" />
-                </button>
-              </div>
-            );
-          })}
-
-          <div ref={plusRef} className="relative shrink-0 pl-1">
-            <button
-              type="button"
-              onClick={() => setMenuOpen((open) => !open)}
-              aria-label={t("panelBrowser.newTab")}
-              title={t("panelBrowser.newTab")}
-              aria-expanded={menuOpen}
-              className="flex h-6 w-6 items-center justify-center rounded-md text-muted transition-colors hover:bg-hover hover:text-text"
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </button>
-            {menuOpen && (
-              <div className="absolute left-0 top-8 z-30 w-40 overflow-hidden rounded-xl border border-border-subtle bg-elevated p-1 shadow-lg">
-                {availableNewTabs.map((option) => (
                   <button
-                    key={option.type}
                     type="button"
-                    onClick={() => startPanel(option.type)}
-                    className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[12px] text-text transition-colors hover:bg-hover"
+                    onClick={() => selectPanel(tab.id)}
+                    className="flex min-w-0 items-center gap-2"
                   >
-                    {t(`tabs.${option.type}`)}
+                    <Icon
+                      className={cn(
+                        "h-3.5 w-3.5 shrink-0",
+                        active ? "text-accent" : "text-faint",
+                      )}
+                    />
+                    <span className="min-w-0 truncate">{t(`tabs.${tab.type}`)}</span>
                   </button>
-                ))}
-              </div>
-            )}
+                  <button
+                    type="button"
+                    onClick={() => closePanel(tab.id)}
+                    aria-label={t("panelBrowser.closeTab")}
+                    title={t("panelBrowser.closeTab")}
+                    className={cn(
+                      "flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted transition-colors hover:bg-hover hover:text-text",
+                      active ? "opacity-70" : "opacity-0 group-hover:opacity-70",
+                    )}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              );
+            })}
+
+            <div ref={plusRef} className="relative shrink-0 pl-1">
+              <button
+                type="button"
+                onClick={() => setMenuOpen((open) => !open)}
+                aria-label={t("panelBrowser.newTab")}
+                title={t("panelBrowser.newTab")}
+                aria-expanded={menuOpen}
+                className="flex h-6 w-6 items-center justify-center rounded-md text-muted transition-colors hover:bg-hover hover:text-text"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+              {menuOpen && (
+                <div className="absolute left-0 top-8 z-30 w-40 overflow-hidden rounded-xl border border-border-subtle bg-elevated p-1 shadow-lg">
+                  {availableNewTabs.map((option) => (
+                    <button
+                      key={option.type}
+                      type="button"
+                      onClick={() => startPanel(option.type)}
+                      className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[12px] text-text transition-colors hover:bg-hover"
+                    >
+                      {t(`tabs.${option.type}`)}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
         {activeTab ? (
@@ -192,8 +194,8 @@ export function ToolWorkspace() {
             );
           })
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-faint">
-            {t("toolWorkspace.empty")}
+          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-faint">
+            {showTabBar ? t("toolWorkspace.empty") : t("shell.rightTools")}
           </div>
         )}
       </div>

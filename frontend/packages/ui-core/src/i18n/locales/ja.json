@@ -100,6 +100,20 @@
     "expand": "右サイドバーを開く",
     "selectPanel": "プラスボタンからターミナル、ブラウザ、ファイル、レビューを選択します"
   },
+  "shell": {
+    "chatGroup": "チャットグループ名",
+    "breadcrumb": "パンくずリスト",
+    "addAgent": "Agent を追加",
+    "groupDropdown": "グループ",
+    "chatRecord": "チャット履歴 {{index}}",
+    "agentDropdown": "Agent",
+    "agent": "Agent {{index}}",
+    "rightTools": "右側のツールバーで4つのツールパネルを開きます"
+  },
+  "composer": {
+    "workspace": "ワークスペースを選択",
+    "branch": "Git ブランチ"
+  },
   "chat": {
     "placeholder": "メッセージを送信…",
     "send": "送信",
