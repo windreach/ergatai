@@ -38,11 +38,7 @@ pub struct ErgataiMcpServerFactory {
 
 impl ErgataiMcpServerFactory {
     /// Create a new factory.
-    pub fn new(
-        registry: Arc<AgentRegistry>,
-        peer_registry: PeerRegistry,
-        name: String,
-    ) -> Self {
+    pub fn new(registry: Arc<AgentRegistry>, peer_registry: PeerRegistry, name: String) -> Self {
         Self {
             registry,
             peer_registry,
@@ -62,9 +58,8 @@ impl McpServerFactory for ErgataiMcpServerFactory {
         let service = ErgataiAcpMcpService::new(registry, peer_registry);
 
         // Convert to ACP McpServer using from_rmcp.
-        let mcp_server = McpServer::<role::mcp::Client>::from_rmcp(&self.name, move || {
-            service.clone()
-        });
+        let mcp_server =
+            McpServer::<role::mcp::Client>::from_rmcp(&self.name, move || service.clone());
 
         Box::new(mcp_server)
     }
@@ -100,9 +95,12 @@ impl ErgataiAcpMcpService {
     /// Handle list_agents tool call.
     async fn handle_list_agents(&self) -> Result<CallToolResult, ErrorData> {
         let agents = self.registry.list_agents().await;
-        let json = serde_json::to_string_pretty(&agents)
-            .map_err(|e| ErrorData::internal_error(format!("Failed to serialize agents: {}", e), None))?;
-        Ok(CallToolResult::success(vec![rmcp2::model::ContentBlock::text(json)]))
+        let json = serde_json::to_string_pretty(&agents).map_err(|e| {
+            ErrorData::internal_error(format!("Failed to serialize agents: {}", e), None)
+        })?;
+        Ok(CallToolResult::success(vec![
+            rmcp2::model::ContentBlock::text(json),
+        ]))
     }
 
     /// Handle send_message tool call.
@@ -116,9 +114,12 @@ impl ErgataiAcpMcpService {
             message_len = params.content.len(),
             "Sending message via ACP MCP"
         );
-        Ok(CallToolResult::success(vec![rmcp2::model::ContentBlock::text(
-            format!("Message queued for agent {}", params.target_agent_id),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp2::model::ContentBlock::text(format!(
+                "Message queued for agent {}",
+                params.target_agent_id
+            )),
+        ]))
     }
 }
 
@@ -165,8 +166,8 @@ impl ServerHandler for ErgataiAcpMcpService {
             "list_agents" => self.handle_list_agents().await,
             "send_message" => {
                 let args = request.arguments.unwrap_or_default();
-                let params: SendMessageParams = serde_json::from_value(serde_json::Value::Object(args))
-                    .map_err(|e| {
+                let params: SendMessageParams =
+                    serde_json::from_value(serde_json::Value::Object(args)).map_err(|e| {
                         ErrorData::invalid_params(
                             format!("Invalid send_message parameters: {}", e),
                             None,

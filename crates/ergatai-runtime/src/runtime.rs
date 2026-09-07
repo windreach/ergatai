@@ -165,15 +165,17 @@ impl AgentRuntime {
 
         // Register workspace boundary BEFORE starting the agent to prevent race condition.
         // Convert absolute work_dir to relative path (relative to project root)
-        let workspace_dir = if let Ok(relative) =
-            std::path::Path::new(&spec.work_dir).strip_prefix(std::env::current_dir().unwrap_or_default())
+        let workspace_dir = if let Ok(relative) = std::path::Path::new(&spec.work_dir)
+            .strip_prefix(std::env::current_dir().unwrap_or_default())
         {
             relative.to_string_lossy().to_string()
         } else {
             spec.work_dir.to_string_lossy().to_string()
         };
 
-        if let Err(e) = ergatai_lock::register_workspace_for_project("default", &agent_id, &workspace_dir).await {
+        if let Err(e) =
+            ergatai_lock::register_workspace_for_project("default", &agent_id, &workspace_dir).await
+        {
             warn!(
                 agent_id = %agent_id,
                 workspace = %workspace_dir,
@@ -190,7 +192,9 @@ impl AgentRuntime {
 
         // Pass the pre-computed agent_id via workspace metadata
         let mut workspace_with_id = workspace.clone();
-        workspace_with_id.metadata.insert("precomputed_agent_id".to_string(), agent_id.clone());
+        workspace_with_id
+            .metadata
+            .insert("precomputed_agent_id".to_string(), agent_id.clone());
 
         let handle = self
             .backend

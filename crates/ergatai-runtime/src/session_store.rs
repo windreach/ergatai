@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use tracing::{debug, warn};
 
 use ergatai_error::{ErgataiError, ErgataiResult};
@@ -144,9 +144,7 @@ impl SessionStore {
                     cwd: row.get(3)?,
                 })
             })
-            .map_err(|e| {
-                ErgataiError::internal(format!("Failed to query session: {}", e))
-            })?;
+            .map_err(|e| ErgataiError::internal(format!("Failed to query session: {}", e)))?;
 
         match rows.next() {
             Some(Ok(record)) => {

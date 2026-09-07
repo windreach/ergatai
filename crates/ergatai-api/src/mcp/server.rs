@@ -501,7 +501,10 @@ impl ErgataiMcpServer {
 
         info!(
             "Sending message to agent {} (type: {}, bytes: {}, correlation_id: {:?})",
-            target_agent_id, message_type, message.len(), correlation_id
+            target_agent_id,
+            message_type,
+            message.len(),
+            correlation_id
         );
 
         // Get the sender agent ID from MCP session

@@ -104,7 +104,9 @@ impl FileMonitor {
         for result in event_rx {
             match result {
                 Ok(event) => {
-                    if let Err(e) = Self::handle_event(&lock_manager, &pid_to_agent, &project_root, event).await {
+                    if let Err(e) =
+                        Self::handle_event(&lock_manager, &pid_to_agent, &project_root, event).await
+                    {
                         warn!("Failed to handle file event: {}", e);
                     }
                 }

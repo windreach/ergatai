@@ -28,19 +28,14 @@ use parking_lot::RwLock;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
-use agent_client_protocol::schema::v1::{
-    ContentBlock, SessionNotification,
-    SessionUpdate,
-};
+use agent_client_protocol::schema::v1::{ContentBlock, SessionNotification, SessionUpdate};
 use agent_client_protocol::Client;
 use agent_client_protocol_http::HttpClient;
 
 use ergatai_error::{ErgataiError, ErgataiResult};
 
 use crate::backend::AgentRuntimeBackend;
-use crate::types::{
-    AgentHandle, BackendCapabilities, WaitResult, WorkspaceHandle, WorkspaceSpec,
-};
+use crate::types::{AgentHandle, BackendCapabilities, WaitResult, WorkspaceHandle, WorkspaceSpec};
 
 // ── Configuration constants ──
 
@@ -231,7 +226,10 @@ impl AcpHttpBackend {
             // context and send requests through it.
             while let Some(cmd) = command_rx.recv().await {
                 match cmd {
-                    HttpAcpCommand::Prompt { message, response_tx } => {
+                    HttpAcpCommand::Prompt {
+                        message,
+                        response_tx,
+                    } => {
                         debug!(message_len = message.len(), "Prompt command received");
                         // TODO: Send prompt through connection
                         let _ = response_tx.send(Ok(()));
@@ -320,7 +318,10 @@ impl AcpHttpBackend {
         let workspaces = self.workspaces.read();
         let count = workspaces
             .get(workspace_id)
-            .map(|ws| ws.agent_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+            .map(|ws| {
+                ws.agent_counter
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            })
             .unwrap_or(0);
         format!("{}-agent-{}", workspace_id, count)
     }
@@ -362,7 +363,10 @@ impl AgentRuntimeBackend for AcpHttpBackend {
         // HTTP backend uses a simple counter-based approach
         // Note: This is called before start_agent for workspace pre-registration
         let agents = self.agents.read();
-        let count = agents.values().filter(|a| a.workspace == workspace_id).count();
+        let count = agents
+            .values()
+            .filter(|a| a.workspace == workspace_id)
+            .count();
         format!("{}-agent-{}", workspace_id, count)
     }
 
@@ -403,7 +407,11 @@ impl AgentRuntimeBackend for AcpHttpBackend {
         let agents = self.agents.read();
         if let Some(entry) = agents.get(&handle.agent_id) {
             let output = entry.output.capture();
-            Ok(if output.is_empty() { None } else { Some(output) })
+            Ok(if output.is_empty() {
+                None
+            } else {
+                Some(output)
+            })
         } else {
             Err(ErgataiError::AgentNotFound(handle.agent_id.clone()))
         }
@@ -483,8 +491,7 @@ impl AgentRuntimeBackend for AcpHttpBackend {
         info!("AcpHttpBackend shutdown — draining HTTP agents");
         // Drain all agents, abort their connection/command tasks, and mark them
         // dead so observers don't see stale entries.
-        let entries: Vec<(String, HttpAgentEntry)> =
-            self.agents.write().drain().collect();
+        let entries: Vec<(String, HttpAgentEntry)> = self.agents.write().drain().collect();
         for (agent_id, entry) in entries {
             entry
                 .alive

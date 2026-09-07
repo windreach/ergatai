@@ -85,11 +85,7 @@ pub async fn handle(action: AgentAction, api_url: &str, token: Option<&str>) -> 
             } else {
                 // Both name and command are guaranteed to be Some due to the if condition above
                 match (name, command) {
-                    (Some(n), Some(c)) => (
-                        n,
-                        c,
-                        agent_type.unwrap_or_else(|| "acp".to_string()),
-                    ),
+                    (Some(n), Some(c)) => (n, c, agent_type.unwrap_or_else(|| "acp".to_string())),
                     _ => unreachable!("name and command are guaranteed to be Some"),
                 }
             };

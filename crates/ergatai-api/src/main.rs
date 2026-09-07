@@ -201,8 +201,8 @@ async fn async_main(args: Args) -> Result<()> {
     // ERGATAI_AUTO_CONTINUE=1 enables automatic prompt continuation when the
     // agent's stop_reason is max_tokens or max_turn_requests (up to 3 retries).
     let runtime_backend: std::sync::Arc<dyn ergatai_runtime::AgentRuntimeBackend> = {
-        let mut backend = ergatai_runtime::AcpBackend::new()
-            .with_permission_handler(std::sync::Arc::new(
+        let mut backend =
+            ergatai_runtime::AcpBackend::new().with_permission_handler(std::sync::Arc::new(
                 ergatai_api::lock_permission::LockPermissionHandler::new("default".to_string()),
             ));
         if std::env::var("ERGATAI_AUTO_CONTINUE")
@@ -516,7 +516,10 @@ async fn async_main(args: Args) -> Result<()> {
         // allowing any client to impersonate any agent by connecting to
         // `/mcp/agent-N`. Now all routes (REST + MCP) require a valid
         // Bearer token when --api-token is configured.
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
 
     // Mount ACP server endpoint if enabled
     let runtime = ergatai_runtime::get_agent_runtime();

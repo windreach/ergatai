@@ -194,9 +194,7 @@ impl ProfileRegistry {
                 }
             });
         } else {
-            debug!(
-                "Adapter auto-update disabled (set ERGATAI_ADAPTERS_AUTO_UPDATE=1 to enable)"
-            );
+            debug!("Adapter auto-update disabled (set ERGATAI_ADAPTERS_AUTO_UPDATE=1 to enable)");
         }
 
         Ok(())
@@ -221,7 +219,9 @@ impl ProfileRegistry {
         );
         let claude_cmd = format!(
             "node {}",
-            adapters_base.join("claude-agent-acp/dist/acp-agent.js").display()
+            adapters_base
+                .join("claude-agent-acp/dist/acp-agent.js")
+                .display()
         );
 
         let defaults = vec![
@@ -473,7 +473,7 @@ impl ProfileRegistry {
     /// Updates happen asynchronously so they don't delay system startup.
     /// Updated adapters will be used on NEXT system startup.
     ///
-    /// `adapters_base` must be the same directory that [`register_default_profiles`]
+    /// `adapters_base` must be the same directory that `register_default_profiles`
     /// resolved, so this function inspects the adapters that were actually registered.
     pub async fn check_and_update_adapters_background(
         &self,
@@ -525,10 +525,7 @@ impl ProfileRegistry {
                 "Background adapter updates complete (will use on next startup)"
             );
         } else {
-            info!(
-                total = checked_count,
-                "All adapters are up-to-date"
-            );
+            info!(total = checked_count, "All adapters are up-to-date");
         }
 
         Ok(())

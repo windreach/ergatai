@@ -2231,11 +2231,13 @@ impl FileLockManager {
         let mut buffer = [0u8; 8192]; // 8KB chunks
 
         loop {
-            let bytes_read = file.read(&mut buffer)
-                .map_err(|e| ErgataiError::internal(format!(
+            let bytes_read = file.read(&mut buffer).map_err(|e| {
+                ErgataiError::internal(format!(
                     "Failed to read file {} for hash computation: {}",
-                    full_path.display(), e
-                )))?;
+                    full_path.display(),
+                    e
+                ))
+            })?;
             if bytes_read == 0 {
                 break;
             }
@@ -2250,11 +2252,7 @@ impl FileLockManager {
     /// Called when an agent modifies a locked file. Increments the version
     /// and updates the current_hash to reflect the new file content.
     /// Computes hash within database transaction to prevent TOCTOU race.
-    pub fn update_file_hash(
-        &self,
-        file_path: &str,
-        agent_id: &str,
-    ) -> Result<(), ErgataiError> {
+    pub fn update_file_hash(&self, file_path: &str, agent_id: &str) -> Result<(), ErgataiError> {
         let normalized_path = self.validate_and_normalize_path(file_path)?;
 
         let conn = self.conn.lock();
@@ -2264,12 +2262,14 @@ impl FileLockManager {
         // Compute hash while holding the database lock to prevent TOCTOU race
         let new_hash = self.compute_file_hash(&normalized_path)?;
 
-        let rows_affected = conn.execute(
-            "UPDATE file_locks
+        let rows_affected = conn
+            .execute(
+                "UPDATE file_locks
              SET current_hash = ?1, version = version + 1, updated_at = ?2
              WHERE file_path = ?3 AND agent_id = ?4 AND status = 'ACTIVE' AND mode = 'WRITE'",
-            params![new_hash, Utc::now().to_rfc3339(), normalized_path, agent_id],
-        ).map_err(|e| ErgataiError::internal(format!("Failed to update file hash: {}", e)))?;
+                params![new_hash, Utc::now().to_rfc3339(), normalized_path, agent_id],
+            )
+            .map_err(|e| ErgataiError::internal(format!("Failed to update file hash: {}", e)))?;
 
         if rows_affected == 0 {
             return Err(ErgataiError::internal(format!(
@@ -2278,7 +2278,8 @@ impl FileLockManager {
             )));
         }
 
-        tx.commit().map_err(|e| ErgataiError::internal(format!("Failed to commit transaction: {}", e)))?;
+        tx.commit()
+            .map_err(|e| ErgataiError::internal(format!("Failed to commit transaction: {}", e)))?;
 
         debug!(
             file_path = %file_path,
@@ -2302,12 +2303,16 @@ impl FileLockManager {
         let normalized_path = self.validate_and_normalize_path(file_path)?;
 
         let conn = self.conn.lock();
-        let has_lock: bool = conn.query_row(
-            "SELECT COUNT(*) > 0 FROM file_locks
+        let has_lock: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM file_locks
              WHERE file_path = ?1 AND agent_id = ?2 AND status = 'ACTIVE' AND mode = 'WRITE'",
-            params![normalized_path, agent_id],
-            |row| row.get(0),
-        ).map_err(|e| ErgataiError::internal(format!("Failed to check write permission: {}", e)))?;
+                params![normalized_path, agent_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to check write permission: {}", e))
+            })?;
 
         Ok(has_lock)
     }
@@ -2329,7 +2334,8 @@ impl FileLockManager {
              SET violation_count = violation_count + 1, updated_at = ?1
              WHERE file_path = ?2 AND agent_id = ?3 AND status = 'ACTIVE'",
             params![Utc::now().to_rfc3339(), normalized_path, agent_id],
-        ).map_err(|e| ErgataiError::internal(format!("Failed to record violation: {}", e)))?;
+        )
+        .map_err(|e| ErgataiError::internal(format!("Failed to record violation: {}", e)))?;
 
         warn!(
             file_path = %file_path,
@@ -2343,24 +2349,24 @@ impl FileLockManager {
     /// Get the current hash and version for a locked file.
     ///
     /// Returns (current_hash, version) if the file has an active lock.
-    pub fn get_file_version(
-        &self,
-        file_path: &str,
-    ) -> Result<Option<(String, i64)>, ErgataiError> {
+    pub fn get_file_version(&self, file_path: &str) -> Result<Option<(String, i64)>, ErgataiError> {
         let normalized_path = self.validate_and_normalize_path(file_path)?;
 
         let conn = self.conn.lock();
-        let result = conn.query_row(
-            "SELECT current_hash, version FROM file_locks
+        let result = conn
+            .query_row(
+                "SELECT current_hash, version FROM file_locks
              WHERE file_path = ?1 AND status = 'ACTIVE' AND mode = 'WRITE'
              LIMIT 1",
-            params![normalized_path],
-            |row| {
-                let hash: Option<String> = row.get(0)?;
-                let version: i64 = row.get(1)?;
-                Ok((hash, version))
-            },
-        ).optional().map_err(|e| ErgataiError::internal(format!("Failed to get file version: {}", e)))?;
+                params![normalized_path],
+                |row| {
+                    let hash: Option<String> = row.get(0)?;
+                    let version: i64 = row.get(1)?;
+                    Ok((hash, version))
+                },
+            )
+            .optional()
+            .map_err(|e| ErgataiError::internal(format!("Failed to get file version: {}", e)))?;
 
         match result {
             Some((Some(hash), version)) => Ok(Some((hash, version))),

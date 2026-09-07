@@ -103,11 +103,7 @@ pub async fn create_workspace(
     let work_dir = match crate::validate_cwd(&raw_work_dir) {
         Ok(p) => p,
         Err(msg) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse { error: msg }),
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: msg })).into_response();
         }
     };
 

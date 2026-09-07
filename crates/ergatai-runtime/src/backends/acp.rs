@@ -632,7 +632,8 @@ pub struct AcpBackend {
     /// Pending elicitation responders (elicitation_id -> oneshot sender).
     /// When an elicitation arrives, we store the sender here and await the
     /// receiver in the handler. The HTTP API sends responses through the sender.
-    pending_elicitations: Arc<RwLock<HashMap<String, tokio::sync::oneshot::Sender<ElicitationResponse>>>>,
+    pending_elicitations:
+        Arc<RwLock<HashMap<String, tokio::sync::oneshot::Sender<ElicitationResponse>>>>,
     /// Optional MCP server factory for MCP-over-ACP. When enabled, agents can call
     /// ergatai's MCP tools through the native ACP transport.
     mcp_server_factory: Option<Arc<dyn crate::mcp_over_acp::McpServerFactory>>,
@@ -684,7 +685,7 @@ impl AcpBackend {
 
     /// Attach a custom permission handler for ACP permission requests.
     ///
-    /// The default is [`YoloPermissionHandler`] (auto-approve all requests).
+    /// The default is `YoloPermissionHandler` (auto-approve all requests).
     /// Pass an `ergatai_lock`-backed handler to enforce file access control
     /// on ACP tool calls.
     pub fn with_permission_handler(
@@ -932,9 +933,8 @@ impl AcpBackend {
         let sender = self.pending_elicitations.write().remove(elicitation_id);
         match sender {
             Some(tx) => {
-                tx.send(response).map_err(|_| {
-                    ErgataiError::internal("Elicitation response channel closed")
-                })?;
+                tx.send(response)
+                    .map_err(|_| ErgataiError::internal("Elicitation response channel closed"))?;
                 Ok(true)
             }
             None => Ok(false),
@@ -1124,9 +1124,10 @@ impl AgentRuntimeBackend for AcpBackend {
 
         // Spawn the process manually to get the PID for file lock attribution.
         // This replaces the implicit spawn inside connect_with().
-        let (child_stdin, child_stdout, child_stderr, child) = acp_agent
-            .spawn_process()
-            .map_err(|e| ErgataiError::internal(format!("Failed to spawn ACP agent process: {}", e)))?;
+        let (child_stdin, child_stdout, child_stderr, child) =
+            acp_agent.spawn_process().map_err(|e| {
+                ErgataiError::internal(format!("Failed to spawn ACP agent process: {}", e))
+            })?;
 
         let pid = child.id();
         info!(pid = pid, agent_id = %agent_id, "Spawned ACP agent process");
@@ -1143,8 +1144,12 @@ impl AgentRuntimeBackend for AcpBackend {
         let session_title: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
         let stop_reason: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
         let continuation_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let config_options: Arc<RwLock<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>> = Arc::new(RwLock::new(Vec::new()));
-        let available_commands: Arc<RwLock<Vec<agent_client_protocol::schema::v1::AvailableCommand>>> = Arc::new(RwLock::new(Vec::new()));
+        let config_options: Arc<
+            RwLock<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>,
+        > = Arc::new(RwLock::new(Vec::new()));
+        let available_commands: Arc<
+            RwLock<Vec<agent_client_protocol::schema::v1::AvailableCommand>>,
+        > = Arc::new(RwLock::new(Vec::new()));
         let usage = Arc::new(UsageTracker::new());
         let last_output_at = Arc::new(RwLock::new(Instant::now()));
         let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -1192,33 +1197,33 @@ impl AgentRuntimeBackend for AcpBackend {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
 
         // Look up a previously saved session for this agent (for session/load recovery).
-        let saved_session_id: Option<String> = self
-            .session_store
-            .as_ref()
-            .and_then(|store| match store.load_session(&agent_id) {
-                Ok(Some(record)) if record.command == command => {
-                    info!(
-                        agent_id = %agent_id,
-                        session_id = %record.session_id,
-                        "Found saved ACP session, will attempt session/load"
-                    );
-                    Some(record.session_id)
-                }
-                Ok(Some(record)) => {
-                    info!(
-                        agent_id = %agent_id,
-                        old_command = %record.command,
-                        new_command = %command,
-                        "Saved session command mismatch, creating new session"
-                    );
-                    None
-                }
-                Ok(None) => None,
-                Err(e) => {
-                    warn!(error = %e, "Failed to load saved session, creating new");
-                    None
-                }
-            });
+        let saved_session_id: Option<String> =
+            self.session_store
+                .as_ref()
+                .and_then(|store| match store.load_session(&agent_id) {
+                    Ok(Some(record)) if record.command == command => {
+                        info!(
+                            agent_id = %agent_id,
+                            session_id = %record.session_id,
+                            "Found saved ACP session, will attempt session/load"
+                        );
+                        Some(record.session_id)
+                    }
+                    Ok(Some(record)) => {
+                        info!(
+                            agent_id = %agent_id,
+                            old_command = %record.command,
+                            new_command = %command,
+                            "Saved session command mismatch, creating new session"
+                        );
+                        None
+                    }
+                    Ok(None) => None,
+                    Err(e) => {
+                        warn!(error = %e, "Failed to load saved session, creating new");
+                        None
+                    }
+                });
 
         // Clone for the connection task — session_store is shared via Arc.
         let task_session_store = self.session_store.clone();
@@ -1729,7 +1734,9 @@ impl AgentRuntimeBackend for AcpBackend {
                 &agent_id,
                 &sid.to_string(),
                 &cwd_for_token.to_string_lossy(),
-            ).await {
+            )
+            .await
+            {
                 warn!(
                     agent_id = %agent_id,
                     session_id = %sid,
@@ -1925,7 +1932,10 @@ impl AgentRuntimeBackend for AcpBackend {
                 #[cfg(not(unix))]
                 {
                     // On non-Unix platforms, we rely on the child wait task to clean up.
-                    debug!(pid = pid, "Direct process kill not supported on this platform");
+                    debug!(
+                        pid = pid,
+                        "Direct process kill not supported on this platform"
+                    );
                 }
             }
         }
@@ -2179,7 +2189,10 @@ mod tests {
         backend.register_pid(12345, "test-agent-1");
 
         // Verify bidirectional lookup
-        assert_eq!(backend.get_agent_by_pid(12345), Some("test-agent-1".to_string()));
+        assert_eq!(
+            backend.get_agent_by_pid(12345),
+            Some("test-agent-1".to_string())
+        );
         assert_eq!(backend.get_pid_by_agent("test-agent-1"), Some(12345));
 
         // Verify non-existent lookups
@@ -2196,7 +2209,10 @@ mod tests {
 
         // Register and then unregister
         backend.register_pid(54321, "test-agent-2");
-        assert_eq!(backend.get_agent_by_pid(54321), Some("test-agent-2".to_string()));
+        assert_eq!(
+            backend.get_agent_by_pid(54321),
+            Some("test-agent-2".to_string())
+        );
 
         backend.unregister_pid(54321, "test-agent-2");
         assert_eq!(backend.get_agent_by_pid(54321), None);

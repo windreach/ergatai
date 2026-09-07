@@ -100,10 +100,8 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
                 .get("work_dir")
                 .cloned()
                 .unwrap_or_default();
-            let session_title = acp_backend
-                .and_then(|b| b.get_agent_session_title(&a.agent_id));
-            let stop_reason = acp_backend
-                .and_then(|b| b.get_agent_stop_reason(&a.agent_id));
+            let session_title = acp_backend.and_then(|b| b.get_agent_session_title(&a.agent_id));
+            let stop_reason = acp_backend.and_then(|b| b.get_agent_stop_reason(&a.agent_id));
             let continuation_count = acp_backend
                 .and_then(|b| b.get_agent_continuation_count(&a.agent_id))
                 .unwrap_or(0);
@@ -281,11 +279,7 @@ pub async fn spawn_agent(
     let work_dir = match crate::validate_cwd(&raw_work_dir) {
         Ok(p) => p,
         Err(msg) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse { error: msg }),
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: msg })).into_response();
         }
     };
     let work_dir_str = work_dir.to_string_lossy().into_owned();
@@ -983,7 +977,10 @@ pub async fn respond_to_elicitation(
         Ok(false) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: format!("Elicitation {} not found or already responded", elicitation_id),
+                error: format!(
+                    "Elicitation {} not found or already responded",
+                    elicitation_id
+                ),
             }),
         )
             .into_response(),

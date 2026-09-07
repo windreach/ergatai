@@ -33,7 +33,7 @@ impl NatsConnection {
     ///
     /// Returns an error if connection fails.
     ///
-    /// NOTE: Most callers should use [`connect_with_auth`] or [`connect_to_server`]
+    /// NOTE: Most callers should use [`Self::connect_with_auth`] or [`Self::connect_to_server`]
     /// instead. The embedded NATS server requires authentication; unauthenticated
     /// connections will be rejected.
     pub async fn connect(url: &str) -> ErgataiResult<Self> {

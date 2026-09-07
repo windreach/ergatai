@@ -75,10 +75,8 @@ pub async fn get_recent_events(
 /// SECURITY (P1 #15): Rejects with 503 when the connection cap
 /// (`ERGATAI_MAX_SSE_CONNECTIONS`, default 100) is reached. Each accepted
 /// connection increments an atomic counter that is decremented when the
-/// client disconnects (via the RAII [`SseConnectionGuard`]).
-pub async fn stream_events(
-    State(_state): State<AppState>,
-) -> impl IntoResponse {
+/// client disconnects (via the RAII `SseConnectionGuard`).
+pub async fn stream_events(State(_state): State<AppState>) -> impl IntoResponse {
     // Enforce SSE connection cap with a CAS loop to avoid the TOCTOU race
     // inherent in fetch_add + check + fetch_sub: under contention, N concurrent
     // callers can all succeed fetch_add and then roll back, briefly admitting
@@ -176,8 +174,7 @@ pub async fn stream_events(
 
     Sse::new(combined)
         .keep_alive(
-            axum::response::sse::KeepAlive::new()
-                .interval(std::time::Duration::from_secs(15)),
+            axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)),
         )
         .into_response()
 }

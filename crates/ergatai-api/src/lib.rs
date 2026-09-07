@@ -130,10 +130,7 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/agents/:id/tool-calls",
             get(api::agents::get_agent_tool_calls),
         )
-        .route(
-            "/api/v1/agents/:id/plan",
-            get(api::agents::get_agent_plan),
-        )
+        .route("/api/v1/agents/:id/plan", get(api::agents::get_agent_plan))
         .route(
             "/api/v1/agents/:id/elicitations",
             get(api::agents::get_agent_elicitations),
@@ -204,7 +201,10 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route("/api/v1/dags", get(list_dags))
         .with_state(state.clone())
         // Auth middleware (exempts /health, /ready, /metrics)
-        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
 }
 
 // ── Health / readiness / metrics handlers ────────────────────────────
@@ -393,8 +393,6 @@ pub fn sanitize_error(err: &dyn std::fmt::Display, context: &str) -> String {
     format!("Internal error ({})", context)
 }
 
-
-
 /// Validate and canonicalize a working directory path.
 ///
 /// SECURITY (P1 #13):
@@ -414,8 +412,12 @@ pub fn validate_cwd(cwd: &str) -> anyhow::Result<PathBuf, String> {
         }
     }
 
-    let canonical = std::fs::canonicalize(path)
-        .map_err(|_| format!("Invalid work_dir '{}': does not exist or is not accessible", cwd))?;
+    let canonical = std::fs::canonicalize(path).map_err(|_| {
+        format!(
+            "Invalid work_dir '{}': does not exist or is not accessible",
+            cwd
+        )
+    })?;
 
     if !canonical.is_dir() {
         return Err(format!("work_dir '{}' is not a directory", cwd));
