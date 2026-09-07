@@ -495,7 +495,7 @@ impl ProfileRegistry {
         let mut checked_count = 0;
 
         // Check each adapter directory
-        if let Ok(entries) = std::fs::read_dir(&adapters_dir) {
+        if let Ok(entries) = std::fs::read_dir(adapters_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() && path.join("package.json").exists() {

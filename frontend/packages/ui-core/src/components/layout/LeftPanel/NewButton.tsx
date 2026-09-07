@@ -1,14 +1,38 @@
 import { Plus } from "lucide-react";
+import { useGroupStore } from "../../../core/workspace/groupStore";
+import { useSessionStore } from "../../../core/workspace/sessionStore";
+import { useWorkspaceStore, type WorkspaceMode } from "../../../core/workspace/workspaceStore";
 
 interface NewButtonProps {
-  mode: "group" | "agent";
+  mode: WorkspaceMode;
+}
+
+/**
+ * Create a new conversation (group or session) and open it.
+ * Shared between the expanded NewButton and the collapsed sidebar rail.
+ */
+export function createNewConversation(mode: WorkspaceMode): void {
+  const timestamp = new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  const conversationId = mode === "group"
+    ? useGroupStore.getState().addGroup({
+        name: `新项目群 ${timestamp}`,
+        members: ["你"],
+        memberCount: 1,
+        preview: "暂无消息",
+        lastActive: "刚刚",
+      })
+    : useSessionStore.getState().addSession({
+        agentName: `新 Agent ${timestamp}`,
+        agentType: "Codex",
+        preview: "暂无消息",
+        lastActive: "刚刚",
+      });
+
+  useWorkspaceStore.getState().openConversation(mode, mode === "group" ? `group-${conversationId}` : `direct-${conversationId}`);
 }
 
 export function NewButton({ mode }: NewButtonProps) {
-  const handleClick = () => {
-    // TODO: 实现新建逻辑
-    console.log(`新建${mode === "group" ? "群聊" : "会话"}`);
-  };
+  const handleClick = () => createNewConversation(mode);
 
   return (
     <div className="border-b border-border-subtle p-3">

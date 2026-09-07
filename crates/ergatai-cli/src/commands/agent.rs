@@ -83,11 +83,15 @@ pub async fn handle(action: AgentAction, api_url: &str, token: Option<&str>) -> 
 
                 (name, command, agent_type)
             } else {
-                (
-                    name.unwrap(),
-                    command.unwrap(),
-                    agent_type.unwrap_or_else(|| "acp".to_string()),
-                )
+                // Both name and command are guaranteed to be Some due to the if condition above
+                match (name, command) {
+                    (Some(n), Some(c)) => (
+                        n,
+                        c,
+                        agent_type.unwrap_or_else(|| "acp".to_string()),
+                    ),
+                    _ => unreachable!("name and command are guaranteed to be Some"),
+                }
             };
 
             client
@@ -100,10 +104,7 @@ pub async fn handle(action: AgentAction, api_url: &str, token: Option<&str>) -> 
             if profiles.profiles.is_empty() {
                 println!("No agent profiles registered");
             } else {
-                println!(
-                    "{:<20} {:<30} {:<10} {}",
-                    "NAME", "COMMAND", "TYPE", "CREATED"
-                );
+                println!("{:<20} {:<30} {:<10} CREATED", "NAME", "COMMAND", "TYPE");
                 println!("{}", "-".repeat(80));
                 for p in profiles.profiles {
                     println!(

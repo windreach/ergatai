@@ -120,7 +120,7 @@ impl FileMonitor {
     /// Handle a single file system event.
     async fn handle_event(
         lock_manager: &Arc<FileLockManager>,
-        pid_to_agent: &Arc<RwLock<HashMap<u32, String>>>,
+        _pid_to_agent: &Arc<RwLock<HashMap<u32, String>>>,
         project_root: &Path,
         event: Event,
     ) -> ErgataiResult<()> {

@@ -82,6 +82,7 @@ impl McpServerFactory for ErgataiMcpServerFactory {
 /// Note: This manually implements ServerHandler to avoid macro conflicts between
 /// rmcp 2.x and 3.x versions in the same crate.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct ErgataiAcpMcpService {
     registry: Arc<AgentRegistry>,
     peer_registry: PeerRegistry,

@@ -110,11 +110,9 @@ fn find_preload_library() -> Option<String> {
         exe_dir.map(|d| d.join("target").join("debug").join(lib_name)),
     ];
 
-    for path_opt in search_paths {
-        if let Some(path) = path_opt {
-            if path.exists() {
-                return path.to_str().map(|s| s.to_string());
-            }
+    for path in search_paths.into_iter().flatten() {
+        if path.exists() {
+            return path.to_str().map(|s| s.to_string());
         }
     }
 

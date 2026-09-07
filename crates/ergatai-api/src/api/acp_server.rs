@@ -38,6 +38,7 @@ use ergatai_runtime::AgentRuntime;
 ///
 /// This is a placeholder implementation. Full ACP server support
 /// requires updating to match the current ACP SDK HTTP server API.
+#[allow(dead_code)]
 pub struct AcpServerEndpoint {
     runtime: Arc<AgentRuntime>,
     cors_origins: Vec<String>,
@@ -98,7 +99,7 @@ impl AcpServerEndpoint {
 /// # Returns
 ///
 /// The router with ACP endpoints mounted (currently unchanged).
-pub fn mount_acp_server(app: Router, runtime: Arc<AgentRuntime>) -> Router {
+pub fn mount_acp_server(app: Router, _runtime: Arc<AgentRuntime>) -> Router {
     let config = AcpServerConfig::from_env();
 
     if config.enabled {

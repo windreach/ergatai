@@ -113,7 +113,7 @@ pub async fn create_workspace(
 
     let spec = WorkspaceSpec {
         id: req.id,
-        work_dir: work_dir.into(),
+        work_dir,
         env,
         resources: ResourceLimits::default(),
         capture_thoughts: false,

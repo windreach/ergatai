@@ -166,7 +166,7 @@ impl AgentRuntime {
         // Register workspace boundary BEFORE starting the agent to prevent race condition.
         // Convert absolute work_dir to relative path (relative to project root)
         let workspace_dir = if let Ok(relative) =
-            std::path::Path::new(&spec.work_dir).strip_prefix(&std::env::current_dir().unwrap_or_default())
+            std::path::Path::new(&spec.work_dir).strip_prefix(std::env::current_dir().unwrap_or_default())
         {
             relative.to_string_lossy().to_string()
         } else {

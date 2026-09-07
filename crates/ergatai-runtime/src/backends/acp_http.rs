@@ -26,14 +26,13 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, SessionNotification,
-    SessionUpdate, TextContent,
+    ContentBlock, SessionNotification,
+    SessionUpdate,
 };
-use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::{Agent, Client, ConnectionTo};
+use agent_client_protocol::Client;
 use agent_client_protocol_http::HttpClient;
 
 use ergatai_error::{ErgataiError, ErgataiResult};
@@ -85,6 +84,7 @@ impl OutputBuffer {
 }
 
 /// Commands sent to the connection task.
+#[allow(dead_code)]
 enum HttpAcpCommand {
     Prompt {
         message: String,
@@ -99,6 +99,7 @@ enum HttpAcpCommand {
 }
 
 /// Per-agent entry tracking HTTP connection state.
+#[allow(dead_code)]
 struct HttpAgentEntry {
     agent_id: String,
     output: Arc<OutputBuffer>,
@@ -222,9 +223,7 @@ impl AcpHttpBackend {
         let abort_handle = join_handle.abort_handle();
 
         // Spawn command handler task
-        let cmd_output = output.clone();
         let cmd_alive = alive.clone();
-        let cmd_last_output = last_output_at.clone();
 
         tokio::spawn(async move {
             // Note: This is a simplified command handler.
@@ -264,10 +263,9 @@ impl AcpHttpBackend {
 
         // Register agent
         self.agents.write().insert(agent_id.clone(), entry);
-        self.workspaces
-            .write()
-            .get_mut(workspace_id)
-            .map(|ws| ws.agent_ids.push(agent_id.clone()));
+        if let Some(ws) = self.workspaces.write().get_mut(workspace_id) {
+            ws.agent_ids.push(agent_id.clone());
+        }
 
         info!(agent_id = %agent_id, "Connected to remote HTTP ACP agent");
 
