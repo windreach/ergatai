@@ -13,7 +13,7 @@ import {
 
 import { ErrorBoundary } from "../ErrorBoundary";
 import { PlaceholderPanel } from "../tabs/PlaceholderPanel";
-import { ChatPanel } from "../tabs/ChatPanel";
+import { ChatPanel } from "../chat/ChatPanel";
 import { LazyFilesPanel as FilesPanel } from "../../panels/lazy-panels";
 import { LazyReviewPanel as ReviewPanel } from "../../panels/lazy-panels";
 import { LazyTerminalPanel as TerminalPanel } from "../../panels/lazy-panels";

@@ -1,39 +1,27 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useMemo } from "react";
 import {
   Ban,
   CheckCircle,
   Clock,
-  FileDiff,
   List,
   Loader2,
   MessageCircle,
   Network,
   Pause,
-  Send,
-  ShieldCheck,
   Square,
   Timer,
-  Users,
   XCircle,
 } from "lucide-react";
 import {
   useConversationStore,
-  type ActivityCard,
-  type ApprovalCard,
-  type Conversation,
-  type ConversationMessage,
-  type ConversationMessagePart,
 } from "../../../core/workspace/conversationStore";
 import { useGroupStore } from "../../../core/workspace/groupStore";
-import { useSessionStore } from "../../../core/workspace/sessionStore";
+import { useAgentSessionStore } from "../../../core/workspace/sessionStore";
 import { sortTasks, useTaskStore, type Task, type TaskPriority, type TaskStatus } from "../../../core/workspace/taskStore";
-import { usePanelTrigger } from "../../../core/workspace/panelAutomation";
 import { useWorkspaceStore } from "../../../core/workspace/workspaceStore";
+import { ChatPanel as UnifiedChatPanel } from "../../chat/ChatPanel";
 import { DAGView } from "./DAGView";
 
-function formatTime(value: string) {
-  return new Date(value).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-}
 
 function statusMeta(status: TaskStatus) {
   const metadata: Record<TaskStatus, { label: string; className: string; icon: typeof Clock }> = {
@@ -68,8 +56,8 @@ function ConversationView() {
   const messages = useConversationStore((state) => state.messages);
   const activeGroupId = useGroupStore((state) => state.activeGroupId);
   const groups = useGroupStore((state) => state.groups);
-  const activeSessionId = useSessionStore((state) => state.activeSessionId);
-  const sessions = useSessionStore((state) => state.sessions);
+  const activeSessionId = useAgentSessionStore((state) => state.activeSessionId);
+  const sessions = useAgentSessionStore((state) => state.sessions);
 
   const fallbackId = mode === "group"
     ? `group-${activeGroupId ?? groups[0]?.id}`
@@ -90,306 +78,25 @@ function ConversationView() {
     );
   }
 
-  return <ConversationSurface conversation={conversation} messages={conversationMessages} />;
-}
-
-function ConversationSurface({
-  conversation,
-  messages,
-}: {
-  conversation: Conversation;
-  messages: ConversationMessage[];
-}) {
-  const [input, setInput] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const sendMessage = useConversationStore((state) => state.sendMessage);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [messages.length]);
-
-  const submit = () => {
-    if (!input.trim()) return;
-    sendMessage(conversation.id, input);
-    setInput("");
-  };
-
-  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      submit();
-    }
-  };
-
-  return (
-    <div className="flex h-full flex-col">
-      <header className="flex h-14 items-center gap-3 border-b border-border-subtle bg-surface px-5">
-        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-primary">
-          {conversation.kind === "group" ? <Users className="h-4 w-4" /> : <MessageCircle className="h-4 w-4" />}
-        </div>
-        <div>
-          <h2 className="text-sm font-medium text-text">{conversation.title}</h2>
-          <p className="text-xs text-muted">
-            {conversation.members.length} 名成员 · {conversation.members.filter((member) => member.kind === "agent").length} 个 Agent
-          </p>
-        </div>
-      </header>
-
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
-        {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
-        <div ref={bottomRef} />
-      </div>
-
-      <div className="border-t border-border-subtle bg-surface p-4">
-        <div className="rounded-xl border border-border-subtle bg-bg p-3">
-          <textarea
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="输入消息，使用 @Agent 触发任务..."
-            className="min-h-[68px] w-full resize-none bg-transparent text-sm text-text placeholder:text-muted focus:outline-none"
-          />
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-muted">Enter 发送 · Shift + Enter 换行</p>
-            <button
-              type="button"
-              onClick={submit}
-              disabled={!input.trim()}
-              className="flex h-9 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-white transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Send className="h-4 w-4" />
-              发送
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function MessageBubble({ message }: { message: ConversationMessage }) {
-  if (message.senderKind === "system") {
-    return (
-      <div className="flex justify-center">
-        <span className="rounded-full bg-bg px-3 py-1 text-xs text-muted">{renderPlainText(message.parts)}</span>
-      </div>
-    );
-  }
-
-  const isUser = message.senderKind === "user";
-
-  return (
-    <article className={`flex gap-3 ${isUser ? "flex-row-reverse" : ""}`}>
-      <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary">
-        {message.senderName.slice(0, 1)}
-      </div>
-      <div className={`min-w-0 max-w-[min(760px,88%)] ${isUser ? "text-right" : ""}`}>
-        <div className={`mb-1 flex items-center gap-2 text-xs text-muted ${isUser ? "justify-end" : ""}`}>
-          <span className="font-medium text-text">{message.senderName}</span>
-          <span>{formatTime(message.createdAt)}</span>
-        </div>
-        <div className="space-y-2 text-left">
-          {message.parts.map((part, index) => <MessagePart key={`${message.id}-${index}`} part={part} />)}
-        </div>
-      </div>
-    </article>
-  );
-}
-
-function MessagePart({ part }: { part: ConversationMessagePart }) {
   const openTask = useWorkspaceStore((state) => state.openTask);
-  const { triggerTerminalCommand } = usePanelTrigger();
-
-  if (part.type === "text") {
-    return <p className="text-sm leading-relaxed text-text">{part.content}</p>;
-  }
-
-  if (part.type === "mention") {
-    return (
-      <span className="mr-1 inline-flex rounded bg-primary/10 px-1.5 py-0.5 text-sm font-medium text-primary">
-        @{part.displayName}
-      </span>
-    );
-  }
-
-  if (part.type === "task_ref") {
-    return (
-      <button
-        type="button"
-        onClick={() => openTask(part.taskId)}
-        className="block w-fit rounded-lg border border-border-subtle bg-surface px-3 py-2 text-left text-sm text-text transition-colors hover:border-primary/50"
-      >
-        <span className="text-xs text-muted">关联任务</span>
-        <span className="block font-medium">{part.title}</span>
-      </button>
-    );
-  }
-
-  if (part.type === "activity_card") {
-    return (
-      <div className="space-y-2">
-        <ActivityCardView activity={part.activity} />
-        <div className="flex flex-wrap gap-2">
-          {part.activity.toolCalls.map((toolCall) => (
-            <button
-              key={toolCall}
-              type="button"
-              onClick={() => triggerTerminalCommand(toolCall)}
-              className="rounded-md border border-border-subtle bg-surface px-2 py-1 font-mono text-xs text-text transition-colors hover:border-primary/50"
-            >
-              {toolCall}
-            </button>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  if (part.type === "approval") {
-    return <ApprovalCardView approval={part.approval} />;
-  }
-
-  if (part.type === "artifact") {
-    const Icon = part.kind === "diff" ? FileDiff : Clock;
-    return (
-      <span
-        className="flex w-fit items-center gap-2 rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text"
-      >
-        <Icon className="h-4 w-4 text-primary" />
-        {part.label}
-        <span className="text-xs text-muted">{part.kind}</span>
-      </span>
-    );
-  }
-
-  return null;
-}
-
-function renderPlainText(parts: ConversationMessagePart[]) {
-  return parts.map((part) => {
-    if (part.type === "text") return part.content;
-    if (part.type === "mention") return `@${part.displayName}`;
-    if (part.type === "system_notice") return part.content;
-    return "";
-  }).join("");
-}
-
-function ActivityCardView({ activity }: { activity: ActivityCard }) {
-  const task = useTaskStore((state) => state.tasks.find((item) => item.id === activity.taskId));
-  const cancelAgentRun = useConversationStore((state) => state.cancelAgentRun);
-  const openTask = useWorkspaceStore((state) => state.openTask);
-  const derivedStatus = task?.status;
-  const state = derivedStatus === "pending" ? activity.state : derivedStatus ?? activity.state;
-  const meta = statusMeta(state);
-  const StatusIcon = meta.icon;
-
-  return (
-    <section className="w-full max-w-[680px] overflow-hidden rounded-xl border border-border-subtle bg-surface">
-      <div className="flex items-center justify-between gap-3 border-b border-border-subtle px-4 py-3">
-        <div className="flex items-center gap-2">
-          <StatusIcon className={`h-4 w-4 ${state === "running" ? "animate-spin" : ""} ${meta.className.split(" ")[0]}`} />
-          <h3 className="text-sm font-medium text-text">{activity.agentName} · 活动卡</h3>
-        </div>
-        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${meta.className}`}>{meta.label}</span>
-      </div>
-
-      <div className="space-y-3 px-4 py-3">
-        <p className="text-sm text-text">{activity.summary}</p>
-        <div className="grid gap-3 md:grid-cols-2">
-          <div>
-            <h4 className="mb-1 text-xs font-medium text-muted">执行步骤</h4>
-            <ol className="space-y-1 text-xs text-text">
-              {activity.steps.map((step) => (
-                <li key={step} className="flex gap-2"><span className="text-muted">·</span><span>{step}</span></li>
-              ))}
-            </ol>
-          </div>
-          <div>
-            <h4 className="mb-1 text-xs font-medium text-muted">工具调用</h4>
-            {activity.toolCalls.length ? (
-              <ul className="space-y-1 font-mono text-xs text-text">
-                {activity.toolCalls.map((call) => <li key={call}>{call}</li>)}
-              </ul>
-            ) : (
-              <p className="text-xs text-muted">暂无工具调用</p>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2 border-t border-border-subtle px-4 py-2">
-        <button type="button" onClick={() => openTask(activity.taskId)} className="rounded-md px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10">
-          详情
-        </button>
-        {(state === "running" || state === "waiting" || state === "queued") && (
-          <button
-            type="button"
-            onClick={() => cancelAgentRun(activity.runId)}
-            className="rounded-md px-2 py-1 text-xs text-muted hover:bg-bg hover:text-red-500"
-          >
-            停止
-          </button>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function ApprovalCardView({ approval }: { approval: ApprovalCard }) {
   const respondToApproval = useConversationStore((state) => state.respondToApproval);
-  const messages = useConversationStore((state) => state.messages);
-  const openTask = useWorkspaceStore((state) => state.openTask);
-  const { triggerApprovalRequest } = usePanelTrigger();
-  const automationRef = useRef<string | null>(null);
-  const messageId = messages.find((message) =>
-    message.parts.some((part) => part.type === "approval" && part.approval.approvalId === approval.approvalId),
-  )?.id;
-
-  useEffect(() => {
-    if (approval.state !== "pending") return;
-    if (automationRef.current === approval.approvalId) return;
-
-    automationRef.current = approval.approvalId;
-    triggerApprovalRequest(approval.approvalId, approval.filePath);
-  }, [approval.approvalId, approval.filePath, approval.state, triggerApprovalRequest]);
 
   return (
-    <section className="w-full max-w-[520px] rounded-xl border border-orange-500/30 bg-orange-500/5">
-      <div className="flex items-center gap-2 px-4 py-3">
-        <ShieldCheck className="h-4 w-4 text-orange-600" />
-        <h3 className="text-sm font-medium text-text">审批请求</h3>
-        <span className="rounded-full bg-orange-500/10 px-2 py-0.5 text-xs text-orange-600">
-          {approval.state === "pending" ? "待处理" : approval.state === "approved" ? "已批准" : "已拒绝"}
-        </span>
-      </div>
-      <div className="px-4 pb-3">
-        <p className="text-sm font-medium text-text">{approval.title}</p>
-        <p className="mt-1 text-xs text-muted">{approval.reason}</p>
-      </div>
-      <div className="flex gap-2 px-4 pb-3">
-        <button type="button" onClick={() => openTask(approval.taskId)} className="rounded-md border border-border-subtle px-2.5 py-1 text-xs text-text hover:bg-bg">
-          详情
-        </button>
-        {approval.state === "pending" && messageId && (
-          <>
-            <button
-              type="button"
-              onClick={() => respondToApproval(messageId, approval.approvalId, true)}
-              className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-white hover:bg-primary/90"
-            >
-              批准
-            </button>
-            <button
-              type="button"
-              onClick={() => respondToApproval(messageId, approval.approvalId, false)}
-              className="rounded-md border border-red-500/30 px-2.5 py-1 text-xs text-red-500 hover:bg-red-500/10"
-            >
-              拒绝
-            </button>
-          </>
-        )}
-      </div>
-    </section>
+    <UnifiedChatPanel
+      mode="group"
+      conversationId={conversation.id}
+      conversationStore={{
+        conversation,
+        messages: conversationMessages,
+        sendMessage: useConversationStore.getState().sendMessage,
+      }}
+      onTaskClick={openTask}
+      onApprovalAction={(approvalId: string, action: 'approve' | 'reject') => {
+        // TODO: 需要找到对应的 messageId
+        respondToApproval('unknown', approvalId, action === 'approve');
+      }}
+      className="h-full"
+    />
   );
 }
 

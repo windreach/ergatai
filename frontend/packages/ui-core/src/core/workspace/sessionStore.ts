@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export interface Session {
+export interface AgentSession {
   id: string;
   agentName: string;
   agentType: string;
@@ -9,17 +9,17 @@ export interface Session {
   unread: number;
 }
 
-interface SessionState {
-  sessions: Session[];
+interface AgentSessionState {
+  sessions: AgentSession[];
   activeSessionId: string | null;
   setActiveSession: (id: string) => void;
-  addSession: (session: Omit<Session, "id" | "unread">) => string;
-  updateSession: (id: string, updates: Partial<Session>) => void;
+  addSession: (session: Omit<AgentSession, "id" | "unread">) => string;
+  updateSession: (id: string, updates: Partial<AgentSession>) => void;
   markAsRead: (id: string) => void;
   removeSession: (id: string) => void;
 }
 
-export const useSessionStore = create<SessionState>((set) => ({
+export const useAgentSessionStore = create<AgentSessionState>((set) => ({
   sessions: [
     // Mock data
     {

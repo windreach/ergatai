@@ -9,7 +9,7 @@ import {
   Sparkles,
 } from "lucide-react";
 
-import { useSessionStore } from "../../core/session/store";
+import { useConversationSessionStore } from "../../core/session/store";
 import { useAgentTabStore } from "../../core/workspace/store";
 import { cn } from "../../lib/utils";
 import logoUrl from "../../assets/ergatai-logo.png";
@@ -21,10 +21,10 @@ interface AgentSidebarProps {
 
 export function AgentSidebar({ collapsed, onToggle }: AgentSidebarProps) {
   const { t } = useTranslation();
-  const sessions = useSessionStore((state) => state.sessions);
-  const activeSessionId = useSessionStore((state) => state.activeSessionId);
-  const createSession = useSessionStore((state) => state.createSession);
-  const selectSession = useSessionStore((state) => state.selectSession);
+  const sessions = useConversationSessionStore((state) => state.sessions);
+  const activeSessionId = useConversationSessionStore((state) => state.activeSessionId);
+  const createSession = useConversationSessionStore((state) => state.createSession);
+  const selectSession = useConversationSessionStore((state) => state.selectSession);
   const agents = useAgentTabStore((state) => state.tabs);
   const activeAgentId = useAgentTabStore((state) => state.activeTabId);
   const createAgent = useAgentTabStore((state) => state.createTab);

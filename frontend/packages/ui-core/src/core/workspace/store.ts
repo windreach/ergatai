@@ -277,6 +277,6 @@ export type { Task, TaskStatus } from "./taskStore";
 export { useGroupStore } from "./groupStore";
 export type { Group } from "./groupStore";
 
-export { useSessionStore } from "./sessionStore";
+export { useAgentSessionStore } from "./sessionStore";
 export type { Session } from "./sessionStore";
 

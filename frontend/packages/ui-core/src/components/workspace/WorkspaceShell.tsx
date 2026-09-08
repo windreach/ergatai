@@ -9,11 +9,11 @@ import {
 } from "lucide-react";
 
 import { AgentSidebar } from "./AgentSidebar";
-import { ChatPanel } from "../tabs/ChatPanel";
+import { ChatPanel } from "../chat/ChatPanel";
 import { ToolWorkspace } from "./ToolWorkspace";
 import { useToolPanelStore, type ToolPanelType } from "../../core/browser/store";
 import { useAgentTabStore } from "../../core/workspace/store";
-import { useSessionStore } from "../../core/session/store";
+import { useConversationSessionStore } from "../../core/session/store";
 import { cn } from "../../lib/utils";
 
 type ToolRailType = Extract<ToolPanelType, "terminal" | "browser" | "files" | "review">;
@@ -38,7 +38,7 @@ export function WorkspaceShell() {
   const activeAgent = useAgentTabStore((state) => state.tabs.find(
     (agent) => agent.id === state.activeTabId,
   ));
-  const activeSession = useSessionStore((state) => state.sessions.find(
+  const activeSession = useConversationSessionStore((state) => state.sessions.find(
     (session) => session.id === state.activeSessionId,
   ));
   const tabs = useToolPanelStore((state) => state.tabs);

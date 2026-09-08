@@ -1,6 +1,6 @@
 import { Plus } from "lucide-react";
 import { useGroupStore } from "../../../core/workspace/groupStore";
-import { useSessionStore } from "../../../core/workspace/sessionStore";
+import { useAgentSessionStore } from "../../../core/workspace/sessionStore";
 import { useWorkspaceStore, type WorkspaceMode } from "../../../core/workspace/workspaceStore";
 
 interface NewButtonProps {
@@ -21,7 +21,7 @@ export function createNewConversation(mode: WorkspaceMode): void {
         preview: "暂无消息",
         lastActive: "刚刚",
       })
-    : useSessionStore.getState().addSession({
+    : useAgentSessionStore.getState().addSession({
         agentName: `新 Agent ${timestamp}`,
         agentType: "Codex",
         preview: "暂无消息",

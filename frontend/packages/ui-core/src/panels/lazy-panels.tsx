@@ -1,7 +1,7 @@
 import { lazy } from "react";
 
 export const LazyChatPanel = lazy(() =>
-  import("../components/tabs/ChatPanel").then((module) => ({ default: module.ChatPanel })),
+  import("../components/chat/ChatPanel").then((module) => ({ default: module.ChatPanel })),
 );
 
 export const LazyTerminalPanel = lazy(() =>

@@ -18,6 +18,9 @@ target/
 .DS_Store
 Thumbs.db
 
+# Reference clones
+deepseek-harness/
+
 # Superpowers SDD scratch (per-plan workspaces)
 .superpowers/
 

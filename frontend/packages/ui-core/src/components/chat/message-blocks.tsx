@@ -13,7 +13,8 @@ import {
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
-import type { AttachedFile, ChatPart, ToolGroup } from "./types";
+import type { AttachedFile, ToolGroup } from "./types";
+import type { UnifiedMessagePart } from '@ergatai/platform-core';
 
 export function ReasoningBlock({ text }: { text: string }) {
   const { t } = useTranslation();
@@ -91,15 +92,16 @@ export function AttachmentCard({ file, onRemove }: { file: AttachedFile; onRemov
   );
 }
 
-function ToolBlock({ part }: { part: ChatPart }) {
+function ToolBlock({ part }: { part: UnifiedMessagePart }) {
   const { t } = useTranslation();
   const [showDetails, setShowDetails] = useState(false);
   const toolName = part.type.replace("tool-", "");
-  const state = (part as Record<string, unknown>).state as string ?? "input-streaming";
-  const input = (part as Record<string, unknown>).input;
-  const output = (part as Record<string, unknown>).output;
-  const errorText = (part as Record<string, unknown>).errorText as string | undefined;
-  const approval = (part as Record<string, unknown>).approval as { id?: string; approved?: boolean; requestReason?: string; reason?: string } | undefined;
+  const record = part as unknown as Record<string, unknown>;
+  const state = record.state as string ?? "input-streaming";
+  const input = record.input;
+  const output = record.output;
+  const errorText = record.errorText as string | undefined;
+  const approval = record.approval as { id?: string; approved?: boolean; requestReason?: string; reason?: string } | undefined;
   const stateLabel = state === "output-available"
     ? t("chat.toolDone")
     : state === "output-error"
@@ -148,11 +150,11 @@ function ToolBlock({ part }: { part: ChatPart }) {
 export function ToolGroupBlock({ group }: { group: ToolGroup }) {
   const { t } = useTranslation();
   const allDone = group.parts.every((part) => {
-    const state = (part as Record<string, unknown>).state as string;
+    const state = (part as unknown as Record<string, unknown>).state as string;
     return ["output-available", "output-error", "output-denied", "approval-responded"].includes(state);
   });
-  const hasError = group.parts.some((part) => (part as Record<string, unknown>).state === "output-error");
-  const needsApproval = group.parts.some((part) => (part as Record<string, unknown>).state === "approval-requested");
+  const hasError = group.parts.some((part) => (part as unknown as Record<string, unknown>).state === "output-error");
+  const needsApproval = group.parts.some((part) => (part as unknown as Record<string, unknown>).state === "approval-requested");
   const running = !allDone;
 
   return (

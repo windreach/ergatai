@@ -1,17 +1,17 @@
 import { useState } from "react";
 import { Check, MessageCircle, Trash2, Copy, ChevronDown, ChevronRight } from "lucide-react";
-import { useSessionStore } from "../../../core/workspace/sessionStore";
+import { useAgentSessionStore } from "../../../core/workspace/sessionStore";
 import { useWorkspaceStore } from "../../../core/workspace/workspaceStore";
 import { ContextMenu } from "../../ui/ContextMenu";
 import { matchesSearch } from "./search";
 
 export function SessionList() {
   const [collapsed, setCollapsed] = useState(false);
-  const sessions = useSessionStore((state) => state.sessions);
-  const setActiveSession = useSessionStore((state) => state.setActiveSession);
-  const markAsRead = useSessionStore((state) => state.markAsRead);
-  const activeSessionId = useSessionStore((state) => state.activeSessionId);
-  const removeSession = useSessionStore((state) => state.removeSession);
+  const sessions = useAgentSessionStore((state) => state.sessions);
+  const setActiveSession = useAgentSessionStore((state) => state.setActiveSession);
+  const markAsRead = useAgentSessionStore((state) => state.markAsRead);
+  const activeSessionId = useAgentSessionStore((state) => state.activeSessionId);
+  const removeSession = useAgentSessionStore((state) => state.removeSession);
   const openConversation = useWorkspaceStore((state) => state.openConversation);
   const searchQuery = useWorkspaceStore((state) => state.searchQuery);
 

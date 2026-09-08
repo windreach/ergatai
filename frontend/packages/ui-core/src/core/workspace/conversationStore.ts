@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import { chatTransport } from "@ergatai/platform-core";
+import { chatTransport, type UnifiedMessagePart } from "@ergatai/platform-core";
 import { useTaskStore, type TaskSource, type TaskStatus } from "./taskStore";
 
 export type ConversationKind = "group" | "direct";
@@ -10,6 +10,7 @@ export type ActivityState = Extract<
   "queued" | "running" | "waiting" | "completed" | "failed" | "cancelled"
 >;
 
+/** Local helper type for constructing activity_card parts */
 export interface ActivityCard {
   runId: string;
   taskId: string;
@@ -21,6 +22,7 @@ export interface ActivityCard {
   toolCalls: string[];
 }
 
+/** Local helper type for constructing approval parts */
 export interface ApprovalCard {
   approvalId: string;
   taskId: string;
@@ -30,14 +32,45 @@ export interface ApprovalCard {
   state: "pending" | "approved" | "rejected";
 }
 
-export type ConversationMessagePart =
-  | { type: "text"; content: string }
-  | { type: "mention"; memberId: string; displayName: string }
-  | { type: "task_ref"; taskId: string; title: string }
-  | { type: "activity_card"; activity: ActivityCard }
-  | { type: "approval"; approval: ApprovalCard }
-  | { type: "artifact"; artifactId: string; kind: "diff" | "file" | "log" | "report"; label: string }
-  | { type: "system_notice"; content: string };
+function mapActivityState(state: ActivityState): 'info' | 'success' | 'warning' | 'error' {
+  switch (state) {
+    case 'running': return 'info';
+    case 'completed': return 'success';
+    case 'failed': return 'error';
+    case 'waiting': return 'warning';
+    default: return 'info';
+  }
+}
+
+/** Convert local ActivityCard to unified activity_card part */
+function toActivityCardPart(card: ActivityCard): UnifiedMessagePart {
+  return {
+    type: 'activity_card',
+    activityCard: {
+      cardId: card.runId,
+      title: `${card.agentName} · ${card.phase}`,
+      description: card.summary,
+      status: mapActivityState(card.state),
+      metadata: { ...card } as Record<string, unknown>,
+    },
+  };
+}
+
+/** Convert local ApprovalCard to unified approval part */
+function toApprovalPart(card: ApprovalCard, requestedBy: string, requestedAt = Date.now()): UnifiedMessagePart {
+  return {
+    type: 'approval',
+    approval: {
+      approvalId: card.approvalId,
+      title: card.title,
+      description: card.reason,
+      status: card.state,
+      requestedBy,
+      requestedAt,
+      metadata: { taskId: card.taskId, filePath: card.filePath } as Record<string, unknown>,
+    },
+  };
+}
 
 export interface ConversationMember {
   id: string;
@@ -59,7 +92,7 @@ export interface ConversationMessage {
   senderKind: MessageSenderKind;
   senderId: string;
   senderName: string;
-  parts: ConversationMessagePart[];
+  parts: UnifiedMessagePart[];
   createdAt: string;
 }
 
@@ -135,9 +168,9 @@ const messages: ConversationMessage[] = [
     senderId: "user",
     senderName: "你",
     parts: [
-      { type: "mention", memberId: "agent1", displayName: "Codex" },
+      { type: "mention", mention: { agentId: "agent1", agentName: "Codex" } },
       { type: "text", content: " 修复登录超时" },
-      { type: "task_ref", taskId: "1", title: "修复登录超时" },
+      { type: "task_ref", taskRef: { taskId: "1", title: "修复登录超时", status: "pending" } },
     ],
     createdAt: nowMinusMinutes(11),
   },
@@ -148,29 +181,34 @@ const messages: ConversationMessage[] = [
     senderId: "agent1",
     senderName: "Codex",
     parts: [
+      toActivityCardPart({
+        runId: "run-1",
+        taskId: "1",
+        agentName: "Codex",
+        state: "running",
+        phase: "定位登录超时原因",
+        summary: "已读取 auth/session.ts 和 auth/token.ts，正在验证 refresh token 竞态。",
+        steps: [
+          "开始分析登录链路",
+          "读取 auth/session.ts",
+          "读取 auth/token.ts",
+          "定位到 refresh token 竞态",
+        ],
+        toolCalls: [
+          "read_file(auth/session.ts)",
+          "read_file(auth/token.ts)",
+          "search_code(\"refresh token\")",
+        ],
+      }),
       {
-        type: "activity_card",
-        activity: {
-          runId: "run-1",
-          taskId: "1",
-          agentName: "Codex",
-          state: "running",
-          phase: "定位登录超时原因",
-          summary: "已读取 auth/session.ts 和 auth/token.ts，正在验证 refresh token 竞态。",
-          steps: [
-            "开始分析登录链路",
-            "读取 auth/session.ts",
-            "读取 auth/token.ts",
-            "定位到 refresh token 竞态",
-          ],
-          toolCalls: [
-            "read_file(auth/session.ts)",
-            "read_file(auth/token.ts)",
-            "search_code(\"refresh token\")",
-          ],
+        type: "artifact",
+        artifact: {
+          artifactId: "auth-fix.patch",
+          type: "code",
+          title: "auth-fix.patch",
+          content: "",
         },
-      },
-      { type: "artifact", artifactId: "auth-fix.patch", kind: "diff", label: "auth-fix.patch" },
+      } satisfies UnifiedMessagePart,
     ],
     createdAt: nowMinusMinutes(8),
   },
@@ -181,17 +219,14 @@ const messages: ConversationMessage[] = [
     senderId: "agent2",
     senderName: "Claude",
     parts: [
-      {
-        type: "approval",
-        approval: {
-          approvalId: "approval-1",
-          taskId: "2",
-          title: "应用审查结论",
-          filePath: "src/auth/session.ts",
-          reason: "Codex 建议合并修复，Claude 需要确认写入 3 个文件。",
-          state: "pending",
-        },
-      },
+      toApprovalPart({
+        approvalId: "approval-1",
+        taskId: "2",
+        title: "应用审查结论",
+        filePath: "src/auth/session.ts",
+        reason: "Codex 建议合并修复，Claude 需要确认写入 3 个文件。",
+        state: "pending",
+      }, "Claude"),
     ],
     createdAt: nowMinusMinutes(3),
   },
@@ -201,7 +236,7 @@ const messages: ConversationMessage[] = [
     senderKind: "system",
     senderId: "system",
     senderName: "系统",
-    parts: [{ type: "system_notice", content: "前端重构群已创建，邀请 Codex、Claude 和 Gemini 加入。" }],
+    parts: [{ type: "system_notice", content: "前端重构群已创建，邀请 Codex、Claude 和 Gemini 加入。", level: "info" }],
     createdAt: nowMinusMinutes(120),
   },
   {
@@ -243,13 +278,12 @@ export const useConversationStore = create<ConversationState>((set) => ({
     const messageId = createMessageId();
     const createdAt = new Date().toISOString();
     let textContent = content;
-    const userParts: ConversationMessagePart[] = [];
+    const userParts: UnifiedMessagePart[] = [];
 
     for (const agent of [...targetAgents].reverse()) {
       userParts.unshift({
         type: "mention",
-        memberId: agent.id,
-        displayName: agent.name,
+        mention: { agentId: agent.id, agentName: agent.name },
       });
       textContent = textContent
         .replace(new RegExp(`@${agent.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "ig"), "")
@@ -309,19 +343,16 @@ export const useConversationStore = create<ConversationState>((set) => ({
             senderId: agent.id,
             senderName: agent.name,
             parts: [
-              {
-                type: "activity_card",
-                activity: {
-                  runId,
-                  taskId,
-                  agentName: agent.name,
-                  state: "queued",
-                  phase: "等待调度",
-                  summary: "请求已接受，Agent Run 正在排队。",
-                  steps: ["收到用户请求", "创建任务", "等待调度"],
-                  toolCalls: [],
-                },
-              },
+              toActivityCardPart({
+                runId,
+                taskId,
+                agentName: agent.name,
+                state: "queued",
+                phase: "等待调度",
+                summary: "请求已接受，Agent Run 正在排队。",
+                steps: ["收到用户请求", "创建任务", "等待调度"],
+                toolCalls: [],
+              }),
             ],
             createdAt: new Date().toISOString(),
           },
@@ -357,7 +388,7 @@ export const useConversationStore = create<ConversationState>((set) => ({
                       ...part,
                       approval: {
                         ...part.approval,
-                        state: approved ? "approved" : "rejected",
+                        status: approved ? "approved" : "rejected",
                       },
                     }
                   : part,
@@ -369,15 +400,18 @@ export const useConversationStore = create<ConversationState>((set) => ({
 
     const message = messages.find((item) => item.id === messageId);
     const approval = message?.parts.find(
-      (part): part is Extract<ConversationMessagePart, { type: "approval" }> =>
+      (part): part is Extract<UnifiedMessagePart, { type: "approval" }> =>
         part.type === "approval" && part.approval.approvalId === approvalId,
     )?.approval;
 
     if (approval) {
-      useTaskStore.getState().updateTask(approval.taskId, {
-        status: approved ? "running" : "cancelled",
-        statusSummary: approved ? "审批通过，开始执行" : "审批拒绝，任务已取消",
-      });
+      const taskId = (approval.metadata as Record<string, unknown> | undefined)?.taskId as string | undefined;
+      if (taskId) {
+        useTaskStore.getState().updateTask(taskId, {
+          status: approved ? "running" : "cancelled",
+          statusSummary: approved ? "审批通过，开始执行" : "审批拒绝，任务已取消",
+        });
+      }
     }
   },
 }));
@@ -407,11 +441,13 @@ async function runAgentTurn({
         if (message.id !== agentMessageId) return message;
         return {
           ...message,
-          parts: message.parts.map((part) =>
-            part.type === "activity_card" && part.activity.runId === runId
-              ? { ...part, activity: { ...part.activity, ...patch } }
-              : part,
-          ),
+          parts: message.parts.map((part) => {
+            if (part.type !== "activity_card") return part;
+            const card = part.activityCard.metadata as unknown as ActivityCard | undefined;
+            if (!card || card.runId !== runId) return part;
+            const updated = { ...card, ...patch };
+            return toActivityCardPart(updated);
+          }),
         };
       }),
     }));

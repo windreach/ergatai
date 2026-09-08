@@ -5,3 +5,5 @@ export * from "./api/files";
 export * from "./api/review";
 export * from "./api/terminal";
 export * from "./config/runtime";
+export * from "./types/unified-message-parts";
+export * from "./types/unified-message";

@@ -1,5 +1,6 @@
 import type { FileUIPart, ReasoningUIPart, TextUIPart, UIMessage } from "ai";
-import type { ChatPart, MessageAnchor, PendingApproval, ToolGroup } from "./types";
+import type { UnifiedMessagePart } from '@ergatai/platform-core';
+import type { MessageAnchor, PendingApproval, ToolGroup } from "./types";
 
 export function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -14,9 +15,9 @@ export function conversationSignature(messages: UIMessage[]): string {
   return messages.map((message) => `${message.id}:${messageText(message).length}`).join("|");
 }
 
-export function groupParts(parts: ChatPart[]): (ChatPart | ToolGroup)[] {
-  const result: (ChatPart | ToolGroup)[] = [];
-  let currentGroup: ChatPart[] | null = null;
+export function groupParts(parts: UnifiedMessagePart[]): (UnifiedMessagePart | ToolGroup)[] {
+  const result: (UnifiedMessagePart | ToolGroup)[] = [];
+  let currentGroup: UnifiedMessagePart[] | null = null;
 
   for (const part of parts) {
     if (isToolPart(part)) {
@@ -34,19 +35,19 @@ export function groupParts(parts: ChatPart[]): (ChatPart | ToolGroup)[] {
   return result;
 }
 
-export function isTextPart(part: ChatPart): part is TextUIPart {
+export function isTextPart(part: { type: string }): part is TextUIPart {
   return part.type === "text";
 }
 
-export function isFilePart(part: ChatPart): part is FileUIPart {
+export function isFilePart(part: { type: string }): part is FileUIPart {
   return part.type === "file";
 }
 
-export function isReasoningPart(part: ChatPart): part is ReasoningUIPart {
+export function isReasoningPart(part: { type: string }): part is ReasoningUIPart {
   return part.type === "reasoning";
 }
 
-export function isToolPart(part: ChatPart): boolean {
+export function isToolPart(part: { type: string }): boolean {
   return part.type.startsWith("tool-");
 }
 

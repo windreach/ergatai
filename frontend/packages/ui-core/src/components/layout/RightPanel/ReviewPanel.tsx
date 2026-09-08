@@ -42,11 +42,11 @@ export function ReviewPanel() {
         ? [{
             approvalId: part.approval.approvalId,
             messageId: message.id,
-            taskId: part.approval.taskId,
+            taskId: (part.approval.metadata as Record<string, unknown> | undefined)?.taskId as string ?? '',
             title: part.approval.title,
-            filePath: part.approval.filePath,
-            reason: part.approval.reason,
-            state: part.approval.state,
+            filePath: (part.approval.metadata as Record<string, unknown> | undefined)?.filePath as string ?? '',
+            reason: part.approval.description ?? '',
+            state: part.approval.status,
             senderName: message.senderName,
           }]
         : [],

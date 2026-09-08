@@ -1,6 +1,4 @@
-import type { UIMessage } from "ai";
-
-export type ChatPart = UIMessage["parts"][number];
+import type { UnifiedMessagePart } from '@ergatai/platform-core';
 
 export interface AttachedFile {
   id: string;
@@ -26,7 +24,7 @@ export interface PendingApproval {
 }
 
 export interface ToolGroup {
-  parts: ChatPart[];
+  parts: UnifiedMessagePart[];
 }
 
 export const maxAttachmentCount = 8;

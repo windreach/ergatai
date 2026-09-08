@@ -7,7 +7,7 @@ export interface ConversationSession {
   createdAt: number;
 }
 
-interface SessionState {
+interface ConversationSessionState {
   sessions: ConversationSession[];
   activeSessionId: string | null;
 }
@@ -17,7 +17,7 @@ interface SessionActions {
   selectSession: (id: string) => void;
 }
 
-export type SessionStore = SessionState & SessionActions;
+export type ConversationSessionStore = ConversationSessionState & SessionActions;
 
 function createId(prefix: string) {
   const uniqueId = typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -35,7 +35,7 @@ function isSession(value: unknown): value is ConversationSession {
     && typeof session.createdAt === "number";
 }
 
-function normalizeState(persisted: unknown, current: SessionState): SessionState {
+function normalizeState(persisted: unknown, current: ConversationSessionState): ConversationSessionState {
   if (typeof persisted !== "object" || persisted === null) return current;
   const value = persisted as Record<string, unknown>;
   const sessions = Array.isArray(value.sessions) ? value.sessions.filter(isSession) : [];
@@ -46,7 +46,7 @@ function normalizeState(persisted: unknown, current: SessionState): SessionState
   return { sessions, activeSessionId };
 }
 
-export const useSessionStore = create<SessionStore>()(persist((set) => ({
+export const useConversationSessionStore = create<ConversationSessionStore>()(persist((set) => ({
   sessions: [],
   activeSessionId: null,
 
