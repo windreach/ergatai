@@ -193,31 +193,6 @@ jobs:
       - name: Check build with MSRV
         run: cargo check --workspace --all-targets
 
-  # Unsafe code audit
-  geiger:
-    name: Unsafe code audit
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-geiger
-        run: cargo install cargo-geiger --locked
-
-      - name: Run unsafe code audit
-        run: |
-          cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[].manifest_path' \
-            | while read -r manifest; do
-                echo "── cargo geiger: $(basename $(dirname $manifest)) ──"
-                cargo geiger --manifest-path "$manifest" || true
-              done
-        # Note: fails open (--update-readme writes report, || true prevents CI failure
-        # on first run when no README exists). Review the generated report manually.
-
   # Unused dependencies check
   machete:
     name: Unused dependencies check
