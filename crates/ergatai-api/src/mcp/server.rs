@@ -303,85 +303,33 @@ impl ErgataiMcpServer {
         let _include_capabilities = params.0.include_capabilities.unwrap_or(false);
         let filter = params.0.filter;
 
-        // Get runtime agents (discovered via PTY backend) instead of just MCP agents
-        let runtime = get_agent_runtime();
-        let runtime_agents = runtime.list_agents().await;
-
         // Get the calling agent's ID to mark is_self.
         let my_agent_id = self.session_agent_id.read().await.clone();
 
         // Resolve caller's runtime ID so we can exclude self from the listing.
         let my_runtime_id = match &my_agent_id {
-            Some(id) => runtime.resolve_agent_id(id).await,
+            Some(id) => crate::services::agent_service::resolve_agent_id(id).await,
             None => None,
         };
 
-        // ── Pre-compute filter state for `in_dag` ──
-        let dag_participants: Option<std::collections::HashSet<String>> = if let Some(ref f) =
-            filter
-        {
-            if let Some(ref dag_id) = f.in_dag {
-                let scheduler = ergatai_core::cross_agent::get_dag_scheduler_by_id(Some(dag_id));
-                match scheduler {
-                    Some(s) => {
-                        // Get participants from the graph nodes (unique agents)
-                        let graph = s.graph().lock_owned().await;
-                        let participants: std::collections::HashSet<String> =
-                            graph.nodes.iter().map(|n| n.agent.clone()).collect();
-                        Some(participants)
-                    }
-                    None => {
-                        // DAG not found — treat as empty filter (nothing matches)
-                        Some(std::collections::HashSet::new())
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
+        // Build the shared filter.
+        let mut exclude = std::collections::HashSet::new();
+        if let Some(ref id) = my_agent_id {
+            exclude.insert(id.clone());
+        }
+        if let Some(ref rid) = my_runtime_id {
+            exclude.insert(rid.clone());
+        }
+        let svc_filter = crate::services::agent_service::AgentListFilter {
+            in_dag: filter.as_ref().and_then(|f| f.in_dag.clone()),
+            status: filter.as_ref().and_then(|f| f.status.clone()),
+            exclude_agent_ids: exclude,
         };
 
-        // ── Pre-compute status filter ──
-        let status_filter: Option<String> = filter
-            .as_ref()
-            .and_then(|f| f.status.as_ref().map(|s| s.to_lowercase()));
+        let items = crate::services::agent_service::list_agents_filtered(svc_filter).await;
 
-        let agents_json: Vec<serde_json::Value> = runtime_agents
-            .iter()
-            .filter(|info| {
-                // Skip self from the listing
-                let is_self = my_agent_id.as_ref().is_some_and(|id| {
-                    id == &info.agent_id
-                        || info
-                            .mcp_agent_id
-                            .as_ref()
-                            .is_some_and(|mcp_id| mcp_id == id)
-                }) || my_runtime_id
-                    .as_ref()
-                    .is_some_and(|rid| rid == &info.agent_id);
-                if is_self {
-                    return false;
-                }
-                // Apply in_dag filter
-                if let Some(ref participants) = dag_participants {
-                    let matches = participants.contains(&info.agent_id)
-                        || info
-                            .mcp_agent_id
-                            .as_ref()
-                            .is_some_and(|mid| participants.contains(mid));
-                    if !matches {
-                        return false;
-                    }
-                }
-                // Apply status filter
-                if let Some(ref status) = status_filter {
-                    if info.lifecycle.state_name().to_lowercase() != *status {
-                        return false;
-                    }
-                }
-                true
-            })
+        let agents_json: Vec<serde_json::Value> = items
+            .into_iter()
             .map(|info| {
                 serde_json::json!({
                     "agent_id": info.agent_id,
@@ -389,20 +337,20 @@ impl ErgataiMcpServer {
                     "mcp_agent_id": info.mcp_agent_id,
                     "workspace_id": info.workspace_id,
                     // Lifecycle state (lowercase) from unified state machine
-                    "state": info.lifecycle.state_name(),
-                    "lifecycle_state": info.lifecycle.state_name(),
+                    "state": info.state,
+                    "lifecycle_state": info.state,
                     "task_id": info.task_id,
-                    "is_alive": info.lifecycle.is_alive(),
-                    "is_idle": info.lifecycle.is_idle(),
-                    "is_processing": info.lifecycle.is_processing(),
+                    "is_alive": info.is_alive,
+                    "is_idle": info.is_idle,
+                    "is_processing": info.is_processing,
                     "status": if info.mcp_agent_id.is_some() { "active" } else { "discovered" },
                     // ID Unification: prefer MCP URL path name (e.g., "agent-1") when
                     // the agent is MCP-bound, so it matches the `from` field in messages
                     // and the `target_agent_id` agents use in send_message.
                     // Fall back to workspace ID (e.g., "start-opencode-3-agent-1") for
                     // agents not yet bound to an MCP connection.
-                    "ergatai_agent_id": info.mcp_agent_id.as_ref().or_else(|| info.handle.metadata.get("ergatai_agent_id")),
-                    "last_heartbeat": info.last_heartbeat.to_rfc3339(),
+                    "ergatai_agent_id": info.mcp_agent_id,
+                    "last_heartbeat": info.last_heartbeat,
                 })
             })
             .collect();
@@ -671,93 +619,39 @@ impl ErgataiMcpServer {
 
         // ── 获取调度者（提交者）的 agent_id ──
         let submitter_id = self.session_agent_id.read().await.clone();
-        let submitter_runtime_id = match &submitter_id {
-            Some(id) => {
-                let runtime = ergatai_runtime::get_agent_runtime();
-                runtime.resolve_agent_id(id).await
-            }
-            None => None,
+
+        let req = crate::services::dag_service::DagSubmitRequest {
+            definition: dag_definition.clone(),
+            parameters,
+            context: context_value.clone(),
+            submitter_agent_id: submitter_id,
         };
 
-        // Check if a DAG is already running
-        if let Some(existing) = ergatai_core::cross_agent::get_dag_scheduler() {
-            if !existing.is_complete().await {
-                return Err(ErrorData::internal_error(
-                    "A DAG is already running. Wait for it to complete or check its status.",
-                    None,
-                ));
+        match crate::services::dag_service::submit_dag(req).await {
+            Ok(resp) => {
+                let result = serde_json::json!({
+                    "status": "submitted",
+                    "submitted_nodes": resp.submitted_nodes,
+                    "progress": resp.progress,
+                    "graph_status": resp.graph_status,
+                });
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    serde_json::to_string_pretty(&result).unwrap_or_default(),
+                )]))
             }
-        }
-
-        // Parse DAG definition (YAML) → TaskGraph
-        let graph = ergatai_core::orchestration::parse_dag_auto(dag_definition, parameters)
-            .map_err(|e| {
-                ErrorData::invalid_params(format!("Failed to parse DAG definition: {}", e), None)
-            })?;
-
-        // ── 强制校验：调度者禁止参与 DAG 工作 ──
-        // 调度者（submitter）应该是纯协调角色，不应该同时是任务执行者。
-        // 如果调度者在 DAG 的 task 列表中，拒绝提交。
-        if let Some(ref runtime_id) = submitter_runtime_id {
-            let dag_agents: Vec<String> = graph.nodes.iter().map(|t| t.agent.clone()).collect();
-            if dag_agents.contains(runtime_id) {
-                warn!(
-                    submitter = %runtime_id,
-                    dag_agents = ?dag_agents,
-                    "Submitter is also a worker in DAG — rejecting"
-                );
-                return Err(ErrorData::invalid_params(
-                    format!(
-                        "DAG scheduler (agent '{}') cannot also be a task worker. \
-                         The submitter must be a pure coordinator. \
-                         Please assign tasks to other agents only.",
-                        runtime_id
-                    ),
-                    None,
-                ));
-            }
-        }
-
-        // Build DagContext from optional context parameter
-        let mut dag_context = ergatai_core::orchestration::DagContext::empty();
-        if let Some(ctx_val) = context_value {
-            if let Some(vars) = ctx_val.as_object() {
-                for (k, v) in vars {
-                    dag_context.set_global(k.clone(), v.as_str().unwrap_or_default().to_string());
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("already running") {
+                    Err(ErrorData::internal_error(msg, None))
+                } else if msg.contains("Failed to parse")
+                    || msg.contains("cannot also be a task worker")
+                {
+                    Err(ErrorData::invalid_params(msg, None))
+                } else {
+                    Err(ErrorData::internal_error(msg, None))
                 }
             }
         }
-
-        // Create DagScheduler
-        let project_root = std::env::current_dir().map_err(|e| {
-            ErrorData::internal_error(format!("Failed to get current directory: {}", e), None)
-        })?;
-        let scheduler =
-            ergatai_core::cross_agent::DagScheduler::with_context(project_root, graph, dag_context);
-
-        // Register globally + start NATS event listener
-        ergatai_core::cross_agent::set_dag_scheduler(scheduler.clone());
-        scheduler.clone().start_event_listener();
-
-        // Submit the graph (dispatches ready nodes)
-        let submitted = scheduler
-            .submit_graph()
-            .await
-            .map_err(|e| ErrorData::internal_error(format!("Failed to submit DAG: {}", e), None))?;
-
-        let progress = scheduler.progress().await;
-        let status = scheduler.status_prompt().await;
-
-        let result = serde_json::json!({
-            "status": "submitted",
-            "submitted_nodes": submitted.len(),
-            "progress": progress,
-            "graph_status": status,
-        });
-
-        Ok(CallToolResult::success(vec![ContentBlock::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
     }
 
     /// Dry-run validate a DAG YAML definition. ALWAYS call this BEFORE `submit_orchestration`
@@ -825,48 +719,16 @@ impl ErgataiMcpServer {
 
         info!("Validating DAG definition ({} bytes)", dag_definition.len());
 
-        // Parse (applies all strict validation rules)
-        let graph = ergatai_core::orchestration::parse_dag_auto(dag_definition, parameters)
-            .map_err(|e| {
-                ErrorData::invalid_params(format!("DAG validation failed: {}", e), None)
-            })?;
-
-        // Build success summary
-        let mut agents: Vec<&str> = graph.nodes.iter().map(|n| n.agent.as_str()).collect();
-        agents.sort_unstable();
-        agents.dedup();
-
-        let task_summaries: Vec<serde_json::Value> = graph
-            .nodes
-            .iter()
-            .map(|n| {
-                serde_json::json!({
-                    "name": n.task,
-                    "agent": n.agent,
-                    "priority": n.priority,
-                    "complexity": format!("{:?}", n.complexity).to_lowercase(),
-                    "depends_on_count": n.depends_on.len(),
-                    "timeout": n.timeout,
-                    "scope": n.scope,
-                })
-            })
-            .collect();
-
-        let result = serde_json::json!({
-            "valid": true,
-            "task_count": graph.nodes.len(),
-            "agents": agents,
-            "communication": graph.communication.as_deref().unwrap_or("open"),
-            "dag_timeout": graph.timeout,
-            "dag_max_agent_calls": graph.max_agent_calls,
-            "dag_stall_timeout_secs": graph.stall_timeout_secs,
-            "dag_node_timeout_secs": graph.node_timeout_secs,
-            "tasks": task_summaries,
-        });
-
-        Ok(CallToolResult::success(vec![ContentBlock::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
+        match crate::services::dag_service::validate_dag(dag_definition, parameters) {
+            Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
+                serde_json::to_string_pretty(&serde_json::to_value(result).unwrap_or_default())
+                    .unwrap_or_default(),
+            )])),
+            Err(e) => Err(ErrorData::invalid_params(
+                format!("DAG validation failed: {}", e),
+                None,
+            )),
+        }
     }
 
     /// Get the status of a DAG execution. Use this AFTER `submit_orchestration` to monitor
@@ -946,258 +808,133 @@ impl ErgataiMcpServer {
         &self,
         params: Parameters<GetDagStatusParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let _dag_id = &params.0.dag_id;
+        let dag_id = &params.0.dag_id;
 
         info!("Getting DAG status");
 
-        match ergatai_core::cross_agent::get_dag_scheduler() {
-            None => {
-                // Scheduler was removed from registry (DAG reached terminal state).
-                // Try to load the final state from disk so callers see "completed"
-                // instead of "no_dag".
-                match load_completed_dag_from_disk().await {
-                    Some(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
-                        serde_json::to_string_pretty(&result).unwrap_or_default(),
-                    )])),
-                    None => {
-                        let result = serde_json::json!({
-                            "status": "no_dag",
-                            "message": "No DAG scheduler is active",
-                        });
-                        Ok(CallToolResult::success(vec![ContentBlock::text(
-                            serde_json::to_string_pretty(&result).unwrap_or_default(),
-                        )]))
-                    }
-                }
-            }
-            Some(scheduler) => {
-                let is_complete = scheduler.is_complete().await;
-                let status_text = scheduler.status_prompt().await;
-                let snapshot = scheduler.graph_snapshot().await.ok();
+        let info = crate::services::dag_service::get_dag_status(Some(dag_id)).await;
 
-                // Calculate progress as object (consistent with disk fallback format)
-                let graph_arc = scheduler.graph();
-                let graph = graph_arc.lock().await;
-                let total = graph.nodes.len();
-                let completed = graph
-                    .nodes
-                    .iter()
-                    .filter(|n| {
-                        matches!(n.status, ergatai_core::orchestration::TaskStatus::Completed)
-                    })
-                    .count();
-                let running = graph
-                    .nodes
-                    .iter()
-                    .filter(|n| {
-                        matches!(n.status, ergatai_core::orchestration::TaskStatus::Running)
-                    })
-                    .count();
-                let failed = graph
-                    .nodes
-                    .iter()
-                    .filter(|n| matches!(n.status, ergatai_core::orchestration::TaskStatus::Failed))
-                    .count();
-                let pending = graph
-                    .nodes
-                    .iter()
-                    .filter(|n| {
-                        matches!(n.status, ergatai_core::orchestration::TaskStatus::Pending)
-                    })
-                    .count();
-                let percent = if total > 0 {
-                    // Clamp to 100.0 to prevent float precision from producing
-                    // values like 100.5 that round up past the logical maximum.
-                    ((completed + failed) as f64 / total as f64 * 100.0)
-                        .round()
-                        .min(100.0) as u32
-                } else {
-                    0
-                };
-                drop(graph);
+        // 检查是否是来自磁盘的 completed 状态
+        let is_from_disk = info.progress_detail.is_some() && !info.running;
 
-                // Fetch collaboration session info (MeshPolicy + participants)
-                let collab = scheduler.collaboration().await;
-                let policy_str = format!("{:?}", collab.policy);
-                let participants: Vec<&str> =
-                    collab.participants.iter().map(|s| s.as_str()).collect();
-
-                let status = if is_complete { "completed" } else { "running" };
-
-                let result = serde_json::json!({
-                    "status": status,
-                    "progress": {
-                        "completed": completed,
-                        "running": running,
-                        "failed": failed,
-                        "pending": pending,
-                        "total": total,
-                        "percent": percent,
-                    },
-                    "is_complete": is_complete,
-                    "graph_status": status_text,
-                    "graph_snapshot": snapshot,
-                    "collaboration": {
-                        "dag_id": collab.dag_id,
-                        "policy": policy_str,
-                        "participants": participants,
-                        "participant_count": participants.len(),
-                        "created_at": collab.created_at,
-                    }
-                });
-                Ok(CallToolResult::success(vec![ContentBlock::text(
-                    serde_json::to_string_pretty(&result).unwrap_or_default(),
-                )]))
-            }
-        }
-    }
-}
-
-// ── Helpers ──
-
-/// Try to load the most recently modified completed DAG state from disk.
-///
-/// After `finalize_if_terminal` removes the scheduler from the in-memory registry,
-/// the persisted `dag-state-*.json` files remain on disk. This function scans
-/// `<project_root>/.ergatai/`, picks the newest file, and — if its graph shows all
-/// nodes in a terminal state — returns a JSON value with status "completed".
-///
-/// Returns `None` if no project root can be determined, no state files exist, or
-/// the most recent DAG is not yet complete (e.g., crash mid-execution).
-async fn load_completed_dag_from_disk() -> Option<serde_json::Value> {
-    use ergatai_core::orchestration::{TaskGraph, TaskStatus};
-
-    let project_root = std::env::current_dir().ok()?;
-    let ergatai_dir = project_root.join(".ergatai");
-
-    // Collect dag-state-*.json files
-    let mut dag_files: Vec<std::path::PathBuf> = Vec::new();
-    let mut entries = tokio::fs::read_dir(&ergatai_dir).await.ok()?;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("json")
-            && path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("dag-state-"))
-        {
-            dag_files.push(path);
-        }
-    }
-
-    if dag_files.is_empty() {
-        // Also try legacy single-DAG file
-        let legacy = ergatai_dir.join("dag-state.json");
-        if legacy.exists() {
-            dag_files.push(legacy);
-        }
-    }
-
-    if dag_files.is_empty() {
-        return None;
-    }
-
-    // Pick the most recently modified file
-    let mut best: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
-    for path in &dag_files {
-        if let Ok(meta) = tokio::fs::metadata(path).await {
-            if let Ok(modified) = meta.modified() {
-                if best.as_ref().is_none_or(|(_, t)| modified > *t) {
-                    best = Some((path.clone(), modified));
-                }
-            }
-        }
-    }
-    let (best_path, _) = best?;
-
-    // Guard against excessively large state files (e.g., corrupted or malicious)
-    const MAX_DAG_STATE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
-    if let Ok(meta) = tokio::fs::metadata(&best_path).await {
-        if meta.len() > MAX_DAG_STATE_SIZE {
-            tracing::warn!(
-                path = %best_path.display(),
-                size = meta.len(),
-                limit = MAX_DAG_STATE_SIZE,
-                "DAG state file exceeds size limit, skipping"
-            );
-            return None;
-        }
-    }
-
-    let graph = TaskGraph::load_from_file(&best_path).await.ok()?;
-
-    // Only report completed if every node is terminal
-    if !graph.is_complete() {
-        return None;
-    }
-
-    let total = graph.nodes.len();
-    let completed = graph
-        .nodes
-        .iter()
-        .filter(|n| matches!(n.status, TaskStatus::Completed))
-        .count();
-    let failed = graph
-        .nodes
-        .iter()
-        .filter(|n| matches!(n.status, TaskStatus::Failed))
-        .count();
-    let percent = if total > 0 {
-        // Clamp to 100.0 to prevent float precision overflow.
-        ((completed + failed) as f64 / total as f64 * 100.0)
-            .round()
-            .min(100.0) as u32
-    } else {
-        0
-    };
-
-    let dag_id = graph
-        .dag_id
-        .clone()
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let snapshot: Vec<serde_json::Value> = graph
-        .nodes
-        .iter()
-        .map(|n| {
-            serde_json::json!({
-                "id": n.id,
-                "task": n.task,
-                "agent": n.agent,
-                "status": format!("{:?}", n.status),
-            })
-        })
-        .collect();
-
-    // Load collaboration metadata from disk (if saved during finalization)
-    let collab_meta =
-        ergatai_core::cross_agent::DagScheduler::load_collaboration_meta(&project_root, &dag_id)
-            .await
-            .unwrap_or_else(|| {
-                serde_json::json!({
-                    "dag_id": dag_id,
-                    "policy": "N/A",
-                    "participants": [],
-                    "participant_count": 0,
-                    "created_at": "N/A",
-                })
+        if !info.running && info.is_complete != Some(true) {
+            // 没有活跃 DAG，也没有磁盘状态
+            let result = serde_json::json!({
+                "status": "no_dag",
+                "message": "No DAG scheduler is active",
             });
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
+                serde_json::to_string_pretty(&result).unwrap_or_default(),
+            )]));
+        }
 
-    Some(serde_json::json!({
-        "status": "completed",
-        "progress": {
-            "completed": completed,
-            "failed": failed,
-            "total": total,
-            "percent": percent,
-        },
-        "is_complete": true,
-        "graph_status": "All nodes have reached a terminal state",
-        "graph_snapshot": snapshot,
-        "collaboration": collab_meta,
-        "source": "disk",
-        "message": "DAG has completed. Scheduler was removed from memory; this status was loaded from persisted state.",
-    }))
+        if is_from_disk {
+            // 磁盘加载状态：格式与之前的 load_completed_dag_from_disk 一致
+            let nodes: Vec<serde_json::Value> = info
+                .nodes
+                .unwrap_or_default()
+                .iter()
+                .map(|n| {
+                    serde_json::json!({
+                        "id": n.id,
+                        "task": n.task,
+                        "agent": n.agent,
+                        "status": n.status,
+                    })
+                })
+                .collect();
+
+            let collab =
+                info.collaboration
+                    .unwrap_or(crate::services::dag_service::DagCollaborationInfo {
+                        dag_id: "unknown".to_string(),
+                        policy: "N/A".to_string(),
+                        participants: Vec::new(),
+                        participant_count: 0,
+                        created_at: "N/A".to_string(),
+                    });
+
+            let detail = info.progress_detail.unwrap();
+
+            let result = serde_json::json!({
+                "status": "completed",
+                "progress": {
+                    "completed": detail.completed,
+                    "failed": detail.failed,
+                    "total": detail.total,
+                    "percent": detail.percent,
+                },
+                "is_complete": true,
+                "graph_status": info.status_prompt.unwrap_or_default(),
+                "graph_snapshot": nodes,
+                "collaboration": {
+                    "dag_id": collab.dag_id,
+                    "policy": collab.policy,
+                    "participants": collab.participants,
+                    "participant_count": collab.participant_count,
+                    "created_at": collab.created_at,
+                },
+                "source": "disk",
+                "message": "DAG has completed. Scheduler was removed from memory; this status was loaded from persisted state.",
+            });
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
+                serde_json::to_string_pretty(&result).unwrap_or_default(),
+            )]));
+        }
+
+        // 活跃 DAG 状态
+        let detail =
+            info.progress_detail
+                .unwrap_or(crate::services::dag_service::DagProgressDetail {
+                    completed: 0,
+                    running: 0,
+                    failed: 0,
+                    pending: 0,
+                    total: 0,
+                    percent: 0,
+                });
+
+        let collab =
+            info.collaboration
+                .unwrap_or(crate::services::dag_service::DagCollaborationInfo {
+                    dag_id: String::new(),
+                    policy: "N/A".to_string(),
+                    participants: Vec::new(),
+                    participant_count: 0,
+                    created_at: String::new(),
+                });
+
+        let status = if info.is_complete == Some(true) {
+            "completed"
+        } else {
+            "running"
+        };
+
+        let result = serde_json::json!({
+            "status": status,
+            "progress": {
+                "completed": detail.completed,
+                "running": detail.running,
+                "failed": detail.failed,
+                "pending": detail.pending,
+                "total": detail.total,
+                "percent": detail.percent,
+            },
+            "is_complete": info.is_complete.unwrap_or(false),
+            "graph_status": info.status_prompt.unwrap_or_default(),
+            "graph_snapshot": info.graph_snapshot,
+            "collaboration": {
+                "dag_id": collab.dag_id,
+                "policy": collab.policy,
+                "participants": collab.participants,
+                "participant_count": collab.participant_count,
+                "created_at": collab.created_at,
+            }
+        });
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            serde_json::to_string_pretty(&result).unwrap_or_default(),
+        )]))
+    }
 }
 
 // ── ServerHandler implementation ──

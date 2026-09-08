@@ -2,6 +2,7 @@
 // Provides structured error types with fine-grained ConfigError variants
 
 mod classify;
+pub mod datetime;
 mod types;
 
 // Re-export public API

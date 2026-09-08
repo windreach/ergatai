@@ -5,34 +5,16 @@
  * Creates the root context, loads plugins, and mounts the application.
  */
 
-import type { ErgataiContext, Plugin } from '@ergatai/core-plugin-types'
+import type { ErgataiContext, EventMap, Plugin } from '@ergatai/core-plugin-types'
 import { EventBus } from '@ergatai/core-events'
 import { SlotService } from '@ergatai/core-slots'
-
-/**
- * Boot manifest — declares which plugins to load.
- */
-export interface BootManifest {
-  plugins: Array<{
-    /** Unique identifier for this plugin entry. */
-    id: string
-    /** npm package name or relative path. */
-    name: string
-    /** Plugin-specific configuration. */
-    config?: Record<string, unknown>
-    /** Whether this plugin is disabled. */
-    disabled?: boolean
-  }>
-}
 
 /**
  * Options for the boot function.
  */
 export interface BootOptions {
-  /** Static shared modules (singletons like React, core services). */
-  staticModules?: Record<string, unknown>
-  /** Boot manifest declaring which plugins to load. */
-  manifest: BootManifest
+  /** Plugins loaded by the application host. */
+  plugins: Plugin[]
 }
 
 /**
@@ -109,9 +91,7 @@ class ErgataiContextImpl implements ErgataiContext {
   }
 
   inject(deps: string[], callback: (ctx: ErgataiContext) => void): void {
-    const missing = deps.filter(name => !this.services.has(name))
-    if (missing.length > 0) {
-      // Wait for all dependencies
+    const waitForMissing = (missing: string[]) => {
       for (const dep of missing) {
         let pending = this.pendingInjections.get(dep)
         if (!pending) {
@@ -119,16 +99,21 @@ class ErgataiContextImpl implements ErgataiContext {
           this.pendingInjections.set(dep, pending)
         }
         pending.push((ctx) => {
-          // Check again if all deps are now available
           const stillMissing = deps.filter(name => !ctx.get(name))
           if (stillMissing.length === 0) {
             callback(ctx)
+          } else {
+            waitForMissing(stillMissing)
           }
         })
       }
-    } else {
-      // All dependencies available, run immediately
+    }
+
+    const missing = deps.filter(name => !this.services.has(name))
+    if (missing.length === 0) {
       callback(this)
+    } else {
+      waitForMissing(missing)
     }
   }
 
@@ -155,14 +140,11 @@ class ErgataiContextImpl implements ErgataiContext {
   }
 }
 
-// Re-export EventMap for type compatibility
-type EventMap = import('@ergatai/core-plugin-types').EventMap
-
 /**
  * Boot the Ergatai frontend application.
  *
  * @param container - DOM element to mount the application into
- * @param options - Boot configuration (manifest, static modules)
+ * @param options - Boot configuration and plugin list
  * @returns Promise that resolves when the app is mounted
  *
  * @example
@@ -174,42 +156,36 @@ type EventMap = import('@ergatai/core-plugin-types').EventMap
  * if (!el) throw new Error('Missing #root element')
  *
  * void boot(el, {
- *   manifest: window.__ERGATAI_BOOT__,
+ *   plugins: [layoutPlugin, uiRendererPlugin],
  * })
  * ```
  */
 export async function boot(
   container: HTMLElement,
   options: BootOptions,
-): Promise<void> {
+): Promise<ErgataiContext> {
   const ctx = new ErgataiContextImpl()
 
   try {
-    // Load all plugins from the manifest
-    for (const entry of options.manifest.plugins) {
-      if (entry.disabled) continue
-
-      // In a real implementation, we'd dynamically import the plugin here
-      // For now, we expect plugins to be registered via static imports
-      // This is a placeholder for the dynamic loading logic
-      console.log(`[boot] Loading plugin: ${entry.name} (id: ${entry.id})`)
+    for (const plugin of options.plugins) {
+      ctx.plugin(plugin)
     }
 
-    // Mount the app through the uiRenderer service
-    // This is deferred until the uiRenderer service is provided
-    ctx.inject(['uiRenderer'], (scope) => {
-      scope.effect(() => {
-        const uiRenderer = scope.get<{ mount: (el: HTMLElement) => void }>('uiRenderer')
-        if (uiRenderer) {
-          uiRenderer.mount(container)
-        }
-        return () => {
-          // Unmount logic would go here
-        }
-      }, 'boot: mount application')
+    if (!ctx.get('uiRenderer')) {
+      throw new Error('Boot requires the @ergatai/ui-renderer plugin.')
+    }
+
+    await new Promise<void>((resolve) => {
+      ctx.inject(['uiRenderer'], (scope) => {
+        scope.effect(() => {
+          const uiRenderer = scope.get<{ mount: (element: HTMLElement) => void }>('uiRenderer')
+          uiRenderer?.mount(container)
+        }, 'boot: mount application')
+        resolve()
+      })
     })
 
-    console.log('[boot] Application boot complete')
+    return ctx
   } catch (error) {
     console.error('[boot] Boot failed:', error)
     await ctx.dispose()

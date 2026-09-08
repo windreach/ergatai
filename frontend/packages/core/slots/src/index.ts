@@ -6,8 +6,8 @@
  * which are then rendered by the layout.
  */
 
-import { createElement, Fragment, type ComponentType, type ReactNode } from 'react'
-import type { SlotRegistration, SlotDefinition } from '@ergatai/core-plugin-types'
+import { createElement, Fragment, useSyncExternalStore, type ComponentType, type ReactNode } from 'react'
+import type { ErgataiContext, SlotRegistration } from '@ergatai/core-plugin-types'
 
 /**
  * Slot map interface. Feature modules extend this via declaration merging to declare
@@ -30,14 +30,16 @@ export interface SlotMap {
 }
 
 /**
- * Internal representation of a slot registration.
+ * Public representation of a slot registration, used by renderer outlets.
  */
-interface SlotEntry {
+export interface SlotEntry {
   id: string
   order: number
   component: ComponentType<unknown>
   registration: SlotRegistration
 }
+
+const EMPTY_ENTRIES: readonly SlotEntry[] = Object.freeze([])
 
 /**
  * Slot service implementation.
@@ -45,6 +47,21 @@ interface SlotEntry {
 export class SlotService {
   private slots = new Map<string, SlotEntry[]>()
   private pendingInjections = new Map<string, Array<() => () => void>>()
+  private listeners = new Set<() => void>()
+
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener)
+
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
+
+  private notify(): void {
+    for (const listener of this.listeners) {
+      listener()
+    }
+  }
 
   /**
    * Register a React component into a named slot.
@@ -67,26 +84,21 @@ export class SlotService {
     let entries = this.slots.get(slotName)
     if (!entries) {
       entries = []
-      this.slots.set(slotName, entries)
-    }
-
-    // For 'single' kind slots, replace existing entry
-    const slotDef = registration.children?.[slotName]
-    if (!slotDef || slotDef.kind === 'single') {
-      // Remove existing entry with same id (if any)
-      const existingIndex = entries.findIndex(e => e.id === id)
-      if (existingIndex >= 0) {
-        entries[existingIndex] = entry
-      } else {
-        entries.push(entry)
-      }
     } else {
-      // For 'list' kind, add to the list
+      entries = [...entries]
+    }
+    this.slots.set(slotName, entries)
+
+    if ((registration.kind ?? 'single') === 'single') {
+      entries = [entry]
+      this.slots.set(slotName, entries)
+    } else {
       entries.push(entry)
     }
 
     // Sort by order
     entries.sort((a, b) => a.order - b.order)
+    this.notify()
 
     // Process any pending injections for this slot
     const pending = this.pendingInjections.get(slotName)
@@ -95,17 +107,18 @@ export class SlotService {
         factory()
       }
       this.pendingInjections.delete(slotName)
+      this.notify()
     }
 
     // Return disposer
     return () => {
-      const idx = entries!.findIndex(e => e.id === id)
-      if (idx >= 0) {
-        entries!.splice(idx, 1)
-      }
-      if (entries!.length === 0) {
+      const remaining = (this.slots.get(slotName) ?? []).filter(entry => entry.id !== id)
+      if (remaining.length > 0) {
+        this.slots.set(slotName, remaining)
+      } else {
         this.slots.delete(slotName)
       }
+      this.notify()
     }
   }
 
@@ -166,11 +179,40 @@ export class SlotService {
     return Array.from(this.slots.keys())
   }
 
+  getEntries(slotName: string): readonly SlotEntry[] {
+    return this.slots.get(slotName) ?? EMPTY_ENTRIES
+  }
+
   /**
    * Remove all registrations. Called during context disposal.
    */
   dispose(): void {
     this.slots.clear()
     this.pendingInjections.clear()
+    this.notify()
   }
+}
+
+export function SlotOutlet({ context, name, props, fallback = null }: {
+  context: ErgataiContext
+  name: string
+  props?: Record<string, unknown>
+  fallback?: ReactNode
+}): ReactNode {
+  const entries = useSyncExternalStore(
+    context.slots.subscribe,
+    () => context.slots.getEntries(name),
+  )
+
+  if (entries.length === 0) {
+    return fallback
+  }
+
+  return createElement(
+    Fragment,
+    null,
+    entries.map(entry =>
+      createElement((entry as SlotEntry).component, { key: (entry as SlotEntry).id, ...props }),
+    ),
+  )
 }

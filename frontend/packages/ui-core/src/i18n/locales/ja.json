@@ -154,7 +154,10 @@
     "fileTooLarge": "各ファイルは {{size}} MB 以下にしてください",
     "fileReadFailed": "ファイルの読み込みに失敗しました",
     "copyCode": "コードをコピー",
-    "attachment": "添付ファイル"
+    "attachment": "添付ファイル",
+    "selectAgent": "エージェントを選択",
+    "noAgents": "エージェントなし",
+    "newAgent": "新規エージェント"
   },
   "common": {
     "language": "言語",
@@ -194,6 +197,11 @@
     "defaultTitle": "ワークスペース {{index}}",
     "closeWorkspace": "ワークスペースを閉じる",
     "conversationArea": "会話エリア",
+    "history": "履歴",
+    "noHistory": "履歴はまだありません",
+    "newConversation": "新しい会話",
+    "collapseHistory": "履歴を折りたたむ",
+    "expandHistory": "履歴を展開",
     "workspaceArea": "ワークスペースエリア",
     "domainResizeHandle": "会話とワークスペースの分割を調整",
     "emptyConversation": "会話コンテンツがありません",

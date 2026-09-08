@@ -154,7 +154,10 @@
     "fileTooLarge": "Each file must be under {{size}} MB",
     "fileReadFailed": "Failed to read file",
     "copyCode": "Copy code",
-    "attachment": "Attachment"
+    "attachment": "Attachment",
+    "selectAgent": "Select Agent",
+    "noAgents": "No agents",
+    "newAgent": "New Agent"
   },
   "common": {
     "language": "Language",
@@ -194,6 +197,11 @@
     "defaultTitle": "Workspace {{index}}",
     "closeWorkspace": "Close workspace",
     "conversationArea": "Conversation area",
+    "history": "History",
+    "noHistory": "No conversations yet",
+    "newConversation": "New conversation",
+    "collapseHistory": "Collapse history",
+    "expandHistory": "Expand history",
     "workspaceArea": "Workspace area",
     "domainResizeHandle": "Resize conversation and workspace split",
     "emptyConversation": "No conversation content",

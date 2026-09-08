@@ -3,13 +3,41 @@
  * 合并了 tabs/ChatPanel 和 chat/ChatPanel 的 props
  */
 
+import type { ReactNode } from 'react';
 import type { UseChatHelpers } from '@ai-sdk/react';
-import type { Conversation, ConversationMessage } from '../../core/workspace/conversationStore';
+import type { UnifiedMessagePart } from '@ergatai/platform-core';
 
 /**
  * 对话模式
  */
 export type ChatMode = 'single' | 'group' | 'sidebar';
+
+export type ConversationKind = 'group' | 'direct';
+export type MessageSenderKind = 'user' | 'agent' | 'system';
+
+export interface ConversationMember {
+  id: string;
+  name: string;
+  kind: 'user' | 'agent';
+  agentType?: string;
+}
+
+export interface Conversation {
+  id: string;
+  kind: ConversationKind;
+  title: string;
+  members: ConversationMember[];
+}
+
+export interface ConversationMessage {
+  id: string;
+  conversationId: string;
+  senderKind: MessageSenderKind;
+  senderId: string;
+  senderName: string;
+  parts: UnifiedMessagePart[];
+  createdAt: string;
+}
 
 /**
  * ChatPanel 功能配置
@@ -83,6 +111,10 @@ export interface ChatPanelProps {
   aiSdkTransport?: AiSdkDataSource;
   /** 数据源：conversationStore */
   conversationStore?: ConversationStoreDataSource;
+  /** Optional header action rendered at the top-left of the chat panel. */
+  headerLeading?: ReactNode;
+  /** Called after local chat messages are persisted. */
+  onConversationSaved?: (conversationId: string) => void;
 
   /** @提及选择回调 */
   onMentionSelect?: (agentId: string) => void;

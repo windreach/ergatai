@@ -297,6 +297,14 @@ async fn async_main(args: Args) -> Result<()> {
     // Initialize the global MessageSender so both REST API and MCP use the same pipeline.
     init_message_sender();
 
+    // Initialize the global ProfileRegistry singleton so agent-profile handlers
+    // share a single SQLite connection instead of opening one per request.
+    if let Err(e) = ergatai_api::services::profile_service::init_profile_registry() {
+        tracing::warn!("Failed to initialize profile registry: {}", e);
+    } else {
+        tracing::info!("✅ Profile registry initialized");
+    }
+
     // Initialize persistent binding store for MCP reconnection support
     // Store bindings in .ergatai directory alongside other ergatai data
     let binding_db_path = ".ergatai/agent_bindings.db";

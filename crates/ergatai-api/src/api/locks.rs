@@ -2,17 +2,19 @@
 //!
 //! Provides read-only endpoints for the dashboard to query active file locks
 //! and audit log entries. All data comes from `FileLockManager` (SQLite WAL).
+//!
+//! 业务逻辑已迁移到 `crate::services::lock_service`，handler 只负责
+//! HTTP 请求解析和响应格式化。
 
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
     response::IntoResponse,
     Json,
 };
-use ergatai_lock::get_lock_manager;
 use serde::{Deserialize, Serialize};
 
-use crate::{AppState, ErrorResponse};
+use crate::services::lock_service;
+use crate::AppState;
 
 /// Response item for a single active file lock.
 #[derive(Debug, Serialize)]
@@ -45,42 +47,31 @@ fn is_internal_path(path: &str) -> bool {
 /// Internal system files (`.git/`, `.ergatai/`) are filtered out to reduce
 /// noise from FileSystemWatcher auto-locks on git objects and database files.
 pub async fn list_locks(State(_state): State<AppState>) -> impl IntoResponse {
-    let manager = match get_lock_manager("default").await {
-        Ok(m) => m,
+    let locks = match lock_service::list_active_locks().await {
+        Ok(locks) => locks,
         Err(e) => {
             tracing::debug!(error = %e, "File lock manager not initialized");
             return Json(Vec::<LockInfo>::new()).into_response();
         }
     };
 
-    match manager.get_all_active_locks() {
-        Ok(locks) => {
-            let infos: Vec<LockInfo> = locks
-                .into_iter()
-                .filter(|l| !is_internal_path(&l.file_path))
-                .map(|l| LockInfo {
-                    id: l.id,
-                    file_path: l.file_path,
-                    agent_id: l.agent_id,
-                    session_id: l.session_id,
-                    mode: format!("{:?}", l.mode),
-                    scope: l.scope,
-                    created_at: l.created_at.to_rfc3339(),
-                    expires_at: l.expires_at.to_rfc3339(),
-                    heartbeat_at: l.heartbeat_at.to_rfc3339(),
-                    status: format!("{:?}", l.status),
-                })
-                .collect();
-            Json(infos).into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to query locks: {}", e),
-            }),
-        )
-            .into_response(),
-    }
+    let infos: Vec<LockInfo> = locks
+        .into_iter()
+        .filter(|l| !is_internal_path(&l.file_path))
+        .map(|l| LockInfo {
+            id: l.id,
+            file_path: l.file_path,
+            agent_id: l.agent_id,
+            session_id: l.session_id,
+            mode: format!("{:?}", l.mode),
+            scope: l.scope,
+            created_at: l.created_at.to_rfc3339(),
+            expires_at: l.expires_at.to_rfc3339(),
+            heartbeat_at: l.heartbeat_at.to_rfc3339(),
+            status: format!("{:?}", l.status),
+        })
+        .collect();
+    Json(infos).into_response()
 }
 
 /// Query parameters for audit log endpoint.
@@ -106,32 +97,20 @@ pub async fn list_audit(
     State(_state): State<AppState>,
     Query(query): Query<AuditQuery>,
 ) -> impl IntoResponse {
-    let manager = match get_lock_manager("default").await {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::debug!(error = %e, "File lock manager not initialized");
-            return Json(Vec::<ergatai_lock::AuditEntry>::new()).into_response();
-        }
-    };
-
-    let audit = manager.audit_manager();
     let limit = query.limit.min(MAX_AUDIT_LIMIT);
-    match audit.query_audit_log(
+    match lock_service::query_audit(
         query.agent_id.as_deref(),
         query.action.as_deref(),
         query.file_path.as_deref(),
-        None,
-        None,
         limit,
-    ) {
+    )
+    .await
+    {
         Ok(entries) => Json(entries).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to query audit log: {}", e),
-            }),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::debug!(error = %e, "File lock manager not initialized");
+            Json(Vec::<ergatai_lock::AuditEntry>::new()).into_response()
+        }
     }
 }
 
@@ -147,74 +126,25 @@ pub struct LockContentionInfo {
 
 /// GET /api/v1/locks/contention — get lock contention information
 pub async fn get_lock_contention(State(_state): State<AppState>) -> impl IntoResponse {
-    let manager = match get_lock_manager("default").await {
-        Ok(m) => m,
+    match lock_service::get_lock_contention().await {
+        Ok(contentions) => {
+            let infos: Vec<LockContentionInfo> = contentions
+                .into_iter()
+                .map(|c| LockContentionInfo {
+                    file_path: c.file_path,
+                    current_holder: c.current_holder,
+                    waiting_agents: c.waiting_agents,
+                    wait_time_secs: c.wait_time_secs,
+                    conflict_count: c.conflict_count,
+                })
+                .collect();
+            Json(infos).into_response()
+        }
         Err(e) => {
             tracing::debug!(error = %e, "File lock manager not initialized");
-            return Json(Vec::<LockContentionInfo>::new()).into_response();
+            Json(Vec::<LockContentionInfo>::new()).into_response()
         }
-    };
-
-    // Get all active locks
-    let locks = match manager.get_all_active_locks() {
-        Ok(locks) => locks,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to get active locks");
-            return Json(Vec::<LockContentionInfo>::new()).into_response();
-        }
-    };
-
-    // Filter out internal paths
-    let user_locks: Vec<_> = locks
-        .into_iter()
-        .filter(|l| !is_internal_path(&l.file_path))
-        .collect();
-
-    // Group by file_path to find contention
-    let mut file_map: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
-    for lock in user_locks {
-        file_map
-            .entry(lock.file_path.clone())
-            .or_insert_with(Vec::new)
-            .push(lock);
     }
-
-    // Build contention info
-    let contentions: Vec<LockContentionInfo> = file_map
-        .into_iter()
-        .filter_map(|(file_path, locks)| {
-            if locks.is_empty() {
-                return None;
-            }
-
-            let current_holder = locks.first().map(|l| l.agent_id.clone());
-            let waiting_agents: Vec<String> =
-                locks.iter().skip(1).map(|l| l.agent_id.clone()).collect();
-
-            // Calculate wait time (time since first lock was created)
-            let wait_time_secs = locks
-                .first()
-                .map(|l| {
-                    let now = chrono::Utc::now();
-                    (now - l.created_at).num_seconds().max(0) as u64
-                })
-                .unwrap_or(0);
-
-            // Count conflicts (number of agents waiting)
-            let conflict_count = waiting_agents.len() as u32;
-
-            Some(LockContentionInfo {
-                file_path,
-                current_holder,
-                waiting_agents,
-                wait_time_secs,
-                conflict_count,
-            })
-        })
-        .filter(|c| c.conflict_count > 0) // Only show files with contention
-        .collect();
-
-    Json(contentions).into_response()
 }
 
 // ── Tests ──

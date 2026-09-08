@@ -570,47 +570,7 @@ impl FileLockManager {
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
 
-        let result = match stmt.query_row(params![session_id], |row| {
-            Ok(SystemToken {
-                id: TokenId::from_string(row.get(0)?),
-                agent_id: row.get(1)?,
-                session_id: row.get(2)?,
-                project_root: row.get(3)?,
-                issued_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
-                    .map_err(|e| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            0,
-                            rusqlite::types::Type::Text,
-                            Box::new(e),
-                        )
-                    })?
-                    .with_timezone(&Utc),
-                expires_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
-                    .map_err(|e| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            0,
-                            rusqlite::types::Type::Text,
-                            Box::new(e),
-                        )
-                    })?
-                    .with_timezone(&Utc),
-                heartbeat_interval_secs: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(30),
-                heartbeat_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
-                    .map_err(|e| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            0,
-                            rusqlite::types::Type::Text,
-                            Box::new(e),
-                        )
-                    })?
-                    .with_timezone(&Utc),
-                status: match row.get::<_, String>(8)?.as_str() {
-                    "ACTIVE" => TokenStatus::Active,
-                    "EXPIRED" => TokenStatus::Expired,
-                    _ => TokenStatus::Expired,
-                },
-            })
-        }) {
+        let result = match stmt.query_row(params![session_id], parse_system_token_row) {
             Ok(token) => Some(token),
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
             Err(e) => {
@@ -1461,47 +1421,7 @@ impl FileLockManager {
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare statement: {}", e)))?;
 
         let tokens = stmt
-            .query_map([], |row| {
-                Ok(SystemToken {
-                    id: TokenId::from_string(row.get(0)?),
-                    agent_id: row.get(1)?,
-                    session_id: row.get(2)?,
-                    project_root: row.get(3)?,
-                    issued_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
-                        .map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                0,
-                                rusqlite::types::Type::Text,
-                                Box::new(e),
-                            )
-                        })?
-                        .with_timezone(&Utc),
-                    expires_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
-                        .map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                0,
-                                rusqlite::types::Type::Text,
-                                Box::new(e),
-                            )
-                        })?
-                        .with_timezone(&Utc),
-                    heartbeat_interval_secs: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(30),
-                    heartbeat_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
-                        .map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                0,
-                                rusqlite::types::Type::Text,
-                                Box::new(e),
-                            )
-                        })?
-                        .with_timezone(&Utc),
-                    status: match row.get::<_, String>(8)?.as_str() {
-                        "ACTIVE" => TokenStatus::Active,
-                        "EXPIRED" => TokenStatus::Expired,
-                        _ => TokenStatus::Expired,
-                    },
-                })
-            })
+            .query_map([], parse_system_token_row)
             .map_err(|e| ErgataiError::internal(format!("Failed to query tokens: {}", e)))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| ErgataiError::internal(format!("Failed to collect tokens: {}", e)))?;
@@ -1526,47 +1446,7 @@ impl FileLockManager {
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare statement: {}", e)))?;
 
         let tokens = stmt
-            .query_map(params![session_id], |row| {
-                Ok(SystemToken {
-                    id: TokenId::from_string(row.get(0)?),
-                    agent_id: row.get(1)?,
-                    session_id: row.get(2)?,
-                    project_root: row.get(3)?,
-                    issued_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
-                        .map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                0,
-                                rusqlite::types::Type::Text,
-                                Box::new(e),
-                            )
-                        })?
-                        .with_timezone(&Utc),
-                    expires_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
-                        .map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                0,
-                                rusqlite::types::Type::Text,
-                                Box::new(e),
-                            )
-                        })?
-                        .with_timezone(&Utc),
-                    heartbeat_interval_secs: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(30),
-                    heartbeat_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
-                        .map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                0,
-                                rusqlite::types::Type::Text,
-                                Box::new(e),
-                            )
-                        })?
-                        .with_timezone(&Utc),
-                    status: match row.get::<_, String>(8)?.as_str() {
-                        "ACTIVE" => TokenStatus::Active,
-                        "EXPIRED" => TokenStatus::Expired,
-                        _ => TokenStatus::Expired,
-                    },
-                })
-            })
+            .query_map(params![session_id], parse_system_token_row)
             .map_err(|e| ErgataiError::internal(format!("Failed to query tokens: {}", e)))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| ErgataiError::internal(format!("Failed to collect tokens: {}", e)))?;
@@ -1589,58 +1469,7 @@ impl FileLockManager {
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare statement: {}", e)))?;
 
         let locks = stmt
-            .query_map(params![token_id], |row| {
-                Ok(FileLock {
-                    id: row.get(0)?,
-                    file_path: row.get(1)?,
-                    agent_id: row.get(2)?,
-                    session_id: row.get(3)?,
-                    mode: match row.get::<_, String>(4)?.as_str() {
-                        "WRITE" => FileMode::Write,
-                        _ => FileMode::Read,
-                    },
-                    scope: row.get(5)?,
-                    token_id: TokenId::from_string(row.get(6)?),
-                    reason: row.get(7)?,
-                    approved_by: row.get(8)?,
-                    created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(9)?)
-                        .map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                0,
-                                rusqlite::types::Type::Text,
-                                Box::new(e),
-                            )
-                        })?
-                        .with_timezone(&Utc),
-                    expires_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(10)?)
-                        .map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                0,
-                                rusqlite::types::Type::Text,
-                                Box::new(e),
-                            )
-                        })?
-                        .with_timezone(&Utc),
-                    heartbeat_interval_secs: u64::try_from(row.get::<_, i64>(11)?).unwrap_or(30),
-                    heartbeat_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(12)?)
-                        .map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                0,
-                                rusqlite::types::Type::Text,
-                                Box::new(e),
-                            )
-                        })?
-                        .with_timezone(&Utc),
-                    status: match row.get::<_, String>(13)?.as_str() {
-                        "ACTIVE" => TokenStatus::Active,
-                        "EXPIRED" => TokenStatus::Expired,
-                        _ => TokenStatus::Expired,
-                    },
-                    current_hash: row.get(14)?,
-                    version: row.get(15)?,
-                    violation_count: row.get(16)?,
-                })
-            })
+            .query_map(params![token_id], parse_file_lock_row)
             .map_err(|e| ErgataiError::internal(format!("Failed to query locks: {}", e)))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| ErgataiError::internal(format!("Failed to collect locks: {}", e)))?;
@@ -2409,13 +2238,55 @@ fn parse_token_status(s: &str) -> TokenStatus {
 }
 
 fn parse_datetime(s: &str) -> DateTime<Utc> {
-    match DateTime::parse_from_rfc3339(s) {
-        Ok(dt) => dt.with_timezone(&Utc),
-        Err(e) => {
-            tracing::error!(raw = s, error = %e, "Invalid datetime in DB, using UNIX_EPOCH (fail-safe: expired)");
-            DateTime::UNIX_EPOCH
-        }
-    }
+    ergatai_error::datetime::parse_rfc3339_datetime(
+        s,
+        ergatai_error::datetime::OnErrorStrategy::Epoch,
+        "DB datetime field",
+    )
+}
+
+/// Parse a database row into a SystemToken struct.
+/// Used by `get_token_by_session`, `get_active_tokens`, and `get_tokens_by_session`.
+fn parse_system_token_row(row: &rusqlite::Row) -> rusqlite::Result<SystemToken> {
+    Ok(SystemToken {
+        id: TokenId::from_string(row.get(0)?),
+        agent_id: row.get(1)?,
+        session_id: row.get(2)?,
+        project_root: row.get(3)?,
+        issued_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?
+            .with_timezone(&Utc),
+        expires_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?
+            .with_timezone(&Utc),
+        heartbeat_interval_secs: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(30),
+        heartbeat_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?
+            .with_timezone(&Utc),
+        status: match row.get::<_, String>(8)?.as_str() {
+            "ACTIVE" => TokenStatus::Active,
+            "EXPIRED" => TokenStatus::Expired,
+            _ => TokenStatus::Expired,
+        },
+    })
 }
 
 /// Parse a database row into a FileLock struct.

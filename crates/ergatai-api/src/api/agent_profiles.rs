@@ -1,14 +1,14 @@
 //! Agent Profile Registry API handlers
+//!
+//! 业务逻辑已迁移到 `crate::services::profile_service`，handler 只负责
+//! HTTP 请求解析、响应格式化和错误状态码映射。
 
 use axum::{extract::Path, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
-use ergatai_runtime::profile_registry::{AgentRegistration, ProfileRegistry};
+use ergatai_runtime::profile_registry::AgentRegistration;
 
-/// Default path for the profile registry database
-fn profile_registry_db_path() -> String {
-    ".ergatai/profile_registry.db".to_string()
-}
+use crate::services::profile_service;
 
 /// Request to register a new agent profile
 #[derive(Debug, Deserialize)]
@@ -48,25 +48,13 @@ pub struct ListProfilesResponse {
 ///
 /// POST /api/v1/agent-profiles
 pub async fn register_profile(Json(request): Json<RegisterProfileRequest>) -> impl IntoResponse {
-    let registry = match ProfileRegistry::new(profile_registry_db_path()) {
-        Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": format!("Failed to open profile registry: {}", e)
-                })),
-            );
-        }
-    };
-
-    let registration = AgentRegistration::new(
+    match profile_service::register_profile(
         request.name.clone(),
         request.command.clone(),
         request.agent_type.clone(),
-    );
-
-    match registry.register(registration).await {
+    )
+    .await
+    {
         Ok(()) => (
             StatusCode::CREATED,
             Json(serde_json::json!({
@@ -113,19 +101,7 @@ pub async fn register_profile(Json(request): Json<RegisterProfileRequest>) -> im
 ///
 /// GET /api/v1/agent-profiles
 pub async fn list_profiles() -> impl IntoResponse {
-    let registry = match ProfileRegistry::new(profile_registry_db_path()) {
-        Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": format!("Failed to open profile registry: {}", e)
-                })),
-            );
-        }
-    };
-
-    match registry.list().await {
+    match profile_service::list_profiles().await {
         Ok(profiles) => {
             let response = ListProfilesResponse {
                 profiles: profiles.into_iter().map(ProfileResponse::from).collect(),
@@ -153,19 +129,7 @@ pub async fn list_profiles() -> impl IntoResponse {
 ///
 /// GET /api/v1/agent-profiles/:name
 pub async fn get_profile(Path(name): Path<String>) -> impl IntoResponse {
-    let registry = match ProfileRegistry::new(profile_registry_db_path()) {
-        Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": format!("Failed to open profile registry: {}", e)
-                })),
-            );
-        }
-    };
-
-    match registry.get(&name).await {
+    match profile_service::get_profile(&name).await {
         Ok(Some(registration)) => match serde_json::to_value(ProfileResponse::from(registration)) {
             Ok(value) => (StatusCode::OK, Json(value)),
             Err(e) => (
@@ -194,19 +158,7 @@ pub async fn get_profile(Path(name): Path<String>) -> impl IntoResponse {
 ///
 /// DELETE /api/v1/agent-profiles/:name
 pub async fn delete_profile(Path(name): Path<String>) -> impl IntoResponse {
-    let registry = match ProfileRegistry::new(profile_registry_db_path()) {
-        Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": format!("Failed to open profile registry: {}", e)
-                })),
-            );
-        }
-    };
-
-    match registry.delete(&name).await {
+    match profile_service::delete_profile(&name).await {
         Ok(true) => (
             StatusCode::OK,
             Json(serde_json::json!({

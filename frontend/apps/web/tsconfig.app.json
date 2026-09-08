@@ -18,9 +18,22 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true,
     "paths": {
+      "@ergatai/boot": ["../../packages/boot/src/index.ts"],
+      "@ergatai/core-plugin-types": ["../../packages/core/plugin-types/src/index.ts"],
+      "@ergatai/core-slots": ["../../packages/core/slots/src/index.ts"],
       "@ergatai/platform-core": ["../../packages/platform-core/src/index.ts"],
-      "@ergatai/ui-core": ["../../packages/ui-core/src/index.ts"]
+      "@ergatai/ui-core": ["../../packages/ui-core/src/index.ts"],
+      "@ergatai/ui-core/plugins/dockview": ["../../packages/ui-core/src/plugins/dockview.tsx"],
+      "@ergatai/ui-renderer/client": ["../../packages/ui-renderer/src/client/index.tsx"]
     }
   },
-  "include": ["src", "../../packages/platform-core/src", "../../packages/ui-core/src"]
+  "include": [
+    "src",
+    "../../packages/boot/src",
+    "../../packages/core/plugin-types/src",
+    "../../packages/core/slots/src",
+    "../../packages/platform-core/src",
+    "../../packages/ui-core/src",
+    "../../packages/ui-renderer/src"
+  ]
 }

@@ -62,12 +62,24 @@ pub fn all_dag_event_stream_configs() -> Vec<Config> {
 
 /// Initialize a pull consumer on the DAG_EVENTS stream with the given name and filter.
 ///
-/// Shared helper used by both TaskScheduler (task submissions) and DagScheduler (dag events)
-/// to avoid duplicating consumer setup logic.
-pub async fn init_dag_stream_pull_consumer(
+/// Generic pull consumer initialization for any JetStream stream.
+///
+/// # Arguments
+/// * `connection` - NATS connection
+/// * `stream_name` - Name of the JetStream stream
+/// * `consumer_name` - Durable consumer name
+/// * `filter_subject` - Optional subject filter (empty string for no filter)
+/// * `ack_wait_secs` - Acknowledgment wait time in seconds
+/// * `max_deliver` - Maximum delivery attempts
+///
+/// Returns a boxed message stream to avoid naming the private `pull::Consumer` type.
+pub async fn init_pull_consumer_generic(
     connection: &crate::NatsConnection,
+    stream_name: &str,
     consumer_name: &str,
     filter_subject: &str,
+    ack_wait_secs: u64,
+    max_deliver: usize,
 ) -> Result<
     futures_util::stream::BoxStream<
         'static,
@@ -80,17 +92,21 @@ pub async fn init_dag_stream_pull_consumer(
 
     let stream = connection
         .jetstream()
-        .get_stream(DAG_EVENTS_STREAM)
+        .get_stream(stream_name)
         .await
-        .map_err(|e| format!("Stream {} not found: {}", DAG_EVENTS_STREAM, e))?;
+        .map_err(|e| format!("Stream {} not found: {}", stream_name, e))?;
 
     let consumer_config = pull::Config {
         durable_name: Some(consumer_name.to_string()),
-        filter_subject: filter_subject.to_string(),
+        filter_subject: if filter_subject.is_empty() {
+            String::new()
+        } else {
+            filter_subject.to_string()
+        },
         deliver_policy: DeliverPolicy::All,
         ack_policy: AckPolicy::Explicit,
-        ack_wait: Duration::from_secs(60),
-        max_deliver: 5,
+        ack_wait: Duration::from_secs(ack_wait_secs),
+        max_deliver: max_deliver as i64,
         ..Default::default()
     };
 
@@ -107,6 +123,30 @@ pub async fn init_dag_stream_pull_consumer(
     Ok(Box::pin(messages.map(|r| {
         r.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
     })))
+}
+
+/// Shared helper used by both TaskScheduler (task submissions) and DagScheduler (dag events)
+/// to avoid duplicating consumer setup logic.
+pub async fn init_dag_stream_pull_consumer(
+    connection: &crate::NatsConnection,
+    consumer_name: &str,
+    filter_subject: &str,
+) -> Result<
+    futures_util::stream::BoxStream<
+        'static,
+        Result<async_nats::jetstream::Message, Box<dyn std::error::Error + Send + Sync>>,
+    >,
+    String,
+> {
+    init_pull_consumer_generic(
+        connection,
+        DAG_EVENTS_STREAM,
+        consumer_name,
+        filter_subject,
+        60,
+        5,
+    )
+    .await
 }
 
 #[cfg(test)]

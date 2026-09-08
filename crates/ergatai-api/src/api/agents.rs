@@ -78,49 +78,34 @@ pub struct ErrorResponse {
 }
 
 pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
-    let runtime = get_agent_runtime();
-    let agents = runtime.list_agents().await;
+    let items = crate::services::agent_service::list_agents_filtered(
+        crate::services::agent_service::AgentListFilter::default(),
+    )
+    .await;
 
-    // Downcast once to fetch per-agent ACP metadata (session_title).
-    let acp_backend = runtime
-        .backend()
-        .as_any()
-        .downcast_ref::<ergatai_runtime::AcpBackend>();
-
-    let response: Vec<AgentInfoResponse> = agents
+    let response: Vec<AgentInfoResponse> = items
         .into_iter()
         .map(|a| {
-            // Use lifecycle state_name() which returns lowercase (fixes the bug)
-            let lifecycle_state = a.lifecycle.state_name().to_string();
-            // Get work_dir from workspace metadata
-            let work_dir = a
-                .handle
-                .workspace
-                .metadata
-                .get("work_dir")
-                .cloned()
-                .unwrap_or_default();
-            let session_title = acp_backend.and_then(|b| b.get_agent_session_title(&a.agent_id));
-            let stop_reason = acp_backend.and_then(|b| b.get_agent_stop_reason(&a.agent_id));
-            let continuation_count = acp_backend
-                .and_then(|b| b.get_agent_continuation_count(&a.agent_id))
-                .unwrap_or(0);
+            let session_title =
+                crate::services::agent_service::get_agent_session_title(&a.agent_id);
+            let stop_reason = crate::services::agent_service::get_agent_stop_reason(&a.agent_id);
+            let continuation_count =
+                crate::services::agent_service::get_agent_continuation_count(&a.agent_id);
             AgentInfoResponse {
                 agent_id: a.agent_id,
                 stable_id: a.stable_id,
                 agent_uuid: a.agent_uuid,
                 workspace_id: a.workspace_id,
-                work_dir,
-                // Fix: use lowercase lifecycle state instead of Debug-formatted AgentState
-                state: lifecycle_state.clone(),
-                lifecycle_state,
+                work_dir: a.work_dir,
+                state: a.state.clone(),
+                lifecycle_state: a.state,
                 task_id: a.task_id,
                 mcp_agent_id: a.mcp_agent_id,
-                is_alive: a.lifecycle.is_alive(),
-                is_idle: a.lifecycle.is_idle(),
-                is_processing: a.lifecycle.is_processing(),
-                created_at: a.created_at.to_rfc3339(),
-                last_heartbeat: a.last_heartbeat.to_rfc3339(),
+                is_alive: a.is_alive,
+                is_idle: a.is_idle,
+                is_processing: a.is_processing,
+                created_at: a.created_at,
+                last_heartbeat: a.last_heartbeat,
                 session_title,
                 stop_reason,
                 continuation_count,
@@ -358,26 +343,8 @@ pub async fn cancel_prompt(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let runtime = get_agent_runtime();
-    let backend = runtime.backend();
-    let acp_backend = match backend
-        .as_any()
-        .downcast_ref::<ergatai_runtime::AcpBackend>()
-    {
-        Some(b) => b,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Agent is not using ACP backend".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    match acp_backend.cancel_prompt(&id).await {
-        Ok(_) => (
+    match crate::services::agent_service::cancel_agent_prompt(&id).await {
+        Ok(()) => (
             StatusCode::OK,
             Json(serde_json::json!({ "status": "cancelled" })),
         )
@@ -512,40 +479,19 @@ pub async fn get_agent_thoughts(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let runtime = get_agent_runtime();
-
-    // Get ACP backend
-    let backend = runtime.backend();
-    let acp_backend = match backend
-        .as_any()
-        .downcast_ref::<ergatai_runtime::AcpBackend>()
-    {
-        Some(b) => b,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Agent is not using ACP backend".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    match acp_backend.get_agent_thoughts(&id) {
-        Some(thoughts) => (
+    match crate::services::agent_service::get_agent_thoughts(&id) {
+        Ok(thoughts) => (
             StatusCode::OK,
             Json(AgentThoughtsResponse {
                 agent_id: id,
-                thoughts: Some(thoughts),
+                thoughts,
             }),
         )
             .into_response(),
-        None => (
-            StatusCode::OK,
-            Json(AgentThoughtsResponse {
-                agent_id: id,
-                thoughts: None,
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
             }),
         )
             .into_response(),
@@ -557,27 +503,9 @@ pub async fn get_agent_tool_calls(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let runtime = get_agent_runtime();
-
-    let backend = runtime.backend();
-    let acp_backend = match backend
-        .as_any()
-        .downcast_ref::<ergatai_runtime::AcpBackend>()
-    {
-        Some(b) => b,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Agent is not using ACP backend".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    match acp_backend.get_agent_tool_calls(&id) {
-        Some(calls) => {
+    let result = crate::services::agent_service::get_agent_tool_calls(&id);
+    match result {
+        Ok(Some(calls)) => {
             let tool_calls = calls
                 .into_iter()
                 .map(|tc| {
@@ -615,10 +543,17 @@ pub async fn get_agent_tool_calls(
             )
                 .into_response()
         }
-        None => (
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: format!("Agent {} not found", id),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
             }),
         )
             .into_response(),
@@ -652,27 +587,8 @@ pub async fn get_agent_plan(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let runtime = get_agent_runtime();
-
-    let backend = runtime.backend();
-    let acp_backend = match backend
-        .as_any()
-        .downcast_ref::<ergatai_runtime::AcpBackend>()
-    {
-        Some(b) => b,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Agent is not using ACP backend".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    match acp_backend.get_agent_plan(&id) {
-        Some(tracked) => {
+    match crate::services::agent_service::get_agent_plan(&id) {
+        Ok(Some(tracked)) => {
             let elapsed = tracked.last_updated.elapsed();
             let plan = PlanInfo {
                 entries: tracked
@@ -695,11 +611,18 @@ pub async fn get_agent_plan(
             )
                 .into_response()
         }
-        None => (
+        Ok(None) => (
             StatusCode::OK,
             Json(AgentPlanResponse {
                 agent_id: id,
                 plan: None,
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
             }),
         )
             .into_response(),
@@ -761,27 +684,9 @@ pub async fn get_agent_elicitations(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let runtime = get_agent_runtime();
-
-    let backend = runtime.backend();
-    let acp_backend = match backend
-        .as_any()
-        .downcast_ref::<ergatai_runtime::AcpBackend>()
-    {
-        Some(b) => b,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Agent is not using ACP backend".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    match acp_backend.get_agent_elicitations(&id) {
-        Some(elics) => {
+    let result = crate::services::agent_service::get_agent_elicitations(&id);
+    match result {
+        Ok(Some(elics)) => {
             let elicitation_infos = elics
                 .into_iter()
                 .map(|e| {
@@ -805,10 +710,17 @@ pub async fn get_agent_elicitations(
             )
                 .into_response()
         }
-        None => (
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: format!("Agent {} not found", id),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
             }),
         )
             .into_response(),
@@ -820,26 +732,9 @@ pub async fn get_agent_available_commands(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let runtime = get_agent_runtime();
-    let backend = runtime.backend();
-    let acp_backend = match backend
-        .as_any()
-        .downcast_ref::<ergatai_runtime::AcpBackend>()
-    {
-        Some(b) => b,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Agent is not using ACP backend".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    match acp_backend.get_agent_available_commands(&id) {
-        Some(cmds) => {
+    let result = crate::services::agent_service::get_agent_available_commands(&id);
+    match result {
+        Ok(Some(cmds)) => {
             let cmd_infos: Vec<AvailableCommandInfo> = cmds
                 .into_iter()
                 .map(|c| AvailableCommandInfo {
@@ -857,10 +752,17 @@ pub async fn get_agent_available_commands(
             )
                 .into_response()
         }
-        None => (
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: format!("Agent {} not found", id),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
             }),
         )
             .into_response(),
@@ -872,26 +774,9 @@ pub async fn get_agent_config_options(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let runtime = get_agent_runtime();
-    let backend = runtime.backend();
-    let acp_backend = match backend
-        .as_any()
-        .downcast_ref::<ergatai_runtime::AcpBackend>()
-    {
-        Some(b) => b,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Agent is not using ACP backend".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    match acp_backend.get_agent_config_options(&id) {
-        Some(opts) => {
+    let result = crate::services::agent_service::get_agent_config_options(&id);
+    match result {
+        Ok(Some(opts)) => {
             let opt_infos: Vec<ConfigOptionInfo> = opts
                 .into_iter()
                 .map(|o| {
@@ -917,10 +802,17 @@ pub async fn get_agent_config_options(
             )
                 .into_response()
         }
-        None => (
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: format!("Agent {} not found", id),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
             }),
         )
             .into_response(),
@@ -942,33 +834,12 @@ pub async fn respond_to_elicitation(
     Path((_agent_id, elicitation_id)): Path<(String, String)>,
     Json(req): Json<RespondToElicitationRequest>,
 ) -> impl IntoResponse {
-    let runtime = get_agent_runtime();
-    let backend = runtime.backend();
-    let acp_backend = match backend
-        .as_any()
-        .downcast_ref::<ergatai_runtime::AcpBackend>()
-    {
-        Some(b) => b,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Agent is not using ACP backend".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
     let response = ergatai_runtime::ElicitationResponse {
         action: req.action,
         form_data: req.form_data,
     };
 
-    match acp_backend
-        .respond_to_elicitation(&elicitation_id, response)
-        .await
-    {
+    match crate::services::agent_service::respond_to_elicitation(&elicitation_id, response).await {
         Ok(true) => (
             StatusCode::OK,
             Json(serde_json::json!({ "status": "responded" })),
@@ -1000,27 +871,9 @@ pub async fn get_agent_usage(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let runtime = get_agent_runtime();
-
-    let backend = runtime.backend();
-    let acp_backend = match backend
-        .as_any()
-        .downcast_ref::<ergatai_runtime::AcpBackend>()
-    {
-        Some(b) => b,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Agent is not using ACP backend".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    match acp_backend.get_agent_usage(&id) {
-        Some((input_tokens, output_tokens)) => (
+    let result = crate::services::agent_service::get_agent_usage(&id);
+    match result {
+        Ok(Some((input_tokens, output_tokens))) => (
             StatusCode::OK,
             Json(AgentUsageResponse {
                 agent_id: id,
@@ -1030,10 +883,17 @@ pub async fn get_agent_usage(
             }),
         )
             .into_response(),
-        None => (
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: format!("Agent {} not found", id),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
             }),
         )
             .into_response(),

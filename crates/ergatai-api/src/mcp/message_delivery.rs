@@ -25,7 +25,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use async_nats::jetstream::consumer::{pull, AckPolicy, DeliverPolicy};
 use async_nats::jetstream::message::AckKind;
 use futures::StreamExt;
 use tracing::{debug, error, info, warn};
@@ -127,43 +126,16 @@ async fn init_pull_consumer(
         Result<async_nats::jetstream::Message, Box<dyn std::error::Error + Send + Sync>>,
     >,
 > {
-    let stream = connection
-        .jetstream()
-        .get_stream(AGENT_MESSAGES_STREAM)
-        .await
-        .map_err(|e| {
-            ErgataiError::NatsError(format!("Stream {} not found: {}", AGENT_MESSAGES_STREAM, e))
-        })?;
-
-    // Durable pull consumer with explicit ack.
-    // - `ack_wait: 30s` — consumer has 30s to deliver before redelivery
-    // - `max_deliver: 20` — after 20 failed attempts, message is discarded by JetStream
-    //   (the consumer logs the final discard so operators can detect message loss)
-    // - `deliver_policy: All` — start from beginning of stream (catch up on missed)
-    let consumer_config = pull::Config {
-        durable_name: Some(CONSUMER_NAME.to_string()),
-        deliver_policy: DeliverPolicy::All,
-        ack_policy: AckPolicy::Explicit,
-        ack_wait: Duration::from_secs(30),
-        max_deliver: 20,
-        ..Default::default()
-    };
-
-    let consumer = stream
-        .get_or_create_consumer(CONSUMER_NAME, consumer_config)
-        .await
-        .map_err(|e| ErgataiError::NatsError(format!("Failed to create consumer: {}", e)))?;
-
-    let messages = consumer
-        .messages()
-        .await
-        .map_err(|e| ErgataiError::NatsError(format!("Failed to get message stream: {}", e)))?;
-
-    // Map the specific async_nats error type to Box<dyn Error + Send + Sync>
-    // so we don't have to name the private error kind type.
-    Ok(Box::pin(messages.map(|r| {
-        r.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-    })))
+    ergatai_nats::dag_event_stream::init_pull_consumer_generic(
+        connection,
+        AGENT_MESSAGES_STREAM,
+        CONSUMER_NAME,
+        "", // No filter for agent messages
+        30, // ack_wait: 30s
+        20, // max_deliver: 20 attempts
+    )
+    .await
+    .map_err(|e| ErgataiError::NatsError(e))
 }
 
 /// Initialize the pull consumer with retry logic.

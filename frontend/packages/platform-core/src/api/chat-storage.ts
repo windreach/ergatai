@@ -36,6 +36,44 @@ function isUIMessage(value: unknown): value is UIMessage {
     && Array.isArray((value as UIMessage).parts);
 }
 
+export interface ChatConversationSummary {
+  id: string;
+  title: string;
+}
+
+function conversationTitle(messages: unknown): string {
+  if (!Array.isArray(messages)) return "";
+
+  for (const message of messages) {
+    if (!isUIMessage(message)) continue;
+
+    for (const part of message.parts) {
+      if (part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0) {
+        return part.text.trim().slice(0, 80);
+      }
+    }
+  }
+
+  return "";
+}
+
+export async function listChatConversations(): Promise<ChatConversationSummary[]> {
+  try {
+    const database = await openDatabase();
+    const store = database.transaction(storeName, "readonly").objectStore(storeName);
+    const keys = await requestToPromise(store.getAllKeys());
+    const values = await requestToPromise(store.getAll());
+
+    return keys
+      .map((key, index) => {
+        const id = typeof key === "string" ? key : String(key);
+        return { id, title: conversationTitle(values[index]) || id };
+      });
+  } catch {
+    return [];
+  }
+}
+
 function readLegacyMessages(conversationId: string): UIMessage[] {
   try {
     const value = localStorage.getItem(`${legacyKeyPrefix}${conversationId}`);

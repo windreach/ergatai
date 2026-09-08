@@ -1,4 +1,5 @@
 export * from "./api/backend";
+export * from "./api/agent-api";
 export * from "./api/chat";
 export * from "./api/chat-storage";
 export * from "./api/files";

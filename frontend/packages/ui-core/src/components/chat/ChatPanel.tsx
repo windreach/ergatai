@@ -4,7 +4,7 @@
  * 合并了 tabs/ChatPanel (AI SDK 全功能) 和 chat/ChatPanel (多模式 + 双数据源) 的所有功能。
  *
  * 数据源优先级:
- * 1. conversationStore → 基于 zustand store 的消息源
+ * 1. conversationStore → 宿主提供的消息源
  * 2. aiSdkTransport → 自定义 useChat 钩子
  * 3. 默认 → useChat + chatTransport + IndexedDB 持久化
  *
@@ -20,7 +20,6 @@ import {
   Shield,
   X,
   CircleX,
-  FilePlus,
   RotateCcw,
   Copy,
   Check,
@@ -32,8 +31,16 @@ import {
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { MarkdownContent } from "../MarkdownContent";
-import { chatTransport } from "@ergatai/platform-core";
-import { clearChatMessages, loadChatMessages, saveChatMessages } from "@ergatai/platform-core";
+import {
+  chatTransport,
+  type UnifiedMessagePart,
+  type AgentSummary,
+  type WorkspaceInfo,
+  fetchAgents,
+  fetchWorkspaces,
+  fetchGitBranches,
+} from "@ergatai/platform-core";
+import { loadChatMessages, saveChatMessages } from "@ergatai/platform-core";
 import {
   ChatLightbox,
   ReasoningBlock,
@@ -48,6 +55,7 @@ import {
   type PermissionMode,
 } from "./types";
 import { ChatComposer } from "./ChatComposer";
+import { ChatHeader } from "./ChatHeader";
 import {
   conversationSignature,
   fileToDataUrl,
@@ -62,7 +70,7 @@ import {
 import type { ChatPanelProps, ChatPanelFeatures } from "./ChatPanel.types";
 import { getFeaturesForMode } from "./ChatPanel.types";
 import { PartRenderer } from "./components/PartRenderer";
-import { useChatState } from "./hooks/useChatState";
+import { useConversationStoreChatState } from "./hooks/useChatState";
 
 // ─── Main exported component ─────────────────────────────────────────────────
 
@@ -117,11 +125,13 @@ export { ChatPanel as UnifiedChatPanel };
 // ─── AI SDK backed path ──────────────────────────────────────────────────────
 
 function AiSdkBackedChatPanel({
-  mode,
+  mode: _mode,
   features,
   conversationId,
   agentName,
   aiSdkTransport,
+  headerLeading,
+  onConversationSaved,
   className,
   maxHeight,
 }: ChatPanelProps & { features: ChatPanelFeatures; conversationId: string; agentName?: string }) {
@@ -145,6 +155,12 @@ function AiSdkBackedChatPanel({
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
+  const [gitBranch, setGitBranch] = useState<string | null>(null);
+  const [gitBranches, setGitBranches] = useState<string[]>([]);
   const [branches, setBranches] = useState<Record<string, UIMessage[][]>>({});
   const [activeBranches, setActiveBranches] = useState<Record<string, number>>({});
   const messageAnchorRefs = useRef(new Map<string, HTMLElement>());
@@ -152,6 +168,27 @@ function AiSdkBackedChatPanel({
 
   const activeConversationId = conversationId ?? "default";
   const chatHydrated = hydratedConversationId === activeConversationId;
+
+  // Fetch header data
+  useEffect(() => {
+    let cancelled = false;
+    void fetchAgents().then((list) => {
+      if (cancelled) return;
+      setAgents(list);
+      setSelectedAgentId((prev) => prev ?? list[0]?.id ?? null);
+    }).catch(() => {});
+    void fetchWorkspaces().then((list) => {
+      if (cancelled) return;
+      setWorkspaces(list);
+      setSelectedWorkspaceId((prev) => prev ?? list[0]?.id ?? null);
+    }).catch(() => {});
+    void fetchGitBranches().then((info) => {
+      if (cancelled) return;
+      setGitBranch(info.current);
+      setGitBranches(info.branches);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   // useChat — either from the provided transport or the default chatTransport
   const defaultChat = useChat({
@@ -192,10 +229,12 @@ function AiSdkBackedChatPanel({
 
   useEffect(() => {
     if (sending || !chatHydrated) return;
-    void saveChatMessages(activeConversationId, messages).catch(() => {
-      setAttachmentError(t("chat.storageFailed"));
-    });
-  }, [activeConversationId, chatHydrated, messages, sending, t]);
+    void saveChatMessages(activeConversationId, messages)
+      .then(() => onConversationSaved?.(activeConversationId))
+      .catch(() => {
+        setAttachmentError(t("chat.storageFailed"));
+      });
+  }, [activeConversationId, chatHydrated, messages, onConversationSaved, sending, t]);
 
   // Auto-scroll
   useEffect(() => {
@@ -316,18 +355,6 @@ function AiSdkBackedChatPanel({
     setBranches((current) => ({ ...current, [messageId]: normalizedSnapshots }));
     setActiveBranches((current) => ({ ...current, [messageId]: index }));
     setMessages(normalizedSnapshots[index]);
-  }
-
-  function startNewConversation() {
-    if (sending) return;
-    stop();
-    setMessages([]);
-    setBranches({});
-    setActiveBranches({});
-    setFeedback({});
-    void clearChatMessages(activeConversationId).catch(() => {
-      setAttachmentError(t("chat.storageFailed"));
-    });
   }
 
   function toggleFeedback(messageId: string, value: MessageFeedback) {
@@ -511,15 +538,15 @@ function AiSdkBackedChatPanel({
       className={cn("relative flex h-full min-h-0 flex-col overflow-hidden bg-chat", className)}
       style={maxHeight ? { maxHeight } : undefined}
     >
-      <button
-        type="button"
-        onClick={startNewConversation}
-        disabled={isEmpty && messages.length === 0}
-        className="absolute right-4 top-10 z-30 flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1 text-[12px] text-muted shadow-sm transition-colors hover:text-text disabled:opacity-40"
-      >
-        <FilePlus className="h-3.5 w-3.5" />
-        {t("sidebar.newChat")}
-      </button>
+      <ChatHeader
+        leading={headerLeading}
+        branch={gitBranch}
+        branches={gitBranches}
+        onBranchChange={setGitBranch}
+        agents={agents}
+        selectedAgentId={selectedAgentId}
+        onAgentSelect={setSelectedAgentId}
+      />
       {isEmpty ? (
         <div className="flex-1 flex flex-col items-center justify-center select-none">
           <h1 className="text-2xl font-semibold tracking-tight text-text mb-6">
@@ -535,6 +562,9 @@ function AiSdkBackedChatPanel({
               permissionOpen={permissionOpen}
               sending={sending}
               autoFocus
+              workspaces={workspaces}
+              selectedWorkspaceId={selectedWorkspaceId}
+              onWorkspaceSelect={setSelectedWorkspaceId}
               onRemoveAttachment={(id) => setAttachments((current) => current.filter((file) => file.id !== id))}
               onPermissionChange={setPermission}
               onPermissionOpenChange={setPermissionOpen}
@@ -606,7 +636,7 @@ function AiSdkBackedChatPanel({
                           "bg-bubble rounded-2xl rounded-br-md px-4 py-2.5 text-[14px] leading-relaxed max-w-[85%] space-y-2 transition-shadow duration-300",
                           highlightedMessageId === msg.id && "ring-2 ring-accent/40",
                         )}>
-                          {msg.parts.map((part, i) => {
+                          {msg.parts.map((part: UnifiedMessagePart, i: number) => {
                             if (isFilePart(part)) {
                               if (part.mediaType?.startsWith("image/")) {
                                 return (
@@ -838,6 +868,9 @@ function AiSdkBackedChatPanel({
                 permissionOpen={permissionOpen}
                 sending={sending}
                 supportsFormSubmit
+                workspaces={workspaces}
+                selectedWorkspaceId={selectedWorkspaceId}
+                onWorkspaceSelect={setSelectedWorkspaceId}
                 onRemoveAttachment={(id) => setAttachments((current) => current.filter((file) => file.id !== id))}
                 onPermissionChange={setPermission}
                 onPermissionOpenChange={setPermissionOpen}
@@ -874,6 +907,7 @@ function StoreBackedChatPanel({
   agentName,
   agentId,
   participantIds,
+  headerLeading,
   onMentionSelect,
   onTaskClick,
   onApprovalAction,
@@ -902,9 +936,7 @@ function StoreBackedChatPanel({
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const messageAnchorRefs = useRef(new Map<string, HTMLElement>());
 
-  const { messages, sendMessage: storeSendMessage, editMessage: storeEditMessage } = useChatState({
-    conversationStore: conversationStore!,
-  });
+  const { messages, sendMessage: storeSendMessage, editMessage: storeEditMessage } = useConversationStoreChatState(conversationStore!);
 
   const sending = false; // conversationStore doesn't track sending state yet
   const isEmpty = messages.length === 0;
@@ -1044,12 +1076,6 @@ function StoreBackedChatPanel({
     }, 1500);
   }
 
-  function openLightbox(url: string) {
-    if (!features.lightbox) return;
-    setLightboxScale(1);
-    setLightboxUrl(url);
-  }
-
   function submitInput() {
     const el = textareaRef.current;
     if (!el) return;
@@ -1168,6 +1194,7 @@ function StoreBackedChatPanel({
     >
       {/* Header */}
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border-subtle bg-surface px-5">
+        {headerLeading}
         <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-primary">
           {mode === "group" ? "👥" : "💬"}
         </div>

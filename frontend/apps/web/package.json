@@ -9,8 +9,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@ergatai/boot": "*",
     "@ergatai/platform-core": "*",
     "@ergatai/ui-core": "*",
+    "@ergatai/ui-renderer": "*",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },

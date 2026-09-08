@@ -1319,6 +1319,7 @@ name = "ergatai-error"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "rusqlite",
  "serde_json",
  "thiserror 1.0.69",

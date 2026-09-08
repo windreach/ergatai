@@ -1,9 +1,11 @@
 import { useTranslation } from "react-i18next";
 import type { ChangeEvent, FormEvent, KeyboardEvent, ClipboardEvent, RefObject } from "react";
-import { ArrowUp, FolderOpen, GitBranch, Plus, Shield, Square } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ArrowUp, FolderOpen, Plus, Shield, Square, ChevronDown } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { AttachmentCard } from "./message-blocks";
 import { permissionModes, type AttachedFile, type PermissionMode } from "./types";
+import type { WorkspaceInfo } from "@ergatai/platform-core";
 
 interface ChatComposerProps {
   textareaRef: RefObject<HTMLTextAreaElement | null>;
@@ -15,6 +17,9 @@ interface ChatComposerProps {
   sending: boolean;
   autoFocus?: boolean;
   supportsFormSubmit?: boolean;
+  workspaces?: WorkspaceInfo[];
+  selectedWorkspaceId?: string | null;
+  onWorkspaceSelect?: (workspaceId: string) => void;
   onRemoveAttachment: (id: string) => void;
   onPermissionChange: (permission: PermissionMode) => void;
   onPermissionOpenChange: (open: boolean) => void;
@@ -37,6 +42,9 @@ export function ChatComposer({
   sending,
   autoFocus,
   supportsFormSubmit,
+  workspaces = [],
+  selectedWorkspaceId,
+  onWorkspaceSelect,
   onRemoveAttachment,
   onPermissionChange,
   onPermissionOpenChange,
@@ -49,29 +57,24 @@ export function ChatComposer({
   onFileSelect,
 }: ChatComposerProps) {
   const { t } = useTranslation();
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const workspaceRef = useRef<HTMLDivElement>(null);
   const activePermission = permissionModes.find((mode) => mode.value === permission);
+  const selectedWorkspace = workspaces.find((w) => w.id === selectedWorkspaceId);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (workspaceRef.current && !workspaceRef.current.contains(e.target as Node)) setWorkspaceOpen(false);
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
 
   return (
     <form
       onSubmit={supportsFormSubmit ? onSubmit : undefined}
       className="rounded-2xl border border-border bg-surface shadow-sm"
     >
-      <div className="flex h-9 items-center gap-2 border-b border-border-subtle px-2.5">
-        <button
-          type="button"
-          className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] text-muted transition-colors hover:bg-hover hover:text-text"
-        >
-          <FolderOpen className="h-3.5 w-3.5" />
-          {t("composer.workspace")}
-        </button>
-        <button
-          type="button"
-          className="ml-auto flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] text-muted transition-colors hover:bg-hover hover:text-text"
-        >
-          <GitBranch className="h-3.5 w-3.5" />
-          {t("composer.branch")}
-        </button>
-      </div>
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-2 px-3 pt-3">
           {attachments.map((file) => (
@@ -94,6 +97,39 @@ export function ChatComposer({
         className="w-full bg-transparent px-4 pt-3 pb-1 text-[14px] text-text placeholder:text-faint resize-none focus:outline-none leading-relaxed min-h-[40px] max-h-[200px]"
       />
       <div className="flex items-center gap-0.5 px-2.5 pb-2.5">
+        {workspaces.length > 0 && (
+          <div className="relative" ref={workspaceRef}>
+            <button
+              type="button"
+              onClick={() => setWorkspaceOpen((v) => !v)}
+              className="flex h-7 items-center gap-1 rounded-lg px-2 text-[12px] text-muted transition-colors hover:bg-hover hover:text-text"
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
+              <span className="max-w-28 truncate">{selectedWorkspace?.id ?? t("composer.workspace")}</span>
+              <ChevronDown className="h-3 w-3 opacity-50" />
+            </button>
+            {workspaceOpen && (
+              <div className="absolute bottom-full left-0 z-20 mb-1.5 w-48 rounded-lg border border-border bg-surface py-1 shadow-lg animate-fade-in">
+                {workspaces.map((ws) => (
+                  <button
+                    key={ws.id}
+                    type="button"
+                    onClick={() => { onWorkspaceSelect?.(ws.id); setWorkspaceOpen(false); }}
+                    className={cn(
+                      "flex w-full items-center gap-2 px-3 py-1.5 text-[12px] transition-colors",
+                      ws.id === selectedWorkspaceId ? "text-accent font-medium" : "text-muted hover:bg-hover hover:text-text",
+                    )}
+                  >
+                    <FolderOpen className="h-3 w-3 shrink-0" />
+                    <span className="flex-1 truncate text-left">{ws.id}</span>
+                    <span className="shrink-0 text-[10px] text-faint">{ws.backend}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {workspaces.length > 0 && <div className="mx-0.5 h-4 w-px bg-border-subtle" />}
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}

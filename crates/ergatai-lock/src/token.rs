@@ -64,6 +64,26 @@ impl std::fmt::Display for FileMode {
     }
 }
 
+/// Helper functions for token validation and heartbeat (shared by SystemToken and FileToken).
+mod token_helpers {
+    use super::*;
+
+    pub fn is_valid(status: TokenStatus, expires_at: DateTime<Utc>) -> bool {
+        status == TokenStatus::Active && Utc::now() < expires_at
+    }
+
+    pub fn is_heartbeat_timeout(
+        heartbeat_interval_secs: u64,
+        heartbeat_at: DateTime<Utc>,
+        timeout_multiplier: u32,
+    ) -> bool {
+        let timeout = chrono::Duration::seconds(
+            (heartbeat_interval_secs * timeout_multiplier as u64) as i64,
+        );
+        Utc::now() > heartbeat_at + timeout
+    }
+}
+
 /// System token: proves agent is authorized to participate in multi-agent collaboration.
 ///
 /// Issued by the system when an ACP session starts. Required in multi-agent mode.
@@ -114,7 +134,7 @@ impl SystemToken {
 
     /// Check if the token is valid (not expired and active).
     pub fn is_valid(&self) -> bool {
-        self.status == TokenStatus::Active && Utc::now() < self.expires_at
+        token_helpers::is_valid(self.status, self.expires_at)
     }
 
     /// Update the heartbeat timestamp.
@@ -124,10 +144,11 @@ impl SystemToken {
 
     /// Check if heartbeat has timed out.
     pub fn is_heartbeat_timeout(&self, timeout_multiplier: u32) -> bool {
-        let timeout = chrono::Duration::seconds(
-            (self.heartbeat_interval_secs * timeout_multiplier as u64) as i64,
-        );
-        Utc::now() > self.heartbeat_at + timeout
+        token_helpers::is_heartbeat_timeout(
+            self.heartbeat_interval_secs,
+            self.heartbeat_at,
+            timeout_multiplier,
+        )
     }
 }
 
@@ -229,7 +250,7 @@ impl FileToken {
 
     /// Check if the token is valid (not expired and active).
     pub fn is_valid(&self) -> bool {
-        self.status == TokenStatus::Active && Utc::now() < self.expires_at
+        token_helpers::is_valid(self.status, self.expires_at)
     }
 
     /// Update the heartbeat timestamp.
@@ -239,10 +260,11 @@ impl FileToken {
 
     /// Check if heartbeat has timed out.
     pub fn is_heartbeat_timeout(&self, timeout_multiplier: u32) -> bool {
-        let timeout = chrono::Duration::seconds(
-            (self.heartbeat_interval_secs * timeout_multiplier as u64) as i64,
-        );
-        Utc::now() > self.heartbeat_at + timeout
+        token_helpers::is_heartbeat_timeout(
+            self.heartbeat_interval_secs,
+            self.heartbeat_at,
+            timeout_multiplier,
+        )
     }
 
     /// Check if a file path is within this token's scope.

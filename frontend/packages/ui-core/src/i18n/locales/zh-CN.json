@@ -154,7 +154,10 @@
     "fileTooLarge": "单个文件不能超过 {{size}} MB",
     "fileReadFailed": "文件读取失败",
     "copyCode": "复制代码",
-    "attachment": "附件"
+    "attachment": "附件",
+    "selectAgent": "选择 Agent",
+    "noAgents": "暂无 Agent",
+    "newAgent": "新建 Agent"
   },
   "common": {
     "language": "语言",
@@ -194,6 +197,11 @@
     "defaultTitle": "工作区 {{index}}",
     "closeWorkspace": "关闭工作区",
     "conversationArea": "对话区域",
+    "history": "历史对话",
+    "noHistory": "暂无历史对话",
+    "newConversation": "新建会话",
+    "collapseHistory": "收起历史对话",
+    "expandHistory": "展开历史对话",
     "workspaceArea": "工作区域",
     "domainResizeHandle": "调整对话与工作区分区",
     "emptyConversation": "对话区域暂无内容",

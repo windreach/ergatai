@@ -6,9 +6,9 @@
  */
 
 import type { ComponentType, ReactNode } from 'react'
+import type { EventMap } from '@ergatai/core-events'
 
-// Re-export event types for convenience
-export type { EventMap } from '@ergatai/core-events'
+export type { EventMap }
 
 /**
  * The plugin contract. Every feature module exports one of these.
@@ -181,28 +181,19 @@ export interface ErgataiContext {
 }
 
 /**
- * Event map interface. Feature modules extend this via declaration merging to add
- * their own event types.
- *
- * @example
- * ```typescript
- * // In ui-theme:
- * declare module '@ergatai/core-events' {
- *   interface EventMap {
- *     'theme/change'(snapshot: ThemeSnapshot): void
- *   }
- * }
- * ```
- */
-export interface EventMap {
-  // Built-in events can be added here
-  // Feature modules extend this via declaration merging
-}
-
-/**
  * Slot service interface for UI composition.
  */
 export interface SlotService {
+  /**
+   * Subscribe to slot changes. Used by React outlets via useSyncExternalStore.
+   */
+  subscribe(listener: () => void): () => void
+
+  /**
+   * Read the registered entries without creating React elements.
+   */
+  getEntries(slotName: string): readonly unknown[]
+
   /**
    * Register a React component into a named slot.
    *
@@ -258,6 +249,8 @@ export interface SlotService {
 export interface SlotRegistration {
   /** Slot name (e.g., 'sidebar', 'conversation', 'shell.overlay'). */
   name: string
+  /** Whether the slot holds one replacement component or many additive components. */
+  kind?: 'single' | 'list'
   /** Entry ID (for list slots — must be unique within the slot). */
   id?: string
   /** Sort order (for list slots). Lower numbers render first. */

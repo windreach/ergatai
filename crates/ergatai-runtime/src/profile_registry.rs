@@ -390,19 +390,7 @@ impl ProfileRegistry {
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
 
         let result = stmt
-            .query_row(params![name], |row| {
-                let created_at_str: String = row.get(3)?;
-                let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now());
-
-                Ok(AgentRegistration {
-                    name: row.get(0)?,
-                    command: row.get(1)?,
-                    agent_type: row.get(2)?,
-                    created_at,
-                })
-            })
+            .query_row(params![name], parse_agent_registration_row)
             .optional()
             .map_err(|e| ErgataiError::internal(format!("Failed to get agent profile: {}", e)))?;
 
@@ -423,19 +411,7 @@ impl ProfileRegistry {
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
 
         let profiles = stmt
-            .query_map([], |row| {
-                let created_at_str: String = row.get(3)?;
-                let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now());
-
-                Ok(AgentRegistration {
-                    name: row.get(0)?,
-                    command: row.get(1)?,
-                    agent_type: row.get(2)?,
-                    created_at,
-                })
-            })
+            .query_map([], parse_agent_registration_row)
             .map_err(|e| ErgataiError::internal(format!("Failed to list agent profiles: {}", e)))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| {
@@ -664,6 +640,22 @@ impl ProfileRegistry {
             Ok(false)
         }
     }
+}
+
+/// Parse a database row into an AgentRegistration struct.
+/// Used by both `get` and `list` methods.
+fn parse_agent_registration_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRegistration> {
+    let created_at_str: String = row.get(3)?;
+    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now());
+
+    Ok(AgentRegistration {
+        name: row.get(0)?,
+        command: row.get(1)?,
+        agent_type: row.get(2)?,
+        created_at,
+    })
 }
 
 #[cfg(test)]

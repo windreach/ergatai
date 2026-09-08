@@ -19,10 +19,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use ergatai_core::cross_agent::{
-    get_dag_scheduler, get_dag_scheduler_by_id, list_dag_schedulers, set_dag_scheduler,
-    DagScheduler,
-};
 use ergatai_core::nats;
 
 pub mod api;
@@ -30,6 +26,8 @@ pub mod lock_permission;
 pub mod mcp;
 
 pub mod messaging;
+
+pub mod services;
 
 // ── AppState ─────────────────────────────────────────────────────────
 
@@ -195,6 +193,7 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::activity_routes::stream_events),
         )
         .route("/api/v1/dag", post(submit_dag))
+        .route("/api/v1/dag/validate", post(validate_dag))
         .route("/api/v1/dag/status", get(dag_status))
         .route("/api/v1/dag/visualization", get(dag_visualization))
         .route("/api/v1/dag/metrics", get(dag_metrics))
@@ -478,25 +477,6 @@ struct AgentSummary {
     available: bool,
 }
 
-#[derive(Debug, Serialize)]
-struct NodeStatusInfo {
-    id: String,
-    agent: String,
-    task: String,
-    status: String,
-    depends_on: Vec<String>,
-    output: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Serialize)]
-struct DagStatusResponse {
-    running: bool,
-    progress: Option<f32>,
-    status_prompt: Option<String>,
-    is_complete: Option<bool>,
-    nodes: Option<Vec<NodeStatusInfo>>,
-}
-
 // ── DAG handlers ─────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -507,17 +487,6 @@ struct SubmitDagRequest {
 }
 
 async fn submit_dag(body: String) -> impl IntoResponse {
-    if let Some(existing) = get_dag_scheduler() {
-        if !existing.is_complete().await {
-            return (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({
-                    "error": "A DAG is already running. Wait for completion or check status.",
-                })),
-            );
-        }
-    }
-
     let (definition, parameters) = if let Ok(req) = serde_json::from_str::<SubmitDagRequest>(&body)
     {
         (req.definition, req.parameters)
@@ -525,39 +494,34 @@ async fn submit_dag(body: String) -> impl IntoResponse {
         (body, None)
     };
 
-    let graph = match ergatai_core::orchestration::parse_dag_auto(&definition, parameters) {
-        Ok(g) => g,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": format!("Failed to parse DAG definition: {}", e),
-                })),
-            );
-        }
+    let req = services::dag_service::DagSubmitRequest {
+        definition,
+        parameters,
+        context: None,
+        submitter_agent_id: None,
     };
 
-    let state = get_app_state();
-    let project_root = PathBuf::from(&state.default_cwd);
-    let scheduler = DagScheduler::new(project_root, graph);
-
-    set_dag_scheduler(scheduler.clone());
-    scheduler.clone().start_event_listener();
-
-    match scheduler.submit_graph().await {
-        Ok(submitted) => (
+    match services::dag_service::submit_dag(req).await {
+        Ok(resp) => (
             StatusCode::OK,
             Json(serde_json::json!({
                 "status": "submitted",
-                "submitted_nodes": submitted.len(),
+                "submitted_nodes": resp.submitted_nodes,
             })),
         ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": format!("Failed to submit DAG: {}", e),
-            })),
-        ),
+        Err(e) => {
+            let msg = e.to_string();
+            let status = if msg.contains("already running") {
+                StatusCode::CONFLICT
+            } else if msg.contains("Failed to parse")
+                || msg.contains("cannot also be a task worker")
+            {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, Json(serde_json::json!({ "error": msg })))
+        }
     }
 }
 
@@ -567,68 +531,24 @@ struct DagStatusQuery {
 }
 
 async fn dag_status(Query(query): Query<DagStatusQuery>) -> impl IntoResponse {
-    let scheduler: Option<DagScheduler> = if let Some(dag_id) = &query.dag_id {
-        get_dag_scheduler_by_id(Some(dag_id))
-    } else {
-        get_dag_scheduler()
-    };
+    let info = services::dag_service::get_dag_status(query.dag_id.as_deref()).await;
 
-    let Some(scheduler) = scheduler else {
-        return Json(DagStatusResponse {
-            running: false,
-            progress: None,
-            status_prompt: None,
-            is_complete: None,
-            nodes: None,
-        });
-    };
+    // REST response 兼容旧格式
+    #[derive(Serialize)]
+    struct DagStatusRest {
+        running: bool,
+        progress: Option<f64>,
+        status_prompt: Option<String>,
+        is_complete: Option<bool>,
+        nodes: Option<Vec<services::dag_service::NodeStatusInfo>>,
+    }
 
-    let progress = scheduler.progress().await;
-    let status_prompt = scheduler.status_prompt().await;
-    let is_complete = scheduler.is_complete().await;
-
-    let nodes = match scheduler.graph_snapshot().await {
-        Ok(snapshot_json) => {
-            if let Ok(snapshot) = serde_json::from_str::<serde_json::Value>(&snapshot_json) {
-                if let Some(nodes_array) = snapshot.get("nodes").and_then(|n| n.as_array()) {
-                    let nodes_info: Vec<NodeStatusInfo> = nodes_array
-                        .iter()
-                        .filter_map(|node| {
-                            Some(NodeStatusInfo {
-                                id: node.get("id")?.as_str()?.to_string(),
-                                agent: node.get("agent")?.as_str()?.to_string(),
-                                task: node.get("task")?.as_str()?.to_string(),
-                                status: node.get("status")?.as_str()?.to_string(),
-                                depends_on: node
-                                    .get("depends_on")
-                                    .and_then(|d| d.as_array())
-                                    .map(|arr| {
-                                        arr.iter()
-                                            .filter_map(|v| v.as_str().map(String::from))
-                                            .collect()
-                                    })
-                                    .unwrap_or_default(),
-                                output: None,
-                            })
-                        })
-                        .collect();
-                    Some(nodes_info)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        }
-        Err(_) => None,
-    };
-
-    Json(DagStatusResponse {
-        running: true,
-        progress: Some(progress),
-        status_prompt: Some(status_prompt),
-        is_complete: Some(is_complete),
-        nodes,
+    Json(DagStatusRest {
+        running: info.running,
+        progress: info.progress,
+        status_prompt: info.status_prompt,
+        is_complete: info.is_complete,
+        nodes: info.nodes,
     })
 }
 
@@ -641,177 +561,32 @@ struct DagInfo {
 }
 
 async fn list_dags() -> impl IntoResponse {
-    let schedulers = list_dag_schedulers();
-
-    let mut dags = Vec::new();
-    for scheduler in schedulers {
-        let progress = scheduler.progress().await;
-        let is_complete = scheduler.is_complete().await;
-        let status_prompt = scheduler.status_prompt().await;
-
-        dags.push(DagInfo {
-            dag_id: scheduler.dag_id().to_string(),
-            progress,
-            is_complete,
-            status_prompt,
-        });
-    }
-
+    let entries = services::dag_service::list_dags().await;
+    let dags: Vec<DagInfo> = entries
+        .into_iter()
+        .map(|e| DagInfo {
+            dag_id: e.dag_id,
+            progress: e.progress,
+            is_complete: e.is_complete,
+            status_prompt: e.status_prompt,
+        })
+        .collect();
     Json(dags)
-}
-
-#[derive(Serialize)]
-struct DagVisualizationNode {
-    id: String,
-    agent: String,
-    task: String,
-    status: String,
-    depends_on: Vec<String>,
-    x: f32,
-    y: f32,
-    layer: u32,
 }
 
 #[derive(Serialize)]
 struct DagVisualizationResponse {
     dag_id: String,
-    nodes: Vec<DagVisualizationNode>,
-    edges: Vec<DagEdge>,
-}
-
-#[derive(Serialize)]
-struct DagEdge {
-    from: String,
-    to: String,
+    nodes: Vec<services::dag_service::DagVisualizationNode>,
+    edges: Vec<services::dag_service::DagEdge>,
 }
 
 async fn dag_visualization(Query(query): Query<DagStatusQuery>) -> impl IntoResponse {
-    let scheduler: Option<DagScheduler> = if let Some(dag_id) = &query.dag_id {
-        get_dag_scheduler_by_id(Some(dag_id))
-    } else {
-        get_dag_scheduler()
-    };
-
-    let Some(scheduler) = scheduler else {
-        return Json(DagVisualizationResponse {
-            dag_id: String::new(),
-            nodes: Vec::new(),
-            edges: Vec::new(),
-        });
-    };
-
-    let dag_id = scheduler.dag_id().to_string();
-
-    // Parse graph snapshot
-    let nodes = match scheduler.graph_snapshot().await {
-        Ok(snapshot_json) => {
-            if let Ok(snapshot) = serde_json::from_str::<serde_json::Value>(&snapshot_json) {
-                if let Some(nodes_array) = snapshot.get("nodes").and_then(|n| n.as_array()) {
-                    nodes_array
-                        .iter()
-                        .filter_map(|node| {
-                            Some((
-                                node.get("id")?.as_str()?.to_string(),
-                                node.get("agent")?.as_str()?.to_string(),
-                                node.get("task")?.as_str()?.to_string(),
-                                node.get("status")?.as_str()?.to_string(),
-                                node.get("depends_on")
-                                    .and_then(|d| d.as_array())
-                                    .map(|arr| {
-                                        arr.iter()
-                                            .filter_map(|v| v.as_str().map(String::from))
-                                            .collect::<Vec<String>>()
-                                    })
-                                    .unwrap_or_default(),
-                            ))
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                }
-            } else {
-                Vec::new()
-            }
-        }
-        Err(_) => Vec::new(),
-    };
-
-    // Calculate layers using topological sort (BFS from root nodes)
-    let mut node_layers: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-    let mut queue: std::collections::VecDeque<(String, u32)> = std::collections::VecDeque::new();
-
-    // Find root nodes (no dependencies)
-    for (id, _, _, _, deps) in &nodes {
-        if deps.is_empty() {
-            queue.push_back((id.clone(), 0));
-        }
-    }
-
-    // BFS to assign layers — FIFO ensures shortest path (minimum layer) is found first
-    while let Some((id, layer)) = queue.pop_front() {
-        if let Some(&existing_layer) = node_layers.get(&id) {
-            // Skip if we already found a shorter or equal path
-            if existing_layer <= layer {
-                continue;
-            }
-        }
-        node_layers.insert(id.clone(), layer);
-
-        // Find nodes that depend on this one
-        for (other_id, _, _, _, deps) in &nodes {
-            if deps.contains(&id) {
-                queue.push_back((other_id.clone(), layer + 1));
-            }
-        }
-    }
-
-    // Group nodes by layer
-    let mut layer_groups: std::collections::HashMap<u32, Vec<usize>> =
-        std::collections::HashMap::new();
-    for (idx, (id, _, _, _, _)) in nodes.iter().enumerate() {
-        let layer = node_layers.get(id).copied().unwrap_or(0);
-        layer_groups.entry(layer).or_default().push(idx);
-    }
-
-    // Calculate positions
-    let layer_spacing = 150.0;
-    let node_spacing = 100.0;
-    let mut visualization_nodes = Vec::new();
-
-    for (layer, indices) in &layer_groups {
-        let layer_width = indices.len() as f32 * node_spacing;
-        let start_x = -layer_width / 2.0 + node_spacing / 2.0;
-
-        for (pos, idx) in indices.iter().enumerate() {
-            let (id, agent, task, status, deps) = &nodes[*idx];
-            visualization_nodes.push(DagVisualizationNode {
-                id: id.clone(),
-                agent: agent.clone(),
-                task: task.clone(),
-                status: status.clone(),
-                depends_on: deps.clone(),
-                x: start_x + pos as f32 * node_spacing,
-                y: *layer as f32 * layer_spacing,
-                layer: *layer,
-            });
-        }
-    }
-
-    // Build edges
-    let mut edges = Vec::new();
-    for (id, _, _, _, deps) in &nodes {
-        for dep in deps {
-            edges.push(DagEdge {
-                from: dep.clone(),
-                to: id.clone(),
-            });
-        }
-    }
-
+    let result = services::dag_service::get_dag_visualization(query.dag_id.as_deref()).await;
     Json(DagVisualizationResponse {
-        dag_id,
-        nodes: visualization_nodes,
-        edges,
+        dag_id: result.dag_id,
+        nodes: result.nodes,
+        edges: result.edges,
     })
 }
 
@@ -826,53 +601,41 @@ struct DagMetrics {
 }
 
 async fn dag_metrics(Query(query): Query<DagStatusQuery>) -> impl IntoResponse {
-    let scheduler: Option<DagScheduler> = if let Some(dag_id) = &query.dag_id {
-        get_dag_scheduler_by_id(Some(dag_id))
-    } else {
-        get_dag_scheduler()
-    };
-
-    let Some(scheduler) = scheduler else {
-        return Json(DagMetrics {
-            total_nodes: 0,
-            completed_nodes: 0,
-            failed_nodes: 0,
-            running_nodes: 0,
-            pending_nodes: 0,
-            avg_completion_time_secs: None,
-        });
-    };
-
-    let nodes = match scheduler.graph_snapshot().await {
-        Ok(snapshot_json) => {
-            if let Ok(snapshot) = serde_json::from_str::<serde_json::Value>(&snapshot_json) {
-                if let Some(nodes_array) = snapshot.get("nodes").and_then(|n| n.as_array()) {
-                    nodes_array
-                        .iter()
-                        .filter_map(|node| node.get("status")?.as_str().map(|s| s.to_string()))
-                        .collect::<Vec<String>>()
-                } else {
-                    Vec::new()
-                }
-            } else {
-                Vec::new()
-            }
-        }
-        Err(_) => Vec::new(),
-    };
-
-    let total_nodes = nodes.len() as u32;
-    let completed_nodes = nodes.iter().filter(|s| s.as_str() == "completed").count() as u32;
-    let failed_nodes = nodes.iter().filter(|s| s.as_str() == "failed").count() as u32;
-    let running_nodes = nodes.iter().filter(|s| s.as_str() == "running").count() as u32;
-    let pending_nodes = nodes.iter().filter(|s| s.as_str() == "pending").count() as u32;
-
+    let result = services::dag_service::get_dag_metrics(query.dag_id.as_deref()).await;
     Json(DagMetrics {
-        total_nodes,
-        completed_nodes,
-        failed_nodes,
-        running_nodes,
-        pending_nodes,
-        avg_completion_time_secs: None, // TODO: Calculate from timestamps
+        total_nodes: result.total_nodes,
+        completed_nodes: result.completed_nodes,
+        failed_nodes: result.failed_nodes,
+        running_nodes: result.running_nodes,
+        pending_nodes: result.pending_nodes,
+        avg_completion_time_secs: result.avg_completion_time_secs,
     })
+}
+
+/// REST 端点：dry-run 验证 DAG YAML。
+#[derive(Deserialize)]
+struct ValidateDagRestRequest {
+    definition: String,
+    #[serde(default)]
+    parameters: Option<HashMap<String, serde_json::Value>>,
+}
+
+async fn validate_dag(body: String) -> impl IntoResponse {
+    let (definition, parameters) =
+        if let Ok(req) = serde_json::from_str::<ValidateDagRestRequest>(&body) {
+            (req.definition, req.parameters)
+        } else {
+            (body, None)
+        };
+
+    match services::dag_service::validate_dag(&definition, parameters) {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(result).unwrap_or_default()),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        ),
+    }
 }
