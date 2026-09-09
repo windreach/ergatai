@@ -171,10 +171,7 @@ Server flags (`ergatai-api`):
 
 ## 🗺️ Roadmap
 
-- [ ] Cross-machine agent federation
-- [ ] Pluggable backends beyond ACP
-- [ ] Persistent conversation replay
-- [ ] Built-in agent marketplace
+🚧 **Frontend in active development** — the Tauri + React desktop app is under active construction. See `frontend/` for current work.
 
 ## 🤝 Contributing
 
