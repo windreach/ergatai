@@ -157,7 +157,15 @@
     "attachment": "Attachment",
     "selectAgent": "Select Agent",
     "noAgents": "No agents",
-    "newAgent": "New Agent"
+    "newAgent": "New Agent",
+    "greeting": "What can I help you with?",
+    "greetingHint": "Type a message to start",
+    "suggestions": [
+      "Analyze architecture",
+      "Write code",
+      "Explain code",
+      "Debug an error"
+    ]
   },
   "common": {
     "language": "Language",
@@ -175,8 +183,7 @@
     "close": "Close",
     "panelErrorTitle": "Panel failed to load",
     "retry": "Retry"
-  }
-  ,
+  },
   "session": {
     "title": "Sessions",
     "new": "New session",
@@ -206,6 +213,11 @@
     "domainResizeHandle": "Resize conversation and workspace split",
     "emptyConversation": "No conversation content",
     "emptyWorkspace": "No workspace content",
-    "startNewConversation": "Start a new conversation"
+    "startNewConversation": "Start a new conversation",
+    "today": "Today"
+  },
+  "init": {
+    "subtitle": "Choose an agent to start chatting",
+    "customAgent": "Custom Agent"
   }
 }

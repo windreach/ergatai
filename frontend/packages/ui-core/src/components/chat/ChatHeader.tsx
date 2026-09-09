@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { GitBranch, ChevronDown, CircleDot } from "lucide-react";
+import { GitBranch, ChevronDown, CircleDot, Plus } from "lucide-react";
 import { cn } from "../../lib/utils";
-import type { AgentSummary } from "@ergatai/platform-core";
+import { createGitBranch, type AgentSummary } from "@ergatai/platform-core";
 
 interface ChatHeaderProps {
   leading?: ReactNode;
@@ -28,6 +28,8 @@ export function ChatHeader({
   const { t } = useTranslation();
   const [branchOpen, setBranchOpen] = useState(false);
   const [agentOpen, setAgentOpen] = useState(false);
+  const [creatingBranch, setCreatingBranch] = useState(false);
+  const [newBranchName, setNewBranchName] = useState("");
   const branchRef = useRef<HTMLDivElement>(null);
   const agentRef = useRef<HTMLDivElement>(null);
 
@@ -81,6 +83,38 @@ export function ChatHeader({
                     {b === branch && <CircleDot className="ml-auto h-3 w-3 text-accent" />}
                   </button>
                 ))}
+                <div className="my-1 border-t border-border-subtle" />
+                {creatingBranch ? (
+                  <div className="px-2 py-1">
+                    <input
+                      autoFocus
+                      value={newBranchName}
+                      onChange={(e) => setNewBranchName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && newBranchName.trim()) {
+                          createGitBranch(newBranchName.trim()).then((info) => {
+                            onBranchChange?.(info.current);
+                            setBranchOpen(false);
+                            setCreatingBranch(false);
+                            setNewBranchName("");
+                          });
+                        }
+                        if (e.key === "Escape") { setCreatingBranch(false); setNewBranchName(""); }
+                      }}
+                      placeholder="分支名"
+                      className="w-full rounded-md border border-border bg-bg px-2 py-1 text-[12px] text-text placeholder:text-faint focus:outline-none focus:ring-1 focus:ring-accent"
+                    />
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setCreatingBranch(true)}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-[12px] text-accent transition-colors hover:bg-hover"
+                  >
+                    <Plus className="h-3 w-3" />
+                    新建分支
+                  </button>
+                )}
               </div>
             )}
           </div>

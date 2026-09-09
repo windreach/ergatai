@@ -662,6 +662,53 @@ struct AvailableCommandInfo {
     has_input: bool,
 }
 
+/// Request to execute a slash command on an agent.
+#[derive(Debug, Deserialize)]
+pub struct ExecuteCommandRequest {
+    /// The slash command to execute (e.g. "/model").
+    pub command: String,
+    /// Timeout in seconds (default: 10).
+    #[serde(default = "default_command_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_command_timeout() -> u64 {
+    10
+}
+
+/// Response from executing a slash command.
+#[derive(Debug, Serialize)]
+pub struct ExecuteCommandResponse {
+    /// Raw output text from the agent.
+    pub output: String,
+    /// Parsed data (command-specific). For `/model`: `{ "models": [...], "current": "..." }`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parsed: Option<serde_json::Value>,
+}
+
+/// Response from listing sessions.
+#[derive(Debug, Serialize)]
+pub struct ListSessionsResponse {
+    /// List of sessions.
+    pub sessions: Vec<SessionInfoResponse>,
+}
+
+/// Session information.
+#[derive(Debug, Serialize)]
+pub struct SessionInfoResponse {
+    /// Unique session identifier.
+    pub session_id: String,
+    /// Human-readable title.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Creation timestamp (ISO 8601).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// Last update timestamp (ISO 8601).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
 /// Agent config options response.
 #[derive(Serialize)]
 struct AgentConfigOptionsResponse {
@@ -767,6 +814,201 @@ pub async fn get_agent_available_commands(
         )
             .into_response(),
     }
+}
+
+/// Execute a slash command on an agent (e.g. `/model`).
+///
+/// Sends the command as a prompt via ACP, waits for the agent to finish,
+/// and returns the captured output with optional parsed data.
+pub async fn execute_agent_command(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ExecuteCommandRequest>,
+) -> impl IntoResponse {
+    match crate::services::agent_service::execute_agent_command(
+        &id,
+        &req.command,
+        req.timeout_secs,
+    )
+    .await
+    {
+        Ok(output) => {
+            let parsed = parse_command_output(&req.command, &output);
+            (
+                StatusCode::OK,
+                Json(ExecuteCommandResponse { output, parsed }),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// List available ACP sessions for an agent.
+pub async fn list_agent_sessions(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match crate::services::agent_service::list_agent_sessions(&id).await {
+        Ok(sessions) => {
+            let response = ListSessionsResponse {
+                sessions: sessions
+                    .into_iter()
+                    .map(|s| SessionInfoResponse {
+                        session_id: s.session_id,
+                        title: s.title,
+                        created_at: s.created_at,
+                        updated_at: s.updated_at,
+                    })
+                    .collect(),
+            };
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Create a new ACP session for an agent.
+pub async fn create_agent_session(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match crate::services::agent_service::create_agent_session(&id).await {
+        Ok(session) => {
+            let response = SessionInfoResponse {
+                session_id: session.session_id,
+                title: session.title,
+                created_at: session.created_at,
+                updated_at: session.updated_at,
+            };
+            (StatusCode::CREATED, Json(response)).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Load an existing ACP session for an agent.
+pub async fn load_agent_session(
+    State(_state): State<AppState>,
+    Path((id, session_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    match crate::services::agent_service::load_agent_session(&id, &session_id).await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Delete an ACP session for an agent.
+pub async fn delete_agent_session(
+    State(_state): State<AppState>,
+    Path((id, session_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    match crate::services::agent_service::delete_agent_session(&id, &session_id).await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Parse command output based on command type.
+///
+/// Currently supports `/model` — extracts model names and current model from
+/// the agent's text response.
+fn parse_command_output(command: &str, output: &str) -> Option<serde_json::Value> {
+    if command == "/model" {
+        parse_model_output(output)
+    } else {
+        None
+    }
+}
+
+/// Parse `/model` output to extract model list and current model.
+///
+/// Looks for lines containing model identifiers (e.g. `claude-sonnet-4-20250514`)
+/// and detects which model is marked as current via `(current)` or similar markers.
+fn parse_model_output(output: &str) -> Option<serde_json::Value> {
+    let mut models = Vec::new();
+    let mut current_model = None;
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+
+        // Extract model identifiers from the line.
+        if let Some(model_name) = extract_model_name(trimmed) {
+            if !models.contains(&model_name) {
+                models.push(model_name.clone());
+            }
+
+            // Detect current model marker.
+            if trimmed.contains("(current)")
+                || trimmed.contains("(selected)")
+                || trimmed.contains("✓")
+                || trimmed.contains("✔")
+            {
+                current_model = Some(model_name);
+            }
+        }
+    }
+
+    if models.is_empty() {
+        return None;
+    }
+
+    Some(serde_json::json!({
+        "models": models,
+        "current": current_model,
+    }))
+}
+
+/// Extract a model name from a line of text.
+///
+/// Matches common model name patterns: `claude-*`, `gpt-*`, `o1-*`, `o3-*`, `o4-*`.
+fn extract_model_name(line: &str) -> Option<String> {
+    // Simple pattern matching without regex dependency.
+    let prefixes = ["claude-", "gpt-", "o1-", "o3-", "o4-"];
+    for prefix in &prefixes {
+        if let Some(start) = line.find(prefix) {
+            let rest = &line[start..];
+            // Extract the model name: alphanumeric, hyphens, dots.
+            let end = rest
+                .find(|c: char| !c.is_alphanumeric() && c != '-' && c != '.')
+                .unwrap_or(rest.len());
+            let name = &rest[..end];
+            if name.len() > prefix.len() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Get configuration options reported by the agent.

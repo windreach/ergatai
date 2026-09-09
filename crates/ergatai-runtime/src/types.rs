@@ -143,6 +143,25 @@ pub struct BackendCapabilities {
     pub max_concurrent_agents: Option<usize>,
 }
 
+/// ACP session information.
+///
+/// Represents a conversation session managed by the ACP agent.
+/// Sessions can be listed, created, loaded, and deleted via the ACP protocol.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionInfo {
+    /// Unique session identifier (assigned by the ACP agent)
+    pub session_id: String,
+
+    /// Human-readable title (may be auto-generated or user-provided)
+    pub title: Option<String>,
+
+    /// Session creation timestamp (ISO 8601 format, e.g., "2026-09-10T14:30:00Z")
+    pub created_at: Option<String>,
+
+    /// Last update timestamp (ISO 8601 format)
+    pub updated_at: Option<String>,
+}
+
 /// Agent information tracked by the runtime facade.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {

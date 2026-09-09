@@ -29,11 +29,11 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, CreateElicitationRequest, CreateElicitationResponse, ElicitationAction,
-    InitializeRequest, LoadSessionRequest, NewSessionRequest, Plan, PromptRequest,
-    RequestPermissionRequest, RequestPermissionResponse, SessionNotification, SessionUpdate,
-    TextContent, ToolCall as AcpToolCall, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
-    ToolKind,
+    ContentBlock, CreateElicitationRequest, CreateElicitationResponse, DeleteSessionRequest,
+    ElicitationAction, InitializeRequest, ListSessionsRequest, LoadSessionRequest,
+    NewSessionRequest, Plan, PromptRequest, RequestPermissionRequest, RequestPermissionResponse,
+    SessionNotification, SessionUpdate, TextContent, ToolCall as AcpToolCall, ToolCallLocation,
+    ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{AcpAgent, Agent, ByteStreams, Client, ConnectionTo};
@@ -151,7 +151,7 @@ fn extract_text_from_chunk(
 }
 
 use crate::backend::AgentRuntimeBackend;
-use crate::types::{AgentHandle, BackendCapabilities, WaitResult, WorkspaceHandle, WorkspaceSpec};
+use crate::types::{AgentHandle, BackendCapabilities, SessionInfo, WaitResult, WorkspaceHandle, WorkspaceSpec};
 
 // ── Configuration constants ──
 
@@ -414,6 +414,24 @@ enum AcpCommand {
     },
     /// Graceful stop (connection task will exit, closing the ACP connection).
     Stop,
+    /// List available ACP sessions (sends `session/list` request).
+    ListSessions {
+        response_tx: oneshot::Sender<ErgataiResult<Vec<SessionInfo>>>,
+    },
+    /// Create a new ACP session (sends `session/new` request).
+    CreateSession {
+        response_tx: oneshot::Sender<ErgataiResult<SessionInfo>>,
+    },
+    /// Load an existing ACP session (sends `session/load` request).
+    LoadSession {
+        session_id: String,
+        response_tx: oneshot::Sender<ErgataiResult<()>>,
+    },
+    /// Delete an ACP session (sends `session/delete` request).
+    DeleteSession {
+        session_id: String,
+        response_tx: oneshot::Sender<ErgataiResult<()>>,
+    },
 }
 
 /// Tracked agent execution plan (from `SessionUpdate::Plan`).
@@ -977,6 +995,241 @@ impl AcpBackend {
             Err(_) => Err(ErgataiError::internal("ACP response channel closed")),
         }
     }
+
+    /// Execute a slash command on an agent and return the captured output.
+    ///
+    /// Sends the command as a prompt via ACP, waits for the agent to finish,
+    /// and returns the output text. The output buffer is drained before and
+    /// after execution so only the command's response is returned.
+    pub async fn execute_command(
+        &self,
+        agent_id: &str,
+        command: &str,
+        timeout_secs: u64,
+    ) -> ErgataiResult<String> {
+        self.reap_dead();
+
+        // Look up agent entry by ID string.
+        let (command_tx, output) = {
+            let agents = self.agents.read();
+            match agents.get(agent_id) {
+                Some(entry) => {
+                    if !entry.alive.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(ErgataiError::internal(format!(
+                            "Agent {} is not alive",
+                            agent_id
+                        )));
+                    }
+                    (entry.command_tx.clone(), entry.output.clone())
+                }
+                None => {
+                    return Err(ErgataiError::NotFound(format!(
+                        "Agent not found: {}",
+                        agent_id
+                    )));
+                }
+            }
+        };
+
+        // Drain any existing output so we only capture the command's response.
+        let _ = output.capture();
+
+        // Send the command as a prompt through the ACP channel.
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(AcpCommand::Prompt {
+                message: command.to_string(),
+                response_tx,
+            })
+            .await
+            .map_err(|_| ErgataiError::internal("ACP command channel closed"))?;
+
+        // Wait for the prompt to complete, with a timeout.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            response_rx,
+        )
+        .await
+        .map_err(|_| ErgataiError::AgentTimeout {
+            message: "Command execution timed out".to_string(),
+            source: None,
+        })?;
+
+        // Check if the command succeeded.
+        match result {
+            Ok(Ok(())) => {
+                // Command completed — capture the output produced during execution.
+                let output_text = output.capture();
+                info!(
+                    agent_id = %agent_id,
+                    command = %command,
+                    output_len = output_text.len(),
+                    "Slash command executed successfully"
+                );
+                Ok(output_text)
+            }
+            Ok(Err(e)) => {
+                warn!(agent_id = %agent_id, command = %command, error = %e, "Slash command failed");
+                Err(e)
+            }
+            Err(_) => Err(ErgataiError::internal("ACP response channel closed")),
+        }
+    }
+
+    /// List available ACP sessions for an agent.
+    ///
+    /// Sends a `session/list` request to the agent and returns the list of sessions.
+    pub async fn list_sessions(&self, agent_id: &str) -> ErgataiResult<Vec<SessionInfo>> {
+        self.reap_dead();
+
+        let command_tx = {
+            let agents = self.agents.read();
+            match agents.get(agent_id) {
+                Some(entry) => {
+                    if !entry.alive.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(ErgataiError::internal(format!(
+                            "Agent {} is not alive",
+                            agent_id
+                        )));
+                    }
+                    entry.command_tx.clone()
+                }
+                None => {
+                    return Err(ErgataiError::NotFound(format!(
+                        "Agent not found: {}",
+                        agent_id
+                    )));
+                }
+            }
+        };
+
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(AcpCommand::ListSessions { response_tx })
+            .await
+            .map_err(|_| ErgataiError::internal("ACP command channel closed"))?;
+
+        response_rx
+            .await
+            .map_err(|_| ErgataiError::internal("ACP response channel closed"))?
+    }
+
+    /// Create a new ACP session for an agent.
+    ///
+    /// Sends a `session/new` request to the agent and returns the new session info.
+    pub async fn create_session(&self, agent_id: &str) -> ErgataiResult<SessionInfo> {
+        self.reap_dead();
+
+        let command_tx = {
+            let agents = self.agents.read();
+            match agents.get(agent_id) {
+                Some(entry) => {
+                    if !entry.alive.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(ErgataiError::internal(format!(
+                            "Agent {} is not alive",
+                            agent_id
+                        )));
+                    }
+                    entry.command_tx.clone()
+                }
+                None => {
+                    return Err(ErgataiError::NotFound(format!(
+                        "Agent not found: {}",
+                        agent_id
+                    )));
+                }
+            }
+        };
+
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(AcpCommand::CreateSession { response_tx })
+            .await
+            .map_err(|_| ErgataiError::internal("ACP command channel closed"))?;
+
+        response_rx
+            .await
+            .map_err(|_| ErgataiError::internal("ACP response channel closed"))?
+    }
+
+    /// Load an existing ACP session for an agent.
+    ///
+    /// Sends a `session/load` request to the agent to switch to the specified session.
+    pub async fn load_session(&self, agent_id: &str, session_id: &str) -> ErgataiResult<()> {
+        self.reap_dead();
+
+        let command_tx = {
+            let agents = self.agents.read();
+            match agents.get(agent_id) {
+                Some(entry) => {
+                    if !entry.alive.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(ErgataiError::internal(format!(
+                            "Agent {} is not alive",
+                            agent_id
+                        )));
+                    }
+                    entry.command_tx.clone()
+                }
+                None => {
+                    return Err(ErgataiError::NotFound(format!(
+                        "Agent not found: {}",
+                        agent_id
+                    )));
+                }
+            }
+        };
+
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(AcpCommand::LoadSession {
+                session_id: session_id.to_string(),
+                response_tx,
+            })
+            .await
+            .map_err(|_| ErgataiError::internal("ACP command channel closed"))?;
+
+        response_rx
+            .await
+            .map_err(|_| ErgataiError::internal("ACP response channel closed"))?
+    }
+
+    pub async fn delete_session(&self, agent_id: &str, session_id: &str) -> ErgataiResult<()> {
+        self.reap_dead();
+
+        let command_tx = {
+            let agents = self.agents.read();
+            match agents.get(agent_id) {
+                Some(entry) => {
+                    if !entry.alive.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(ErgataiError::internal(format!(
+                            "Agent {} is not alive",
+                            agent_id
+                        )));
+                    }
+                    entry.command_tx.clone()
+                }
+                None => {
+                    return Err(ErgataiError::NotFound(format!(
+                        "Agent not found: {}",
+                        agent_id
+                    )));
+                }
+            }
+        };
+
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(AcpCommand::DeleteSession {
+                session_id: session_id.to_string(),
+                response_tx,
+            })
+            .await
+            .map_err(|_| ErgataiError::internal("ACP command channel closed"))?;
+
+        response_rx
+            .await
+            .map_err(|_| ErgataiError::internal("ACP response channel closed"))?
+    }
 }
 
 impl Default for AcpBackend {
@@ -1484,7 +1737,7 @@ impl AgentRuntimeBackend for AcpBackend {
                     );
 
                     // Step 2: Create or load an ACP session.
-                    let session_id = if let Some(saved_sid) = saved_session_id {
+                    let mut session_id = if let Some(saved_sid) = saved_session_id {
                         info!(session_id = %saved_sid, "Attempting session/load");
                         match connection
                             .send_request(LoadSessionRequest::new(saved_sid.clone(), &cwd))
@@ -1666,6 +1919,132 @@ impl AgentRuntimeBackend for AcpBackend {
                                         warn!(error = %e, "Failed to send session/cancel");
                                         let _ = response_tx.send(Err(ErgataiError::internal(
                                             format!("Failed to cancel: {e}"),
+                                        )));
+                                    }
+                                }
+                            }
+                            Some(AcpCommand::ListSessions { response_tx }) => {
+                                debug!("ACP connection task received list_sessions command");
+                                let result = connection
+                                    .send_request(ListSessionsRequest::new())
+                                    .block_task()
+                                    .await;
+                                match result {
+                                    Ok(response) => {
+                                        info!(
+                                            count = response.sessions.len(),
+                                            "Listed ACP sessions"
+                                        );
+                                        // Convert ACP SessionInfo to our SessionInfo
+                                        let sessions: Vec<SessionInfo> = response
+                                            .sessions
+                                            .into_iter()
+                                            .map(|s| SessionInfo {
+                                                session_id: s.session_id.to_string(),
+                                                title: s.title,
+                                                created_at: None, // ACP doesn't provide created_at
+                                                updated_at: s.updated_at,
+                                            })
+                                            .collect();
+                                        let _ = response_tx.send(Ok(sessions));
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "Failed to list sessions");
+                                        let _ = response_tx.send(Err(ErgataiError::internal(
+                                            format!("Failed to list sessions: {e}"),
+                                        )));
+                                    }
+                                }
+                            }
+                            Some(AcpCommand::CreateSession { response_tx }) => {
+                                debug!("ACP connection task received create_session command");
+                                let cwd = task_cwd_for_save.clone();
+                                let result = connection
+                                    .send_request(NewSessionRequest::new(&cwd))
+                                    .block_task()
+                                    .await;
+                                match result {
+                                    Ok(response) => {
+                                        let session_id = response.session_id.to_string();
+                                        info!(session_id = %session_id, "Created new ACP session");
+                                        let session_info = SessionInfo {
+                                            session_id: session_id.clone(),
+                                            title: None,
+                                            created_at: Some(
+                                                chrono::Utc::now().to_rfc3339(),
+                                            ),
+                                            updated_at: Some(
+                                                chrono::Utc::now().to_rfc3339(),
+                                            ),
+                                        };
+                                        let _ = response_tx.send(Ok(session_info));
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "Failed to create session");
+                                        let _ = response_tx.send(Err(ErgataiError::internal(
+                                            format!("Failed to create session: {e}"),
+                                        )));
+                                    }
+                                }
+                            }
+                            Some(AcpCommand::LoadSession {
+                                session_id: target_session_id,
+                                response_tx,
+                            }) => {
+                                debug!(
+                                    session_id = %target_session_id,
+                                    "ACP connection task received load_session command"
+                                );
+                                let cwd = task_cwd_for_save.clone();
+                                let result = connection
+                                    .send_request(LoadSessionRequest::new(
+                                        target_session_id.clone(),
+                                        &cwd,
+                                    ))
+                                    .block_task()
+                                    .await;
+                                match result {
+                                    Ok(_) => {
+                                        info!(
+                                            session_id = %target_session_id,
+                                            "Loaded ACP session"
+                                        );
+                                        // Update the current session_id for subsequent prompts
+                                        session_id = agent_client_protocol::schema::v1::SessionId::from(target_session_id);
+                                        let _ = response_tx.send(Ok(()));
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "Failed to load session");
+                                        let _ = response_tx.send(Err(ErgataiError::internal(
+                                            format!("Failed to load session: {e}"),
+                                        )));
+                                    }
+                                }
+                            }
+                            Some(AcpCommand::DeleteSession {
+                                session_id: target_session_id,
+                                response_tx,
+                            }) => {
+                                debug!(
+                                    session_id = %target_session_id,
+                                    "ACP connection task received delete_session command"
+                                );
+                                let result = connection
+                                    .send_request(DeleteSessionRequest::new(target_session_id.clone()))
+                                    .block_task()
+                                    .await;
+                                match result {
+                                    Ok(_) => {
+                                        info!(
+                                            session_id = %target_session_id,
+                                            "Deleted ACP session"
+                                        );
+                                        let _ = response_tx.send(Ok(()));
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "Failed to delete session");
+                                        let _ = response_tx.send(Err(ErgataiError::internal(
+                                            format!("Failed to delete session: {e}"),
                                         )));
                                     }
                                 }

@@ -69,6 +69,6 @@ pub use permission::{PermissionDecision, PermissionHandler, YoloPermissionHandle
 pub use runtime::{get_agent_runtime, init_agent_runtime, AgentRuntime};
 pub use session_store::{SessionRecord, SessionStore};
 pub use types::{
-    AgentHandle, AgentInfo, BackendCapabilities, ResourceLimits, WaitResult, WorkspaceHandle,
-    WorkspaceSpec,
+    AgentHandle, AgentInfo, BackendCapabilities, ResourceLimits, SessionInfo, WaitResult,
+    WorkspaceHandle, WorkspaceSpec,
 };

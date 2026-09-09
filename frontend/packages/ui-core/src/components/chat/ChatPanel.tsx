@@ -128,7 +128,7 @@ function AiSdkBackedChatPanel({
   mode: _mode,
   features,
   conversationId,
-  agentName,
+  agentName: _agentName,
   aiSdkTransport,
   headerLeading,
   onConversationSaved,
@@ -549,9 +549,10 @@ function AiSdkBackedChatPanel({
       />
       {isEmpty ? (
         <div className="flex-1 flex flex-col items-center justify-center select-none">
-          <h1 className="text-2xl font-semibold tracking-tight text-text mb-6">
-            {agentName ?? t("tabs.chat")}
+          <h1 className="text-2xl font-semibold tracking-tight text-text mb-1.5">
+            {t("chat.greeting")}
           </h1>
+          <p className="text-sm text-muted mb-8">{t("chat.greetingHint")}</p>
           <div className="w-full max-w-[560px] px-6">
             <ChatComposer
               textareaRef={textareaRef}
@@ -574,6 +575,23 @@ function AiSdkBackedChatPanel({
               onInput={(event) => autoResize(event.currentTarget)}
               onFileSelect={handleFileSelect}
             />
+          </div>
+          <div className="mt-6 flex flex-wrap justify-center gap-2 px-6">
+            {(t("chat.suggestions", { returnObjects: true }) as string[]).map((suggestion) => (
+              <button
+                key={suggestion}
+                type="button"
+                onClick={() => {
+                  if (textareaRef.current) {
+                    textareaRef.current.value = suggestion;
+                    textareaRef.current.focus();
+                  }
+                }}
+                className="rounded-full border border-border bg-surface px-3.5 py-1.5 text-[13px] text-muted transition-colors hover:bg-hover hover:text-text"
+              >
+                {suggestion}
+              </button>
+            ))}
           </div>
           {attachmentError && (
             <div className="mb-2 flex items-center justify-between rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-[12px] text-danger">

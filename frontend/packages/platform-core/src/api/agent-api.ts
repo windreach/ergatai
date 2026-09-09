@@ -22,7 +22,11 @@ const mockWorkspaces: WorkspaceInfo[] = [
   { id: "frontend", backend: "local" },
 ];
 
-const mockAgents: AgentSummary[] = [];
+const mockAgents: AgentSummary[] = [
+  { id: "architect", name: "架构师", state: "idle", workDir: "/workspace" },
+  { id: "coder", name: "编码助手", state: "idle", workDir: "/workspace" },
+  { id: "reviewer", name: "代码审查", state: "idle", workDir: "/workspace" },
+];
 
 const mockBranches: GitBranchInfo = { current: "main", branches: ["main", "develop", "feat/ui"] };
 
@@ -54,4 +58,16 @@ export async function fetchGitBranches(_workDir?: string): Promise<GitBranchInfo
   if (isMock()) return mockBranches;
   // TODO: add a lightweight GET /api/v1/git/branches endpoint to ergatai-api
   return mockBranches;
+}
+
+export async function createGitBranch(name: string): Promise<GitBranchInfo> {
+  if (isMock()) {
+    if (!mockBranches.branches.includes(name)) {
+      mockBranches.branches.push(name);
+    }
+    mockBranches.current = name;
+    return { ...mockBranches };
+  }
+  // TODO: add a lightweight POST /api/v1/git/branches endpoint to ergatai-api
+  return { ...mockBranches };
 }

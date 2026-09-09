@@ -83,6 +83,83 @@ pub async fn cancel_agent_prompt(agent_id: &str) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
+/// Execute a slash command on an agent and return the captured output.
+///
+/// Sends the command (e.g. `/model`) as a prompt via ACP, waits for the agent
+/// to finish responding, and returns the output text. The output buffer is
+/// drained so only the command's response is returned.
+pub async fn execute_agent_command(
+    agent_id: &str,
+    command: &str,
+    timeout_secs: u64,
+) -> anyhow::Result<String> {
+    let runtime = get_agent_runtime();
+    let backend = runtime.backend();
+    let acp = backend
+        .as_any()
+        .downcast_ref::<AcpBackend>()
+        .ok_or_else(|| anyhow::anyhow!("Agent is not using ACP backend"))?;
+    acp.execute_command(agent_id, command, timeout_secs)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// List available ACP sessions for an agent.
+pub async fn list_agent_sessions(
+    agent_id: &str,
+) -> anyhow::Result<Vec<ergatai_runtime::SessionInfo>> {
+    let runtime = get_agent_runtime();
+    let backend = runtime.backend();
+    let acp = backend
+        .as_any()
+        .downcast_ref::<AcpBackend>()
+        .ok_or_else(|| anyhow::anyhow!("Agent is not using ACP backend"))?;
+    acp.list_sessions(agent_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Create a new ACP session for an agent.
+pub async fn create_agent_session(
+    agent_id: &str,
+) -> anyhow::Result<ergatai_runtime::SessionInfo> {
+    let runtime = get_agent_runtime();
+    let backend = runtime.backend();
+    let acp = backend
+        .as_any()
+        .downcast_ref::<AcpBackend>()
+        .ok_or_else(|| anyhow::anyhow!("Agent is not using ACP backend"))?;
+    acp.create_session(agent_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Load an existing ACP session for an agent.
+pub async fn load_agent_session(agent_id: &str, session_id: &str) -> anyhow::Result<()> {
+    let runtime = get_agent_runtime();
+    let backend = runtime.backend();
+    let acp = backend
+        .as_any()
+        .downcast_ref::<AcpBackend>()
+        .ok_or_else(|| anyhow::anyhow!("Agent is not using ACP backend"))?;
+    acp.load_session(agent_id, session_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Delete an ACP session for an agent.
+pub async fn delete_agent_session(agent_id: &str, session_id: &str) -> anyhow::Result<()> {
+    let runtime = get_agent_runtime();
+    let backend = runtime.backend();
+    let acp = backend
+        .as_any()
+        .downcast_ref::<AcpBackend>()
+        .ok_or_else(|| anyhow::anyhow!("Agent is not using ACP backend"))?;
+    acp.delete_session(agent_id, session_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
 /// Respond to a pending elicitation request from an agent.
 ///
 /// Returns `Ok(true)` if the elicitation was found and the response was sent,

@@ -157,7 +157,15 @@
     "attachment": "添付ファイル",
     "selectAgent": "エージェントを選択",
     "noAgents": "エージェントなし",
-    "newAgent": "新規エージェント"
+    "newAgent": "新規エージェント",
+    "greeting": "何をお手伝いしましょうか？",
+    "greetingHint": "メッセージを入力して開始",
+    "suggestions": [
+      "アーキテクチャ分析",
+      "コードを書く",
+      "コードを説明",
+      "エラーをデバッグ"
+    ]
   },
   "common": {
     "language": "言語",
@@ -175,8 +183,7 @@
     "close": "閉じる",
     "panelErrorTitle": "パネルの読み込みに失敗しました",
     "retry": "再試行"
-  }
-  ,
+  },
   "session": {
     "title": "セッション",
     "new": "新しいセッション",
@@ -206,6 +213,11 @@
     "domainResizeHandle": "会話とワークスペースの分割を調整",
     "emptyConversation": "会話コンテンツがありません",
     "emptyWorkspace": "ワークスペースコンテンツがありません",
-    "startNewConversation": "新しい会話を開始"
+    "startNewConversation": "新しい会話を開始",
+    "today": "今日"
+  },
+  "init": {
+    "subtitle": "エージェントを選択して開始",
+    "customAgent": "カスタムエージェント"
   }
 }

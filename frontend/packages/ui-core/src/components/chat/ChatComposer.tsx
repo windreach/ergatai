@@ -42,7 +42,6 @@ export function ChatComposer({
   sending,
   autoFocus,
   supportsFormSubmit,
-  workspaces = [],
   selectedWorkspaceId,
   onWorkspaceSelect,
   onRemoveAttachment,
@@ -58,17 +57,46 @@ export function ChatComposer({
 }: ChatComposerProps) {
   const { t } = useTranslation();
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [browsePath, setBrowsePath] = useState("");
+  const [browseEntries, setBrowseEntries] = useState<string[]>([]);
+  const [browseLoading, setBrowseLoading] = useState(false);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const activePermission = permissionModes.find((mode) => mode.value === permission);
-  const selectedWorkspace = workspaces.find((w) => w.id === selectedWorkspaceId);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (workspaceRef.current && !workspaceRef.current.contains(e.target as Node)) setWorkspaceOpen(false);
+      if (permissionRef.current && !permissionRef.current.contains(e.target as Node)) onPermissionOpenChange(false);
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
+
+  const listDirectories = (path: string) => {
+    setBrowseLoading(true);
+    void fetch(`/api/fs?path=${encodeURIComponent(path)}`)
+      .then((res) => res.ok ? res.json() : Promise.reject(new Error("Failed to list")))
+      .then((data: { path: string; directories: string[] }) => {
+        setBrowsePath(data.path);
+        setBrowseEntries(data.directories);
+      })
+      .catch(() => setBrowseEntries([]))
+      .finally(() => setBrowseLoading(false));
+  };
+
+  const openFolderBrowser = () => {
+    setWorkspaceOpen(true);
+    listDirectories(browsePath || "~");
+  };
+
+  const navigateTo = (path: string) => {
+    listDirectories(path);
+  };
+
+  const confirmSelection = () => {
+    onWorkspaceSelect?.(browsePath);
+    setWorkspaceOpen(false);
+  };
 
   return (
     <form
@@ -97,39 +125,6 @@ export function ChatComposer({
         className="w-full bg-transparent px-4 pt-3 pb-1 text-[14px] text-text placeholder:text-faint resize-none focus:outline-none leading-relaxed min-h-[40px] max-h-[200px]"
       />
       <div className="flex items-center gap-0.5 px-2.5 pb-2.5">
-        {workspaces.length > 0 && (
-          <div className="relative" ref={workspaceRef}>
-            <button
-              type="button"
-              onClick={() => setWorkspaceOpen((v) => !v)}
-              className="flex h-7 items-center gap-1 rounded-lg px-2 text-[12px] text-muted transition-colors hover:bg-hover hover:text-text"
-            >
-              <FolderOpen className="h-3.5 w-3.5" />
-              <span className="max-w-28 truncate">{selectedWorkspace?.id ?? t("composer.workspace")}</span>
-              <ChevronDown className="h-3 w-3 opacity-50" />
-            </button>
-            {workspaceOpen && (
-              <div className="absolute bottom-full left-0 z-20 mb-1.5 w-48 rounded-lg border border-border bg-surface py-1 shadow-lg animate-fade-in">
-                {workspaces.map((ws) => (
-                  <button
-                    key={ws.id}
-                    type="button"
-                    onClick={() => { onWorkspaceSelect?.(ws.id); setWorkspaceOpen(false); }}
-                    className={cn(
-                      "flex w-full items-center gap-2 px-3 py-1.5 text-[12px] transition-colors",
-                      ws.id === selectedWorkspaceId ? "text-accent font-medium" : "text-muted hover:bg-hover hover:text-text",
-                    )}
-                  >
-                    <FolderOpen className="h-3 w-3 shrink-0" />
-                    <span className="flex-1 truncate text-left">{ws.id}</span>
-                    <span className="shrink-0 text-[10px] text-faint">{ws.backend}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-        {workspaces.length > 0 && <div className="mx-0.5 h-4 w-px bg-border-subtle" />}
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
@@ -144,6 +139,69 @@ export function ChatComposer({
           onChange={onFileSelect}
           className="hidden"
         />
+        {(
+          <div className="relative" ref={workspaceRef}>
+            <button
+              type="button"
+              onClick={() => { if (workspaceOpen) { setWorkspaceOpen(false); } else { openFolderBrowser(); } }}
+              className="flex h-7 items-center gap-1 rounded-lg px-2 text-[12px] text-muted transition-colors hover:bg-hover hover:text-text"
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
+              <span className="max-w-28 truncate">{selectedWorkspaceId ?? browsePath ?? t("composer.workspace")}</span>
+              <ChevronDown className="h-3 w-3 opacity-50" />
+            </button>
+            {workspaceOpen && (
+              <div className="absolute bottom-full left-0 z-20 mb-1.5 w-72 rounded-lg border border-border bg-surface shadow-lg animate-fade-in overflow-hidden">
+                <div className="flex items-center gap-1.5 border-b border-border px-2 py-1.5">
+                  <button
+                    type="button"
+                    onClick={() => navigateTo(browsePath.replace(/\/[^/]+\/?$/, "") || "/")}
+                    disabled={browsePath === "/"}
+                    className={cn("h-5 w-5 flex items-center justify-center rounded text-[11px]", browsePath === "/" ? "text-faint" : "text-muted hover:bg-hover hover:text-text")}
+                  >
+                    ←
+                  </button>
+                  <input
+                    value={browsePath}
+                    onChange={(e) => setBrowsePath(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); navigateTo(browsePath); } }}
+                    className="flex-1 bg-transparent text-[12px] text-text placeholder:text-faint focus:outline-none"
+                    placeholder="/path/to/folder"
+                  />
+                </div>
+                <div className="max-h-48 overflow-y-auto py-0.5">
+                  {browseLoading ? (
+                    <p className="px-3 py-2 text-[12px] text-faint">加载中…</p>
+                  ) : browseEntries.length === 0 ? (
+                    <p className="px-3 py-2 text-[12px] text-faint">无子目录</p>
+                  ) : (
+                    browseEntries.map((entry) => (
+                      <button
+                        key={entry}
+                        type="button"
+                        onClick={() => navigateTo(`${browsePath.replace(/\/$/, "")}/${entry}`)}
+                        className="flex w-full items-center gap-2 px-3 py-1.5 text-[12px] text-muted transition-colors hover:bg-hover hover:text-text"
+                      >
+                        <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate text-left">{entry}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+                <div className="border-t border-border px-2 py-1.5">
+                  <button
+                    type="button"
+                    onClick={confirmSelection}
+                    className="w-full rounded-md bg-accent px-2 py-1.5 text-[12px] font-medium text-white transition-colors hover:bg-accent-hover"
+                  >
+                    选择此文件夹
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        <div className="flex-1" />
         <div className="relative" ref={permissionRef}>
           <button
             type="button"
@@ -181,7 +239,6 @@ export function ChatComposer({
             </div>
           )}
         </div>
-        <div className="flex-1" />
         {sending ? (
           <button
             type="button"

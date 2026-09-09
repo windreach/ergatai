@@ -15,6 +15,8 @@
     "@ergatai/platform-core": "*",
     "@radix-ui/react-collapsible": "^1.1.20",
     "clsx": "^2.1.1",
+    "dockview-core": "^8.2.0",
+    "dockview-react": "^8.2.0",
     "i18next": "^26.4.1",
     "lucide-react": "^1.40.0",
     "react": "^19.2.8",

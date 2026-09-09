@@ -157,7 +157,15 @@
     "attachment": "附件",
     "selectAgent": "选择 Agent",
     "noAgents": "暂无 Agent",
-    "newAgent": "新建 Agent"
+    "newAgent": "新建 Agent",
+    "greeting": "有什么我能帮你的吗？",
+    "greetingHint": "输入消息开始对话",
+    "suggestions": [
+      "分析项目架构",
+      "写一段代码",
+      "解释这段代码",
+      "帮我调试错误"
+    ]
   },
   "common": {
     "language": "语言",
@@ -175,8 +183,7 @@
     "close": "关闭",
     "panelErrorTitle": "面板加载失败",
     "retry": "重试"
-  }
-  ,
+  },
   "session": {
     "title": "会话",
     "new": "新建会话",
@@ -206,6 +213,11 @@
     "domainResizeHandle": "调整对话与工作区分区",
     "emptyConversation": "对话区域暂无内容",
     "emptyWorkspace": "工作区域暂无内容",
-    "startNewConversation": "开启新的对话"
+    "startNewConversation": "开启新的对话",
+    "today": "今天"
+  },
+  "init": {
+    "subtitle": "选择一个 Agent 开始对话",
+    "customAgent": "自定义 Agent"
   }
 }

@@ -1,5 +1,5 @@
 import type { Plugin } from "@ergatai/core-plugin-types";
-import { AgentWorkspace } from "./agent-workspace";
+import { App } from "./agent-workspace";
 
 export const dockviewPlugin: Plugin = {
   name: "@ergatai/dockview",
@@ -8,7 +8,7 @@ export const dockviewPlugin: Plugin = {
     context.effect(
       () => context.slots.register(
         { name: "root", id: "ergatai.dockview" },
-        AgentWorkspace,
+        App,
       ),
       "dockview: register agent workspace",
     );

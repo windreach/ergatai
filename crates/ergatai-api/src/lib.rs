@@ -146,6 +146,26 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::agents::get_agent_available_commands),
         )
         .route(
+            "/api/v1/agents/:id/execute-command",
+            post(api::agents::execute_agent_command),
+        )
+        .route(
+            "/api/v1/agents/:id/sessions",
+            get(api::agents::list_agent_sessions),
+        )
+        .route(
+            "/api/v1/agents/:id/sessions",
+            post(api::agents::create_agent_session),
+        )
+        .route(
+            "/api/v1/agents/:id/sessions/:session_id",
+            post(api::agents::load_agent_session),
+        )
+        .route(
+            "/api/v1/agents/:id/sessions/:session_id",
+            delete(api::agents::delete_agent_session),
+        )
+        .route(
             "/api/v1/agents/:id/usage",
             get(api::agents::get_agent_usage),
         )

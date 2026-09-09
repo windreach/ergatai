@@ -3,6 +3,78 @@
 @source "../../apps/web/src";
 @source "../";
 
+.dockview-theme-light,
+.dockview-theme-dark {
+  --dv-tabs-and-actions-container-background-color: var(--surface) !important;
+  --dv-group-view-background-color: var(--bg) !important;
+  --dv-activegroup-visiblepanel-tab-background-color: var(--bg);
+  --dv-activegroup-visiblepanel-tab-color: var(--text);
+  --dv-activegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-activegroup-hiddenpanel-tab-color: var(--muted);
+  --dv-tab-divider-color: var(--border-subtle);
+  --dv-icon-hover-background-color: var(--hover);
+  --dv-tabs-and-actions-container-height: 36px;
+  --dv-tabs-and-actions-container-font-size: 13px;
+}
+
+.dockview-theme-light .dv-tabs-and-actions-container,
+.dv-tabs-and-actions-container {
+  background-color: var(--surface) !important;
+}
+.dockview-theme-light .dv-groupview,
+.dv-groupview {
+  background-color: var(--bg) !important;
+}
+.dockview-theme-light .dv-tab.dv-active-tab,
+.dv-tab.dv-active-tab {
+  background-color: var(--bg) !important;
+  color: var(--text) !important;
+}
+.dockview-theme-light .dv-tab.dv-inactive-tab,
+.dv-tab.dv-inactive-tab {
+  background-color: transparent !important;
+  color: var(--muted) !important;
+}
+
+.dockview-theme-light .dv-tab,
+.dv-tab {
+  border-radius: 6px 6px 0 0 !important;
+  margin: 2px 1px 0 !important;
+  padding: 0 4px !important;
+  transition: background-color 150ms ease, color 150ms ease !important;
+}
+.dockview-theme-light .dv-tab .dv-default-tab,
+.dv-tab .dv-default-tab {
+  padding: 0 6px !important;
+  gap: 4px;
+}
+.dockview-theme-light .dv-tab .dv-default-tab .dv-default-tab-content,
+.dv-tab .dv-default-tab .dv-default-tab-content {
+  font-size: 13px !important;
+  font-weight: 500;
+}
+.dockview-theme-light .dv-tab .dv-default-tab .dv-default-tab-action,
+.dv-tab .dv-default-tab .dv-default-tab-action {
+  border-radius: 4px !important;
+  height: 20px !important;
+  width: 20px !important;
+  transition: background-color 150ms ease !important;
+}
+.dockview-theme-light .dv-tab .dv-default-tab .dv-default-tab-action:hover,
+.dv-tab .dv-default-tab .dv-default-tab-action:hover {
+  background-color: var(--hover) !important;
+}
+.dockview-theme-light .dv-tabs-and-actions-container,
+.dv-tabs-and-actions-container {
+  border-bottom: 1px solid var(--border-subtle) !important;
+  padding: 0 6px !important;
+  gap: 2px;
+}
+.dockview-theme-light .dv-groupview,
+.dv-groupview {
+  border: none !important;
+}
+
 @theme {
   --color-bg: var(--bg);
   --color-surface: var(--surface);

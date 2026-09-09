@@ -1,0 +1,57 @@
+.dv-tabs-and-actions-container {
+  background-color: #f3f3f3 !important;
+  border-bottom: 1px solid #e8e8ea !important;
+  padding: 0 6px !important;
+  gap: 2px;
+}
+.dv-groupview {
+  background-color: #ffffff !important;
+  border: none !important;
+}
+.dv-tab .dv-default-tab {
+  padding: 0 !important;
+}
+.dv-tab .dv-default-tab .dv-default-tab-content {
+  font-size: 13px !important;
+  font-weight: 500;
+}
+.dv-tab .dv-default-tab .dv-default-tab-action {
+  border-radius: 4px !important;
+  height: 20px !important;
+  width: 20px !important;
+  transition: background-color 150ms ease !important;
+}
+.dv-tab .dv-default-tab .dv-default-tab-action:hover {
+  background-color: #f0f0f1 !important;
+}
+.dv-tab.dv-active-tab {
+  background-color: transparent !important;
+}
+.dv-tab.dv-inactive-tab {
+  background-color: transparent !important;
+  color: inherit !important;
+}
+.dv-right-actions-container {
+  display: flex !important;
+  align-items: stretch;
+  padding: 0;
+}
+.dv-right-actions-container button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--dv-tabs-and-actions-container-height, 36px);
+  width: 36px;
+  margin: 0;
+  padding: 0;
+}
+.dv-tabs-container {
+  flex: 0 1 auto !important;
+}
+.dv-void-container {
+  flex-grow: 0 !important;
+}
+.dv-tabs-overflow-dropdown-default,
+.dv-tabs-overflow-container {
+  display: none !important;
+}

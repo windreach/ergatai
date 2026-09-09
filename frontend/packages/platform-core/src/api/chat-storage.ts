@@ -67,8 +67,11 @@ export async function listChatConversations(): Promise<ChatConversationSummary[]
     return keys
       .map((key, index) => {
         const id = typeof key === "string" ? key : String(key);
-        return { id, title: conversationTitle(values[index]) || id };
-      });
+        const title = conversationTitle(values[index]);
+        return { id, title, hasContent: title.length > 0 };
+      })
+      .filter((entry): entry is ChatConversationSummary & { hasContent: boolean } => entry.hasContent)
+      .map(({ id, title }) => ({ id, title }));
   } catch {
     return [];
   }
@@ -117,4 +120,52 @@ export async function clearChatMessages(conversationId: string): Promise<void> {
   const store = database.transaction(storeName, "readwrite").objectStore(storeName);
   await requestToPromise(store.delete(conversationId));
   localStorage.removeItem(`${legacyKeyPrefix}${conversationId}`);
+}
+
+function mockMessage(
+  id: string,
+  role: UIMessage["role"],
+  text: string,
+  offsetMs: number,
+): UIMessage {
+  return {
+    id,
+    role,
+    parts: [{ type: "text", text }],
+    createdAt: new Date(Date.now() - offsetMs).toISOString(),
+  } as UIMessage;
+}
+
+export async function seedMockConversations(): Promise<void> {
+  try {
+    const seeds: Array<[string, UIMessage[]]> = [
+      [
+        "mock-architecture-review",
+        [
+          mockMessage("m1", "user", "帮我分析一下这个项目的整体架构", 600_000),
+          mockMessage("m2", "assistant", "## Workspace Analysis\n\nThis workspace contains **12 crates** and follows a modular architecture. `ergatai-core` is the aggregation layer, while the API and CLI layers expose the same capability set through different transports.\n\n### Module Map\n\n| Module | Responsibility | Status |\n|---|---|---|\n| `ergatai-core` | Aggregates shared domain types | Ready |\n| `ergatai-nats` | JetStream messaging and WorkQueue | Ready |\n| `ergatai-dag` | Workflow orchestration | Ready |\n\n### Recommendation\n\nKeep the WorkQueue TTL at 24 hours until long-running tasks have durable checkpoints.", 540_000),
+        ],
+      ],
+      [
+        "mock-frontend-design",
+        [
+          mockMessage("m3", "user", "前端的面板结构是怎么设计的？", 300_000),
+          mockMessage("m4", "assistant", "## Frontend Architecture\n\nThe UI uses **five independently routable panels**:\n\n1. AI conversation\n2. Terminal\n3. Browser preview\n4. Files\n5. Review\n\nEach panel consumes the same registry contract, so switching `MockChatTransport` to `DefaultChatTransport` should not require UI changes.", 240_000),
+        ],
+      ],
+      [
+        "mock-debug-locking",
+        [
+          mockMessage("m5", "user", "ergatai-lock 的 watchdog 是怎么处理租约过期的？", 120_000),
+          mockMessage("m6", "assistant", "The watchdog monitors lock leases on a background timer. When a lease's TTL is about to expire, it attempts to renew. If renewal fails (e.g. the owner is gone), the watcher transitions the lock to `expired` and notifies all subscribers. This ensures stale holders don't block new acquisitions indefinitely.", 60_000),
+        ],
+      ],
+    ];
+
+    for (const [id, messages] of seeds) {
+      await saveChatMessages(id, messages);
+    }
+  } catch {
+    // Seeding is best-effort; ignore failures.
+  }
 }
