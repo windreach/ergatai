@@ -2,7 +2,7 @@ use axum::{extract::State, response::IntoResponse, Json};
 use ergatai_runtime::get_agent_runtime;
 use serde::Serialize;
 
-use crate::{nats, AppState};
+use crate::{nats, services::agent_service, AppState};
 
 #[derive(Debug, Serialize)]
 pub struct StatusResponse {
@@ -23,6 +23,29 @@ pub async fn get_status(State(_state): State<AppState>) -> impl IntoResponse {
         nats_initialized,
         nats_port,
         active_agents: agents.len(),
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct BackendConfigResponse {
+    pub auto_continue: bool,
+    pub max_auto_continues: usize,
+    pub mcp_over_acp_enabled: bool,
+    pub session_persistence_enabled: bool,
+}
+
+pub async fn get_backend_config(State(_state): State<AppState>) -> impl IntoResponse {
+    let auto_continue = agent_service::get_backend_auto_continue().unwrap_or(false);
+    let max_auto_continues = agent_service::get_backend_max_auto_continues().unwrap_or(0);
+    let mcp_over_acp_enabled = agent_service::is_backend_mcp_over_acp_enabled().unwrap_or(false);
+    let session_persistence_enabled =
+        agent_service::is_backend_session_persistence_enabled().unwrap_or(false);
+
+    Json(BackendConfigResponse {
+        auto_continue,
+        max_auto_continues,
+        mcp_over_acp_enabled,
+        session_persistence_enabled,
     })
 }
 

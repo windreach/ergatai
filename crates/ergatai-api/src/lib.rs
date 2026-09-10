@@ -170,6 +170,22 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::agents::get_agent_usage),
         )
         .route(
+            "/api/v1/agents/:id/output",
+            get(api::agents::get_agent_output),
+        )
+        .route(
+            "/api/v1/agents/:id/last-output",
+            get(api::agents::get_agent_last_output),
+        )
+        .route(
+            "/api/v1/agents/:id/exit-code",
+            get(api::agents::get_agent_exit_code),
+        )
+        .route(
+            "/api/v1/agents/:id/pid",
+            get(api::agents::get_agent_pid),
+        )
+        .route(
             "/api/v1/agent-profiles",
             get(api::agent_profiles::list_profiles),
         )
@@ -186,6 +202,10 @@ pub fn build_rest_app(state: AppState) -> Router {
             delete(api::agent_profiles::delete_profile),
         )
         .route("/api/v1/status", get(api::status::get_status))
+        .route(
+            "/api/v1/system/config",
+            get(api::status::get_backend_config),
+        )
         .route("/api/v1/locks", get(api::locks::list_locks))
         .route("/api/v1/locks/audit", get(api::locks::list_audit))
         .route(

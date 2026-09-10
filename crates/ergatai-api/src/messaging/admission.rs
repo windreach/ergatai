@@ -169,6 +169,14 @@ impl Default for RateLimitGate {
 #[async_trait]
 impl AdmissionGate for RateLimitGate {
     async fn check(&self, request: &SendRequest, runtime: &AgentRuntime) -> AdmissionResult {
+        // System senders (API, user) bypass rate limiting — they are trusted sources
+        // that don't correspond to runtime agents. This allows the frontend/UI to
+        // send messages without being registered as an agent.
+        const SYSTEM_SENDERS: &[&str] = &["api", "user", "system"];
+        if SYSTEM_SENDERS.contains(&request.from.as_str()) {
+            return AdmissionResult::Allowed;
+        }
+
         // SECURITY: Resolve sender to a known runtime agent ID. Reject unresolvable
         // senders instead of falling back to the raw string — otherwise an attacker
         // could rotate through N unique fake IDs, each getting its own 60 msg/min

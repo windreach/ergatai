@@ -65,11 +65,24 @@ pub struct AgentInfoResponse {
     pub last_heartbeat: String,
     /// Session title reported by the agent via `SessionUpdate::SessionInfoUpdate`.
     pub session_title: Option<String>,
+    /// ACP session ID for session persistence and recovery.
+    pub session_id: Option<String>,
     /// Stop reason from the most recent prompt response (e.g., EndTurn, MaxTokens,
     /// Refusal, Cancelled). `None` if no prompt has completed yet.
     pub stop_reason: Option<String>,
     /// Number of automatic prompt continuations performed (when auto-continue is enabled).
     pub continuation_count: usize,
+    /// Configuration options reported by the agent (includes modes like auto-approval, plan mode).
+    /// `None` if agent hasn't reported any config options yet.
+    pub config_options: Option<Vec<ConfigOptionInfo>>,
+    /// Agent profile name (e.g., "general-purpose", "explore", "plan").
+    pub profile: Option<String>,
+    /// Agent capabilities (tools this agent provides).
+    pub capabilities: Vec<String>,
+    /// When the lifecycle state last changed.
+    pub state_changed_at: String,
+    /// State transition history (audit trail).
+    pub state_history: Vec<ergatai_runtime::agent_record::StateTransition>,
 }
 
 #[derive(Debug, Serialize)]
@@ -88,9 +101,33 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
         .map(|a| {
             let session_title =
                 crate::services::agent_service::get_agent_session_title(&a.agent_id);
+            let session_id =
+                crate::services::agent_service::get_agent_session_id(&a.agent_id);
             let stop_reason = crate::services::agent_service::get_agent_stop_reason(&a.agent_id);
             let continuation_count =
                 crate::services::agent_service::get_agent_continuation_count(&a.agent_id);
+
+            // Get config options (includes modes like auto-approval, plan mode)
+            let config_options = crate::services::agent_service::get_agent_config_options(&a.agent_id)
+                .ok()
+                .flatten()
+                .map(|opts| {
+                    opts.into_iter()
+                        .map(|o| {
+                            let category = o.category.map(|c| format!("{:?}", c));
+                            let description = o.description.clone();
+                            let kind_json = serde_json::to_value(&o.kind).ok();
+                            ConfigOptionInfo {
+                                id: o.id.to_string(),
+                                name: o.name,
+                                description,
+                                category,
+                                kind: kind_json,
+                            }
+                        })
+                        .collect()
+                });
+
             AgentInfoResponse {
                 agent_id: a.agent_id,
                 stable_id: a.stable_id,
@@ -107,8 +144,14 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
                 created_at: a.created_at,
                 last_heartbeat: a.last_heartbeat,
                 session_title,
+                session_id,
                 stop_reason,
                 continuation_count,
+                config_options,
+                profile: a.profile,
+                capabilities: a.capabilities,
+                state_changed_at: a.state_changed_at,
+                state_history: a.state_history,
             }
         })
         .collect();
@@ -717,13 +760,13 @@ struct AgentConfigOptionsResponse {
 }
 
 /// Config option info.
-#[derive(Serialize)]
-struct ConfigOptionInfo {
-    id: String,
-    name: String,
-    description: Option<String>,
-    category: Option<String>,
-    kind: Option<serde_json::Value>,
+#[derive(Debug, Serialize)]
+pub struct ConfigOptionInfo {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub category: Option<String>,
+    pub kind: Option<serde_json::Value>,
 }
 
 /// Get recent elicitation requests for an agent.
@@ -1142,6 +1185,166 @@ pub async fn get_agent_usage(
     }
 }
 
+/// Response for agent output endpoint.
+#[derive(Serialize)]
+pub struct AgentOutputResponse {
+    pub agent_id: String,
+    pub output: String,
+}
+
+/// Get captured output for an agent (non-destructive read).
+pub async fn get_agent_output(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let result = crate::services::agent_service::get_agent_output(&id);
+    match result {
+        Ok(Some(output)) => (
+            StatusCode::OK,
+            Json(AgentOutputResponse {
+                agent_id: id,
+                output,
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Agent {} not found or has no output", id),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Response for agent last output age endpoint.
+#[derive(Serialize)]
+pub struct AgentLastOutputResponse {
+    pub agent_id: String,
+    /// Seconds since the agent's last output.
+    pub last_output_age_secs: f64,
+}
+
+/// Get the time elapsed since the agent's last output.
+pub async fn get_agent_last_output(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let result = crate::services::agent_service::get_agent_last_output_age(&id);
+    match result {
+        Ok(Some(duration)) => (
+            StatusCode::OK,
+            Json(AgentLastOutputResponse {
+                agent_id: id,
+                last_output_age_secs: duration.as_secs_f64(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Agent {} not found", id),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Response for agent exit code endpoint.
+#[derive(Serialize)]
+pub struct AgentExitCodeResponse {
+    pub agent_id: String,
+    /// `null` if still running, `0` for normal exit, non-zero for error.
+    pub exit_code: Option<i32>,
+    pub running: bool,
+}
+
+/// Get the exit code from the agent's connection task.
+pub async fn get_agent_exit_code(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let result = crate::services::agent_service::get_agent_exit_code(&id);
+    match result {
+        Ok(Some(exit_code)) => (
+            StatusCode::OK,
+            Json(AgentExitCodeResponse {
+                agent_id: id,
+                exit_code,
+                running: exit_code.is_none(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Agent {} not found", id),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Response for agent PID endpoint.
+#[derive(Serialize)]
+pub struct AgentPidResponse {
+    pub agent_id: String,
+    pub pid: u32,
+}
+
+/// Get the PID of an agent's process.
+pub async fn get_agent_pid(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let result = crate::services::agent_service::get_agent_pid(&id);
+    match result {
+        Ok(Some(pid)) => (
+            StatusCode::OK,
+            Json(AgentPidResponse {
+                agent_id: id,
+                pid,
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Agent {} not found or PID not available", id),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 // ── Tests ──
 
 #[cfg(test)]
@@ -1261,8 +1464,14 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".to_string(),
             last_heartbeat: "2026-01-01T00:00:00Z".to_string(),
             session_title: Some("Refactoring auth module".to_string()),
+            session_id: Some("session-123".to_string()),
             stop_reason: Some("end_turn".to_string()),
             continuation_count: 2,
+            config_options: None,
+            profile: Some("general-purpose".to_string()),
+            capabilities: vec!["code_edit".to_string(), "search".to_string()],
+            state_changed_at: "2026-01-01T00:00:00Z".to_string(),
+            state_history: vec![],
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["agent_id"], "a-1");

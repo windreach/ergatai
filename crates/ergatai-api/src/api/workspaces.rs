@@ -8,7 +8,7 @@ use ergatai_runtime::{get_agent_runtime, ResourceLimits, WorkspaceSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::AppState;
+use crate::{services::agent_service, AppState};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateWorkspaceRequest {
@@ -22,6 +22,8 @@ pub struct WorkspaceResponse {
     pub id: String,
     pub backend: String,
     pub metadata: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_thoughts: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -35,10 +37,14 @@ pub async fn list_workspaces(State(_state): State<AppState>) -> impl IntoRespons
         Ok(workspaces) => {
             let response: Vec<WorkspaceResponse> = workspaces
                 .into_iter()
-                .map(|w| WorkspaceResponse {
-                    id: w.id,
-                    backend: w.backend,
-                    metadata: w.metadata,
+                .map(|w| {
+                    let capture_thoughts = agent_service::get_workspace_capture_thoughts(&w.id).ok().flatten();
+                    WorkspaceResponse {
+                        id: w.id,
+                        backend: w.backend,
+                        metadata: w.metadata,
+                        capture_thoughts,
+                    }
                 })
                 .collect();
             (StatusCode::OK, Json(response)).into_response()
@@ -117,10 +123,12 @@ pub async fn create_workspace(
 
     match runtime.backend().create_workspace(spec).await {
         Ok(handle) => {
+            let capture_thoughts = agent_service::get_workspace_capture_thoughts(&handle.id).ok().flatten();
             let response = WorkspaceResponse {
                 id: handle.id,
                 backend: handle.backend,
                 metadata: handle.metadata,
+                capture_thoughts,
             };
             (StatusCode::CREATED, Json(response)).into_response()
         }
@@ -242,11 +250,13 @@ mod tests {
             id: "ws-1".to_string(),
             backend: "pty".to_string(),
             metadata,
+            capture_thoughts: Some(true),
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["id"], "ws-1");
         assert_eq!(json["backend"], "pty");
         assert_eq!(json["metadata"]["key"], "value");
+        assert_eq!(json["capture_thoughts"], true);
     }
 
     #[test]
@@ -255,6 +265,7 @@ mod tests {
             id: "ws-1".to_string(),
             backend: "pty".to_string(),
             metadata: HashMap::new(),
+            capture_thoughts: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert!(json["metadata"].as_object().unwrap().is_empty());

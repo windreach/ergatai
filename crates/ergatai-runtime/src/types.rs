@@ -201,6 +201,15 @@ pub struct AgentInfo {
     /// Last heartbeat timestamp (for hang detection)
     pub last_heartbeat: chrono::DateTime<chrono::Utc>,
 
+    /// Agent profile name (from profile registry)
+    pub profile: Option<String>,
+
+    /// Agent capabilities (from profile or runtime discovery)
+    pub capabilities: Vec<String>,
+
+    /// When the lifecycle state last changed
+    pub state_changed_at: chrono::DateTime<chrono::Utc>,
+
     /// State transition history (for debugging and audit)
     pub state_history: Vec<crate::agent_record::StateTransition>,
 }
@@ -466,6 +475,9 @@ mod tests {
             created_at: now,
             mcp_agent_id: None,
             last_heartbeat: now,
+            profile: None,
+            capabilities: Vec::new(),
+            state_changed_at: now,
             state_history: Vec::new(),
         };
         assert_eq!(info.agent_id, "agent-1");
@@ -501,6 +513,9 @@ mod tests {
             created_at: now,
             mcp_agent_id: None,
             last_heartbeat: now,
+            profile: None,
+            capabilities: Vec::new(),
+            state_changed_at: now,
             state_history: Vec::new(),
         };
         assert_eq!(info.task_id, Some("task-42".to_string()));

@@ -209,6 +209,15 @@ impl OutputBuffer {
         data.clear();
         result
     }
+
+    /// Read current buffer contents as text without clearing (non-destructive).
+    ///
+    /// Returns the full accumulated output since the buffer was created or last cleared.
+    /// Unlike `capture()`, this does not drain the buffer.
+    fn read(&self) -> String {
+        let data = self.data.read();
+        String::from_utf8_lossy(&data).to_string()
+    }
 }
 
 /// Helper function to evict oldest entries when a tracker reaches capacity.
@@ -582,6 +591,8 @@ struct AcpAgentEntry {
     elicitations: Arc<ElicitationTracker>,
     /// Session title/metadata from `SessionUpdate::SessionInfoUpdate`.
     session_title: Arc<RwLock<Option<String>>>,
+    /// ACP session ID (for session persistence and recovery).
+    session_id: Arc<RwLock<Option<String>>>,
     /// Last prompt response stop_reason (EndTurn, MaxTokens, Refusal, etc.).
     stop_reason: Arc<RwLock<Option<String>>>,
     /// Number of automatic continuations performed for this agent.
@@ -840,6 +851,24 @@ impl AcpBackend {
         })
     }
 
+    /// Get captured output for an agent (non-destructive read of the output buffer).
+    ///
+    /// Returns the full accumulated output text without clearing the buffer.
+    /// Unlike the internal `capture()` method used by the session handler, this
+    /// does not drain the buffer — repeated calls return the same data.
+    pub fn get_agent_output(&self, agent_id: &str) -> Option<String> {
+        self.reap_dead();
+        let agents = self.agents.read();
+        agents.get(agent_id).and_then(|entry| {
+            let output = entry.output.read();
+            if output.is_empty() {
+                None
+            } else {
+                Some(output)
+            }
+        })
+    }
+
     /// Get recent tool calls for an agent (last 100, newest first).
     ///
     /// Returns the full structured `TrackedToolCall` records with all ACP fields
@@ -887,6 +916,19 @@ impl AcpBackend {
             .and_then(|entry| entry.session_title.read().clone())
     }
 
+    /// Get the ACP session ID for an agent (if available).
+    ///
+    /// The session ID is assigned when the agent connects and is used for
+    /// session persistence and recovery. Returns `None` if the agent hasn't
+    /// established a session yet.
+    pub fn get_agent_session_id(&self, agent_id: &str) -> Option<String> {
+        self.reap_dead();
+        let agents = self.agents.read();
+        agents
+            .get(agent_id)
+            .and_then(|entry| entry.session_id.read().clone())
+    }
+
     /// Get the stop reason from the most recent prompt response.
     ///
     /// Returns `None` if no prompt has completed yet. Possible values include
@@ -899,6 +941,14 @@ impl AcpBackend {
             .and_then(|entry| entry.stop_reason.read().clone())
     }
 
+    /// Get the capture_thoughts setting for a workspace.
+    ///
+    /// Returns `None` if the workspace doesn't exist.
+    pub fn get_workspace_capture_thoughts(&self, workspace_id: &str) -> Option<bool> {
+        let workspaces = self.workspaces.read();
+        workspaces.get(workspace_id).map(|entry| entry.capture_thoughts)
+    }
+
     /// Get the number of automatic continuations performed for an agent.
     pub fn get_agent_continuation_count(&self, agent_id: &str) -> Option<usize> {
         self.reap_dead();
@@ -908,6 +958,32 @@ impl AcpBackend {
                 .continuation_count
                 .load(std::sync::atomic::Ordering::SeqCst)
         })
+    }
+
+    /// Get the time elapsed since the agent's last output.
+    ///
+    /// Returns `None` if the agent is not found. Useful for watchdog/health checks
+    /// to detect stuck or idle agents.
+    pub fn get_agent_last_output_age(&self, agent_id: &str) -> Option<std::time::Duration> {
+        self.reap_dead();
+        let agents = self.agents.read();
+        agents.get(agent_id).map(|entry| {
+            let last_output_at = entry.last_output_at.read();
+            last_output_at.elapsed()
+        })
+    }
+
+    /// Get the exit code from the agent's connection task.
+    ///
+    /// Returns `Some(None)` if the agent exists but hasn't exited yet (still running).
+    /// Returns `Some(Some(code))` if the agent has exited (0 = normal, non-zero = error).
+    /// Returns `None` if the agent is not found.
+    pub fn get_agent_exit_code(&self, agent_id: &str) -> Option<Option<i32>> {
+        self.reap_dead();
+        let agents = self.agents.read();
+        agents
+            .get(agent_id)
+            .map(|entry| entry.exit_code.read().clone())
     }
 
     /// Get configuration options reported by the agent.
@@ -1229,6 +1305,26 @@ impl AcpBackend {
         response_rx
             .await
             .map_err(|_| ErgataiError::internal("ACP response channel closed"))?
+    }
+
+    /// Get backend configuration: auto_continue setting.
+    pub fn get_auto_continue(&self) -> bool {
+        self.auto_continue
+    }
+
+    /// Get backend configuration: max_auto_continues setting.
+    pub fn get_max_auto_continues(&self) -> usize {
+        self.max_auto_continues
+    }
+
+    /// Check if MCP-over-ACP is enabled.
+    pub fn is_mcp_over_acp_enabled(&self) -> bool {
+        self.mcp_server_factory.is_some()
+    }
+
+    /// Check if session persistence is enabled.
+    pub fn is_session_persistence_enabled(&self) -> bool {
+        self.session_store.is_some()
     }
 }
 
@@ -2141,6 +2237,7 @@ impl AgentRuntimeBackend for AcpBackend {
             plan,
             elicitations,
             session_title,
+            session_id: Arc::new(RwLock::new(session_id.clone().map(|id| id.to_string()))),
             stop_reason,
             continuation_count,
             config_options,
@@ -2535,6 +2632,7 @@ mod tests {
             plan: Arc::new(RwLock::new(None)),
             elicitations: Arc::new(ElicitationTracker::new(100)),
             session_title: Arc::new(RwLock::new(None)),
+            session_id: Arc::new(RwLock::new(None)),
             stop_reason: Arc::new(RwLock::new(None)),
             continuation_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             config_options: Arc::new(RwLock::new(Vec::new())),

@@ -293,6 +293,21 @@ pub struct WorkspaceResponse {
     pub id: String,
     pub backend: String,
     pub metadata: HashMap<String, String>,
+    #[serde(default)]
+    pub capture_thoughts: Option<bool>,
+}
+
+/// Configuration option info (matches API's ConfigOptionInfo).
+#[derive(Debug, Deserialize)]
+pub struct ConfigOptionInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub kind: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -327,6 +342,33 @@ pub struct AgentInfoResponse {
     pub created_at: String,
     #[serde(default)]
     pub last_heartbeat: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub session_title: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub stop_reason: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub continuation_count: usize,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub config_options: Option<Vec<ConfigOptionInfo>>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub profile: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub state_changed_at: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub state_history: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -220,6 +220,9 @@ impl AgentRuntime {
             created_at: now,
             mcp_agent_id: None,
             last_heartbeat: now,
+            profile: None,
+            capabilities: Vec::new(),
+            state_changed_at: now,
             state_history: Vec::new(),
         };
 
@@ -392,6 +395,9 @@ impl AgentRuntime {
             created_at: now,
             mcp_agent_id: None,
             last_heartbeat: now,
+            profile: None,
+            capabilities: Vec::new(),
+            state_changed_at: now,
             state_history: Vec::new(),
         };
 
@@ -577,6 +583,9 @@ impl AgentRuntime {
                     created_at: now,
                     mcp_agent_id,
                     last_heartbeat: now,
+                    profile: None,
+                    capabilities: Vec::new(),
+                    state_changed_at: now,
                     state_history: Vec::new(),
                 }
             });
@@ -1992,6 +2001,9 @@ mod tests {
             created_at: now,
             mcp_agent_id: None,
             last_heartbeat: now,
+            profile: None,
+            capabilities: Vec::new(),
+            state_changed_at: now,
             state_history: Vec::new(),
         };
         runtime

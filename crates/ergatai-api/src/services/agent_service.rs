@@ -68,6 +68,27 @@ pub fn get_agent_usage(agent_id: &str) -> anyhow::Result<Option<(usize, usize)>>
     with_acp_backend(|acp| acp.get_agent_usage(agent_id))
 }
 
+/// Get captured output for an agent (non-destructive read).
+pub fn get_agent_output(agent_id: &str) -> anyhow::Result<Option<String>> {
+    with_acp_backend(|acp| acp.get_agent_output(agent_id))
+}
+
+/// Get the time elapsed since the agent's last output.
+pub fn get_agent_last_output_age(agent_id: &str) -> anyhow::Result<Option<std::time::Duration>> {
+    with_acp_backend(|acp| acp.get_agent_last_output_age(agent_id))
+}
+
+/// Get the exit code from the agent's connection task.
+/// `Some(None)` = exists but still running, `Some(Some(code))` = exited, `None` = not found.
+pub fn get_agent_exit_code(agent_id: &str) -> anyhow::Result<Option<Option<i32>>> {
+    with_acp_backend(|acp| acp.get_agent_exit_code(agent_id))
+}
+
+/// Get the PID of an agent's process.
+pub fn get_agent_pid(agent_id: &str) -> anyhow::Result<Option<u32>> {
+    with_acp_backend(|acp| acp.get_pid_by_agent(agent_id))
+}
+
 /// Cancel the current prompt turn for an agent (sends ACP `session/cancel`).
 ///
 /// Does NOT stop the agent — only cancels the in-flight prompt.
@@ -186,6 +207,13 @@ pub fn get_agent_session_title(agent_id: &str) -> Option<String> {
         .flatten()
 }
 
+/// Get the ACP session ID for an agent (if available).
+pub fn get_agent_session_id(agent_id: &str) -> Option<String> {
+    with_acp_backend(|acp| acp.get_agent_session_id(agent_id))
+        .ok()
+        .flatten()
+}
+
 /// Get the stop reason from the most recent prompt response.
 pub fn get_agent_stop_reason(agent_id: &str) -> Option<String> {
     with_acp_backend(|acp| acp.get_agent_stop_reason(agent_id))
@@ -237,6 +265,14 @@ pub struct AgentListItem {
     pub last_heartbeat: String,
     /// Working directory from workspace metadata.
     pub work_dir: String,
+    /// Agent profile name (e.g., "general-purpose", "explore", "plan").
+    pub profile: Option<String>,
+    /// Agent capabilities (tools this agent provides).
+    pub capabilities: Vec<String>,
+    /// When the lifecycle state last changed.
+    pub state_changed_at: String,
+    /// State transition history (audit trail).
+    pub state_history: Vec<ergatai_runtime::agent_record::StateTransition>,
 }
 
 /// List agents matching the given filter.
@@ -326,6 +362,10 @@ pub async fn list_agents_filtered(filter: AgentListFilter) -> Vec<AgentListItem>
                 created_at: a.created_at.to_rfc3339(),
                 last_heartbeat: a.last_heartbeat.to_rfc3339(),
                 work_dir,
+                profile: a.profile,
+                capabilities: a.capabilities,
+                state_changed_at: a.state_changed_at.to_rfc3339(),
+                state_history: a.state_history,
             }
         })
         .collect()
@@ -337,4 +377,36 @@ pub async fn list_agents_filtered(filter: AgentListFilter) -> Vec<AgentListItem>
 pub async fn resolve_agent_id(mcp_agent_id: &str) -> Option<String> {
     let runtime = get_agent_runtime();
     runtime.resolve_agent_id(mcp_agent_id).await
+}
+
+// ── Backend global configuration ──────────────────────────────────────────────
+
+///
+/// Get the backend auto-continue setting.
+pub fn get_backend_auto_continue() -> anyhow::Result<bool> {
+    with_acp_backend(|b| b.get_auto_continue())
+}
+
+///
+/// Get the backend max auto-continues limit.
+pub fn get_backend_max_auto_continues() -> anyhow::Result<usize> {
+    with_acp_backend(|b| b.get_max_auto_continues())
+}
+
+///
+/// Check if MCP-over-ACP is enabled in the backend.
+pub fn is_backend_mcp_over_acp_enabled() -> anyhow::Result<bool> {
+    with_acp_backend(|b| b.is_mcp_over_acp_enabled())
+}
+
+///
+/// Check if session persistence is enabled in the backend.
+pub fn is_backend_session_persistence_enabled() -> anyhow::Result<bool> {
+    with_acp_backend(|b| b.is_session_persistence_enabled())
+}
+
+///
+/// Get the capture_thoughts setting for a workspace.
+pub fn get_workspace_capture_thoughts(workspace_id: &str) -> anyhow::Result<Option<bool>> {
+    with_acp_backend(|b| b.get_workspace_capture_thoughts(workspace_id))
 }

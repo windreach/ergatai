@@ -278,6 +278,7 @@ mod tests {
             id: id.to_string(),
             backend: backend.to_string(),
             metadata: HashMap::new(),
+            capture_thoughts: None,
         }
     }
 
@@ -297,6 +298,15 @@ mod tests {
             is_processing: state == "processing",
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_heartbeat: "2024-01-01T00:00:00Z".to_string(),
+            session_title: None,
+            session_id: None,
+            stop_reason: None,
+            continuation_count: 0,
+            config_options: None,
+            profile: None,
+            capabilities: vec![],
+            state_changed_at: "2024-01-01T00:00:00Z".to_string(),
+            state_history: vec![],
         }
     }
 
@@ -393,6 +403,15 @@ mod tests {
             is_processing: false,
             created_at: "2024-06-15T12:30:00Z".to_string(),
             last_heartbeat: "2024-06-15T12:30:00Z".to_string(),
+            session_title: None,
+            session_id: None,
+            stop_reason: None,
+            continuation_count: 0,
+            config_options: None,
+            profile: None,
+            capabilities: vec![],
+            state_changed_at: "2024-06-15T12:30:00Z".to_string(),
+            state_history: vec![],
         };
         format_agents_table(&[agent]);
     }
