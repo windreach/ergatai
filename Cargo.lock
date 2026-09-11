@@ -1183,6 +1183,7 @@ dependencies = [
  "futures",
  "metrics",
  "metrics-exporter-prometheus",
+ "once_cell",
  "rmcp 2.2.0",
  "rmcp 3.1.2",
  "rusqlite",

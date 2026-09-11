@@ -13,7 +13,7 @@ use axum::{
     http::{header, Request, StatusCode},
     middleware::{self, Next},
     response::IntoResponse,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,8 @@ pub mod mcp;
 pub mod messaging;
 
 pub mod services;
+
+pub mod user_data_db;
 
 // ── AppState ─────────────────────────────────────────────────────────
 
@@ -119,10 +121,7 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/agents/:id/cancel",
             post(api::agents::cancel_prompt),
         )
-        .route(
-            "/api/v1/agents/:id/prompt",
-            post(api::agents::prompt_agent),
-        )
+        .route("/api/v1/agents/:id/prompt", post(api::agents::prompt_agent))
         .route(
             "/api/v1/agents/:id/stream",
             get(api::agents::stream_agent_output),
@@ -189,9 +188,59 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/agents/:id/exit-code",
             get(api::agents::get_agent_exit_code),
         )
+        .route("/api/v1/agents/:id/pid", get(api::agents::get_agent_pid))
+        // Projects CRUD
+        .route("/api/v1/projects", get(api::projects::list_projects))
+        .route("/api/v1/projects", post(api::projects::create_project))
         .route(
-            "/api/v1/agents/:id/pid",
-            get(api::agents::get_agent_pid),
+            "/api/v1/projects/:id",
+            get(api::projects::get_project),
+        )
+        .route(
+            "/api/v1/projects/:id",
+            put(api::projects::update_project),
+        )
+        .route(
+            "/api/v1/projects/:id",
+            delete(api::projects::delete_project),
+        )
+        // Chats CRUD
+        .route("/api/v1/chats", get(api::chats::list_chats))
+        .route("/api/v1/chats", post(api::chats::create_chat))
+        .route("/api/v1/chats/:id", get(api::chats::get_chat))
+        .route(
+            "/api/v1/chats/:id",
+            put(api::chats::update_chat),
+        )
+        .route(
+            "/api/v1/chats/:id/archive",
+            post(api::chats::archive_chat),
+        )
+        .route(
+            "/api/v1/chats/:id/unarchive",
+            post(api::chats::unarchive_chat),
+        )
+        .route("/api/v1/chats/:id", delete(api::chats::delete_chat))
+        // Sub-chats CRUD
+        .route(
+            "/api/v1/chats/:id/sub-chats",
+            get(api::chats::list_sub_chats),
+        )
+        .route(
+            "/api/v1/chats/:id/sub-chats",
+            post(api::chats::create_sub_chat),
+        )
+        .route(
+            "/api/v1/chats/:chat_id/sub-chats/:sub_chat_id",
+            get(api::chats::get_sub_chat),
+        )
+        .route(
+            "/api/v1/chats/:chat_id/sub-chats/:sub_chat_id",
+            put(api::chats::update_sub_chat),
+        )
+        .route(
+            "/api/v1/chats/:chat_id/sub-chats/:sub_chat_id",
+            delete(api::chats::delete_sub_chat),
         )
         .route(
             "/api/v1/agent-profiles",

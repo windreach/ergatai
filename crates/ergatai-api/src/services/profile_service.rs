@@ -56,7 +56,8 @@ pub async fn register_profile(
     package_name: Option<String>,
 ) -> Result<()> {
     let registry = get_profile_registry()?;
-    let registration = AgentRegistration::with_package_name(name, command, agent_type, package_name);
+    let registration =
+        AgentRegistration::with_package_name(name, command, agent_type, package_name);
     registry
         .register(registration)
         .await

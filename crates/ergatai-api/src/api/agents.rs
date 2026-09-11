@@ -10,8 +10,8 @@ use axum::{
 use ergatai_runtime::{get_agent_runtime, ResourceLimits, WorkspaceSpec};
 use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
-use std::convert::Infallible;
 use std::collections::HashMap;
+use std::convert::Infallible;
 
 use crate::messaging::{get_message_sender, SendMessageResult, SendRequest};
 use crate::AppState;
@@ -106,32 +106,32 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
         .map(|a| {
             let session_title =
                 crate::services::agent_service::get_agent_session_title(&a.agent_id);
-            let session_id =
-                crate::services::agent_service::get_agent_session_id(&a.agent_id);
+            let session_id = crate::services::agent_service::get_agent_session_id(&a.agent_id);
             let stop_reason = crate::services::agent_service::get_agent_stop_reason(&a.agent_id);
             let continuation_count =
                 crate::services::agent_service::get_agent_continuation_count(&a.agent_id);
 
             // Get config options (includes modes like auto-approval, plan mode)
-            let config_options = crate::services::agent_service::get_agent_config_options(&a.agent_id)
-                .ok()
-                .flatten()
-                .map(|opts| {
-                    opts.into_iter()
-                        .map(|o| {
-                            let category = o.category.map(|c| format!("{:?}", c));
-                            let description = o.description.clone();
-                            let kind_json = serde_json::to_value(&o.kind).ok();
-                            ConfigOptionInfo {
-                                id: o.id.to_string(),
-                                name: o.name,
-                                description,
-                                category,
-                                kind: kind_json,
-                            }
-                        })
-                        .collect()
-                });
+            let config_options =
+                crate::services::agent_service::get_agent_config_options(&a.agent_id)
+                    .ok()
+                    .flatten()
+                    .map(|opts| {
+                        opts.into_iter()
+                            .map(|o| {
+                                let category = o.category.map(|c| format!("{:?}", c));
+                                let description = o.description.clone();
+                                let kind_json = serde_json::to_value(&o.kind).ok();
+                                ConfigOptionInfo {
+                                    id: o.id.to_string(),
+                                    name: o.name,
+                                    description,
+                                    category,
+                                    kind: kind_json,
+                                }
+                            })
+                            .collect()
+                    });
 
             AgentInfoResponse {
                 agent_id: a.agent_id,
@@ -891,12 +891,8 @@ pub async fn execute_agent_command(
     Path(id): Path<String>,
     Json(req): Json<ExecuteCommandRequest>,
 ) -> impl IntoResponse {
-    match crate::services::agent_service::execute_agent_command(
-        &id,
-        &req.command,
-        req.timeout_secs,
-    )
-    .await
+    match crate::services::agent_service::execute_agent_command(&id, &req.command, req.timeout_secs)
+        .await
     {
         Ok(output) => {
             let parsed = parse_command_output(&req.command, &output);
@@ -1343,14 +1339,9 @@ pub async fn get_agent_pid(
 ) -> impl IntoResponse {
     let result = crate::services::agent_service::get_agent_pid(&id);
     match result {
-        Ok(Some(pid)) => (
-            StatusCode::OK,
-            Json(AgentPidResponse {
-                agent_id: id,
-                pid,
-            }),
-        )
-            .into_response(),
+        Ok(Some(pid)) => {
+            (StatusCode::OK, Json(AgentPidResponse { agent_id: id, pid })).into_response()
+        }
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -1385,7 +1376,11 @@ pub async fn prompt_agent(
     Json(body): Json<PromptAgentRequest>,
 ) -> impl IntoResponse {
     match crate::services::agent_service::prompt_agent(&id, &body.message).await {
-        Ok(()) => (StatusCode::ACCEPTED, Json(serde_json::json!({ "status": "queued" }))).into_response(),
+        Ok(()) => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "status": "queued" })),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -1422,42 +1417,49 @@ pub async fn stream_agent_output(
     let event_stream = stream::unfold(receiver, move |mut rx| {
         let aid = agent_id_for_stream.clone();
         async move {
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    if let Ok(json) = serde_json::to_string(&event) {
-                        let event_type = match &event {
-                            ergatai_runtime::AgentOutputEvent::Text { .. } => "text",
-                            ergatai_runtime::AgentOutputEvent::Thinking { .. } => "thinking",
-                            ergatai_runtime::AgentOutputEvent::ToolCallStart { .. } => "tool_call_start",
-                            ergatai_runtime::AgentOutputEvent::ToolCallInput { .. } => "tool_call_input",
-                            ergatai_runtime::AgentOutputEvent::ToolCallComplete { .. } => "tool_call_complete",
-                            ergatai_runtime::AgentOutputEvent::ToolCallError { .. } => "tool_call_error",
-                            ergatai_runtime::AgentOutputEvent::Done { .. } => "done",
-                            ergatai_runtime::AgentOutputEvent::Error { .. } => "error",
-                        };
-                        let sse_event = Event::default()
-                            .event(event_type)
-                            .data(json);
-                        let is_done = matches!(event, ergatai_runtime::AgentOutputEvent::Done { .. });
-                        let result = Some((Ok(sse_event), rx));
-                        if is_done {
-                            // After yielding Done, end the stream on next iteration
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        if let Ok(json) = serde_json::to_string(&event) {
+                            let event_type = match &event {
+                                ergatai_runtime::AgentOutputEvent::Text { .. } => "text",
+                                ergatai_runtime::AgentOutputEvent::Thinking { .. } => "thinking",
+                                ergatai_runtime::AgentOutputEvent::ToolCallStart { .. } => {
+                                    "tool_call_start"
+                                }
+                                ergatai_runtime::AgentOutputEvent::ToolCallInput { .. } => {
+                                    "tool_call_input"
+                                }
+                                ergatai_runtime::AgentOutputEvent::ToolCallComplete { .. } => {
+                                    "tool_call_complete"
+                                }
+                                ergatai_runtime::AgentOutputEvent::ToolCallError { .. } => {
+                                    "tool_call_error"
+                                }
+                                ergatai_runtime::AgentOutputEvent::Done { .. } => "done",
+                                ergatai_runtime::AgentOutputEvent::Error { .. } => "error",
+                            };
+                            let sse_event = Event::default().event(event_type).data(json);
+                            let is_done =
+                                matches!(event, ergatai_runtime::AgentOutputEvent::Done { .. });
+                            let result = Some((Ok(sse_event), rx));
+                            if is_done {
+                                // After yielding Done, end the stream on next iteration
+                                return result;
+                            }
                             return result;
                         }
-                        return result;
                     }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(agent_id = %aid, lagged = n, "SSE subscriber lagged, skipping events");
-                    continue;
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    return None;
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(agent_id = %aid, lagged = n, "SSE subscriber lagged, skipping events");
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        return None;
+                    }
                 }
             }
         }
-    }
     });
 
     let pinned: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =

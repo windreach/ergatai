@@ -32,10 +32,7 @@ pub async fn install_npm(package_name: &str) -> ErgataiResult<String> {
         .output()
         .await
         .map_err(|e| {
-            ErgataiError::internal(format!(
-                "Failed to spawn npm (is it installed?): {}",
-                e
-            ))
+            ErgataiError::internal(format!("Failed to spawn npm (is it installed?): {}", e))
         })?;
 
     handle_npm_output(output, "install", package_name)
@@ -58,10 +55,7 @@ pub async fn uninstall_npm(package_name: &str) -> ErgataiResult<String> {
         .output()
         .await
         .map_err(|e| {
-            ErgataiError::internal(format!(
-                "Failed to spawn npm (is it installed?): {}",
-                e
-            ))
+            ErgataiError::internal(format!("Failed to spawn npm (is it installed?): {}", e))
         })?;
 
     handle_npm_output(output, "uninstall", package_name)

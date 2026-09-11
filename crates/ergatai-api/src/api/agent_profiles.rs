@@ -222,7 +222,10 @@ pub async fn list_with_status() -> impl IntoResponse {
     match profile_service::list_profiles_with_status() {
         Ok(profiles) => {
             let response = ListProfilesWithStatusResponse {
-                profiles: profiles.into_iter().map(ProfileWithStatusResponse::from).collect(),
+                profiles: profiles
+                    .into_iter()
+                    .map(ProfileWithStatusResponse::from)
+                    .collect(),
             };
             match serde_json::to_value(response) {
                 Ok(value) => (StatusCode::OK, Json(value)),

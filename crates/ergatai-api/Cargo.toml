@@ -78,6 +78,7 @@ metrics-exporter-prometheus = "0.16"
 # Utilities
 uuid.workspace = true
 chrono.workspace = true
+once_cell = "1.19"
 
 [dev-dependencies]
 tokio-test = "0.4"

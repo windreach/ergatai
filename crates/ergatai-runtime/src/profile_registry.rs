@@ -778,10 +778,9 @@ impl ProfileRegistry {
     /// - Profile has no `package_name` (not npm-installable)
     /// - npm install fails
     pub async fn install(&self, name: &str) -> ErgataiResult<String> {
-        let profile = self
-            .get(name)
-            .await?
-            .ok_or_else(|| ErgataiError::InvalidArgument(format!("Profile '{}' not found", name)))?;
+        let profile = self.get(name).await?.ok_or_else(|| {
+            ErgataiError::InvalidArgument(format!("Profile '{}' not found", name))
+        })?;
 
         let package_name = profile.package_name.ok_or_else(|| {
             ErgataiError::InvalidArgument(format!(
@@ -798,10 +797,9 @@ impl ProfileRegistry {
     /// Looks up the profile, extracts the `package_name`, and runs
     /// `npm uninstall -g`. Returns the npm stdout on success.
     pub async fn uninstall(&self, name: &str) -> ErgataiResult<String> {
-        let profile = self
-            .get(name)
-            .await?
-            .ok_or_else(|| ErgataiError::InvalidArgument(format!("Profile '{}' not found", name)))?;
+        let profile = self.get(name).await?.ok_or_else(|| {
+            ErgataiError::InvalidArgument(format!("Profile '{}' not found", name))
+        })?;
 
         let package_name = profile.package_name.ok_or_else(|| {
             ErgataiError::InvalidArgument(format!(
