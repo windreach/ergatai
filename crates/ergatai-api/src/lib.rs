@@ -119,6 +119,14 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/agents/:id/cancel",
             post(api::agents::cancel_prompt),
         )
+        .route(
+            "/api/v1/agents/:id/prompt",
+            post(api::agents::prompt_agent),
+        )
+        .route(
+            "/api/v1/agents/:id/stream",
+            get(api::agents::stream_agent_output),
+        )
         // ACP monitoring endpoints
         .route(
             "/api/v1/agents/:id/thoughts",

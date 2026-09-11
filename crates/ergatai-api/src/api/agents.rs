@@ -1,11 +1,16 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{
+        sse::{Event, Sse},
+        IntoResponse,
+    },
     Json,
 };
 use ergatai_runtime::{get_agent_runtime, ResourceLimits, WorkspaceSpec};
+use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
 use std::collections::HashMap;
 
 use crate::messaging::{get_message_sender, SendMessageResult, SendRequest};
@@ -1343,6 +1348,108 @@ pub async fn get_agent_pid(
         )
             .into_response(),
     }
+}
+
+// ── Prompt & SSE streaming ──
+
+#[derive(Debug, Deserialize)]
+pub struct PromptAgentRequest {
+    pub message: String,
+}
+
+/// POST /api/v1/agents/:id/prompt — send a prompt to an agent (non-blocking).
+///
+/// Returns 202 Accepted immediately. The agent processes the prompt in the
+/// background; output events are available via `GET /api/v1/agents/:id/stream`.
+pub async fn prompt_agent(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<PromptAgentRequest>,
+) -> impl IntoResponse {
+    match crate::services::agent_service::prompt_agent(&id, &body.message).await {
+        Ok(()) => (StatusCode::ACCEPTED, Json(serde_json::json!({ "status": "queued" }))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/v1/agents/:id/stream — SSE stream of real-time agent output events.
+///
+/// Subscribes to the agent's broadcast channel and yields `AgentOutputEvent`
+/// values as SSE data frames. The stream stays open until the agent finishes
+/// (emits a `Done` event) or the client disconnects.
+pub async fn stream_agent_output(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let receiver = match crate::services::agent_service::subscribe_agent_output(&id) {
+        Ok(rx) => rx,
+        Err(e) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let agent_id_for_stream = id.clone();
+    let event_stream = stream::unfold(receiver, move |mut rx| {
+        let aid = agent_id_for_stream.clone();
+        async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    if let Ok(json) = serde_json::to_string(&event) {
+                        let event_type = match &event {
+                            ergatai_runtime::AgentOutputEvent::Text { .. } => "text",
+                            ergatai_runtime::AgentOutputEvent::Thinking { .. } => "thinking",
+                            ergatai_runtime::AgentOutputEvent::ToolCallStart { .. } => "tool_call_start",
+                            ergatai_runtime::AgentOutputEvent::ToolCallInput { .. } => "tool_call_input",
+                            ergatai_runtime::AgentOutputEvent::ToolCallComplete { .. } => "tool_call_complete",
+                            ergatai_runtime::AgentOutputEvent::ToolCallError { .. } => "tool_call_error",
+                            ergatai_runtime::AgentOutputEvent::Done { .. } => "done",
+                            ergatai_runtime::AgentOutputEvent::Error { .. } => "error",
+                        };
+                        let sse_event = Event::default()
+                            .event(event_type)
+                            .data(json);
+                        let is_done = matches!(event, ergatai_runtime::AgentOutputEvent::Done { .. });
+                        let result = Some((Ok(sse_event), rx));
+                        if is_done {
+                            // After yielding Done, end the stream on next iteration
+                            return result;
+                        }
+                        return result;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(agent_id = %aid, lagged = n, "SSE subscriber lagged, skipping events");
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    return None;
+                }
+            }
+        }
+    }
+    });
+
+    let pinned: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
+        Box::pin(event_stream);
+
+    Sse::new(pinned)
+        .keep_alive(
+            axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)),
+        )
+        .into_response()
 }
 
 // ── Tests ──

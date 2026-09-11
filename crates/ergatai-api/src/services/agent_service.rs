@@ -410,3 +410,32 @@ pub fn is_backend_session_persistence_enabled() -> anyhow::Result<bool> {
 pub fn get_workspace_capture_thoughts(workspace_id: &str) -> anyhow::Result<Option<bool>> {
     with_acp_backend(|b| b.get_workspace_capture_thoughts(workspace_id))
 }
+
+// ── Streaming & Prompt ──
+
+/// Subscribe to real-time output events from an agent.
+///
+/// Returns a broadcast receiver that yields `AgentOutputEvent` values as
+/// the agent produces output during prompt execution.
+pub fn subscribe_agent_output(
+    agent_id: &str,
+) -> anyhow::Result<tokio::sync::broadcast::Receiver<ergatai_runtime::AgentOutputEvent>> {
+    with_acp_backend(|acp| acp.subscribe_output(agent_id))?
+        .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found", agent_id))
+}
+
+/// Send a prompt to an agent (non-blocking).
+///
+/// Spawns a background task that calls `inject_message()` and returns
+/// immediately. Output events are broadcast via `subscribe_agent_output()`.
+pub async fn prompt_agent(agent_id: &str, message: &str) -> anyhow::Result<()> {
+    let runtime = get_agent_runtime();
+    let agent_id = agent_id.to_string();
+    let message = message.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = runtime.inject_message(&agent_id, &message).await {
+            tracing::warn!(agent_id = %agent_id, error = %e, "Background prompt failed");
+        }
+    });
+    Ok(())
+}

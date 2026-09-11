@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use agent_client_protocol::schema::v1::{
@@ -218,6 +218,36 @@ impl OutputBuffer {
         let data = self.data.read();
         String::from_utf8_lossy(&data).to_string()
     }
+}
+
+/// Events emitted from an ACP agent during prompt execution.
+///
+/// These events are broadcast to SSE subscribers in real-time, enabling
+/// the frontend to render streaming output without polling.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentOutputEvent {
+    /// Incremental text content from the agent.
+    Text { delta: String },
+    /// Incremental thinking/reasoning content.
+    Thinking { delta: String },
+    /// A tool call has started.
+    ToolCallStart { id: String, name: String },
+    /// Streaming tool call input (JSON delta).
+    ToolCallInput { id: String, delta: String },
+    /// Tool call input is complete and results are available.
+    ToolCallComplete {
+        id: String,
+        name: String,
+        input: Option<serde_json::Value>,
+        output: Option<serde_json::Value>,
+    },
+    /// Tool call failed.
+    ToolCallError { id: String, error: String },
+    /// Prompt completed.
+    Done { stop_reason: String },
+    /// An error occurred during prompt execution.
+    Error { message: String },
 }
 
 /// Helper function to evict oldest entries when a tracker reaches capacity.
@@ -577,6 +607,8 @@ impl ElicitationTracker {
 struct AcpAgentEntry {
     /// Channel to send commands to the connection task.
     command_tx: mpsc::Sender<AcpCommand>,
+    /// Broadcast sender for real-time output events (SSE subscribers).
+    output_tx: broadcast::Sender<AgentOutputEvent>,
     /// Output buffer for captured agent responses.
     output: Arc<OutputBuffer>,
     /// Thought buffer for captured agent thoughts (if capture_thoughts enabled).
@@ -867,6 +899,20 @@ impl AcpBackend {
                 Some(output)
             }
         })
+    }
+
+    /// Subscribe to real-time output events from an agent.
+    ///
+    /// Returns a broadcast receiver that yields `AgentOutputEvent` values as
+    /// the agent produces them during prompt execution. Used by the SSE stream
+    /// endpoint to push streaming output to the frontend.
+    pub fn subscribe_output(
+        &self,
+        agent_id: &str,
+    ) -> Option<broadcast::Receiver<AgentOutputEvent>> {
+        self.reap_dead();
+        let agents = self.agents.read();
+        agents.get(agent_id).map(|entry| entry.output_tx.subscribe())
     }
 
     /// Get recent tool calls for an agent (last 100, newest first).
@@ -1485,6 +1531,7 @@ impl AgentRuntimeBackend for AcpBackend {
         self.register_pid(pid, &agent_id);
 
         // Shared state between this backend and the connection task.
+        let (output_tx, _) = broadcast::channel::<AgentOutputEvent>(256);
         let output = Arc::new(OutputBuffer::new(OUTPUT_BUFFER_MAX_SIZE));
         let thoughts = Arc::new(OutputBuffer::new(OUTPUT_BUFFER_MAX_SIZE));
         let tool_calls = Arc::new(ToolCallTracker::new(MAX_TRACKED_TOOL_CALLS));
@@ -1517,6 +1564,7 @@ impl AgentRuntimeBackend for AcpBackend {
 
         // Clone shared state for the connection task.
         let task_command_tx = command_tx.clone();
+        let task_output_tx = output_tx.clone();
         let task_output = output.clone();
         let task_thoughts = thoughts.clone();
         let task_tool_calls = tool_calls.clone();
@@ -1637,6 +1685,7 @@ impl AgentRuntimeBackend for AcpBackend {
                         let usage = task_usage.clone();
                         let capture_thoughts = task_capture_thoughts;
                         let last_out = task_last_output_at.clone();
+                        let output_tx = task_output_tx.clone();
                         async move |notification: SessionNotification, _cx| {
                             // Extract text from session notifications and write to output buffer.
                             match &notification.update {
@@ -1644,6 +1693,7 @@ impl AgentRuntimeBackend for AcpBackend {
                                     if let Some(text) = extract_text_from_chunk(chunk) {
                                         debug!(text_len = text.len(), "ACP agent message chunk");
                                         out.append(text.as_bytes());
+                                        let _ = output_tx.send(AgentOutputEvent::Text { delta: text });
                                     }
                                 }
                                 SessionUpdate::AgentThoughtChunk(chunk) => {
@@ -1652,6 +1702,7 @@ impl AgentRuntimeBackend for AcpBackend {
                                         if capture_thoughts {
                                             thoughts.append(format!("[thinking] {}\n", text).as_bytes());
                                         }
+                                        let _ = output_tx.send(AgentOutputEvent::Thinking { delta: text });
                                     }
                                 }
                                 SessionUpdate::UsageUpdate(usage_update) => {
@@ -1666,6 +1717,10 @@ impl AgentRuntimeBackend for AcpBackend {
                                         "ACP tool call started"
                                     );
                                     tool_calls.record_initial(tc);
+                                    let _ = output_tx.send(AgentOutputEvent::ToolCallStart {
+                                        id: tc.tool_call_id.to_string(),
+                                        name: tc.title.clone(),
+                                    });
                                 }
                                 SessionUpdate::ToolCallUpdate(update) => {
                                     debug!(
@@ -1674,7 +1729,28 @@ impl AgentRuntimeBackend for AcpBackend {
                                         title = ?update.fields.title,
                                         "ACP tool call update"
                                     );
+                                    let is_complete = matches!(
+                                        update.fields.status,
+                                        Some(ToolCallStatus::Completed)
+                                    );
+                                    let is_error = matches!(
+                                        update.fields.status,
+                                        Some(ToolCallStatus::Failed)
+                                    );
                                     tool_calls.apply_update(update);
+                                    if is_complete {
+                                        let _ = output_tx.send(AgentOutputEvent::ToolCallComplete {
+                                            id: update.tool_call_id.to_string(),
+                                            name: update.fields.title.clone().unwrap_or_default(),
+                                            input: None,
+                                            output: None,
+                                        });
+                                    } else if is_error {
+                                        let _ = output_tx.send(AgentOutputEvent::ToolCallError {
+                                            id: update.tool_call_id.to_string(),
+                                            error: update.fields.title.clone().unwrap_or_else(|| "tool call failed".to_string()),
+                                        });
+                                    }
                                 }
                                 SessionUpdate::Plan(acp_plan) => {
                                     let entry_count = acp_plan.entries.len();
@@ -1930,6 +2006,7 @@ impl AgentRuntimeBackend for AcpBackend {
                                             "ACP prompt completed"
                                         );
                                         *task_stop_reason.write() = Some(sr.clone());
+                                        let _ = task_output_tx.send(AgentOutputEvent::Done { stop_reason: sr.clone() });
                                         let _ = response_tx.send(Ok(()));
 
                                         // Auto-continue on max_tokens / max_turn_requests
@@ -2230,6 +2307,7 @@ impl AgentRuntimeBackend for AcpBackend {
         // Build the agent entry.
         let entry = AcpAgentEntry {
             command_tx,
+            output_tx,
             output,
             thoughts,
             tool_calls,
@@ -2623,8 +2701,10 @@ mod tests {
         use std::sync::atomic::AtomicBool;
 
         let (command_tx, _) = mpsc::channel(1);
+        let (output_tx, _) = broadcast::channel::<AgentOutputEvent>(16);
         let entry = AcpAgentEntry {
             command_tx,
+            output_tx,
             output: Arc::new(OutputBuffer::new(100)),
             thoughts: Arc::new(OutputBuffer::new(100)),
             tool_calls: Arc::new(ToolCallTracker::new(1000)),

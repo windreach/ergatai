@@ -62,8 +62,8 @@ pub use agent_record::{
 };
 pub use backend::AgentRuntimeBackend;
 pub use backends::acp::{
-    AcpBackend, ElicitationResponse, TrackedElicitation, TrackedPlan, TrackedPlanEntry,
-    TrackedToolCall,
+    AgentOutputEvent, AcpBackend, ElicitationResponse, TrackedElicitation, TrackedPlan,
+    TrackedPlanEntry, TrackedToolCall,
 };
 pub use permission::{PermissionDecision, PermissionHandler, YoloPermissionHandler};
 pub use runtime::{get_agent_runtime, init_agent_runtime, AgentRuntime};
