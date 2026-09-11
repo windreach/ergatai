@@ -16,6 +16,7 @@ pub struct RegisterProfileRequest {
     pub name: String,
     pub command: String,
     pub agent_type: String,
+    pub package_name: Option<String>,
 }
 
 /// Response for a single agent profile
@@ -24,6 +25,7 @@ pub struct ProfileResponse {
     pub name: String,
     pub command: String,
     pub agent_type: String,
+    pub package_name: Option<String>,
     pub created_at: String,
 }
 
@@ -33,6 +35,7 @@ impl From<AgentRegistration> for ProfileResponse {
             name: reg.name,
             command: reg.command,
             agent_type: reg.agent_type,
+            package_name: reg.package_name,
             created_at: reg.created_at.to_rfc3339(),
         }
     }
@@ -52,6 +55,7 @@ pub async fn register_profile(Json(request): Json<RegisterProfileRequest>) -> im
         request.name.clone(),
         request.command.clone(),
         request.agent_type.clone(),
+        request.package_name.clone(),
     )
     .await
     {
@@ -178,5 +182,137 @@ pub async fn delete_profile(Path(name): Path<String>) -> impl IntoResponse {
                 "error": format!("Failed to delete profile: {}", e)
             })),
         ),
+    }
+}
+
+/// Response for a profile with installation status
+#[derive(Debug, Serialize)]
+pub struct ProfileWithStatusResponse {
+    pub name: String,
+    pub command: String,
+    pub agent_type: String,
+    pub package_name: Option<String>,
+    pub installed: bool,
+    pub created_at: String,
+}
+
+impl From<ergatai_runtime::profile_registry::ProfileWithStatus> for ProfileWithStatusResponse {
+    fn from(p: ergatai_runtime::profile_registry::ProfileWithStatus) -> Self {
+        Self {
+            name: p.name,
+            command: p.command,
+            agent_type: p.agent_type,
+            package_name: p.package_name,
+            installed: p.installed,
+            created_at: p.created_at,
+        }
+    }
+}
+
+/// Response for listing profiles with status
+#[derive(Debug, Serialize)]
+pub struct ListProfilesWithStatusResponse {
+    pub profiles: Vec<ProfileWithStatusResponse>,
+}
+
+/// List all agent profiles with installation status
+///
+/// GET /api/v1/agent-profiles/with-status
+pub async fn list_with_status() -> impl IntoResponse {
+    match profile_service::list_profiles_with_status() {
+        Ok(profiles) => {
+            let response = ListProfilesWithStatusResponse {
+                profiles: profiles.into_iter().map(ProfileWithStatusResponse::from).collect(),
+            };
+            match serde_json::to_value(response) {
+                Ok(value) => (StatusCode::OK, Json(value)),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": format!("Failed to serialize profiles: {}", e)
+                    })),
+                ),
+            }
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to list profiles: {}", e)
+            })),
+        ),
+    }
+}
+
+/// Install an agent by profile name (npm install -g)
+///
+/// POST /api/v1/agent-profiles/:name/install
+pub async fn install_agent(Path(name): Path<String>) -> impl IntoResponse {
+    match profile_service::install_agent(&name).await {
+        Ok(output) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "success",
+                "message": format!("Agent '{}' installed successfully", name),
+                "output": output
+            })),
+        ),
+        Err(e) => {
+            let err_text = e.to_string();
+            let is_user_error = err_text.contains("not found")
+                || err_text.contains("no package_name")
+                || err_text.contains("cannot be empty");
+
+            let (status, message) = if is_user_error {
+                (StatusCode::BAD_REQUEST, err_text)
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    crate::sanitize_error(&e, "install_agent"),
+                )
+            };
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": message
+                })),
+            )
+        }
+    }
+}
+
+/// Uninstall an agent by profile name (npm uninstall -g)
+///
+/// DELETE /api/v1/agent-profiles/:name/uninstall
+pub async fn uninstall_agent(Path(name): Path<String>) -> impl IntoResponse {
+    match profile_service::uninstall_agent(&name).await {
+        Ok(output) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "success",
+                "message": format!("Agent '{}' uninstalled successfully", name),
+                "output": output
+            })),
+        ),
+        Err(e) => {
+            let err_text = e.to_string();
+            let is_user_error = err_text.contains("not found")
+                || err_text.contains("no package_name")
+                || err_text.contains("cannot be empty");
+
+            let (status, message) = if is_user_error {
+                (StatusCode::BAD_REQUEST, err_text)
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    crate::sanitize_error(&e, "uninstall_agent"),
+                )
+            };
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": message
+                })),
+            )
+        }
     }
 }

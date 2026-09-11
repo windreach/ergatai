@@ -209,7 +209,8 @@ fn is_valid_workspace_id(id: &str) -> bool {
 
 /// Validate command against whitelist.
 ///
-/// Strict mode is enabled by default. Commands must match `STRICT_MODE_ALLOWED_COMMANDS`.
+/// Strict mode is enabled by default. Commands must match `STRICT_MODE_ALLOWED_COMMANDS`,
+/// the `ERGATAI_ALLOWED_COMMANDS` env var, OR any binary registered in the ProfileRegistry.
 /// Set `ERGATAI_STRICT_MODE=0` to disable validation (not recommended).
 fn validate_command(command: &str) -> Result<(), String> {
     // Skip validation only when strict mode is explicitly disabled
@@ -228,7 +229,6 @@ fn validate_command(command: &str) -> Result<(), String> {
         .unwrap_or(program);
 
     // Check against env var if set, otherwise use static whitelist.
-    // This avoids allocating a Vec<String> on every validation call.
     if let Ok(commands) = std::env::var("ERGATAI_ALLOWED_COMMANDS") {
         for pattern in commands
             .split(',')
@@ -243,6 +243,24 @@ fn validate_command(command: &str) -> Result<(), String> {
         for pattern in STRICT_MODE_ALLOWED_COMMANDS {
             if matches_pattern(binary_name, pattern) || matches_pattern(program, pattern) {
                 return Ok(());
+            }
+        }
+    }
+
+    // Dynamic whitelist: accept any binary registered in the ProfileRegistry.
+    // Uses list_with_status() (sync) to avoid async context issues.
+    if let Ok(registry) = crate::services::profile_service::get_profile_registry() {
+        if let Ok(profiles) = registry.list_with_status() {
+            for profile in profiles {
+                if let Some(cmd_binary) = profile.command.split_whitespace().next() {
+                    let cmd_basename = std::path::Path::new(cmd_binary)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(cmd_binary);
+                    if cmd_basename == binary_name || cmd_binary == program {
+                        return Ok(());
+                    }
+                }
             }
         }
     }

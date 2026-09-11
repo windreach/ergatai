@@ -11,7 +11,7 @@
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
-use ergatai_runtime::profile_registry::{AgentRegistration, ProfileRegistry};
+use ergatai_runtime::profile_registry::{AgentRegistration, ProfileRegistry, ProfileWithStatus};
 
 /// ProfileRegistry 全局单例。
 ///
@@ -48,9 +48,15 @@ pub fn get_profile_registry() -> Result<&'static ProfileRegistry> {
 /// * `name` - profile 名称（唯一）
 /// * `command` - agent 启动命令
 /// * `agent_type` - agent 类型标识
-pub async fn register_profile(name: String, command: String, agent_type: String) -> Result<()> {
+/// * `package_name` - npm 包名（可选，用于安装/卸载）
+pub async fn register_profile(
+    name: String,
+    command: String,
+    agent_type: String,
+    package_name: Option<String>,
+) -> Result<()> {
     let registry = get_profile_registry()?;
-    let registration = AgentRegistration::new(name, command, agent_type);
+    let registration = AgentRegistration::with_package_name(name, command, agent_type, package_name);
     registry
         .register(registration)
         .await
@@ -86,4 +92,30 @@ pub async fn delete_profile(name: &str) -> Result<bool> {
         .delete(name)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to delete profile: {}", e))
+}
+
+/// 列出所有 profile 及其安装状态。
+pub fn list_profiles_with_status() -> Result<Vec<ProfileWithStatus>> {
+    let registry = get_profile_registry()?;
+    registry
+        .list_with_status()
+        .map_err(|e| anyhow::anyhow!("Failed to list profiles with status: {}", e))
+}
+
+/// 安装指定 profile 对应的 agent（通过 npm install -g）。
+pub async fn install_agent(name: &str) -> Result<String> {
+    let registry = get_profile_registry()?;
+    registry
+        .install(name)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to install agent: {}", e))
+}
+
+/// 卸载指定 profile 对应的 agent（通过 npm uninstall -g）。
+pub async fn uninstall_agent(name: &str) -> Result<String> {
+    let registry = get_profile_registry()?;
+    registry
+        .uninstall(name)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to uninstall agent: {}", e))
 }

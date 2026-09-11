@@ -202,6 +202,18 @@ pub fn build_rest_app(state: AppState) -> Router {
             post(api::agent_profiles::register_profile),
         )
         .route(
+            "/api/v1/agent-profiles/with-status",
+            get(api::agent_profiles::list_with_status),
+        )
+        .route(
+            "/api/v1/agent-profiles/:name/install",
+            post(api::agent_profiles::install_agent),
+        )
+        .route(
+            "/api/v1/agent-profiles/:name/uninstall",
+            delete(api::agent_profiles::uninstall_agent),
+        )
+        .route(
             "/api/v1/agent-profiles/:name",
             get(api::agent_profiles::get_profile),
         )

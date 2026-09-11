@@ -12,12 +12,11 @@
 //! let registry = ProfileRegistry::new(".ergatai/profile_registry.db")?;
 //!
 //! // Register a profile
-//! let registration = AgentRegistration {
-//!     name: "my-claude".to_string(),
-//!     command: "npx @anthropic/claude-acp".to_string(),
-//!     agent_type: "acp".to_string(),
-//!     created_at: chrono::Utc::now(),
-//! };
+//! let registration = AgentRegistration::new(
+//!     "my-claude".to_string(),
+//!     "npx @anthropic/claude-acp".to_string(),
+//!     "acp".to_string(),
+//! );
 //! registry.register(registration).await?;
 //!
 //! // Spawn from profile
@@ -36,6 +35,8 @@ use tracing::{debug, info, warn};
 
 use ergatai_error::{ErgataiError, ErgataiResult};
 
+use crate::{agent_installer, binary_detection};
+
 /// User-registered agent template.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRegistration {
@@ -45,6 +46,9 @@ pub struct AgentRegistration {
     pub command: String,
     /// Agent type: "acp" or "mcp" (future).
     pub agent_type: String,
+    /// NPM package name for install/uninstall (e.g., "@anthropic-ai/claude-code").
+    /// None for agents that are not installed via npm.
+    pub package_name: Option<String>,
     /// When the profile was registered.
     pub created_at: DateTime<Utc>,
 }
@@ -56,6 +60,23 @@ impl AgentRegistration {
             name,
             command,
             agent_type,
+            package_name: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    /// Create a new agent registration with an npm package name.
+    pub fn with_package_name(
+        name: String,
+        command: String,
+        agent_type: String,
+        package_name: Option<String>,
+    ) -> Self {
+        Self {
+            name,
+            command,
+            agent_type,
+            package_name,
             created_at: Utc::now(),
         }
     }
@@ -86,6 +107,24 @@ impl AgentRegistration {
             ))),
         }
     }
+}
+
+/// Agent profile with installation status — used by the API to report
+/// whether each registered agent's binary is currently available on the system.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileWithStatus {
+    /// Profile name (unique identifier).
+    pub name: String,
+    /// Command to start the agent.
+    pub command: String,
+    /// Agent type: "acp" or "mcp".
+    pub agent_type: String,
+    /// NPM package name (if installable via npm).
+    pub package_name: Option<String>,
+    /// Whether the agent's binary is currently detected on the system.
+    pub installed: bool,
+    /// When the profile was registered (RFC3339 string).
+    pub created_at: String,
 }
 
 /// SQLite-backed registry for agent profiles.
@@ -156,6 +195,9 @@ impl ProfileRegistry {
             ErgataiError::internal(format!("Failed to create agent_registrations table: {}", e))
         })?;
 
+        // Run schema migrations (additive, non-destructive)
+        self.migrate_schema()?;
+
         debug!(
             "Profile registry initialized at {} (WAL mode)",
             self.db_path
@@ -200,6 +242,38 @@ impl ProfileRegistry {
         Ok(())
     }
 
+    /// Run additive schema migrations (non-destructive).
+    ///
+    /// Called from `init_db` after CREATE TABLE IF NOT EXISTS.
+    /// Each migration checks for the column's existence before ALTER TABLE.
+    fn migrate_schema(&self) -> ErgataiResult<()> {
+        let conn = Connection::open(&self.db_path).map_err(|e| {
+            ErgataiError::internal(format!("Failed to open profile registry database: {}", e))
+        })?;
+
+        // Migration: add package_name column (v1 → v2)
+        let has_package_name: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('agent_registrations') WHERE name='package_name'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| ErgataiError::internal(format!("Failed to check schema: {}", e)))?;
+
+        if !has_package_name {
+            conn.execute(
+                "ALTER TABLE agent_registrations ADD COLUMN package_name TEXT",
+                [],
+            )
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to add package_name column: {}", e))
+            })?;
+            info!("Migrated profile_registry schema: added package_name column");
+        }
+
+        Ok(())
+    }
+
     /// Register built-in default agent profiles.
     ///
     /// Commands verified from official documentation:
@@ -226,75 +300,75 @@ impl ProfileRegistry {
 
         let defaults = vec![
             // OpenAI Codex CLI adapter (已验证 - adapters/codex-acp)
-            AgentRegistration {
-                name: "codex".to_string(),
-                command: codex_cmd,
-                agent_type: "acp".to_string(),
-                created_at: Utc::now(),
-            },
+            AgentRegistration::with_package_name(
+                "codex".to_string(),
+                codex_cmd,
+                "acp".to_string(),
+                Some("@openai/codex".to_string()),
+            ),
             // Anthropic Claude Agent adapter (已验证 - adapters/claude-agent-acp)
-            AgentRegistration {
-                name: "claude".to_string(),
-                command: claude_cmd,
-                agent_type: "acp".to_string(),
-                created_at: Utc::now(),
-            },
+            AgentRegistration::with_package_name(
+                "claude".to_string(),
+                claude_cmd,
+                "acp".to_string(),
+                Some("@anthropic-ai/claude-code".to_string()),
+            ),
             // OpenCode (已验证 - https://opencode.ai/docs/acp/)
-            AgentRegistration {
-                name: "opencode".to_string(),
-                command: "opencode acp".to_string(),
-                agent_type: "acp".to_string(),
-                created_at: Utc::now(),
-            },
+            AgentRegistration::with_package_name(
+                "opencode".to_string(),
+                "opencode acp".to_string(),
+                "acp".to_string(),
+                Some("opencode-ai".to_string()),
+            ),
             // Gemini CLI (已验证 - https://geminicli.com/docs/cli/acp-mode/)
-            AgentRegistration {
-                name: "gemini".to_string(),
-                command: "gemini --acp".to_string(),
-                agent_type: "acp".to_string(),
-                created_at: Utc::now(),
-            },
+            AgentRegistration::with_package_name(
+                "gemini".to_string(),
+                "gemini --acp".to_string(),
+                "acp".to_string(),
+                Some("@anthropic-ai/claude-code".to_string()),
+            ),
             // Goose (已验证 - https://goose-docs.ai/docs/guides/acp-clients/)
-            AgentRegistration {
-                name: "goose".to_string(),
-                command: "goose run --acp".to_string(),
-                agent_type: "acp".to_string(),
-                created_at: Utc::now(),
-            },
+            AgentRegistration::with_package_name(
+                "goose".to_string(),
+                "goose run --acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
             // Cline (已验证 - ACP registry)
-            AgentRegistration {
-                name: "cline".to_string(),
-                command: "cline --acp".to_string(),
-                agent_type: "acp".to_string(),
-                created_at: Utc::now(),
-            },
+            AgentRegistration::with_package_name(
+                "cline".to_string(),
+                "cline --acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
             // Kiro CLI (已验证 - ACP registry)
-            AgentRegistration {
-                name: "kiro".to_string(),
-                command: "kiro-cli acp".to_string(),
-                agent_type: "acp".to_string(),
-                created_at: Utc::now(),
-            },
+            AgentRegistration::with_package_name(
+                "kiro".to_string(),
+                "kiro-cli acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
             // Auggie CLI (已验证 - ACP registry)
-            AgentRegistration {
-                name: "auggie".to_string(),
-                command: "auggie --acp".to_string(),
-                agent_type: "acp".to_string(),
-                created_at: Utc::now(),
-            },
+            AgentRegistration::with_package_name(
+                "auggie".to_string(),
+                "auggie --acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
             // OpenClaw (已验证 - ACP registry)
-            AgentRegistration {
-                name: "openclaw".to_string(),
-                command: "openclaw acp".to_string(),
-                agent_type: "acp".to_string(),
-                created_at: Utc::now(),
-            },
+            AgentRegistration::with_package_name(
+                "openclaw".to_string(),
+                "openclaw acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
             // Hermes Agent (已验证 - ACP registry)
-            AgentRegistration {
-                name: "hermes".to_string(),
-                command: "hermes acp".to_string(),
-                agent_type: "acp".to_string(),
-                created_at: Utc::now(),
-            },
+            AgentRegistration::with_package_name(
+                "hermes".to_string(),
+                "hermes acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
         ];
 
         for profile in defaults {
@@ -320,12 +394,13 @@ impl ProfileRegistry {
         })?;
 
         conn.execute(
-            "INSERT INTO agent_registrations (name, command, agent_type, created_at)
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO agent_registrations (name, command, agent_type, package_name, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 registration.name,
                 registration.command,
                 registration.agent_type,
+                registration.package_name,
                 registration.created_at.to_rfc3339()
             ],
         )
@@ -352,12 +427,13 @@ impl ProfileRegistry {
         })?;
 
         conn.execute(
-            "INSERT INTO agent_registrations (name, command, agent_type, created_at)
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO agent_registrations (name, command, agent_type, package_name, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 registration.name,
                 registration.command,
                 registration.agent_type,
+                registration.package_name,
                 registration.created_at.to_rfc3339()
             ],
         )
@@ -384,7 +460,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT name, command, agent_type, created_at
+                "SELECT name, command, agent_type, package_name, created_at
                  FROM agent_registrations WHERE name = ?1",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -405,7 +481,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT name, command, agent_type, created_at
+                "SELECT name, command, agent_type, package_name, created_at
                  FROM agent_registrations ORDER BY created_at DESC",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -640,12 +716,108 @@ impl ProfileRegistry {
             Ok(false)
         }
     }
+
+    /// List all registered profiles with their current installation status.
+    ///
+    /// For each profile, checks whether the agent's binary is detectable on
+    /// the system PATH (or at the explicit path in the command).
+    pub fn list_with_status(&self) -> ErgataiResult<Vec<ProfileWithStatus>> {
+        let conn = Connection::open(&self.db_path).map_err(|e| {
+            ErgataiError::internal(format!("Failed to open profile registry database: {}", e))
+        })?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, command, agent_type, package_name, created_at
+                 FROM agent_registrations ORDER BY created_at DESC",
+            )
+            .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
+
+        let profiles = stmt
+            .query_map([], |row| {
+                let created_at_str: String = row.get(4)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    created_at_str,
+                ))
+            })
+            .map_err(|e| ErgataiError::internal(format!("Failed to list agent profiles: {}", e)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to collect agent profiles: {}", e))
+            })?;
+
+        let result = profiles
+            .into_iter()
+            .map(|(name, command, agent_type, package_name, created_at)| {
+                let installed = binary_detection::is_installed(&command);
+                ProfileWithStatus {
+                    name,
+                    command,
+                    agent_type,
+                    package_name,
+                    installed,
+                    created_at,
+                }
+            })
+            .collect();
+
+        Ok(result)
+    }
+
+    /// Install an agent by its profile name.
+    ///
+    /// Looks up the profile, extracts the `package_name`, and runs
+    /// `npm install -g`. Returns the npm stdout on success.
+    ///
+    /// # Errors
+    /// - Profile not found
+    /// - Profile has no `package_name` (not npm-installable)
+    /// - npm install fails
+    pub async fn install(&self, name: &str) -> ErgataiResult<String> {
+        let profile = self
+            .get(name)
+            .await?
+            .ok_or_else(|| ErgataiError::InvalidArgument(format!("Profile '{}' not found", name)))?;
+
+        let package_name = profile.package_name.ok_or_else(|| {
+            ErgataiError::InvalidArgument(format!(
+                "Profile '{}' has no package_name — cannot be installed via npm",
+                name
+            ))
+        })?;
+
+        agent_installer::install_and_verify(&profile.command, &package_name).await
+    }
+
+    /// Uninstall an agent by its profile name.
+    ///
+    /// Looks up the profile, extracts the `package_name`, and runs
+    /// `npm uninstall -g`. Returns the npm stdout on success.
+    pub async fn uninstall(&self, name: &str) -> ErgataiResult<String> {
+        let profile = self
+            .get(name)
+            .await?
+            .ok_or_else(|| ErgataiError::InvalidArgument(format!("Profile '{}' not found", name)))?;
+
+        let package_name = profile.package_name.ok_or_else(|| {
+            ErgataiError::InvalidArgument(format!(
+                "Profile '{}' has no package_name — cannot be uninstalled via npm",
+                name
+            ))
+        })?;
+
+        agent_installer::uninstall_npm(&package_name).await
+    }
 }
 
 /// Parse a database row into an AgentRegistration struct.
 /// Used by both `get` and `list` methods.
 fn parse_agent_registration_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRegistration> {
-    let created_at_str: String = row.get(3)?;
+    let created_at_str: String = row.get(4)?;
     let created_at = DateTime::parse_from_rfc3339(&created_at_str)
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now());
@@ -654,6 +826,7 @@ fn parse_agent_registration_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRe
         name: row.get(0)?,
         command: row.get(1)?,
         agent_type: row.get(2)?,
+        package_name: row.get(3)?,
         created_at,
     })
 }

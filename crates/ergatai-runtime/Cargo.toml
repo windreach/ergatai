@@ -28,6 +28,7 @@ nix = { version = "0.27", features = ["signal", "process"] }
 parking_lot = "0.12"
 libc = "0.2"
 futures = "0.3"
+which = "6.0"
 
 [dev-dependencies]
 tempfile = "3.10"

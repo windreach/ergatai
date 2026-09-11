@@ -35,6 +35,8 @@
 pub mod agent_lifecycle;
 pub mod agent_profile;
 pub mod agent_record;
+pub mod agent_installer;
+pub mod binary_detection;
 pub mod cgroups;
 pub mod mcp_over_acp;
 pub mod permission;
