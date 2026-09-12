@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{
         sse::{Event, Sse},
@@ -7,7 +7,7 @@ use axum::{
     },
     Json,
 };
-use ergatai_runtime::{get_agent_runtime, ResourceLimits, WorkspaceSpec};
+use ergatai_runtime::{ResourceLimits, WorkspaceSpec};
 use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -41,6 +41,12 @@ pub struct SendMessageRequest {
     /// request's `_meta.correlation_id`. Ignored for request/broadcast.
     #[serde(default)]
     pub correlation_id: Option<String>,
+    /// Optional UI thread to append the external message to before delivery.
+    #[serde(default)]
+    pub sub_chat_id: Option<String>,
+    /// Optional display name for UI rendering.
+    #[serde(default)]
+    pub sender_agent_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -299,7 +305,7 @@ pub async fn spawn_agent(
         .and_then(|s| s.parse().ok())
         .unwrap_or(50);
     {
-        let runtime = get_agent_runtime();
+        let runtime = crate::context::get_app_context().agent_runtime.clone();
         let list = runtime.list_agents().await;
         if list.len() >= max_agents {
             return (
@@ -316,7 +322,7 @@ pub async fn spawn_agent(
         }
     }
 
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
     let env = req.env.unwrap_or_default();
 
     // SECURITY (P1 #13): validate and canonicalize the work_dir.
@@ -374,7 +380,7 @@ pub async fn kill_agent(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
 
     // Unregister workspace boundary before stopping the agent.
     // Best-effort: log but don't fail if registration removal errors.
@@ -447,6 +453,7 @@ pub async fn send_message(
         message: req.message,
         message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
         correlation_id: req.correlation_id,
+        sub_chat_id: req.sub_chat_id,
     };
 
     match sender.send(send_req).await {
@@ -1364,6 +1371,30 @@ pub async fn get_agent_pid(
 #[derive(Debug, Deserialize)]
 pub struct PromptAgentRequest {
     pub message: String,
+    /// Optional sub-chat associated with this prompt.
+    #[serde(default)]
+    pub sub_chat_id: Option<String>,
+    /// Optional sender identity for agent-to-agent UI rendering.
+    #[serde(default)]
+    pub sender_agent_id: Option<String>,
+    #[serde(default)]
+    pub sender_agent_name: Option<String>,
+    /// Optional image attachments sent as base64 ACP content blocks.
+    #[serde(default)]
+    pub images: Vec<ergatai_runtime::AgentImage>,
+    /// Server-side dispatchers can execute immediately; chat transports wait
+    /// for their paired SSE stream to subscribe first.
+    #[serde(default = "default_true")]
+    pub wait_for_stream: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentStreamQuery {
+    pub prompt_id: Option<String>,
 }
 
 /// POST /api/v1/agents/:id/prompt — send a prompt to an agent (non-blocking).
@@ -1375,19 +1406,170 @@ pub async fn prompt_agent(
     Path(id): Path<String>,
     Json(body): Json<PromptAgentRequest>,
 ) -> impl IntoResponse {
-    match crate::services::agent_service::prompt_agent(&id, &body.message).await {
-        Ok(()) => (
+    // Resolve the agent ID to a runtime ID (handles profile names, stable IDs, etc.)
+    let runtime_id = match crate::services::agent_service::resolve_to_runtime_id(&id).await {
+        Some(rid) => rid,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("Agent {} not found or not running", id),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let prompt_id = uuid::Uuid::new_v4().to_string();
+
+    if let Some(sub_chat_id) = body.sub_chat_id.as_deref() {
+        let sub_chat = match crate::user_data_db::sub_chats::get(sub_chat_id) {
+            Ok(Some(sub_chat)) => sub_chat,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: "Sub-chat not found".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to get sub-chat: {}", e),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+        let metadata = if body.sender_agent_id.is_some() {
+            serde_json::json!({
+                "source": "agent",
+                "senderAgentId": body.sender_agent_id,
+                "senderAgentName": body.sender_agent_name,
+            })
+        } else {
+            serde_json::json!({ "source": "user" })
+        };
+
+        let mut parts = vec![serde_json::json!({
+            "type": "text",
+            "text": body.message,
+        })];
+        for image in &body.images {
+            parts.push(serde_json::json!({
+                "type": "data-image",
+                "data": image,
+            }));
+        }
+
+        if let Err(e) = crate::user_data_db::sub_chats::append_message_parts(
+            sub_chat_id,
+            "user",
+            serde_json::Value::Array(parts),
+            metadata,
+        ) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to append prompt message: {}", e),
+                }),
+            )
+                .into_response();
+        }
+
+        // Get the target agent's actual name (not the sender's name)
+        let agent_name = crate::services::agent_service::get_agent_info(&runtime_id)
+            .await
+            .and_then(|info| info.stable_id.clone())
+            .or_else(|| sub_chat.name.clone())
+            .unwrap_or_else(|| runtime_id.clone());
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let binding = crate::user_data_db::GroupAgentBinding {
+            id: format!("binding_{}", uuid::Uuid::new_v4()),
+            chat_id: sub_chat.chat_id,
+            agent_id: runtime_id.clone(),
+            agent_name: agent_name.clone(),
+            agent_command: Some(id.clone()), // Store the original agent identifier (profile name or runtime ID)
+            sub_chat_id: sub_chat.id,
+            created_at: now,
+            updated_at: now,
+        };
+        if let Err(e) = crate::user_data_db::group_agent_bindings::upsert(binding) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to bind agent to sub-chat: {}", e),
+                }),
+            )
+                .into_response();
+        }
+
+        let pending_prompt = crate::services::agent_service::PendingPrompt {
+            id: prompt_id.clone(),
+            agent_id: runtime_id.clone(),
+            message: body.message.clone(),
+            images: body.images.clone(),
+            sub_chat_id: Some(sub_chat_id.to_string()),
+            agent_name: agent_name.clone(),
+            created_at: std::time::Instant::now(),
+        };
+
+        if body.wait_for_stream {
+            // Enqueue prompt — actual inject happens when the paired SSE
+            // client subscribes. The persistence receiver is created in
+            // execute_prompt() only once, so no duplicate persistence occurs.
+            let _ = crate::services::agent_service::enqueue_prompt(&runtime_id, pending_prompt);
+        } else if let Err(e) = crate::services::agent_service::prompt_agent_with_persistence(
+            &runtime_id,
+            pending_prompt,
+            None,
+        )
+        .await
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+
+        (
             StatusCode::ACCEPTED,
-            Json(serde_json::json!({ "status": "queued" })),
+            Json(serde_json::json!({ "status": "queued", "prompt_id": prompt_id })),
         )
-            .into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
+            .into_response()
+    } else {
+        // No sub_chat_id — use direct inject (legacy path, no persistence).
+        match crate::services::agent_service::prompt_agent_with_images(
+            &runtime_id,
+            &body.message,
+            body.images,
         )
-            .into_response(),
+        .await
+        {
+            Ok(()) => (
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({ "status": "queued", "prompt_id": prompt_id })),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response(),
+        }
     }
 }
 
@@ -1399,8 +1581,36 @@ pub async fn prompt_agent(
 pub async fn stream_agent_output(
     State(_state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<AgentStreamQuery>,
 ) -> impl IntoResponse {
-    let receiver = match crate::services::agent_service::subscribe_agent_output(&id) {
+    let runtime_id = match crate::services::agent_service::resolve_to_runtime_id(&id).await {
+        Some(runtime_id) => runtime_id,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("Agent {} not found or not running", id),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    if let Some(prompt_id) = query.prompt_id.as_deref() {
+        let has_turn =
+            crate::services::agent_service::wait_pending_prompt_turn(&runtime_id, prompt_id).await;
+        if !has_turn {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("Prompt {} not found", prompt_id),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    let receiver = match crate::services::agent_service::subscribe_agent_output(&runtime_id) {
         Ok(rx) => rx,
         Err(e) => {
             return (
@@ -1413,7 +1623,30 @@ pub async fn stream_agent_output(
         }
     };
 
-    let agent_id_for_stream = id.clone();
+    // Now that we're subscribed to the broadcast channel, execute this prompt
+    // in FIFO order. Without a prompt_id, flush remaining prompts for older
+    // clients that do not know their prompt ID.
+    match query.prompt_id.as_deref() {
+        Some(prompt_id) => {
+            let agent_id_for_prompt = runtime_id.clone();
+            let prompt_id = prompt_id.to_string();
+            tokio::spawn(async move {
+                let _ = crate::services::agent_service::run_pending_prompt(
+                    &agent_id_for_prompt,
+                    Some(&prompt_id),
+                )
+                .await;
+            });
+        }
+        None => {
+            let agent_id_for_flush = runtime_id.clone();
+            tokio::spawn(async move {
+                crate::services::agent_service::flush_pending_prompt(&agent_id_for_flush).await;
+            });
+        }
+    }
+
+    let agent_id_for_stream = runtime_id.clone();
     let event_stream = stream::unfold(receiver, move |mut rx| {
         let aid = agent_id_for_stream.clone();
         async move {

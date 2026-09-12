@@ -8,6 +8,20 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// An image attachment delivered with an agent prompt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentImage {
+    /// Base64-encoded image payload without the data-URI prefix.
+    pub base64_data: String,
+
+    /// MIME type of the encoded image payload.
+    pub media_type: String,
+
+    /// Optional filename used for logging and UI context.
+    pub filename: Option<String>,
+}
+
 /// Specification for creating a new agent workspace.
 ///
 /// A workspace is the execution environment for an agent — it is a PTY-backed

@@ -8,19 +8,20 @@
 //! - Better data consistency
 //! - Centralized backup
 
-use rusqlite::{Connection, Result, params};
-use std::sync::{Arc, Mutex};
-use std::path::PathBuf;
 use once_cell::sync::Lazy;
+use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 /// Global database instance
 static USER_DATA_DB: Lazy<Arc<Mutex<Connection>>> = Lazy::new(|| {
     let db_path = get_db_path();
     let conn = Connection::open(&db_path).expect("Failed to open user data database");
 
-    // Enable WAL mode for better concurrent access
-    conn.execute_batch("PRAGMA journal_mode=WAL;").ok();
+    // Enable WAL mode and enforce declared foreign-key cascades.
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+        .ok();
 
     // Initialize tables
     initialize_tables(&conn).expect("Failed to initialize user data tables");
@@ -90,6 +91,21 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
         );
 
+        -- Stable binding between a group chat, a backend agent, and its own thread
+        CREATE TABLE IF NOT EXISTS group_agent_bindings (
+            id TEXT PRIMARY KEY,
+            chat_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            agent_name TEXT NOT NULL,
+            agent_command TEXT,
+            sub_chat_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(chat_id, agent_id),
+            FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE,
+            FOREIGN KEY (sub_chat_id) REFERENCES sub_chats(id) ON DELETE CASCADE
+        );
+
         -- Anthropic accounts for OAuth
         CREATE TABLE IF NOT EXISTS anthropic_accounts (
             id TEXT PRIMARY KEY,
@@ -113,6 +129,8 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         -- Create indexes for performance
         CREATE INDEX IF NOT EXISTS idx_chats_project_id ON chats(project_id);
         CREATE INDEX IF NOT EXISTS idx_sub_chats_chat_id ON sub_chats(chat_id);
+        CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_chat_id ON group_agent_bindings(chat_id);
+        CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_agent_id ON group_agent_bindings(agent_id);
         CREATE INDEX IF NOT EXISTS idx_chats_archived_at ON chats(archived_at);
         "#,
     )?;
@@ -166,6 +184,18 @@ pub struct SubChat {
     pub stream_id: Option<String>,
     pub mode: String,
     pub messages: String, // JSON array
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupAgentBinding {
+    pub id: String,
+    pub chat_id: String,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub agent_command: Option<String>,
+    pub sub_chat_id: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -578,6 +608,51 @@ pub mod sub_chats {
         Ok(())
     }
 
+    pub fn append_message(
+        id: &str,
+        role: &str,
+        text: &str,
+        metadata: serde_json::Value,
+    ) -> Result<()> {
+        let parts = serde_json::json!([{ "type": "text", "text": text }]);
+        sub_chats::append_message_parts(id, role, parts, metadata)
+    }
+
+    pub fn append_message_parts(
+        id: &str,
+        role: &str,
+        parts: serde_json::Value,
+        metadata: serde_json::Value,
+    ) -> Result<()> {
+        let Some(sub_chat) = sub_chats::get(id)? else {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        };
+
+        let mut messages: serde_json::Value =
+            serde_json::from_str(&sub_chat.messages).unwrap_or_else(|_| serde_json::json!([]));
+        if !messages.is_array() {
+            messages = serde_json::json!([]);
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let message_id = format!("msg_{}", uuid::Uuid::new_v4());
+
+        messages
+            .as_array_mut()
+            .expect("messages must be an array")
+            .push(serde_json::json!({
+                "id": message_id,
+                "role": role,
+                "parts": parts,
+                "metadata": metadata,
+            }));
+
+        sub_chats::update_messages(id, &messages.to_string(), now)
+    }
+
     pub fn update_name(id: &str, name: &str, updated_at: i64) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
@@ -614,6 +689,7 @@ pub mod sub_chats {
         Ok(())
     }
 
+    #[allow(unused_assignments)]
     pub fn update_full(
         id: &str,
         name: Option<&str>,
@@ -651,10 +727,7 @@ pub mod sub_chats {
             param_idx += 1;
         }
 
-        let query = format!(
-            "UPDATE sub_chats SET {} WHERE id = ?",
-            updates.join(", ")
-        );
+        let query = format!("UPDATE sub_chats SET {} WHERE id = ?", updates.join(", "));
 
         // Build params
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(updated_at)];
@@ -675,7 +748,8 @@ pub mod sub_chats {
         }
         params_vec.push(Box::new(id.to_string()));
 
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
         conn.execute(&query, params_ref.as_slice())?;
 
         Ok(())
@@ -691,12 +765,238 @@ pub mod sub_chats {
     }
 }
 
+pub mod group_agent_bindings {
+    use super::*;
+
+    fn row_to_binding(row: &rusqlite::Row<'_>) -> Result<GroupAgentBinding> {
+        Ok(GroupAgentBinding {
+            id: row.get(0)?,
+            chat_id: row.get(1)?,
+            agent_id: row.get(2)?,
+            agent_name: row.get(3)?,
+            agent_command: row.get(4)?,
+            sub_chat_id: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+        })
+    }
+
+    pub fn upsert(binding: GroupAgentBinding) -> Result<GroupAgentBinding> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO group_agent_bindings (id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(chat_id, agent_id) DO UPDATE SET
+               agent_name = excluded.agent_name,
+               agent_command = excluded.agent_command,
+               sub_chat_id = excluded.sub_chat_id,
+               updated_at = excluded.updated_at",
+            params![
+                binding.id,
+                binding.chat_id,
+                binding.agent_id,
+                binding.agent_name,
+                binding.agent_command,
+                binding.sub_chat_id,
+                binding.created_at,
+                binding.updated_at,
+            ],
+        )?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
+             FROM group_agent_bindings WHERE chat_id = ?1 AND agent_id = ?2",
+        )?;
+        let mut rows =
+            stmt.query_map(params![binding.chat_id, binding.agent_id], row_to_binding)?;
+        rows.next()
+            .unwrap_or_else(|| Err(rusqlite::Error::QueryReturnedNoRows))
+    }
+
+    pub fn list(chat_id: &str) -> Result<Vec<GroupAgentBinding>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
+             FROM group_agent_bindings WHERE chat_id = ?1 ORDER BY created_at ASC",
+        )?;
+        let bindings = stmt.query_map(params![chat_id], row_to_binding)?;
+        bindings.collect()
+    }
+
+    pub fn find_sub_chat_id(agent_id: &str) -> Result<Option<String>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT sub_chat_id FROM group_agent_bindings WHERE agent_id = ?1 LIMIT 1")?;
+        let mut rows = stmt.query_map(params![agent_id], |row| row.get::<_, String>(0))?;
+        rows.next().transpose()
+    }
+
+    pub fn delete(chat_id: &str, agent_id: &str) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let count = conn.execute(
+            "DELETE FROM group_agent_bindings WHERE chat_id = ?1 AND agent_id = ?2",
+            params![chat_id, agent_id],
+        )?;
+        Ok(count > 0)
+    }
+}
+
+pub mod anthropic_accounts {
+    use super::*;
+
+    fn row_to_account(row: &rusqlite::Row<'_>) -> Result<AnthropicAccount> {
+        Ok(AnthropicAccount {
+            id: row.get(0)?,
+            user_id: row.get(1)?,
+            email: row.get(2)?,
+            display_name: row.get(3)?,
+            encrypted_access_token: row.get(4)?,
+            encrypted_refresh_token: row.get(5)?,
+            token_expires_at: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+        })
+    }
+
+    pub fn create(account: AnthropicAccount) -> Result<AnthropicAccount> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO anthropic_accounts (id, user_id, email, display_name, encrypted_access_token, encrypted_refresh_token, token_expires_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                account.id,
+                account.user_id,
+                account.email,
+                account.display_name,
+                account.encrypted_access_token,
+                account.encrypted_refresh_token,
+                account.token_expires_at,
+                account.created_at,
+                account.updated_at,
+            ],
+        )?;
+
+        Ok(account)
+    }
+
+    pub fn list() -> Result<Vec<AnthropicAccount>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, user_id, email, display_name, encrypted_access_token, encrypted_refresh_token, token_expires_at, created_at, updated_at
+             FROM anthropic_accounts ORDER BY created_at ASC",
+        )?;
+        let accounts = stmt.query_map([], row_to_account)?;
+        accounts.collect()
+    }
+
+    pub fn get(id: &str) -> Result<Option<AnthropicAccount>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, user_id, email, display_name, encrypted_access_token, encrypted_refresh_token, token_expires_at, created_at, updated_at
+             FROM anthropic_accounts WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], row_to_account)?;
+        match rows.next() {
+            Some(Ok(account)) => Ok(Some(account)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    pub fn delete(id: &str) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let count = conn.execute("DELETE FROM anthropic_accounts WHERE id = ?1", params![id])?;
+        Ok(count > 0)
+    }
+
+    pub fn get_active() -> Result<Option<AnthropicAccount>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT a.id, a.user_id, a.email, a.display_name, a.encrypted_access_token, a.encrypted_refresh_token, a.token_expires_at, a.created_at, a.updated_at
+             FROM anthropic_accounts a
+             JOIN anthropic_settings s ON s.active_account_id = a.id
+             WHERE s.id = 'active'",
+        )?;
+        let mut rows = stmt.query_map([], row_to_account)?;
+        match rows.next() {
+            Some(Ok(account)) => Ok(Some(account)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    pub fn set_active(id: &str) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        // Verify account exists
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM anthropic_accounts WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !exists {
+            return Ok(false);
+        }
+
+        conn.execute(
+            "INSERT INTO anthropic_settings (id, active_account_id) VALUES ('active', ?1)
+             ON CONFLICT(id) DO UPDATE SET active_account_id = excluded.active_account_id",
+            params![id],
+        )?;
+
+        Ok(true)
+    }
+
+    pub fn update_display_name(id: &str, display_name: &str) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let count = conn.execute(
+            "UPDATE anthropic_accounts SET display_name = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, display_name, now],
+        )?;
+        Ok(count > 0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_project_crud() {
+        let data_dir = std::env::temp_dir()
+            .join("ergatai-user-data-tests")
+            .join(std::process::id().to_string());
+        let _ = std::fs::remove_dir_all(&data_dir);
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::env::set_var("ERGATAI_DATA_DIR", &data_dir);
+
         let project = Project {
             id: "test-1".to_string(),
             name: "Test Project".to_string(),
@@ -720,11 +1020,13 @@ mod tests {
 
         // List
         let all = projects::list().unwrap();
-        assert!(all.len() > 0);
+        assert!(!all.is_empty());
 
         // Delete
         projects::delete(&project.id).unwrap();
         let deleted = projects::get(&project.id).unwrap();
         assert!(deleted.is_none());
+
+        let _ = std::fs::remove_dir_all(&data_dir);
     }
 }

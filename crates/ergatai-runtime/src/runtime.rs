@@ -17,7 +17,8 @@ use tracing::{debug, error, info, warn};
 
 use ergatai_error::{ErgataiError, ErgataiResult};
 
-use crate::backend::AgentRuntimeBackend;
+use crate::agent_registry::AgentRegistry;
+use crate::backend::AcpBackendInterface;
 use crate::types::{AgentHandle, AgentInfo, WaitResult, WorkspaceSpec};
 
 // ── Global singleton ──
@@ -42,7 +43,7 @@ pub fn get_agent_runtime() -> Arc<AgentRuntime> {
 /// Returns `Err` if already initialized. Call this from `main()` before
 /// any other component accesses the runtime.
 pub fn init_agent_runtime(
-    backend: Arc<dyn AgentRuntimeBackend>,
+    backend: Arc<dyn AcpBackendInterface>,
 ) -> ErgataiResult<Arc<AgentRuntime>> {
     let runtime = Arc::new(AgentRuntime::new(backend));
     AGENT_RUNTIME
@@ -57,19 +58,10 @@ pub fn init_agent_runtime(
 ///
 /// Wraps a backend + agent registry.
 pub struct AgentRuntime {
-    backend: Arc<dyn AgentRuntimeBackend>,
-    registry: Arc<RwLock<HashMap<String, AgentInfo>>>,
-    /// Reverse index: agent UUID → runtime agent ID.
-    /// Enables O(1) UUID resolution for stable message routing.
-    uuid_index: Arc<RwLock<HashMap<String, String>>>,
-    /// Reverse index: MCP agent ID → runtime agent ID.
-    /// Enables resolving MCP IDs (e.g., "opencode@abcd1234") to runtime IDs
-    /// (e.g., "ws1-agent-1") for message injection.
-    mcp_index: Arc<RwLock<HashMap<String, String>>>,
-    /// Reverse index: stable ID → runtime agent ID.
-    /// LOW FIX: Enables O(1) stable ID resolution instead of O(n) linear scan.
-    /// Populated when agents register with a stable_id.
-    stable_id_index: Arc<RwLock<HashMap<String, String>>>,
+    backend: Arc<dyn AcpBackendInterface>,
+    /// 统一 agent 注册表 — 封装所有 5 个索引（primary, uuid, mcp, stable_id, streaks）。
+    /// 所有 insert/remove 操作原子性地更新所有反向索引。
+    registry: AgentRegistry,
     /// Queue of MCP agent IDs waiting to be bound to a runtime agent.
     /// Stores (mcp_agent_id, agent_identifier) tuples for precise binding.
     /// Populated when an MCP agent connects before runtime discovery finds agents.
@@ -79,8 +71,6 @@ pub struct AgentRuntime {
     /// Ensures that even if multiple MCP agents connect concurrently,
     /// they are bound sequentially in creation-time order.
     binding_mutex: Arc<Mutex<()>>,
-    /// Tracks consecutive unhealthy observations per agent. Agents pruned after 2 consecutive Zombie/Dead samples.
-    unhealthy_streaks: Arc<Mutex<HashMap<String, u32>>>,
     /// CRITICAL FIX: CancellationToken for graceful shutdown.
     /// When cancelled, all spawn_monitor tasks will exit cleanly instead of
     /// waiting for agents to exit or timing out. Prevents task leaks during shutdown.
@@ -90,23 +80,19 @@ pub struct AgentRuntime {
     /// shutdown() returns, racing with process exit or subsequent runtime reuse.
     /// Uses std::sync::Mutex because `spawn_monitor()` is a sync fn called from
     /// async contexts — tokio::sync::Mutex::blocking_lock would panic there.
-    monitor_handles: std::sync::Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    monitor_handles: std::sync::Arc<std::sync::Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
 }
 
 impl AgentRuntime {
     /// Create a new runtime with the given backend.
-    pub fn new(backend: Arc<dyn AgentRuntimeBackend>) -> Self {
+    pub fn new(backend: Arc<dyn AcpBackendInterface>) -> Self {
         Self {
             backend,
-            registry: Arc::new(RwLock::new(HashMap::new())),
-            uuid_index: Arc::new(RwLock::new(HashMap::new())),
-            mcp_index: Arc::new(RwLock::new(HashMap::new())),
-            stable_id_index: Arc::new(RwLock::new(HashMap::new())),
+            registry: AgentRegistry::new(),
             pending_mcp: Arc::new(RwLock::new(Vec::new())),
             binding_mutex: Arc::new(Mutex::new(())),
-            unhealthy_streaks: Arc::new(Mutex::new(HashMap::new())),
             shutdown_token: CancellationToken::new(),
-            monitor_handles: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            monitor_handles: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -117,7 +103,7 @@ impl AgentRuntime {
     }
 
     /// Get a reference to the underlying backend.
-    pub fn backend(&self) -> &Arc<dyn AgentRuntimeBackend> {
+    pub fn backend(&self) -> &Arc<dyn AcpBackendInterface> {
         &self.backend
     }
 
@@ -205,6 +191,14 @@ impl AgentRuntime {
         let agent_uuid = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now();
 
+        // Generate MCP agent ID for ACP agents to enable cross-protocol addressing.
+        // Format: "acp-{workspace_id}-{counter}" (e.g., "acp-ws1-1")
+        // This allows ACP agents to be addressable via MCP tools like send_message.
+        let mcp_agent_id = {
+            let counter = agent_id.split('-').next_back().unwrap_or(&agent_id);
+            format!("acp-{}-{}", spec.id, counter)
+        };
+
         let info = AgentInfo {
             agent_uuid: agent_uuid.clone(),
             agent_id: agent_id.clone(),
@@ -218,7 +212,7 @@ impl AgentRuntime {
             },
             task_id: None,
             created_at: now,
-            mcp_agent_id: None,
+            mcp_agent_id: Some(mcp_agent_id.clone()),
             last_heartbeat: now,
             profile: None,
             capabilities: Vec::new(),
@@ -226,19 +220,7 @@ impl AgentRuntime {
             state_history: Vec::new(),
         };
 
-        self.registry.write().await.insert(agent_id.clone(), info);
-        self.uuid_index
-            .write()
-            .await
-            .insert(agent_uuid, agent_id.clone());
-
-        // LOW FIX: Populate stable_id_index for O(1) resolution
-        if let Some(ref stable_id) = handle.metadata.get("ergatai_agent_id").cloned() {
-            self.stable_id_index
-                .write()
-                .await
-                .insert(stable_id.clone(), agent_id.clone());
-        }
+        self.registry.insert(info).await;
 
         self.spawn_monitor(agent_id.clone(), handle);
 
@@ -258,38 +240,54 @@ impl AgentRuntime {
             .await
             .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", agent_id)))?;
 
-        let info = {
-            let registry = self.registry.read().await;
-            registry
-                .get(&runtime_id)
-                .cloned()
-                .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", runtime_id)))?
-        };
+        let info = self
+            .registry
+            .get(&runtime_id)
+            .await
+            .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", runtime_id)))?;
 
         // Deliver via backend injection
         self.backend.inject_message(&info.handle, message).await
     }
 
-    /// Stop an agent.
-    pub async fn stop_agent(&self, agent_id: &str) -> ErgataiResult<()> {
-        let info = self
-            .registry
-            .write()
+    /// Inject a message and optional image attachments into a running agent.
+    pub async fn inject_message_with_images(
+        &self,
+        agent_id: &str,
+        message: &str,
+        images: Vec<crate::types::AgentImage>,
+    ) -> ErgataiResult<()> {
+        let runtime_id = self
+            .resolve_agent_id(agent_id)
             .await
-            .remove(agent_id)
             .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", agent_id)))?;
 
-        // Clean up all indices using unified helper
-        self.remove_agent_indices(
-            agent_id,
-            &info.agent_uuid,
-            info.mcp_agent_id.as_deref(),
-            info.stable_id.as_deref(),
-        )
-        .await;
+        let info = self
+            .registry
+            .get(&runtime_id)
+            .await
+            .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", runtime_id)))?;
+
+        self.backend
+            .inject_message_with_images(&info.handle, message, &images)
+            .await
+    }
+
+    /// Stop an agent.
+    pub async fn stop_agent(&self, agent_id: &str) -> ErgataiResult<()> {
+        // 原子移除 — 自动清理所有反向索引（uuid, mcp, stable_id, streaks）
+        let info = self
+            .registry
+            .remove(agent_id)
+            .await
+            .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", agent_id)))?;
 
         if let Err(e) = self.backend.stop_agent(&info.handle).await {
             warn!(agent_id = agent_id, error = %e, "Failed to stop agent backend");
+        }
+
+        if let Some(handle) = self.monitor_handles.lock().unwrap().remove(agent_id) {
+            handle.abort();
         }
 
         // NOTE: Do NOT call cleanup_workspace here. The workspace may be shared
@@ -300,60 +298,20 @@ impl AgentRuntime {
         Ok(())
     }
 
-    /// Remove agent from all indices atomically.
-    ///
-    /// CRITICAL BUG FIX: Previously, `stop_agent()` and `prune_unhealthy_agents()`
-    /// only cleaned the main `registry`, leaking entries in `uuid_index`, `mcp_index`,
-    /// `stable_id_index`, and `unhealthy_streaks`. This caused memory leaks and stale
-    /// routing failures (e.g., `resolve_to_stable_id` could resolve to a dead agent).
-    ///
-    /// This helper ensures all five data structures are cleaned consistently.
-    async fn remove_agent_indices(
-        &self,
-        agent_id: &str,
-        agent_uuid: &str,
-        mcp_agent_id: Option<&str>,
-        stable_id: Option<&str>,
-    ) {
-        // 1. Clean uuid_index
-        self.uuid_index.write().await.remove(agent_uuid);
-
-        // 2. Clean mcp_index (if agent had MCP binding)
-        if let Some(mcp_id) = mcp_agent_id {
-            self.mcp_index.write().await.remove(mcp_id);
-        }
-
-        // 3. Clean stable_id_index (if agent had stable ID binding)
-        if let Some(sid) = stable_id {
-            self.stable_id_index.write().await.remove(sid);
-        }
-
-        // 4. Clean unhealthy_streaks
-        self.unhealthy_streaks.lock().await.remove(agent_id);
-
-        debug!(
-            agent_id = agent_id,
-            agent_uuid = agent_uuid,
-            mcp_agent_id = ?mcp_agent_id,
-            stable_id = ?stable_id,
-            "Cleaned all agent indices"
-        );
-    }
-
     /// List all registered agents.
     pub async fn list_agents(&self) -> Vec<AgentInfo> {
-        self.registry.read().await.values().cloned().collect()
+        self.registry.list().await
     }
 
     /// Get a specific agent by ID.
     pub async fn get_agent(&self, agent_id: &str) -> Option<AgentInfo> {
-        self.registry.read().await.get(agent_id).cloned()
+        self.registry.get(agent_id).await
     }
 
     /// Set the task ID for a runtime agent (for DAG tracking).
     pub async fn set_task_id(&self, agent_id: &str, task_id: String) -> ErgataiResult<()> {
-        let mut registry = self.registry.write().await;
-        let info = registry
+        let mut guard = self.registry.write().await;
+        let info = guard
             .get_mut(agent_id)
             .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", agent_id)))?;
         info.task_id = Some(task_id);
@@ -365,9 +323,6 @@ impl AgentRuntime {
     /// This allows agents started outside the normal `launch_agent()` flow
     /// (e.g., externally managed agents) to receive messages via the runtime
     /// delivery chain.
-    ///
-    /// MEDIUM BUG FIX: If the same agent_id is re-registered, the old UUID
-    /// is now cleaned from uuid_index to prevent index leak.
     ///
     /// CRITICAL FIX: Spawn lifecycle monitor for the registered agent to prevent
     /// zombie state accumulation when the agent exits. Previously, agents registered
@@ -401,40 +356,8 @@ impl AgentRuntime {
             state_history: Vec::new(),
         };
 
-        // MEDIUM BUG FIX: Check if agent already exists and clean old UUID
-        let old_uuid = {
-            let mut registry = self.registry.write().await;
-            let old_uuid = registry.get(&agent_id).map(|old| old.agent_uuid.clone());
-            registry.insert(agent_id.clone(), info);
-            old_uuid
-        };
-
-        // Clean old UUID from index if it existed
-        if let Some(old) = old_uuid {
-            self.uuid_index.write().await.remove(&old);
-        }
-
-        self.uuid_index
-            .write()
-            .await
-            .insert(agent_uuid, agent_id.clone());
-
-        // LOW FIX: Populate stable_id_index for O(1) resolution (parity with launch_agent).
-        // Previously only launch_agent() populated this index, so discovered agents
-        // missed the fast path in resolve_agent_id() and fell through to linear scan.
-        // Read stable_id from the registry (info was moved into it above).
-        let stable_id_for_index = {
-            let registry = self.registry.read().await;
-            registry
-                .get(&agent_id)
-                .and_then(|info| info.stable_id.clone())
-        };
-        if let Some(sid) = stable_id_for_index {
-            self.stable_id_index
-                .write()
-                .await
-                .insert(sid, agent_id.clone());
-        }
+        // 原子插入 — 自动清理旧条目的反向索引（如果 agent_id 已存在）
+        self.registry.insert(info).await;
 
         // CRITICAL FIX: Spawn lifecycle monitor to track agent exit and cleanup
         self.spawn_monitor(agent_id.clone(), handle);
@@ -459,8 +382,9 @@ impl AgentRuntime {
         let discovered = self.backend.discover_agents().await?;
         let mut count = 0;
         let mut new_agents = Vec::new();
-        let mut indices_to_clean = Vec::new(); // Collect indices to clean after dropping lock
-        let mut registry = self.registry.write().await;
+
+        // 获取 WriteGuard — 持有所有索引的写锁，确保原子性
+        let mut guard = self.registry.write().await;
 
         for (agent_id, handle) in discovered {
             // If this workspace already has an agent registered (e.g., via launch_agent),
@@ -473,7 +397,7 @@ impl AgentRuntime {
             //
             // Track MCP binding from the old entry so we can preserve it across restarts.
             let mut preserved_mcp_id: Option<String> = None;
-            let existing_match: Option<(String, Option<String>, Option<String>)> = registry
+            let existing_match: Option<(String, Option<String>, Option<String>)> = guard
                 .values()
                 .find(|info| info.workspace_id == handle.workspace.id)
                 .map(|info| {
@@ -493,24 +417,11 @@ impl AgentRuntime {
                         new_agent = ?new_agent_key,
                         "Agent changed — process likely died and was recreated. Re-registering agent."
                     );
-                    // Remove old registration under the SAME lock, then fall through
-                    // to register the new agent below.
-                    // CRITICAL BUG FIX: Collect indices to clean AFTER dropping the lock,
-                    // not during the loop. This prevents TOCTOU race where another task
-                    // could modify the registry between drop and re-acquire.
-                    if let Some(old_info) = registry.remove(&old_agent_id) {
-                        let old_uuid = old_info.agent_uuid.clone();
-                        let old_mcp = old_info.mcp_agent_id.clone();
-                        let old_stable = old_info.stable_id.clone();
+                    // 原子移除 — 自动清理所有反向索引
+                    if let Some(old_info) = guard.remove(&old_agent_id) {
                         // Preserve MCP binding across restart — the MCP client is still
                         // connected, just the underlying agent process was recreated.
-                        preserved_mcp_id = old_mcp.clone();
-                        indices_to_clean.push((
-                            old_agent_id.clone(),
-                            old_uuid,
-                            old_mcp,
-                            old_stable,
-                        ));
+                        preserved_mcp_id = old_info.mcp_agent_id.clone();
                     }
                 } else {
                     // Same agent - update metadata but preserve MCP binding.
@@ -519,7 +430,7 @@ impl AgentRuntime {
                     // MCP-bound, keep the MCP URL path name as ergatai_agent_id
                     // to maintain ID consistency across list_agents and message routing.
                     if let Some(eai) = handle.metadata.get("ergatai_agent_id") {
-                        if let Some(existing) = registry.get_mut(&old_agent_id) {
+                        if let Some(existing) = guard.get_mut(&old_agent_id) {
                             if existing.mcp_agent_id.is_none() {
                                 // Not MCP-bound — safe to use workspace ID
                                 existing
@@ -540,7 +451,7 @@ impl AgentRuntime {
             }
             // Atomic check-and-insert under a single write lock acquisition.
             // entry().or_insert() ensures no TOCTOU gap between contains_key and insert.
-            registry.entry(agent_id.clone()).or_insert_with(|| {
+            guard.entry(agent_id.clone()).or_insert_with(|| {
                 count += 1;
                 let agent_uuid = uuid::Uuid::new_v4().to_string();
                 let now = chrono::Utc::now();
@@ -591,38 +502,10 @@ impl AgentRuntime {
             });
         }
 
-        // Clean up indices for removed agents and reconcile mcp_index
-        // WHILE STILL HOLDING the registry write lock to eliminate visibility gaps.
-        // Order matters: remove old indices first, then reconcile to add back correct entries.
-        for (old_agent_id, old_uuid, old_mcp, old_stable) in indices_to_clean {
-            self.remove_agent_indices(
-                &old_agent_id,
-                &old_uuid,
-                old_mcp.as_deref(),
-                old_stable.as_deref(),
-            )
-            .await;
-        }
+        // 重建所有反向索引，确保一致性
+        guard.reconcile_indices();
 
-        // Reconcile mcp_index: add entries for agents with preserved MCP bindings
-        {
-            let mut mcp_index = self.mcp_index.write().await;
-            for info in registry.values() {
-                if let Some(ref mcp_id) = info.mcp_agent_id {
-                    mcp_index.insert(mcp_id.clone(), info.agent_id.clone());
-                }
-            }
-        }
-
-        drop(registry);
-
-        // Update UUID index for newly registered agents
-        if !new_agents.is_empty() {
-            let mut uuid_index = self.uuid_index.write().await;
-            for (agent_id, uuid, _) in &new_agents {
-                uuid_index.insert(uuid.clone(), agent_id.clone());
-            }
-        }
+        drop(guard);
 
         // CRITICAL BUG FIX: Spawn lifecycle monitor for each newly discovered agent.
         // Previously, discovered agents had no monitor, causing zombie state accumulation.
@@ -652,8 +535,8 @@ impl AgentRuntime {
     pub async fn prune_unhealthy_agents(&self) -> Vec<String> {
         // Step 1: Snapshot agent IDs + handles (release read lock before async calls)
         let agents_snapshot: Vec<(String, AgentHandle)> = {
-            let registry = self.registry.read().await;
-            registry
+            let guard = self.registry.read().await;
+            guard
                 .iter()
                 .map(|(id, info)| (id.clone(), info.handle.clone()))
                 .collect()
@@ -679,50 +562,38 @@ impl AgentRuntime {
         }
 
         // Step 3: Reset streaks for healthy agents, increment for dead
-        {
-            let mut streaks = self.unhealthy_streaks.lock().await;
-            for id in &healthy {
-                streaks.remove(id);
-            }
-            for id in &dead_now {
-                *streaks.entry(id.clone()).or_insert(0) += 1;
-            }
-        }
+        // 使用 with_streaks 批量操作
+        let pruned: Vec<String> = self
+            .registry
+            .with_streaks(|streaks| {
+                for id in &healthy {
+                    streaks.remove(id);
+                }
+                for id in &dead_now {
+                    *streaks.entry(id.clone()).or_insert(0) += 1;
+                }
 
-        // Step 4: Collect agents that reached threshold (2 consecutive dead observations)
-        let pruned: Vec<String> = {
-            let streaks = self.unhealthy_streaks.lock().await;
-            dead_now
-                .into_iter()
-                .filter(|id| streaks.get(id).copied().unwrap_or(0) >= 2)
-                .collect()
-        };
+                // Step 4: Collect agents that reached threshold (2 consecutive dead observations)
+                dead_now
+                    .iter()
+                    .filter(|id| streaks.get(*id).copied().unwrap_or(0) >= 2)
+                    .cloned()
+                    .collect()
+            })
+            .await;
 
         if pruned.is_empty() {
             return pruned;
         }
 
-        // Step 5: Remove pruned agents from registry and clean indices
+        // Step 5: Remove pruned agents from registry — 原子移除，自动清理所有反向索引
         {
-            let mut registry = self.registry.write().await;
+            let mut guard = self.registry.write().await;
             for agent_id in &pruned {
-                if let Some(info) = registry.remove(agent_id) {
-                    self.remove_agent_indices(
-                        &info.agent_id,
-                        &info.agent_uuid,
-                        info.mcp_agent_id.as_deref(),
-                        info.stable_id.as_deref(),
-                    )
-                    .await;
-                }
+                guard.remove(agent_id);
             }
-        }
-
-        // Also reconcile mcp_index in case of stale entries
-        {
-            let mut mcp_index = self.mcp_index.write().await;
-            let registry = self.registry.read().await;
-            mcp_index.retain(|_, runtime_id| registry.contains_key(runtime_id));
+            // 重建所有反向索引，确保一致性
+            guard.reconcile_indices();
         }
 
         info!(
@@ -755,53 +626,37 @@ impl AgentRuntime {
         // bindings happen sequentially in creation-time order
         let _guard = self.binding_mutex.lock().await;
 
-        // Step 1: Check if already bound and collect cleanup info if stale
-        let needs_cleanup = {
-            let index = self.mcp_index.read().await;
-            if let Some(runtime_id) = index.get(mcp_agent_id) {
-                // HIGH BUG FIX: Verify the runtime_id still exists in registry.
-                // Previously returned stale bindings for stopped/pruned agents,
-                // causing permanent routing failures until server restart.
-                let registry = self.registry.read().await;
-                if registry.contains_key(runtime_id) {
-                    debug!(
-                        mcp_agent_id = mcp_agent_id,
-                        runtime_id = runtime_id,
-                        "MCP agent already bound (verified)"
-                    );
-                    return Some(runtime_id.clone());
-                } else {
-                    // Stale binding — mark for cleanup
-                    warn!(
-                        mcp_agent_id = mcp_agent_id,
-                        runtime_id = runtime_id,
-                        "Stale MCP binding detected (runtime agent gone), cleaning up"
-                    );
-                    true
-                }
-            } else {
-                false
+        let mut guard = self.registry.write().await;
+        if let Some(runtime_id) = guard.resolve_mcp_id(mcp_agent_id) {
+            if guard.contains_key(runtime_id) {
+                debug!(
+                    mcp_agent_id = mcp_agent_id,
+                    runtime_id = runtime_id,
+                    "MCP agent already bound (verified)"
+                );
+                return Some(runtime_id.to_string());
             }
-        };
-        // Read locks dropped here
 
-        // Step 2: Clean up stale binding if needed (write lock)
-        if needs_cleanup {
-            self.mcp_index.write().await.remove(mcp_agent_id);
+            warn!(
+                mcp_agent_id = mcp_agent_id,
+                runtime_id = runtime_id,
+                "Stale MCP binding detected (runtime agent gone), cleaning up"
+            );
+            guard.reconcile_indices();
         }
 
-        // Step 3: Sequential binding algorithm
+        // Sequential binding algorithm
         // Find the FIRST unbound runtime agent (by discovery order)
         // This assumes panes are opened one at a time and MCP connects shortly after
-        let mut registry = self.registry.write().await;
-        let mut unbound_agents: Vec<_> = registry
+        let mut unbound_agents: Vec<_> = guard
             .values()
             .filter(|info| info.mcp_agent_id.is_none())
+            .cloned()
             .collect();
 
         if unbound_agents.is_empty() {
             // No unmapped runtime agent — add to pending queue
-            drop(registry);
+            drop(guard);
             let mut pending = self.pending_mcp.write().await;
             if !pending.iter().any(|(id, _)| id == mcp_agent_id) {
                 pending.push((mcp_agent_id.to_string(), String::new()));
@@ -823,13 +678,15 @@ impl AgentRuntime {
         let runtime_id = matched_agent.agent_id.clone();
 
         // Update the registry — agent may have been removed between sort and bind
-        if let Some(info) = registry.get_mut(&runtime_id) {
+        if let Some(info) = guard.get_mut(&runtime_id) {
             info.mcp_agent_id = Some(mcp_agent_id.to_string());
             // Unify ergatai_agent_id to MCP URL path name for consistent IDs
             // across list_agents, message routing, and reply targets.
             info.handle
                 .metadata
                 .insert("ergatai_agent_id".to_string(), mcp_agent_id.to_string());
+            // 重建反向索引以包含新的 MCP 绑定
+            guard.reconcile_indices();
         } else {
             warn!(
                 runtime_id = %runtime_id,
@@ -838,13 +695,6 @@ impl AgentRuntime {
             );
             return None;
         }
-
-        // Update the reverse index
-        drop(registry);
-        self.mcp_index
-            .write()
-            .await
-            .insert(mcp_agent_id.to_string(), runtime_id.clone());
 
         info!(
             mcp_agent_id = mcp_agent_id,
@@ -866,28 +716,28 @@ impl AgentRuntime {
     ) -> Option<String> {
         let _guard = self.binding_mutex.lock().await;
 
-        // Check if already bound
+        // Check if already bound — 使用 ReadGuard 获取一致的快照
         {
-            let index = self.mcp_index.read().await;
-            if let Some(runtime_id) = index.get(mcp_agent_id) {
+            let guard = self.registry.read().await;
+            if let Some(runtime_id) = guard.resolve_mcp_id(mcp_agent_id) {
                 // HIGH BUG FIX: Verify the runtime_id still exists in registry.
-                let registry = self.registry.read().await;
-                if registry.contains_key(runtime_id) {
+                if guard.contains_key(runtime_id) {
                     debug!(
                         mcp_agent_id = mcp_agent_id,
                         runtime_id = runtime_id,
                         "MCP agent already bound (verified)"
                     );
-                    return Some(runtime_id.clone());
+                    return Some(runtime_id.to_string());
                 } else {
                     warn!(
                         mcp_agent_id = mcp_agent_id,
                         runtime_id = runtime_id,
                         "Stale MCP binding detected (runtime agent gone), cleaning up"
                     );
-                    drop(registry);
-                    drop(index);
-                    self.mcp_index.write().await.remove(mcp_agent_id);
+                    drop(guard);
+                    // Clean up stale binding
+                    let mut write_guard = self.registry.write().await;
+                    write_guard.reconcile_indices();
                 }
             }
         }
@@ -900,9 +750,9 @@ impl AgentRuntime {
         // Strategy: prefer exact match first; fall back to suffix match only if
         // unambiguous (exactly one match). Multiple suffix matches are ambiguous
         // and must NOT silently route to the wrong agent.
-        let registry = self.registry.read().await;
+        let guard = self.registry.read().await;
         let suffix = format!("-{}", agent_identifier);
-        let matched_agent = registry
+        let matched_agent = guard
             .values()
             .find(|info| {
                 info.handle
@@ -912,7 +762,7 @@ impl AgentRuntime {
             })
             .or_else(|| {
                 // Collect suffix matches — only use if exactly one
-                let suffix_matches: Vec<_> = registry
+                let suffix_matches: Vec<_> = guard
                     .values()
                     .filter(|info| {
                         info.handle
@@ -936,10 +786,11 @@ impl AgentRuntime {
             });
 
         let matched_agent = match matched_agent {
-            Some(agent) => agent,
+            Some(agent) => agent.clone(),
             None => {
                 // No matching runtime agent found yet - add to pending queue
                 // for later binding when discovery completes
+                drop(guard);
                 let mut pq = self.pending_mcp.write().await;
                 if !pq.iter().any(|(id, _)| id == mcp_agent_id) {
                     info!(
@@ -960,7 +811,7 @@ impl AgentRuntime {
         };
 
         let runtime_id = matched_agent.agent_id.clone();
-        drop(registry);
+        drop(guard);
 
         // Update the registry: set mcp_agent_id and unify ergatai_agent_id
         // metadata to the MCP URL path name, so all downstream lookups
@@ -980,11 +831,8 @@ impl AgentRuntime {
             }
         }
 
-        // Update the reverse index
-        self.mcp_index
-            .write()
-            .await
-            .insert(mcp_agent_id.to_string(), runtime_id.clone());
+        // 重建反向索引以包含新的 MCP 绑定 — 已在上面的 write guard 中完成
+        // reconcile_indices() 调用
 
         info!(
             mcp_agent_id = mcp_agent_id,
@@ -1012,21 +860,22 @@ impl AgentRuntime {
             "Draining pending MCP bindings"
         );
 
-        let mut registry = self.registry.write().await;
-        let mut index = self.mcp_index.write().await;
+        // 使用单个 WriteGuard 替代分离的 registry + mcp_index 锁
+        let mut guard = self.registry.write().await;
         let mut bound = 0;
         let mut requeued = Vec::new();
 
         for (mcp_id, agent_identifier) in pending {
             // Skip if already bound (could happen if bound between queue and drain)
-            if index.contains_key(&mcp_id) {
+            if guard.resolve_mcp_id(&mcp_id).is_some() {
                 continue;
             }
 
             // Find unbound runtime agents
-            let mut unbound_agents: Vec<_> = registry
+            let mut unbound_agents: Vec<_> = guard
                 .values()
                 .filter(|info| info.mcp_agent_id.is_none())
+                .cloned()
                 .collect();
 
             if unbound_agents.is_empty() {
@@ -1041,16 +890,16 @@ impl AgentRuntime {
             // Strategy: prefer exact match first; fall back to suffix match only if
             // unambiguous (exactly one match). Multiple suffix matches are ambiguous.
             let suffix = format!("-{}", agent_identifier);
-            let matched_agent: Option<&AgentInfo> = if !agent_identifier.is_empty() {
+            let matched_agent: Option<AgentInfo> = if !agent_identifier.is_empty() {
                 // Exact match first
-                unbound_agents.iter().copied().find(|info| {
+                unbound_agents.iter().find(|info| {
                     info.handle
                         .metadata
                         .get("ergatai_agent_id")
                         .is_some_and(|id| id == &agent_identifier)
                 }).or_else(|| {
                     // Suffix match — only if exactly one
-                    let suffix_matches: Vec<_> = unbound_agents.iter().copied().filter(|info| {
+                    let suffix_matches: Vec<_> = unbound_agents.iter().filter(|info| {
                         info.handle
                             .metadata
                             .get("ergatai_agent_id")
@@ -1068,11 +917,11 @@ impl AgentRuntime {
                         }
                         None
                     }
-                })
+                }).cloned()
             } else {
                 // FIFO: sort by creation time and take earliest
                 unbound_agents.sort_by_key(|a| a.created_at);
-                unbound_agents.first().copied()
+                unbound_agents.first().cloned()
             };
 
             let matched_agent = match matched_agent {
@@ -1086,14 +935,14 @@ impl AgentRuntime {
 
             let runtime_id = matched_agent.agent_id.clone();
 
-            if let Some(info) = registry.get_mut(&runtime_id) {
+            if let Some(info) = guard.get_mut(&runtime_id) {
                 info.mcp_agent_id = Some(mcp_id.clone());
                 // Unify ergatai_agent_id to MCP URL path name
                 info.handle
                     .metadata
                     .insert("ergatai_agent_id".to_string(), mcp_id.clone());
             }
-            index.insert(mcp_id.clone(), runtime_id.clone());
+            // MCP 绑定通过 reconcile_indices() 在循环结束后统一重建
 
             info!(
                 mcp_agent_id = mcp_id,
@@ -1103,6 +952,10 @@ impl AgentRuntime {
             );
             bound += 1;
         }
+
+        // 重建所有反向索引，确保一致性
+        guard.reconcile_indices();
+        drop(guard);
 
         // Put back any that couldn't be bound
         if !requeued.is_empty() {
@@ -1119,31 +972,22 @@ impl AgentRuntime {
     ///
     /// First checks if the ID is a direct runtime ID, then checks the MCP index.
     pub async fn resolve_agent_id(&self, agent_id: &str) -> Option<String> {
-        // Direct match in registry
-        {
-            let registry = self.registry.read().await;
-            if registry.contains_key(agent_id) {
-                return Some(agent_id.to_string());
-            }
+        // 使用 ReadGuard 获取一致的快照
+        let guard = self.registry.read().await;
 
-            // Stable ID lookup: search by ergatai_agent_id metadata (e.g. "agent-1").
-            // This enables callers to address agents by their human-readable stable name.
-            for (runtime_id, info) in registry.iter() {
-                if info
-                    .handle
-                    .metadata
-                    .get("ergatai_agent_id")
-                    .map(String::as_str)
-                    == Some(agent_id)
-                {
-                    return Some(runtime_id.clone());
-                }
-            }
+        // Direct match in registry
+        if guard.contains_key(agent_id) {
+            return Some(agent_id.to_string());
+        }
+
+        // Stable ID lookup (O(1) via stable_id_index).
+        // This enables callers to address agents by their human-readable stable name.
+        if let Some(runtime_id) = guard.resolve_stable_id(agent_id) {
+            return Some(runtime_id.to_string());
         }
 
         // MCP ID lookup
-        let index = self.mcp_index.read().await;
-        index.get(agent_id).cloned()
+        guard.resolve_mcp_id(agent_id).map(|s| s.to_string())
     }
 
     /// Resolve any agent identifier to the stable `ergatai_agent_id` (e.g., "agent-1").
@@ -1166,8 +1010,11 @@ impl AgentRuntime {
         agent_id: &str,
         agent_identifier: Option<&str>,
     ) -> String {
+        // 使用 ReadGuard 获取一致的快照
+        let guard = self.registry.read().await;
+
         // 1. Direct registry lookup (runtime ID)
-        if let Some(info) = self.get_agent(agent_id).await {
+        if let Some(info) = guard.get(agent_id) {
             // Prefer first-class stable_id field, fallback to metadata for backward compat
             if let Some(ref stable) = info.stable_id {
                 return stable.clone();
@@ -1179,8 +1026,8 @@ impl AgentRuntime {
         }
 
         // 2. MCP index lookup
-        if let Some(runtime_id) = self.resolve_agent_id(agent_id).await {
-            if let Some(info) = self.get_agent(&runtime_id).await {
+        if let Some(runtime_id) = guard.resolve_mcp_id(agent_id) {
+            if let Some(info) = guard.get(runtime_id) {
                 if let Some(ref stable) = info.stable_id {
                     return stable.clone();
                 }
@@ -1188,16 +1035,12 @@ impl AgentRuntime {
                     return stable.clone();
                 }
             }
-            return runtime_id;
+            return runtime_id.to_string();
         }
 
         // 3. Stable ID match — check if agent_id matches any agent's stable_id
-        // LOW FIX: Use stable_id_index for O(1) lookup instead of O(n) scan
-        {
-            let stable_id_index = self.stable_id_index.read().await;
-            if stable_id_index.contains_key(agent_id) {
-                return agent_id.to_string();
-            }
+        if guard.resolve_stable_id(agent_id).is_some() {
+            return agent_id.to_string();
         }
 
         // 4. agent_identifier fallback (MCP session context)
@@ -1211,10 +1054,7 @@ impl AgentRuntime {
 
     /// Get the MCP agent ID associated with a runtime agent.
     pub async fn get_mcp_agent_id(&self, runtime_id: &str) -> Option<String> {
-        let registry = self.registry.read().await;
-        registry
-            .get(runtime_id)
-            .and_then(|info| info.mcp_agent_id.clone())
+        self.registry.get_mcp_agent_id(runtime_id).await
     }
 
     /// Resolve agent UUID to current runtime ID.
@@ -1224,15 +1064,14 @@ impl AgentRuntime {
     ///
     /// Uses O(1) hash map lookup via uuid_index for efficient resolution.
     pub async fn resolve_agent_uuid(&self, agent_uuid: &str) -> Option<String> {
-        let index = self.uuid_index.read().await;
-        index.get(agent_uuid).cloned()
+        self.registry.resolve_uuid(agent_uuid).await
     }
 
     /// Set agent UUID (for testing purposes only).
     #[cfg(test)]
     pub async fn set_agent_uuid_for_test(&self, agent_id: &str, uuid: &str) -> ErgataiResult<()> {
-        let mut registry = self.registry.write().await;
-        let info = registry
+        let mut guard = self.registry.write().await;
+        let info = guard
             .get_mut(agent_id)
             .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", agent_id)))?;
         info.agent_uuid = uuid.to_string();
@@ -1247,8 +1086,8 @@ impl AgentRuntime {
         agent_id: &str,
         new_state: crate::agent_lifecycle::AgentLifecycleState,
     ) -> ErgataiResult<()> {
-        let mut registry = self.registry.write().await;
-        let info = registry
+        let mut guard = self.registry.write().await;
+        let info = guard
             .get_mut(agent_id)
             .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", agent_id)))?;
         info.lifecycle = new_state;
@@ -1257,13 +1096,11 @@ impl AgentRuntime {
 
     /// Capture agent output.
     pub async fn capture_output(&self, agent_id: &str) -> ErgataiResult<Option<String>> {
-        let info = {
-            let registry = self.registry.read().await;
-            registry
-                .get(agent_id)
-                .cloned()
-                .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", agent_id)))?
-        };
+        let info = self
+            .registry
+            .get(agent_id)
+            .await
+            .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", agent_id)))?;
 
         self.backend.capture_output(&info.handle).await
     }
@@ -1274,13 +1111,11 @@ impl AgentRuntime {
         agent_id: &str,
         timeout: Option<std::time::Duration>,
     ) -> ErgataiResult<WaitResult> {
-        let info = {
-            let registry = self.registry.read().await;
-            registry
-                .get(agent_id)
-                .cloned()
-                .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", agent_id)))?
-        };
+        let info = self
+            .registry
+            .get(agent_id)
+            .await
+            .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", agent_id)))?;
 
         self.backend.wait_for_exit(&info.handle, timeout).await
     }
@@ -1289,11 +1124,7 @@ impl AgentRuntime {
     /// Used by DAG watchdog to detect idle agents.
     /// Returns None if the agent is not found or the backend doesn't track output.
     pub async fn agent_last_output_age(&self, agent_id: &str) -> Option<std::time::Duration> {
-        let info = {
-            let registry = self.registry.read().await;
-            registry.get(agent_id).cloned()?
-        };
-
+        let info = self.registry.get(agent_id).await?;
         self.backend.last_output_age(&info.handle)
     }
 
@@ -1319,7 +1150,7 @@ impl AgentRuntime {
         // preventing races with process exit or subsequent runtime reuse.
         let handles: Vec<_> = {
             let mut guard = self.monitor_handles.lock().unwrap();
-            std::mem::take(&mut *guard)
+            guard.drain().map(|(_, handle)| handle).collect()
         };
         if !handles.is_empty() {
             info!(count = handles.len(), "Joining monitor tasks");
@@ -1353,13 +1184,10 @@ impl AgentRuntime {
     /// preventing task leaks during runtime shutdown.
     fn spawn_monitor(&self, agent_id: String, handle: AgentHandle) {
         let backend = self.backend.clone();
-        let registry = self.registry.clone();
-        let uuid_index = self.uuid_index.clone();
-        let mcp_index = self.mcp_index.clone();
-        let stable_id_index = self.stable_id_index.clone();
-        let unhealthy_streaks = self.unhealthy_streaks.clone();
+        let registry = self.registry.clone(); // AgentRegistry is Clone (Arc clone)
         let shutdown_token = self.shutdown_token.clone();
         let monitor_handles = self.monitor_handles.clone();
+        let agent_id_for_handle = agent_id.clone();
 
         let join_handle = tokio::spawn(async move {
             use crate::agent_lifecycle::AgentLifecycleState;
@@ -1474,10 +1302,10 @@ impl AgentRuntime {
                 }
             };
 
-            // Extract agent info before mutating registry
-            let (agent_uuid, mcp_agent_id, stable_id) = {
-                let mut reg = registry.write().await;
-                if let Some(info) = reg.get_mut(&agent_id) {
+            // Extract agent UUID before mutating registry (for consistency check)
+            let agent_uuid = {
+                let mut guard = registry.write().await;
+                if let Some(info) = guard.get_mut(&agent_id) {
                     // Fill in the real duration for Terminated states
                     let final_state = match terminal_state {
                         AgentLifecycleState::Terminated {
@@ -1499,11 +1327,7 @@ impl AgentRuntime {
                     };
                     info.lifecycle = final_state;
                     info.last_heartbeat = now;
-                    (
-                        info.agent_uuid.clone(),
-                        info.mcp_agent_id.clone(),
-                        info.stable_id.clone(),
-                    )
+                    info.agent_uuid.clone()
                 } else {
                     // Agent was already removed (e.g., by stop_agent)
                     return;
@@ -1513,14 +1337,23 @@ impl AgentRuntime {
             // HIGH BUG FIX: Grace period before cleanup. This gives callers time
             // to query the terminated agent's state (e.g., for exit code, duration).
             // After 60 seconds, remove from all indices to prevent memory leak.
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
+                _ = shutdown_token.cancelled() => {
+                    info!(
+                        agent_id = agent_id,
+                        "Monitor grace period cancelled during runtime shutdown"
+                    );
+                    return;
+                }
+            }
 
             // CRITICAL FIX: Verify UUID consistency before removing. If agent_id was
             // re-bound to a new agent during the grace period, skip cleanup to avoid
             // destroying the new agent's registry entry and workspace.
             {
-                let reg = registry.read().await;
-                if let Some(current) = reg.get(&agent_id) {
+                let guard = registry.read().await;
+                if let Some(current) = guard.get(&agent_id) {
                     if current.agent_uuid != agent_uuid {
                         info!(
                             agent_id = agent_id,
@@ -1533,16 +1366,8 @@ impl AgentRuntime {
                 }
             }
 
-            // Remove from all indices
-            registry.write().await.remove(&agent_id);
-            uuid_index.write().await.remove(&agent_uuid);
-            if let Some(mcp_id) = mcp_agent_id {
-                mcp_index.write().await.remove(&mcp_id);
-            }
-            if let Some(stable_id) = stable_id {
-                stable_id_index.write().await.remove(&stable_id);
-            }
-            unhealthy_streaks.lock().await.remove(&agent_id);
+            // 原子移除所有索引 — AgentRegistry 自动清理 uuid, mcp, stable_id, streaks
+            registry.remove(&agent_id).await;
 
             // NOTE: Do NOT cleanup workspace here. The workspace may be shared
             // by multiple agents. Workspace lifecycle is managed explicitly.
@@ -1556,14 +1381,17 @@ impl AgentRuntime {
         // Track the JoinHandle so shutdown() can join it.
         // Use std::sync::Mutex (not tokio::sync::Mutex) because spawn_monitor is
         // a sync fn called from async contexts — blocking_lock would panic.
-        monitor_handles.lock().unwrap().push(join_handle);
+        let mut handles = monitor_handles.lock().unwrap();
+        if let Some(existing_handle) = handles.insert(agent_id_for_handle, join_handle) {
+            existing_handle.abort();
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::AgentRuntimeBackend;
+    use crate::backend::AcpBackendInterface;
     use crate::types::{
         AgentHandle, BackendCapabilities, WaitResult, WorkspaceHandle, WorkspaceSpec,
     };
@@ -1599,7 +1427,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl AgentRuntimeBackend for MockBackend {
+    impl AcpBackendInterface for MockBackend {
         fn name(&self) -> &'static str {
             "mock"
         }
@@ -1674,6 +1502,88 @@ mod tests {
             Ok(())
         }
         async fn shutdown(&self) -> ErgataiResult<()> {
+            Ok(())
+        }
+        fn last_output_age(&self, _handle: &AgentHandle) -> Option<Duration> {
+            None
+        }
+        // Observation operations
+        async fn thoughts(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+            Ok(None)
+        }
+        async fn output(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+            Ok(None)
+        }
+        async fn tool_calls(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<Option<Vec<crate::backends::acp::TrackedToolCall>>> {
+            Ok(None)
+        }
+        async fn plan(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<Option<crate::backends::acp::TrackedPlan>> {
+            Ok(None)
+        }
+        async fn elicitations(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<Option<Vec<crate::backends::acp::TrackedElicitation>>> {
+            Ok(None)
+        }
+        async fn session_title(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+            Ok(None)
+        }
+        async fn session_id(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+            Ok(None)
+        }
+        async fn stop_reason(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+            Ok(None)
+        }
+        async fn workspace_capture_thoughts(
+            &self,
+            _workspace_id: &str,
+        ) -> ErgataiResult<Option<bool>> {
+            Ok(None)
+        }
+        async fn continuation_count(&self, _agent_id: &str) -> ErgataiResult<Option<usize>> {
+            Ok(None)
+        }
+        async fn agent_last_output_age(&self, _agent_id: &str) -> ErgataiResult<Option<Duration>> {
+            Ok(None)
+        }
+        async fn exit_code(&self, _agent_id: &str) -> ErgataiResult<Option<Option<i32>>> {
+            Ok(None)
+        }
+        async fn available_commands(&self, _agent_id: &str) -> ErgataiResult<Option<Vec<String>>> {
+            Ok(None)
+        }
+        async fn auto_continue(&self) -> ErgataiResult<bool> {
+            Ok(false)
+        }
+        async fn max_auto_continues(&self) -> ErgataiResult<usize> {
+            Ok(0)
+        }
+        async fn mcp_over_acp_enabled(&self) -> ErgataiResult<bool> {
+            Ok(false)
+        }
+        async fn session_persistence_enabled(&self) -> ErgataiResult<bool> {
+            Ok(false)
+        }
+        // Control operations
+        async fn cancel_prompt(&self, _agent_id: &str) -> ErgataiResult<()> {
+            Ok(())
+        }
+        async fn execute_command(&self, _agent_id: &str, _command: &str) -> ErgataiResult<()> {
+            Ok(())
+        }
+        async fn respond_to_elicitation(
+            &self,
+            _agent_id: &str,
+            _elicitation_id: &str,
+            _response: &str,
+        ) -> ErgataiResult<()> {
             Ok(())
         }
         fn as_any(&self) -> &dyn std::any::Any {
@@ -2006,20 +1916,18 @@ mod tests {
             state_changed_at: now,
             state_history: Vec::new(),
         };
-        runtime
-            .registry
-            .write()
-            .await
-            .insert(runtime_id.to_string(), info);
+        runtime.registry.write().await.insert(info);
     }
 
-    /// Helper: insert an MCP index mapping.
+    /// Helper: insert an MCP index mapping by setting mcp_agent_id on the existing agent.
     async fn insert_mcp_binding(runtime: &AgentRuntime, mcp_id: &str, runtime_id: &str) {
-        runtime
-            .mcp_index
-            .write()
+        let mut info = runtime
+            .registry
+            .get(runtime_id)
             .await
-            .insert(mcp_id.to_string(), runtime_id.to_string());
+            .unwrap_or_else(|| panic!("insert_mcp_binding: agent {} not found", runtime_id));
+        info.mcp_agent_id = Some(mcp_id.to_string());
+        runtime.registry.insert(info).await;
     }
 
     /// resolve_to_stable_id: runtime ID → stable ID from metadata

@@ -1,5 +1,4 @@
 use axum::{extract::State, response::IntoResponse, Json};
-use ergatai_runtime::get_agent_runtime;
 use serde::Serialize;
 
 use crate::{nats, services::agent_service, AppState};
@@ -12,7 +11,7 @@ pub struct StatusResponse {
 }
 
 pub async fn get_status(State(_state): State<AppState>) -> impl IntoResponse {
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
 
     // Basic status
     let nats_initialized = nats::is_nats_initialized().await;

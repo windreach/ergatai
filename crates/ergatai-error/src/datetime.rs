@@ -18,35 +18,29 @@ pub enum OnErrorStrategy {
 /// * `context` - Context information for logging (e.g., field name)
 ///
 /// # Returns
-/// Parsed DateTime<Utc> or fallback value based on strategy.
-pub fn parse_rfc3339_datetime(
-    s: &str,
-    strategy: OnErrorStrategy,
-    context: &str,
-) -> DateTime<Utc> {
+/// Parsed `DateTime<Utc>` or fallback value based on strategy.
+pub fn parse_rfc3339_datetime(s: &str, strategy: OnErrorStrategy, context: &str) -> DateTime<Utc> {
     match DateTime::parse_from_rfc3339(s) {
         Ok(dt) => dt.with_timezone(&Utc),
-        Err(e) => {
-            match strategy {
-                OnErrorStrategy::Now => {
-                    tracing::warn!(
-                        error = %e,
-                        context = context,
-                        timestamp = s,
-                        "Failed to parse timestamp, using current time"
-                    );
-                    Utc::now()
-                }
-                OnErrorStrategy::Epoch => {
-                    tracing::error!(
-                        error = %e,
-                        context = context,
-                        timestamp = s,
-                        "Invalid datetime, using UNIX_EPOCH (fail-safe: expired)"
-                    );
-                    DateTime::UNIX_EPOCH
-                }
+        Err(e) => match strategy {
+            OnErrorStrategy::Now => {
+                tracing::warn!(
+                    error = %e,
+                    context = context,
+                    timestamp = s,
+                    "Failed to parse timestamp, using current time"
+                );
+                Utc::now()
             }
-        }
+            OnErrorStrategy::Epoch => {
+                tracing::error!(
+                    error = %e,
+                    context = context,
+                    timestamp = s,
+                    "Invalid datetime, using UNIX_EPOCH (fail-safe: expired)"
+                );
+                DateTime::UNIX_EPOCH
+            }
+        },
     }
 }

@@ -12,6 +12,19 @@ use tower::util::ServiceExt;
 
 /// Build a test AppState (no auth token).
 fn test_state() -> AppState {
+    // Initialize AppContext for tests if not already initialized
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let runtime = ergatai_runtime::get_agent_runtime();
+        let ctx = ergatai_api::context::AppContext::new(
+            runtime,
+            None,
+            ergatai_api::user_data_db::get_user_data_db(),
+        );
+        ergatai_api::context::init_app_context(ctx);
+    });
+
     AppState {
         default_cwd: std::env::temp_dir().to_string_lossy().to_string(),
         api_token: None,
@@ -35,6 +48,19 @@ impl Drop for WorkspaceCleanupGuard {
 
 /// Build a test AppState with an auth token.
 fn test_state_with_token(token: &str) -> AppState {
+    // Initialize AppContext for tests if not already initialized
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let runtime = ergatai_runtime::get_agent_runtime();
+        let ctx = ergatai_api::context::AppContext::new(
+            runtime,
+            None,
+            ergatai_api::user_data_db::get_user_data_db(),
+        );
+        ergatai_api::context::init_app_context(ctx);
+    });
+
     AppState {
         default_cwd: std::env::temp_dir().to_string_lossy().to_string(),
         api_token: Some(token.to_string()),

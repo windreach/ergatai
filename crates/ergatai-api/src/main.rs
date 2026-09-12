@@ -200,7 +200,7 @@ async fn async_main(args: Args) -> Result<()> {
     //
     // ERGATAI_AUTO_CONTINUE=1 enables automatic prompt continuation when the
     // agent's stop_reason is max_tokens or max_turn_requests (up to 3 retries).
-    let runtime_backend: std::sync::Arc<dyn ergatai_runtime::AgentRuntimeBackend> = {
+    let runtime_backend: std::sync::Arc<dyn ergatai_runtime::AcpBackendInterface> = {
         let mut backend =
             ergatai_runtime::AcpBackend::new().with_permission_handler(std::sync::Arc::new(
                 ergatai_api::lock_permission::LockPermissionHandler::new("default".to_string()),
@@ -359,7 +359,7 @@ async fn async_main(args: Args) -> Result<()> {
             tracing::info!("✅ NATS initialized successfully");
 
             let delivery_handle =
-                start_message_delivery_consumer(conn, mcp_cancellation_token.clone());
+                start_message_delivery_consumer(conn.clone(), mcp_cancellation_token.clone());
             let cancel_monitor = mcp_cancellation_token.clone();
             tokio::spawn(async move {
                 match delivery_handle.await {
@@ -391,9 +391,20 @@ async fn async_main(args: Args) -> Result<()> {
                 tracing::info!("✅ Activity feed started (dashboard real-time events)");
             }
 
+            // Initialize AppContext (centralized dependency injection)
+            let app_context = ergatai_api::context::AppContext::new(
+                ergatai_runtime::get_agent_runtime(),
+                Some(conn.clone()),
+                ergatai_api::user_data_db::get_user_data_db(),
+            );
+            ergatai_api::context::init_app_context(app_context);
+            tracing::info!("✅ AppContext initialized");
+
             // File access control
             let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let runtime_for_resolver = ergatai_runtime::get_agent_runtime();
+            let runtime_for_resolver = ergatai_api::context::get_app_context()
+                .agent_runtime
+                .clone();
             let pid_resolver = ergatai_lock::CallbackPidResolver::with_cache(
                 {
                     let runtime = runtime_for_resolver.clone();
@@ -530,7 +541,9 @@ async fn async_main(args: Args) -> Result<()> {
         ));
 
     // Mount ACP server endpoint if enabled
-    let runtime = ergatai_runtime::get_agent_runtime();
+    let runtime = ergatai_api::context::get_app_context()
+        .agent_runtime
+        .clone();
     let app = ergatai_api::api::acp_server::mount_acp_server(app, runtime);
 
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)

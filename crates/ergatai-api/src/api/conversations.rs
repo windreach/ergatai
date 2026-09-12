@@ -101,9 +101,17 @@ pub async fn get_conversation_detail(
         return Json(None::<ConversationDetail>).into_response();
     };
 
-    // TODO: Read real message history from NATS JetStream (AGENT_MESSAGES stream)
-    // For now, return empty array instead of mock data
-    let messages = Vec::new();
+    let history = manager.get_conversation_history(&conv.id).await;
+    let messages = history
+        .into_iter()
+        .map(|message| ConversationMessage {
+            from: message.from,
+            to: message.to,
+            content: message.content,
+            message_type: message.message_type,
+            timestamp: message.timestamp.to_rfc3339(),
+        })
+        .collect();
 
     let detail = ConversationDetail {
         id: conv.id,

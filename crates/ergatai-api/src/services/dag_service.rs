@@ -194,7 +194,7 @@ pub async fn submit_dag(req: DagSubmitRequest) -> Result<DagSubmitResponse> {
 
     // 3. submitter-is-worker 检查（MCP-only）
     if let Some(ref submitter_id) = req.submitter_agent_id {
-        let runtime = ergatai_runtime::get_agent_runtime();
+        let runtime = crate::context::get_app_context().agent_runtime.clone();
         if let Some(runtime_id) = runtime.resolve_agent_id(submitter_id).await {
             let dag_agents: Vec<String> = graph.nodes.iter().map(|t| t.agent.clone()).collect();
             if dag_agents.contains(&runtime_id) {

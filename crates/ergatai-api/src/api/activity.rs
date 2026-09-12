@@ -148,9 +148,11 @@ impl ActivityFeed {
         // Wait for NATS to be ready
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        let connection = ergatai_nats::get_nats_connection()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("NATS not initialized"))?;
+        let connection = match crate::context::try_get_app_context() {
+            Some(ctx) => ctx.nats_connection.clone(),
+            None => None,
+        }
+        .ok_or_else(|| anyhow::anyhow!("NATS not initialized"))?;
 
         let mut subscriber = connection
             .client()
@@ -186,9 +188,11 @@ impl ActivityFeed {
         // Wait for NATS to be ready
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        let connection = ergatai_nats::get_nats_connection()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("NATS not initialized"))?;
+        let connection = match crate::context::try_get_app_context() {
+            Some(ctx) => ctx.nats_connection.clone(),
+            None => None,
+        }
+        .ok_or_else(|| anyhow::anyhow!("NATS not initialized"))?;
 
         // Subscribe to all DAG events
         let mut subscriber = connection

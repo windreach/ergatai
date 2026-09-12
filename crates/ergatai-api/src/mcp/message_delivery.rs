@@ -33,7 +33,6 @@ use ergatai_error::{ErgataiError, ErgataiResult};
 use ergatai_nats::connection::NatsConnection;
 use ergatai_nats::events::AgentMessagePayload;
 use ergatai_nats::AGENT_MESSAGES_STREAM;
-use ergatai_runtime::get_agent_runtime;
 
 /// Global message type counters for statistics
 static MSG_COUNT_REQUEST: AtomicU64 = AtomicU64::new(0);
@@ -135,7 +134,7 @@ async fn init_pull_consumer(
         20, // max_deliver: 20 attempts
     )
     .await
-    .map_err(|e| ErgataiError::NatsError(e))
+    .map_err(ErgataiError::NatsError)
 }
 
 /// Initialize the pull consumer with retry logic.
@@ -280,7 +279,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
 
     // ── Resolve sender and recipient runtime IDs for delivery ──
     // Priority: UUID (stable) > runtime agent ID (dynamic, may be stale)
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
 
     // The message content is already formatted by the MCP server (server.rs)
     // with instruction + JSON payload. Just deliver it as-is.
@@ -347,7 +346,9 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
 
             // Publish read receipt if required (after ack to avoid duplicates)
             if payload.requires_receipt {
-                if let Some(conn) = ergatai_nats::get_nats_connection().await {
+                if let Some(conn) = crate::context::try_get_app_context()
+                    .and_then(|ctx| ctx.nats_connection.clone())
+                {
                     let bus = ergatai_nats::EventBus::new(conn);
                     let read_at =
                         match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {

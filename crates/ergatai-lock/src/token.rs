@@ -77,9 +77,8 @@ mod token_helpers {
         heartbeat_at: DateTime<Utc>,
         timeout_multiplier: u32,
     ) -> bool {
-        let timeout = chrono::Duration::seconds(
-            (heartbeat_interval_secs * timeout_multiplier as u64) as i64,
-        );
+        let timeout =
+            chrono::Duration::seconds((heartbeat_interval_secs * timeout_multiplier as u64) as i64);
         Utc::now() > heartbeat_at + timeout
     }
 }

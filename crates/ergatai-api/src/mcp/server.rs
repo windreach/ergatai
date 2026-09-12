@@ -23,7 +23,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use ergatai_core::agent_registry::AgentRegistry;
-use ergatai_runtime::get_agent_runtime;
 
 /// Shared registry of MCP peer handles for pushing notifications to agents.
 /// Key: agent_id (e.g., "opencode@abcd1234")
@@ -479,6 +478,7 @@ impl ErgataiMcpServer {
             message: message.to_string(),
             message_type: message_type.to_string(),
             correlation_id,
+            sub_chat_id: None,
         };
 
         match sender.send(send_req).await {
@@ -993,7 +993,7 @@ impl ServerHandler for ErgataiMcpServer {
         // Try to bind this MCP agent to a runtime agent (PTY pane).
         // If agent_identifier is available (from URL path), use precise binding.
         // Otherwise, fall back to FIFO binding (legacy behavior).
-        let runtime = get_agent_runtime();
+        let runtime = crate::context::get_app_context().agent_runtime.clone();
 
         // Trigger immediate discovery to ensure runtime agents are available.
         // This handles the race condition where MCP connects before the periodic

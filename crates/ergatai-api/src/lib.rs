@@ -22,6 +22,7 @@ use tokio::sync::broadcast;
 use ergatai_core::nats;
 
 pub mod api;
+pub mod context;
 pub mod lock_permission;
 pub mod mcp;
 
@@ -192,14 +193,8 @@ pub fn build_rest_app(state: AppState) -> Router {
         // Projects CRUD
         .route("/api/v1/projects", get(api::projects::list_projects))
         .route("/api/v1/projects", post(api::projects::create_project))
-        .route(
-            "/api/v1/projects/:id",
-            get(api::projects::get_project),
-        )
-        .route(
-            "/api/v1/projects/:id",
-            put(api::projects::update_project),
-        )
+        .route("/api/v1/projects/:id", get(api::projects::get_project))
+        .route("/api/v1/projects/:id", put(api::projects::update_project))
         .route(
             "/api/v1/projects/:id",
             delete(api::projects::delete_project),
@@ -208,20 +203,23 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route("/api/v1/chats", get(api::chats::list_chats))
         .route("/api/v1/chats", post(api::chats::create_chat))
         .route("/api/v1/chats/:id", get(api::chats::get_chat))
-        .route(
-            "/api/v1/chats/:id",
-            put(api::chats::update_chat),
-        )
-        .route(
-            "/api/v1/chats/:id/archive",
-            post(api::chats::archive_chat),
-        )
+        .route("/api/v1/chats/:id", put(api::chats::update_chat))
+        .route("/api/v1/chats/:id/archive", post(api::chats::archive_chat))
         .route(
             "/api/v1/chats/:id/unarchive",
             post(api::chats::unarchive_chat),
         )
         .route("/api/v1/chats/:id", delete(api::chats::delete_chat))
         // Sub-chats CRUD
+        .route("/api/v1/sub-chats/:id", get(api::chats::get_sub_chat_by_id))
+        .route(
+            "/api/v1/sub-chats/:id",
+            put(api::chats::update_sub_chat_by_id),
+        )
+        .route(
+            "/api/v1/worktrees/registered",
+            get(api::chats::lookup_registered_worktree),
+        )
         .route(
             "/api/v1/chats/:id/sub-chats",
             get(api::chats::list_sub_chats),
@@ -241,6 +239,22 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/chats/:chat_id/sub-chats/:sub_chat_id",
             delete(api::chats::delete_sub_chat),
+        )
+        .route(
+            "/api/v1/chats/:chat_id/agent-bindings",
+            get(api::chats::list_agent_bindings),
+        )
+        .route(
+            "/api/v1/chats/:chat_id/agent-bindings",
+            post(api::chats::bind_agent),
+        )
+        .route(
+            "/api/v1/chats/:chat_id/agent-bindings/:agent_id",
+            delete(api::chats::unbind_agent),
+        )
+        .route(
+            "/api/v1/chats/:chat_id/sub-chats/:sub_chat_id/messages",
+            post(api::chats::append_sub_chat_message),
         )
         .route(
             "/api/v1/agent-profiles",
@@ -301,6 +315,34 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/activity/stream",
             get(api::activity_routes::stream_events),
         )
+        .route(
+            "/api/v1/anthropic-accounts",
+            get(api::anthropic_accounts::list_accounts),
+        )
+        .route(
+            "/api/v1/anthropic-accounts",
+            post(api::anthropic_accounts::create_account),
+        )
+        .route(
+            "/api/v1/anthropic-accounts/active",
+            get(api::anthropic_accounts::get_active_account),
+        )
+        .route(
+            "/api/v1/anthropic-accounts/active",
+            post(api::anthropic_accounts::set_active_account),
+        )
+        .route(
+            "/api/v1/anthropic-accounts/:id",
+            get(api::anthropic_accounts::get_account),
+        )
+        .route(
+            "/api/v1/anthropic-accounts/:id",
+            delete(api::anthropic_accounts::delete_account),
+        )
+        .route(
+            "/api/v1/anthropic-accounts/:id/display-name",
+            put(api::anthropic_accounts::update_display_name),
+        )
         .route("/api/v1/dag", post(submit_dag))
         .route("/api/v1/dag/validate", post(validate_dag))
         .route("/api/v1/dag/status", get(dag_status))
@@ -329,8 +371,12 @@ async fn health_check() -> impl IntoResponse {
         all_healthy = false;
     }
 
-    let nats_connected = if let Some(conn) = nats::get_nats_connection().await {
-        conn.is_connected()
+    let nats_connected = if let Some(ctx) = crate::context::try_get_app_context() {
+        if let Some(conn) = ctx.nats_connection.clone() {
+            conn.is_connected()
+        } else {
+            false
+        }
     } else {
         false
     };
@@ -367,8 +413,8 @@ async fn health_check() -> impl IntoResponse {
 
 async fn readiness_check() -> impl IntoResponse {
     let nats_ready = nats::is_nats_initialized().await
-        && nats::get_nats_connection()
-            .await
+        && crate::context::try_get_app_context()
+            .and_then(|ctx| ctx.nats_connection.clone())
             .map(|c| c.is_ready())
             .unwrap_or(false);
 

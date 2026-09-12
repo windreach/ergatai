@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ergatai_runtime::backend::AgentRuntimeBackend;
+use ergatai_runtime::backend::AcpBackendInterface;
 use ergatai_runtime::backends::acp::AcpBackend;
 use ergatai_runtime::types::{ResourceLimits, WorkspaceSpec};
 

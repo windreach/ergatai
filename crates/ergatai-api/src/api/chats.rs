@@ -55,6 +55,34 @@ pub struct UpdateSubChatRequest {
     pub messages: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct BindGroupAgentRequest {
+    pub agent_id: String,
+    pub agent_name: String,
+    #[serde(default)]
+    pub agent_command: Option<String>,
+    pub sub_chat_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AppendSubChatMessageRequest {
+    pub role: String,
+    pub text: String,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WorktreeLookupParams {
+    pub path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RegisteredWorktreeResponse {
+    pub chat: Option<ChatResponse>,
+    pub project_path: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ChatResponse {
     pub id: String,
@@ -87,6 +115,13 @@ pub struct SubChatResponse {
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     pub error: String,
+}
+
+fn now_unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 // ── Helper Functions ─────────────────────────────────────────────────────────
@@ -151,10 +186,7 @@ pub async fn list_chats(
 ) -> impl IntoResponse {
     match user_data_db::chats::list(params.project_id.as_deref()) {
         Ok(chats) => {
-            let response: Vec<ChatResponse> = chats
-                .into_iter()
-                .map(chat_to_response)
-                .collect();
+            let response: Vec<ChatResponse> = chats.into_iter().map(chat_to_response).collect();
             (StatusCode::OK, Json(response)).into_response()
         }
         Err(e) => (
@@ -183,7 +215,9 @@ pub async fn create_chat(
         id: generate_id(),
         name: req.name,
         project_id: req.project_id,
-        collaboration_mode: req.collaboration_mode.unwrap_or_else(|| "supervisor".to_string()),
+        collaboration_mode: req
+            .collaboration_mode
+            .unwrap_or_else(|| "supervisor".to_string()),
         created_at: now,
         updated_at: now,
         archived_at: None,
@@ -212,10 +246,7 @@ pub async fn create_chat(
 /// GET /api/v1/chats/:id
 ///
 /// Get a specific chat by ID.
-pub async fn get_chat(
-    State(_state): State<AppState>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
+pub async fn get_chat(State(_state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
     match user_data_db::chats::get(&id) {
         Ok(Some(chat)) => {
             let response = chat_to_response(chat);
@@ -275,7 +306,10 @@ pub async fn update_chat(
         .as_secs() as i64;
 
     let name = req.name.or(existing.name);
-    let collaboration_mode = req.collaboration_mode.flatten().unwrap_or(existing.collaboration_mode);
+    let collaboration_mode = req
+        .collaboration_mode
+        .flatten()
+        .unwrap_or(existing.collaboration_mode);
     let worktree_path = req.worktree_path.flatten().or(existing.worktree_path);
     let branch = req.branch.flatten().or(existing.branch);
     let base_branch = req.base_branch.flatten().or(existing.base_branch);
@@ -382,6 +416,49 @@ pub async fn delete_chat(
     }
 }
 
+/// GET /api/v1/worktrees/registered?path=...
+///
+/// Resolve a filesystem path against backend-registered chats and projects.
+pub async fn lookup_registered_worktree(
+    State(_state): State<AppState>,
+    Query(params): Query<WorktreeLookupParams>,
+) -> impl IntoResponse {
+    let lookup = || -> Result<RegisteredWorktreeResponse, rusqlite::Error> {
+        let chat = user_data_db::chats::list(None)?
+            .into_iter()
+            .find(|chat| chat.worktree_path.as_deref() == Some(params.path.as_str()));
+
+        if let Some(chat) = chat {
+            let project = user_data_db::projects::get(&chat.project_id)?;
+            let project_path = project.map(|project| project.path);
+            return Ok(RegisteredWorktreeResponse {
+                chat: Some(chat_to_response(chat)),
+                project_path,
+            });
+        }
+
+        let project = user_data_db::projects::list()?
+            .into_iter()
+            .find(|project| project.path == params.path);
+
+        Ok(RegisteredWorktreeResponse {
+            chat: None,
+            project_path: project.map(|project| project.path),
+        })
+    };
+
+    match lookup() {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to lookup registered worktree: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 // ── Sub-Chat API Handlers ────────────────────────────────────────────────────
 
 /// GET /api/v1/chats/:id/sub-chats
@@ -393,10 +470,8 @@ pub async fn list_sub_chats(
 ) -> impl IntoResponse {
     match user_data_db::sub_chats::list(&chat_id) {
         Ok(sub_chats) => {
-            let response: Vec<SubChatResponse> = sub_chats
-                .into_iter()
-                .map(sub_chat_to_response)
-                .collect();
+            let response: Vec<SubChatResponse> =
+                sub_chats.into_iter().map(sub_chat_to_response).collect();
             (StatusCode::OK, Json(response)).into_response()
         }
         Err(e) => (
@@ -520,6 +595,35 @@ pub async fn get_sub_chat(
     }
 }
 
+/// GET /api/v1/sub-chats/:sub_chat_id
+///
+/// Get a sub-chat without requiring the caller to know its chat ID.
+pub async fn get_sub_chat_by_id(
+    State(_state): State<AppState>,
+    Path(sub_chat_id): Path<String>,
+) -> impl IntoResponse {
+    match user_data_db::sub_chats::get(&sub_chat_id) {
+        Ok(Some(sub_chat)) => {
+            let response = sub_chat_to_response(sub_chat);
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Sub-chat not found".to_string(),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to get sub-chat: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 /// PUT /api/v1/chats/:chat_id/sub-chats/:sub_chat_id
 ///
 /// Update a sub-chat.
@@ -569,6 +673,176 @@ pub async fn update_sub_chat(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: format!("Failed to update sub-chat: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// PUT /api/v1/sub-chats/:sub_chat_id
+///
+/// Update a sub-chat without requiring the caller to know its chat ID.
+pub async fn update_sub_chat_by_id(
+    State(_state): State<AppState>,
+    Path(sub_chat_id): Path<String>,
+    Json(req): Json<UpdateSubChatRequest>,
+) -> impl IntoResponse {
+    let now = now_unix_seconds();
+
+    match user_data_db::sub_chats::update_full(
+        &sub_chat_id,
+        req.name.as_deref(),
+        req.session_id.as_deref(),
+        req.stream_id.as_deref(),
+        req.mode.as_deref(),
+        req.messages.as_deref(),
+        now,
+    ) {
+        Ok(_) => match user_data_db::sub_chats::get(&sub_chat_id) {
+            Ok(Some(sub_chat)) => {
+                let response = sub_chat_to_response(sub_chat);
+                (StatusCode::OK, Json(response)).into_response()
+            }
+            Ok(None) => (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Sub-chat not found after update".to_string(),
+                }),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to fetch updated sub-chat: {}", e),
+                }),
+            )
+                .into_response(),
+        },
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to update sub-chat: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/v1/chats/:chat_id/agent-bindings
+pub async fn list_agent_bindings(
+    State(_state): State<AppState>,
+    Path(chat_id): Path<String>,
+) -> impl IntoResponse {
+    match user_data_db::group_agent_bindings::list(&chat_id) {
+        Ok(bindings) => (StatusCode::OK, Json(bindings)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to list agent bindings: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/v1/chats/:chat_id/agent-bindings
+pub async fn bind_agent(
+    State(_state): State<AppState>,
+    Path(chat_id): Path<String>,
+    Json(req): Json<BindGroupAgentRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = user_data_db::chats::get(&chat_id) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to get chat: {}", e),
+            }),
+        )
+            .into_response();
+    }
+
+    let sub_chat = match user_data_db::sub_chats::get(&req.sub_chat_id) {
+        Ok(Some(sub_chat)) if sub_chat.chat_id == chat_id => sub_chat,
+        Ok(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Sub-chat does not belong to this chat".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to get sub-chat: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let now = now_unix_seconds();
+    let binding = user_data_db::GroupAgentBinding {
+        id: format!("binding_{}", uuid::Uuid::new_v4()),
+        chat_id,
+        agent_id: req.agent_id,
+        agent_name: req.agent_name,
+        agent_command: req.agent_command,
+        sub_chat_id: sub_chat.id,
+        created_at: now,
+        updated_at: now,
+    };
+
+    match user_data_db::group_agent_bindings::upsert(binding) {
+        Ok(binding) => (StatusCode::OK, Json(binding)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to bind agent: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// DELETE /api/v1/chats/:chat_id/agent-bindings/:agent_id
+pub async fn unbind_agent(
+    State(_state): State<AppState>,
+    Path((chat_id, agent_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    match user_data_db::group_agent_bindings::delete(&chat_id, &agent_id) {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to unbind agent: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/v1/chats/:chat_id/sub-chats/:sub_chat_id/messages
+pub async fn append_sub_chat_message(
+    State(_state): State<AppState>,
+    Path((_chat_id, sub_chat_id)): Path<(String, String)>,
+    Json(req): Json<AppendSubChatMessageRequest>,
+) -> impl IntoResponse {
+    match user_data_db::sub_chats::append_message(
+        &sub_chat_id,
+        &req.role,
+        &req.text,
+        req.metadata.unwrap_or(serde_json::Value::Null),
+    ) {
+        Ok(()) => StatusCode::CREATED.into_response(),
+        Err(rusqlite::Error::QueryReturnedNoRows) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to append message: {}", e),
             }),
         )
             .into_response(),

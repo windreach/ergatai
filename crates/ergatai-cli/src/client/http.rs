@@ -294,11 +294,13 @@ pub struct WorkspaceResponse {
     pub backend: String,
     pub metadata: HashMap<String, String>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub capture_thoughts: Option<bool>,
 }
 
 /// Configuration option info (matches API's ConfigOptionInfo).
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct ConfigOptionInfo {
     pub id: String,
     pub name: String,

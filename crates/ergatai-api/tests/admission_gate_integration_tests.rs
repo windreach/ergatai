@@ -17,6 +17,7 @@ async fn test_self_message_gate_denies_self_send() {
         message: "test".to_string(),
         message_type: "request".to_string(),
         correlation_id: None,
+        sub_chat_id: None,
     };
 
     let result = gate.check(&request, &runtime).await;
@@ -38,6 +39,7 @@ async fn test_self_message_gate_allows_different_agents() {
         message: "test".to_string(),
         message_type: "request".to_string(),
         correlation_id: None,
+        sub_chat_id: None,
     };
 
     let result = gate.check(&request, &runtime).await;
@@ -51,6 +53,8 @@ async fn test_composite_gate_short_circuits() {
         .with_gate(Box::new(SelfMessageGate::new()))
         .with_gate(Box::new(RateLimitGate::new()));
 
+    let runtime = get_agent_runtime();
+
     // This should be denied by SelfMessageGate before reaching RateLimitGate
     let request = SendRequest {
         from: "agent-1".to_string(),
@@ -58,9 +62,10 @@ async fn test_composite_gate_short_circuits() {
         message: "test".to_string(),
         message_type: "request".to_string(),
         correlation_id: None,
+        sub_chat_id: None,
     };
 
-    let result = gate.check(&request).await;
+    let result = gate.check(&request, &runtime).await;
     assert!(result.is_denied());
 
     if let AdmissionResult::Denied { reason } = result {
@@ -71,6 +76,7 @@ async fn test_composite_gate_short_circuits() {
 #[tokio::test]
 async fn test_composite_gate_empty_allows_all() {
     let gate = CompositeGate::new();
+    let runtime = get_agent_runtime();
 
     let request = SendRequest {
         from: "agent-1".to_string(),
@@ -78,9 +84,10 @@ async fn test_composite_gate_empty_allows_all() {
         message: "test".to_string(),
         message_type: "request".to_string(),
         correlation_id: None,
+        sub_chat_id: None,
     };
 
-    let result = gate.check(&request).await;
+    let result = gate.check(&request, &runtime).await;
     assert!(result.is_allowed());
 }
 

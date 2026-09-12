@@ -4,7 +4,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use ergatai_runtime::{get_agent_runtime, ResourceLimits, WorkspaceSpec};
+use ergatai_runtime::{ResourceLimits, WorkspaceSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -32,13 +32,15 @@ pub struct ErrorResponse {
 }
 
 pub async fn list_workspaces(State(_state): State<AppState>) -> impl IntoResponse {
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
     match runtime.backend().list_workspaces().await {
         Ok(workspaces) => {
             let response: Vec<WorkspaceResponse> = workspaces
                 .into_iter()
                 .map(|w| {
-                    let capture_thoughts = agent_service::get_workspace_capture_thoughts(&w.id).ok().flatten();
+                    let capture_thoughts = agent_service::get_workspace_capture_thoughts(&w.id)
+                        .ok()
+                        .flatten();
                     WorkspaceResponse {
                         id: w.id,
                         backend: w.backend,
@@ -65,7 +67,7 @@ pub async fn create_workspace(
     State(state): State<AppState>,
     Json(req): Json<CreateWorkspaceRequest>,
 ) -> impl IntoResponse {
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
 
     // SECURITY (P1 #15): Enforce a workspace cap to prevent a runaway client
     // from exhausting host resources (memory, file descriptors, NATS subjects).
@@ -123,7 +125,9 @@ pub async fn create_workspace(
 
     match runtime.backend().create_workspace(spec).await {
         Ok(handle) => {
-            let capture_thoughts = agent_service::get_workspace_capture_thoughts(&handle.id).ok().flatten();
+            let capture_thoughts = agent_service::get_workspace_capture_thoughts(&handle.id)
+                .ok()
+                .flatten();
             let response = WorkspaceResponse {
                 id: handle.id,
                 backend: handle.backend,
@@ -148,7 +152,7 @@ pub async fn delete_workspace(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
 
     // Find workspace by ID
     let workspaces = match runtime.backend().list_workspaces().await {

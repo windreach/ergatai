@@ -54,6 +54,10 @@ pub enum ErrorCode {
     Internal,
     Channel,
     Json,
+
+    // Backend errors
+    BackendOperationFailed,
+    BackendUnsupported,
 }
 
 impl ErrorCode {
@@ -95,6 +99,9 @@ impl ErrorCode {
             Self::Internal => "ERR_INTERNAL",
             Self::Channel => "ERR_CHANNEL",
             Self::Json => "ERR_JSON",
+
+            Self::BackendOperationFailed => "ERR_BACKEND_OPERATION_FAILED",
+            Self::BackendUnsupported => "ERR_BACKEND_UNSUPPORTED",
         }
     }
 }
@@ -269,6 +276,20 @@ pub enum ErgataiError {
         #[source]
         source: Option<BoxError>,
     },
+
+    // ===== Backend Errors =====
+    /// Backend operation failed (e.g., observation/control operations)
+    #[error("Backend operation failed: {operation}: {message}")]
+    BackendOperationFailed {
+        operation: String,
+        message: String,
+        #[source]
+        source: Option<BoxError>,
+    },
+
+    /// Backend does not support the requested operation
+    #[error("Backend does not support operation: {0}")]
+    BackendUnsupported(String),
 }
 
 // ===== Source-preserving From impls =====
@@ -386,6 +407,28 @@ impl ErgataiError {
             source: Some(Box::new(source)),
         }
     }
+
+    /// Backend operation failed without source
+    pub fn backend_operation(operation: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::BackendOperationFailed {
+            operation: operation.into(),
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// Backend operation failed with source chain
+    pub fn backend_operation_with_source(
+        operation: impl Into<String>,
+        message: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::BackendOperationFailed {
+            operation: operation.into(),
+            message: message.into(),
+            source: Some(Box::new(source)),
+        }
+    }
 }
 
 // ===== Error Classification =====
@@ -438,6 +481,10 @@ impl ErgataiError {
             ErgataiError::InternalError { .. } => ErrorCode::Internal,
             ErgataiError::ChannelError(_) => ErrorCode::Channel,
             ErgataiError::JsonError { .. } => ErrorCode::Json,
+
+            // Backend errors
+            ErgataiError::BackendOperationFailed { .. } => ErrorCode::BackendOperationFailed,
+            ErgataiError::BackendUnsupported(_) => ErrorCode::BackendUnsupported,
         }
     }
 

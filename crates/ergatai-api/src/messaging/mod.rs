@@ -20,15 +20,16 @@ use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ergatai_core::agent_registry::{agent_registry, AgentRegistry};
-use ergatai_runtime::{get_agent_runtime, AgentRuntime};
+use ergatai_runtime::AgentRuntime;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::mcp::conversation::{ConversationConfig, ConversationManager};
 use crate::mcp::request_monitor::RequestMonitor;
+use crate::user_data_db;
 use admission::{
-    AgentHealthGate, CompositeGate, ConversationLoopGate, MeshPolicyGate, RateLimitGate,
-    SelfMessageGate,
+    AdmissionGate, AgentHealthGate, CompositeGate, ConversationLoopGate, MeshPolicyGate,
+    RateLimitGate, SelfMessageGate,
 };
 
 /// Result of a message send operation.
@@ -66,6 +67,8 @@ pub struct SendRequest {
     ///   generate a new correlation ID automatically.
     /// - For `"broadcast"` messages: ignored.
     pub correlation_id: Option<String>,
+    /// Optional UI thread to persist/render this external message.
+    pub sub_chat_id: Option<String>,
 }
 
 /// Unified message sending service.
@@ -133,7 +136,7 @@ impl MessageSender {
             };
         }
 
-        let runtime = get_agent_runtime();
+        let runtime = crate::context::get_app_context().agent_runtime.clone();
 
         info!(
             from = %req.from,
@@ -144,7 +147,8 @@ impl MessageSender {
         );
 
         // ── Admission control: run all gates ──
-        if let admission::AdmissionResult::Denied { reason } = self.admission_gate.check(&req).await
+        if let admission::AdmissionResult::Denied { reason } =
+            self.admission_gate.check(&req, &runtime).await
         {
             return SendMessageResult::Rejected { reason };
         }
@@ -176,6 +180,10 @@ impl MessageSender {
         // MCP path — keeping IDs uniform across the system.
         let from_runtime_id_for_payload =
             from_runtime_id.clone().unwrap_or_else(|| req.from.clone());
+        let conversation_receiver = runtime
+            .resolve_agent_id(&req.to)
+            .await
+            .unwrap_or_else(|| req.to.clone());
 
         let sender_display = match self.get_sender_display(&req.from).await {
             Some(display) => display,
@@ -190,6 +198,44 @@ impl MessageSender {
                 };
             }
         };
+
+        let mut target_sub_chat_id = req.sub_chat_id.clone();
+        if target_sub_chat_id.is_none() {
+            for candidate in [
+                resolved_agent_id.as_str(),
+                to_stable.as_str(),
+                req.to.as_str(),
+            ] {
+                match user_data_db::group_agent_bindings::find_sub_chat_id(candidate) {
+                    Ok(Some(sub_chat_id)) => {
+                        target_sub_chat_id = Some(sub_chat_id);
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        warn!("MessageSender: failed to resolve agent binding: {}", e);
+                    }
+                }
+            }
+        }
+
+        if let Some(sub_chat_id) = target_sub_chat_id.as_deref() {
+            if let Err(e) = user_data_db::sub_chats::append_message(
+                sub_chat_id,
+                "user",
+                &req.message,
+                serde_json::json!({
+                    "source": "agent",
+                    "senderAgentId": req.from.clone(),
+                    "senderAgentName": sender_display,
+                }),
+            ) {
+                return SendMessageResult::Rejected {
+                    reason: format!("Failed to persist external UI message: {}", e),
+                };
+            }
+        }
+
         // reply target = sender's stable ID (so recipient knows who to reply to)
         //
         // Compute correlation_id + timeout BEFORE format_agent_message so they can be
@@ -239,7 +285,9 @@ impl MessageSender {
             .as_secs();
 
         // ── 5. NATS publish or direct inject ──
-        if let Some(conn) = ergatai_nats::get_nats_connection().await {
+        if let Some(conn) =
+            crate::context::try_get_app_context().and_then(|ctx| ctx.nats_connection.clone())
+        {
             let bus = ergatai_nats::EventBus::new(conn);
             let metadata = std::collections::HashMap::new();
 
@@ -299,6 +347,14 @@ impl MessageSender {
 
             match bus.publish_agent_message_reliable(&payload).await {
                 Ok(ack) => {
+                    self.conversation_manager
+                        .record_delivered_message(
+                            &from_runtime_id_for_payload,
+                            &conversation_receiver,
+                            &req.message,
+                            &req.message_type,
+                        )
+                        .await;
                     return SendMessageResult::Queued {
                         target_agent: resolved_agent_id,
                         stream: ack.stream,
@@ -320,9 +376,19 @@ impl MessageSender {
             .inject_message(&resolved_agent_id, &formatted_content)
             .await
         {
-            Ok(_) => SendMessageResult::DirectDelivered {
-                target_agent: resolved_agent_id,
-            },
+            Ok(_) => {
+                self.conversation_manager
+                    .record_delivered_message(
+                        &from_runtime_id_for_payload,
+                        &conversation_receiver,
+                        &req.message,
+                        &req.message_type,
+                    )
+                    .await;
+                SendMessageResult::DirectDelivered {
+                    target_agent: resolved_agent_id,
+                }
+            }
             Err(e) => SendMessageResult::Rejected {
                 reason: format!(
                     "Failed to deliver message to {}: NATS publish failed and direct injection error: {}",

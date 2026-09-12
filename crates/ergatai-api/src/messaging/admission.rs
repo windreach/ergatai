@@ -36,7 +36,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use ergatai_core::cross_agent::list_dag_schedulers;
-use ergatai_runtime::{get_agent_runtime, AgentRuntime};
+use ergatai_runtime::AgentRuntime;
 
 use crate::mcp::conversation::ConversationManager;
 use crate::messaging::SendRequest;
@@ -114,22 +114,6 @@ impl CompositeGate {
         self
     }
 
-    /// Check all gates in order
-    ///
-    /// Returns the first denial encountered, or Allowed if all gates pass.
-    pub async fn check(&self, request: &SendRequest) -> AdmissionResult {
-        let runtime = get_agent_runtime();
-
-        for gate in &self.gates {
-            let result = gate.check(request, &runtime).await;
-            if result.is_denied() {
-                return result;
-            }
-        }
-
-        AdmissionResult::Allowed
-    }
-
     /// Get the number of gates in the chain
     pub fn len(&self) -> usize {
         self.gates.len()
@@ -138,6 +122,24 @@ impl CompositeGate {
     /// Check if the composite gate is empty
     pub fn is_empty(&self) -> bool {
         self.gates.is_empty()
+    }
+}
+
+#[async_trait]
+impl AdmissionGate for CompositeGate {
+    async fn check(&self, request: &SendRequest, runtime: &AgentRuntime) -> AdmissionResult {
+        for gate in &self.gates {
+            let result = gate.check(request, runtime).await;
+            if result.is_denied() {
+                return result;
+            }
+        }
+
+        AdmissionResult::Allowed
+    }
+
+    fn name(&self) -> &'static str {
+        "CompositeGate"
     }
 }
 

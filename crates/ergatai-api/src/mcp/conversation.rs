@@ -29,7 +29,7 @@
 //! manager.check_and_record("agent_a", "agent_b", "New topic").await?;
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -46,6 +46,9 @@ use ergatai_error::{ErgataiError, ErgataiResult};
 /// repeated timeout resets. After this limit, the conversation is permanently
 /// terminated with TimedOut status.
 const MAX_TIMEOUT_RESETS: u32 = 3;
+
+/// Maximum number of delivered messages retained in memory for one conversation.
+const MAX_CONVERSATION_HISTORY: usize = 200;
 
 /// Maximum number of consecutive cycles the initiator can send without
 /// receiving a response from the non-initiator. After this limit, the
@@ -285,10 +288,22 @@ impl Conversation {
     }
 }
 
+/// A delivered agent-to-agent message retained for dashboard history.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationMessageRecord {
+    pub from: String,
+    pub to: String,
+    pub content: String,
+    pub message_type: String,
+    pub timestamp: DateTime<Utc>,
+}
+
 /// Manages conversations and enforces loop prevention rules.
 pub struct ConversationManager {
     config: ConversationConfig,
     conversations: Arc<RwLock<HashMap<String, Conversation>>>,
+    /// Successfully delivered messages, keyed by conversation ID.
+    message_history: Arc<RwLock<HashMap<String, VecDeque<ConversationMessageRecord>>>>,
     /// Per-agent send timestamps for global rate limiting (catches multi-agent cycles).
     /// Key: stable agent ID, Value: Vec of send timestamps (seconds since epoch).
     agent_send_times: Arc<RwLock<HashMap<String, Vec<u64>>>>,
@@ -300,8 +315,44 @@ impl ConversationManager {
         Self {
             config,
             conversations: Arc::new(RwLock::new(HashMap::new())),
+            message_history: Arc::new(RwLock::new(HashMap::new())),
             agent_send_times: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Record a message after NATS accepted it or it was injected locally.
+    pub async fn record_delivered_message(
+        &self,
+        from: &str,
+        to: &str,
+        message: &str,
+        message_type: &str,
+    ) {
+        let conv_id = self.conversation_id(from, to);
+        let record = ConversationMessageRecord {
+            from: from.to_string(),
+            to: to.to_string(),
+            content: message.to_string(),
+            message_type: message_type.to_string(),
+            timestamp: Utc::now(),
+        };
+
+        let mut histories = self.message_history.write().await;
+        let history = histories.entry(conv_id).or_default();
+        history.push_back(record);
+        while history.len() > MAX_CONVERSATION_HISTORY {
+            history.pop_front();
+        }
+    }
+
+    /// Get delivered messages for a conversation in send order.
+    pub async fn get_conversation_history(&self, conv_id: &str) -> Vec<ConversationMessageRecord> {
+        self.message_history
+            .read()
+            .await
+            .get(conv_id)
+            .map(|history| history.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Check if a message is allowed and record it.
@@ -729,6 +780,11 @@ impl ConversationManager {
             times.retain(|&t| t > cutoff);
         }
         send_times.retain(|_, times| !times.is_empty());
+
+        self.message_history
+            .write()
+            .await
+            .retain(|conv_id, _| conversations.contains_key(conv_id));
     }
 
     /// Manually terminate a conversation.
@@ -1235,6 +1291,35 @@ mod tests {
         // Active list should be empty
         let active = manager.list_active_conversations().await;
         assert_eq!(active.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_delivered_message_history_is_ordered_and_bounded() {
+        let manager = ConversationManager::new(ConversationConfig::default());
+
+        for index in 0..(MAX_CONVERSATION_HISTORY + 5) {
+            manager
+                .record_delivered_message(
+                    "agent_a",
+                    "agent_b",
+                    &format!("message-{index}"),
+                    "request",
+                )
+                .await;
+        }
+
+        let history = manager
+            .get_conversation_history("conv-agent_a-agent_b")
+            .await;
+        assert_eq!(history.len(), MAX_CONVERSATION_HISTORY);
+        assert_eq!(history.first().unwrap().content, "message-5");
+        assert_eq!(
+            history.last().unwrap().content,
+            format!("message-{}", MAX_CONVERSATION_HISTORY + 4).as_str()
+        );
+        assert_eq!(history.first().unwrap().from, "agent_a");
+        assert_eq!(history.first().unwrap().to, "agent_b");
+        assert_eq!(history.first().unwrap().message_type, "request");
     }
 
     #[tokio::test]

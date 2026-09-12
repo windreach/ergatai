@@ -34,7 +34,7 @@ use agent_client_protocol_http::HttpClient;
 
 use ergatai_error::{ErgataiError, ErgataiResult};
 
-use crate::backend::AgentRuntimeBackend;
+use crate::backend::AcpBackendInterface;
 use crate::types::{AgentHandle, BackendCapabilities, WaitResult, WorkspaceHandle, WorkspaceSpec};
 
 // ── Configuration constants ──
@@ -231,12 +231,15 @@ impl AcpHttpBackend {
                         response_tx,
                     } => {
                         debug!(message_len = message.len(), "Prompt command received");
-                        // TODO: Send prompt through connection
-                        let _ = response_tx.send(Ok(()));
+                        let _ = response_tx.send(Err(ErgataiError::internal(
+                            "ACP HTTP prompt delivery is not implemented",
+                        )));
                     }
                     HttpAcpCommand::Cancel { response_tx } => {
                         debug!("Cancel command received");
-                        let _ = response_tx.send(Ok(()));
+                        let _ = response_tx.send(Err(ErgataiError::internal(
+                            "ACP HTTP cancellation is not implemented",
+                        )));
                     }
                     HttpAcpCommand::Stop { response_tx } => {
                         debug!("Stop command received");
@@ -334,7 +337,7 @@ impl Default for AcpHttpBackend {
 }
 
 #[async_trait]
-impl AgentRuntimeBackend for AcpHttpBackend {
+impl AcpBackendInterface for AcpHttpBackend {
     fn name(&self) -> &'static str {
         "acp-http"
     }
@@ -500,6 +503,116 @@ impl AgentRuntimeBackend for AcpHttpBackend {
             debug!(agent_id = %agent_id, "Aborted HTTP agent connection task");
         }
         Ok(())
+    }
+
+    fn last_output_age(&self, _handle: &AgentHandle) -> Option<Duration> {
+        None // AcpHttpBackend does not track output age
+    }
+
+    // Observation operations - not supported by AcpHttpBackend
+    async fn thoughts(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+        Err(ErgataiError::BackendUnsupported("thoughts".into()))
+    }
+
+    async fn output(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+        Err(ErgataiError::BackendUnsupported("output".into()))
+    }
+
+    async fn tool_calls(
+        &self,
+        _agent_id: &str,
+    ) -> ErgataiResult<Option<Vec<crate::backends::acp::TrackedToolCall>>> {
+        Err(ErgataiError::BackendUnsupported("tool_calls".into()))
+    }
+
+    async fn plan(
+        &self,
+        _agent_id: &str,
+    ) -> ErgataiResult<Option<crate::backends::acp::TrackedPlan>> {
+        Err(ErgataiError::BackendUnsupported("plan".into()))
+    }
+
+    async fn elicitations(
+        &self,
+        _agent_id: &str,
+    ) -> ErgataiResult<Option<Vec<crate::backends::acp::TrackedElicitation>>> {
+        Err(ErgataiError::BackendUnsupported("elicitations".into()))
+    }
+
+    async fn session_title(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+        Err(ErgataiError::BackendUnsupported("session_title".into()))
+    }
+
+    async fn session_id(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+        Err(ErgataiError::BackendUnsupported("session_id".into()))
+    }
+
+    async fn stop_reason(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+        Err(ErgataiError::BackendUnsupported("stop_reason".into()))
+    }
+
+    async fn workspace_capture_thoughts(&self, _workspace_id: &str) -> ErgataiResult<Option<bool>> {
+        Err(ErgataiError::BackendUnsupported(
+            "workspace_capture_thoughts".into(),
+        ))
+    }
+
+    async fn continuation_count(&self, _agent_id: &str) -> ErgataiResult<Option<usize>> {
+        Err(ErgataiError::BackendUnsupported(
+            "continuation_count".into(),
+        ))
+    }
+
+    async fn agent_last_output_age(&self, _agent_id: &str) -> ErgataiResult<Option<Duration>> {
+        Err(ErgataiError::BackendUnsupported(
+            "agent_last_output_age".into(),
+        ))
+    }
+
+    async fn exit_code(&self, _agent_id: &str) -> ErgataiResult<Option<Option<i32>>> {
+        Err(ErgataiError::BackendUnsupported("exit_code".into()))
+    }
+
+    async fn available_commands(&self, _agent_id: &str) -> ErgataiResult<Option<Vec<String>>> {
+        Err(ErgataiError::BackendUnsupported(
+            "available_commands".into(),
+        ))
+    }
+
+    async fn auto_continue(&self) -> ErgataiResult<bool> {
+        Ok(false)
+    }
+
+    async fn max_auto_continues(&self) -> ErgataiResult<usize> {
+        Ok(0)
+    }
+
+    async fn mcp_over_acp_enabled(&self) -> ErgataiResult<bool> {
+        Ok(false)
+    }
+
+    async fn session_persistence_enabled(&self) -> ErgataiResult<bool> {
+        Ok(false)
+    }
+
+    // Control operations - not supported by AcpHttpBackend
+    async fn cancel_prompt(&self, _agent_id: &str) -> ErgataiResult<()> {
+        Err(ErgataiError::BackendUnsupported("cancel_prompt".into()))
+    }
+
+    async fn execute_command(&self, _agent_id: &str, _command: &str) -> ErgataiResult<()> {
+        Err(ErgataiError::BackendUnsupported("execute_command".into()))
+    }
+
+    async fn respond_to_elicitation(
+        &self,
+        _agent_id: &str,
+        _elicitation_id: &str,
+        _response: &str,
+    ) -> ErgataiResult<()> {
+        Err(ErgataiError::BackendUnsupported(
+            "respond_to_elicitation".into(),
+        ))
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

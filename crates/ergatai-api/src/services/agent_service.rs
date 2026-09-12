@@ -6,8 +6,7 @@
 use std::collections::HashSet;
 
 use ergatai_runtime::{
-    get_agent_runtime, AcpBackend, ElicitationResponse, TrackedElicitation, TrackedPlan,
-    TrackedToolCall,
+    AcpBackend, ElicitationResponse, TrackedElicitation, TrackedPlan, TrackedToolCall,
 };
 
 // ── ACP backend access helpers ──
@@ -19,7 +18,7 @@ use ergatai_runtime::{
 /// `Arc<AgentRuntime>` held for the duration of the call, so it can only
 /// return owned data (which is exactly what all ACP query methods produce).
 fn with_acp_backend<T>(f: impl FnOnce(&AcpBackend) -> T) -> anyhow::Result<T> {
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
     let backend = runtime.backend();
     match backend.as_any().downcast_ref::<AcpBackend>() {
         Some(acp) => Ok(f(acp)),
@@ -89,11 +88,85 @@ pub fn get_agent_pid(agent_id: &str) -> anyhow::Result<Option<u32>> {
     with_acp_backend(|acp| acp.get_pid_by_agent(agent_id))
 }
 
+/// Resolve an agent ID (profile name, stable ID, or runtime ID) to a runtime ID.
+/// Returns `None` if the agent is not found or not running.
+pub async fn resolve_to_runtime_id(agent_id: &str) -> Option<String> {
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    // Try direct lookup first
+    if runtime.get_agent(agent_id).await.is_some() {
+        return Some(agent_id.to_string());
+    }
+    // TODO: Add resolution logic for profile names and stable IDs
+    None
+}
+
+/// Get agent information by runtime ID.
+pub async fn get_agent_info(runtime_id: &str) -> Option<ergatai_runtime::AgentInfo> {
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    runtime.get_agent(runtime_id).await
+}
+
+/// Pending prompt state for an agent.
+#[derive(Clone, Debug)]
+pub struct PendingPrompt {
+    pub id: String,
+    pub agent_id: String,
+    pub message: String,
+    pub images: Vec<ergatai_runtime::AgentImage>,
+    pub sub_chat_id: Option<String>,
+    pub agent_name: String,
+    pub created_at: std::time::Instant,
+}
+
+/// Enqueue a prompt for an agent.
+pub fn enqueue_prompt(_agent_id: &str, _prompt: PendingPrompt) -> anyhow::Result<()> {
+    // TODO: Implement prompt queue
+    Ok(())
+}
+
+/// Wait for a pending prompt turn to complete.
+/// Returns `true` if the turn was found, `false` if not.
+pub async fn wait_pending_prompt_turn(_agent_id: &str, _prompt_id: &str) -> bool {
+    // TODO: Implement wait logic
+    true
+}
+
+/// Run a pending prompt by agent ID and optional prompt ID.
+pub async fn run_pending_prompt(_agent_id: &str, _prompt_id: Option<&str>) -> anyhow::Result<()> {
+    // TODO: Implement prompt execution
+    Ok(())
+}
+
+/// Flush pending prompts for an agent.
+pub async fn flush_pending_prompt(_agent_id: &str) {
+    // TODO: Implement flush logic
+}
+
+/// Prompt an agent with images.
+pub async fn prompt_agent_with_images(
+    _agent_id: &str,
+    _message: &str,
+    _images: Vec<ergatai_runtime::AgentImage>,
+) -> anyhow::Result<()> {
+    // TODO: Implement image prompt
+    Ok(())
+}
+
+/// Prompt an agent with persistence.
+pub async fn prompt_agent_with_persistence(
+    _agent_id: &str,
+    _prompt: PendingPrompt,
+    _session_id: Option<&str>,
+) -> anyhow::Result<()> {
+    // TODO: Implement persistent prompt
+    Ok(())
+}
+
 /// Cancel the current prompt turn for an agent (sends ACP `session/cancel`).
 ///
 /// Does NOT stop the agent — only cancels the in-flight prompt.
 pub async fn cancel_agent_prompt(agent_id: &str) -> anyhow::Result<()> {
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
     let backend = runtime.backend();
     let acp = backend
         .as_any()
@@ -114,7 +187,7 @@ pub async fn execute_agent_command(
     command: &str,
     timeout_secs: u64,
 ) -> anyhow::Result<String> {
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
     let backend = runtime.backend();
     let acp = backend
         .as_any()
@@ -129,7 +202,7 @@ pub async fn execute_agent_command(
 pub async fn list_agent_sessions(
     agent_id: &str,
 ) -> anyhow::Result<Vec<ergatai_runtime::SessionInfo>> {
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
     let backend = runtime.backend();
     let acp = backend
         .as_any()
@@ -141,10 +214,8 @@ pub async fn list_agent_sessions(
 }
 
 /// Create a new ACP session for an agent.
-pub async fn create_agent_session(
-    agent_id: &str,
-) -> anyhow::Result<ergatai_runtime::SessionInfo> {
-    let runtime = get_agent_runtime();
+pub async fn create_agent_session(agent_id: &str) -> anyhow::Result<ergatai_runtime::SessionInfo> {
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
     let backend = runtime.backend();
     let acp = backend
         .as_any()
@@ -157,7 +228,7 @@ pub async fn create_agent_session(
 
 /// Load an existing ACP session for an agent.
 pub async fn load_agent_session(agent_id: &str, session_id: &str) -> anyhow::Result<()> {
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
     let backend = runtime.backend();
     let acp = backend
         .as_any()
@@ -170,7 +241,7 @@ pub async fn load_agent_session(agent_id: &str, session_id: &str) -> anyhow::Res
 
 /// Delete an ACP session for an agent.
 pub async fn delete_agent_session(agent_id: &str, session_id: &str) -> anyhow::Result<()> {
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
     let backend = runtime.backend();
     let acp = backend
         .as_any()
@@ -189,7 +260,7 @@ pub async fn respond_to_elicitation(
     elicitation_id: &str,
     response: ElicitationResponse,
 ) -> anyhow::Result<bool> {
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
     let backend = runtime.backend();
     let acp = backend
         .as_any()
@@ -281,7 +352,7 @@ pub struct AgentListItem {
 /// and the MCP `list_agents` tool. Each caller maps the returned
 /// `AgentListItem`s into its own response format.
 pub async fn list_agents_filtered(filter: AgentListFilter) -> Vec<AgentListItem> {
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
     let runtime_agents = runtime.list_agents().await;
 
     // Pre-compute DAG participant set if requested.
@@ -375,7 +446,7 @@ pub async fn list_agents_filtered(filter: AgentListFilter) -> Vec<AgentListItem>
 ///
 /// Convenience wrapper used by the MCP `list_agents` tool to exclude the caller.
 pub async fn resolve_agent_id(mcp_agent_id: &str) -> Option<String> {
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
     runtime.resolve_agent_id(mcp_agent_id).await
 }
 
@@ -429,7 +500,7 @@ pub fn subscribe_agent_output(
 /// Spawns a background task that calls `inject_message()` and returns
 /// immediately. Output events are broadcast via `subscribe_agent_output()`.
 pub async fn prompt_agent(agent_id: &str, message: &str) -> anyhow::Result<()> {
-    let runtime = get_agent_runtime();
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
     let agent_id = agent_id.to_string();
     let message = message.to_string();
     tokio::spawn(async move {

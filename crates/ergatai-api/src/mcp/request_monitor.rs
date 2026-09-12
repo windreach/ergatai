@@ -258,7 +258,9 @@ pub async fn spawn_request_monitor_with_cancel(
         }
 
         // Get NATS connection
-        let conn = match ergatai_nats::get_nats_connection().await {
+        let conn = match crate::context::try_get_app_context()
+            .and_then(|ctx| ctx.nats_connection.clone())
+        {
             Some(c) => c,
             None => {
                 warn!("NATS not initialized, cannot publish timeout events");

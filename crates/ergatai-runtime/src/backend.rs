@@ -1,34 +1,49 @@
-//! Agent Runtime Backend trait — the core abstraction for pluggable execution environments.
+//! ACP Backend Interface — the complete interface for ACP-based agent execution.
 //!
-//! Implementations of this trait provide the actual mechanism for creating workspaces,
-//! launching agents, injecting messages, and capturing output. The runtime facade
-//! (`AgentRuntime`) delegates all backend-specific operations to the selected implementation.
+//! This trait defines all operations that an ACP backend must support, including:
+//! - Agent lifecycle management (start, stop, inject messages)
+//! - Observation operations (get thoughts, tool calls, plan, etc.)
+//! - Control operations (cancel prompt, execute commands, session management)
+//!
+//! # Design Rationale
+//!
+//! Initially, this was designed as a generic `AgentRuntimeBackend` trait supporting
+//! multiple backend types (Docker, SSH, K8s). However, in practice only ACP is used,
+//! and all consumers downcast to `AcpBackend`. This trait now honestly reflects that
+//! reality: it's the complete ACP backend interface, not a generic abstraction.
 
 use std::time::Duration;
 
 use async_trait::async_trait;
 
-use ergatai_error::ErgataiResult;
+use ergatai_error::{ErgataiError, ErgataiResult};
 
 use crate::types::{AgentHandle, BackendCapabilities, WaitResult, WorkspaceHandle, WorkspaceSpec};
 
-/// Pluggable execution backend for agents.
+/// Complete interface for ACP-based agent execution.
 ///
-/// Each backend manages a specific type of execution environment:
-/// - **AcpBackend**: Agent Client Protocol (ACP) over stdio (default)
-/// - **DockerBackend**: Docker containers (future)
-/// - **RemoteSSHBackend**: SSH to remote hosts (future)
-/// - **KubernetesBackend**: K8s pods (future)
+/// This trait describes all operations that an ACP backend must support.
+/// Unlike the previous generic `AgentRuntimeBackend`, this trait is ACP-specific
+/// and includes observation and control operations that were previously only
+/// accessible via downcast.
 ///
-/// # Design Principles
+/// # Observation Operations
 ///
-/// 1. **Backend Agnostic** — trait defines *what*, not *how*
-/// 2. **Capability-Based** — backends declare what they support via `capabilities()`
-/// 3. **Fail-Graceful** — unsupported operations return `Err`, callers degrade
-/// 4. **Async-First** — all operations are async (network, process, container APIs)
+/// Methods like `thoughts()`, `tool_calls()`, `plan()` return `Result<Option<T>>`:
+/// - `Ok(Some(value))` — data is available
+/// - `Ok(None)` — no data yet (agent hasn't produced thoughts, etc.)
+/// - `Err(e)` — error (agent not found, connection failed, etc.)
+///
+/// # Control Operations
+///
+/// Methods like `cancel_prompt()`, `execute_command()` return `Result<()>`:
+/// - `Ok(())` — operation succeeded
+/// - `Err(e)` — operation failed
 #[async_trait]
-pub trait AgentRuntimeBackend: Send + Sync + 'static {
-    /// Human-readable backend name (e.g., "acp", "docker", "ssh").
+pub trait AcpBackendInterface: Send + Sync + 'static {
+    // ===== Core Lifecycle (from original trait) =====
+
+    /// Human-readable backend name (e.g., "acp").
     fn name(&self) -> &'static str;
 
     /// Declare what this backend can do.
@@ -49,11 +64,26 @@ pub trait AgentRuntimeBackend: Send + Sync + 'static {
     ) -> ErgataiResult<AgentHandle>;
 
     /// Pre-compute the next agent_id for a workspace (for pre-registration).
-    /// This allows workspace registration before agent start to eliminate race conditions.
     fn next_agent_id(&self, workspace_id: &str) -> String;
 
     /// Inject a message into a running agent.
     async fn inject_message(&self, handle: &AgentHandle, message: &str) -> ErgataiResult<()>;
+
+    /// Inject a message and optional image attachments into a running agent.
+    async fn inject_message_with_images(
+        &self,
+        handle: &AgentHandle,
+        message: &str,
+        images: &[crate::types::AgentImage],
+    ) -> ErgataiResult<()> {
+        if images.is_empty() {
+            self.inject_message(handle, message).await
+        } else {
+            Err(ErgataiError::internal(
+                "Image attachments are not supported by this backend",
+            ))
+        }
+    }
 
     /// Capture agent output for result collection.
     async fn capture_output(&self, handle: &AgentHandle) -> ErgataiResult<Option<String>>;
@@ -74,40 +104,107 @@ pub trait AgentRuntimeBackend: Send + Sync + 'static {
         timeout: Option<Duration>,
     ) -> ErgataiResult<WaitResult>;
 
-    /// List all active workspaces (for cleanup and recovery).
+    /// List all active workspaces.
     async fn list_workspaces(&self) -> ErgataiResult<Vec<WorkspaceHandle>>;
 
-    /// Cleanup a workspace (remove resources).
+    /// Cleanup a workspace.
     async fn cleanup_workspace(&self, handle: &WorkspaceHandle) -> ErgataiResult<()>;
 
     /// Cleanup all resources (shutdown).
     async fn shutdown(&self) -> ErgataiResult<()>;
 
-    /// Return self as `&dyn Any` to enable downcasting through the trait object.
-    ///
-    /// Each concrete backend implements this as `fn as_any(&self) -> &dyn Any { self }`.
-    /// Required because casting `&dyn AgentRuntimeBackend` directly to `&dyn Any` is
-    /// not allowed (trait objects are not `Sized`).
-    fn as_any(&self) -> &dyn std::any::Any;
-
     /// Discover agents already running in the environment.
-    ///
-    /// Returns a list of `(agent_id, AgentHandle)` pairs for agents found outside
-    /// the normal `launch_agent()` flow. Backends that don't support discovery
-    /// return an empty vec (default implementation).
-    ///
-    /// Called at startup by `AgentRuntime::discover_and_register_agents()` to
-    /// register externally-started agents so message delivery can reach them.
     async fn discover_agents(&self) -> ErgataiResult<Vec<(String, AgentHandle)>> {
         Ok(Vec::new())
     }
 
     /// Returns how long since the agent last produced output.
-    /// None if the agent is not found or the backend doesn't track output.
-    /// Used by DAG watchdog to detect idle agents.
-    fn last_output_age(&self, _handle: &AgentHandle) -> Option<Duration> {
-        None
-    }
+    fn last_output_age(&self, handle: &AgentHandle) -> Option<Duration>;
+
+    // ===== Observation Operations (NEW) =====
+
+    /// Get the agent's current thoughts (if any).
+    async fn thoughts(&self, agent_id: &str) -> ErgataiResult<Option<String>>;
+
+    /// Get the agent's output (non-destructive read).
+    async fn output(&self, agent_id: &str) -> ErgataiResult<Option<String>>;
+
+    /// Get the agent's tool call history.
+    async fn tool_calls(
+        &self,
+        agent_id: &str,
+    ) -> ErgataiResult<Option<Vec<crate::backends::acp::TrackedToolCall>>>;
+
+    /// Get the agent's execution plan.
+    async fn plan(
+        &self,
+        agent_id: &str,
+    ) -> ErgataiResult<Option<crate::backends::acp::TrackedPlan>>;
+
+    /// Get pending elicitation requests.
+    async fn elicitations(
+        &self,
+        agent_id: &str,
+    ) -> ErgataiResult<Option<Vec<crate::backends::acp::TrackedElicitation>>>;
+
+    /// Get the agent's session title.
+    async fn session_title(&self, agent_id: &str) -> ErgataiResult<Option<String>>;
+
+    /// Get the agent's ACP session ID.
+    async fn session_id(&self, agent_id: &str) -> ErgataiResult<Option<String>>;
+
+    /// Get the reason the agent last stopped.
+    async fn stop_reason(&self, agent_id: &str) -> ErgataiResult<Option<String>>;
+
+    /// Get workspace configuration (capture_thoughts flag).
+    async fn workspace_capture_thoughts(&self, workspace_id: &str) -> ErgataiResult<Option<bool>>;
+
+    /// Get the number of auto-continuations.
+    async fn continuation_count(&self, agent_id: &str) -> ErgataiResult<Option<usize>>;
+
+    /// Get the agent's last output age.
+    async fn agent_last_output_age(&self, agent_id: &str) -> ErgataiResult<Option<Duration>>;
+
+    /// Get the agent's exit code (if exited).
+    async fn exit_code(&self, agent_id: &str) -> ErgataiResult<Option<Option<i32>>>;
+
+    /// Get the agent's available commands.
+    async fn available_commands(&self, agent_id: &str) -> ErgataiResult<Option<Vec<String>>>;
+
+    /// Check if auto-continue is enabled.
+    async fn auto_continue(&self) -> ErgataiResult<bool>;
+
+    /// Get max auto-continues setting.
+    async fn max_auto_continues(&self) -> ErgataiResult<usize>;
+
+    /// Check if MCP-over-ACP is enabled.
+    async fn mcp_over_acp_enabled(&self) -> ErgataiResult<bool>;
+
+    /// Check if session persistence is enabled.
+    async fn session_persistence_enabled(&self) -> ErgataiResult<bool>;
+
+    // ===== Control Operations (NEW) =====
+
+    /// Cancel the agent's current prompt.
+    async fn cancel_prompt(&self, agent_id: &str) -> ErgataiResult<()>;
+
+    /// Execute a slash command.
+    async fn execute_command(&self, agent_id: &str, command: &str) -> ErgataiResult<()>;
+
+    /// Respond to an elicitation request.
+    async fn respond_to_elicitation(
+        &self,
+        agent_id: &str,
+        elicitation_id: &str,
+        response: &str,
+    ) -> ErgataiResult<()>;
+
+    /// Return self as `&dyn Any` to enable downcasting through the trait object.
+    ///
+    /// **Deprecated**: This is a transitional method for backward compatibility.
+    /// New code should use the trait methods directly instead of downcasting.
+    /// This will be removed once all callers are migrated.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 #[cfg(test)]
@@ -138,7 +235,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl AgentRuntimeBackend for MockBackend {
+    impl AcpBackendInterface for MockBackend {
         fn name(&self) -> &'static str {
             self.name
         }
@@ -189,6 +286,21 @@ mod tests {
             Ok(())
         }
 
+        async fn inject_message_with_images(
+            &self,
+            _handle: &AgentHandle,
+            _message: &str,
+            images: &[crate::types::AgentImage],
+        ) -> ErgataiResult<()> {
+            if images.is_empty() {
+                Ok(())
+            } else {
+                Err(ErgataiError::internal(
+                    "Image attachments are not supported by this backend",
+                ))
+            }
+        }
+
         async fn capture_output(&self, _handle: &AgentHandle) -> ErgataiResult<Option<String>> {
             Ok(None)
         }
@@ -222,6 +334,109 @@ mod tests {
         }
 
         async fn shutdown(&self) -> ErgataiResult<()> {
+            Ok(())
+        }
+
+        fn last_output_age(&self, _handle: &AgentHandle) -> Option<Duration> {
+            None
+        }
+
+        // Observation operations
+        async fn thoughts(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+            Ok(None)
+        }
+
+        async fn output(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+            Ok(None)
+        }
+
+        async fn tool_calls(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<Option<Vec<crate::backends::acp::TrackedToolCall>>> {
+            Ok(None)
+        }
+
+        async fn plan(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<Option<crate::backends::acp::TrackedPlan>> {
+            Ok(None)
+        }
+
+        async fn elicitations(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<Option<Vec<crate::backends::acp::TrackedElicitation>>> {
+            Ok(None)
+        }
+
+        async fn session_title(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+            Ok(None)
+        }
+
+        async fn session_id(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+            Ok(None)
+        }
+
+        async fn stop_reason(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+            Ok(None)
+        }
+
+        async fn workspace_capture_thoughts(
+            &self,
+            _workspace_id: &str,
+        ) -> ErgataiResult<Option<bool>> {
+            Ok(None)
+        }
+
+        async fn continuation_count(&self, _agent_id: &str) -> ErgataiResult<Option<usize>> {
+            Ok(None)
+        }
+
+        async fn agent_last_output_age(&self, _agent_id: &str) -> ErgataiResult<Option<Duration>> {
+            Ok(None)
+        }
+
+        async fn exit_code(&self, _agent_id: &str) -> ErgataiResult<Option<Option<i32>>> {
+            Ok(None)
+        }
+
+        async fn available_commands(&self, _agent_id: &str) -> ErgataiResult<Option<Vec<String>>> {
+            Ok(None)
+        }
+
+        async fn auto_continue(&self) -> ErgataiResult<bool> {
+            Ok(false)
+        }
+
+        async fn max_auto_continues(&self) -> ErgataiResult<usize> {
+            Ok(0)
+        }
+
+        async fn mcp_over_acp_enabled(&self) -> ErgataiResult<bool> {
+            Ok(false)
+        }
+
+        async fn session_persistence_enabled(&self) -> ErgataiResult<bool> {
+            Ok(false)
+        }
+
+        // Control operations
+        async fn cancel_prompt(&self, _agent_id: &str) -> ErgataiResult<()> {
+            Ok(())
+        }
+
+        async fn execute_command(&self, _agent_id: &str, _command: &str) -> ErgataiResult<()> {
+            Ok(())
+        }
+
+        async fn respond_to_elicitation(
+            &self,
+            _agent_id: &str,
+            _elicitation_id: &str,
+            _response: &str,
+        ) -> ErgataiResult<()> {
             Ok(())
         }
 
@@ -322,19 +537,25 @@ mod tests {
         assert!(backend.shutdown().await.is_ok());
     }
 
-    #[test]
-    fn test_backend_as_any_downcast() {
-        let backend = MockBackend::new("mock");
-        let trait_obj: &dyn AgentRuntimeBackend = &backend;
-        let downcast = trait_obj.as_any().downcast_ref::<MockBackend>();
-        assert!(downcast.is_some());
-        assert_eq!(downcast.unwrap().name(), "mock");
-    }
-
     #[tokio::test]
     async fn test_backend_list_workspaces_empty() {
         let backend = MockBackend::new("mock");
         let workspaces = backend.list_workspaces().await.unwrap();
         assert!(workspaces.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_observation_operations() {
+        let backend = MockBackend::new("mock");
+        assert!(backend.thoughts("agent-1").await.unwrap().is_none());
+        assert!(backend.tool_calls("agent-1").await.unwrap().is_none());
+        assert!(backend.plan("agent-1").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_control_operations() {
+        let backend = MockBackend::new("mock");
+        assert!(backend.cancel_prompt("agent-1").await.is_ok());
+        assert!(backend.execute_command("agent-1", "/help").await.is_ok());
     }
 }

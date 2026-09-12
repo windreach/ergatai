@@ -30,7 +30,7 @@ use tracing::{debug, error, info, warn};
 
 use agent_client_protocol::schema::v1::{
     ContentBlock, CreateElicitationRequest, CreateElicitationResponse, DeleteSessionRequest,
-    ElicitationAction, InitializeRequest, ListSessionsRequest, LoadSessionRequest,
+    ElicitationAction, ImageContent, InitializeRequest, ListSessionsRequest, LoadSessionRequest,
     NewSessionRequest, Plan, PromptRequest, RequestPermissionRequest, RequestPermissionResponse,
     SessionNotification, SessionUpdate, TextContent, ToolCall as AcpToolCall, ToolCallLocation,
     ToolCallStatus, ToolCallUpdate, ToolKind,
@@ -150,8 +150,10 @@ fn extract_text_from_chunk(
     }
 }
 
-use crate::backend::AgentRuntimeBackend;
-use crate::types::{AgentHandle, BackendCapabilities, SessionInfo, WaitResult, WorkspaceHandle, WorkspaceSpec};
+use crate::backend::AcpBackendInterface;
+use crate::types::{
+    AgentHandle, BackendCapabilities, SessionInfo, WaitResult, WorkspaceHandle, WorkspaceSpec,
+};
 
 // ── Configuration constants ──
 
@@ -445,6 +447,7 @@ enum AcpCommand {
     /// Send a prompt message to the agent.
     Prompt {
         message: String,
+        images: Vec<crate::types::AgentImage>,
         response_tx: oneshot::Sender<ErgataiResult<()>>,
     },
     /// Cancel the current prompt turn (sends `session/cancel` notification).
@@ -912,7 +915,9 @@ impl AcpBackend {
     ) -> Option<broadcast::Receiver<AgentOutputEvent>> {
         self.reap_dead();
         let agents = self.agents.read();
-        agents.get(agent_id).map(|entry| entry.output_tx.subscribe())
+        agents
+            .get(agent_id)
+            .map(|entry| entry.output_tx.subscribe())
     }
 
     /// Get recent tool calls for an agent (last 100, newest first).
@@ -992,7 +997,9 @@ impl AcpBackend {
     /// Returns `None` if the workspace doesn't exist.
     pub fn get_workspace_capture_thoughts(&self, workspace_id: &str) -> Option<bool> {
         let workspaces = self.workspaces.read();
-        workspaces.get(workspace_id).map(|entry| entry.capture_thoughts)
+        workspaces
+            .get(workspace_id)
+            .map(|entry| entry.capture_thoughts)
     }
 
     /// Get the number of automatic continuations performed for an agent.
@@ -1027,9 +1034,7 @@ impl AcpBackend {
     pub fn get_agent_exit_code(&self, agent_id: &str) -> Option<Option<i32>> {
         self.reap_dead();
         let agents = self.agents.read();
-        agents
-            .get(agent_id)
-            .map(|entry| entry.exit_code.read().clone())
+        agents.get(agent_id).map(|entry| *entry.exit_code.read())
     }
 
     /// Get configuration options reported by the agent.
@@ -1161,21 +1166,20 @@ impl AcpBackend {
         command_tx
             .send(AcpCommand::Prompt {
                 message: command.to_string(),
+                images: Vec::new(),
                 response_tx,
             })
             .await
             .map_err(|_| ErgataiError::internal("ACP command channel closed"))?;
 
         // Wait for the prompt to complete, with a timeout.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            response_rx,
-        )
-        .await
-        .map_err(|_| ErgataiError::AgentTimeout {
-            message: "Command execution timed out".to_string(),
-            source: None,
-        })?;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), response_rx)
+                .await
+                .map_err(|_| ErgataiError::AgentTimeout {
+                    message: "Command execution timed out".to_string(),
+                    source: None,
+                })?;
 
         // Check if the command succeeded.
         match result {
@@ -1381,13 +1385,9 @@ impl Default for AcpBackend {
 }
 
 #[async_trait]
-impl AgentRuntimeBackend for AcpBackend {
+impl AcpBackendInterface for AcpBackend {
     fn name(&self) -> &'static str {
         "acp"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 
     fn capabilities(&self) -> BackendCapabilities {
@@ -1742,8 +1742,8 @@ impl AgentRuntimeBackend for AcpBackend {
                                         let _ = output_tx.send(AgentOutputEvent::ToolCallComplete {
                                             id: update.tool_call_id.to_string(),
                                             name: update.fields.title.clone().unwrap_or_default(),
-                                            input: None,
-                                            output: None,
+                                            input: update.fields.raw_input.clone(),
+                                            output: update.fields.raw_output.clone(),
                                         });
                                     } else if is_error {
                                         let _ = output_tx.send(AgentOutputEvent::ToolCallError {
@@ -1980,11 +1980,23 @@ impl AgentRuntimeBackend for AcpBackend {
                         match command_rx.recv().await {
                             Some(AcpCommand::Prompt {
                                 message,
+                                images,
                                 response_tx,
                             }) => {
-                                let content = vec![ContentBlock::Text(TextContent::new(
-                                    message.clone(),
-                                ))];
+                                let mut content = if message.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    vec![ContentBlock::Text(TextContent::new(message.clone()))]
+                                };
+                                content.extend(images.into_iter().map(|image| {
+                                    ContentBlock::Image(ImageContent::new(
+                                        image.base64_data,
+                                        image.media_type,
+                                    ))
+                                }));
+                                if content.is_empty() {
+                                    content.push(ContentBlock::Text(TextContent::new(String::new())));
+                                }
                                 let result = connection
                                     .send_request(PromptRequest::new(
                                         session_id.clone(),
@@ -2045,10 +2057,11 @@ impl AgentRuntimeBackend for AcpBackend {
                                                 );
                                                 let (cont_tx, cont_rx) = oneshot::channel();
                                                 let _ = task_command_tx
-                                                    .send(AcpCommand::Prompt {
-                                                        message: "Please continue your unfinished work.".to_string(),
-                                                        response_tx: cont_tx,
-                                                    })
+                                                .send(AcpCommand::Prompt {
+                                                    message: "Please continue your unfinished work.".to_string(),
+                                                    images: Vec::new(),
+                                                    response_tx: cont_tx,
+                                                })
                                                     .await;
                                                 // Fire-and-forget: the continuation response
                                                 // is consumed by the command loop.
@@ -2389,6 +2402,15 @@ impl AgentRuntimeBackend for AcpBackend {
     }
 
     async fn inject_message(&self, handle: &AgentHandle, message: &str) -> ErgataiResult<()> {
+        self.inject_message_with_images(handle, message, &[]).await
+    }
+
+    async fn inject_message_with_images(
+        &self,
+        handle: &AgentHandle,
+        message: &str,
+        images: &[crate::types::AgentImage],
+    ) -> ErgataiResult<()> {
         self.reap_dead();
         let command_tx = {
             let agents = self.agents.read();
@@ -2407,6 +2429,7 @@ impl AgentRuntimeBackend for AcpBackend {
         command_tx
             .send(AcpCommand::Prompt {
                 message: message.to_string(),
+                images: images.to_vec(),
                 response_tx,
             })
             .await
@@ -2654,6 +2677,109 @@ impl AgentRuntimeBackend for AcpBackend {
             last_output.elapsed()
         })
     }
+
+    // ===== Observation Operations =====
+
+    async fn thoughts(&self, agent_id: &str) -> ErgataiResult<Option<String>> {
+        Ok(self.get_agent_thoughts(agent_id))
+    }
+
+    async fn output(&self, agent_id: &str) -> ErgataiResult<Option<String>> {
+        Ok(self.get_agent_output(agent_id))
+    }
+
+    async fn tool_calls(&self, agent_id: &str) -> ErgataiResult<Option<Vec<TrackedToolCall>>> {
+        Ok(self.get_agent_tool_calls(agent_id))
+    }
+
+    async fn plan(&self, agent_id: &str) -> ErgataiResult<Option<TrackedPlan>> {
+        Ok(self.get_agent_plan(agent_id))
+    }
+
+    async fn elicitations(&self, agent_id: &str) -> ErgataiResult<Option<Vec<TrackedElicitation>>> {
+        Ok(self.get_agent_elicitations(agent_id))
+    }
+
+    async fn session_title(&self, agent_id: &str) -> ErgataiResult<Option<String>> {
+        Ok(self.get_agent_session_title(agent_id))
+    }
+
+    async fn session_id(&self, agent_id: &str) -> ErgataiResult<Option<String>> {
+        Ok(self.get_agent_session_id(agent_id))
+    }
+
+    async fn stop_reason(&self, agent_id: &str) -> ErgataiResult<Option<String>> {
+        Ok(self.get_agent_stop_reason(agent_id))
+    }
+
+    async fn workspace_capture_thoughts(&self, workspace_id: &str) -> ErgataiResult<Option<bool>> {
+        Ok(self.get_workspace_capture_thoughts(workspace_id))
+    }
+
+    async fn continuation_count(&self, agent_id: &str) -> ErgataiResult<Option<usize>> {
+        Ok(self.get_agent_continuation_count(agent_id))
+    }
+
+    async fn agent_last_output_age(&self, agent_id: &str) -> ErgataiResult<Option<Duration>> {
+        Ok(self.get_agent_last_output_age(agent_id))
+    }
+
+    async fn exit_code(&self, agent_id: &str) -> ErgataiResult<Option<Option<i32>>> {
+        Ok(self.get_agent_exit_code(agent_id))
+    }
+
+    async fn available_commands(&self, agent_id: &str) -> ErgataiResult<Option<Vec<String>>> {
+        // Convert AvailableCommand to String
+        Ok(self
+            .get_agent_available_commands(agent_id)
+            .map(|cmds| cmds.into_iter().map(|c| c.name).collect()))
+    }
+
+    async fn auto_continue(&self) -> ErgataiResult<bool> {
+        Ok(self.get_auto_continue())
+    }
+
+    async fn max_auto_continues(&self) -> ErgataiResult<usize> {
+        Ok(self.get_max_auto_continues())
+    }
+
+    async fn mcp_over_acp_enabled(&self) -> ErgataiResult<bool> {
+        Ok(self.is_mcp_over_acp_enabled())
+    }
+
+    async fn session_persistence_enabled(&self) -> ErgataiResult<bool> {
+        Ok(self.is_session_persistence_enabled())
+    }
+
+    // ===== Control Operations =====
+
+    async fn cancel_prompt(&self, agent_id: &str) -> ErgataiResult<()> {
+        self.cancel_prompt(agent_id).await
+    }
+
+    async fn execute_command(&self, agent_id: &str, command: &str) -> ErgataiResult<()> {
+        self.execute_command(agent_id, command, 30).await?;
+        Ok(())
+    }
+
+    async fn respond_to_elicitation(
+        &self,
+        agent_id: &str,
+        _elicitation_id: &str,
+        response: &str,
+    ) -> ErgataiResult<()> {
+        let elicitation_response = ElicitationResponse {
+            action: "accept".to_string(),
+            form_data: Some(serde_json::Value::String(response.to_string())),
+        };
+        self.respond_to_elicitation(agent_id, elicitation_response)
+            .await?;
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 #[cfg(test)]
@@ -2806,3 +2932,7 @@ mod tests {
         assert_eq!(backend.get_agent_by_pid(333), Some("agent-3".to_string()));
     }
 }
+
+// ===== AcpBackendInterface Implementation =====
+// This impl block bridges the existing AcpBackend methods to the new trait interface.
+// Each trait method delegates to the corresponding existing method.

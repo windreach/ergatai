@@ -89,10 +89,8 @@ fn generate_id() -> String {
 pub async fn list_projects(State(_state): State<AppState>) -> impl IntoResponse {
     match user_data_db::projects::list() {
         Ok(projects) => {
-            let response: Vec<ProjectResponse> = projects
-                .into_iter()
-                .map(project_to_response)
-                .collect();
+            let response: Vec<ProjectResponse> =
+                projects.into_iter().map(project_to_response).collect();
             (StatusCode::OK, Json(response)).into_response()
         }
         Err(e) => (
