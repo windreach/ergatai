@@ -315,34 +315,6 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/activity/stream",
             get(api::activity_routes::stream_events),
         )
-        .route(
-            "/api/v1/anthropic-accounts",
-            get(api::anthropic_accounts::list_accounts),
-        )
-        .route(
-            "/api/v1/anthropic-accounts",
-            post(api::anthropic_accounts::create_account),
-        )
-        .route(
-            "/api/v1/anthropic-accounts/active",
-            get(api::anthropic_accounts::get_active_account),
-        )
-        .route(
-            "/api/v1/anthropic-accounts/active",
-            post(api::anthropic_accounts::set_active_account),
-        )
-        .route(
-            "/api/v1/anthropic-accounts/:id",
-            get(api::anthropic_accounts::get_account),
-        )
-        .route(
-            "/api/v1/anthropic-accounts/:id",
-            delete(api::anthropic_accounts::delete_account),
-        )
-        .route(
-            "/api/v1/anthropic-accounts/:id/display-name",
-            put(api::anthropic_accounts::update_display_name),
-        )
         .route("/api/v1/dag", post(submit_dag))
         .route("/api/v1/dag/validate", post(validate_dag))
         .route("/api/v1/dag/status", get(dag_status))

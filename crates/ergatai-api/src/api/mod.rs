@@ -3,7 +3,6 @@ pub mod activity;
 pub mod activity_routes;
 pub mod agent_profiles;
 pub mod agents;
-pub mod anthropic_accounts;
 pub mod chats;
 pub mod conversations;
 pub mod locks;

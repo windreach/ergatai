@@ -106,26 +106,6 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             FOREIGN KEY (sub_chat_id) REFERENCES sub_chats(id) ON DELETE CASCADE
         );
 
-        -- Anthropic accounts for OAuth
-        CREATE TABLE IF NOT EXISTS anthropic_accounts (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            email TEXT,
-            display_name TEXT,
-            encrypted_access_token TEXT NOT NULL,
-            encrypted_refresh_token TEXT,
-            token_expires_at INTEGER,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-
-        -- Anthropic settings (singleton)
-        CREATE TABLE IF NOT EXISTS anthropic_settings (
-            id TEXT PRIMARY KEY DEFAULT 'active',
-            active_account_id TEXT,
-            FOREIGN KEY (active_account_id) REFERENCES anthropic_accounts(id)
-        );
-
         -- Create indexes for performance
         CREATE INDEX IF NOT EXISTS idx_chats_project_id ON chats(project_id);
         CREATE INDEX IF NOT EXISTS idx_sub_chats_chat_id ON sub_chats(chat_id);
@@ -196,19 +176,6 @@ pub struct GroupAgentBinding {
     pub agent_name: String,
     pub agent_command: Option<String>,
     pub sub_chat_id: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AnthropicAccount {
-    pub id: String,
-    pub user_id: String,
-    pub email: Option<String>,
-    pub display_name: Option<String>,
-    pub encrypted_access_token: String,
-    pub encrypted_refresh_token: Option<String>,
-    pub token_expires_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -939,147 +906,6 @@ pub mod group_agent_bindings {
         let count = conn.execute(
             "DELETE FROM group_agent_bindings WHERE chat_id = ?1 AND agent_id = ?2",
             params![chat_id, agent_id],
-        )?;
-        Ok(count > 0)
-    }
-}
-
-pub mod anthropic_accounts {
-    use super::*;
-
-    fn row_to_account(row: &rusqlite::Row<'_>) -> Result<AnthropicAccount> {
-        Ok(AnthropicAccount {
-            id: row.get(0)?,
-            user_id: row.get(1)?,
-            email: row.get(2)?,
-            display_name: row.get(3)?,
-            encrypted_access_token: row.get(4)?,
-            encrypted_refresh_token: row.get(5)?,
-            token_expires_at: row.get(6)?,
-            created_at: row.get(7)?,
-            updated_at: row.get(8)?,
-        })
-    }
-
-    pub fn create(account: AnthropicAccount) -> Result<AnthropicAccount> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        conn.execute(
-            "INSERT INTO anthropic_accounts (id, user_id, email, display_name, encrypted_access_token, encrypted_refresh_token, token_expires_at, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                account.id,
-                account.user_id,
-                account.email,
-                account.display_name,
-                account.encrypted_access_token,
-                account.encrypted_refresh_token,
-                account.token_expires_at,
-                account.created_at,
-                account.updated_at,
-            ],
-        )?;
-
-        Ok(account)
-    }
-
-    pub fn list() -> Result<Vec<AnthropicAccount>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT id, user_id, email, display_name, encrypted_access_token, encrypted_refresh_token, token_expires_at, created_at, updated_at
-             FROM anthropic_accounts ORDER BY created_at ASC",
-        )?;
-        let accounts = stmt.query_map([], row_to_account)?;
-        accounts.collect()
-    }
-
-    pub fn get(id: &str) -> Result<Option<AnthropicAccount>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT id, user_id, email, display_name, encrypted_access_token, encrypted_refresh_token, token_expires_at, created_at, updated_at
-             FROM anthropic_accounts WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query_map(params![id], row_to_account)?;
-        match rows.next() {
-            Some(Ok(account)) => Ok(Some(account)),
-            Some(Err(e)) => Err(e),
-            None => Ok(None),
-        }
-    }
-
-    pub fn delete(id: &str) -> Result<bool> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-        // Clear active_account_id if this is the active account to avoid FK constraint violation
-        conn.execute(
-            "UPDATE anthropic_settings SET active_account_id = NULL WHERE active_account_id = ?1",
-            params![id],
-        )?;
-        let count = conn.execute("DELETE FROM anthropic_accounts WHERE id = ?1", params![id])?;
-        Ok(count > 0)
-    }
-
-    pub fn get_active() -> Result<Option<AnthropicAccount>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT a.id, a.user_id, a.email, a.display_name, a.encrypted_access_token, a.encrypted_refresh_token, a.token_expires_at, a.created_at, a.updated_at
-             FROM anthropic_accounts a
-             JOIN anthropic_settings s ON s.active_account_id = a.id
-             WHERE s.id = 'active'",
-        )?;
-        let mut rows = stmt.query_map([], row_to_account)?;
-        match rows.next() {
-            Some(Ok(account)) => Ok(Some(account)),
-            Some(Err(e)) => Err(e),
-            None => Ok(None),
-        }
-    }
-
-    pub fn set_active(id: &str) -> Result<bool> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        // Verify account exists
-        let exists: bool = conn
-            .query_row(
-                "SELECT COUNT(*) > 0 FROM anthropic_accounts WHERE id = ?1",
-                params![id],
-                |row| row.get(0),
-            )
-            .unwrap_or(false);
-
-        if !exists {
-            return Ok(false);
-        }
-
-        conn.execute(
-            "INSERT INTO anthropic_settings (id, active_account_id) VALUES ('active', ?1)
-             ON CONFLICT(id) DO UPDATE SET active_account_id = excluded.active_account_id",
-            params![id],
-        )?;
-
-        Ok(true)
-    }
-
-    pub fn update_display_name(id: &str, display_name: &str) -> Result<bool> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-
-        let count = conn.execute(
-            "UPDATE anthropic_accounts SET display_name = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id, display_name, now],
         )?;
         Ok(count > 0)
     }
