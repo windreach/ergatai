@@ -365,26 +365,13 @@ async fn health_check() -> impl IntoResponse {
     let mut checks = serde_json::Map::new();
     let mut all_healthy = true;
 
-    let nats_ok = nats::is_nats_initialized().await;
+    // Use AppContext as single source of truth for NATS health
+    let nats_ok = crate::context::try_get_app_context()
+        .and_then(|ctx| ctx.nats_connection.clone())
+        .map(|conn| conn.is_connected())
+        .unwrap_or(false);
     checks.insert("nats".to_string(), serde_json::Value::Bool(nats_ok));
     if !nats_ok {
-        all_healthy = false;
-    }
-
-    let nats_connected = if let Some(ctx) = crate::context::try_get_app_context() {
-        if let Some(conn) = ctx.nats_connection.clone() {
-            conn.is_connected()
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-    checks.insert(
-        "nats_connected".to_string(),
-        serde_json::Value::Bool(nats_connected),
-    );
-    if !nats_connected {
         all_healthy = false;
     }
 
@@ -412,11 +399,11 @@ async fn health_check() -> impl IntoResponse {
 }
 
 async fn readiness_check() -> impl IntoResponse {
-    let nats_ready = nats::is_nats_initialized().await
-        && crate::context::try_get_app_context()
-            .and_then(|ctx| ctx.nats_connection.clone())
-            .map(|c| c.is_ready())
-            .unwrap_or(false);
+    // Use AppContext as single source of truth for NATS readiness
+    let nats_ready = crate::context::try_get_app_context()
+        .and_then(|ctx| ctx.nats_connection.clone())
+        .map(|c| c.is_ready())
+        .unwrap_or(false);
 
     if nats_ready {
         (StatusCode::OK, Json(serde_json::json!({"ready": true})))

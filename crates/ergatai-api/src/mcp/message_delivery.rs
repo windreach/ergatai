@@ -279,7 +279,17 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
 
     // ── Resolve sender and recipient runtime IDs for delivery ──
     // Priority: UUID (stable) > runtime agent ID (dynamic, may be stale)
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    let runtime = match crate::context::try_get_app_context() {
+        Some(ctx) => ctx.agent_runtime.clone(),
+        None => {
+            warn!(
+                message_id = %payload.message_id,
+                "AppContext not yet initialized, deferring message delivery"
+            );
+            // Don't ack - let NATS redeliver after ack_wait timeout or consumer restart
+            return;
+        }
+    };
 
     // The message content is already formatted by the MCP server (server.rs)
     // with instruction + JSON payload. Just deliver it as-is.

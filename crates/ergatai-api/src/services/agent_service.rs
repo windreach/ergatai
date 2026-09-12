@@ -111,13 +111,11 @@ pub async fn get_agent_continuation_count(agent_id: &str) -> usize {
 /// Resolve an agent ID (profile name, stable ID, or runtime ID) to a runtime ID.
 /// Returns `None` if the agent is not found or not running.
 pub async fn resolve_to_runtime_id(agent_id: &str) -> Option<String> {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
-    // Try direct lookup first
-    if runtime.get_agent(agent_id).await.is_some() {
-        return Some(agent_id.to_string());
-    }
-    // TODO: Add resolution logic for profile names and stable IDs
-    None
+    // Delegate to the more complete resolve_agent_id which handles:
+    // 1. Direct lookup by runtime ID
+    // 2. MCP agent ID lookup via bindings
+    // 3. Profile name resolution (TODO)
+    resolve_agent_id(agent_id).await
 }
 
 /// Get agent information by runtime ID.
@@ -140,26 +138,24 @@ pub struct PendingPrompt {
 
 /// Enqueue a prompt for an agent.
 pub fn enqueue_prompt(_agent_id: &str, _prompt: PendingPrompt) -> anyhow::Result<()> {
-    // TODO: Implement prompt queue
-    Ok(())
+    anyhow::bail!("Prompt queue not yet implemented")
 }
 
 /// Wait for a pending prompt turn to complete.
 /// Returns `true` if the turn was found, `false` if not.
 pub async fn wait_pending_prompt_turn(_agent_id: &str, _prompt_id: &str) -> bool {
-    // TODO: Implement wait logic
-    true
+    // TODO: Implement wait logic — for now, always return false to indicate not found
+    false
 }
 
 /// Run a pending prompt by agent ID and optional prompt ID.
 pub async fn run_pending_prompt(_agent_id: &str, _prompt_id: Option<&str>) -> anyhow::Result<()> {
-    // TODO: Implement prompt execution
-    Ok(())
+    anyhow::bail!("Prompt execution not yet implemented")
 }
 
 /// Flush pending prompts for an agent.
 pub async fn flush_pending_prompt(_agent_id: &str) {
-    // TODO: Implement flush logic
+    // TODO: Implement flush logic — no-op until queue is implemented
 }
 
 /// Prompt an agent with images.
@@ -168,8 +164,7 @@ pub async fn prompt_agent_with_images(
     _message: &str,
     _images: Vec<ergatai_runtime::AgentImage>,
 ) -> anyhow::Result<()> {
-    // TODO: Implement image prompt
-    Ok(())
+    anyhow::bail!("Image prompt not yet implemented")
 }
 
 /// Prompt an agent with persistence.
@@ -178,8 +173,7 @@ pub async fn prompt_agent_with_persistence(
     _prompt: PendingPrompt,
     _session_id: Option<&str>,
 ) -> anyhow::Result<()> {
-    // TODO: Implement persistent prompt
-    Ok(())
+    anyhow::bail!("Persistent prompt not yet implemented")
 }
 
 /// Cancel the current prompt turn for an agent (sends ACP `session/cancel`).

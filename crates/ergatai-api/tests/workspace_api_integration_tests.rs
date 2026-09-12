@@ -10,9 +10,9 @@ use ergatai_api::{build_rest_app, AppState};
 use serde_json::json;
 use tower::util::ServiceExt;
 
-/// Build a test AppState (no auth token).
-fn test_state() -> AppState {
-    // Initialize AppContext for tests if not already initialized
+/// Ensure AppContext is initialized for tests.
+/// Extracted to avoid duplicating the initialization logic across test helpers.
+fn ensure_app_context_initialized() {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
@@ -24,6 +24,11 @@ fn test_state() -> AppState {
         );
         ergatai_api::context::init_app_context(ctx);
     });
+}
+
+/// Build a test AppState (no auth token).
+fn test_state() -> AppState {
+    ensure_app_context_initialized();
 
     AppState {
         default_cwd: std::env::temp_dir().to_string_lossy().to_string(),
@@ -48,18 +53,7 @@ impl Drop for WorkspaceCleanupGuard {
 
 /// Build a test AppState with an auth token.
 fn test_state_with_token(token: &str) -> AppState {
-    // Initialize AppContext for tests if not already initialized
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let runtime = ergatai_runtime::get_agent_runtime();
-        let ctx = ergatai_api::context::AppContext::new(
-            runtime,
-            None,
-            ergatai_api::user_data_db::get_user_data_db(),
-        );
-        ergatai_api::context::init_app_context(ctx);
-    });
+    ensure_app_context_initialized();
 
     AppState {
         default_cwd: std::env::temp_dir().to_string_lossy().to_string(),

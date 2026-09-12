@@ -43,8 +43,8 @@ pub struct AccountResponse {
     pub user_id: String,
     pub email: Option<String>,
     pub display_name: Option<String>,
-    pub encrypted_access_token: String,
-    pub encrypted_refresh_token: Option<String>,
+    pub has_access_token: bool,
+    pub has_refresh_token: bool,
     pub token_expires_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -61,8 +61,11 @@ fn account_to_response(account: AnthropicAccount) -> AccountResponse {
         user_id: account.user_id,
         email: account.email,
         display_name: account.display_name,
-        encrypted_access_token: account.encrypted_access_token,
-        encrypted_refresh_token: account.encrypted_refresh_token,
+        has_access_token: !account.encrypted_access_token.is_empty(),
+        has_refresh_token: account
+            .encrypted_refresh_token
+            .as_ref()
+            .is_some_and(|t| !t.is_empty()),
         token_expires_at: account.token_expires_at,
         created_at: account.created_at,
         updated_at: account.updated_at,

@@ -210,19 +210,11 @@ pub async fn update_project(
 
     let git_remote_url = req
         .git_remote_url
-        .map_or(existing.git_remote_url.clone(), |value| value);
-    let git_provider = req
-        .git_provider
-        .map_or(existing.git_provider.clone(), |value| value);
-    let git_owner = req
-        .git_owner
-        .map_or(existing.git_owner.clone(), |value| value);
-    let git_repo = req
-        .git_repo
-        .map_or(existing.git_repo.clone(), |value| value);
-    let icon_path = req
-        .icon_path
-        .map_or(existing.icon_path.clone(), |value| value);
+        .unwrap_or(existing.git_remote_url.clone());
+    let git_provider = req.git_provider.unwrap_or(existing.git_provider.clone());
+    let git_owner = req.git_owner.unwrap_or(existing.git_owner.clone());
+    let git_repo = req.git_repo.unwrap_or(existing.git_repo.clone());
+    let icon_path = req.icon_path.unwrap_or(existing.icon_path.clone());
 
     let updated_project = Project {
         id: existing.id.clone(),

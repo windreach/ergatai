@@ -38,7 +38,7 @@ pub struct AppContext {
 
     /// NATS connection for messaging and event bus.
     /// Previously accessed via `get_nats_connection()`.
-    /// Note: NATS connection is cloneable, so we store an Option.
+    /// Note: `None` when NATS is not initialized (e.g., startup failure or test context).
     pub nats_connection: Option<NatsConnection>,
 
     /// User data database connection (SQLite).

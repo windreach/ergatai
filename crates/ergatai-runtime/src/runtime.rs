@@ -592,8 +592,8 @@ impl AgentRuntime {
             for agent_id in &pruned {
                 guard.remove(agent_id);
             }
-            // 重建所有反向索引，确保一致性
-            guard.reconcile_indices();
+            // No need to call reconcile_indices() here — each remove() call
+            // already cleans up all reverse indices via clean_reverse_indices()
         }
 
         info!(
@@ -642,7 +642,8 @@ impl AgentRuntime {
                 runtime_id = runtime_id,
                 "Stale MCP binding detected (runtime agent gone), cleaning up"
             );
-            guard.reconcile_indices();
+            // Remove stale entry in O(1) instead of O(n) reconcile_indices()
+            guard.remove_stale_mcp_binding(mcp_agent_id);
         }
 
         // Sequential binding algorithm
@@ -829,10 +830,9 @@ impl AgentRuntime {
                     .metadata
                     .insert("ergatai_agent_id".to_string(), mcp_agent_id.to_string());
             }
+            // 重建反向索引以包含新的 MCP 绑定
+            registry.reconcile_indices();
         }
-
-        // 重建反向索引以包含新的 MCP 绑定 — 已在上面的 write guard 中完成
-        // reconcile_indices() 调用
 
         info!(
             mcp_agent_id = mcp_agent_id,

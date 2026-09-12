@@ -206,35 +206,30 @@ impl MessageSender {
                 to_stable.as_str(),
                 req.to.as_str(),
             ] {
-                match user_data_db::group_agent_bindings::find_sub_chat_id(candidate) {
-                    Ok(Some(sub_chat_id)) => {
+                // Wrap synchronous DB call in spawn_blocking to avoid blocking async runtime
+                let candidate = candidate.to_string();
+                match tokio::task::spawn_blocking(move || {
+                    user_data_db::group_agent_bindings::find_sub_chat_id(&candidate)
+                })
+                .await
+                {
+                    Ok(Ok(Some(sub_chat_id))) => {
                         target_sub_chat_id = Some(sub_chat_id);
                         break;
                     }
-                    Ok(None) => {}
-                    Err(e) => {
+                    Ok(Ok(None)) => {}
+                    Ok(Err(e)) => {
                         warn!("MessageSender: failed to resolve agent binding: {}", e);
+                    }
+                    Err(e) => {
+                        warn!("MessageSender: spawn_blocking failed: {}", e);
                     }
                 }
             }
         }
 
-        if let Some(sub_chat_id) = target_sub_chat_id.as_deref() {
-            if let Err(e) = user_data_db::sub_chats::append_message(
-                sub_chat_id,
-                "user",
-                &req.message,
-                serde_json::json!({
-                    "source": "agent",
-                    "senderAgentId": req.from.clone(),
-                    "senderAgentName": sender_display,
-                }),
-            ) {
-                return SendMessageResult::Rejected {
-                    reason: format!("Failed to persist external UI message: {}", e),
-                };
-            }
-        }
+        // NOTE: Message persistence to sub_chat moved to AFTER successful delivery (see below)
+        // to prevent orphaned messages when delivery fails.
 
         // reply target = sender's stable ID (so recipient knows who to reply to)
         //
@@ -355,6 +350,31 @@ impl MessageSender {
                             &req.message_type,
                         )
                         .await;
+
+                    // Persist message to sub_chat AFTER successful delivery
+                    if let Some(sub_chat_id) = target_sub_chat_id.clone() {
+                        let message = req.message.clone();
+                        let from = req.from.clone();
+                        let sender_name = sender_display.clone();
+                        // Wrap synchronous DB call in spawn_blocking
+                        if let Err(e) = tokio::task::spawn_blocking(move || {
+                            user_data_db::sub_chats::append_message(
+                                &sub_chat_id,
+                                "assistant",
+                                &message,
+                                serde_json::json!({
+                                    "source": "agent",
+                                    "senderAgentId": from,
+                                    "senderAgentName": sender_name,
+                                }),
+                            )
+                        })
+                        .await
+                        {
+                            warn!("Failed to persist delivered message to sub_chat: {}", e);
+                        }
+                    }
+
                     return SendMessageResult::Queued {
                         target_agent: resolved_agent_id,
                         stream: ack.stream,
@@ -385,6 +405,31 @@ impl MessageSender {
                         &req.message_type,
                     )
                     .await;
+
+                // Persist message to sub_chat AFTER successful delivery
+                if let Some(sub_chat_id) = target_sub_chat_id.clone() {
+                    let message = req.message.clone();
+                    let from = req.from.clone();
+                    let sender_name = sender_display.clone();
+                    // Wrap synchronous DB call in spawn_blocking
+                    if let Err(e) = tokio::task::spawn_blocking(move || {
+                        user_data_db::sub_chats::append_message(
+                            &sub_chat_id,
+                            "user",
+                            &message,
+                            serde_json::json!({
+                                "source": "agent",
+                                "senderAgentId": from,
+                                "senderAgentName": sender_name,
+                            }),
+                        )
+                    })
+                    .await
+                    {
+                        warn!("Failed to persist delivered message to sub_chat: {}", e);
+                    }
+                }
+
                 SendMessageResult::DirectDelivered {
                     target_agent: resolved_agent_id,
                 }

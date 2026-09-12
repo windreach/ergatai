@@ -424,9 +424,8 @@ pub async fn lookup_registered_worktree(
     Query(params): Query<WorktreeLookupParams>,
 ) -> impl IntoResponse {
     let lookup = || -> Result<RegisteredWorktreeResponse, rusqlite::Error> {
-        let chat = user_data_db::chats::list(None)?
-            .into_iter()
-            .find(|chat| chat.worktree_path.as_deref() == Some(params.path.as_str()));
+        // Use indexed lookup instead of full table scan
+        let chat = user_data_db::chats::find_by_worktree_path(&params.path)?;
 
         if let Some(chat) = chat {
             let project = user_data_db::projects::get(&chat.project_id)?;
@@ -437,9 +436,8 @@ pub async fn lookup_registered_worktree(
             });
         }
 
-        let project = user_data_db::projects::list()?
-            .into_iter()
-            .find(|project| project.path == params.path);
+        // Use indexed lookup for projects too
+        let project = user_data_db::projects::find_by_path(&params.path)?;
 
         Ok(RegisteredWorktreeResponse {
             chat: None,
@@ -751,14 +749,26 @@ pub async fn bind_agent(
     Path(chat_id): Path<String>,
     Json(req): Json<BindGroupAgentRequest>,
 ) -> impl IntoResponse {
-    if let Err(e) = user_data_db::chats::get(&chat_id) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to get chat: {}", e),
-            }),
-        )
-            .into_response();
+    match user_data_db::chats::get(&chat_id) {
+        Ok(Some(_)) => {} // Chat exists, proceed
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("Chat {} not found", chat_id),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to get chat: {}", e),
+                }),
+            )
+                .into_response();
+        }
     }
 
     let sub_chat = match user_data_db::sub_chats::get(&req.sub_chat_id) {
@@ -828,9 +838,35 @@ pub async fn unbind_agent(
 /// POST /api/v1/chats/:chat_id/sub-chats/:sub_chat_id/messages
 pub async fn append_sub_chat_message(
     State(_state): State<AppState>,
-    Path((_chat_id, sub_chat_id)): Path<(String, String)>,
+    Path((chat_id, sub_chat_id)): Path<(String, String)>,
     Json(req): Json<AppendSubChatMessageRequest>,
 ) -> impl IntoResponse {
+    // Verify the sub-chat belongs to the specified chat
+    match user_data_db::sub_chats::get(&sub_chat_id) {
+        Ok(Some(sc)) if sc.chat_id == chat_id => {}
+        Ok(Some(_)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Sub-chat does not belong to this chat".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Ok(None) => {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to get sub-chat: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    }
+
     match user_data_db::sub_chats::append_message(
         &sub_chat_id,
         &req.role,

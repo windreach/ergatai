@@ -327,6 +327,11 @@ impl<'a> AgentRegistryWriteGuard<'a> {
     }
 
     /// Entry API — 原子性的检查-并-插入。
+    ///
+    /// **Warning**: Entries inserted via this API do NOT automatically update
+    /// reverse indices (uuid_index, mcp_index, stable_id_index). You MUST call
+    /// [`reconcile_indices()`](Self::reconcile_indices) after completing all
+    /// entry operations to restore index consistency.
     pub fn entry(
         &mut self,
         key: String,
@@ -367,6 +372,14 @@ impl<'a> AgentRegistryWriteGuard<'a> {
             .stable_id_index
             .get(stable_id)
             .map(|s| s.as_str())
+    }
+
+    /// Remove a stale MCP binding in O(1) time.
+    ///
+    /// Use this when you detect that an mcp_index entry points to a non-existent
+    /// runtime agent. Avoids the O(n) cost of `reconcile_indices()`.
+    pub fn remove_stale_mcp_binding(&mut self, mcp_id: &str) {
+        self.inner.mcp_index.remove(mcp_id);
     }
 }
 

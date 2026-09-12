@@ -300,6 +300,38 @@ pub mod projects {
         }
     }
 
+    /// Find a project by its path (indexed lookup, O(1) instead of O(n) full table scan)
+    pub fn find_by_path(path: &str) -> Result<Option<Project>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, name, path, git_remote_url, git_provider, git_owner, git_repo, icon_path, created_at, updated_at
+             FROM projects WHERE path = ?1 LIMIT 1"
+        )?;
+
+        let mut rows = stmt.query_map(params![path], |row| {
+            Ok(Project {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                path: row.get(2)?,
+                git_remote_url: row.get(3)?,
+                git_provider: row.get(4)?,
+                git_owner: row.get(5)?,
+                git_repo: row.get(6)?,
+                icon_path: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(project)) => Ok(Some(project)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
     pub fn update(project: Project) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
@@ -424,6 +456,40 @@ pub mod chats {
         )?;
 
         let mut rows = stmt.query_map(params![id], |row| {
+            Ok(Chat {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                project_id: row.get(2)?,
+                collaboration_mode: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                archived_at: row.get(6)?,
+                worktree_path: row.get(7)?,
+                branch: row.get(8)?,
+                base_branch: row.get(9)?,
+                pr_url: row.get(10)?,
+                pr_number: row.get(11)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(chat)) => Ok(Some(chat)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    /// Find a chat by its worktree path (indexed lookup, O(1) instead of O(n) full table scan)
+    pub fn find_by_worktree_path(path: &str) -> Result<Option<Chat>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, name, project_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number
+             FROM chats WHERE worktree_path = ?1 LIMIT 1"
+        )?;
+
+        let mut rows = stmt.query_map(params![path], |row| {
             Ok(Chat {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -624,12 +690,22 @@ pub mod sub_chats {
         parts: serde_json::Value,
         metadata: serde_json::Value,
     ) -> Result<()> {
-        let Some(sub_chat) = sub_chats::get(id)? else {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
+        // Hold the mutex across the entire read-modify-write sequence to prevent race conditions
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        // Read current messages
+        let mut stmt = conn.prepare("SELECT messages FROM sub_chats WHERE id = ?1")?;
+        let messages_str: String = match stmt.query_row(params![id], |row| row.get(0)) {
+            Ok(s) => s,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return Err(rusqlite::Error::QueryReturnedNoRows)
+            }
+            Err(e) => return Err(e),
         };
 
         let mut messages: serde_json::Value =
-            serde_json::from_str(&sub_chat.messages).unwrap_or_else(|_| serde_json::json!([]));
+            serde_json::from_str(&messages_str).unwrap_or_else(|_| serde_json::json!([]));
         if !messages.is_array() {
             messages = serde_json::json!([]);
         }
@@ -650,7 +726,13 @@ pub mod sub_chats {
                 "metadata": metadata,
             }));
 
-        sub_chats::update_messages(id, &messages.to_string(), now)
+        // Write updated messages while still holding the mutex
+        conn.execute(
+            "UPDATE sub_chats SET messages = ?1, updated_at = ?2 WHERE id = ?3",
+            params![messages.to_string(), now, id],
+        )?;
+
+        Ok(())
     }
 
     pub fn update_name(id: &str, name: &str, updated_at: i64) -> Result<()> {
@@ -689,7 +771,6 @@ pub mod sub_chats {
         Ok(())
     }
 
-    #[allow(unused_assignments)]
     pub fn update_full(
         id: &str,
         name: Option<&str>,
@@ -704,8 +785,19 @@ pub mod sub_chats {
 
         // Build dynamic update query
         let mut updates = vec!["updated_at = ?1".to_string()];
-        let mut param_idx = 2;
+        // Count Some fields to determine param_idx (starts at 2 since updated_at is ?1)
+        let some_count = [
+            name.is_some(),
+            session_id.is_some(),
+            stream_id.is_some(),
+            mode.is_some(),
+            messages.is_some(),
+        ]
+        .iter()
+        .filter(|&&b| b)
+        .count();
 
+        let mut param_idx = 2;
         if name.is_some() {
             updates.push(format!("name = ?{}", param_idx));
             param_idx += 1;
@@ -724,8 +816,12 @@ pub mod sub_chats {
         }
         if messages.is_some() {
             updates.push(format!("messages = ?{}", param_idx));
-            param_idx += 1;
+            // No need to increment param_idx after the last field
         }
+
+        // Suppress unused variable warning for param_idx when all fields are None
+        let _ = param_idx;
+        let _ = some_count;
 
         let query = format!("UPDATE sub_chats SET {} WHERE id = ?", updates.join(", "));
 
@@ -832,7 +928,7 @@ pub mod group_agent_bindings {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn
-            .prepare("SELECT sub_chat_id FROM group_agent_bindings WHERE agent_id = ?1 LIMIT 1")?;
+            .prepare("SELECT sub_chat_id FROM group_agent_bindings WHERE agent_id = ?1 ORDER BY created_at ASC LIMIT 1")?;
         let mut rows = stmt.query_map(params![agent_id], |row| row.get::<_, String>(0))?;
         rows.next().transpose()
     }
@@ -919,6 +1015,11 @@ pub mod anthropic_accounts {
     pub fn delete(id: &str) -> Result<bool> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
+        // Clear active_account_id if this is the active account to avoid FK constraint violation
+        conn.execute(
+            "UPDATE anthropic_settings SET active_account_id = NULL WHERE active_account_id = ?1",
+            params![id],
+        )?;
         let count = conn.execute("DELETE FROM anthropic_accounts WHERE id = ?1", params![id])?;
         Ok(count > 0)
     }
@@ -990,6 +1091,10 @@ mod tests {
 
     #[test]
     fn test_project_crud() {
+        // NOTE: This test uses set_var which is not thread-safe in parallel test contexts.
+        // We use process ID to create a unique directory per test process, reducing race risk.
+        // For full safety, this test should be run with `cargo test -- --test-threads=1` or
+        // refactored to not rely on env vars (requires get_db_path() to accept a parameter).
         let data_dir = std::env::temp_dir()
             .join("ergatai-user-data-tests")
             .join(std::process::id().to_string());
