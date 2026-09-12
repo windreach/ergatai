@@ -2728,11 +2728,11 @@ impl AcpBackendInterface for AcpBackend {
         Ok(self.get_agent_exit_code(agent_id))
     }
 
-    async fn available_commands(&self, agent_id: &str) -> ErgataiResult<Option<Vec<String>>> {
-        // Convert AvailableCommand to String
-        Ok(self
-            .get_agent_available_commands(agent_id)
-            .map(|cmds| cmds.into_iter().map(|c| c.name).collect()))
+    async fn available_commands(
+        &self,
+        agent_id: &str,
+    ) -> ErgataiResult<Option<Vec<agent_client_protocol::schema::v1::AvailableCommand>>> {
+        Ok(self.get_agent_available_commands(agent_id))
     }
 
     async fn auto_continue(&self) -> ErgataiResult<bool> {
@@ -2751,30 +2751,65 @@ impl AcpBackendInterface for AcpBackend {
         Ok(self.is_session_persistence_enabled())
     }
 
+    async fn config_options(
+        &self,
+        agent_id: &str,
+    ) -> ErgataiResult<Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>> {
+        Ok(self.get_agent_config_options(agent_id))
+    }
+
+    async fn usage(&self, agent_id: &str) -> ErgataiResult<Option<(usize, usize)>> {
+        Ok(self.get_agent_usage(agent_id))
+    }
+
+    async fn pid(&self, agent_id: &str) -> ErgataiResult<Option<u32>> {
+        Ok(self.get_pid_by_agent(agent_id))
+    }
+
+    async fn subscribe_output(
+        &self,
+        agent_id: &str,
+    ) -> ErgataiResult<Option<tokio::sync::broadcast::Receiver<AgentOutputEvent>>> {
+        Ok(self.subscribe_output(agent_id))
+    }
+
+    async fn list_sessions(&self, agent_id: &str) -> ErgataiResult<Vec<crate::types::SessionInfo>> {
+        self.list_sessions(agent_id).await
+    }
+
+    async fn create_session(&self, agent_id: &str) -> ErgataiResult<crate::types::SessionInfo> {
+        self.create_session(agent_id).await
+    }
+
+    async fn load_session(&self, agent_id: &str, session_id: &str) -> ErgataiResult<()> {
+        self.load_session(agent_id, session_id).await
+    }
+
+    async fn delete_session(&self, agent_id: &str, session_id: &str) -> ErgataiResult<()> {
+        self.delete_session(agent_id, session_id).await
+    }
+
     // ===== Control Operations =====
 
     async fn cancel_prompt(&self, agent_id: &str) -> ErgataiResult<()> {
         self.cancel_prompt(agent_id).await
     }
 
-    async fn execute_command(&self, agent_id: &str, command: &str) -> ErgataiResult<()> {
-        self.execute_command(agent_id, command, 30).await?;
-        Ok(())
+    async fn execute_command(
+        &self,
+        agent_id: &str,
+        command: &str,
+        timeout_secs: u64,
+    ) -> ErgataiResult<String> {
+        self.execute_command(agent_id, command, timeout_secs).await
     }
 
     async fn respond_to_elicitation(
         &self,
-        agent_id: &str,
-        _elicitation_id: &str,
-        response: &str,
-    ) -> ErgataiResult<()> {
-        let elicitation_response = ElicitationResponse {
-            action: "accept".to_string(),
-            form_data: Some(serde_json::Value::String(response.to_string())),
-        };
-        self.respond_to_elicitation(agent_id, elicitation_response)
-            .await?;
-        Ok(())
+        elicitation_id: &str,
+        response: ElicitationResponse,
+    ) -> ErgataiResult<bool> {
+        self.respond_to_elicitation(elicitation_id, response).await
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

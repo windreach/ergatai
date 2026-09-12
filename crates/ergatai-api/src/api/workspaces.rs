@@ -35,10 +35,10 @@ pub async fn list_workspaces(State(_state): State<AppState>) -> impl IntoRespons
     let runtime = crate::context::get_app_context().agent_runtime.clone();
     match runtime.backend().list_workspaces().await {
         Ok(workspaces) => {
-            let response: Vec<WorkspaceResponse> = workspaces
-                .into_iter()
-                .map(|w| {
+            let response: Vec<WorkspaceResponse> =
+                futures::future::join_all(workspaces.into_iter().map(|w| async move {
                     let capture_thoughts = agent_service::get_workspace_capture_thoughts(&w.id)
+                        .await
                         .ok()
                         .flatten();
                     WorkspaceResponse {
@@ -47,8 +47,8 @@ pub async fn list_workspaces(State(_state): State<AppState>) -> impl IntoRespons
                         metadata: w.metadata,
                         capture_thoughts,
                     }
-                })
-                .collect();
+                }))
+                .await;
             (StatusCode::OK, Json(response)).into_response()
         }
         // SECURITY (P1 #18): Redact internal error details (may contain
@@ -126,6 +126,7 @@ pub async fn create_workspace(
     match runtime.backend().create_workspace(spec).await {
         Ok(handle) => {
             let capture_thoughts = agent_service::get_workspace_capture_thoughts(&handle.id)
+                .await
                 .ok()
                 .flatten();
             let response = WorkspaceResponse {

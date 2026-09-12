@@ -573,7 +573,10 @@ impl AcpBackendInterface for AcpHttpBackend {
         Err(ErgataiError::BackendUnsupported("exit_code".into()))
     }
 
-    async fn available_commands(&self, _agent_id: &str) -> ErgataiResult<Option<Vec<String>>> {
+    async fn available_commands(
+        &self,
+        _agent_id: &str,
+    ) -> ErgataiResult<Option<Vec<agent_client_protocol::schema::v1::AvailableCommand>>> {
         Err(ErgataiError::BackendUnsupported(
             "available_commands".into(),
         ))
@@ -595,21 +598,68 @@ impl AcpBackendInterface for AcpHttpBackend {
         Ok(false)
     }
 
+    async fn config_options(
+        &self,
+        _agent_id: &str,
+    ) -> ErgataiResult<Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>> {
+        Err(ErgataiError::BackendUnsupported("config_options".into()))
+    }
+
+    async fn usage(&self, _agent_id: &str) -> ErgataiResult<Option<(usize, usize)>> {
+        Err(ErgataiError::BackendUnsupported("usage".into()))
+    }
+
+    async fn pid(&self, _agent_id: &str) -> ErgataiResult<Option<u32>> {
+        Err(ErgataiError::BackendUnsupported("pid".into()))
+    }
+
+    async fn subscribe_output(
+        &self,
+        _agent_id: &str,
+    ) -> ErgataiResult<
+        Option<tokio::sync::broadcast::Receiver<crate::backends::acp::AgentOutputEvent>>,
+    > {
+        Err(ErgataiError::BackendUnsupported("subscribe_output".into()))
+    }
+
+    async fn list_sessions(
+        &self,
+        _agent_id: &str,
+    ) -> ErgataiResult<Vec<crate::types::SessionInfo>> {
+        Err(ErgataiError::BackendUnsupported("list_sessions".into()))
+    }
+
+    async fn create_session(&self, _agent_id: &str) -> ErgataiResult<crate::types::SessionInfo> {
+        Err(ErgataiError::BackendUnsupported("create_session".into()))
+    }
+
+    async fn load_session(&self, _agent_id: &str, _session_id: &str) -> ErgataiResult<()> {
+        Err(ErgataiError::BackendUnsupported("load_session".into()))
+    }
+
+    async fn delete_session(&self, _agent_id: &str, _session_id: &str) -> ErgataiResult<()> {
+        Err(ErgataiError::BackendUnsupported("delete_session".into()))
+    }
+
     // Control operations - not supported by AcpHttpBackend
     async fn cancel_prompt(&self, _agent_id: &str) -> ErgataiResult<()> {
         Err(ErgataiError::BackendUnsupported("cancel_prompt".into()))
     }
 
-    async fn execute_command(&self, _agent_id: &str, _command: &str) -> ErgataiResult<()> {
+    async fn execute_command(
+        &self,
+        _agent_id: &str,
+        _command: &str,
+        _timeout_secs: u64,
+    ) -> ErgataiResult<String> {
         Err(ErgataiError::BackendUnsupported("execute_command".into()))
     }
 
     async fn respond_to_elicitation(
         &self,
-        _agent_id: &str,
         _elicitation_id: &str,
-        _response: &str,
-    ) -> ErgataiResult<()> {
+        _response: crate::ElicitationResponse,
+    ) -> ErgataiResult<bool> {
         Err(ErgataiError::BackendUnsupported(
             "respond_to_elicitation".into(),
         ))

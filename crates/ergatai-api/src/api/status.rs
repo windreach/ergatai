@@ -34,11 +34,18 @@ pub struct BackendConfigResponse {
 }
 
 pub async fn get_backend_config(State(_state): State<AppState>) -> impl IntoResponse {
-    let auto_continue = agent_service::get_backend_auto_continue().unwrap_or(false);
-    let max_auto_continues = agent_service::get_backend_max_auto_continues().unwrap_or(0);
-    let mcp_over_acp_enabled = agent_service::is_backend_mcp_over_acp_enabled().unwrap_or(false);
-    let session_persistence_enabled =
-        agent_service::is_backend_session_persistence_enabled().unwrap_or(false);
+    let auto_continue = agent_service::get_backend_auto_continue()
+        .await
+        .unwrap_or(false);
+    let max_auto_continues = agent_service::get_backend_max_auto_continues()
+        .await
+        .unwrap_or(0);
+    let mcp_over_acp_enabled = agent_service::is_backend_mcp_over_acp_enabled()
+        .await
+        .unwrap_or(false);
+    let session_persistence_enabled = agent_service::is_backend_session_persistence_enabled()
+        .await
+        .unwrap_or(false);
 
     Json(BackendConfigResponse {
         auto_continue,

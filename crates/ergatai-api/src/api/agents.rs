@@ -107,19 +107,21 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
     )
     .await;
 
-    let response: Vec<AgentInfoResponse> = items
-        .into_iter()
-        .map(|a| {
+    let response: Vec<AgentInfoResponse> =
+        futures::future::join_all(items.into_iter().map(|a| async move {
             let session_title =
-                crate::services::agent_service::get_agent_session_title(&a.agent_id);
-            let session_id = crate::services::agent_service::get_agent_session_id(&a.agent_id);
-            let stop_reason = crate::services::agent_service::get_agent_stop_reason(&a.agent_id);
+                crate::services::agent_service::get_agent_session_title(&a.agent_id).await;
+            let session_id =
+                crate::services::agent_service::get_agent_session_id(&a.agent_id).await;
+            let stop_reason =
+                crate::services::agent_service::get_agent_stop_reason(&a.agent_id).await;
             let continuation_count =
-                crate::services::agent_service::get_agent_continuation_count(&a.agent_id);
+                crate::services::agent_service::get_agent_continuation_count(&a.agent_id).await;
 
             // Get config options (includes modes like auto-approval, plan mode)
             let config_options =
                 crate::services::agent_service::get_agent_config_options(&a.agent_id)
+                    .await
                     .ok()
                     .flatten()
                     .map(|opts| {
@@ -164,8 +166,8 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
                 state_changed_at: a.state_changed_at,
                 state_history: a.state_history,
             }
-        })
-        .collect();
+        }))
+        .await;
 
     Json(response)
 }
@@ -552,7 +554,7 @@ pub async fn get_agent_thoughts(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match crate::services::agent_service::get_agent_thoughts(&id) {
+    match crate::services::agent_service::get_agent_thoughts(&id).await {
         Ok(thoughts) => (
             StatusCode::OK,
             Json(AgentThoughtsResponse {
@@ -576,7 +578,7 @@ pub async fn get_agent_tool_calls(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let result = crate::services::agent_service::get_agent_tool_calls(&id);
+    let result = crate::services::agent_service::get_agent_tool_calls(&id).await;
     match result {
         Ok(Some(calls)) => {
             let tool_calls = calls
@@ -660,7 +662,7 @@ pub async fn get_agent_plan(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match crate::services::agent_service::get_agent_plan(&id) {
+    match crate::services::agent_service::get_agent_plan(&id).await {
         Ok(Some(tracked)) => {
             let elapsed = tracked.last_updated.elapsed();
             let plan = PlanInfo {
@@ -804,7 +806,7 @@ pub async fn get_agent_elicitations(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let result = crate::services::agent_service::get_agent_elicitations(&id);
+    let result = crate::services::agent_service::get_agent_elicitations(&id).await;
     match result {
         Ok(Some(elics)) => {
             let elicitation_infos = elics
@@ -852,7 +854,7 @@ pub async fn get_agent_available_commands(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let result = crate::services::agent_service::get_agent_available_commands(&id);
+    let result = crate::services::agent_service::get_agent_available_commands(&id).await;
     match result {
         Ok(Some(cmds)) => {
             let cmd_infos: Vec<AvailableCommandInfo> = cmds
@@ -1085,7 +1087,7 @@ pub async fn get_agent_config_options(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let result = crate::services::agent_service::get_agent_config_options(&id);
+    let result = crate::services::agent_service::get_agent_config_options(&id).await;
     match result {
         Ok(Some(opts)) => {
             let opt_infos: Vec<ConfigOptionInfo> = opts
@@ -1182,7 +1184,7 @@ pub async fn get_agent_usage(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let result = crate::services::agent_service::get_agent_usage(&id);
+    let result = crate::services::agent_service::get_agent_usage(&id).await;
     match result {
         Ok(Some((input_tokens, output_tokens))) => (
             StatusCode::OK,
@@ -1223,7 +1225,7 @@ pub async fn get_agent_output(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let result = crate::services::agent_service::get_agent_output(&id);
+    let result = crate::services::agent_service::get_agent_output(&id).await;
     match result {
         Ok(Some(output)) => (
             StatusCode::OK,
@@ -1263,7 +1265,7 @@ pub async fn get_agent_last_output(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let result = crate::services::agent_service::get_agent_last_output_age(&id);
+    let result = crate::services::agent_service::get_agent_last_output_age(&id).await;
     match result {
         Ok(Some(duration)) => (
             StatusCode::OK,
@@ -1304,7 +1306,7 @@ pub async fn get_agent_exit_code(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let result = crate::services::agent_service::get_agent_exit_code(&id);
+    let result = crate::services::agent_service::get_agent_exit_code(&id).await;
     match result {
         Ok(Some(exit_code)) => (
             StatusCode::OK,
@@ -1344,7 +1346,7 @@ pub async fn get_agent_pid(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let result = crate::services::agent_service::get_agent_pid(&id);
+    let result = crate::services::agent_service::get_agent_pid(&id).await;
     match result {
         Ok(Some(pid)) => {
             (StatusCode::OK, Json(AgentPidResponse { agent_id: id, pid })).into_response()
@@ -1610,8 +1612,17 @@ pub async fn stream_agent_output(
         }
     }
 
-    let receiver = match crate::services::agent_service::subscribe_agent_output(&runtime_id) {
-        Ok(rx) => rx,
+    let receiver = match crate::services::agent_service::subscribe_agent_output(&runtime_id).await {
+        Ok(Some(rx)) => rx,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("Agent {} not found or not running", runtime_id),
+                }),
+            )
+                .into_response();
+        }
         Err(e) => {
             return (
                 StatusCode::NOT_FOUND,

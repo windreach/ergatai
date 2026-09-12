@@ -192,8 +192,59 @@ impl AcpBackendInterface for MockBackend {
         Ok(None)
     }
 
-    async fn available_commands(&self, _agent_id: &str) -> ErgataiResult<Option<Vec<String>>> {
+    async fn available_commands(
+        &self,
+        _agent_id: &str,
+    ) -> ErgataiResult<Option<Vec<agent_client_protocol::schema::v1::AvailableCommand>>> {
         Ok(None)
+    }
+
+    async fn config_options(
+        &self,
+        _agent_id: &str,
+    ) -> ErgataiResult<Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>> {
+        Ok(None)
+    }
+
+    async fn usage(&self, _agent_id: &str) -> ErgataiResult<Option<(usize, usize)>> {
+        Ok(None)
+    }
+
+    async fn pid(&self, _agent_id: &str) -> ErgataiResult<Option<u32>> {
+        Ok(None)
+    }
+
+    async fn subscribe_output(
+        &self,
+        _agent_id: &str,
+    ) -> ErgataiResult<Option<tokio::sync::broadcast::Receiver<ergatai_runtime::AgentOutputEvent>>>
+    {
+        Ok(None)
+    }
+
+    async fn list_sessions(
+        &self,
+        _agent_id: &str,
+    ) -> ErgataiResult<Vec<ergatai_runtime::SessionInfo>> {
+        Ok(vec![])
+    }
+
+    async fn create_session(&self, _agent_id: &str) -> ErgataiResult<ergatai_runtime::SessionInfo> {
+        Err(ergatai_error::ErgataiError::BackendUnsupported(
+            "mock backend does not support sessions".to_string(),
+        ))
+    }
+
+    async fn load_session(&self, _agent_id: &str, _session_id: &str) -> ErgataiResult<()> {
+        Err(ergatai_error::ErgataiError::BackendUnsupported(
+            "mock backend does not support sessions".to_string(),
+        ))
+    }
+
+    async fn delete_session(&self, _agent_id: &str, _session_id: &str) -> ErgataiResult<()> {
+        Err(ergatai_error::ErgataiError::BackendUnsupported(
+            "mock backend does not support sessions".to_string(),
+        ))
     }
 
     async fn auto_continue(&self) -> ErgataiResult<bool> {
@@ -217,17 +268,21 @@ impl AcpBackendInterface for MockBackend {
         Ok(())
     }
 
-    async fn execute_command(&self, _agent_id: &str, _command: &str) -> ErgataiResult<()> {
-        Ok(())
+    async fn execute_command(
+        &self,
+        _agent_id: &str,
+        _command: &str,
+        _timeout_secs: u64,
+    ) -> ErgataiResult<String> {
+        Ok(String::new())
     }
 
     async fn respond_to_elicitation(
         &self,
-        _agent_id: &str,
         _elicitation_id: &str,
-        _response: &str,
-    ) -> ErgataiResult<()> {
-        Ok(())
+        _response: ergatai_runtime::ElicitationResponse,
+    ) -> ErgataiResult<bool> {
+        Ok(false)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

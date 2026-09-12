@@ -7,9 +7,12 @@ pub mod acp_factory;
 pub mod agent_binding;
 pub mod conversation;
 pub mod message_delivery;
+pub mod params;
+pub mod protocol;
 pub mod rate_limiter;
 pub mod request_monitor;
 pub mod server;
+pub mod tools;
 
 // Re-export AgentRegistry for backward compatibility
 pub use acp_factory::ErgataiMcpServerFactory;

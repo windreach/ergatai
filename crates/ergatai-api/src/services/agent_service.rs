@@ -1,91 +1,111 @@
 //! Agent service — 统一 agent 查询和 ACP backend 访问。
 //!
-//! 将 handler 中重复的 ACP backend downcast 逻辑和 agent 列表查询封装到
-//! service 层，handler 只负责 HTTP 协议细节（响应格式化、状态码映射）。
+//! 将 handler 中重复的 backend trait 方法调用封装到 service 层，
+//! handler 只负责 HTTP 协议细节（响应格式化、状态码映射）。
 
 use std::collections::HashSet;
 
-use ergatai_runtime::{
-    AcpBackend, ElicitationResponse, TrackedElicitation, TrackedPlan, TrackedToolCall,
-};
+use ergatai_runtime::{ElicitationResponse, TrackedElicitation, TrackedPlan, TrackedToolCall};
 
-// ── ACP backend access helpers ──
+// ── Backend access helper ──
 
-/// Apply `f` to the live `AcpBackend`, or return an error if the runtime is
-/// using a different backend.
-///
-/// The closure receives a `&AcpBackend` whose lifetime is tied to the
-/// `Arc<AgentRuntime>` held for the duration of the call, so it can only
-/// return owned data (which is exactly what all ACP query methods produce).
-fn with_acp_backend<T>(f: impl FnOnce(&AcpBackend) -> T) -> anyhow::Result<T> {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
-    let backend = runtime.backend();
-    match backend.as_any().downcast_ref::<AcpBackend>() {
-        Some(acp) => Ok(f(acp)),
-        None => anyhow::bail!("Agent is not using ACP backend"),
-    }
+/// Get the current backend instance via the trait interface.
+fn backend() -> std::sync::Arc<dyn ergatai_runtime::backend::AcpBackendInterface> {
+    crate::context::get_app_context()
+        .agent_runtime
+        .backend()
+        .clone()
 }
 
 // ── Per-agent queries ──
 
 /// Get captured thoughts for an agent (if `capture_thoughts` was enabled).
-pub fn get_agent_thoughts(agent_id: &str) -> anyhow::Result<Option<String>> {
-    with_acp_backend(|acp| acp.get_agent_thoughts(agent_id))
+pub async fn get_agent_thoughts(agent_id: &str) -> anyhow::Result<Option<String>> {
+    Ok(backend().thoughts(agent_id).await?)
 }
 
 /// Get recent tool calls for an agent (last 100, newest first).
-pub fn get_agent_tool_calls(agent_id: &str) -> anyhow::Result<Option<Vec<TrackedToolCall>>> {
-    with_acp_backend(|acp| acp.get_agent_tool_calls(agent_id))
+pub async fn get_agent_tool_calls(agent_id: &str) -> anyhow::Result<Option<Vec<TrackedToolCall>>> {
+    Ok(backend().tool_calls(agent_id).await?)
 }
 
 /// Get the current execution plan reported by an agent.
-pub fn get_agent_plan(agent_id: &str) -> anyhow::Result<Option<TrackedPlan>> {
-    with_acp_backend(|acp| acp.get_agent_plan(agent_id))
+pub async fn get_agent_plan(agent_id: &str) -> anyhow::Result<Option<TrackedPlan>> {
+    Ok(backend().plan(agent_id).await?)
 }
 
 /// Get recent elicitation requests for an agent (both pending and responded).
-pub fn get_agent_elicitations(agent_id: &str) -> anyhow::Result<Option<Vec<TrackedElicitation>>> {
-    with_acp_backend(|acp| acp.get_agent_elicitations(agent_id))
+pub async fn get_agent_elicitations(
+    agent_id: &str,
+) -> anyhow::Result<Option<Vec<TrackedElicitation>>> {
+    Ok(backend().elicitations(agent_id).await?)
 }
 
 /// Get available slash commands reported by the agent.
-pub fn get_agent_available_commands(
+pub async fn get_agent_available_commands(
     agent_id: &str,
 ) -> anyhow::Result<Option<Vec<agent_client_protocol::schema::v1::AvailableCommand>>> {
-    with_acp_backend(|acp| acp.get_agent_available_commands(agent_id))
+    Ok(backend().available_commands(agent_id).await?)
 }
 
 /// Get configuration options reported by the agent.
-pub fn get_agent_config_options(
+pub async fn get_agent_config_options(
     agent_id: &str,
 ) -> anyhow::Result<Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>> {
-    with_acp_backend(|acp| acp.get_agent_config_options(agent_id))
+    Ok(backend().config_options(agent_id).await?)
 }
 
 /// Get token usage statistics for an agent as `(input_tokens, output_tokens)`.
-pub fn get_agent_usage(agent_id: &str) -> anyhow::Result<Option<(usize, usize)>> {
-    with_acp_backend(|acp| acp.get_agent_usage(agent_id))
+pub async fn get_agent_usage(agent_id: &str) -> anyhow::Result<Option<(usize, usize)>> {
+    Ok(backend().usage(agent_id).await?)
 }
 
 /// Get captured output for an agent (non-destructive read).
-pub fn get_agent_output(agent_id: &str) -> anyhow::Result<Option<String>> {
-    with_acp_backend(|acp| acp.get_agent_output(agent_id))
+pub async fn get_agent_output(agent_id: &str) -> anyhow::Result<Option<String>> {
+    Ok(backend().output(agent_id).await?)
 }
 
 /// Get the time elapsed since the agent's last output.
-pub fn get_agent_last_output_age(agent_id: &str) -> anyhow::Result<Option<std::time::Duration>> {
-    with_acp_backend(|acp| acp.get_agent_last_output_age(agent_id))
+pub async fn get_agent_last_output_age(
+    agent_id: &str,
+) -> anyhow::Result<Option<std::time::Duration>> {
+    Ok(backend().agent_last_output_age(agent_id).await?)
 }
 
 /// Get the exit code from the agent's connection task.
 /// `Some(None)` = exists but still running, `Some(Some(code))` = exited, `None` = not found.
-pub fn get_agent_exit_code(agent_id: &str) -> anyhow::Result<Option<Option<i32>>> {
-    with_acp_backend(|acp| acp.get_agent_exit_code(agent_id))
+pub async fn get_agent_exit_code(agent_id: &str) -> anyhow::Result<Option<Option<i32>>> {
+    Ok(backend().exit_code(agent_id).await?)
 }
 
 /// Get the PID of an agent's process.
-pub fn get_agent_pid(agent_id: &str) -> anyhow::Result<Option<u32>> {
-    with_acp_backend(|acp| acp.get_pid_by_agent(agent_id))
+pub async fn get_agent_pid(agent_id: &str) -> anyhow::Result<Option<u32>> {
+    Ok(backend().pid(agent_id).await?)
+}
+
+/// Get the session title reported by an agent (if any).
+pub async fn get_agent_session_title(agent_id: &str) -> Option<String> {
+    backend().session_title(agent_id).await.ok().flatten()
+}
+
+/// Get the ACP session ID for an agent (if available).
+pub async fn get_agent_session_id(agent_id: &str) -> Option<String> {
+    backend().session_id(agent_id).await.ok().flatten()
+}
+
+/// Get the stop reason from the most recent prompt response.
+pub async fn get_agent_stop_reason(agent_id: &str) -> Option<String> {
+    backend().stop_reason(agent_id).await.ok().flatten()
+}
+
+/// Get the number of automatic continuations performed for an agent.
+pub async fn get_agent_continuation_count(agent_id: &str) -> usize {
+    backend()
+        .continuation_count(agent_id)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(0)
 }
 
 /// Resolve an agent ID (profile name, stable ID, or runtime ID) to a runtime ID.
@@ -166,15 +186,7 @@ pub async fn prompt_agent_with_persistence(
 ///
 /// Does NOT stop the agent — only cancels the in-flight prompt.
 pub async fn cancel_agent_prompt(agent_id: &str) -> anyhow::Result<()> {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
-    let backend = runtime.backend();
-    let acp = backend
-        .as_any()
-        .downcast_ref::<AcpBackend>()
-        .ok_or_else(|| anyhow::anyhow!("Agent is not using ACP backend"))?;
-    acp.cancel_prompt(agent_id)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))
+    Ok(backend().cancel_prompt(agent_id).await?)
 }
 
 /// Execute a slash command on an agent and return the captured output.
@@ -187,69 +199,31 @@ pub async fn execute_agent_command(
     command: &str,
     timeout_secs: u64,
 ) -> anyhow::Result<String> {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
-    let backend = runtime.backend();
-    let acp = backend
-        .as_any()
-        .downcast_ref::<AcpBackend>()
-        .ok_or_else(|| anyhow::anyhow!("Agent is not using ACP backend"))?;
-    acp.execute_command(agent_id, command, timeout_secs)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))
+    Ok(backend()
+        .execute_command(agent_id, command, timeout_secs)
+        .await?)
 }
 
 /// List available ACP sessions for an agent.
 pub async fn list_agent_sessions(
     agent_id: &str,
 ) -> anyhow::Result<Vec<ergatai_runtime::SessionInfo>> {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
-    let backend = runtime.backend();
-    let acp = backend
-        .as_any()
-        .downcast_ref::<AcpBackend>()
-        .ok_or_else(|| anyhow::anyhow!("Agent is not using ACP backend"))?;
-    acp.list_sessions(agent_id)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))
+    Ok(backend().list_sessions(agent_id).await?)
 }
 
 /// Create a new ACP session for an agent.
 pub async fn create_agent_session(agent_id: &str) -> anyhow::Result<ergatai_runtime::SessionInfo> {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
-    let backend = runtime.backend();
-    let acp = backend
-        .as_any()
-        .downcast_ref::<AcpBackend>()
-        .ok_or_else(|| anyhow::anyhow!("Agent is not using ACP backend"))?;
-    acp.create_session(agent_id)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))
+    Ok(backend().create_session(agent_id).await?)
 }
 
 /// Load an existing ACP session for an agent.
 pub async fn load_agent_session(agent_id: &str, session_id: &str) -> anyhow::Result<()> {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
-    let backend = runtime.backend();
-    let acp = backend
-        .as_any()
-        .downcast_ref::<AcpBackend>()
-        .ok_or_else(|| anyhow::anyhow!("Agent is not using ACP backend"))?;
-    acp.load_session(agent_id, session_id)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))
+    Ok(backend().load_session(agent_id, session_id).await?)
 }
 
 /// Delete an ACP session for an agent.
 pub async fn delete_agent_session(agent_id: &str, session_id: &str) -> anyhow::Result<()> {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
-    let backend = runtime.backend();
-    let acp = backend
-        .as_any()
-        .downcast_ref::<AcpBackend>()
-        .ok_or_else(|| anyhow::anyhow!("Agent is not using ACP backend"))?;
-    acp.delete_session(agent_id, session_id)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))
+    Ok(backend().delete_session(agent_id, session_id).await?)
 }
 
 /// Respond to a pending elicitation request from an agent.
@@ -260,44 +234,43 @@ pub async fn respond_to_elicitation(
     elicitation_id: &str,
     response: ElicitationResponse,
 ) -> anyhow::Result<bool> {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
-    let backend = runtime.backend();
-    let acp = backend
-        .as_any()
-        .downcast_ref::<AcpBackend>()
-        .ok_or_else(|| anyhow::anyhow!("Agent is not using ACP backend"))?;
-    acp.respond_to_elicitation(elicitation_id, response)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))
+    Ok(backend()
+        .respond_to_elicitation(elicitation_id, response)
+        .await?)
 }
 
-/// Get the session title reported by an agent (if any).
-pub fn get_agent_session_title(agent_id: &str) -> Option<String> {
-    with_acp_backend(|acp| acp.get_agent_session_title(agent_id))
-        .ok()
-        .flatten()
+// ── Backend configuration queries ──
+
+/// Check if auto-continue is enabled.
+pub async fn get_backend_auto_continue() -> anyhow::Result<bool> {
+    Ok(backend().auto_continue().await?)
 }
 
-/// Get the ACP session ID for an agent (if available).
-pub fn get_agent_session_id(agent_id: &str) -> Option<String> {
-    with_acp_backend(|acp| acp.get_agent_session_id(agent_id))
-        .ok()
-        .flatten()
+/// Get max auto-continues setting.
+pub async fn get_backend_max_auto_continues() -> anyhow::Result<usize> {
+    Ok(backend().max_auto_continues().await?)
 }
 
-/// Get the stop reason from the most recent prompt response.
-pub fn get_agent_stop_reason(agent_id: &str) -> Option<String> {
-    with_acp_backend(|acp| acp.get_agent_stop_reason(agent_id))
-        .ok()
-        .flatten()
+/// Check if MCP-over-ACP is enabled.
+pub async fn is_backend_mcp_over_acp_enabled() -> anyhow::Result<bool> {
+    Ok(backend().mcp_over_acp_enabled().await?)
 }
 
-/// Get the number of automatic continuations performed for an agent.
-pub fn get_agent_continuation_count(agent_id: &str) -> usize {
-    with_acp_backend(|acp| acp.get_agent_continuation_count(agent_id))
-        .ok()
-        .flatten()
-        .unwrap_or(0)
+/// Check if session persistence is enabled.
+pub async fn is_backend_session_persistence_enabled() -> anyhow::Result<bool> {
+    Ok(backend().session_persistence_enabled().await?)
+}
+
+/// Get workspace configuration (capture_thoughts flag).
+pub async fn get_workspace_capture_thoughts(workspace_id: &str) -> anyhow::Result<Option<bool>> {
+    Ok(backend().workspace_capture_thoughts(workspace_id).await?)
+}
+
+/// Subscribe to real-time output events from an agent.
+pub async fn subscribe_agent_output(
+    agent_id: &str,
+) -> anyhow::Result<Option<tokio::sync::broadcast::Receiver<ergatai_runtime::AgentOutputEvent>>> {
+    Ok(backend().subscribe_output(agent_id).await?)
 }
 
 // ── Agent list query (Phase 4) ──
@@ -442,71 +415,52 @@ pub async fn list_agents_filtered(filter: AgentListFilter) -> Vec<AgentListItem>
         .collect()
 }
 
-/// Resolve the runtime agent ID for a given MCP peer ID.
+// ── Agent ID resolution (used by MCP server.rs) ──
+
+/// Resolve an agent ID to a runtime agent ID.
 ///
-/// Convenience wrapper used by the MCP `list_agents` tool to exclude the caller.
-pub async fn resolve_agent_id(mcp_agent_id: &str) -> Option<String> {
+/// Tries:
+/// 1. Direct lookup by runtime ID (e.g., "ws1-agent-1")
+/// 2. Lookup by MCP agent ID (e.g., "agent-1")
+/// 3. Profile name resolution (TODO)
+///
+/// Returns `None` if the agent is not found or not running.
+pub async fn resolve_agent_id(agent_id: &str) -> Option<String> {
     let runtime = crate::context::get_app_context().agent_runtime.clone();
-    runtime.resolve_agent_id(mcp_agent_id).await
-}
-
-// ── Backend global configuration ──────────────────────────────────────────────
-
-///
-/// Get the backend auto-continue setting.
-pub fn get_backend_auto_continue() -> anyhow::Result<bool> {
-    with_acp_backend(|b| b.get_auto_continue())
-}
-
-///
-/// Get the backend max auto-continues limit.
-pub fn get_backend_max_auto_continues() -> anyhow::Result<usize> {
-    with_acp_backend(|b| b.get_max_auto_continues())
-}
-
-///
-/// Check if MCP-over-ACP is enabled in the backend.
-pub fn is_backend_mcp_over_acp_enabled() -> anyhow::Result<bool> {
-    with_acp_backend(|b| b.is_mcp_over_acp_enabled())
-}
-
-///
-/// Check if session persistence is enabled in the backend.
-pub fn is_backend_session_persistence_enabled() -> anyhow::Result<bool> {
-    with_acp_backend(|b| b.is_session_persistence_enabled())
-}
-
-///
-/// Get the capture_thoughts setting for a workspace.
-pub fn get_workspace_capture_thoughts(workspace_id: &str) -> anyhow::Result<Option<bool>> {
-    with_acp_backend(|b| b.get_workspace_capture_thoughts(workspace_id))
-}
-
-// ── Streaming & Prompt ──
-
-/// Subscribe to real-time output events from an agent.
-///
-/// Returns a broadcast receiver that yields `AgentOutputEvent` values as
-/// the agent produces output during prompt execution.
-pub fn subscribe_agent_output(
-    agent_id: &str,
-) -> anyhow::Result<tokio::sync::broadcast::Receiver<ergatai_runtime::AgentOutputEvent>> {
-    with_acp_backend(|acp| acp.subscribe_output(agent_id))?
-        .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found", agent_id))
-}
-
-/// Send a prompt to an agent (non-blocking).
-///
-/// Spawns a background task that calls `inject_message()` and returns
-/// immediately. Output events are broadcast via `subscribe_agent_output()`.
-pub async fn prompt_agent(agent_id: &str, message: &str) -> anyhow::Result<()> {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
-    let agent_id = agent_id.to_string();
-    let message = message.to_string();
-    tokio::spawn(async move {
-        if let Err(e) = runtime.inject_message(&agent_id, &message).await {
-            tracing::warn!(agent_id = %agent_id, error = %e, "Background prompt failed");
+    // Try direct lookup first
+    if runtime.get_agent(agent_id).await.is_some() {
+        return Some(agent_id.to_string());
+    }
+    // Try MCP agent ID lookup via bindings
+    if let Some(binding_store) = crate::mcp::get_binding_store() {
+        if let Ok(Some(binding)) = binding_store.get_binding_by_identifier(agent_id) {
+            let runtime_id = binding.runtime_agent_id;
+            // Verify the runtime agent still exists
+            if runtime.get_agent(&runtime_id).await.is_some() {
+                return Some(runtime_id);
+            }
         }
-    });
+    }
+    // TODO: Add profile name resolution
+    None
+}
+
+/// Prompt an agent with a message.
+///
+/// This is the main entry point for sending prompts to agents.
+/// It resolves the agent ID and delegates to the backend's message injection.
+pub async fn prompt_agent(
+    agent_id: &str,
+    message: &str,
+    images: Vec<ergatai_runtime::AgentImage>,
+) -> anyhow::Result<()> {
+    let runtime_id = resolve_agent_id(agent_id)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Agent not found or not running: {}", agent_id))?;
+
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    runtime
+        .inject_message_with_images(&runtime_id, message, images)
+        .await?;
     Ok(())
 }

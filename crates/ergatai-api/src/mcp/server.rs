@@ -1,28 +1,31 @@
-//! MCP Server implementation using rmcp (Rust MCP SDK)
+//! MCP Server core — struct definition, tool router delegation, service factory.
 //!
-//! Implements MCP protocol 2025-06-18 with Streamable HTTP transport.
-//! Agents connect via POST/GET /mcp and can call tools like list_agents,
-//! send_message, submit_orchestration, etc.
+//! The heavy lifting lives in sibling modules:
+//! - [`crate::mcp::params`] — tool parameter types
+//! - [`crate::mcp::tools`] — tool implementations (one file per tool)
+//! - [`crate::mcp::protocol`] — `ServerHandler` impl (initialize handshake, server info)
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{
-        CallToolResult, ContentBlock, InitializeRequestParams, InitializeResult,
-        ServerCapabilities, ServerInfo,
-    },
-    service::{Peer, RequestContext},
-    tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler,
+    model::CallToolResult,
+    service::Peer,
+    tool, tool_router, ErrorData, RoleServer,
 };
-use schemars::JsonSchema;
-use serde::Deserialize;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use ergatai_core::agent_registry::AgentRegistry;
+
+use super::params::{
+    GetDagStatusParams, ListAgentsParams, SendMessageParams, SubmitOrchestrationParams,
+    ValidateDagParams,
+};
+
+// ── PeerRegistry ──
 
 /// Shared registry of MCP peer handles for pushing notifications to agents.
 /// Key: agent_id (e.g., "opencode@abcd1234")
@@ -34,10 +37,12 @@ pub fn new_peer_registry() -> PeerRegistry {
     Arc::new(RwLock::new(HashMap::new()))
 }
 
+// ── ErgataiMcpServer ──
+
 /// MCP Server state - shared across all sessions via Arc
 #[derive(Clone)]
 pub struct ErgataiMcpServer {
-    tool_router: ToolRouter<Self>,
+    pub(crate) tool_router: ToolRouter<Self>,
     registry: Arc<AgentRegistry>,
     /// Shared peer registry for pushing notifications to agents
     peer_registry: PeerRegistry,
@@ -69,7 +74,27 @@ impl ErgataiMcpServer {
             agent_identifier,
         }
     }
+
+    // ── Accessors for sibling modules (tools/, protocol) ──
+
+    pub(crate) fn session_agent_id(&self) -> &RwLock<Option<String>> {
+        &self.session_agent_id
+    }
+
+    pub(crate) fn registry(&self) -> &AgentRegistry {
+        &self.registry
+    }
+
+    pub(crate) fn peer_registry(&self) -> &PeerRegistry {
+        &self.peer_registry
+    }
+
+    pub(crate) fn agent_identifier(&self) -> &Option<String> {
+        &self.agent_identifier
+    }
 }
+
+// ── Drop — auto-unregister on session close ──
 
 /// When the per-session `ErgataiMcpServer` is dropped (session ends — client
 /// disconnect, idle timeout, or server shutdown), automatically unregister the
@@ -107,7 +132,7 @@ impl Drop for ErgataiMcpServer {
 
 /// Unregister an agent from the registry and remove its peer handle.
 /// Centralized helper used by Drop, peer reaper, and send_message failure handler.
-async fn do_unregister_agent(
+pub(crate) async fn do_unregister_agent(
     registry: &AgentRegistry,
     peer_registry: &PeerRegistry,
     agent_id: &str,
@@ -118,179 +143,10 @@ async fn do_unregister_agent(
     info!("Agent {} unregistered ({})", agent_id, reason);
 }
 
-// ── Tool parameter types ──
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct ListAgentsParams {
-    /// Whether to include agent capabilities
-    #[serde(default)]
-    include_capabilities: Option<bool>,
-
-    /// Optional filter to narrow results.
-    /// - `can_communicate_with`: reserved for future use; currently a no-op (all
-    ///   agents are returned regardless of this value).
-    /// - `in_dag`: Only return agents that are participants in the specified DAG.
-    /// - `status`: Only return agents whose lifecycle state matches (e.g., "running", "idle", "processing").
-    #[serde(default)]
-    filter: Option<AgentFilter>,
-}
-
-/// Filter criteria for `list_agents`. All fields are optional and combined with AND.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct AgentFilter {
-    /// Reserved for future use; currently a no-op. All agents are returned
-    /// regardless of this value.
-    pub can_communicate_with: Option<String>,
-
-    /// Filter agents that are participants in the specified DAG (by dag_id).
-    pub in_dag: Option<String>,
-
-    /// Filter agents by lifecycle status (case-insensitive).
-    /// Valid values: "created", "initializing", "idle", "starting", "running", "processing", "stopping", "terminated".
-    pub status: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct SendMessageParams {
-    /// ID of the target agent
-    target_agent_id: String,
-    /// Message content
-    message: String,
-    /// Message type. Controls tracking and timeout behavior:
-    ///
-    /// - `"request"` (default): the message expects a response. The system will
-    ///   generate a correlation ID, start a 30-second timeout, and track the
-    ///   request via `RequestMonitor`. If no response arrives in time, a
-    ///   `request_timeout` notification is published to the sender.
-    /// - `"response"`: a reply to a received request. Pass `correlation_id`
-    ///   (from the request's `_meta.correlation_id`) so the system can match
-    ///   this response to the original request and cancel the timeout.
-    /// - `"broadcast"`: informational message, no tracking, no timeout.
-    #[serde(default)]
-    message_type: Option<String>,
-    /// Correlation ID for linking a response back to its original request.
-    ///
-    /// **Optional**: the system automatically tracks pending responses, so you
-    /// typically don't need to set this. Only provide it if you're handling
-    /// advanced scenarios with multiple concurrent requests.
-    /// Ignored for `"request"` and `"broadcast"` messages.
-    #[serde(default)]
-    correlation_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct SubmitOrchestrationParams {
-    /// DAG definition in YAML format.
-    ///
-    /// ```yaml
-    /// tasks:
-    ///   - name: Task A
-    ///     agent: agent-a
-    ///     task: tasks/a.md
-    ///   - name: Task B
-    ///     agent: agent-b
-    ///     depends_on: [Task A]
-    ///     timeout: 300
-    /// ```
-    dag_definition: String,
-    /// Optional context variables
-    #[serde(default)]
-    context: Option<serde_json::Value>,
-    /// Optional parameter values for template expansion (maps `{{var}}` in
-    /// task `input` / `condition` to concrete values). Must match the
-    /// `parameters` schema declared in the YAML, if any.
-    #[serde(default)]
-    parameters: Option<HashMap<String, serde_json::Value>>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct ValidateDagParams {
-    /// DAG definition in YAML format to validate (without executing).
-    /// The YAML goes through the same strict validation as `submit_orchestration`,
-    /// but nothing is scheduled or run.
-    dag_definition: String,
-    /// Optional parameter values for template expansion (maps `{{var}}` in
-    /// task `input` / `condition` to concrete values).
-    #[serde(default)]
-    parameters: Option<HashMap<String, serde_json::Value>>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct GetDagStatusParams {
-    /// DAG ID to check (currently unused — there is at most one active DAG)
-    dag_id: String,
-}
-
-// ── Tool implementations ──
+// ── Tool router — thin delegation to tools/ modules ──
 
 #[tool_router]
 impl ErgataiMcpServer {
-    /// List online agents in Ergatai. Use this BEFORE `send_message` to discover valid
-    /// target_agent_id values, or BEFORE `submit_orchestration` to verify which agents
-    /// are available for task assignment.
-    ///
-    /// # Behavior
-    /// Returns all online agents discovered via the PTY backend. The caller is automatically
-    /// excluded from the results (you cannot message yourself). Communication policy (MeshPolicy)
-    /// filtering is NOT applied — all agents are listed regardless of DAG membership.
-    ///
-    /// # Filter Options (combined with AND)
-    /// - `in_dag: "<dag_id>"` — Only agents participating in the specified DAG (derived from
-    ///   the DAG's task graph nodes). Use this to see who is working on a specific orchestration.
-    /// - `status: "<state>"` — Only agents whose lifecycle state matches (case-insensitive).
-    ///   Valid states: `created`, `initializing`, `idle`, `starting`, `running`, `processing`,
-    ///   `stopping`, `terminated`. Use `idle` to find agents available for new tasks.
-    /// - `can_communicate_with` — Reserved for future use (currently a no-op).
-    ///
-    /// # Response Format
-    /// ```json
-    /// {
-    ///   "agents": [
-    ///     {
-    ///       "agent_id": "ws1-agent-1",
-    ///       "agent_uuid": "550e8400-e29b-41d4-a716-446655440000",
-    ///       "mcp_agent_id": "opencode@a1b2c3d4",
-    ///       "workspace_id": "ws1",
-    ///       "state": "idle",
-    ///       "lifecycle_state": "idle",
-    ///       "task_id": null,
-    ///       "is_alive": true,
-    ///       "is_idle": true,
-    ///       "is_processing": false,
-    ///       "status": "active",
-    ///       "ergatai_agent_id": "ws1-agent-1",
-    ///       "last_heartbeat": "2026-08-27T10:30:00Z"
-    ///     }
-    ///   ],
-    ///   "total": 3,
-    ///   "filter_applied": false,
-    ///   "note": "All online agents are listed."
-    /// }
-    /// ```
-    ///
-    /// # Field Semantics
-    /// - `agent_id` / `ergatai_agent_id` — Runtime agent ID (use this for `send_message` target).
-    ///   Format: `{workspace_id}-agent-{counter}` (e.g., `ws1-agent-1`).
-    /// - `mcp_agent_id` — MCP connection ID (e.g., `opencode@a1b2c3d4`). Present only if the
-    ///   agent connected via MCP protocol.
-    /// - `state` / `lifecycle_state` — Current lifecycle state. Agents in `idle` state are
-    ///   available for new tasks; agents in `processing` state are executing a task.
-    /// - `status` — `"active"` if connected via MCP, `"discovered"` if detected via PTY only.
-    /// - `last_heartbeat` — ISO 8601 timestamp of last heartbeat. Stale heartbeats (> 60s)
-    ///   indicate the agent may be unresponsive.
-    ///
-    /// # Usage Patterns
-    /// 1. **Find available agents**: Call with `filter: {"status": "idle"}` (pass filter as a JSON object) to find agents ready
-    ///    for new tasks.
-    /// 2. **Check DAG participants**: Call with `filter: {"in_dag": "<dag_id>"}` to see which
-    ///    agents are assigned to a specific orchestration.
-    /// 3. **No filter needed**: Omit `filter` entirely (or pass `null`) to list all agents.
-    /// 4. **Verify target exists**: Before `send_message`, call this to confirm the target
-    ///    agent is online and `is_alive = true`.
-    ///
-    /// # Errors
-    /// This tool does not return errors under normal operation. If `total = 0`, no agents
-    /// are currently online — wait for agents to start or check workspace configuration.
     #[tool(
         description = "List online agents in Ergatai. Use BEFORE `send_message` to discover valid target_agent_id values, or BEFORE `submit_orchestration` to verify agent availability. Excludes the caller automatically. RESPONSE: JSON with {agents: [{agent_id, state, workspace_id, is_alive, last_heartbeat, ...}], total, filter_applied, note}. FILTER: pass `filter` as a JSON OBJECT (not a string), e.g. {\"filter\": {\"status\": \"idle\"}} or {\"filter\": {\"in_dag\": \"dag-1\"}}. Valid status values: created|initializing|idle|starting|running|processing|stopping|terminated. Omit `filter` entirely to list all agents.",
         annotations(read_only_hint = true, idempotent_hint = true)
@@ -299,136 +155,9 @@ impl ErgataiMcpServer {
         &self,
         params: Parameters<ListAgentsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let _include_capabilities = params.0.include_capabilities.unwrap_or(false);
-        let filter = params.0.filter;
-
-        // Get the calling agent's ID to mark is_self.
-        let my_agent_id = self.session_agent_id.read().await.clone();
-
-        // Resolve caller's runtime ID so we can exclude self from the listing.
-        let my_runtime_id = match &my_agent_id {
-            Some(id) => crate::services::agent_service::resolve_agent_id(id).await,
-            None => None,
-        };
-
-        // Build the shared filter.
-        let mut exclude = std::collections::HashSet::new();
-        if let Some(ref id) = my_agent_id {
-            exclude.insert(id.clone());
-        }
-        if let Some(ref rid) = my_runtime_id {
-            exclude.insert(rid.clone());
-        }
-        let svc_filter = crate::services::agent_service::AgentListFilter {
-            in_dag: filter.as_ref().and_then(|f| f.in_dag.clone()),
-            status: filter.as_ref().and_then(|f| f.status.clone()),
-            exclude_agent_ids: exclude,
-        };
-
-        let items = crate::services::agent_service::list_agents_filtered(svc_filter).await;
-
-        let agents_json: Vec<serde_json::Value> = items
-            .into_iter()
-            .map(|info| {
-                serde_json::json!({
-                    "agent_id": info.agent_id,
-                    "agent_uuid": info.agent_uuid,
-                    "mcp_agent_id": info.mcp_agent_id,
-                    "workspace_id": info.workspace_id,
-                    // Lifecycle state (lowercase) from unified state machine
-                    "state": info.state,
-                    "lifecycle_state": info.state,
-                    "task_id": info.task_id,
-                    "is_alive": info.is_alive,
-                    "is_idle": info.is_idle,
-                    "is_processing": info.is_processing,
-                    "status": if info.mcp_agent_id.is_some() { "active" } else { "discovered" },
-                    // ID Unification: prefer MCP URL path name (e.g., "agent-1") when
-                    // the agent is MCP-bound, so it matches the `from` field in messages
-                    // and the `target_agent_id` agents use in send_message.
-                    // Fall back to workspace ID (e.g., "start-opencode-3-agent-1") for
-                    // agents not yet bound to an MCP connection.
-                    "ergatai_agent_id": info.mcp_agent_id,
-                    "last_heartbeat": info.last_heartbeat,
-                })
-            })
-            .collect();
-
-        let filter_applied = filter.as_ref().is_some_and(|f| {
-            f.can_communicate_with.is_some() || f.in_dag.is_some() || f.status.is_some()
-        });
-        let result = serde_json::json!({
-            "agents": agents_json,
-            "total": agents_json.len(),
-            "filter_applied": filter_applied,
-            "note": if filter_applied {
-                "User-supplied filter applied."
-            } else {
-                "All online agents are listed."
-            }
-        });
-
-        Ok(CallToolResult::success(vec![ContentBlock::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
+        super::tools::list_agents::handle(self, params).await
     }
 
-    /// Send a message to another agent. Use this for any inter-agent communication:
-    /// requests, status updates, task delegation, or collaborative discussion.
-    ///
-    /// # Before You Call
-    /// 1. **Verify the target exists**: Call `list_agents` first and confirm the target
-    ///    agent is in the result with `is_alive = true`. Sending to a dead agent will
-    ///    be rejected.
-    /// 2. **Use the right ID**: Pass `agent_id` (e.g., `ws1-agent-1`) from `list_agents`
-    ///    as `target_agent_id`. Do NOT use `mcp_agent_id` — that is internal.
-    ///
-    /// # Communication Rules
-    /// - You can message ANY online agent. MeshPolicy constraints (from DAG `communication`
-    ///   field) are enforced server-side and will return a clear error if violated.
-    /// - You CANNOT message yourself — the server rejects self-messages.
-    /// - Rate limit: 60 messages/min per agent (sliding window). Exceeding this returns
-    ///   a 429-style error; back off and retry.
-    ///
-    /// # Message Types
-    /// - `request` (default) — A request requiring a response. The receiver is expected
-    ///   to act and reply.
-    /// - `response` — A reply to a previous `request`. Use when answering a question.
-    /// - `broadcast` — Informational; no response expected. Use for status updates.
-    ///
-    /// # Delivery Pipeline
-    /// Messages are persisted to NATS JetStream (`AGENT_MESSAGES` stream, 24h TTL,
-    /// WorkQueue retention) and delivered by a background consumer via PTY injection
-    /// into the target agent's terminal. If NATS is unavailable, messages fall back
-    /// to direct PTY injection (no persistence — use this signal for reliability
-    /// monitoring).
-    ///
-    /// # Response Format (success)
-    /// ```json
-    /// {
-    ///   "status": "queued",
-    ///   "target_agent": "ws1-agent-2",
-    ///   "delivery_method": "nats_jetstream",
-    ///   "stream": "AGENT_MESSAGES",
-    ///   "sequence": 42,
-    ///   "note": "Message persisted to NATS JetStream..."
-    /// }
-    /// ```
-    /// Status values:
-    /// - `queued` — persisted to NATS JetStream, will be delivered by background consumer.
-    ///   `stream` and `sequence` fields are present.
-    /// - `direct_delivered` — NATS unavailable; delivered via direct PTY injection
-    ///   (no persistence). Only `target_agent` and `delivery_method` are present.
-    ///
-    /// # Response Format (error)
-    /// MCP error with human-readable reason. Common causes:
-    /// - `target agent not found` — call `list_agents` to verify the agent is online.
-    /// - `rate limit exceeded` — wait and retry; reduce message frequency.
-    /// - `communication policy denied` — the DAG's `communication` field (MeshPolicy)
-    ///   forbids this sender→receiver pair. Adjust the DAG YAML or remove the sender
-    ///   from the DAG session.
-    /// - `backpressure: too many pending messages` — the target's inbox is full (≥1000).
-    ///   Wait for the target to consume messages before retrying.
     #[tool(
         description = "Send a message to another online agent. Persists via NATS JetStream with PTY injection fallback.\n\nWHEN TO USE:\n- Need to communicate with another agent (request help, send response, broadcast info)\n- User explicitly asks to message another agent\n- Responding to a received message\n\nWHEN NOT TO USE:\n- Target agent is offline (check list_agents first)\n- Messaging yourself (will be rejected)\n- Sending a reply that is ONLY polite acknowledgment (\"thanks\", \"ok\", \"got it\", \"thanks for the update\")\n- Responding to a broadcast that has no specific task for you\n- Responding to a \"response\" message that is clearly ending the conversation\n\nWHEN NOT TO RESPOND (ANTI-LOOP — CRITICAL):\nEvery unnecessary reply creates a loop. Follow these rules:\n- broadcast with no task/question → DO NOT reply, ignore silently\n- response that says \"thanks\", \"ok\", \"got it\" → DO NOT reply, conversation is done\n- You already replied once → STOP, do not reply again\n- Your message would just be acknowledgment → SUPPRESS IT, silence is better than a loop\n- message_type = \"request\" with real task → DO reply (this is the ONLY case you should reply)\n\nPARAMETERS:\n- target_agent_id (REQUIRED): recipient's ergatai_agent_id from list_agents (e.g., \"agent-2\"). NOT the agent_id field (e.g., \"%15\").\n- message (REQUIRED): message content\n- message_type (OPTIONAL, default \"request\"):\n  * \"request\": expects response; system auto-tracks correlation_id, starts 30s timeout\n  * \"response\": reply to received request; system auto-tracks correlation_id\n  * \"broadcast\": informational; no tracking, no timeout\n- correlation_id (OPTIONAL): system auto-tracks, typically not needed\n\nRECEIVING MESSAGES:\nWhen you receive a message, it's JSON with these fields:\n- from: sender's agent ID (use as target_agent_id when replying)\n- message: the actual content\n- message_type: \"request\" | \"response\" | \"broadcast\"\n- _reply: exact send_message call to make (COPY THIS EXACTLY)\n- _rules: rules you MUST follow\n\nHOW TO RESPOND:\nIf message_type = \"request\" with a concrete task or question:\n1. Do your work\n2. Call send_message(target_agent_id=<from>, message=<reply>, message_type=\"response\")\n3. Output END in terminal\nSystem auto-tracks correlation — no need to pass correlation_id manually.\n\nIf message_type = \"response\": DO NOT reply again unless there is NEW work to do. Most \"response\" messages end the conversation. Silence = done.\n\nIf message_type = \"broadcast\": DO NOT reply unless the broadcast contains a SPECIFIC task for you. General greetings or FYI broadcasts need NO response.\n\nRESPONSE ON SUCCESS:\n{status: \"queued\"|\"direct_delivered\", target_agent: string, delivery_method: string, stream?: string, sequence?: number}\n\nRESPONSE ON ERROR:\nMCP error with reason:\n- \"target agent not found\": call list_agents to verify target is online\n- \"rate limit exceeded\": 60 msg/min/agent, back off and retry\n- \"communication policy denied\": DAG MeshPolicy forbids this pair\n- \"backpressure\": target inbox full (>=1000 pending), wait and retry\n- \"sender not bound to runtime agent\": MCP clients must be bound to PTY agents\n\nRATE LIMITS:\n- 60 messages per minute per agent (sliding window)\n- NATS backpressure: >=1000 pending messages triggers rejection\n- You CANNOT message yourself",
         annotations(
@@ -441,161 +170,9 @@ impl ErgataiMcpServer {
         &self,
         params: Parameters<SendMessageParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let target_agent_id = &params.0.target_agent_id;
-        let message = &params.0.message;
-        let message_type = params.0.message_type.as_deref().unwrap_or("request");
-        let correlation_id = params.0.correlation_id.clone();
-
-        info!(
-            "Sending message to agent {} (type: {}, bytes: {}, correlation_id: {:?})",
-            target_agent_id,
-            message_type,
-            message.len(),
-            correlation_id
-        );
-
-        // Get the sender agent ID from MCP session
-        let from_agent = self
-            .session_agent_id
-            .read()
-            .await
-            .clone()
-            .unwrap_or_else(|| "unknown-mcp-client".to_string());
-
-        // Delegate to the shared MessageSender service (same pipeline as REST API)
-        let sender = match crate::messaging::get_message_sender() {
-            Some(s) => s,
-            None => {
-                return Err(ErrorData::internal_error(
-                    "MessageSender not initialized — call init_message_sender first",
-                    None,
-                ));
-            }
-        };
-        let send_req = crate::messaging::SendRequest {
-            from: from_agent.clone(),
-            to: target_agent_id.to_string(),
-            message: message.to_string(),
-            message_type: message_type.to_string(),
-            correlation_id,
-            sub_chat_id: None,
-        };
-
-        match sender.send(send_req).await {
-            crate::messaging::SendMessageResult::Queued {
-                target_agent,
-                stream,
-                sequence,
-            } => {
-                let response_json = serde_json::json!({
-                    "status": "queued",
-                    "target_agent": target_agent,
-                    "delivery_method": "nats_jetstream",
-                    "stream": stream,
-                    "sequence": sequence,
-                    "note": "Message persisted to NATS JetStream. Background consumer will deliver via PTY injection."
-                });
-
-                Ok(CallToolResult::success(vec![ContentBlock::text(
-                    serde_json::to_string_pretty(&response_json).unwrap_or_default(),
-                )]))
-            }
-            crate::messaging::SendMessageResult::DirectDelivered { target_agent } => {
-                let response_json = serde_json::json!({
-                    "status": "direct_delivered",
-                    "target_agent": target_agent,
-                    "delivery_method": "pty_injection",
-                    "note": "NATS unavailable. Message delivered directly via PTY injection (no persistence)."
-                });
-
-                Ok(CallToolResult::success(vec![ContentBlock::text(
-                    serde_json::to_string_pretty(&response_json).unwrap_or_default(),
-                )]))
-            }
-            crate::messaging::SendMessageResult::Rejected { reason } => {
-                Ok(CallToolResult::error(vec![ContentBlock::text(reason)]))
-            }
-        }
+        super::tools::send_message::handle(self, params).await
     }
 
-    /// Submit a DAG workflow for multi-agent collaboration. You are the COORDINATOR —
-    /// once submitted, you CANNOT also be a task worker in the same DAG. The scheduler
-    /// role is purely orchestration; assign all tasks to other agents.
-    ///
-    /// # Before You Call
-    /// 1. **Validate the YAML first**: Call `validate_dag_yaml` with the SAME YAML
-    ///    to catch errors without starting execution. A failed `submit_orchestration`
-    ///    wastes no resources, but validation errors are clearer from the dry-run tool.
-    /// 2. **Verify agents exist**: Call `list_agents` and confirm every `agent:` value
-    ///    in your YAML matches an online agent's `agent_id`. Submitting a DAG that
-    ///    references unknown agents will fail at task dispatch time (not at submission).
-    /// 3. **Choose complexity carefully**: Each task's `complexity` (low|medium|high)
-    ///    scales its timeout (Low × 0.5, Medium × 1.0, High × 2.0) and influences
-    ///    priority scoring. Under-estimating complexity causes premature timeouts.
-    ///
-    /// # DAG Definition Format
-    /// Accepts YAML format with strict validation.
-    ///
-    /// ```yaml
-    /// tasks:
-    ///   - name: Task A
-    ///     agent: agent-a
-    ///     task: tasks/a.md
-    ///     complexity: medium        # optional: low | medium | high
-    ///   - name: Task B
-    ///     agent: agent-b
-    ///     depends_on: [Task A]
-    ///     timeout: 300
-    /// communication: adjacent       # optional: open (default) | adjacent | star:{hub}
-    /// ```
-    ///
-    /// # Communication Policy
-    /// Optional top-level `communication` field constrains which agents can message
-    /// each other DURING the DAG execution (MeshPolicy):
-    /// - `open` (default) — any participant can message any other participant.
-    /// - `adjacent` — only agents connected by a `depends_on` edge can message each other.
-    /// - `star:{hub_agent}` — all communication must pass through the named hub agent.
-    ///   The hub must appear as the `agent` of at least one task.
-    /// Policy is enforced server-side on every `send_message` call while the DAG is active.
-    /// After the DAG completes, policy is lifted and agents can communicate freely again.
-    ///
-    /// # YAML Validation Rules (strict — invalid YAML is rejected)
-    /// - **Top-level fields**: unknown keys are rejected (e.g., `communcation:` typo → error).
-    ///   Task-level unknown keys are collected as metadata (allowed).
-    /// - **`name`** (per task): required, non-empty.
-    /// - **`priority`** (DAG or task level): must be `low` | `medium` | `high` (case-insensitive).
-    /// - **`timeout` / `max_agent_calls` / `stall_timeout_secs` / `node_timeout_secs`**:
-    ///   must be > 0 when specified (0 is rejected, not treated as "unlimited").
-    /// - **`communication`**: must be `open` | `adjacent` | `star:{hub}`; the hub agent
-    ///   must appear as the `agent` of at least one task.
-    /// - **Template variables** (`{{var}}` in `input` / `condition`): must reference a
-    ///   declared `parameters` entry. If no parameters are declared, templates are
-    ///   left unchecked (backward compatible).
-    /// - **`depends_on`**: referenced task names must exist.
-    /// - **`scope`**: invalid glob patterns are rejected (not silently dropped).
-    ///
-    /// # Concurrency
-    /// Only ONE DAG can run at a time. If a DAG is already running, this call is rejected.
-    /// Use `get_dag_status` to check the current DAG, then wait for it to complete or fail
-    /// before submitting a new one.
-    ///
-    /// # Response Format
-    /// ```json
-    /// {
-    ///   "status": "submitted",
-    ///   "submitted_nodes": 3,
-    ///   "progress": {
-    ///     "completed": 0,
-    ///     "total": 3,
-    ///     "percent": 0.0
-    ///   },
-    ///   "graph_status": "running (0/3 completed)"
-    /// }
-    /// ```
-    ///
-    /// # After Submission
-    /// Use `get_dag_status` to monitor progress. The scheduler dispatches ready tasks
-    /// (those with all `depends_on` satisfied) as their worker agents become available.
     #[tool(
         description = "Submit a DAG workflow for multi-agent collaboration. BEFORE calling: (1) run `validate_dag_yaml` with the same YAML to dry-run validation; (2) run `list_agents` to confirm every `agent:` in the YAML matches an online agent. YOU CANNOT be a task worker in your own DAG — the scheduler must be a pure coordinator. YAML format: the top-level field MUST be `tasks:` (NOT `nodes:`), each with `name`, `agent`, `task` sub-fields. YAML rules: unknown top-level fields rejected; priority ∈ {low,medium,high}; timeouts > 0; `communication` ∈ {open,adjacent,star:{hub}} with hub existing in tasks; template vars must match declared parameters. Only ONE DAG can run at a time — use `get_dag_status` to check before submitting. RESPONSE: {status: 'submitted', submitted_nodes, progress: {completed, total, percent}, graph_status}. TIP: After submission, poll `get_dag_status` to monitor progress.",
         annotations(
@@ -608,104 +185,9 @@ impl ErgataiMcpServer {
         &self,
         params: Parameters<SubmitOrchestrationParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dag_definition = &params.0.dag_definition;
-        let context_value = &params.0.context;
-        let parameters = params.0.parameters;
-
-        info!(
-            "Submitting DAG orchestration ({} bytes)",
-            dag_definition.len()
-        );
-
-        // ── 获取调度者（提交者）的 agent_id ──
-        let submitter_id = self.session_agent_id.read().await.clone();
-
-        let req = crate::services::dag_service::DagSubmitRequest {
-            definition: dag_definition.clone(),
-            parameters,
-            context: context_value.clone(),
-            submitter_agent_id: submitter_id,
-        };
-
-        match crate::services::dag_service::submit_dag(req).await {
-            Ok(resp) => {
-                let result = serde_json::json!({
-                    "status": "submitted",
-                    "submitted_nodes": resp.submitted_nodes,
-                    "progress": resp.progress,
-                    "graph_status": resp.graph_status,
-                });
-                Ok(CallToolResult::success(vec![ContentBlock::text(
-                    serde_json::to_string_pretty(&result).unwrap_or_default(),
-                )]))
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("already running") {
-                    Err(ErrorData::internal_error(msg, None))
-                } else if msg.contains("Failed to parse")
-                    || msg.contains("cannot also be a task worker")
-                {
-                    Err(ErrorData::invalid_params(msg, None))
-                } else {
-                    Err(ErrorData::internal_error(msg, None))
-                }
-            }
-        }
+        super::tools::orchestration::handle_submit(self, params).await
     }
 
-    /// Dry-run validate a DAG YAML definition. ALWAYS call this BEFORE `submit_orchestration`
-    /// to catch validation errors without starting execution. The same YAML and parameters
-    /// go through the exact same strict parser — if validation passes here, submission
-    /// will not fail on parse errors.
-    ///
-    /// # What is Validated
-    /// All 9 strict rules (unknown top-level fields rejected, non-empty unique task names,
-    /// priority enum, positive timeouts, communication format + hub existence, template
-    /// variable references, depends_on existence, scope glob validity). See
-    /// `submit_orchestration` for the full rule list.
-    ///
-    /// # Response Format (success)
-    /// ```json
-    /// {
-    ///   "valid": true,
-    ///   "task_count": 3,
-    ///   "agents": ["agent-a", "agent-b", "agent-c"],
-    ///   "communication": "adjacent",
-    ///   "dag_timeout": 3600,
-    ///   "dag_max_agent_calls": 100,
-    ///   "dag_stall_timeout_secs": 300,
-    ///   "dag_node_timeout_secs": 600,
-    ///   "tasks": [
-    ///     {
-    ///       "name": "Task A",
-    ///       "agent": "agent-a",
-    ///       "priority": "medium",
-    ///       "complexity": "medium",
-    ///       "depends_on_count": 0,
-    ///       "timeout": null,
-    ///       "scope": null
-    ///     }
-    ///   ]
-    /// }
-    /// ```
-    /// Use this summary to verify your YAML parsed as intended: check `agents` for typos,
-    /// `communication` for correct policy, `tasks[].depends_on_count` for correct edges.
-    ///
-    /// # Response Format (failure)
-    /// MCP error with the FIRST validation error encountered. The error message includes
-    /// the offending field name and the rejected value. Common errors and fixes:
-    /// - `unknown field 'communcation'` → typo: rename to `communication`
-    /// - `Task name cannot be empty` → add a `name:` field to every task
-    /// - `Duplicate task name: 'X'` → rename one of the duplicate tasks
-    /// - `DAG has invalid priority ["urgent"]` → use `low`|`medium`|`high`
-    /// - `DAG 'timeout' must be > 0` → remove the field or set to a positive integer
-    /// - `Task 'B' depends_on unknown task 'A'` → fix the typo or declare task 'A'
-    /// - `communication hub 'agent-x' not found in tasks` → ensure the hub is an `agent:` value
-    ///
-    /// # Tip
-    /// After successful validation, verify every `agents[]` value exists by calling
-    /// `list_agents` before submission.
     #[tool(
         description = "Dry-run validate a DAG YAML definition. ALWAYS call this BEFORE `submit_orchestration` — same strict parser, no execution. RESPONSE on success: {valid: true, task_count, agents: [...], communication, dag_timeout, dag_max_agent_calls, tasks: [{name, agent, priority, complexity, depends_on_count, timeout, scope}]}. Use the summary to verify parsing: check `agents` for typos, `tasks[].depends_on_count` for correct edges. RESPONSE on failure: MCP error with first validation error (common: `unknown field 'X'` → fix typo; `Duplicate task name` → rename; `depends_on unknown task` → fix reference; `communication hub not found` → hub must be an agent in the DAG). TIP: After validation, also call `list_agents` to confirm every `agents[]` value is online.",
         annotations(read_only_hint = true, idempotent_hint = true)
@@ -714,92 +196,9 @@ impl ErgataiMcpServer {
         &self,
         params: Parameters<ValidateDagParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dag_definition = &params.0.dag_definition;
-        let parameters = params.0.parameters;
-
-        info!("Validating DAG definition ({} bytes)", dag_definition.len());
-
-        match crate::services::dag_service::validate_dag(dag_definition, parameters) {
-            Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
-                serde_json::to_string_pretty(&serde_json::to_value(result).unwrap_or_default())
-                    .unwrap_or_default(),
-            )])),
-            Err(e) => Err(ErrorData::invalid_params(
-                format!("DAG validation failed: {}", e),
-                None,
-            )),
-        }
+        super::tools::orchestration::handle_validate(params).await
     }
 
-    /// Get the status of a DAG execution. Use this AFTER `submit_orchestration` to monitor
-    /// progress, check for stuck nodes, or inspect the active communication policy.
-    /// Poll periodically (every 10-30s) during long-running orchestrations.
-    ///
-    /// # What This Returns
-    /// A combined view of DAG execution progress + collaboration session metadata.
-    /// There is at most ONE active DAG at a time, so no dag_id lookup is needed —
-    /// the `dag_id` parameter is accepted for forward compatibility but ignored.
-    ///
-    /// # Response Format (no DAG running)
-    /// ```json
-    /// {
-    ///   "status": "no_dag",
-    ///   "message": "No DAG scheduler is active"
-    /// }
-    /// ```
-    /// Use this signal to decide whether it is safe to call `submit_orchestration`.
-    ///
-    /// # Response Format (DAG active or completed)
-    /// ```json
-    /// {
-    ///   "status": "running",
-    ///   "progress": {
-    ///     "completed": 2,
-    ///     "total": 5,
-    ///     "percent": 40.0
-    ///   },
-    ///   "is_complete": false,
-    ///   "graph_status": "running (2/5 completed, 1 in progress)",
-    ///   "graph_snapshot": [
-    ///     {"id": "...", "task": "Task A", "agent": "agent-a", "status": "completed", ...},
-    ///     {"id": "...", "task": "Task B", "agent": "agent-b", "status": "running", ...},
-    ///     {"id": "...", "task": "Task C", "agent": "agent-c", "status": "pending", ...}
-    ///   ],
-    ///   "collaboration": {
-    ///     "dag_id": "550e8400-e29b-41d4-a716-446655440000",
-    ///     "policy": "Adjacent",
-    ///     "participants": ["agent-a", "agent-b", "agent-c"],
-    ///     "participant_count": 3,
-    ///     "created_at": "2026-08-27T10:30:00Z"
-    ///   }
-    /// }
-    /// ```
-    ///
-    /// # Field Semantics
-    /// - `status` — `"no_dag"` | `"running"` | `"completed"`. Check this first to branch logic.
-    /// - `progress` — `{completed, total, percent}`. `percent` is 0-100 float.
-    /// - `is_complete` — boolean; true when all nodes reached terminal state (completed/failed/skipped).
-    /// - `graph_snapshot` — array of node states; each has `{id, task, agent, status}`.
-    ///   Node status: `pending` | `running` | `completed` | `failed` | `skipped`.
-    ///   Use to identify stuck nodes (running for too long) or plan next steps.
-    /// - `collaboration.policy` — Active MeshPolicy: `Open` | `Adjacent` | `Star { hub: "..." }` |
-    ///   `Restricted { pairs: [...] }`. Determines which agents can message each other.
-    /// - `collaboration.participants` — Agents bound to this DAG session. Only these agents
-    ///   are subject to the MeshPolicy; agents outside the list can communicate freely.
-    ///
-    /// # Interpreting Results
-    /// - `status = "running"` + `progress.percent < 100` → DAG is still executing. Poll again
-    ///   in 10-30s. Inspect `graph_snapshot` to find nodes in `running` state.
-    /// - `graph_snapshot` has nodes in `running` state for longer than `node_timeout_secs` →
-    ///   those nodes may be stuck; the scheduler's timeout watcher will handle them.
-    /// - `status = "completed"` → DAG finished. MeshPolicy is lifted; agents can now message
-    ///   freely. You may submit a new DAG.
-    /// - `graph_snapshot` has `failed` nodes → inspect their `metadata["error"]` for the
-    ///   failure reason. Decide whether to retry with a new DAG.
-    ///
-    /// # Errors
-    /// This tool does not return errors under normal operation. A `no_dag` status is NOT
-    /// an error — it means no DAG is currently scheduled.
     #[tool(
         description = "Get DAG execution status. Use AFTER `submit_orchestration` to monitor progress, check stuck nodes, or inspect the active MeshPolicy. Poll every 10-30s during long runs. There is at most ONE active DAG — `dag_id` param is accepted but ignored. RESPONSE: {status: 'no_dag'|'running'|'completed', progress: {completed, total, percent}, is_complete, graph_snapshot: [{id, task, agent, status}], collaboration: {dag_id, policy, participants, participant_count, created_at}}. INTERPRETING: `status='running'` → poll again in 10-30s; check `graph_snapshot` for stuck `running` nodes. `status='completed'` → MeshPolicy lifted, safe to submit new DAG. `failed` nodes → check node metadata for error reason. `status='no_dag'` → no DAG active, safe to submit.",
         annotations(read_only_hint = true, idempotent_hint = true)
@@ -808,526 +207,7 @@ impl ErgataiMcpServer {
         &self,
         params: Parameters<GetDagStatusParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dag_id = &params.0.dag_id;
-
-        info!("Getting DAG status");
-
-        let info = crate::services::dag_service::get_dag_status(Some(dag_id)).await;
-
-        // 检查是否是来自磁盘的 completed 状态
-        let is_from_disk = info.progress_detail.is_some() && !info.running;
-
-        if !info.running && info.is_complete != Some(true) {
-            // 没有活跃 DAG，也没有磁盘状态
-            let result = serde_json::json!({
-                "status": "no_dag",
-                "message": "No DAG scheduler is active",
-            });
-            return Ok(CallToolResult::success(vec![ContentBlock::text(
-                serde_json::to_string_pretty(&result).unwrap_or_default(),
-            )]));
-        }
-
-        if is_from_disk {
-            // 磁盘加载状态：格式与之前的 load_completed_dag_from_disk 一致
-            let nodes: Vec<serde_json::Value> = info
-                .nodes
-                .unwrap_or_default()
-                .iter()
-                .map(|n| {
-                    serde_json::json!({
-                        "id": n.id,
-                        "task": n.task,
-                        "agent": n.agent,
-                        "status": n.status,
-                    })
-                })
-                .collect();
-
-            let collab =
-                info.collaboration
-                    .unwrap_or(crate::services::dag_service::DagCollaborationInfo {
-                        dag_id: "unknown".to_string(),
-                        policy: "N/A".to_string(),
-                        participants: Vec::new(),
-                        participant_count: 0,
-                        created_at: "N/A".to_string(),
-                    });
-
-            let detail = info.progress_detail.unwrap();
-
-            let result = serde_json::json!({
-                "status": "completed",
-                "progress": {
-                    "completed": detail.completed,
-                    "failed": detail.failed,
-                    "total": detail.total,
-                    "percent": detail.percent,
-                },
-                "is_complete": true,
-                "graph_status": info.status_prompt.unwrap_or_default(),
-                "graph_snapshot": nodes,
-                "collaboration": {
-                    "dag_id": collab.dag_id,
-                    "policy": collab.policy,
-                    "participants": collab.participants,
-                    "participant_count": collab.participant_count,
-                    "created_at": collab.created_at,
-                },
-                "source": "disk",
-                "message": "DAG has completed. Scheduler was removed from memory; this status was loaded from persisted state.",
-            });
-            return Ok(CallToolResult::success(vec![ContentBlock::text(
-                serde_json::to_string_pretty(&result).unwrap_or_default(),
-            )]));
-        }
-
-        // 活跃 DAG 状态
-        let detail =
-            info.progress_detail
-                .unwrap_or(crate::services::dag_service::DagProgressDetail {
-                    completed: 0,
-                    running: 0,
-                    failed: 0,
-                    pending: 0,
-                    total: 0,
-                    percent: 0,
-                });
-
-        let collab =
-            info.collaboration
-                .unwrap_or(crate::services::dag_service::DagCollaborationInfo {
-                    dag_id: String::new(),
-                    policy: "N/A".to_string(),
-                    participants: Vec::new(),
-                    participant_count: 0,
-                    created_at: String::new(),
-                });
-
-        let status = if info.is_complete == Some(true) {
-            "completed"
-        } else {
-            "running"
-        };
-
-        let result = serde_json::json!({
-            "status": status,
-            "progress": {
-                "completed": detail.completed,
-                "running": detail.running,
-                "failed": detail.failed,
-                "pending": detail.pending,
-                "total": detail.total,
-                "percent": detail.percent,
-            },
-            "is_complete": info.is_complete.unwrap_or(false),
-            "graph_status": info.status_prompt.unwrap_or_default(),
-            "graph_snapshot": info.graph_snapshot,
-            "collaboration": {
-                "dag_id": collab.dag_id,
-                "policy": collab.policy,
-                "participants": collab.participants,
-                "participant_count": collab.participant_count,
-                "created_at": collab.created_at,
-            }
-        });
-        Ok(CallToolResult::success(vec![ContentBlock::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
-    }
-}
-
-// ── ServerHandler implementation ──
-
-#[tool_handler(router = self.tool_router)]
-impl ServerHandler for ErgataiMcpServer {
-    /// Handle initialize - auto-register the agent and save peer handle
-    async fn initialize(
-        &self,
-        request: InitializeRequestParams,
-        context: RequestContext<rmcp::RoleServer>,
-    ) -> Result<InitializeResult, ErrorData> {
-        let agent_id = request.client_info.name.clone();
-        let agent_version = request.client_info.version.clone();
-
-        // Use the MCP URL path component as the unique agent ID.
-        // This is the dynamic name from the URL (e.g., /mcp/agent-1/ → "agent-1").
-        // Falls back to client_info.name if no agent_identifier (default /mcp/ endpoint).
-        let connection_id = uuid::Uuid::new_v4().to_string();
-        let unique_agent_id = self
-            .agent_identifier
-            .clone()
-            .unwrap_or_else(|| agent_id.clone());
-
-        info!(
-            "Agent connecting: {} (version: {}, protocol: {}) → {}",
-            agent_id, agent_version, request.protocol_version, unique_agent_id
-        );
-
-        // Store the agent ID for this session (used in send_message)
-        *self.session_agent_id.write().await = Some(unique_agent_id.clone());
-
-        // Register agent in registry
-        if let Err(e) = self
-            .registry
-            .register_agent(unique_agent_id.clone(), connection_id.clone(), None)
-            .await
-        {
-            return Err(ErrorData::invalid_params(
-                format!("Failed to register agent: {}", e),
-                None::<serde_json::Value>,
-            ));
-        }
-
-        // Save the peer handle for pushing notifications to this agent
-        self.peer_registry
-            .write()
-            .await
-            .insert(unique_agent_id.clone(), context.peer.clone());
-
-        info!(
-            "Agent registered: {} (connection: {}, peer handle saved)",
-            unique_agent_id, connection_id
-        );
-
-        // Try to bind this MCP agent to a runtime agent (PTY pane).
-        // If agent_identifier is available (from URL path), use precise binding.
-        // Otherwise, fall back to FIFO binding (legacy behavior).
-        let runtime = crate::context::get_app_context().agent_runtime.clone();
-
-        // Trigger immediate discovery to ensure runtime agents are available.
-        // This handles the race condition where MCP connects before the periodic
-        // discovery (30s interval) has run.
-        if let Err(e) = runtime.discover_and_register_agents().await {
-            warn!(error = %e, "Immediate discovery on MCP connect failed");
-        }
-
-        // Reconnection support: Check for stored binding first
-        let mut binding_restored = false;
-        if let (Some(identifier), Some(binding_store)) =
-            (&self.agent_identifier, crate::mcp::get_binding_store())
-        {
-            if let Ok(Some(stored_binding)) = binding_store.get_binding_by_identifier(identifier) {
-                // Verify the runtime agent still exists
-                if runtime
-                    .get_agent(&stored_binding.runtime_agent_id)
-                    .await
-                    .is_some()
-                {
-                    // Try to restore the binding
-                    match runtime
-                        .try_bind_mcp_agent_with_identifier(
-                            &unique_agent_id,
-                            &stored_binding.runtime_agent_id,
-                        )
-                        .await
-                    {
-                        Some(runtime_id) => {
-                            info!(
-                                mcp_agent_id = unique_agent_id,
-                                runtime_id = runtime_id,
-                                agent_identifier = identifier,
-                                "Binding restored from persistent storage (reconnection)"
-                            );
-                            binding_restored = true;
-                            // Update last_active timestamp
-                            let _ = binding_store.touch_binding(&unique_agent_id);
-                        }
-                        None => {
-                            warn!(
-                                mcp_agent_id = unique_agent_id,
-                                runtime_id = stored_binding.runtime_agent_id,
-                                "Failed to restore binding, proceeding with normal binding"
-                            );
-                        }
-                    }
-                } else {
-                    info!(
-                        mcp_agent_id = unique_agent_id,
-                        runtime_id = stored_binding.runtime_agent_id,
-                        "Stored runtime agent no longer exists, proceeding with normal binding"
-                    );
-                }
-            }
-        }
-
-        // Normal binding flow (if not restored from storage)
-        if !binding_restored {
-            match &self.agent_identifier {
-                Some(identifier) => {
-                    // Precise binding based on agent identifier from URL path
-                    match runtime
-                        .try_bind_mcp_agent_with_identifier(&unique_agent_id, identifier)
-                        .await
-                    {
-                        Some(runtime_id) => {
-                            info!(
-                                mcp_agent_id = unique_agent_id,
-                                runtime_id = runtime_id,
-                                agent_identifier = identifier,
-                                "MCP agent bound to runtime agent by identifier"
-                            );
-                        }
-                        None => {
-                            // Identifier mismatch (e.g. URL path "agent-1" vs runtime
-                            // "ws1-agent-1"). Fall back to FIFO binding so MCP ↔ PTY
-                            // mapping still works.
-                            warn!(
-                                mcp_agent_id = unique_agent_id,
-                                agent_identifier = identifier,
-                                "Identifier-based binding failed, falling back to FIFO"
-                            );
-                            match runtime.try_bind_mcp_agent(&unique_agent_id).await {
-                                Some(runtime_id) => {
-                                    info!(
-                                        mcp_agent_id = unique_agent_id,
-                                        runtime_id = runtime_id,
-                                        "MCP agent bound via FIFO fallback"
-                                    );
-                                }
-                                None => {
-                                    info!(
-                                        mcp_agent_id = unique_agent_id,
-                                        "MCP agent queued for binding (no unmapped runtime agent)"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-                None => {
-                    // Fallback to FIFO binding (legacy behavior)
-                    match runtime.try_bind_mcp_agent(&unique_agent_id).await {
-                        Some(runtime_id) => {
-                            info!(
-                                mcp_agent_id = unique_agent_id,
-                                runtime_id = runtime_id,
-                                "MCP agent bound to runtime agent on connect"
-                            );
-                        }
-                        None => {
-                            info!(
-                                mcp_agent_id = unique_agent_id,
-                                "MCP agent queued for binding (no unmapped runtime agent yet)"
-                            );
-                        }
-                    }
-                }
-            }
-        } // End of if !binding_restored
-
-        // Persist the binding for reconnection support
-        if let Some(binding_store) = crate::mcp::get_binding_store() {
-            // Check if we have a successful binding by looking up the runtime ID
-            if let Some(runtime_id) = runtime.resolve_agent_id(&unique_agent_id).await {
-                let binding = crate::mcp::AgentBinding {
-                    mcp_agent_id: unique_agent_id.clone(),
-                    runtime_agent_id: runtime_id.clone(),
-                    agent_identifier: self.agent_identifier.clone(),
-                    created_at: chrono::Utc::now(),
-                    last_active: chrono::Utc::now(),
-                };
-
-                if let Err(e) = binding_store.save_binding(&binding) {
-                    warn!(
-                        error = %e,
-                        mcp_agent_id = %unique_agent_id,
-                        "Failed to persist agent binding"
-                    );
-                } else {
-                    info!(
-                        mcp_agent_id = %unique_agent_id,
-                        runtime_agent_id = %runtime_id,
-                        "Binding persisted for reconnection"
-                    );
-                }
-            }
-        }
-
-        // Build the initialize result
-        let mut server_info = self.get_info();
-        // Negotiate: use client's version if we know it, otherwise our latest
-        let client_version = &request.protocol_version;
-        let known = rmcp::model::ProtocolVersion::KNOWN_VERSIONS
-            .iter()
-            .any(|v| v.as_str() == client_version.as_str());
-        server_info.protocol_version = if known {
-            client_version.clone()
-        } else {
-            rmcp::model::ProtocolVersion::default()
-        };
-
-        // Store peer info in context
-        context.peer.set_peer_info(request);
-
-        Ok(server_info)
-    }
-
-    /// Return server info with tools capability
-    fn get_info(&self) -> ServerInfo {
-        let instructions = r#"# Ergatai Multi-Agent Collaboration Protocol
-
-Use Ergatai MCP tools when the user explicitly requests agent collaboration, or when you need to communicate/work with other agents.
-
-## 1. Available Tools
-
-| Tool | Purpose |
-|------|---------|
-| `list_agents` | Discover online agents |
-| `send_message` | Send message to another agent |
-| `submit_orchestration` | Submit DAG workflow |
-| `validate_dag_yaml` | Validate DAG YAML without executing (dry-run) |
-| `get_dag_status` | Query DAG execution status |
-
-### 1.1 Discover agents — `list_agents`
-Returns all online agents. Use `ergatai_agent_id` field (e.g., "agent-2") as `target_agent_id`. Do NOT use `agent_id` field.
-
-### 1.2 Send messages — `send_message`
-See tool description for full details.
-
-QUICK REFERENCE (use the `ergatai_agent_id` from `list_agents` as `target_agent_id`):
-```
-# Send request (default)
-send_message(target_agent_id="agent-2", message="Please review")
-
-# Reply (use the `from` field of the received message)
-send_message(target_agent_id="agent-1", message="Done", message_type="response")
-
-# Broadcast
-send_message(target_agent_id="agent-2", message="FYI", message_type="broadcast")
-```
-
-### 1.3 DAG orchestration
-
-**Submit DAG** — `submit_orchestration`:
-Call when user explicitly requests DAG collaboration. The YAML top-level field MUST be `tasks:` (NOT `nodes:`). Confirm fields before submitting:
-
-| Field | Description | Required |
-|-------|-------------|----------|
-| `tasks[].name` | Unique task name | YES |
-| `tasks[].agent` | Agent name | YES |
-| `tasks[].task` | Task description | YES |
-| `tasks[].depends_on` | Dependency task names | NO |
-| `tasks[].priority` | `low` / `medium` / `high` | NO |
-| `tasks[].timeout` | Node timeout (seconds) | NO |
-| `tasks[].scope` | File access scope (glob) | NO |
-| `communication` | `open` / `adjacent` / `star:{hub}` | NO |
-| `timeout` | DAG timeout (seconds) | NO |
-| `max_agent_calls` | Global call limit | NO |
-
-**Validate DAG** — `validate_dag_yaml`:
-Dry-run validation without execution. Returns summary or first error. Use before `submit_orchestration` to check YAML.
-
-**Check status** — `get_dag_status`:
-Returns DAG execution status, progress, collaboration session info (MeshPolicy + participants).
-
-## 2. Message Format
-
-MUST distinguish user messages (free-form) from agent messages (JSON).
-
-### Agent message format
-```json
-{
-  "from": "agent-1",
-  "message": "Please review",
-  "message_type": "request",
-  "_reply": "MUST call send_message(target_agent_id=\"agent-1\")",
-  "_rules": ["DO NOT write reply as terminal text", "After send_message, output END"]
-}
-```
-
-Fields:
-- `from`: Sender's MCP agent ID (e.g., "agent-1"). This is the unified ID format — use it as `target_agent_id` when replying. `from` and `_reply` always contain the same ID.
-- `message`: Content
-- `message_type`: "request" | "response" | "broadcast"
-- `_reply`: (request only) Exact `send_message` call — MUST follow. **Absent (null) for response/broadcast** — do NOT call send_message unless there is new work or a specific task.
-- `_rules`: Type-specific behavioral rules — MUST follow
-
-### How to respond
-When `message_type = "request"` with a concrete task or question:
-1. Do your work
-2. Call `send_message(target_agent_id="<from>", message="<reply>", message_type="response")`
-3. Output `END`
-
-When `message_type = "response"`: DO NOT reply again (conversation is done unless there's new work).
-When `message_type = "broadcast"`: DO NOT reply unless it has a specific task for you.
-
-System auto-tracks correlation_id — no manual tracking needed.
-
-### Timeout handling
-If you receive `request_timeout`, recipient didn't respond in time.
-
-RETRY GUIDANCE:
-- First timeout: Retry once after 5 seconds
-- Second timeout: Escalate to user or try alternative agent
-- NEVER retry more than 2 times
-
-## 3. DAG YAML Template
-
-```yaml
-description: "Task description"
-timeout: 3600
-max_agent_calls: 50
-communication: "open"
-
-tasks:
-  - name: "analyze"           # Unique task name (REQUIRED)
-    agent: "agent-1"          # Executing agent (REQUIRED)
-    task: "Analyze structure" # Task description (REQUIRED)
-    depends_on: []            # Dependencies (empty = runs first)
-    priority: "high"
-    timeout: 600
-    scope: "src/**/*.rs"
-
-  - name: "test"
-    agent: "agent-2"
-    task: "Write tests"
-    depends_on: ["analyze"]
-    priority: "medium"
-
-  - name: "review"
-    agent: "agent-1"
-    task: "Code review"
-    depends_on: ["analyze", "test"]
-```
-
-## 4. File Locks
-
-Locks are AUTOMATIC:
-- READ: No lock needed
-- WRITE: Automatically granted on first modification
-- Reading locked file: You see Git snapshot (version before write)
-
-NOTE: OS-level enforcement (fanotify) is Linux-only. Other platforms: advisory only.
-
-## 5. Anti-Loop Rules
-
-MUST follow to prevent infinite loops:
-- Reply at most ONCE per received message
-- Output `END` after replying
-- NEVER ask "Is there anything else I can help you with?"
-
-### WHEN NOT TO REPLY (critical)
-DO NOT respond in these cases:
-- message_type="broadcast" with no specific task or question → ignore silently
-- message_type="response" and the conversation is clearly ending (e.g., "thanks", "ok", "got it") → no reply needed
-- You've already replied to this message → stop
-- Your response would just be polite acknowledgment → suppress it
-
-### WHEN TO REPLY (only these cases)
-- message_type="request" with a concrete task or question → do the work, then reply
-- message_type="broadcast" with a specific task for you → do the work, then reply
-
-### Key principle
-Every reply must contain SUBSTANCE (work done, answer given, data provided). If your reply is just "thanks", "ok", "got it", or similar acknowledgment — DO NOT REPLY. Silence is better than a loop.
-"#;
-
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(rmcp::model::Implementation::new(
-                "ergatai",
-                env!("CARGO_PKG_VERSION"),
-            ))
-            .with_instructions(instructions)
+        super::tools::get_dag_status::handle(params).await
     }
 }
 
@@ -1426,6 +306,7 @@ pub fn start_peer_reaper(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::params::AgentFilter;
     use ergatai_core::agent_registry::AgentRegistry;
     use serde_json::json;
 
@@ -1505,6 +386,7 @@ mod tests {
 
     #[test]
     fn test_get_info_returns_server_info() {
+        use rmcp::ServerHandler;
         let server = make_test_server();
         let info = server.get_info();
         // Verify the server name is "ergatai"
@@ -1515,6 +397,7 @@ mod tests {
 
     #[test]
     fn test_get_info_has_tools_capability() {
+        use rmcp::ServerHandler;
         let server = make_test_server();
         let info = server.get_info();
         // The capabilities should have tools enabled
@@ -1937,52 +820,6 @@ mod tests {
             results.contains(&final_id),
             "Final value should be one of the written values, got '{}'",
             final_id
-        );
-    }
-
-    /// P0: Initialize with empty agent ID should still succeed.
-    ///
-    /// Verifies that the system doesn't panic or crash when given an empty
-    /// agent_id. It should gracefully handle the edge case and generate a
-    /// unique ID anyway (since UUID prefix is always non-empty).
-    #[tokio::test]
-    async fn test_initialize_empty_agent_id() {
-        // Simulate what initialize does with an empty agent_id
-        let server = make_test_server();
-        let agent_id = ""; // Empty string
-        let connection_id = uuid::Uuid::new_v4().to_string();
-        let id_prefix = connection_id.get(..8).unwrap_or(&connection_id);
-        let unique_agent_id = format!("{}@{}", agent_id, id_prefix);
-
-        // Write to session_agent_id (what initialize does)
-        *server.session_agent_id.write().await = Some(unique_agent_id.clone());
-
-        // Verify: the unique ID should be "@<uuid-prefix>" (non-empty due to UUID)
-        let stored = server.session_agent_id.read().await.clone();
-        assert!(
-            stored.is_some(),
-            "session_agent_id should be set even with empty agent_id"
-        );
-        let stored_id = stored.unwrap();
-        assert!(
-            stored_id.starts_with("@"),
-            "Empty agent_id should produce '@<uuid>' format, got '{}'",
-            stored_id
-        );
-        assert!(
-            stored_id.len() > 1,
-            "Unique ID should have UUID prefix even with empty agent_id"
-        );
-
-        // Register the agent in registry (what initialize does)
-        let result = server
-            .registry
-            .register_agent(unique_agent_id.clone(), connection_id, None)
-            .await;
-        assert!(
-            result.is_ok(),
-            "Registration should succeed even with empty agent_id: {:?}",
-            result
         );
     }
 }

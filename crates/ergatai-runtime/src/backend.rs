@@ -169,7 +169,10 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
     async fn exit_code(&self, agent_id: &str) -> ErgataiResult<Option<Option<i32>>>;
 
     /// Get the agent's available commands.
-    async fn available_commands(&self, agent_id: &str) -> ErgataiResult<Option<Vec<String>>>;
+    async fn available_commands(
+        &self,
+        agent_id: &str,
+    ) -> ErgataiResult<Option<Vec<agent_client_protocol::schema::v1::AvailableCommand>>>;
 
     /// Check if auto-continue is enabled.
     async fn auto_continue(&self) -> ErgataiResult<bool>;
@@ -183,21 +186,57 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
     /// Check if session persistence is enabled.
     async fn session_persistence_enabled(&self) -> ErgataiResult<bool>;
 
+    /// Get the agent's configuration options.
+    async fn config_options(
+        &self,
+        agent_id: &str,
+    ) -> ErgataiResult<Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>>;
+
+    /// Get the agent's token usage statistics (input_tokens, output_tokens).
+    async fn usage(&self, agent_id: &str) -> ErgataiResult<Option<(usize, usize)>>;
+
+    /// Get the agent's process ID.
+    async fn pid(&self, agent_id: &str) -> ErgataiResult<Option<u32>>;
+
+    /// Subscribe to real-time output events from an agent.
+    async fn subscribe_output(
+        &self,
+        agent_id: &str,
+    ) -> ErgataiResult<
+        Option<tokio::sync::broadcast::Receiver<crate::backends::acp::AgentOutputEvent>>,
+    >;
+
+    /// List available ACP sessions for an agent.
+    async fn list_sessions(&self, agent_id: &str) -> ErgataiResult<Vec<crate::types::SessionInfo>>;
+
+    /// Create a new ACP session for an agent.
+    async fn create_session(&self, agent_id: &str) -> ErgataiResult<crate::types::SessionInfo>;
+
+    /// Load an existing ACP session for an agent.
+    async fn load_session(&self, agent_id: &str, session_id: &str) -> ErgataiResult<()>;
+
+    /// Delete an ACP session for an agent.
+    async fn delete_session(&self, agent_id: &str, session_id: &str) -> ErgataiResult<()>;
+
     // ===== Control Operations (NEW) =====
 
     /// Cancel the agent's current prompt.
     async fn cancel_prompt(&self, agent_id: &str) -> ErgataiResult<()>;
 
-    /// Execute a slash command.
-    async fn execute_command(&self, agent_id: &str, command: &str) -> ErgataiResult<()>;
+    /// Execute a slash command and return the captured output.
+    async fn execute_command(
+        &self,
+        agent_id: &str,
+        command: &str,
+        timeout_secs: u64,
+    ) -> ErgataiResult<String>;
 
     /// Respond to an elicitation request.
     async fn respond_to_elicitation(
         &self,
-        agent_id: &str,
         elicitation_id: &str,
-        response: &str,
-    ) -> ErgataiResult<()>;
+        response: crate::ElicitationResponse,
+    ) -> ErgataiResult<bool>;
 
     /// Return self as `&dyn Any` to enable downcasting through the trait object.
     ///
@@ -402,7 +441,11 @@ mod tests {
             Ok(None)
         }
 
-        async fn available_commands(&self, _agent_id: &str) -> ErgataiResult<Option<Vec<String>>> {
+        async fn available_commands(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<Option<Vec<agent_client_protocol::schema::v1::AvailableCommand>>>
+        {
             Ok(None)
         }
 
@@ -422,22 +465,79 @@ mod tests {
             Ok(false)
         }
 
+        async fn config_options(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>>
+        {
+            Ok(None)
+        }
+
+        async fn usage(&self, _agent_id: &str) -> ErgataiResult<Option<(usize, usize)>> {
+            Ok(None)
+        }
+
+        async fn pid(&self, _agent_id: &str) -> ErgataiResult<Option<u32>> {
+            Ok(None)
+        }
+
+        async fn subscribe_output(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<
+            Option<tokio::sync::broadcast::Receiver<crate::backends::acp::AgentOutputEvent>>,
+        > {
+            Ok(None)
+        }
+
+        async fn list_sessions(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<Vec<crate::types::SessionInfo>> {
+            Ok(Vec::new())
+        }
+
+        async fn create_session(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<crate::types::SessionInfo> {
+            Err(ErgataiError::internal(
+                "MockBackend does not support sessions",
+            ))
+        }
+
+        async fn load_session(&self, _agent_id: &str, _session_id: &str) -> ErgataiResult<()> {
+            Err(ErgataiError::internal(
+                "MockBackend does not support sessions",
+            ))
+        }
+
+        async fn delete_session(&self, _agent_id: &str, _session_id: &str) -> ErgataiResult<()> {
+            Err(ErgataiError::internal(
+                "MockBackend does not support sessions",
+            ))
+        }
+
         // Control operations
         async fn cancel_prompt(&self, _agent_id: &str) -> ErgataiResult<()> {
             Ok(())
         }
 
-        async fn execute_command(&self, _agent_id: &str, _command: &str) -> ErgataiResult<()> {
-            Ok(())
+        async fn execute_command(
+            &self,
+            _agent_id: &str,
+            _command: &str,
+            _timeout_secs: u64,
+        ) -> ErgataiResult<String> {
+            Ok(String::new())
         }
 
         async fn respond_to_elicitation(
             &self,
-            _agent_id: &str,
             _elicitation_id: &str,
-            _response: &str,
-        ) -> ErgataiResult<()> {
-            Ok(())
+            _response: crate::ElicitationResponse,
+        ) -> ErgataiResult<bool> {
+            Ok(false)
         }
 
         fn as_any(&self) -> &dyn std::any::Any {
@@ -556,6 +656,9 @@ mod tests {
     async fn test_control_operations() {
         let backend = MockBackend::new("mock");
         assert!(backend.cancel_prompt("agent-1").await.is_ok());
-        assert!(backend.execute_command("agent-1", "/help").await.is_ok());
+        assert!(backend
+            .execute_command("agent-1", "/help", 30)
+            .await
+            .is_ok());
     }
 }

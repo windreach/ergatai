@@ -2,31 +2,35 @@
 //!
 //! ## Overview
 //!
-//! Enforces **one-question-one-answer** (一问一答) between agent pairs:
-//! - A→B counts as turn 1 (question), B→A counts as turn 2 (answer)
-//! - When `max_turns` is reached (default: 2), the conversation **auto-restarts**:
-//!   turn counter resets to 0 and state returns to Active
-//! - Agents can also end a conversation early with the `TERMINATE` keyword
+//! Two-layer enforcement:
+//!
+//! 1. **Token model** (per-message): a single conversation token enforces strict
+//!    turn-taking. `TokenOwner::Free` means either party can start a new cycle.
+//!    `TokenOwner::Held(agent)` means only that agent can send. After sending, the
+//!    token transfers to the other party. `TERMINATE` releases the token.
+//!
+//! 2. **Round model** (conversation lifecycle): every 2 messages completes a round.
+//!    When `max_rounds` is reached (default: 3), the conversation is terminated.
+//!    A cooldown period prevents immediate re-engagement.
+//!
+//! Additional safeguards: per-agent consecutive auto-reply limits, global per-agent
+//! rate limiting across all pairs, sliding-window timeout, and runaway-loop detection.
 //!
 //! ## Example
 //!
 //! ```ignore
-//! let config = ConversationConfig {
-//!     max_turns: 2,              // 一问一答
-//!     max_consecutive_auto_reply: 5,
-//!     max_execution_time: Duration::from_secs(300),
-//! };
+//! let config = ConversationConfig::default(); // max_rounds=3, max_consecutive_sends=2
 //!
 //! let manager = ConversationManager::new(config);
 //!
-//! // Turn 1: A→B (question)
+//! // A→B (token transfers to B)
 //! manager.check_and_record("agent_a", "agent_b", "Hello").await?;
 //!
-//! // Turn 2: B→A (answer) — reaches max_turns, auto-restarts
+//! // B→A (token transfers to A, 1 round complete)
 //! manager.check_and_record("agent_b", "agent_a", "Hi there").await?;
 //!
-//! // Turn 1 (new cycle): A→B — allowed because conversation auto-restarted
-//! manager.check_and_record("agent_a", "agent_b", "New topic").await?;
+//! // TERMINATE releases the token — either party can start a new cycle
+//! manager.check_and_record("agent_a", "agent_b", "Done. TERMINATE").await?;
 //! ```
 
 use std::collections::{HashMap, VecDeque};
@@ -50,13 +54,11 @@ const MAX_TIMEOUT_RESETS: u32 = 3;
 /// Maximum number of delivered messages retained in memory for one conversation.
 const MAX_CONVERSATION_HISTORY: usize = 200;
 
-/// Maximum number of consecutive cycles the initiator can send without
-/// receiving a response from the non-initiator. After this limit, the
 /// Who holds the conversation token.
 ///
 /// The token model enforces **strict turn-taking**: only the token holder
 /// can send a message. After sending, the token transfers to the other party.
-/// TERMINATE releases the token (both parties can start a new cycle).
+/// `TERMINATE` releases the token (both parties can start a new cycle).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TokenOwner {
     /// No one holds the token — either party can send (start a new cycle).
@@ -68,14 +70,10 @@ pub enum TokenOwner {
 
 /// Conversation configuration — controls loop prevention thresholds.
 ///
-/// Default configuration enforces **one-question-one-answer** (一问一答):
-/// `max_turns = 2` means A→B (question) + B→A (answer), then auto-restart.
+/// Default configuration: `max_rounds = 3` (6 messages total),
+/// `max_consecutive_sends = 2`, cooldown 15s, timeout 60s.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationConfig {
-    /// Maximum total turns before auto-restart.
-    /// Default: 2 (一问一答 — A→B + B→A, then conversation resets)
-    pub max_turns: u32,
-
     /// Maximum consecutive auto-replies from the same agent.
     /// Prevents A→A→A chains (agent sending multiple messages in a row).
     /// Default: 5
@@ -125,7 +123,6 @@ impl Default for ConversationConfig {
             .unwrap_or(60);
 
         Self {
-            max_turns: 2,
             max_consecutive_auto_reply: 5,
             max_execution_time_secs: timeout_secs,
             max_rounds: 3,
@@ -136,17 +133,6 @@ impl Default for ConversationConfig {
 }
 
 /// Conversation state — tracks lifecycle of an agent-to-agent dialogue.
-///
-/// ## Directional model (一问一答)
-///
-/// Conversations follow a strict command-response pattern:
-/// 1. **Initiator** sends a message (command) → `awaiting_reply = true`
-/// 2. **Non-initiator** replies (response) → `awaiting_reply = false`, cycle complete
-/// 3. If the **initiator** sends again → treated as a NEW cycle (auto-restart)
-/// 4. If the **non-initiator** sends when not awaiting reply → BLOCKED (no unsolicited messages)
-///
-/// This models the power asymmetry of terminal injection: the sender commands,
-/// the receiver executes and reports back. The receiver cannot initiate conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
     /// Unique conversation ID
@@ -157,9 +143,6 @@ pub struct Conversation {
 
     /// Current state
     pub state: ConversationState,
-
-    /// Total turn count (each message = 1 turn)
-    pub turn_count: u32,
 
     /// Consecutive auto-reply count per agent.
     /// Resets when the other agent sends a message.
@@ -175,9 +158,6 @@ pub struct Conversation {
     ///
     /// After sending, the token **transfers** to the other party (alternating turns).
     /// TERMINATE **releases** the token (Free) — either party can start a new cycle.
-    ///
-    /// This replaces the older directional model (initiator + awaiting_reply) with
-    /// a simpler symmetric mechanism: only the token holder can speak.
     pub token_owner: TokenOwner,
 
     /// When the conversation started
@@ -258,7 +238,6 @@ impl Conversation {
             id,
             participants: (a, b),
             state: ConversationState::Active,
-            turn_count: 0,
             consecutive_auto_replies: HashMap::new(),
             token_owner: TokenOwner::Free,
             started_at: Utc::now(),
@@ -607,8 +586,10 @@ impl ConversationManager {
             );
             conv.token_owner = TokenOwner::Free;
             conv.consecutive_sends.clear();
-            // Reset turn count for new cycle (but keep completed_rounds and auto_reply counters)
-            conv.turn_count = 0;
+            info!(
+                conv_id = %conv.id,
+                "TERMINATE detected — releasing token (会话 cycle complete)"
+            );
         } else {
             // Normal send: transfer token to receiver (expecting reply).
             // Token holder = expected replier. When they send, they're replying.
@@ -633,13 +614,12 @@ impl ConversationManager {
         }
 
         // ── Record the message ──
-        conv.turn_count += 1;
         conv.message_count += 1;
         conv.last_activity = Utc::now();
 
         // ── Track completed rounds (一问一答 = 1 round = 2 messages) ──
         // Every 2 messages completes a round. When max_rounds is reached, terminate.
-        if conv.turn_count % 2 == 0 {
+        if conv.message_count % 2 == 0 {
             conv.completed_rounds += 1;
             debug!(
                 conv_id = %conv.id,
@@ -688,7 +668,7 @@ impl ConversationManager {
             conv_id = %conv.id,
             from = from,
             to = to,
-            turn_count = conv.turn_count,
+            message_count = conv.message_count,
             token_owner = ?conv.token_owner,
             "Message recorded in conversation"
         );
@@ -877,7 +857,6 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = ConversationConfig::default();
-        assert_eq!(config.max_turns, 2); // 一问一答
         assert_eq!(config.max_consecutive_auto_reply, 5);
         assert_eq!(config.max_execution_time_secs, 60);
         assert_eq!(config.max_consecutive_sends, 2);
@@ -889,7 +868,7 @@ mod tests {
         assert_eq!(conv.participants.0, "agent_a");
         assert_eq!(conv.participants.1, "agent_b");
         assert_eq!(conv.state, ConversationState::Active);
-        assert_eq!(conv.turn_count, 0);
+        assert_eq!(conv.message_count, 0);
         assert_eq!(conv.token_owner, TokenOwner::Free);
         assert!(conv.consecutive_auto_replies.is_empty());
     }
@@ -941,7 +920,6 @@ mod tests {
     #[tokio::test]
     async fn test_conversation_manager_basic_flow() {
         let config = ConversationConfig {
-            max_turns: 10,
             max_consecutive_auto_reply: 5,
             max_execution_time_secs: 300,
             max_rounds: 100,  // high limit for basic tests
@@ -1320,21 +1298,6 @@ mod tests {
         assert_eq!(history.first().unwrap().from, "agent_a");
         assert_eq!(history.first().unwrap().to, "agent_b");
         assert_eq!(history.first().unwrap().message_type, "request");
-    }
-
-    #[tokio::test]
-    async fn test_conversation_turn_count_increments() {
-        let manager = ConversationManager::new(ConversationConfig::default());
-
-        manager.check_and_record("a", "b", "msg1").await.unwrap();
-        let conv = manager.get_conversation("conv-a-b").await.unwrap();
-        assert_eq!(conv.turn_count, 1);
-        assert_eq!(conv.message_count, 1);
-
-        manager.check_and_record("b", "a", "msg2").await.unwrap();
-        let conv = manager.get_conversation("conv-a-b").await.unwrap();
-        assert_eq!(conv.turn_count, 2);
-        assert_eq!(conv.message_count, 2);
     }
 
     #[tokio::test]

@@ -1556,7 +1556,11 @@ mod tests {
         async fn exit_code(&self, _agent_id: &str) -> ErgataiResult<Option<Option<i32>>> {
             Ok(None)
         }
-        async fn available_commands(&self, _agent_id: &str) -> ErgataiResult<Option<Vec<String>>> {
+        async fn available_commands(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<Option<Vec<agent_client_protocol::schema::v1::AvailableCommand>>>
+        {
             Ok(None)
         }
         async fn auto_continue(&self) -> ErgataiResult<bool> {
@@ -1571,20 +1575,69 @@ mod tests {
         async fn session_persistence_enabled(&self) -> ErgataiResult<bool> {
             Ok(false)
         }
+        async fn config_options(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>>
+        {
+            Ok(None)
+        }
+        async fn usage(&self, _agent_id: &str) -> ErgataiResult<Option<(usize, usize)>> {
+            Ok(None)
+        }
+        async fn pid(&self, _agent_id: &str) -> ErgataiResult<Option<u32>> {
+            Ok(None)
+        }
+        async fn subscribe_output(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<
+            Option<tokio::sync::broadcast::Receiver<crate::backends::acp::AgentOutputEvent>>,
+        > {
+            Ok(None)
+        }
+        async fn list_sessions(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<Vec<crate::types::SessionInfo>> {
+            Ok(Vec::new())
+        }
+        async fn create_session(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<crate::types::SessionInfo> {
+            Err(ErgataiError::internal(
+                "MockBackend does not support sessions",
+            ))
+        }
+        async fn load_session(&self, _agent_id: &str, _session_id: &str) -> ErgataiResult<()> {
+            Err(ErgataiError::internal(
+                "MockBackend does not support sessions",
+            ))
+        }
+        async fn delete_session(&self, _agent_id: &str, _session_id: &str) -> ErgataiResult<()> {
+            Err(ErgataiError::internal(
+                "MockBackend does not support sessions",
+            ))
+        }
         // Control operations
         async fn cancel_prompt(&self, _agent_id: &str) -> ErgataiResult<()> {
             Ok(())
         }
-        async fn execute_command(&self, _agent_id: &str, _command: &str) -> ErgataiResult<()> {
-            Ok(())
+        async fn execute_command(
+            &self,
+            _agent_id: &str,
+            _command: &str,
+            _timeout_secs: u64,
+        ) -> ErgataiResult<String> {
+            Ok(String::new())
         }
         async fn respond_to_elicitation(
             &self,
-            _agent_id: &str,
             _elicitation_id: &str,
-            _response: &str,
-        ) -> ErgataiResult<()> {
-            Ok(())
+            _response: crate::ElicitationResponse,
+        ) -> ErgataiResult<bool> {
+            Ok(false)
         }
         fn as_any(&self) -> &dyn std::any::Any {
             self
