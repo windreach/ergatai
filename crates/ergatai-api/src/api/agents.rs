@@ -47,6 +47,13 @@ pub struct SendMessageRequest {
     /// Optional display name for UI rendering.
     #[serde(default)]
     pub sender_agent_name: Option<String>,
+    /// Target agent command for agent-to-agent routing (e.g., "claude", "codex").
+    /// When present, the backend will route to an agent with this command bound to the same chat.
+    #[serde(default)]
+    pub target_agent_command: Option<String>,
+    /// Force spawn a new agent session instead of reusing an existing one.
+    #[serde(default)]
+    pub force_new_session: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -260,6 +267,10 @@ fn validate_command(command: &str) -> Result<(), String> {
     if let Ok(registry) = crate::services::profile_service::get_profile_registry() {
         if let Ok(profiles) = registry.list_with_status() {
             for profile in profiles {
+                // Match against profile name (e.g. "claude-code" matches profile "claude-code")
+                if profile.name == binary_name || profile.name == program {
+                    return Ok(());
+                }
                 if let Some(cmd_binary) = profile.command.split_whitespace().next() {
                     let cmd_basename = std::path::Path::new(cmd_binary)
                         .file_name()
@@ -287,6 +298,24 @@ pub async fn spawn_agent(
     if let Err(e) = validate_command(&req.command) {
         return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
     }
+
+    // Resolve profile name to its actual launch command.
+    // Frontend sends the profile name (e.g. "claude-code"); the runtime
+    // needs the full command (e.g. "npx @anthropic-ai/claude-code --acp").
+    let resolved_command =
+        if let Ok(registry) = crate::services::profile_service::get_profile_registry() {
+            if let Ok(profiles) = registry.list_with_status() {
+                profiles
+                    .into_iter()
+                    .find(|p| p.name == req.command)
+                    .map(|p| p.command)
+                    .unwrap_or_else(|| req.command.clone())
+            } else {
+                req.command.clone()
+            }
+        } else {
+            req.command.clone()
+        };
 
     // Security: validate workspace_id contains only safe characters
     if !is_valid_workspace_id(&req.workspace_id) {
@@ -352,7 +381,7 @@ pub async fn spawn_agent(
     };
 
     match runtime
-        .launch_agent(spec, &req.command, req.instruction.as_deref())
+        .launch_agent(spec, &resolved_command, req.instruction.as_deref())
         .await
     {
         Ok(agent_id) => {
@@ -449,6 +478,259 @@ pub async fn send_message(
                 .into_response();
         }
     };
+
+    // Check if this is an agent-to-agent routing request
+    if let Some(target_command) = &req.target_agent_command {
+        // Get the sender agent's info to find its workspace/chat
+        let sender_info = match crate::services::agent_service::get_agent_info(&id).await {
+            Some(info) => info,
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "status": "error",
+                        "message": format!("Sender agent {} not found", id),
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        // The workspace_id is the chat_id
+        let chat_id = sender_info.workspace_id.clone();
+
+        // Check if we should force a new session
+        let force_new = req.force_new_session.unwrap_or(false);
+
+        if !force_new {
+            // Try to find an existing agent with the target command bound to this chat
+            if let Ok(bindings) = crate::user_data_db::group_agent_bindings::list(&chat_id) {
+                for binding in bindings {
+                    if binding.agent_command.as_deref() == Some(target_command) {
+                        // Check if this agent is alive
+                        if let Some(target_info) =
+                            crate::services::agent_service::get_agent_info(&binding.agent_id).await
+                        {
+                            if target_info.lifecycle.is_alive() {
+                                // Route to this existing agent
+                                let send_req = SendRequest {
+                                    from: req.from.unwrap_or_else(|| id.clone()),
+                                    to: binding.agent_id.clone(),
+                                    message: req.message,
+                                    message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
+                                    correlation_id: req.correlation_id,
+                                    sub_chat_id: req.sub_chat_id,
+                                };
+
+                                match sender.send(send_req).await {
+                                    SendMessageResult::Queued {
+                                        target_agent,
+                                        stream,
+                                        sequence,
+                                    } => {
+                                        return (
+                                            StatusCode::OK,
+                                            Json(serde_json::json!({
+                                                "status": "queued",
+                                                "target_agent_id": target_agent,
+                                                "session_id": stream,
+                                                "sequence": sequence,
+                                                "reused": true,
+                                            })),
+                                        )
+                                            .into_response();
+                                    }
+                                    SendMessageResult::DirectDelivered { target_agent } => {
+                                        return (
+                                            StatusCode::OK,
+                                            Json(serde_json::json!({
+                                                "status": "direct_delivered",
+                                                "target_agent_id": target_agent,
+                                                "reused": true,
+                                            })),
+                                        )
+                                            .into_response();
+                                    }
+                                    SendMessageResult::Rejected { reason } => {
+                                        return (
+                                            StatusCode::BAD_REQUEST,
+                                            Json(serde_json::json!({
+                                                "status": "rejected",
+                                                "reason": reason,
+                                            })),
+                                        )
+                                            .into_response();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // No existing agent found or force_new_session is true - spawn a new one
+        // Resolve profile name to actual command
+        let resolved_command =
+            if let Ok(registry) = crate::services::profile_service::get_profile_registry() {
+                if let Ok(profiles) = registry.list_with_status() {
+                    profiles
+                        .into_iter()
+                        .find(|p| p.name == *target_command)
+                        .map(|p| p.command)
+                        .unwrap_or_else(|| target_command.clone())
+                } else {
+                    target_command.clone()
+                }
+            } else {
+                target_command.clone()
+            };
+
+        // Security: validate command
+        if let Err(e) = validate_command(&resolved_command) {
+            return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
+        }
+
+        // Check agent cap
+        let max_agents: usize = std::env::var("ERGATAI_MAX_AGENTS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(50);
+        {
+            let runtime = crate::context::get_app_context().agent_runtime.clone();
+            let list = runtime.list_agents().await;
+            if list.len() >= max_agents {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({
+                        "status": "error",
+                        "message": format!("Agent limit reached ({}/{}).", list.len(), max_agents),
+                    })),
+                )
+                    .into_response();
+            }
+        }
+
+        let runtime = crate::context::get_app_context().agent_runtime.clone();
+
+        // Get work_dir from workspace metadata or use a default
+        let work_dir = sender_info
+            .handle
+            .workspace
+            .metadata
+            .get("work_dir")
+            .cloned()
+            .unwrap_or_else(|| "/tmp".to_string());
+
+        let spec = WorkspaceSpec {
+            id: chat_id.clone(),
+            work_dir: work_dir.as_str().into(),
+            env: std::collections::HashMap::new(),
+            resources: ResourceLimits::default(),
+            capture_thoughts: false,
+        };
+
+        let instruction = Some(format!(
+            "Agent-to-agent message from {}. Target command: {}.",
+            id, target_command
+        ));
+
+        match runtime
+            .launch_agent(spec, &resolved_command, instruction.as_deref())
+            .await
+        {
+            Ok(new_agent_id) => {
+                tracing::info!(
+                    from_agent = %id,
+                    new_agent = %new_agent_id,
+                    target_command = %target_command,
+                    chat_id = %chat_id,
+                    "Spawned new agent for agent-to-agent routing"
+                );
+
+                // Bind the new agent to the chat
+                let now = chrono::Utc::now().timestamp();
+                let binding = crate::user_data_db::GroupAgentBinding {
+                    id: format!("binding_{}", uuid::Uuid::new_v4()),
+                    chat_id: chat_id.clone(),
+                    agent_id: new_agent_id.clone(),
+                    agent_name: target_command.clone(),
+                    agent_command: Some(target_command.clone()),
+                    sub_chat_id: req.sub_chat_id.clone().unwrap_or_else(|| chat_id.clone()),
+                    created_at: now,
+                    updated_at: now,
+                };
+
+                if let Err(e) = crate::user_data_db::group_agent_bindings::upsert(binding) {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to bind new agent to chat (non-fatal)"
+                    );
+                }
+
+                // Get session ID
+                let session_id = crate::services::agent_service::get_agent_session_id(&new_agent_id).await
+                    .unwrap_or_default();
+
+                // Now send the message to the new agent
+                let send_req = SendRequest {
+                    from: req.from.unwrap_or_else(|| id.clone()),
+                    to: new_agent_id.clone(),
+                    message: req.message,
+                    message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
+                    correlation_id: req.correlation_id,
+                    sub_chat_id: req.sub_chat_id,
+                };
+
+                return match sender.send(send_req).await {
+                    SendMessageResult::Queued {
+                        target_agent,
+                        stream,
+                        sequence,
+                    } => (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "status": "queued",
+                            "target_agent_id": target_agent,
+                            "session_id": stream,
+                            "sequence": sequence,
+                            "spawned": true,
+                        })),
+                    )
+                        .into_response(),
+                    SendMessageResult::DirectDelivered { target_agent } => (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "status": "direct_delivered",
+                            "target_agent_id": target_agent,
+                            "spawned": true,
+                        })),
+                    )
+                        .into_response(),
+                    SendMessageResult::Rejected { reason } => (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({
+                            "status": "rejected",
+                            "reason": reason,
+                        })),
+                    )
+                        .into_response(),
+                };
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "status": "error",
+                        "message": format!("Failed to spawn new agent: {}", crate::sanitize_error(&e, "send_message")),
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // Normal message sending (no agent-to-agent routing)
     let send_req = SendRequest {
         from: req.from.unwrap_or_else(|| "api".to_string()),
         to: id.clone(),
@@ -487,6 +769,183 @@ pub async fn send_message(
                 "status": "rejected",
                 "reason": reason,
             })),
+        )
+            .into_response(),
+    }
+}
+
+/// Request type for POST /api/v1/agents/:agent_id/spawn-session
+#[derive(Debug, Deserialize)]
+pub struct SpawnSessionRequest {
+    /// Target agent command to spawn (e.g., "claude", "codex")
+    pub target_command: String,
+    /// Reason for spawning a new session
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Whether to inherit context from the parent agent
+    #[serde(default)]
+    pub inherit_context: Option<bool>,
+    /// Workspace ID for the new agent (defaults to parent's workspace)
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+}
+
+/// Response type for POST /api/v1/agents/:agent_id/spawn-session
+#[derive(Debug, Serialize)]
+pub struct SpawnSessionResponse {
+    pub new_session_id: String,
+    pub new_agent_id: String,
+    pub message: String,
+}
+
+/// POST /api/v1/agents/:agent_id/spawn-session
+/// Explicitly spawn a new agent session from an existing agent.
+/// Used for context overflow, task separation, or explicit user requests.
+pub async fn spawn_session(
+    State(state): State<AppState>,
+    Path(parent_agent_id): Path<String>,
+    Json(req): Json<SpawnSessionRequest>,
+) -> impl IntoResponse {
+    // Get parent agent info to determine workspace
+    let parent_info = match crate::services::agent_service::get_agent_info(&parent_agent_id).await {
+        Some(info) => info,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("Parent agent {} not found", parent_agent_id),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Resolve profile name to actual command
+    let resolved_command =
+        if let Ok(registry) = crate::services::profile_service::get_profile_registry() {
+            if let Ok(profiles) = registry.list_with_status() {
+                profiles
+                    .into_iter()
+                    .find(|p| p.name == req.target_command)
+                    .map(|p| p.command)
+                    .unwrap_or_else(|| req.target_command.clone())
+            } else {
+                req.target_command.clone()
+            }
+        } else {
+            req.target_command.clone()
+        };
+
+    // Security: validate command
+    if let Err(e) = validate_command(&resolved_command) {
+        return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
+    }
+
+    // Use parent's workspace or the provided one
+    let workspace_id = req.workspace_id.unwrap_or_else(|| parent_info.workspace_id.clone());
+
+    // Security: validate workspace_id
+    if !is_valid_workspace_id(&workspace_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "workspace_id must contain only alphanumeric characters, hyphens, or underscores".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Check agent cap
+    let max_agents: usize = std::env::var("ERGATAI_MAX_AGENTS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50);
+    {
+        let runtime = crate::context::get_app_context().agent_runtime.clone();
+        let list = runtime.list_agents().await;
+        if list.len() >= max_agents {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse {
+                    error: format!(
+                        "Agent limit reached ({}/{}). Stop an agent or raise ERGATAI_MAX_AGENTS.",
+                        list.len(),
+                        max_agents
+                    ),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+
+    // Get work_dir from workspace metadata
+    let work_dir = parent_info
+        .handle
+        .workspace
+        .metadata
+        .get("work_dir")
+        .cloned()
+        .unwrap_or_else(|| state.default_cwd.clone());
+
+    let spec = WorkspaceSpec {
+        id: workspace_id.clone(),
+        work_dir: work_dir.as_str().into(),
+        env: std::collections::HashMap::new(),
+        resources: ResourceLimits::default(),
+        capture_thoughts: false,
+    };
+
+    // Build instruction based on reason and context inheritance
+    let instruction = if req.inherit_context.unwrap_or(false) {
+        Some(format!(
+            "New session spawned from agent {}. Reason: {}. Please continue the work from the parent agent's context.",
+            parent_agent_id,
+            req.reason.as_deref().unwrap_or("explicit_request")
+        ))
+    } else {
+        Some(format!(
+            "New session spawned from agent {}. Reason: {}.",
+            parent_agent_id,
+            req.reason.as_deref().unwrap_or("explicit_request")
+        ))
+    };
+
+    match runtime
+        .launch_agent(spec, &resolved_command, instruction.as_deref())
+        .await
+    {
+        Ok(new_agent_id) => {
+            tracing::info!(
+                parent_agent_id = %parent_agent_id,
+                new_agent_id = %new_agent_id,
+                workspace = %workspace_id,
+                reason = ?req.reason,
+                "New session spawned successfully"
+            );
+
+            // Get the session ID for the new agent
+            let session_id = crate::services::agent_service::get_agent_session_id(&new_agent_id).await
+                .unwrap_or_default();
+
+            let reason_text = req.reason.as_deref().unwrap_or("explicit_request");
+
+            (
+                StatusCode::CREATED,
+                Json(SpawnSessionResponse {
+                    new_session_id: session_id,
+                    new_agent_id,
+                    message: format!("New session created for {}", reason_text),
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: crate::sanitize_error(&e, "spawn_session"),
+            }),
         )
             .into_response(),
     }

@@ -214,7 +214,7 @@ impl AgentRuntime {
             created_at: now,
             mcp_agent_id: Some(mcp_agent_id.clone()),
             last_heartbeat: now,
-            profile: None,
+            profile: Some(command.to_string()),
             capabilities: Vec::new(),
             state_changed_at: now,
             state_history: Vec::new(),

@@ -119,6 +119,10 @@ pub fn build_rest_app(state: AppState) -> Router {
             post(api::agents::send_message),
         )
         .route(
+            "/api/v1/agents/:id/spawn-session",
+            post(api::agents::spawn_session),
+        )
+        .route(
             "/api/v1/agents/:id/cancel",
             post(api::agents::cancel_prompt),
         )
@@ -251,6 +255,10 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/chats/:chat_id/agent-bindings/:agent_id",
             delete(api::chats::unbind_agent),
+        )
+        .route(
+            "/api/v1/chats/:chat_id/agents",
+            get(api::chats::list_chat_agents),
         )
         .route(
             "/api/v1/chats/:chat_id/sub-chats/:sub_chat_id/messages",

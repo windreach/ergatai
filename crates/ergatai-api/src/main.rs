@@ -111,15 +111,66 @@ async fn async_main(args: Args) -> Result<()> {
 
     tracing::info!("Starting Ergatai API server on {}:{}", args.host, args.port);
 
+    // Resolve API token: explicit > shared file > auto-generate
+    let resolved_token = match args.api_token {
+        Some(t) => Some(t),
+        None if !args.insecure_no_auth => {
+            let home = std::env::var("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
+            let token_path = home.join(".ergatai").join(".api-token");
+
+            // Read existing token
+            if let Ok(existing) = std::fs::read_to_string(&token_path) {
+                let trimmed = existing.trim().to_string();
+                if !trimmed.is_empty() {
+                    tracing::info!("API token loaded from {}", token_path.display());
+                    Some(trimmed)
+                } else {
+                    None
+                }
+            } else {
+                // Generate and write new token
+                let token =
+                    uuid::Uuid::new_v4().to_string() + &uuid::Uuid::new_v4().simple().to_string();
+                if let Some(parent) = token_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match std::fs::write(&token_path, &token) {
+                    Ok(_) => {
+                        // Restrict permissions to owner only
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(
+                                &token_path,
+                                std::fs::Permissions::from_mode(0o600),
+                            );
+                        }
+                        tracing::info!("API token auto-generated at {}", token_path.display());
+                        Some(token)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to write token file: {}", e);
+                        None
+                    }
+                }
+            }
+        }
+        None => None,
+    };
+
+    let args_api_token = resolved_token;
+
     // SECURITY: Require authentication by default.
     // The API can spawn agents, execute arbitrary commands, submit DAGs, and control
     // the entire multi-agent system. Running without auth exposes all of this to any
     // client with network access.
     let tls_enabled = args.tls_cert.is_some() || args.tls_key.is_some();
-    let auth_configured = args.api_token.is_some() || tls_enabled;
+    let auth_configured = args_api_token.is_some() || tls_enabled;
 
     if auth_configured {
-        if args.api_token.is_some() {
+        if args_api_token.is_some() {
             tracing::info!("API authentication enabled (bearer token)");
         }
         if tls_enabled {
@@ -520,7 +571,7 @@ async fn async_main(args: Args) -> Result<()> {
     };
 
     // Build application router
-    let state = app_state_with_token(args.api_token.clone()).clone();
+    let state = app_state_with_token(args_api_token.clone()).clone();
 
     // API routes
     let api_app = build_rest_app(state.clone());

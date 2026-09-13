@@ -835,6 +835,65 @@ pub async fn unbind_agent(
     }
 }
 
+/// Response type for GET /api/v1/chats/:chat_id/agents
+#[derive(Debug, Serialize)]
+pub struct ChatAgentResponse {
+    pub agent_id: String,
+    pub command: String,
+    pub status: String,
+    pub bound_at: i64,
+}
+
+/// GET /api/v1/chats/:chat_id/agents
+/// Returns all agents bound to this chat with their current status
+pub async fn list_chat_agents(
+    State(_state): State<AppState>,
+    Path(chat_id): Path<String>,
+) -> impl IntoResponse {
+    // Get all agent bindings for this chat
+    let bindings = match user_data_db::group_agent_bindings::list(&chat_id) {
+        Ok(bindings) => bindings,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to list agent bindings: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // For each binding, get the agent's current status
+    let agents: Vec<ChatAgentResponse> = futures::future::join_all(
+        bindings.into_iter().map(|binding| async move {
+            // Try to get agent info from the runtime
+            let agent_info = crate::services::agent_service::get_agent_info(&binding.agent_id).await;
+
+            let status = match agent_info {
+                Some(info) => {
+                    if info.lifecycle.is_alive() {
+                        info.lifecycle.state_name().to_string().to_lowercase()
+                    } else {
+                        "dead".to_string()
+                    }
+                }
+                None => "not_found".to_string(),
+            };
+
+            ChatAgentResponse {
+                agent_id: binding.agent_id,
+                command: binding.agent_command.unwrap_or_else(|| "unknown".to_string()),
+                status,
+                bound_at: binding.created_at,
+            }
+        }),
+    )
+    .await;
+
+    (StatusCode::OK, Json(agents)).into_response()
+}
+
 /// POST /api/v1/chats/:chat_id/sub-chats/:sub_chat_id/messages
 pub async fn append_sub_chat_message(
     State(_state): State<AppState>,
