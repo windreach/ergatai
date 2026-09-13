@@ -5,8 +5,8 @@
 //! - Agent-to-agent message routing (POST /api/v1/agents/:agentId/message)
 //! - Spawning new sessions (POST /api/v1/agents/:agentId/spawn-session)
 
-use ergatai_api::api::chats::ChatAgentResponse;
 use ergatai_api::api::agents::{SpawnSessionRequest, SpawnSessionResponse};
+use ergatai_api::api::chats::ChatAgentResponse;
 use serde_json::json;
 
 /// Test: Query chat agents endpoint
@@ -149,6 +149,7 @@ async fn test_agent_binding_persistence() {
     use ergatai_api::user_data_db::GroupAgentBinding;
 
     let binding = GroupAgentBinding {
+        workspace_id: "workspace-123".to_string(),
         chat_id: "chat-456".to_string(),
         agent_id: "agent-f".to_string(),
         agent_name: "codex".to_string(),
@@ -159,6 +160,7 @@ async fn test_agent_binding_persistence() {
     };
 
     // Verify binding structure
+    assert_eq!(binding.workspace_id, "workspace-123");
     assert_eq!(binding.chat_id, "chat-456");
     assert_eq!(binding.agent_command, Some("codex".to_string()));
 }
@@ -343,9 +345,9 @@ async fn test_multiple_agents_same_command() {
     ];
 
     // Find first alive agent with command "codex"
-    let selected = bindings.iter().find(|b| {
-        b.command == "codex" && b.status != "dead" && b.status != "not_found"
-    });
+    let selected = bindings
+        .iter()
+        .find(|b| b.command == "codex" && b.status != "dead" && b.status != "not_found");
 
     assert!(selected.is_some());
     assert_eq!(selected.unwrap().agent_id, "codex-2");

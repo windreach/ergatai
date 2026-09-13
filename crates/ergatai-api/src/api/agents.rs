@@ -496,8 +496,15 @@ pub async fn send_message(
             }
         };
 
-        // The workspace_id is the chat_id
-        let chat_id = sender_info.workspace_id.clone();
+        // Get the actual chat_id from sub_chat_id or fallback to workspace_id
+        let chat_id = if let Some(sub_chat_id) = &req.sub_chat_id {
+            match crate::user_data_db::sub_chats::get(sub_chat_id) {
+                Ok(Some(sub_chat)) => sub_chat.chat_id,
+                _ => sender_info.workspace_id.clone(), // Fallback to workspace_id if sub_chat not found
+            }
+        } else {
+            sender_info.workspace_id.clone()
+        };
 
         // Check if we should force a new session
         let force_new = req.force_new_session.unwrap_or(false);
@@ -517,7 +524,9 @@ pub async fn send_message(
                                     from: req.from.unwrap_or_else(|| id.clone()),
                                     to: binding.agent_id.clone(),
                                     message: req.message,
-                                    message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
+                                    message_type: req
+                                        .message_type
+                                        .unwrap_or_else(|| "request".to_string()),
                                     correlation_id: req.correlation_id,
                                     sub_chat_id: req.sub_chat_id,
                                 };
@@ -562,6 +571,30 @@ pub async fn send_message(
                                             .into_response();
                                     }
                                 }
+                            } else {
+                                // Agent is dead - clean up stale binding
+                                if let Err(e) = crate::user_data_db::group_agent_bindings::delete(
+                                    &chat_id,
+                                    &binding.agent_id,
+                                ) {
+                                    tracing::warn!(
+                                        agent_id = %binding.agent_id,
+                                        error = %e,
+                                        "Failed to clean up stale binding for dead agent"
+                                    );
+                                }
+                            }
+                        } else {
+                            // Agent not found - clean up stale binding
+                            if let Err(e) = crate::user_data_db::group_agent_bindings::delete(
+                                &chat_id,
+                                &binding.agent_id,
+                            ) {
+                                tracing::warn!(
+                                    agent_id = %binding.agent_id,
+                                    error = %e,
+                                    "Failed to clean up stale binding for missing agent"
+                                );
                             }
                         }
                     }
@@ -651,6 +684,7 @@ pub async fn send_message(
                 // Bind the new agent to the chat
                 let now = chrono::Utc::now().timestamp();
                 let binding = crate::user_data_db::GroupAgentBinding {
+                    workspace_id: sender_info.workspace_id.clone(),
                     chat_id: chat_id.clone(),
                     agent_id: new_agent_id.clone(),
                     agent_name: target_command.clone(),
@@ -668,8 +702,10 @@ pub async fn send_message(
                 }
 
                 // Get session ID
-                let _session_id = crate::services::agent_service::get_agent_session_id(&new_agent_id).await
-                    .unwrap_or_default();
+                let _session_id =
+                    crate::services::agent_service::get_agent_session_id(&new_agent_id)
+                        .await
+                        .unwrap_or_default();
 
                 // Now send the message to the new agent
                 let send_req = SendRequest {
@@ -841,7 +877,9 @@ pub async fn spawn_session(
     }
 
     // Use parent's workspace or the provided one
-    let workspace_id = req.workspace_id.unwrap_or_else(|| parent_info.workspace_id.clone());
+    let workspace_id = req
+        .workspace_id
+        .unwrap_or_else(|| parent_info.workspace_id.clone());
 
     // Security: validate workspace_id
     if !is_valid_workspace_id(&workspace_id) {
@@ -925,7 +963,8 @@ pub async fn spawn_session(
             );
 
             // Get the session ID for the new agent
-            let session_id = crate::services::agent_service::get_agent_session_id(&new_agent_id).await
+            let session_id = crate::services::agent_service::get_agent_session_id(&new_agent_id)
+                .await
                 .unwrap_or_default();
 
             let reason_text = req.reason.as_deref().unwrap_or("explicit_request");
@@ -1990,7 +2029,15 @@ pub async fn prompt_agent(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
+
+        // Get workspace_id from agent info
+        let workspace_id = crate::services::agent_service::get_agent_info(&runtime_id)
+            .await
+            .map(|info| info.workspace_id.clone())
+            .unwrap_or_else(|| sub_chat.chat_id.clone()); // Fallback to chat_id if agent not found
+
         let binding = crate::user_data_db::GroupAgentBinding {
+            workspace_id,
             chat_id: sub_chat.chat_id,
             agent_id: runtime_id.clone(),
             agent_name: agent_name.clone(),

@@ -13,16 +13,17 @@ use tower::util::ServiceExt;
 /// Ensure AppContext is initialized for tests.
 /// Extracted to avoid duplicating the initialization logic across test helpers.
 fn ensure_app_context_initialized() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
+    use std::sync::OnceLock;
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
         let runtime = ergatai_runtime::get_agent_runtime();
         let ctx = ergatai_api::context::AppContext::new(
             runtime,
             None,
             ergatai_api::user_data_db::get_user_data_db(),
         );
-        ergatai_api::context::init_app_context(ctx);
+        // Ignore error if already initialized (can happen in parallel tests)
+        let _ = ergatai_api::context::init_app_context(ctx);
     });
 }
 

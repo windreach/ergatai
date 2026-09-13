@@ -92,6 +92,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
 
         -- Stable binding between a group chat, a backend agent, and its own thread
         CREATE TABLE IF NOT EXISTS group_agent_bindings (
+            workspace_id TEXT NOT NULL,
             chat_id TEXT NOT NULL,
             agent_id TEXT NOT NULL,
             agent_name TEXT NOT NULL,
@@ -115,13 +116,23 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
 
     // Migration: Remove `id` column from group_agent_bindings if it exists
     // (SQLite 3.35.0+ supports DROP COLUMN)
-    let _ = conn.execute_batch(
-        "ALTER TABLE group_agent_bindings DROP COLUMN id;",
-    );
+    let _ = conn.execute_batch("ALTER TABLE group_agent_bindings DROP COLUMN id;");
 
     // Migration: Remove `stream_id` column from sub_chats if it exists
+    let _ = conn.execute_batch("ALTER TABLE sub_chats DROP COLUMN stream_id;");
+
+    // Migration: Add `workspace_id` column to group_agent_bindings if it doesn't exist
+    // For existing rows, copy chat_id as workspace_id (backward compatibility for 1:1 mapping)
     let _ = conn.execute_batch(
-        "ALTER TABLE sub_chats DROP COLUMN stream_id;",
+        "ALTER TABLE group_agent_bindings ADD COLUMN workspace_id TEXT NOT NULL DEFAULT '';",
+    );
+    let _ = conn.execute_batch(
+        "UPDATE group_agent_bindings SET workspace_id = chat_id WHERE workspace_id = '';",
+    );
+
+    // Create index on workspace_id after migration (column may not exist in older databases)
+    let _ = conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_workspace_id ON group_agent_bindings(workspace_id);",
     );
 
     Ok(())
@@ -176,12 +187,31 @@ pub struct SubChat {
     pub updated_at: i64,
 }
 
+/// Binding between a group chat and a runtime agent.
+///
+/// ## Matching Logic
+/// - `agent_command` stores the profile name (e.g., "coder", "reviewer"), NOT the full command path
+/// - Frontend passes `agentCommand` which is also the profile name
+/// - Agent-to-agent routing matches by `agent_command == target_command` (both are profile names)
+/// - This ensures consistent matching across frontend and backend
+///
+/// ## Workspace vs Chat
+/// - `workspace_id` - Resource isolation (working directory, environment)
+/// - `chat_id` - UI conversation session
+/// - 1 workspace can have N chats (multiple conversations sharing same workspace)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupAgentBinding {
+    /// Workspace ID (resource isolation)
+    pub workspace_id: String,
+    /// Chat ID (UI conversation session)
     pub chat_id: String,
+    /// Runtime agent ID (e.g., "ws1-agent-1")
     pub agent_id: String,
+    /// Display name for the agent
     pub agent_name: String,
+    /// Profile name for matching (e.g., "coder") - NOT full command path
     pub agent_command: Option<String>,
+    /// Sub-chat ID for this agent's conversation thread
     pub sub_chat_id: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -585,7 +615,7 @@ pub mod sub_chats {
 
         let mut stmt = conn.prepare(
             "SELECT id, name, chat_id, session_id, mode, messages, created_at, updated_at
-             FROM sub_chats WHERE chat_id = ?1 ORDER BY created_at ASC"
+             FROM sub_chats WHERE chat_id = ?1 ORDER BY created_at ASC",
         )?;
 
         let sub_chats = stmt.query_map(params![chat_id], |row| {
@@ -610,7 +640,7 @@ pub mod sub_chats {
 
         let mut stmt = conn.prepare(
             "SELECT id, name, chat_id, session_id, mode, messages, created_at, updated_at
-             FROM sub_chats WHERE id = ?1"
+             FROM sub_chats WHERE id = ?1",
         )?;
 
         let mut rows = stmt.query_map(params![id], |row| {
@@ -828,13 +858,14 @@ pub mod group_agent_bindings {
 
     fn row_to_binding(row: &rusqlite::Row<'_>) -> Result<GroupAgentBinding> {
         Ok(GroupAgentBinding {
-            chat_id: row.get(0)?,
-            agent_id: row.get(1)?,
-            agent_name: row.get(2)?,
-            agent_command: row.get(3)?,
-            sub_chat_id: row.get(4)?,
-            created_at: row.get(5)?,
-            updated_at: row.get(6)?,
+            workspace_id: row.get(0)?,
+            chat_id: row.get(1)?,
+            agent_id: row.get(2)?,
+            agent_name: row.get(3)?,
+            agent_command: row.get(4)?,
+            sub_chat_id: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
         })
     }
 
@@ -843,14 +874,16 @@ pub mod group_agent_bindings {
         let conn = db.lock().unwrap();
 
         conn.execute(
-            "INSERT INTO group_agent_bindings (chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO group_agent_bindings (workspace_id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(chat_id, agent_id) DO UPDATE SET
+               workspace_id = excluded.workspace_id,
                agent_name = excluded.agent_name,
                agent_command = excluded.agent_command,
                sub_chat_id = excluded.sub_chat_id,
                updated_at = excluded.updated_at",
             params![
+                binding.workspace_id,
                 binding.chat_id,
                 binding.agent_id,
                 binding.agent_name,
@@ -862,7 +895,7 @@ pub mod group_agent_bindings {
         )?;
 
         let mut stmt = conn.prepare(
-            "SELECT chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
+            "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
              FROM group_agent_bindings WHERE chat_id = ?1 AND agent_id = ?2",
         )?;
         let mut rows =
@@ -876,7 +909,7 @@ pub mod group_agent_bindings {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
+            "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
              FROM group_agent_bindings WHERE chat_id = ?1 ORDER BY created_at ASC",
         )?;
         let bindings = stmt.query_map(params![chat_id], row_to_binding)?;
@@ -901,6 +934,17 @@ pub mod group_agent_bindings {
             params![chat_id, agent_id],
         )?;
         Ok(count > 0)
+    }
+
+    /// Remove all bindings for a specific agent (cleanup when agent dies)
+    pub fn delete_by_agent(agent_id: &str) -> Result<usize> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let count = conn.execute(
+            "DELETE FROM group_agent_bindings WHERE agent_id = ?1",
+            params![agent_id],
+        )?;
+        Ok(count)
     }
 }
 

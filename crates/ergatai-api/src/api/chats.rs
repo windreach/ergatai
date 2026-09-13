@@ -787,7 +787,15 @@ pub async fn bind_agent(
     };
 
     let now = now_unix_seconds();
+
+    // Get workspace_id from the agent
+    let workspace_id = crate::services::agent_service::get_agent_info(&req.agent_id)
+        .await
+        .map(|info| info.workspace_id.clone())
+        .unwrap_or_else(|| chat_id.clone()); // Fallback to chat_id if agent not found
+
     let binding = user_data_db::GroupAgentBinding {
+        workspace_id,
         chat_id,
         agent_id: req.agent_id,
         agent_name: req.agent_name,
@@ -857,10 +865,11 @@ pub async fn list_chat_agents(
     };
 
     // For each binding, get the agent's current status
-    let agents: Vec<ChatAgentResponse> = futures::future::join_all(
-        bindings.into_iter().map(|binding| async move {
+    let agents: Vec<ChatAgentResponse> =
+        futures::future::join_all(bindings.into_iter().map(|binding| async move {
             // Try to get agent info from the runtime
-            let agent_info = crate::services::agent_service::get_agent_info(&binding.agent_id).await;
+            let agent_info =
+                crate::services::agent_service::get_agent_info(&binding.agent_id).await;
 
             let status = match agent_info {
                 Some(info) => {
@@ -875,13 +884,14 @@ pub async fn list_chat_agents(
 
             ChatAgentResponse {
                 agent_id: binding.agent_id,
-                command: binding.agent_command.unwrap_or_else(|| "unknown".to_string()),
+                command: binding
+                    .agent_command
+                    .unwrap_or_else(|| "unknown".to_string()),
                 status,
                 bound_at: binding.created_at,
             }
-        }),
-    )
-    .await;
+        }))
+        .await;
 
     (StatusCode::OK, Json(agents)).into_response()
 }

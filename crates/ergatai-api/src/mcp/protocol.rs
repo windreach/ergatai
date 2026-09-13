@@ -82,11 +82,7 @@ impl ServerHandler for ErgataiMcpServer {
         {
             if let Ok(Some(stored_binding)) = binding_store.get_binding_by_identifier(identifier) {
                 // Verify the runtime agent still exists
-                if runtime
-                    .get_agent(&stored_binding.agent_id)
-                    .await
-                    .is_some()
-                {
+                if runtime.get_agent(&stored_binding.agent_id).await.is_some() {
                     // Try to restore the binding
                     match runtime
                         .try_bind_mcp_agent_with_identifier(
