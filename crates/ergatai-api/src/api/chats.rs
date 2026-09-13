@@ -42,7 +42,6 @@ pub struct UpdateChatRequest {
 pub struct CreateSubChatRequest {
     pub name: Option<String>,
     pub session_id: Option<String>,
-    pub stream_id: Option<String>,
     pub mode: Option<String>,
 }
 
@@ -50,7 +49,6 @@ pub struct CreateSubChatRequest {
 pub struct UpdateSubChatRequest {
     pub name: Option<String>,
     pub session_id: Option<String>,
-    pub stream_id: Option<String>,
     pub mode: Option<String>,
     pub messages: Option<String>,
 }
@@ -105,7 +103,6 @@ pub struct SubChatResponse {
     pub name: Option<String>,
     pub chat_id: String,
     pub session_id: Option<String>,
-    pub stream_id: Option<String>,
     pub mode: String,
     pub messages: String,
     pub created_at: i64,
@@ -149,7 +146,6 @@ fn sub_chat_to_response(sub_chat: SubChat) -> SubChatResponse {
         name: sub_chat.name,
         chat_id: sub_chat.chat_id,
         session_id: sub_chat.session_id,
-        stream_id: sub_chat.stream_id,
         mode: sub_chat.mode,
         messages: sub_chat.messages,
         created_at: sub_chat.created_at,
@@ -523,7 +519,6 @@ pub async fn create_sub_chat(
         name: req.name,
         chat_id,
         session_id: req.session_id,
-        stream_id: req.stream_id,
         mode: req.mode.unwrap_or_else(|| "agent".to_string()),
         messages: "[]".to_string(),
         created_at: now,
@@ -639,7 +634,6 @@ pub async fn update_sub_chat(
         &sub_chat_id,
         req.name.as_deref(),
         req.session_id.as_deref(),
-        req.stream_id.as_deref(),
         req.mode.as_deref(),
         req.messages.as_deref(),
         now,
@@ -691,7 +685,6 @@ pub async fn update_sub_chat_by_id(
         &sub_chat_id,
         req.name.as_deref(),
         req.session_id.as_deref(),
-        req.stream_id.as_deref(),
         req.mode.as_deref(),
         req.messages.as_deref(),
         now,

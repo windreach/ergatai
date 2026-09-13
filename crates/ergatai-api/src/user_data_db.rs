@@ -83,7 +83,6 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             name TEXT,
             chat_id TEXT NOT NULL,
             session_id TEXT,
-            stream_id TEXT,
             mode TEXT NOT NULL DEFAULT 'agent',
             messages TEXT NOT NULL DEFAULT '[]',
             created_at INTEGER NOT NULL,
@@ -118,6 +117,11 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
     // (SQLite 3.35.0+ supports DROP COLUMN)
     let _ = conn.execute_batch(
         "ALTER TABLE group_agent_bindings DROP COLUMN id;",
+    );
+
+    // Migration: Remove `stream_id` column from sub_chats if it exists
+    let _ = conn.execute_batch(
+        "ALTER TABLE sub_chats DROP COLUMN stream_id;",
     );
 
     Ok(())
@@ -166,7 +170,6 @@ pub struct SubChat {
     pub name: Option<String>,
     pub chat_id: String,
     pub session_id: Option<String>,
-    pub stream_id: Option<String>,
     pub mode: String,
     pub messages: String, // JSON array
     pub created_at: i64,
@@ -559,14 +562,13 @@ pub mod sub_chats {
         let conn = db.lock().unwrap();
 
         conn.execute(
-            "INSERT INTO sub_chats (id, name, chat_id, session_id, stream_id, mode, messages, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO sub_chats (id, name, chat_id, session_id, mode, messages, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 sub_chat.id,
                 sub_chat.name,
                 sub_chat.chat_id,
                 sub_chat.session_id,
-                sub_chat.stream_id,
                 sub_chat.mode,
                 sub_chat.messages,
                 sub_chat.created_at,
@@ -582,7 +584,7 @@ pub mod sub_chats {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, name, chat_id, session_id, stream_id, mode, messages, created_at, updated_at
+            "SELECT id, name, chat_id, session_id, mode, messages, created_at, updated_at
              FROM sub_chats WHERE chat_id = ?1 ORDER BY created_at ASC"
         )?;
 
@@ -592,11 +594,10 @@ pub mod sub_chats {
                 name: row.get(1)?,
                 chat_id: row.get(2)?,
                 session_id: row.get(3)?,
-                stream_id: row.get(4)?,
-                mode: row.get(5)?,
-                messages: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
+                mode: row.get(4)?,
+                messages: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
             })
         })?;
 
@@ -608,7 +609,7 @@ pub mod sub_chats {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, name, chat_id, session_id, stream_id, mode, messages, created_at, updated_at
+            "SELECT id, name, chat_id, session_id, mode, messages, created_at, updated_at
              FROM sub_chats WHERE id = ?1"
         )?;
 
@@ -618,11 +619,10 @@ pub mod sub_chats {
                 name: row.get(1)?,
                 chat_id: row.get(2)?,
                 session_id: row.get(3)?,
-                stream_id: row.get(4)?,
-                mode: row.get(5)?,
-                messages: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
+                mode: row.get(4)?,
+                messages: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
             })
         })?;
 
@@ -746,7 +746,6 @@ pub mod sub_chats {
         id: &str,
         name: Option<&str>,
         session_id: Option<&str>,
-        stream_id: Option<&str>,
         mode: Option<&str>,
         messages: Option<&str>,
         updated_at: i64,
@@ -760,7 +759,6 @@ pub mod sub_chats {
         let some_count = [
             name.is_some(),
             session_id.is_some(),
-            stream_id.is_some(),
             mode.is_some(),
             messages.is_some(),
         ]
@@ -775,10 +773,6 @@ pub mod sub_chats {
         }
         if session_id.is_some() {
             updates.push(format!("session_id = ?{}", param_idx));
-            param_idx += 1;
-        }
-        if stream_id.is_some() {
-            updates.push(format!("stream_id = ?{}", param_idx));
             param_idx += 1;
         }
         if mode.is_some() {
@@ -803,9 +797,6 @@ pub mod sub_chats {
         }
         if let Some(s) = session_id {
             params_vec.push(Box::new(s.to_string()));
-        }
-        if let Some(st) = stream_id {
-            params_vec.push(Box::new(st.to_string()));
         }
         if let Some(m) = mode {
             params_vec.push(Box::new(m.to_string()));
