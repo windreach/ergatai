@@ -669,7 +669,7 @@ pub async fn send_message(
                 }
 
                 // Get session ID
-                let session_id = crate::services::agent_service::get_agent_session_id(&new_agent_id).await
+                let _session_id = crate::services::agent_service::get_agent_session_id(&new_agent_id).await
                     .unwrap_or_default();
 
                 // Now send the message to the new agent
