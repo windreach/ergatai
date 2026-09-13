@@ -428,7 +428,7 @@ pub async fn resolve_agent_id(agent_id: &str) -> Option<String> {
     // Try MCP agent ID lookup via bindings
     if let Some(binding_store) = crate::mcp::get_binding_store() {
         if let Ok(Some(binding)) = binding_store.get_binding_by_identifier(agent_id) {
-            let runtime_id = binding.runtime_agent_id;
+            let runtime_id = binding.agent_id;
             // Verify the runtime agent still exists
             if runtime.get_agent(&runtime_id).await.is_some() {
                 return Some(runtime_id);

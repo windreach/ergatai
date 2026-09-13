@@ -21,7 +21,7 @@ pub struct AgentBinding {
     /// MCP agent ID (e.g., "opencode@1a2b3c4d")
     pub mcp_agent_id: String,
     /// Runtime agent ID (e.g., "ws1-agent-1")
-    pub runtime_agent_id: String,
+    pub agent_id: String,
     /// Agent identifier from URL path (e.g., "agent-1")
     pub agent_identifier: Option<String>,
     /// Timestamp when binding was created
@@ -46,19 +46,24 @@ impl AgentBindingStore {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS agent_bindings (
                 mcp_agent_id TEXT PRIMARY KEY,
-                runtime_agent_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
                 agent_identifier TEXT,
                 created_at TEXT NOT NULL,
                 last_active TEXT NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_bindings_runtime
-                ON agent_bindings(runtime_agent_id);
+                ON agent_bindings(agent_id);
 
             CREATE INDEX IF NOT EXISTS idx_bindings_identifier
                 ON agent_bindings(agent_identifier);",
         )
         .map_err(|e| ErgataiError::DatabaseError(format!("Failed to create schema: {}", e)))?;
+
+        // Migration: rename old column `runtime_agent_id` → `agent_id`
+        let _ = conn.execute_batch(
+            "ALTER TABLE agent_bindings RENAME COLUMN runtime_agent_id TO agent_id;",
+        );
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -74,11 +79,11 @@ impl AgentBindingStore {
 
         conn.execute(
             "INSERT OR REPLACE INTO agent_bindings
-             (mcp_agent_id, runtime_agent_id, agent_identifier, created_at, last_active)
+             (mcp_agent_id, agent_id, agent_identifier, created_at, last_active)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 binding.mcp_agent_id,
-                binding.runtime_agent_id,
+                binding.agent_id,
                 binding.agent_identifier,
                 binding.created_at.to_rfc3339(),
                 binding.last_active.to_rfc3339(),
@@ -88,7 +93,7 @@ impl AgentBindingStore {
 
         debug!(
             mcp_agent_id = %binding.mcp_agent_id,
-            runtime_agent_id = %binding.runtime_agent_id,
+            agent_id = %binding.agent_id,
             "Saved agent binding"
         );
 
@@ -103,7 +108,7 @@ impl AgentBindingStore {
         })?;
 
         let result = conn.query_row(
-            "SELECT mcp_agent_id, runtime_agent_id, agent_identifier, created_at, last_active
+            "SELECT mcp_agent_id, agent_id, agent_identifier, created_at, last_active
              FROM agent_bindings
              WHERE mcp_agent_id = ?1",
             params![mcp_agent_id],
@@ -112,7 +117,7 @@ impl AgentBindingStore {
                 let last_active: String = row.get(4)?;
                 Ok(AgentBinding {
                     mcp_agent_id: row.get(0)?,
-                    runtime_agent_id: row.get(1)?,
+                    agent_id: row.get(1)?,
                     agent_identifier: row.get(2)?,
                     created_at: parse_timestamp(&created_at, "created_at"),
                     last_active: parse_timestamp(&last_active, "last_active"),
@@ -141,7 +146,7 @@ impl AgentBindingStore {
         })?;
 
         let result = conn.query_row(
-            "SELECT mcp_agent_id, runtime_agent_id, agent_identifier, created_at, last_active
+            "SELECT mcp_agent_id, agent_id, agent_identifier, created_at, last_active
              FROM agent_bindings
              WHERE agent_identifier = ?1
              ORDER BY last_active DESC
@@ -152,7 +157,7 @@ impl AgentBindingStore {
                 let last_active: String = row.get(4)?;
                 Ok(AgentBinding {
                     mcp_agent_id: row.get(0)?,
-                    runtime_agent_id: row.get(1)?,
+                    agent_id: row.get(1)?,
                     agent_identifier: row.get(2)?,
                     created_at: parse_timestamp(&created_at, "created_at"),
                     last_active: parse_timestamp(&last_active, "last_active"),
@@ -214,7 +219,7 @@ impl AgentBindingStore {
 
         let mut stmt = conn
             .prepare(
-                "SELECT mcp_agent_id, runtime_agent_id, agent_identifier, created_at, last_active
+                "SELECT mcp_agent_id, agent_id, agent_identifier, created_at, last_active
                  FROM agent_bindings
                  ORDER BY last_active DESC",
             )
@@ -226,7 +231,7 @@ impl AgentBindingStore {
                 let last_active: String = row.get(4)?;
                 Ok(AgentBinding {
                     mcp_agent_id: row.get(0)?,
-                    runtime_agent_id: row.get(1)?,
+                    agent_id: row.get(1)?,
                     agent_identifier: row.get(2)?,
                     created_at: parse_timestamp(&created_at, "created_at"),
                     last_active: parse_timestamp(&last_active, "last_active"),

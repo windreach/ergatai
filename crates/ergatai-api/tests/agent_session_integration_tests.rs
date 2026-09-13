@@ -149,7 +149,6 @@ async fn test_agent_binding_persistence() {
     use ergatai_api::user_data_db::GroupAgentBinding;
 
     let binding = GroupAgentBinding {
-        id: "binding-123".to_string(),
         chat_id: "chat-456".to_string(),
         agent_id: "agent-f".to_string(),
         agent_name: "codex".to_string(),

@@ -651,7 +651,6 @@ pub async fn send_message(
                 // Bind the new agent to the chat
                 let now = chrono::Utc::now().timestamp();
                 let binding = crate::user_data_db::GroupAgentBinding {
-                    id: format!("binding_{}", uuid::Uuid::new_v4()),
                     chat_id: chat_id.clone(),
                     agent_id: new_agent_id.clone(),
                     agent_name: target_command.clone(),
@@ -1992,7 +1991,6 @@ pub async fn prompt_agent(
             .unwrap_or_default()
             .as_secs() as i64;
         let binding = crate::user_data_db::GroupAgentBinding {
-            id: format!("binding_{}", uuid::Uuid::new_v4()),
             chat_id: sub_chat.chat_id,
             agent_id: runtime_id.clone(),
             agent_name: agent_name.clone(),

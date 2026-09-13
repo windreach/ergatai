@@ -795,7 +795,6 @@ pub async fn bind_agent(
 
     let now = now_unix_seconds();
     let binding = user_data_db::GroupAgentBinding {
-        id: format!("binding_{}", uuid::Uuid::new_v4()),
         chat_id,
         agent_id: req.agent_id,
         agent_name: req.agent_name,

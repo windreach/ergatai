@@ -83,7 +83,7 @@ impl ServerHandler for ErgataiMcpServer {
             if let Ok(Some(stored_binding)) = binding_store.get_binding_by_identifier(identifier) {
                 // Verify the runtime agent still exists
                 if runtime
-                    .get_agent(&stored_binding.runtime_agent_id)
+                    .get_agent(&stored_binding.agent_id)
                     .await
                     .is_some()
                 {
@@ -91,7 +91,7 @@ impl ServerHandler for ErgataiMcpServer {
                     match runtime
                         .try_bind_mcp_agent_with_identifier(
                             &unique_agent_id,
-                            &stored_binding.runtime_agent_id,
+                            &stored_binding.agent_id,
                         )
                         .await
                     {
@@ -109,7 +109,7 @@ impl ServerHandler for ErgataiMcpServer {
                         None => {
                             warn!(
                                 mcp_agent_id = unique_agent_id,
-                                runtime_id = stored_binding.runtime_agent_id,
+                                agent_id = stored_binding.agent_id,
                                 "Failed to restore binding, proceeding with normal binding"
                             );
                         }
@@ -117,7 +117,7 @@ impl ServerHandler for ErgataiMcpServer {
                 } else {
                     info!(
                         mcp_agent_id = unique_agent_id,
-                        runtime_id = stored_binding.runtime_agent_id,
+                        agent_id = stored_binding.agent_id,
                         "Stored runtime agent no longer exists, proceeding with normal binding"
                     );
                 }
@@ -195,7 +195,7 @@ impl ServerHandler for ErgataiMcpServer {
             if let Some(runtime_id) = runtime.resolve_agent_id(&unique_agent_id).await {
                 let binding = crate::mcp::AgentBinding {
                     mcp_agent_id: unique_agent_id.clone(),
-                    runtime_agent_id: runtime_id.clone(),
+                    agent_id: runtime_id.clone(),
                     agent_identifier: self.agent_identifier().clone(),
                     created_at: chrono::Utc::now(),
                     last_active: chrono::Utc::now(),
@@ -210,7 +210,7 @@ impl ServerHandler for ErgataiMcpServer {
                 } else {
                     info!(
                         mcp_agent_id = %unique_agent_id,
-                        runtime_agent_id = %runtime_id,
+                        agent_id = %runtime_id,
                         "Binding persisted for reconnection"
                     );
                 }

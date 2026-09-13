@@ -93,7 +93,6 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
 
         -- Stable binding between a group chat, a backend agent, and its own thread
         CREATE TABLE IF NOT EXISTS group_agent_bindings (
-            id TEXT PRIMARY KEY,
             chat_id TEXT NOT NULL,
             agent_id TEXT NOT NULL,
             agent_name TEXT NOT NULL,
@@ -101,7 +100,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             sub_chat_id TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            UNIQUE(chat_id, agent_id),
+            PRIMARY KEY (chat_id, agent_id),
             FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE,
             FOREIGN KEY (sub_chat_id) REFERENCES sub_chats(id) ON DELETE CASCADE
         );
@@ -114,6 +113,12 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_chats_archived_at ON chats(archived_at);
         "#,
     )?;
+
+    // Migration: Remove `id` column from group_agent_bindings if it exists
+    // (SQLite 3.35.0+ supports DROP COLUMN)
+    let _ = conn.execute_batch(
+        "ALTER TABLE group_agent_bindings DROP COLUMN id;",
+    );
 
     Ok(())
 }
@@ -170,7 +175,6 @@ pub struct SubChat {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupAgentBinding {
-    pub id: String,
     pub chat_id: String,
     pub agent_id: String,
     pub agent_name: String,
@@ -833,14 +837,13 @@ pub mod group_agent_bindings {
 
     fn row_to_binding(row: &rusqlite::Row<'_>) -> Result<GroupAgentBinding> {
         Ok(GroupAgentBinding {
-            id: row.get(0)?,
-            chat_id: row.get(1)?,
-            agent_id: row.get(2)?,
-            agent_name: row.get(3)?,
-            agent_command: row.get(4)?,
-            sub_chat_id: row.get(5)?,
-            created_at: row.get(6)?,
-            updated_at: row.get(7)?,
+            chat_id: row.get(0)?,
+            agent_id: row.get(1)?,
+            agent_name: row.get(2)?,
+            agent_command: row.get(3)?,
+            sub_chat_id: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
         })
     }
 
@@ -849,15 +852,14 @@ pub mod group_agent_bindings {
         let conn = db.lock().unwrap();
 
         conn.execute(
-            "INSERT INTO group_agent_bindings (id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO group_agent_bindings (chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(chat_id, agent_id) DO UPDATE SET
                agent_name = excluded.agent_name,
                agent_command = excluded.agent_command,
                sub_chat_id = excluded.sub_chat_id,
                updated_at = excluded.updated_at",
             params![
-                binding.id,
                 binding.chat_id,
                 binding.agent_id,
                 binding.agent_name,
@@ -869,7 +871,7 @@ pub mod group_agent_bindings {
         )?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
+            "SELECT chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
              FROM group_agent_bindings WHERE chat_id = ?1 AND agent_id = ?2",
         )?;
         let mut rows =
@@ -883,7 +885,7 @@ pub mod group_agent_bindings {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
+            "SELECT chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
              FROM group_agent_bindings WHERE chat_id = ?1 ORDER BY created_at ASC",
         )?;
         let bindings = stmt.query_map(params![chat_id], row_to_binding)?;
