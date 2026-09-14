@@ -18,6 +18,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
+use utoipa::OpenApi;
 
 use ergatai_core::nats;
 
@@ -99,6 +100,7 @@ pub struct ErrorResponse {
 pub fn build_rest_app(state: AppState) -> Router {
     // API routes
     Router::new()
+        .route("/api/v1/openapi.json", get(openapi_json))
         .route("/health", get(health_check))
         .route("/ready", get(readiness_check))
         .route("/metrics", get(metrics_endpoint))
@@ -110,6 +112,27 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/workspaces/:id",
             delete(api::workspaces::delete_workspace),
+        )
+        // Persistent workspace routes
+        .route(
+            "/api/v1/workspaces/persistent",
+            get(api::workspaces::list_persistent_workspaces),
+        )
+        .route(
+            "/api/v1/workspaces/persistent",
+            post(api::workspaces::create_persistent_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/persistent/:id",
+            get(api::workspaces::get_persistent_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/persistent/:id",
+            put(api::workspaces::update_persistent_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/persistent/:id",
+            delete(api::workspaces::delete_persistent_workspace),
         )
         .route("/api/v1/agents", get(api::agents::list_agents))
         .route("/api/v1/agents", post(api::agents::spawn_agent))
@@ -335,6 +358,10 @@ pub fn build_rest_app(state: AppState) -> Router {
             state.clone(),
             auth_middleware,
         ))
+}
+
+async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
+    Json(api::openapi::ApiDoc::openapi())
 }
 
 // ── Health / readiness / metrics handlers ────────────────────────────

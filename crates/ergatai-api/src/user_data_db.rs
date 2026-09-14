@@ -13,6 +13,7 @@ use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use utoipa::ToSchema;
 
 /// Global database instance
 static USER_DATA_DB: Lazy<Arc<Mutex<Connection>>> = Lazy::new(|| {
@@ -60,11 +61,26 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             updated_at INTEGER NOT NULL
         );
 
-        -- Chats table (workspaces)
+        -- Workspaces table (persistent workspace metadata)
+        CREATE TABLE IF NOT EXISTS workspaces (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            name TEXT,
+            work_dir TEXT NOT NULL,
+            env TEXT DEFAULT '{}',
+            resources TEXT DEFAULT '{}',
+            capture_thoughts INTEGER DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+
+        -- Chats table (conversations within workspaces)
         CREATE TABLE IF NOT EXISTS chats (
             id TEXT PRIMARY KEY,
             name TEXT,
             project_id TEXT NOT NULL,
+            workspace_id TEXT,
             collaboration_mode TEXT NOT NULL DEFAULT 'supervisor',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
@@ -74,7 +90,8 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             base_branch TEXT,
             pr_url TEXT,
             pr_number INTEGER,
-            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE SET NULL
         );
 
         -- Sub-chats table (conversation threads)
@@ -106,6 +123,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         );
 
         -- Create indexes for performance
+        CREATE INDEX IF NOT EXISTS idx_workspaces_project_id ON workspaces(project_id);
         CREATE INDEX IF NOT EXISTS idx_chats_project_id ON chats(project_id);
         CREATE INDEX IF NOT EXISTS idx_sub_chats_chat_id ON sub_chats(chat_id);
         CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_chat_id ON group_agent_bindings(chat_id);
@@ -129,6 +147,14 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
     let _ = conn.execute_batch(
         "UPDATE group_agent_bindings SET workspace_id = chat_id WHERE workspace_id = '';",
     );
+
+    // Migration: Add `workspace_id` column to chats if it doesn't exist
+    // For existing rows, set workspace_id to NULL (they need to be associated with a workspace explicitly)
+    let _ = conn.execute_batch(
+        "ALTER TABLE chats ADD COLUMN workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL;",
+    );
+    let _ = conn
+        .execute_batch("CREATE INDEX IF NOT EXISTS idx_chats_workspace_id ON chats(workspace_id);");
 
     // Create index on workspace_id after migration (column may not exist in older databases)
     let _ = conn.execute_batch(
@@ -160,10 +186,24 @@ pub struct Project {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Workspace {
+    pub id: String,
+    pub project_id: String,
+    pub name: Option<String>,
+    pub work_dir: String,
+    pub env: String,       // JSON string
+    pub resources: String, // JSON string
+    pub capture_thoughts: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chat {
     pub id: String,
     pub name: Option<String>,
     pub project_id: String,
+    pub workspace_id: Option<String>,
     pub collaboration_mode: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -199,7 +239,7 @@ pub struct SubChat {
 /// - `workspace_id` - Resource isolation (working directory, environment)
 /// - `chat_id` - UI conversation session
 /// - 1 workspace can have N chats (multiple conversations sharing same workspace)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct GroupAgentBinding {
     /// Workspace ID (resource isolation)
     pub workspace_id: String,
@@ -370,6 +410,138 @@ pub mod projects {
     }
 }
 
+pub mod workspaces {
+    use super::*;
+
+    pub fn create(workspace: Workspace) -> Result<Workspace> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO workspaces (id, project_id, name, work_dir, env, resources, capture_thoughts, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                workspace.id,
+                workspace.project_id,
+                workspace.name,
+                workspace.work_dir,
+                workspace.env,
+                workspace.resources,
+                workspace.capture_thoughts,
+                workspace.created_at,
+                workspace.updated_at,
+            ],
+        )?;
+
+        Ok(workspace)
+    }
+
+    pub fn list(project_id: Option<&str>) -> Result<Vec<Workspace>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        if let Some(pid) = project_id {
+            let mut stmt = conn.prepare(
+                "SELECT id, project_id, name, work_dir, env, resources, capture_thoughts, created_at, updated_at
+                 FROM workspaces WHERE project_id = ?1 ORDER BY created_at DESC"
+            )?;
+            let workspaces = stmt.query_map(params![pid], |row| {
+                Ok(Workspace {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    name: row.get(2)?,
+                    work_dir: row.get(3)?,
+                    env: row.get(4)?,
+                    resources: row.get(5)?,
+                    capture_thoughts: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                })
+            })?;
+            workspaces.collect()
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT id, project_id, name, work_dir, env, resources, capture_thoughts, created_at, updated_at
+                 FROM workspaces ORDER BY created_at DESC"
+            )?;
+            let workspaces = stmt.query_map([], |row| {
+                Ok(Workspace {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    name: row.get(2)?,
+                    work_dir: row.get(3)?,
+                    env: row.get(4)?,
+                    resources: row.get(5)?,
+                    capture_thoughts: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                })
+            })?;
+            workspaces.collect()
+        }
+    }
+
+    pub fn get(id: &str) -> Result<Option<Workspace>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, project_id, name, work_dir, env, resources, capture_thoughts, created_at, updated_at
+             FROM workspaces WHERE id = ?1"
+        )?;
+
+        let mut rows = stmt.query_map(params![id], |row| {
+            Ok(Workspace {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                name: row.get(2)?,
+                work_dir: row.get(3)?,
+                env: row.get(4)?,
+                resources: row.get(5)?,
+                capture_thoughts: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(workspace)) => Ok(Some(workspace)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    pub fn update(workspace: Workspace) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "UPDATE workspaces
+             SET name = ?1, work_dir = ?2, env = ?3, resources = ?4,
+                 capture_thoughts = ?5, updated_at = ?6
+             WHERE id = ?7",
+            params![
+                workspace.name,
+                workspace.work_dir,
+                workspace.env,
+                workspace.resources,
+                workspace.capture_thoughts,
+                workspace.updated_at,
+                workspace.id,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn delete(id: &str) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let count = conn.execute("DELETE FROM workspaces WHERE id = ?1", params![id])?;
+        Ok(count > 0)
+    }
+}
+
 pub mod chats {
     use super::*;
 
@@ -378,12 +550,13 @@ pub mod chats {
         let conn = db.lock().unwrap();
 
         conn.execute(
-            "INSERT INTO chats (id, name, project_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO chats (id, name, project_id, workspace_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 chat.id,
                 chat.name,
                 chat.project_id,
+                chat.workspace_id,
                 chat.collaboration_mode,
                 chat.created_at,
                 chat.updated_at,
@@ -405,7 +578,7 @@ pub mod chats {
 
         if let Some(pid) = project_id {
             let mut stmt = conn.prepare(
-                "SELECT id, name, project_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number
+                "SELECT id, name, project_id, workspace_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number
                  FROM chats WHERE project_id = ?1 ORDER BY created_at DESC"
             )?;
             let chats = stmt.query_map(params![pid], |row| {
@@ -413,21 +586,22 @@ pub mod chats {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     project_id: row.get(2)?,
-                    collaboration_mode: row.get(3)?,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
-                    archived_at: row.get(6)?,
-                    worktree_path: row.get(7)?,
-                    branch: row.get(8)?,
-                    base_branch: row.get(9)?,
-                    pr_url: row.get(10)?,
-                    pr_number: row.get(11)?,
+                    workspace_id: row.get(3)?,
+                    collaboration_mode: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                    archived_at: row.get(7)?,
+                    worktree_path: row.get(8)?,
+                    branch: row.get(9)?,
+                    base_branch: row.get(10)?,
+                    pr_url: row.get(11)?,
+                    pr_number: row.get(12)?,
                 })
             })?;
             chats.collect()
         } else {
             let mut stmt = conn.prepare(
-                "SELECT id, name, project_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number
+                "SELECT id, name, project_id, workspace_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number
                  FROM chats ORDER BY created_at DESC"
             )?;
             let chats = stmt.query_map([], |row| {
@@ -435,15 +609,16 @@ pub mod chats {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     project_id: row.get(2)?,
-                    collaboration_mode: row.get(3)?,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
-                    archived_at: row.get(6)?,
-                    worktree_path: row.get(7)?,
-                    branch: row.get(8)?,
-                    base_branch: row.get(9)?,
-                    pr_url: row.get(10)?,
-                    pr_number: row.get(11)?,
+                    workspace_id: row.get(3)?,
+                    collaboration_mode: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                    archived_at: row.get(7)?,
+                    worktree_path: row.get(8)?,
+                    branch: row.get(9)?,
+                    base_branch: row.get(10)?,
+                    pr_url: row.get(11)?,
+                    pr_number: row.get(12)?,
                 })
             })?;
             chats.collect()
@@ -455,7 +630,7 @@ pub mod chats {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, name, project_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number
+            "SELECT id, name, project_id, workspace_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number
              FROM chats WHERE id = ?1"
         )?;
 
@@ -464,15 +639,16 @@ pub mod chats {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 project_id: row.get(2)?,
-                collaboration_mode: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-                archived_at: row.get(6)?,
-                worktree_path: row.get(7)?,
-                branch: row.get(8)?,
-                base_branch: row.get(9)?,
-                pr_url: row.get(10)?,
-                pr_number: row.get(11)?,
+                workspace_id: row.get(3)?,
+                collaboration_mode: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                archived_at: row.get(7)?,
+                worktree_path: row.get(8)?,
+                branch: row.get(9)?,
+                base_branch: row.get(10)?,
+                pr_url: row.get(11)?,
+                pr_number: row.get(12)?,
             })
         })?;
 
@@ -489,7 +665,7 @@ pub mod chats {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, name, project_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number
+            "SELECT id, name, project_id, workspace_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number
              FROM chats WHERE worktree_path = ?1 LIMIT 1"
         )?;
 
@@ -498,15 +674,16 @@ pub mod chats {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 project_id: row.get(2)?,
-                collaboration_mode: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-                archived_at: row.get(6)?,
-                worktree_path: row.get(7)?,
-                branch: row.get(8)?,
-                base_branch: row.get(9)?,
-                pr_url: row.get(10)?,
-                pr_number: row.get(11)?,
+                workspace_id: row.get(3)?,
+                collaboration_mode: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                archived_at: row.get(7)?,
+                worktree_path: row.get(8)?,
+                branch: row.get(9)?,
+                base_branch: row.get(10)?,
+                pr_url: row.get(11)?,
+                pr_number: row.get(12)?,
             })
         })?;
 
@@ -523,11 +700,12 @@ pub mod chats {
 
         conn.execute(
             "UPDATE chats
-             SET name = ?1, collaboration_mode = ?2, updated_at = ?3, worktree_path = ?4,
-                 branch = ?5, base_branch = ?6, pr_url = ?7, pr_number = ?8
-             WHERE id = ?9",
+             SET name = ?1, workspace_id = ?2, collaboration_mode = ?3, updated_at = ?4, worktree_path = ?5,
+                 branch = ?6, base_branch = ?7, pr_url = ?8, pr_number = ?9
+             WHERE id = ?10",
             params![
                 chat.name,
+                chat.workspace_id,
                 chat.collaboration_mode,
                 chat.updated_at,
                 chat.worktree_path,

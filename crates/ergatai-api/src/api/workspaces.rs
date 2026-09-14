@@ -7,17 +7,18 @@ use axum::{
 use ergatai_runtime::{ResourceLimits, WorkspaceSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use utoipa::ToSchema;
 
 use crate::{services::agent_service, AppState};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateWorkspaceRequest {
     pub id: String,
     pub work_dir: Option<String>,
     pub env: Option<HashMap<String, String>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct WorkspaceResponse {
     pub id: String,
     pub backend: String,
@@ -31,6 +32,15 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
+#[utoipa::path(
+        get,
+        path = "/api/v1/workspaces",
+        tag = "Workspaces",
+        responses(
+            (status = 200, description = "List workspaces", body = Vec<WorkspaceResponse>),
+            (status = 500, description = "Internal server error", body = crate::api::ApiError),
+        )
+    )]
 pub async fn list_workspaces(State(_state): State<AppState>) -> impl IntoResponse {
     let runtime = crate::context::get_app_context().agent_runtime.clone();
     match runtime.backend().list_workspaces().await {
@@ -63,6 +73,18 @@ pub async fn list_workspaces(State(_state): State<AppState>) -> impl IntoRespons
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces",
+    tag = "Workspaces",
+    request_body = CreateWorkspaceRequest,
+    responses(
+        (status = 201, description = "Workspace created", body = WorkspaceResponse),
+        (status = 400, description = "Invalid workspace", body = crate::api::ApiError),
+        (status = 503, description = "Workspace limit reached", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn create_workspace(
     State(state): State<AppState>,
     Json(req): Json<CreateWorkspaceRequest>,
@@ -149,6 +171,17 @@ pub async fn create_workspace(
     }
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/workspaces/{id}",
+    tag = "Workspaces",
+    params(("id" = String, Path, description = "Workspace ID")),
+    responses(
+        (status = 204, description = "Workspace deleted"),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn delete_workspace(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -184,6 +217,306 @@ pub async fn delete_workspace(
 
     match runtime.backend().cleanup_workspace(&workspace).await {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+// ── Persistent Workspace APIs ──
+
+use crate::user_data_db::{workspaces, Workspace};
+
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct PersistentWorkspaceRequest {
+    pub id: String,
+    pub project_id: String,
+    pub name: Option<String>,
+    pub work_dir: String,
+    pub env: Option<String>,
+    pub resources: Option<String>,
+    pub capture_thoughts: Option<bool>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PersistentWorkspaceResponse {
+    pub id: String,
+    pub project_id: String,
+    pub name: Option<String>,
+    pub work_dir: String,
+    pub env: String,
+    pub resources: String,
+    pub capture_thoughts: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListPersistentWorkspacesQuery {
+    pub project_id: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/persistent",
+    tag = "PersistentWorkspaces",
+    params(
+        ("project_id" = Option<String>, Query, description = "Filter by project ID")
+    ),
+    responses(
+        (status = 200, description = "List persistent workspaces", body = Vec<PersistentWorkspaceResponse>),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn list_persistent_workspaces(
+    axum::extract::Query(query): axum::extract::Query<ListPersistentWorkspacesQuery>,
+) -> impl IntoResponse {
+    match workspaces::list(query.project_id.as_deref()) {
+        Ok(ws_list) => {
+            let response: Vec<PersistentWorkspaceResponse> = ws_list
+                .into_iter()
+                .map(|w| PersistentWorkspaceResponse {
+                    id: w.id,
+                    project_id: w.project_id,
+                    name: w.name,
+                    work_dir: w.work_dir,
+                    env: w.env,
+                    resources: w.resources,
+                    capture_thoughts: w.capture_thoughts,
+                    created_at: w.created_at,
+                    updated_at: w.updated_at,
+                })
+                .collect();
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces/persistent",
+    tag = "PersistentWorkspaces",
+    request_body = PersistentWorkspaceRequest,
+    responses(
+        (status = 201, description = "Persistent workspace created", body = PersistentWorkspaceResponse),
+        (status = 400, description = "Invalid workspace", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn create_persistent_workspace(
+    Json(req): Json<PersistentWorkspaceRequest>,
+) -> impl IntoResponse {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let workspace = Workspace {
+        id: req.id,
+        project_id: req.project_id,
+        name: req.name,
+        work_dir: req.work_dir,
+        env: req.env.unwrap_or_else(|| "{}".to_string()),
+        resources: req.resources.unwrap_or_else(|| "{}".to_string()),
+        capture_thoughts: req.capture_thoughts.unwrap_or(false),
+        created_at: now,
+        updated_at: now,
+    };
+
+    match workspaces::create(workspace) {
+        Ok(w) => {
+            let response = PersistentWorkspaceResponse {
+                id: w.id,
+                project_id: w.project_id,
+                name: w.name,
+                work_dir: w.work_dir,
+                env: w.env,
+                resources: w.resources,
+                capture_thoughts: w.capture_thoughts,
+                created_at: w.created_at,
+                updated_at: w.updated_at,
+            };
+            (StatusCode::CREATED, Json(response)).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/persistent/{id}",
+    tag = "PersistentWorkspaces",
+    params(("id" = String, Path, description = "Workspace ID")),
+    responses(
+        (status = 200, description = "Persistent workspace found", body = PersistentWorkspaceResponse),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn get_persistent_workspace(Path(id): Path<String>) -> impl IntoResponse {
+    match workspaces::get(&id) {
+        Ok(Some(w)) => {
+            let response = PersistentWorkspaceResponse {
+                id: w.id,
+                project_id: w.project_id,
+                name: w.name,
+                work_dir: w.work_dir,
+                env: w.env,
+                resources: w.resources,
+                capture_thoughts: w.capture_thoughts,
+                created_at: w.created_at,
+                updated_at: w.updated_at,
+            };
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Workspace {} not found", id),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/workspaces/persistent/{id}",
+    tag = "PersistentWorkspaces",
+    params(("id" = String, Path, description = "Workspace ID")),
+    request_body = PersistentWorkspaceRequest,
+    responses(
+        (status = 200, description = "Workspace updated", body = PersistentWorkspaceResponse),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn update_persistent_workspace(
+    Path(id): Path<String>,
+    Json(req): Json<PersistentWorkspaceRequest>,
+) -> impl IntoResponse {
+    // Check if workspace exists
+    match workspaces::get(&id) {
+        Ok(Some(existing)) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+
+            let workspace = Workspace {
+                id: id.clone(),
+                project_id: req.project_id,
+                name: req.name,
+                work_dir: req.work_dir,
+                env: req.env.unwrap_or(existing.env),
+                resources: req.resources.unwrap_or(existing.resources),
+                capture_thoughts: req.capture_thoughts.unwrap_or(existing.capture_thoughts),
+                created_at: existing.created_at,
+                updated_at: now,
+            };
+
+            match workspaces::update(workspace) {
+                Ok(()) => match workspaces::get(&id) {
+                    Ok(Some(w)) => {
+                        let response = PersistentWorkspaceResponse {
+                            id: w.id,
+                            project_id: w.project_id,
+                            name: w.name,
+                            work_dir: w.work_dir,
+                            env: w.env,
+                            resources: w.resources,
+                            capture_thoughts: w.capture_thoughts,
+                            created_at: w.created_at,
+                            updated_at: w.updated_at,
+                        };
+                        (StatusCode::OK, Json(response)).into_response()
+                    }
+                    Ok(None) => (
+                        StatusCode::NOT_FOUND,
+                        Json(ErrorResponse {
+                            error: format!("Workspace {} not found after update", id),
+                        }),
+                    )
+                        .into_response(),
+                    Err(e) => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: e.to_string(),
+                        }),
+                    )
+                        .into_response(),
+                },
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Workspace {} not found", id),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/workspaces/persistent/{id}",
+    tag = "PersistentWorkspaces",
+    params(("id" = String, Path, description = "Workspace ID")),
+    responses(
+        (status = 204, description = "Workspace deleted"),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn delete_persistent_workspace(Path(id): Path<String>) -> impl IntoResponse {
+    match workspaces::delete(&id) {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Workspace {} not found", id),
+            }),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {

@@ -12,11 +12,12 @@ use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
+use utoipa::ToSchema;
 
 use crate::messaging::{get_message_sender, SendMessageResult, SendRequest};
 use crate::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SpawnAgentRequest {
     pub workspace_id: String,
     pub command: String,
@@ -25,7 +26,7 @@ pub struct SpawnAgentRequest {
     pub env: Option<HashMap<String, String>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SendMessageRequest {
     pub message: String,
     /// Optional sender identifier. Defaults to "api" if not provided.
@@ -56,12 +57,12 @@ pub struct SendMessageRequest {
     pub force_new_session: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SpawnAgentResponse {
     pub agent_id: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AgentInfoResponse {
     pub agent_id: String,
     /// Human-readable stable identifier (e.g., "agent-1"). User-facing display name.
@@ -100,6 +101,7 @@ pub struct AgentInfoResponse {
     /// When the lifecycle state last changed.
     pub state_changed_at: String,
     /// State transition history (audit trail).
+    #[schema(value_type = Vec<Object>)]
     pub state_history: Vec<ergatai_runtime::agent_record::StateTransition>,
 }
 
@@ -108,6 +110,15 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents",
+    tag = "Agents",
+    responses(
+        (status = 200, description = "List agents", body = Vec<AgentInfoResponse>),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
     let items = crate::services::agent_service::list_agents_filtered(
         crate::services::agent_service::AgentListFilter::default(),
@@ -290,6 +301,19 @@ fn validate_command(command: &str) -> Result<(), String> {
     ))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/agents",
+    tag = "Agents",
+    request_body = SpawnAgentRequest,
+    responses(
+        (status = 201, description = "Agent launched", body = SpawnAgentResponse),
+        (status = 400, description = "Invalid agent request", body = crate::api::ApiError),
+        (status = 403, description = "Command not allowed", body = crate::api::ApiError),
+        (status = 503, description = "Agent limit reached", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn spawn_agent(
     State(state): State<AppState>,
     Json(req): Json<SpawnAgentRequest>,
@@ -407,6 +431,17 @@ pub async fn spawn_agent(
     }
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/agents/{id}",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 204, description = "Agent stopped"),
+        (status = 404, description = "Agent not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn kill_agent(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -463,6 +498,18 @@ pub async fn cancel_prompt(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/agents/{id}/message",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    request_body = SendMessageRequest,
+    responses(
+        (status = 200, description = "Message queued or delivered"),
+        (status = 404, description = "Agent not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn send_message(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -1289,12 +1336,13 @@ struct AgentConfigOptionsResponse {
 }
 
 /// Config option info.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ConfigOptionInfo {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
     pub category: Option<String>,
+    #[schema(value_type = Object, nullable = true)]
     pub kind: Option<serde_json::Value>,
 }
 
@@ -1867,7 +1915,7 @@ pub async fn get_agent_pid(
 
 // ── Prompt & SSE streaming ──
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct PromptAgentRequest {
     pub message: String,
     /// Optional sub-chat associated with this prompt.
@@ -1880,6 +1928,7 @@ pub struct PromptAgentRequest {
     pub sender_agent_name: Option<String>,
     /// Optional image attachments sent as base64 ACP content blocks.
     #[serde(default)]
+    #[schema(value_type = Vec<Object>)]
     pub images: Vec<ergatai_runtime::AgentImage>,
     /// Server-side dispatchers can execute immediately; chat transports wait
     /// for their paired SSE stream to subscribe first.
@@ -1900,6 +1949,19 @@ pub struct AgentStreamQuery {
 ///
 /// Returns 202 Accepted immediately. The agent processes the prompt in the
 /// background; output events are available via `GET /api/v1/agents/:id/stream`.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agents/{id}/prompt",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    request_body = PromptAgentRequest,
+    responses(
+        (status = 202, description = "Prompt accepted"),
+        (status = 400, description = "Prompt rejected", body = crate::api::ApiError),
+        (status = 404, description = "Agent or sub-chat not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn prompt_agent(
     State(_state): State<AppState>,
     Path(id): Path<String>,

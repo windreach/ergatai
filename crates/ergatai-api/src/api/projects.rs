@@ -9,13 +9,14 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::user_data_db::{self, Project};
 use crate::AppState;
 
 // ── Request/Response Types ───────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateProjectRequest {
     pub name: String,
     pub path: String,
@@ -26,7 +27,7 @@ pub struct CreateProjectRequest {
     pub icon_path: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateProjectRequest {
     pub name: Option<String>,
     pub git_remote_url: Option<Option<String>>,
@@ -36,7 +37,7 @@ pub struct UpdateProjectRequest {
     pub icon_path: Option<Option<String>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ProjectResponse {
     pub id: String,
     pub name: String,
@@ -86,6 +87,15 @@ fn generate_id() -> String {
 /// GET /api/v1/projects
 ///
 /// List all projects, ordered by creation date (newest first).
+#[utoipa::path(
+    get,
+    path = "/api/v1/projects",
+    tag = "Projects",
+    responses(
+        (status = 200, description = "List projects", body = Vec<ProjectResponse>),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn list_projects(State(_state): State<AppState>) -> impl IntoResponse {
     match user_data_db::projects::list() {
         Ok(projects) => {
@@ -103,9 +113,17 @@ pub async fn list_projects(State(_state): State<AppState>) -> impl IntoResponse 
     }
 }
 
-/// POST /api/v1/projects
-///
 /// Create a new project.
+#[utoipa::path(
+    post,
+    path = "/api/v1/projects",
+    tag = "Projects",
+    request_body = CreateProjectRequest,
+    responses(
+        (status = 201, description = "Project created", body = ProjectResponse),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn create_project(
     State(_state): State<AppState>,
     Json(req): Json<CreateProjectRequest>,
@@ -143,9 +161,18 @@ pub async fn create_project(
     }
 }
 
-/// GET /api/v1/projects/:id
-///
 /// Get a specific project by ID.
+#[utoipa::path(
+    get,
+    path = "/api/v1/projects/{id}",
+    tag = "Projects",
+    params(("id" = String, Path, description = "Project ID")),
+    responses(
+        (status = 200, description = "Project detail", body = ProjectResponse),
+        (status = 404, description = "Project not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_project(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -172,9 +199,19 @@ pub async fn get_project(
     }
 }
 
-/// PUT /api/v1/projects/:id
-///
 /// Update a project.
+#[utoipa::path(
+    put,
+    path = "/api/v1/projects/{id}",
+    tag = "Projects",
+    params(("id" = String, Path, description = "Project ID")),
+    request_body = UpdateProjectRequest,
+    responses(
+        (status = 200, description = "Project updated", body = ProjectResponse),
+        (status = 404, description = "Project not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn update_project(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -263,9 +300,17 @@ pub async fn update_project(
     }
 }
 
-/// DELETE /api/v1/projects/:id
-///
 /// Delete a project. This will also delete all associated chats (cascade).
+#[utoipa::path(
+    delete,
+    path = "/api/v1/projects/{id}",
+    tag = "Projects",
+    params(("id" = String, Path, description = "Project ID")),
+    responses(
+        (status = 204, description = "Project deleted"),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn delete_project(
     State(_state): State<AppState>,
     Path(id): Path<String>,

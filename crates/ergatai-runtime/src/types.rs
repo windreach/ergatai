@@ -24,7 +24,7 @@ pub struct AgentImage {
 
 /// Specification for creating a new agent workspace.
 ///
-/// A workspace is the execution environment for an agent — it is a PTY-backed
+/// A workspace is the execution environment for an agent — it is a process-based
 /// container with a working directory, environment variables, and resource limits.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceSpec {
@@ -81,7 +81,7 @@ pub struct WorkspaceHandle {
 ///
 /// ## ID System
 ///
-/// - `agent_id`: **Runtime ID** — deterministic ID assigned by PTY backend
+/// - `agent_id`: **Runtime ID** — deterministic ID assigned by ACP backend
 ///   (`{workspace_id}-agent-{counter}`). Not stable across process restarts.
 ///   Use `metadata["ergatai_agent_id"]` (stable ID) for cross-restart
 ///   identification when available.
@@ -92,8 +92,7 @@ pub struct AgentHandle {
 
     /// **Runtime ID** — deterministic identifier from the backend.
     ///
-    /// For PTY backend: `{workspace_id}-agent-{counter}` (e.g., `ws1-agent-1`).
-    /// For fallback: sequential `agent_0`, `agent_1` (unstable).
+    /// For ACP backend: `{workspace_id}-agent-{counter}` (e.g., `ws1-agent-1`).
     ///
     /// This ID changes when the process is recreated. For a stable identifier
     /// that survives restarts, use `metadata["ergatai_agent_id"]` (set via
@@ -138,10 +137,10 @@ pub enum WaitResult {
 /// Callers should check these before attempting operations to provide graceful degradation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BackendCapabilities {
-    /// Can inject messages into a running agent (e.g., PTY write)
+    /// Can inject messages into a running agent (via ACP session/prompt)
     pub supports_message_injection: bool,
 
-    /// Can capture agent output (e.g., PTY read buffer)
+    /// Can capture agent output (via ACP session notifications)
     pub supports_output_capture: bool,
 
     /// Can enforce resource limits (e.g., cgroups, Docker limits)
@@ -182,7 +181,7 @@ pub struct AgentInfo {
     /// Stable agent UUID (persistent across agent restarts, used for message routing)
     pub agent_uuid: String,
 
-    /// Runtime agent ID (e.g., "ws1-agent-1", used for terminal injection)
+    /// Runtime agent ID (e.g., "ws1-agent-1", used for message delivery)
     /// Changes when the process dies and a new one is created.
     pub agent_id: String,
 
@@ -322,7 +321,7 @@ mod tests {
     fn test_workspace_handle_eq() {
         let h1 = WorkspaceHandle {
             id: "ws-1".to_string(),
-            backend: "pty".to_string(),
+            backend: "acp".to_string(),
             metadata: HashMap::new(),
         };
         let h2 = h1.clone();
@@ -335,7 +334,7 @@ mod tests {
         metadata.insert("work_dir".to_string(), "/tmp/project".to_string());
         let handle = WorkspaceHandle {
             id: "ws-1".to_string(),
-            backend: "pty".to_string(),
+            backend: "acp".to_string(),
             metadata,
         };
         assert_eq!(
@@ -361,7 +360,7 @@ mod tests {
         let handle = AgentHandle {
             workspace: WorkspaceHandle {
                 id: "ws-1".to_string(),
-                backend: "pty".to_string(),
+                backend: "acp".to_string(),
                 metadata: HashMap::new(),
             },
             agent_id: "agent-1".to_string(),
@@ -378,7 +377,7 @@ mod tests {
         let handle = AgentHandle {
             workspace: WorkspaceHandle {
                 id: "ws-1".to_string(),
-                backend: "pty".to_string(),
+                backend: "acp".to_string(),
                 metadata: HashMap::new(),
             },
             agent_id: "agent-1".to_string(),
@@ -473,7 +472,7 @@ mod tests {
             handle: AgentHandle {
                 workspace: WorkspaceHandle {
                     id: "ws-1".to_string(),
-                    backend: "pty".to_string(),
+                    backend: "acp".to_string(),
                     metadata: HashMap::new(),
                 },
                 agent_id: "agent-1".to_string(),
@@ -511,7 +510,7 @@ mod tests {
             handle: AgentHandle {
                 workspace: WorkspaceHandle {
                     id: "ws-1".to_string(),
-                    backend: "pty".to_string(),
+                    backend: "acp".to_string(),
                     metadata: HashMap::new(),
                 },
                 agent_id: "agent-1".to_string(),

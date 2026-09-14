@@ -6,6 +6,15 @@ pub mod agents;
 pub mod chats;
 pub mod conversations;
 pub mod locks;
+pub mod openapi;
 pub mod projects;
 pub mod status;
 pub mod workspaces;
+
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ApiError {
+    pub error: String,
+}

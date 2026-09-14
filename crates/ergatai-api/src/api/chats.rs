@@ -9,25 +9,27 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
 use crate::user_data_db::{self, Chat, SubChat};
 use crate::AppState;
 
 // ── Request/Response Types ───────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct ListChatsParams {
     pub project_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateChatRequest {
     pub name: Option<String>,
     pub project_id: String,
+    pub workspace_id: Option<String>,
     pub collaboration_mode: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateChatRequest {
     pub name: Option<String>,
     pub collaboration_mode: Option<Option<String>>,
@@ -38,14 +40,14 @@ pub struct UpdateChatRequest {
     pub pr_number: Option<Option<i32>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateSubChatRequest {
     pub name: Option<String>,
     pub session_id: Option<String>,
     pub mode: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateSubChatRequest {
     pub name: Option<String>,
     pub session_id: Option<String>,
@@ -53,7 +55,7 @@ pub struct UpdateSubChatRequest {
     pub messages: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct BindGroupAgentRequest {
     pub agent_id: String,
     pub agent_name: String,
@@ -62,11 +64,12 @@ pub struct BindGroupAgentRequest {
     pub sub_chat_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct AppendSubChatMessageRequest {
     pub role: String,
     pub text: String,
     #[serde(default)]
+    #[schema(value_type = Object, nullable = true)]
     pub metadata: Option<serde_json::Value>,
 }
 
@@ -81,11 +84,12 @@ pub struct RegisteredWorktreeResponse {
     pub project_path: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ChatResponse {
     pub id: String,
     pub name: Option<String>,
     pub project_id: String,
+    pub workspace_id: Option<String>,
     pub collaboration_mode: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -97,7 +101,7 @@ pub struct ChatResponse {
     pub pr_number: Option<i32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SubChatResponse {
     pub id: String,
     pub name: Option<String>,
@@ -128,6 +132,7 @@ fn chat_to_response(chat: Chat) -> ChatResponse {
         id: chat.id,
         name: chat.name,
         project_id: chat.project_id,
+        workspace_id: chat.workspace_id,
         collaboration_mode: chat.collaboration_mode,
         created_at: chat.created_at,
         updated_at: chat.updated_at,
@@ -176,6 +181,16 @@ fn generate_sub_chat_id() -> String {
 /// GET /api/v1/chats
 ///
 /// List all chats, optionally filtered by project_id.
+#[utoipa::path(
+    get,
+    path = "/api/v1/chats",
+    tag = "Chats",
+    params(ListChatsParams),
+    responses(
+        (status = 200, description = "List chats", body = Vec<ChatResponse>),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn list_chats(
     State(_state): State<AppState>,
     Query(params): Query<ListChatsParams>,
@@ -198,6 +213,16 @@ pub async fn list_chats(
 /// POST /api/v1/chats
 ///
 /// Create a new chat.
+#[utoipa::path(
+    post,
+    path = "/api/v1/chats",
+    tag = "Chats",
+    request_body = CreateChatRequest,
+    responses(
+        (status = 201, description = "Chat created", body = ChatResponse),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn create_chat(
     State(_state): State<AppState>,
     Json(req): Json<CreateChatRequest>,
@@ -211,6 +236,7 @@ pub async fn create_chat(
         id: generate_id(),
         name: req.name,
         project_id: req.project_id,
+        workspace_id: req.workspace_id,
         collaboration_mode: req
             .collaboration_mode
             .unwrap_or_else(|| "supervisor".to_string()),
@@ -242,6 +268,17 @@ pub async fn create_chat(
 /// GET /api/v1/chats/:id
 ///
 /// Get a specific chat by ID.
+#[utoipa::path(
+    get,
+    path = "/api/v1/chats/{id}",
+    tag = "Chats",
+    params(("id" = String, Path, description = "Chat ID")),
+    responses(
+        (status = 200, description = "Chat detail", body = ChatResponse),
+        (status = 404, description = "Chat not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_chat(State(_state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
     match user_data_db::chats::get(&id) {
         Ok(Some(chat)) => {
@@ -268,6 +305,18 @@ pub async fn get_chat(State(_state): State<AppState>, Path(id): Path<String>) ->
 /// PUT /api/v1/chats/:id
 ///
 /// Update an existing chat.
+#[utoipa::path(
+    put,
+    path = "/api/v1/chats/{id}",
+    tag = "Chats",
+    params(("id" = String, Path, description = "Chat ID")),
+    request_body = UpdateChatRequest,
+    responses(
+        (status = 200, description = "Chat updated", body = ChatResponse),
+        (status = 404, description = "Chat not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn update_chat(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -316,6 +365,7 @@ pub async fn update_chat(
         id: existing.id.clone(),
         name,
         project_id: existing.project_id.clone(),
+        workspace_id: existing.workspace_id.clone(),
         collaboration_mode,
         created_at: existing.created_at,
         updated_at: now,
@@ -358,6 +408,16 @@ pub async fn update_chat(
 /// POST /api/v1/chats/:id/archive
 ///
 /// Archive a chat.
+#[utoipa::path(
+    post,
+    path = "/api/v1/chats/{id}/archive",
+    tag = "Chats",
+    params(("id" = String, Path, description = "Chat ID")),
+    responses(
+        (status = 204, description = "Chat archived"),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn archive_chat(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -377,6 +437,16 @@ pub async fn archive_chat(
 /// POST /api/v1/chats/:id/unarchive
 ///
 /// Unarchive a chat (restore from archive).
+#[utoipa::path(
+    post,
+    path = "/api/v1/chats/{id}/unarchive",
+    tag = "Chats",
+    params(("id" = String, Path, description = "Chat ID")),
+    responses(
+        (status = 204, description = "Chat unarchived"),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn unarchive_chat(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -396,6 +466,16 @@ pub async fn unarchive_chat(
 /// DELETE /api/v1/chats/:id
 ///
 /// Delete a chat. This will also delete all associated sub-chats (cascade).
+#[utoipa::path(
+    delete,
+    path = "/api/v1/chats/{id}",
+    tag = "Chats",
+    params(("id" = String, Path, description = "Chat ID")),
+    responses(
+        (status = 204, description = "Chat deleted"),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn delete_chat(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -458,6 +538,16 @@ pub async fn lookup_registered_worktree(
 /// GET /api/v1/chats/:id/sub-chats
 ///
 /// List all sub-chats for a specific chat.
+#[utoipa::path(
+    get,
+    path = "/api/v1/chats/{chat_id}/sub-chats",
+    tag = "Sub-chats",
+    params(("chat_id" = String, Path, description = "Chat ID")),
+    responses(
+        (status = 200, description = "List sub-chats", body = Vec<SubChatResponse>),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn list_sub_chats(
     State(_state): State<AppState>,
     Path(chat_id): Path<String>,
@@ -481,6 +571,18 @@ pub async fn list_sub_chats(
 /// POST /api/v1/chats/:id/sub-chats
 ///
 /// Create a new sub-chat.
+#[utoipa::path(
+    post,
+    path = "/api/v1/chats/{chat_id}/sub-chats",
+    tag = "Sub-chats",
+    params(("chat_id" = String, Path, description = "Chat ID")),
+    request_body = CreateSubChatRequest,
+    responses(
+        (status = 201, description = "Sub-chat created", body = SubChatResponse),
+        (status = 404, description = "Chat not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn create_sub_chat(
     State(_state): State<AppState>,
     Path(chat_id): Path<String>,
@@ -543,6 +645,16 @@ pub async fn create_sub_chat(
 /// DELETE /api/v1/chats/:chat_id/sub-chats/:sub_chat_id
 ///
 /// Delete a sub-chat.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/chats/{chat_id}/sub-chats/{sub_chat_id}",
+    tag = "Sub-chats",
+    params(("chat_id" = String, Path, description = "Chat ID"), ("sub_chat_id" = String, Path, description = "Sub-chat ID")),
+    responses(
+        (status = 204, description = "Sub-chat deleted"),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn delete_sub_chat(
     State(_state): State<AppState>,
     Path((_chat_id, sub_chat_id)): Path<(String, String)>,
@@ -562,6 +674,17 @@ pub async fn delete_sub_chat(
 /// GET /api/v1/chats/:chat_id/sub-chats/:sub_chat_id
 ///
 /// Get a specific sub-chat.
+#[utoipa::path(
+    get,
+    path = "/api/v1/chats/{chat_id}/sub-chats/{sub_chat_id}",
+    tag = "Sub-chats",
+    params(("chat_id" = String, Path, description = "Chat ID"), ("sub_chat_id" = String, Path, description = "Sub-chat ID")),
+    responses(
+        (status = 200, description = "Sub-chat detail", body = SubChatResponse),
+        (status = 404, description = "Sub-chat not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_sub_chat(
     State(_state): State<AppState>,
     Path((_chat_id, sub_chat_id)): Path<(String, String)>,
@@ -591,6 +714,17 @@ pub async fn get_sub_chat(
 /// GET /api/v1/sub-chats/:sub_chat_id
 ///
 /// Get a sub-chat without requiring the caller to know its chat ID.
+#[utoipa::path(
+    get,
+    path = "/api/v1/sub-chats/{id}",
+    tag = "Sub-chats",
+    params(("id" = String, Path, description = "Sub-chat ID")),
+    responses(
+        (status = 200, description = "Sub-chat detail", body = SubChatResponse),
+        (status = 404, description = "Sub-chat not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_sub_chat_by_id(
     State(_state): State<AppState>,
     Path(sub_chat_id): Path<String>,
@@ -620,6 +754,18 @@ pub async fn get_sub_chat_by_id(
 /// PUT /api/v1/chats/:chat_id/sub-chats/:sub_chat_id
 ///
 /// Update a sub-chat.
+#[utoipa::path(
+    put,
+    path = "/api/v1/chats/{chat_id}/sub-chats/{sub_chat_id}",
+    tag = "Sub-chats",
+    params(("chat_id" = String, Path, description = "Chat ID"), ("sub_chat_id" = String, Path, description = "Sub-chat ID")),
+    request_body = UpdateSubChatRequest,
+    responses(
+        (status = 200, description = "Sub-chat updated", body = SubChatResponse),
+        (status = 404, description = "Sub-chat not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn update_sub_chat(
     State(_state): State<AppState>,
     Path((_chat_id, sub_chat_id)): Path<(String, String)>,
@@ -674,6 +820,18 @@ pub async fn update_sub_chat(
 /// PUT /api/v1/sub-chats/:sub_chat_id
 ///
 /// Update a sub-chat without requiring the caller to know its chat ID.
+#[utoipa::path(
+    put,
+    path = "/api/v1/sub-chats/{id}",
+    tag = "Sub-chats",
+    params(("id" = String, Path, description = "Sub-chat ID")),
+    request_body = UpdateSubChatRequest,
+    responses(
+        (status = 200, description = "Sub-chat updated", body = SubChatResponse),
+        (status = 404, description = "Sub-chat not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn update_sub_chat_by_id(
     State(_state): State<AppState>,
     Path(sub_chat_id): Path<String>,
@@ -720,6 +878,16 @@ pub async fn update_sub_chat_by_id(
 }
 
 /// GET /api/v1/chats/:chat_id/agent-bindings
+#[utoipa::path(
+    get,
+    path = "/api/v1/chats/{chat_id}/agent-bindings",
+    tag = "Agent bindings",
+    params(("chat_id" = String, Path, description = "Chat ID")),
+    responses(
+        (status = 200, description = "List agent bindings", body = Vec<crate::user_data_db::GroupAgentBinding>),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn list_agent_bindings(
     State(_state): State<AppState>,
     Path(chat_id): Path<String>,
@@ -737,6 +905,19 @@ pub async fn list_agent_bindings(
 }
 
 /// POST /api/v1/chats/:chat_id/agent-bindings
+#[utoipa::path(
+    post,
+    path = "/api/v1/chats/{chat_id}/agent-bindings",
+    tag = "Agent bindings",
+    params(("chat_id" = String, Path, description = "Chat ID")),
+    request_body = BindGroupAgentRequest,
+    responses(
+        (status = 200, description = "Agent binding saved", body = crate::user_data_db::GroupAgentBinding),
+        (status = 400, description = "Invalid binding", body = crate::api::ApiError),
+        (status = 404, description = "Chat or sub-chat not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn bind_agent(
     State(_state): State<AppState>,
     Path(chat_id): Path<String>,
@@ -818,6 +999,17 @@ pub async fn bind_agent(
 }
 
 /// DELETE /api/v1/chats/:chat_id/agent-bindings/:agent_id
+#[utoipa::path(
+    delete,
+    path = "/api/v1/chats/{chat_id}/agent-bindings/{agent_id}",
+    tag = "Agent bindings",
+    params(("chat_id" = String, Path, description = "Chat ID"), ("agent_id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 204, description = "Agent binding removed"),
+        (status = 404, description = "Agent binding not found"),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn unbind_agent(
     State(_state): State<AppState>,
     Path((chat_id, agent_id)): Path<(String, String)>,
@@ -836,7 +1028,7 @@ pub async fn unbind_agent(
 }
 
 /// Response type for GET /api/v1/chats/:chat_id/agents
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ChatAgentResponse {
     pub agent_id: String,
     pub command: String,
@@ -846,6 +1038,16 @@ pub struct ChatAgentResponse {
 
 /// GET /api/v1/chats/:chat_id/agents
 /// Returns all agents bound to this chat with their current status
+#[utoipa::path(
+    get,
+    path = "/api/v1/chats/{chat_id}/agents",
+    tag = "Agent bindings",
+    params(("chat_id" = String, Path, description = "Chat ID")),
+    responses(
+        (status = 200, description = "List chat agents", body = Vec<ChatAgentResponse>),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn list_chat_agents(
     State(_state): State<AppState>,
     Path(chat_id): Path<String>,
@@ -897,6 +1099,19 @@ pub async fn list_chat_agents(
 }
 
 /// POST /api/v1/chats/:chat_id/sub-chats/:sub_chat_id/messages
+#[utoipa::path(
+    post,
+    path = "/api/v1/chats/{chat_id}/sub-chats/{sub_chat_id}/messages",
+    tag = "Sub-chats",
+    params(("chat_id" = String, Path, description = "Chat ID"), ("sub_chat_id" = String, Path, description = "Sub-chat ID")),
+    request_body = AppendSubChatMessageRequest,
+    responses(
+        (status = 201, description = "Message appended"),
+        (status = 400, description = "Sub-chat does not belong to chat", body = crate::api::ApiError),
+        (status = 404, description = "Sub-chat not found"),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn append_sub_chat_message(
     State(_state): State<AppState>,
     Path((chat_id, sub_chat_id)): Path<(String, String)>,

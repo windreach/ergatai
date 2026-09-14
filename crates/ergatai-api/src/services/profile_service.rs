@@ -31,7 +31,7 @@ pub fn init_profile_registry() -> Result<&'static ProfileRegistry> {
         ProfileRegistry::new(PROFILE_REGISTRY_DB_PATH)
             .expect("Failed to open profile registry database")
     });
-    seed_default_profiles(&registry);
+    seed_default_profiles(registry);
     Ok(registry)
 }
 
@@ -41,16 +41,15 @@ fn seed_default_profiles(registry: &ProfileRegistry) {
     // These were manually registered before auto-seeding existed and use
     // `node .../adapters/...` commands that pass the is_installed check
     // because `node` itself is on PATH.
-    let registry_ref = registry;
-    let _ = tokio::task::block_in_place(|| {
+    tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
-            let all = match registry_ref.list().await {
+            let all = match registry.list().await {
                 Ok(items) => items,
                 Err(_) => return,
             };
             for reg in all {
                 if reg.command.contains("/adapters/") {
-                    let _ = registry_ref.delete(&reg.name).await;
+                    let _ = registry.delete(&reg.name).await;
                     tracing::info!("Removed stale adapter profile '{}'", reg.name);
                 }
             }
