@@ -61,7 +61,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             updated_at INTEGER NOT NULL
         );
 
-        -- Workspaces table (persistent workspace metadata)
+        -- Workspaces table (persistent execution scope: working directory, environment, and resources)
         CREATE TABLE IF NOT EXISTS workspaces (
             id TEXT PRIMARY KEY,
             project_id TEXT NOT NULL,
@@ -75,7 +75,8 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         );
 
-        -- Chats table (conversations within workspaces)
+        -- Chats table (conversation containers; workspace_id references a related workspace,
+        -- but a chat and a workspace remain distinct entities)
         CREATE TABLE IF NOT EXISTS chats (
             id TEXT PRIMARY KEY,
             name TEXT,
@@ -94,7 +95,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE SET NULL
         );
 
-        -- Sub-chats table (conversation threads)
+        -- Sub-chats table (individual conversation threads within a chat)
         CREATE TABLE IF NOT EXISTS sub_chats (
             id TEXT PRIMARY KEY,
             name TEXT,
@@ -107,7 +108,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
         );
 
-        -- Stable binding between a group chat, a backend agent, and its own thread
+        -- Stable binding between a group-mode chat, a backend agent, and its own thread
         CREATE TABLE IF NOT EXISTS group_agent_bindings (
             workspace_id TEXT NOT NULL,
             chat_id TEXT NOT NULL,
@@ -139,8 +140,9 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
     // Migration: Remove `stream_id` column from sub_chats if it exists
     let _ = conn.execute_batch("ALTER TABLE sub_chats DROP COLUMN stream_id;");
 
-    // Migration: Add `workspace_id` column to group_agent_bindings if it doesn't exist
-    // For existing rows, copy chat_id as workspace_id (backward compatibility for 1:1 mapping)
+    // Migration: Add `workspace_id` column to group_agent_bindings if it doesn't exist.
+    // Legacy rows predate a separate workspace ID and used the chat ID as the workspace identifier.
+    // Backfill it only so old rows keep resolving; the current model keeps workspace and chat IDs distinct.
     let _ = conn.execute_batch(
         "ALTER TABLE group_agent_bindings ADD COLUMN workspace_id TEXT NOT NULL DEFAULT '';",
     );
@@ -148,8 +150,8 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         "UPDATE group_agent_bindings SET workspace_id = chat_id WHERE workspace_id = '';",
     );
 
-    // Migration: Add `workspace_id` column to chats if it doesn't exist
-    // For existing rows, set workspace_id to NULL (they need to be associated with a workspace explicitly)
+    // Migration: Add `workspace_id` column to chats if it doesn't exist.
+    // Existing rows are left unlinked rather than assuming that a chat is itself a workspace.
     let _ = conn.execute_batch(
         "ALTER TABLE chats ADD COLUMN workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL;",
     );
@@ -572,57 +574,52 @@ pub mod chats {
         Ok(chat)
     }
 
-    pub fn list(project_id: Option<&str>) -> Result<Vec<Chat>> {
+    pub fn list(project_id: Option<&str>, workspace_id: Option<&str>) -> Result<Vec<Chat>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
-        if let Some(pid) = project_id {
-            let mut stmt = conn.prepare(
-                "SELECT id, name, project_id, workspace_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number
-                 FROM chats WHERE project_id = ?1 ORDER BY created_at DESC"
-            )?;
-            let chats = stmt.query_map(params![pid], |row| {
-                Ok(Chat {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    project_id: row.get(2)?,
-                    workspace_id: row.get(3)?,
-                    collaboration_mode: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
-                    archived_at: row.get(7)?,
-                    worktree_path: row.get(8)?,
-                    branch: row.get(9)?,
-                    base_branch: row.get(10)?,
-                    pr_url: row.get(11)?,
-                    pr_number: row.get(12)?,
-                })
-            })?;
-            chats.collect()
-        } else {
-            let mut stmt = conn.prepare(
-                "SELECT id, name, project_id, workspace_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number
-                 FROM chats ORDER BY created_at DESC"
-            )?;
-            let chats = stmt.query_map([], |row| {
-                Ok(Chat {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    project_id: row.get(2)?,
-                    workspace_id: row.get(3)?,
-                    collaboration_mode: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
-                    archived_at: row.get(7)?,
-                    worktree_path: row.get(8)?,
-                    branch: row.get(9)?,
-                    base_branch: row.get(10)?,
-                    pr_url: row.get(11)?,
-                    pr_number: row.get(12)?,
-                })
-            })?;
-            chats.collect()
-        }
+        let select = "SELECT id, name, project_id, workspace_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number";
+        let (query, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            match (project_id, workspace_id) {
+                (Some(pid), Some(wid)) => (
+                    format!("{select} FROM chats WHERE project_id = ?1 AND workspace_id = ?2 ORDER BY created_at DESC"),
+                    vec![Box::new(pid.to_string()), Box::new(wid.to_string())],
+                ),
+                (Some(pid), None) => (
+                    format!("{select} FROM chats WHERE project_id = ?1 ORDER BY created_at DESC"),
+                    vec![Box::new(pid.to_string())],
+                ),
+                (None, Some(wid)) => (
+                    format!("{select} FROM chats WHERE workspace_id = ?1 ORDER BY created_at DESC"),
+                    vec![Box::new(wid.to_string())],
+                ),
+                (None, None) => (
+                    format!("{select} FROM chats ORDER BY created_at DESC"),
+                    vec![],
+                ),
+            };
+
+        let mut stmt = conn.prepare(&query)?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+        let chats = stmt.query_map(params_refs.as_slice(), |row| {
+            Ok(Chat {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                project_id: row.get(2)?,
+                workspace_id: row.get(3)?,
+                collaboration_mode: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                archived_at: row.get(7)?,
+                worktree_path: row.get(8)?,
+                branch: row.get(9)?,
+                base_branch: row.get(10)?,
+                pr_url: row.get(11)?,
+                pr_number: row.get(12)?,
+            })
+        })?;
+        chats.collect()
     }
 
     pub fn get(id: &str) -> Result<Option<Chat>> {
@@ -1174,5 +1171,139 @@ mod tests {
         assert!(deleted.is_none());
 
         let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    fn make_chat(id: &str, project_id: &str, workspace_id: Option<&str>) -> Chat {
+        Chat {
+            id: id.to_string(),
+            name: Some(format!("Chat {id}")),
+            project_id: project_id.to_string(),
+            workspace_id: workspace_id.map(|s| s.to_string()),
+            collaboration_mode: "none".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+            archived_at: None,
+            worktree_path: None,
+            branch: None,
+            base_branch: None,
+            pr_url: None,
+            pr_number: None,
+        }
+    }
+
+    // NOTE: This test shares the process-global USER_DATA_DB (Lazy<...>).
+    // Use unique IDs to avoid collisions with other tests, and clean up afterward.
+    // For full isolation, run with `cargo test -- --test-threads=1`.
+
+    #[test]
+    fn test_chat_list_all_filter_combinations() {
+        let prefix = format!("cl-{}", std::process::id());
+        let pid1 = format!("{prefix}-p1");
+        let pid2 = format!("{prefix}-p2");
+        let wid1 = format!("{prefix}-w1");
+        let wid2 = format!("{prefix}-w2");
+        let wid3 = format!("{prefix}-w3");
+        let cid1 = format!("{prefix}-c1");
+        let cid2 = format!("{prefix}-c2");
+        let cid3 = format!("{prefix}-c3");
+
+        // Create parent records (FK constraints)
+        let p1 = Project {
+            id: pid1.clone(),
+            name: "P1".into(),
+            path: format!("/tmp/{pid1}"),
+            git_remote_url: None,
+            git_provider: None,
+            git_owner: None,
+            git_repo: None,
+            icon_path: None,
+            created_at: 1000,
+            updated_at: 1000,
+        };
+        let p2 = Project {
+            id: pid2.clone(),
+            name: "P2".into(),
+            path: format!("/tmp/{pid2}"),
+            git_remote_url: None,
+            git_provider: None,
+            git_owner: None,
+            git_repo: None,
+            icon_path: None,
+            created_at: 1000,
+            updated_at: 1000,
+        };
+        projects::create(p1).unwrap();
+        projects::create(p2).unwrap();
+
+        let w1 = Workspace {
+            id: wid1.clone(),
+            project_id: pid1.clone(),
+            name: Some("W1".into()),
+            work_dir: format!("/tmp/{wid1}"),
+            env: "{}".into(),
+            resources: "{}".into(),
+            capture_thoughts: false,
+            created_at: 1000,
+            updated_at: 1000,
+        };
+        let w2 = Workspace {
+            id: wid2.clone(),
+            project_id: pid1.clone(),
+            name: Some("W2".into()),
+            work_dir: format!("/tmp/{wid2}"),
+            env: "{}".into(),
+            resources: "{}".into(),
+            capture_thoughts: false,
+            created_at: 1000,
+            updated_at: 1000,
+        };
+        let w3 = Workspace {
+            id: wid3.clone(),
+            project_id: pid2.clone(),
+            name: Some("W3".into()),
+            work_dir: format!("/tmp/{wid3}"),
+            env: "{}".into(),
+            resources: "{}".into(),
+            capture_thoughts: false,
+            created_at: 1000,
+            updated_at: 1000,
+        };
+        workspaces::create(w1).unwrap();
+        workspaces::create(w2).unwrap();
+        workspaces::create(w3).unwrap();
+
+        // Insert test chats
+        chats::create(make_chat(&cid1, &pid1, Some(&wid1))).unwrap();
+        chats::create(make_chat(&cid2, &pid1, Some(&wid2))).unwrap();
+        chats::create(make_chat(&cid3, &pid2, Some(&wid3))).unwrap();
+
+        // Branch 1: no filters → at least 3 (may include data from other tests)
+        let all = chats::list(None, None).unwrap();
+        assert!(all.len() >= 3);
+
+        // Branch 2: project_id only → 2 (pid1)
+        let by_project = chats::list(Some(&pid1), None).unwrap();
+        assert_eq!(by_project.len(), 2);
+        assert!(by_project.iter().all(|c| c.project_id == pid1));
+
+        // Branch 3: workspace_id only → 1 (wid1)
+        let by_workspace = chats::list(None, Some(&wid1)).unwrap();
+        assert_eq!(by_workspace.len(), 1);
+        assert_eq!(by_workspace[0].id, cid1);
+
+        // Branch 4: both filters → 1 (pid1 + wid1)
+        let by_both = chats::list(Some(&pid1), Some(&wid1)).unwrap();
+        assert_eq!(by_both.len(), 1);
+        assert_eq!(by_both[0].id, cid1);
+
+        // Cleanup
+        let _ = chats::get(&cid1);
+        let _ = chats::get(&cid2);
+        let _ = chats::get(&cid3);
+        let _ = workspaces::delete(&wid1);
+        let _ = workspaces::delete(&wid2);
+        let _ = workspaces::delete(&wid3);
+        let _ = projects::delete(&pid1);
+        let _ = projects::delete(&pid2);
     }
 }

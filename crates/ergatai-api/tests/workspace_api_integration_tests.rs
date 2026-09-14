@@ -22,8 +22,8 @@ fn ensure_app_context_initialized() {
             None,
             ergatai_api::user_data_db::get_user_data_db(),
         );
-        // Ignore error if already initialized (can happen in parallel tests)
-        let _ = ergatai_api::context::init_app_context(ctx);
+        // Already-initialized case is handled inside init_app_context
+        ergatai_api::context::init_app_context(ctx);
     });
 }
 

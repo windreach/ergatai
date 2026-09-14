@@ -19,6 +19,7 @@ use crate::AppState;
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ListChatsParams {
     pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -195,7 +196,7 @@ pub async fn list_chats(
     State(_state): State<AppState>,
     Query(params): Query<ListChatsParams>,
 ) -> impl IntoResponse {
-    match user_data_db::chats::list(params.project_id.as_deref()) {
+    match user_data_db::chats::list(params.project_id.as_deref(), params.workspace_id.as_deref()) {
         Ok(chats) => {
             let response: Vec<ChatResponse> = chats.into_iter().map(chat_to_response).collect();
             (StatusCode::OK, Json(response)).into_response()

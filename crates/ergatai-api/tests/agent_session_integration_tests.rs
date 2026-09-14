@@ -323,7 +323,7 @@ async fn test_multiple_agents_same_command() {
     // Scenario: Chat has multiple codex agents bound
     // Expected: Use the first alive one
 
-    let bindings = vec![
+    let bindings = [
         ChatAgentResponse {
             agent_id: "codex-1".to_string(),
             command: "codex".to_string(),
