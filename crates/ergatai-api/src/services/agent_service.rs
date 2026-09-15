@@ -3,9 +3,11 @@
 //! 将 handler 中重复的 backend trait 方法调用封装到 service 层，
 //! handler 只负责 HTTP 协议细节（响应格式化、状态码映射）。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Mutex, OnceLock};
 
 use ergatai_runtime::{ElicitationResponse, TrackedElicitation, TrackedPlan, TrackedToolCall};
+use tokio::sync::Notify;
 
 // ── Backend access helper ──
 
@@ -15,6 +17,30 @@ fn backend() -> std::sync::Arc<dyn ergatai_runtime::backend::AcpBackendInterface
         .agent_runtime
         .backend()
         .clone()
+}
+
+#[derive(Default)]
+struct PromptQueueState {
+    queues: Mutex<HashMap<String, VecDeque<PendingPrompt>>>,
+    dispatch_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    notify: Notify,
+}
+
+static PROMPT_QUEUE_STATE: OnceLock<PromptQueueState> = OnceLock::new();
+
+fn prompt_queue_state() -> &'static PromptQueueState {
+    PROMPT_QUEUE_STATE.get_or_init(PromptQueueState::default)
+}
+
+fn dispatch_lock(agent_id: &str) -> anyhow::Result<std::sync::Arc<tokio::sync::Mutex<()>>> {
+    let state = prompt_queue_state();
+    Ok(state
+        .dispatch_locks
+        .lock()
+        .map_err(|error| anyhow::anyhow!("Prompt dispatch lock registry poisoned: {}", error))?
+        .entry(agent_id.to_string())
+        .or_default()
+        .clone())
 }
 
 // ── Per-agent queries ──
@@ -137,43 +163,173 @@ pub struct PendingPrompt {
 }
 
 /// Enqueue a prompt for an agent.
-pub fn enqueue_prompt(_agent_id: &str, _prompt: PendingPrompt) -> anyhow::Result<()> {
-    anyhow::bail!("Prompt queue not yet implemented")
+pub fn enqueue_prompt(agent_id: &str, prompt: PendingPrompt) -> anyhow::Result<()> {
+    let state = prompt_queue_state();
+    state
+        .queues
+        .lock()
+        .map_err(|error| anyhow::anyhow!("Prompt queue lock poisoned: {}", error))?
+        .entry(agent_id.to_string())
+        .or_default()
+        .push_back(prompt);
+    state.notify.notify_one();
+    Ok(())
 }
 
 /// Wait for a pending prompt turn to complete.
 /// Returns `true` if the turn was found, `false` if not.
-pub async fn wait_pending_prompt_turn(_agent_id: &str, _prompt_id: &str) -> bool {
-    // TODO: Implement wait logic — for now, always return false to indicate not found
-    false
+pub async fn wait_pending_prompt_turn(agent_id: &str, prompt_id: &str) -> bool {
+    let state = prompt_queue_state();
+    let Ok(queues) = state.queues.lock() else {
+        return false;
+    };
+
+    queues
+        .get(agent_id)
+        .is_some_and(|queue| queue.iter().any(|prompt| prompt.id == prompt_id))
+}
+
+/// Claim the next queued prompt for an SSE subscriber.
+///
+/// The returned guard is held while the prompt executes, so a later prompt's
+/// stream cannot subscribe while the previous turn is still producing events.
+pub async fn claim_pending_prompt(
+    agent_id: &str,
+    prompt_id: &str,
+) -> anyhow::Result<(PendingPrompt, tokio::sync::OwnedMutexGuard<()>)> {
+    let state = prompt_queue_state();
+    loop {
+        let head_id = {
+            let queues = state
+                .queues
+                .lock()
+                .map_err(|error| anyhow::anyhow!("Prompt queue lock poisoned: {}", error))?;
+            queues
+                .get(agent_id)
+                .and_then(VecDeque::front)
+                .map(|prompt| prompt.id.clone())
+        };
+
+        match head_id {
+            Some(head_id) if head_id == prompt_id => {}
+            Some(_) => {
+                state.notify.notified().await;
+                continue;
+            }
+            None => anyhow::bail!("Prompt {} not found", prompt_id),
+        }
+
+        let dispatch_lock = dispatch_lock(agent_id)?;
+        let dispatch_guard = dispatch_lock.clone().lock_owned().await;
+        let mut queues = state
+            .queues
+            .lock()
+            .map_err(|error| anyhow::anyhow!("Prompt queue lock poisoned: {}", error))?;
+        let is_head = queues
+            .get(agent_id)
+            .and_then(VecDeque::front)
+            .is_some_and(|head| head.id == prompt_id);
+        if !is_head {
+            state.notify.notify_one();
+            continue;
+        }
+
+        let prompt = queues
+            .get_mut(agent_id)
+            .expect("prompt queue exists")
+            .pop_front()
+            .expect("checked prompt queue head");
+        state.notify.notify_one();
+        return Ok((prompt, dispatch_guard));
+    }
 }
 
 /// Run a pending prompt by agent ID and optional prompt ID.
-pub async fn run_pending_prompt(_agent_id: &str, _prompt_id: Option<&str>) -> anyhow::Result<()> {
-    anyhow::bail!("Prompt execution not yet implemented")
+pub async fn run_pending_prompt(agent_id: &str, prompt_id: Option<&str>) -> anyhow::Result<()> {
+    let state = prompt_queue_state();
+    let dispatch_lock = dispatch_lock(agent_id)?;
+    let _dispatch_guard = dispatch_lock.lock().await;
+
+    let prompt = loop {
+        let next_prompt = {
+            let queues = state
+                .queues
+                .lock()
+                .map_err(|error| anyhow::anyhow!("Prompt queue lock poisoned: {}", error))?;
+            queues.get(agent_id).and_then(VecDeque::front).cloned()
+        };
+
+        match next_prompt {
+            Some(prompt) if prompt_id.is_none_or(|id| prompt.id == id) => break prompt,
+            Some(_) => state.notify.notified().await,
+            None => anyhow::bail!("Prompt not found"),
+        }
+    };
+
+    {
+        let mut queues = state
+            .queues
+            .lock()
+            .map_err(|error| anyhow::anyhow!("Prompt queue lock poisoned: {}", error))?;
+        let is_head = queues
+            .get(agent_id)
+            .and_then(VecDeque::front)
+            .is_some_and(|head| head.id == prompt.id);
+        if !is_head {
+            anyhow::bail!("Prompt queue changed before prompt {} could run", prompt.id);
+        }
+        queues
+            .get_mut(agent_id)
+            .expect("prompt queue exists")
+            .pop_front();
+    }
+    state.notify.notify_one();
+
+    prompt_agent_with_images(&prompt.agent_id, &prompt.message, prompt.images).await
 }
 
 /// Flush pending prompts for an agent.
-pub async fn flush_pending_prompt(_agent_id: &str) {
-    // TODO: Implement flush logic — no-op until queue is implemented
+pub async fn flush_pending_prompt(agent_id: &str) {
+    loop {
+        let next_prompt = {
+            let Ok(queues) = prompt_queue_state().queues.lock() else {
+                return;
+            };
+            queues.get(agent_id).and_then(VecDeque::front).cloned()
+        };
+
+        let Some(prompt) = next_prompt else {
+            break;
+        };
+        if run_pending_prompt(agent_id, Some(&prompt.id))
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
 }
 
 /// Prompt an agent with images.
 pub async fn prompt_agent_with_images(
-    _agent_id: &str,
-    _message: &str,
-    _images: Vec<ergatai_runtime::AgentImage>,
+    agent_id: &str,
+    message: &str,
+    images: Vec<ergatai_runtime::AgentImage>,
 ) -> anyhow::Result<()> {
-    anyhow::bail!("Image prompt not yet implemented")
+    crate::context::get_app_context()
+        .agent_runtime
+        .inject_message_with_images(agent_id, message, images)
+        .await?;
+    Ok(())
 }
 
 /// Prompt an agent with persistence.
 pub async fn prompt_agent_with_persistence(
-    _agent_id: &str,
-    _prompt: PendingPrompt,
+    agent_id: &str,
+    prompt: PendingPrompt,
     _session_id: Option<&str>,
 ) -> anyhow::Result<()> {
-    anyhow::bail!("Persistent prompt not yet implemented")
+    prompt_agent_with_images(agent_id, &prompt.message, prompt.images).await
 }
 
 /// Cancel the current prompt turn for an agent (sends ACP `session/cancel`).

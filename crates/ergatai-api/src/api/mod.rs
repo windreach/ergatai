@@ -9,6 +9,7 @@ pub mod locks;
 pub mod openapi;
 pub mod projects;
 pub mod status;
+pub mod user_conversations;
 pub mod workspaces;
 
 use serde::{Deserialize, Serialize};

@@ -9,7 +9,7 @@
 //! - Centralized backup
 
 use once_cell::sync::Lazy;
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection, OptionalExtension, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -108,7 +108,74 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
         );
 
-        -- Stable binding between a group-mode chat, a backend agent, and its own thread
+        -- Unified conversation tree. A conversation is either a root scoped to a
+        -- workspace or a child scoped to its parent. Both roots and children are
+        -- the same entity; parent_id is the only hierarchy boundary.
+        CREATE TABLE IF NOT EXISTS conversations (
+            id TEXT PRIMARY KEY,
+            parent_id TEXT,
+            project_id TEXT NOT NULL,
+            workspace_id TEXT,
+            name TEXT,
+            mode TEXT NOT NULL DEFAULT 'agent',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            FOREIGN KEY (parent_id) REFERENCES conversations(id) ON DELETE CASCADE,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE SET NULL
+        );
+
+        -- Durable messages belong to exactly one conversation.
+        CREATE TABLE IF NOT EXISTS messages (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            parts TEXT NOT NULL,
+            metadata TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+            UNIQUE (conversation_id, sequence)
+        );
+
+        -- Runtime identity is separate from conversation identity.
+        CREATE TABLE IF NOT EXISTS agent_sessions (
+            conversation_id TEXT PRIMARY KEY,
+            session_id TEXT,
+            mode TEXT NOT NULL DEFAULT 'agent',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        );
+
+        -- Git/PR execution context is separate from conversation identity.
+        CREATE TABLE IF NOT EXISTS conversation_execution_contexts (
+            conversation_id TEXT PRIMARY KEY,
+            worktree_path TEXT,
+            branch TEXT,
+            base_branch TEXT,
+            pr_url TEXT,
+            pr_number INTEGER,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        );
+
+        -- Stable binding between a root conversation, a backend agent, and its thread.
+        CREATE TABLE IF NOT EXISTS conversation_agent_bindings (
+            workspace_id TEXT NOT NULL,
+            chat_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            agent_name TEXT NOT NULL,
+            agent_command TEXT,
+            sub_chat_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (chat_id, agent_id),
+            FOREIGN KEY (chat_id) REFERENCES conversations(id) ON DELETE CASCADE,
+            FOREIGN KEY (sub_chat_id) REFERENCES conversations(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS group_agent_bindings (
             workspace_id TEXT NOT NULL,
             chat_id TEXT NOT NULL,
@@ -130,6 +197,12 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_chat_id ON group_agent_bindings(chat_id);
         CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_agent_id ON group_agent_bindings(agent_id);
         CREATE INDEX IF NOT EXISTS idx_chats_archived_at ON chats(archived_at);
+        CREATE INDEX IF NOT EXISTS idx_conversations_parent_id ON conversations(parent_id);
+        CREATE INDEX IF NOT EXISTS idx_conversations_project_id ON conversations(project_id);
+        CREATE INDEX IF NOT EXISTS idx_conversations_workspace_id ON conversations(workspace_id);
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_conversation_agent_bindings_agent_id
+            ON conversation_agent_bindings(agent_id);
         "#,
     )?;
 
@@ -162,6 +235,116 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
     let _ = conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_workspace_id ON group_agent_bindings(workspace_id);",
     );
+
+    migrate_legacy_conversations(conn)?;
+
+    Ok(())
+}
+
+/// Copy legacy chat/sub-chat rows into the unified conversation model.
+///
+/// The legacy tables remain only as migration sources; all runtime reads and
+/// writes use the unified tables after startup.
+fn migrate_legacy_conversations(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        INSERT OR IGNORE INTO conversations
+            (id, parent_id, project_id, workspace_id, name, mode, created_at, updated_at, archived_at)
+        SELECT id, NULL, project_id, workspace_id, name, collaboration_mode,
+               created_at, updated_at, archived_at
+        FROM chats;
+
+        INSERT OR IGNORE INTO conversation_execution_contexts
+            (conversation_id, worktree_path, branch, base_branch, pr_url, pr_number)
+        SELECT id, worktree_path, branch, base_branch, pr_url, pr_number
+        FROM chats
+        WHERE id IN (SELECT id FROM conversations);
+
+        INSERT OR IGNORE INTO conversations
+            (id, parent_id, project_id, workspace_id, name, mode, created_at, updated_at, archived_at)
+        SELECT s.id, c.id, c.project_id, c.workspace_id, s.name, s.mode,
+               s.created_at, s.updated_at, NULL
+        FROM sub_chats AS s
+        JOIN chats AS c ON c.id = s.chat_id;
+
+        INSERT OR IGNORE INTO agent_sessions
+            (conversation_id, session_id, mode, created_at, updated_at)
+        SELECT s.id, s.session_id, s.mode, s.created_at, s.updated_at
+        FROM sub_chats AS s
+        WHERE s.id IN (SELECT id FROM conversations);
+
+        INSERT OR IGNORE INTO conversation_agent_bindings
+            (workspace_id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at)
+        SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
+        FROM group_agent_bindings
+        WHERE chat_id IN (SELECT id FROM conversations)
+          AND sub_chat_id IN (SELECT id FROM conversations);
+        "#,
+    )?;
+
+    // Legacy messages are stored as a JSON array inside each sub-chat row.
+    // Expand them once; stable synthetic IDs make this migration idempotent.
+    let mut stmt = conn.prepare(
+        "SELECT id, messages, created_at FROM sub_chats WHERE id IN (SELECT id FROM conversations)",
+    )?;
+    let legacy_sub_chats = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    for (conversation_id, legacy_messages, fallback_created_at) in legacy_sub_chats {
+        let parsed: serde_json::Value =
+            serde_json::from_str(&legacy_messages).unwrap_or_else(|_| serde_json::json!([]));
+        let Some(items) = parsed.as_array() else {
+            continue;
+        };
+
+        for (index, value) in items.iter().enumerate() {
+            let message_id = value
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("legacy_{}_{}", conversation_id, index));
+            let role = value
+                .get("role")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("user")
+                .to_string();
+            let parts = match value.get("parts") {
+                Some(parts) => parts.to_string(),
+                None => value.to_string(),
+            };
+            let metadata = value
+                .get("metadata")
+                .filter(|value| !value.is_null())
+                .map(serde_json::Value::to_string);
+            let timestamp = value
+                .get("createdAt")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(fallback_created_at);
+
+            conn.execute(
+                "INSERT OR IGNORE INTO messages
+                    (id, conversation_id, sequence, role, parts, metadata, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                params![
+                    message_id,
+                    conversation_id,
+                    index as i64,
+                    role,
+                    parts,
+                    metadata,
+                    timestamp,
+                ],
+            )?;
+        }
+    }
 
     Ok(())
 }
@@ -229,6 +412,50 @@ pub struct SubChat {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Conversation {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub project_id: String,
+    pub workspace_id: Option<String>,
+    pub name: Option<String>,
+    pub mode: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub archived_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Message {
+    pub id: String,
+    pub conversation_id: String,
+    pub sequence: i64,
+    pub role: String,
+    pub parts: String,
+    pub metadata: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AgentSession {
+    pub conversation_id: String,
+    pub session_id: Option<String>,
+    pub mode: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ConversationExecutionContext {
+    pub conversation_id: String,
+    pub worktree_path: Option<String>,
+    pub branch: Option<String>,
+    pub base_branch: Option<String>,
+    pub pr_url: Option<String>,
+    pub pr_number: Option<i32>,
+}
+
 /// Binding between a group chat and a runtime agent.
 ///
 /// ## Matching Logic
@@ -260,6 +487,461 @@ pub struct GroupAgentBinding {
 }
 
 // ── CRUD Operations ──────────────────────────────────────────────────────────
+
+pub mod conversations {
+    use super::*;
+
+    pub fn row_to_conversation(row: &rusqlite::Row<'_>) -> Result<Conversation> {
+        Ok(Conversation {
+            id: row.get(0)?,
+            parent_id: row.get(1)?,
+            project_id: row.get(2)?,
+            workspace_id: row.get(3)?,
+            name: row.get(4)?,
+            mode: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+            archived_at: row.get(8)?,
+        })
+    }
+
+    pub const CONVERSATION_COLUMNS: &str =
+        "id, parent_id, project_id, workspace_id, name, mode, created_at, updated_at, archived_at";
+
+    pub fn create(conversation: Conversation) -> Result<Conversation> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        if let Some(parent_id) = &conversation.parent_id {
+            let (project_id, workspace_id): (String, Option<String>) = conn.query_row(
+                "SELECT project_id, workspace_id FROM conversations WHERE id = ?1",
+                params![parent_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+
+            if conversation.project_id != project_id {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "conversation parent and child must belong to the same project".to_string(),
+                ));
+            }
+            if conversation.workspace_id.is_some() && conversation.workspace_id != workspace_id {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "conversation parent and child must belong to the same workspace".to_string(),
+                ));
+            }
+        }
+
+        conn.execute(
+            "INSERT INTO conversations (id, parent_id, project_id, workspace_id, name, mode, created_at, updated_at, archived_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                conversation.id,
+                conversation.parent_id,
+                conversation.project_id,
+                conversation.workspace_id,
+                conversation.name,
+                conversation.mode,
+                conversation.created_at,
+                conversation.updated_at,
+                conversation.archived_at,
+            ],
+        )?;
+
+        Ok(conversation)
+    }
+
+    pub fn list_roots(
+        project_id: Option<&str>,
+        workspace_id: Option<&str>,
+    ) -> Result<Vec<Conversation>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let (where_clause, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            match (project_id, workspace_id) {
+                (Some(project_id), Some(workspace_id)) => (
+                    "WHERE parent_id IS NULL AND project_id = ?1 AND workspace_id = ?2".to_string(),
+                    vec![
+                        Box::new(project_id.to_string()),
+                        Box::new(workspace_id.to_string()),
+                    ],
+                ),
+                (Some(project_id), None) => (
+                    "WHERE parent_id IS NULL AND project_id = ?1".to_string(),
+                    vec![Box::new(project_id.to_string())],
+                ),
+                (None, Some(workspace_id)) => (
+                    "WHERE parent_id IS NULL AND workspace_id = ?1".to_string(),
+                    vec![Box::new(workspace_id.to_string())],
+                ),
+                (None, None) => ("WHERE parent_id IS NULL".to_string(), vec![]),
+            };
+
+        let query = format!(
+            "SELECT {CONVERSATION_COLUMNS} FROM conversations {where_clause} ORDER BY created_at DESC"
+        );
+        let mut stmt = conn.prepare(&query)?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|param| param.as_ref()).collect();
+        let conversations = stmt.query_map(params_refs.as_slice(), row_to_conversation)?;
+        conversations.collect()
+    }
+
+    pub fn list_children(parent_id: &str) -> Result<Vec<Conversation>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {CONVERSATION_COLUMNS} FROM conversations WHERE parent_id = ?1 ORDER BY created_at ASC"
+        ))?;
+        let conversations = stmt.query_map(params![parent_id], row_to_conversation)?;
+        conversations.collect()
+    }
+
+    pub fn get(id: &str) -> Result<Option<Conversation>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {CONVERSATION_COLUMNS} FROM conversations WHERE id = ?1"
+        ))?;
+        let mut rows = stmt.query_map(params![id], row_to_conversation)?;
+        rows.next().transpose()
+    }
+
+    pub fn update(conversation: Conversation) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "UPDATE conversations
+             SET parent_id = ?1, project_id = ?2, workspace_id = ?3, name = ?4, mode = ?5,
+                 archived_at = ?6, updated_at = ?7
+             WHERE id = ?8",
+            params![
+                conversation.parent_id,
+                conversation.project_id,
+                conversation.workspace_id,
+                conversation.name,
+                conversation.mode,
+                conversation.archived_at,
+                conversation.updated_at,
+                conversation.id,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn archive(id: &str, archived_at: i64) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "UPDATE conversations SET archived_at = ?1, updated_at = ?1 WHERE id = ?2",
+            params![archived_at, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn unarchive(id: &str, updated_at: i64) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "UPDATE conversations SET archived_at = NULL, updated_at = ?1 WHERE id = ?2",
+            params![updated_at, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete(id: &str) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn resolve_workspace_id(id: &str) -> Result<Option<String>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.query_row(
+            "WITH RECURSIVE lineage AS (
+                SELECT id, parent_id, workspace_id FROM conversations WHERE id = ?1
+                UNION ALL
+                SELECT conversations.id, conversations.parent_id, conversations.workspace_id
+                FROM conversations JOIN lineage ON conversations.id = lineage.parent_id
+             )
+             SELECT workspace_id FROM lineage WHERE workspace_id IS NOT NULL LIMIT 1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+    }
+}
+
+pub mod messages {
+    use super::*;
+
+    pub fn list(conversation_id: &str) -> Result<Vec<Message>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, sequence, role, parts, metadata, created_at, updated_at
+             FROM messages WHERE conversation_id = ?1 ORDER BY sequence ASC",
+        )?;
+        let messages = stmt.query_map(params![conversation_id], |row| {
+            Ok(Message {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                sequence: row.get(2)?,
+                role: row.get(3)?,
+                parts: row.get(4)?,
+                metadata: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?;
+        messages.collect()
+    }
+
+    pub fn append(
+        conversation_id: &str,
+        role: &str,
+        parts: serde_json::Value,
+        metadata: serde_json::Value,
+    ) -> Result<Message> {
+        let db = get_user_data_db();
+        let mut conn = db.lock().unwrap();
+        let transaction = conn.transaction()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let sequence: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
+            params![conversation_id],
+            |row| row.get(0),
+        )?;
+        let message = Message {
+            id: format!("msg_{}", uuid::Uuid::new_v4()),
+            conversation_id: conversation_id.to_string(),
+            sequence,
+            role: role.to_string(),
+            parts: parts.to_string(),
+            metadata: if metadata.is_null() {
+                None
+            } else {
+                Some(metadata.to_string())
+            },
+            created_at: now,
+            updated_at: now,
+        };
+
+        transaction.execute(
+            "INSERT INTO messages (id, conversation_id, sequence, role, parts, metadata, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                message.id,
+                message.conversation_id,
+                message.sequence,
+                message.role,
+                message.parts,
+                message.metadata,
+                message.created_at,
+                message.updated_at,
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![now, conversation_id],
+        )?;
+        transaction.commit()?;
+        Ok(message)
+    }
+
+    pub fn replace_legacy(conversation_id: &str, messages: &str, updated_at: i64) -> Result<()> {
+        let parsed: serde_json::Value = serde_json::from_str(messages).map_err(|_| {
+            rusqlite::Error::InvalidParameterName("messages must be a JSON array".to_string())
+        })?;
+        let Some(items) = parsed.as_array() else {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "messages must be a JSON array".to_string(),
+            ));
+        };
+
+        let db = get_user_data_db();
+        let mut conn = db.lock().unwrap();
+        let transaction = conn.transaction()?;
+        transaction.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1",
+            params![conversation_id],
+        )?;
+
+        for (index, value) in items.iter().enumerate() {
+            let role = value
+                .get("role")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("user");
+            let parts = value.get("parts").cloned().unwrap_or_else(|| value.clone());
+            let metadata = value
+                .get("metadata")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            transaction.execute(
+                "INSERT INTO messages (id, conversation_id, sequence, role, parts, metadata, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                params![
+                    value.get("id").and_then(serde_json::Value::as_str).unwrap_or(&format!("msg_{}", uuid::Uuid::new_v4())),
+                    conversation_id,
+                    index as i64,
+                    role,
+                    parts.to_string(),
+                    if metadata.is_null() { None } else { Some(metadata.to_string()) },
+                    updated_at,
+                ],
+            )?;
+        }
+
+        transaction.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![updated_at, conversation_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn serialize_legacy(conversation_id: &str) -> Result<String> {
+        let messages = list(conversation_id)?;
+        let values = messages
+            .into_iter()
+            .map(|message| {
+                let parts: serde_json::Value = serde_json::from_str(&message.parts)
+                    .unwrap_or(serde_json::Value::String(message.parts.clone()));
+                let metadata: serde_json::Value = message
+                    .metadata
+                    .as_deref()
+                    .and_then(|metadata| serde_json::from_str(metadata).ok())
+                    .unwrap_or(serde_json::Value::Null);
+                serde_json::json!({
+                    "id": message.id,
+                    "role": message.role,
+                    "parts": parts,
+                    "metadata": metadata,
+                    "createdAt": message.created_at,
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::to_string(&values)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+    }
+}
+
+pub mod agent_sessions {
+    use super::*;
+
+    pub fn upsert(
+        conversation_id: &str,
+        session_id: Option<&str>,
+        mode: &str,
+        timestamp: i64,
+    ) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO agent_sessions (conversation_id, session_id, mode, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(conversation_id) DO UPDATE SET
+               session_id = excluded.session_id,
+               mode = excluded.mode,
+               updated_at = excluded.updated_at",
+            params![conversation_id, session_id, mode, timestamp],
+        )?;
+        Ok(())
+    }
+
+    pub fn get(conversation_id: &str) -> Result<Option<String>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            "SELECT session_id FROM agent_sessions WHERE conversation_id = ?1",
+            params![conversation_id],
+            |row| row.get(0),
+        )
+        .optional()
+    }
+}
+
+pub mod conversation_execution_contexts {
+    use super::*;
+
+    pub fn upsert(context: ConversationExecutionContext, timestamp: i64) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO conversation_execution_contexts
+                (conversation_id, worktree_path, branch, base_branch, pr_url, pr_number)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(conversation_id) DO UPDATE SET
+               worktree_path = excluded.worktree_path,
+               branch = excluded.branch,
+               base_branch = excluded.base_branch,
+               pr_url = excluded.pr_url,
+               pr_number = excluded.pr_number",
+            params![
+                context.conversation_id,
+                context.worktree_path,
+                context.branch,
+                context.base_branch,
+                context.pr_url,
+                context.pr_number,
+            ],
+        )?;
+        let _ = timestamp;
+        Ok(())
+    }
+
+    pub fn get(conversation_id: &str) -> Result<Option<ConversationExecutionContext>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            "SELECT conversation_id, worktree_path, branch, base_branch, pr_url, pr_number
+             FROM conversation_execution_contexts WHERE conversation_id = ?1",
+            params![conversation_id],
+            |row| {
+                Ok(ConversationExecutionContext {
+                    conversation_id: row.get(0)?,
+                    worktree_path: row.get(1)?,
+                    branch: row.get(2)?,
+                    base_branch: row.get(3)?,
+                    pr_url: row.get(4)?,
+                    pr_number: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    pub fn find_by_worktree_path(path: &str) -> Result<Option<Conversation>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            &format!(
+                "SELECT {} FROM conversations AS c
+                 JOIN conversation_execution_contexts AS e ON e.conversation_id = c.id
+                 WHERE c.parent_id IS NULL AND e.worktree_path = ?1 LIMIT 1",
+                super::conversations::CONVERSATION_COLUMNS
+                    .split(", ")
+                    .map(|column| format!("c.{column}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            params![path],
+            super::conversations::row_to_conversation,
+        )
+        .optional()
+    }
+}
 
 pub mod projects {
     use super::*;
@@ -547,6 +1229,144 @@ pub mod workspaces {
 pub mod chats {
     use super::*;
 
+    fn now_unix_seconds() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+    }
+
+    fn conversation_to_chat(
+        conversation: Conversation,
+        context: Option<ConversationExecutionContext>,
+    ) -> Chat {
+        Chat {
+            id: conversation.id,
+            name: conversation.name,
+            project_id: conversation.project_id,
+            workspace_id: conversation.workspace_id,
+            collaboration_mode: conversation.mode,
+            created_at: conversation.created_at,
+            updated_at: conversation.updated_at,
+            archived_at: conversation.archived_at,
+            worktree_path: context
+                .as_ref()
+                .and_then(|context| context.worktree_path.clone()),
+            branch: context.as_ref().and_then(|context| context.branch.clone()),
+            base_branch: context
+                .as_ref()
+                .and_then(|context| context.base_branch.clone()),
+            pr_url: context.as_ref().and_then(|context| context.pr_url.clone()),
+            pr_number: context.as_ref().and_then(|context| context.pr_number),
+        }
+    }
+
+    fn context_for(id: &str) -> Result<Option<ConversationExecutionContext>> {
+        conversation_execution_contexts::get(id)
+    }
+
+    pub fn create(chat: Chat) -> Result<Chat> {
+        let conversation = Conversation {
+            id: chat.id.clone(),
+            parent_id: None,
+            project_id: chat.project_id.clone(),
+            workspace_id: chat.workspace_id,
+            name: chat.name.clone(),
+            mode: chat.collaboration_mode.clone(),
+            created_at: chat.created_at,
+            updated_at: chat.updated_at,
+            archived_at: chat.archived_at,
+        };
+        let conversation = conversations::create(conversation)?;
+        conversation_execution_contexts::upsert(
+            ConversationExecutionContext {
+                conversation_id: chat.id.clone(),
+                worktree_path: chat.worktree_path.clone(),
+                branch: chat.branch.clone(),
+                base_branch: chat.base_branch.clone(),
+                pr_url: chat.pr_url.clone(),
+                pr_number: chat.pr_number,
+            },
+            chat.updated_at,
+        )?;
+        Ok(conversation_to_chat(conversation, context_for(&chat.id)?))
+    }
+
+    pub fn list(project_id: Option<&str>, workspace_id: Option<&str>) -> Result<Vec<Chat>> {
+        conversations::list_roots(project_id, workspace_id)?
+            .into_iter()
+            .map(|conversation| {
+                let context = context_for(&conversation.id)?;
+                Ok(conversation_to_chat(conversation, context))
+            })
+            .collect()
+    }
+
+    pub fn get(id: &str) -> Result<Option<Chat>> {
+        let Some(conversation) = conversations::get(id)? else {
+            return Ok(None);
+        };
+        if conversation.parent_id.is_some() {
+            return Ok(None);
+        }
+        let context = context_for(id)?;
+        Ok(Some(conversation_to_chat(conversation, context)))
+    }
+
+    pub fn find_by_worktree_path(path: &str) -> Result<Option<Chat>> {
+        let Some(conversation) = conversation_execution_contexts::find_by_worktree_path(path)?
+        else {
+            return Ok(None);
+        };
+        let context = context_for(&conversation.id)?;
+        Ok(Some(conversation_to_chat(conversation, context)))
+    }
+
+    pub fn update(chat: Chat) -> Result<()> {
+        let Some(existing) = conversations::get(&chat.id)? else {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        };
+        conversations::update(Conversation {
+            id: existing.id,
+            parent_id: existing.parent_id,
+            project_id: existing.project_id,
+            workspace_id: chat.workspace_id,
+            name: chat.name,
+            mode: chat.collaboration_mode,
+            created_at: existing.created_at,
+            updated_at: chat.updated_at,
+            archived_at: existing.archived_at,
+        })?;
+        conversation_execution_contexts::upsert(
+            ConversationExecutionContext {
+                conversation_id: chat.id.clone(),
+                worktree_path: chat.worktree_path,
+                branch: chat.branch,
+                base_branch: chat.base_branch,
+                pr_url: chat.pr_url,
+                pr_number: chat.pr_number,
+            },
+            chat.updated_at,
+        )?;
+        Ok(())
+    }
+
+    pub fn archive(id: &str) -> Result<()> {
+        conversations::archive(id, now_unix_seconds())
+    }
+
+    pub fn unarchive(id: &str) -> Result<()> {
+        conversations::unarchive(id, now_unix_seconds())
+    }
+
+    pub fn delete(id: &str) -> Result<()> {
+        conversations::delete(id)
+    }
+}
+
+pub mod legacy_chats {
+    use super::*;
+
     pub fn create(chat: Chat) -> Result<Chat> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
@@ -760,6 +1580,173 @@ pub mod chats {
 }
 
 pub mod sub_chats {
+    use super::*;
+
+    fn conversation_to_sub_chat(
+        conversation: Conversation,
+        session_id: Option<String>,
+        messages: String,
+    ) -> SubChat {
+        SubChat {
+            id: conversation.id,
+            name: conversation.name,
+            chat_id: conversation
+                .parent_id
+                .expect("child conversation must have a parent"),
+            session_id,
+            mode: conversation.mode,
+            messages,
+            created_at: conversation.created_at,
+            updated_at: conversation.updated_at,
+        }
+    }
+
+    pub fn create(sub_chat: SubChat) -> Result<SubChat> {
+        let parent = conversations::get(&sub_chat.chat_id)?
+            .filter(|conversation| conversation.parent_id.is_none())
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        let conversation = conversations::create(Conversation {
+            id: sub_chat.id.clone(),
+            parent_id: Some(parent.id.clone()),
+            project_id: parent.project_id.clone(),
+            workspace_id: parent.workspace_id.clone(),
+            name: sub_chat.name.clone(),
+            mode: sub_chat.mode.clone(),
+            created_at: sub_chat.created_at,
+            updated_at: sub_chat.updated_at,
+            archived_at: None,
+        })?;
+        agent_sessions::upsert(
+            &sub_chat.id,
+            sub_chat.session_id.as_deref(),
+            &sub_chat.mode,
+            sub_chat.created_at,
+        )?;
+        messages::replace_legacy(&sub_chat.id, &sub_chat.messages, sub_chat.updated_at)?;
+        Ok(conversation_to_sub_chat(
+            conversation,
+            sub_chat.session_id,
+            sub_chat.messages,
+        ))
+    }
+
+    pub fn list(chat_id: &str) -> Result<Vec<SubChat>> {
+        conversations::list_children(chat_id)?
+            .into_iter()
+            .map(|conversation| {
+                let session_id = agent_sessions::get(&conversation.id)?;
+                let messages = messages::serialize_legacy(&conversation.id)?;
+                Ok(conversation_to_sub_chat(conversation, session_id, messages))
+            })
+            .collect()
+    }
+
+    pub fn get(id: &str) -> Result<Option<SubChat>> {
+        let Some(conversation) =
+            conversations::get(id)?.filter(|conversation| conversation.parent_id.is_some())
+        else {
+            return Ok(None);
+        };
+        let session_id = agent_sessions::get(id)?;
+        let messages = messages::serialize_legacy(id)?;
+        Ok(Some(conversation_to_sub_chat(
+            conversation,
+            session_id,
+            messages,
+        )))
+    }
+
+    pub fn update_messages(id: &str, messages: &str, updated_at: i64) -> Result<()> {
+        if conversations::get(id)?.is_none() {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        messages::replace_legacy(id, messages, updated_at)
+    }
+
+    pub fn append_message(
+        id: &str,
+        role: &str,
+        text: &str,
+        metadata: serde_json::Value,
+    ) -> Result<()> {
+        let parts = serde_json::json!([{ "type": "text", "text": text }]);
+        append_message_parts(id, role, parts, metadata)
+    }
+
+    pub fn append_message_parts(
+        id: &str,
+        role: &str,
+        parts: serde_json::Value,
+        metadata: serde_json::Value,
+    ) -> Result<()> {
+        messages::append(id, role, parts, metadata)?;
+        Ok(())
+    }
+
+    fn update_conversation_fields(
+        id: &str,
+        name: Option<&str>,
+        mode: Option<&str>,
+        updated_at: i64,
+    ) -> Result<()> {
+        let Some(existing) = conversations::get(id)? else {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        };
+        conversations::update(Conversation {
+            id: existing.id,
+            parent_id: existing.parent_id,
+            project_id: existing.project_id,
+            workspace_id: existing.workspace_id,
+            name: name.map(str::to_string).or(existing.name),
+            mode: mode
+                .map(str::to_string)
+                .unwrap_or_else(|| existing.mode.clone()),
+            created_at: existing.created_at,
+            updated_at,
+            archived_at: existing.archived_at,
+        })
+    }
+
+    pub fn update_name(id: &str, name: &str, updated_at: i64) -> Result<()> {
+        update_conversation_fields(id, Some(name), None, updated_at)
+    }
+
+    pub fn update_session(id: &str, session_id: &str, updated_at: i64) -> Result<()> {
+        let mode = conversations::get(id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?
+            .mode;
+        agent_sessions::upsert(id, Some(session_id), &mode, updated_at)
+    }
+
+    pub fn update_mode(id: &str, mode: &str, updated_at: i64) -> Result<()> {
+        update_conversation_fields(id, None, Some(mode), updated_at)?;
+        agent_sessions::upsert(id, None, mode, updated_at)
+    }
+
+    pub fn update_full(
+        id: &str,
+        name: Option<&str>,
+        session_id: Option<&str>,
+        mode: Option<&str>,
+        messages: Option<&str>,
+        updated_at: i64,
+    ) -> Result<()> {
+        update_conversation_fields(id, name, mode, updated_at)?;
+        if let Some(session_id) = session_id {
+            update_session(id, session_id, updated_at)?;
+        }
+        if let Some(messages) = messages {
+            update_messages(id, messages, updated_at)?;
+        }
+        Ok(())
+    }
+
+    pub fn delete(id: &str) -> Result<()> {
+        conversations::delete(id)
+    }
+}
+
+pub mod legacy_sub_chats {
     use super::*;
 
     pub fn create(sub_chat: SubChat) -> Result<SubChat> {
@@ -1049,7 +2036,7 @@ pub mod group_agent_bindings {
         let conn = db.lock().unwrap();
 
         conn.execute(
-            "INSERT INTO group_agent_bindings (workspace_id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at)
+            "INSERT INTO conversation_agent_bindings (workspace_id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(chat_id, agent_id) DO UPDATE SET
                workspace_id = excluded.workspace_id,
@@ -1071,7 +2058,7 @@ pub mod group_agent_bindings {
 
         let mut stmt = conn.prepare(
             "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
-             FROM group_agent_bindings WHERE chat_id = ?1 AND agent_id = ?2",
+             FROM conversation_agent_bindings WHERE chat_id = ?1 AND agent_id = ?2",
         )?;
         let mut rows =
             stmt.query_map(params![binding.chat_id, binding.agent_id], row_to_binding)?;
@@ -1085,7 +2072,7 @@ pub mod group_agent_bindings {
 
         let mut stmt = conn.prepare(
             "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
-             FROM group_agent_bindings WHERE chat_id = ?1 ORDER BY created_at ASC",
+             FROM conversation_agent_bindings WHERE chat_id = ?1 ORDER BY created_at ASC",
         )?;
         let bindings = stmt.query_map(params![chat_id], row_to_binding)?;
         bindings.collect()
@@ -1096,7 +2083,7 @@ pub mod group_agent_bindings {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn
-            .prepare("SELECT sub_chat_id FROM group_agent_bindings WHERE agent_id = ?1 ORDER BY created_at ASC LIMIT 1")?;
+            .prepare("SELECT sub_chat_id FROM conversation_agent_bindings WHERE agent_id = ?1 ORDER BY created_at ASC LIMIT 1")?;
         let mut rows = stmt.query_map(params![agent_id], |row| row.get::<_, String>(0))?;
         rows.next().transpose()
     }
@@ -1105,7 +2092,7 @@ pub mod group_agent_bindings {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         let count = conn.execute(
-            "DELETE FROM group_agent_bindings WHERE chat_id = ?1 AND agent_id = ?2",
+            "DELETE FROM conversation_agent_bindings WHERE chat_id = ?1 AND agent_id = ?2",
             params![chat_id, agent_id],
         )?;
         Ok(count > 0)
@@ -1116,7 +2103,7 @@ pub mod group_agent_bindings {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         let count = conn.execute(
-            "DELETE FROM group_agent_bindings WHERE agent_id = ?1",
+            "DELETE FROM conversation_agent_bindings WHERE agent_id = ?1",
             params![agent_id],
         )?;
         Ok(count)
@@ -1305,5 +2292,117 @@ mod tests {
         let _ = workspaces::delete(&wid3);
         let _ = projects::delete(&pid1);
         let _ = projects::delete(&pid2);
+    }
+
+    #[test]
+    fn test_conversation_tree_messages_and_workspace_resolution() {
+        let prefix = format!("conversation-tree-{}", std::process::id());
+        let project_id = format!("{prefix}-project");
+        let workspace_id = format!("{prefix}-workspace");
+        let root_id = format!("{prefix}-root");
+        let child_id = format!("{prefix}-child");
+
+        projects::create(Project {
+            id: project_id.clone(),
+            name: "Conversation test".to_string(),
+            path: format!("/tmp/{project_id}"),
+            git_remote_url: None,
+            git_provider: None,
+            git_owner: None,
+            git_repo: None,
+            icon_path: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+        workspaces::create(Workspace {
+            id: workspace_id.clone(),
+            project_id: project_id.clone(),
+            name: None,
+            work_dir: format!("/tmp/{workspace_id}"),
+            env: "{}".to_string(),
+            resources: "{}".to_string(),
+            capture_thoughts: false,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+
+        conversations::create(Conversation {
+            id: root_id.clone(),
+            parent_id: None,
+            project_id: project_id.clone(),
+            workspace_id: Some(workspace_id.clone()),
+            name: Some("Root".to_string()),
+            mode: "agent".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+            archived_at: None,
+        })
+        .unwrap();
+        conversations::create(Conversation {
+            id: child_id.clone(),
+            parent_id: Some(root_id.clone()),
+            project_id: project_id.clone(),
+            workspace_id: None,
+            name: Some("Child".to_string()),
+            mode: "agent".to_string(),
+            created_at: 1001,
+            updated_at: 1001,
+            archived_at: None,
+        })
+        .unwrap();
+
+        messages::append(
+            &root_id,
+            "user",
+            serde_json::json!([{ "type": "text", "text": "root prompt" }]),
+            serde_json::json!({}),
+        )
+        .unwrap();
+        messages::append(
+            &child_id,
+            "assistant",
+            serde_json::json!([{ "type": "text", "text": "child reply" }]),
+            serde_json::json!({}),
+        )
+        .unwrap();
+
+        assert_eq!(
+            conversations::resolve_workspace_id(&root_id).unwrap(),
+            Some(workspace_id.clone())
+        );
+        assert_eq!(
+            conversations::resolve_workspace_id(&child_id).unwrap(),
+            Some(workspace_id.clone())
+        );
+        assert_eq!(messages::list(&root_id).unwrap().len(), 1);
+        assert_eq!(messages::list(&child_id).unwrap().len(), 1);
+        assert_eq!(conversations::list_children(&root_id).unwrap().len(), 1);
+
+        let legacy_chat = chats::get(&root_id).unwrap().unwrap();
+        assert_eq!(
+            legacy_chat.workspace_id.as_deref(),
+            Some(workspace_id.as_str())
+        );
+        let legacy_sub_chat = sub_chats::get(&child_id).unwrap().unwrap();
+        assert_eq!(legacy_sub_chat.chat_id, root_id);
+        let legacy_messages: serde_json::Value =
+            serde_json::from_str(&legacy_sub_chat.messages).unwrap();
+        assert_eq!(legacy_messages[0]["role"], "assistant");
+        assert_eq!(legacy_messages[0]["parts"][0]["text"], "child reply");
+
+        conversations::archive(&root_id, 2000).unwrap();
+        assert!(conversations::get(&root_id)
+            .unwrap()
+            .unwrap()
+            .archived_at
+            .is_some());
+
+        conversations::delete(&root_id).unwrap();
+        assert!(conversations::get(&child_id).unwrap().is_none());
+        assert!(messages::list(&child_id).unwrap().is_empty());
+        workspaces::delete(&workspace_id).unwrap();
+        projects::delete(&project_id).unwrap();
     }
 }

@@ -58,7 +58,7 @@ pub struct MessageTypeStats {
     pub percentage: f64,
 }
 
-/// GET /api/v1/conversations — list all conversations (active + recent).
+/// GET /api/v1/runtime/conversations — list all conversations (active + recent).
 pub async fn list_conversations(State(_state): State<AppState>) -> impl IntoResponse {
     let Some(sender) = get_message_sender() else {
         return Json(Vec::<ConversationSummary>::new()).into_response();
@@ -84,7 +84,7 @@ pub async fn list_conversations(State(_state): State<AppState>) -> impl IntoResp
     Json(summaries).into_response()
 }
 
-/// GET /api/v1/conversations/:id — get conversation detail with message history.
+/// GET /api/v1/runtime/conversations/:id — get conversation detail with message history.
 pub async fn get_conversation_detail(
     State(_state): State<AppState>,
     Path(conv_id): Path<String>,

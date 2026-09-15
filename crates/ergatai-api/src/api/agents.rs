@@ -19,7 +19,10 @@ use crate::AppState;
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SpawnAgentRequest {
-    pub workspace_id: String,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
     pub command: String,
     pub instruction: Option<String>,
     pub work_dir: Option<String>,
@@ -341,8 +344,130 @@ pub async fn spawn_agent(
             req.command.clone()
         };
 
-    // Security: validate workspace_id contains only safe characters
-    if !is_valid_workspace_id(&req.workspace_id) {
+    if req.workspace_id.is_none() && req.conversation_id.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Either workspace_id or conversation_id is required".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let mut workspace_id = req.workspace_id.clone();
+    let mut raw_work_dir = req.work_dir.clone();
+    let mut env = req.env.clone();
+    let mut capture_thoughts = false;
+
+    if let Some(conversation_id) = req.conversation_id.as_deref() {
+        match crate::user_data_db::conversations::get(conversation_id) {
+            Ok(Some(_conversation)) => {}
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: "Conversation not found".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to load conversation: {}", e),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+
+        let resolved_workspace_id =
+            match crate::user_data_db::conversations::resolve_workspace_id(conversation_id) {
+                Ok(Some(workspace_id)) => workspace_id,
+                Ok(None) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: "Conversation has no workspace".to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: format!("Failed to resolve conversation workspace: {}", e),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+
+        if let Some(requested_workspace_id) = &workspace_id {
+            if requested_workspace_id != &resolved_workspace_id {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: "workspace_id does not match the conversation workspace".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+
+        let workspace = match crate::user_data_db::workspaces::get(&resolved_workspace_id) {
+            Ok(Some(workspace)) => workspace,
+            Ok(None) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Conversation workspace not found".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to load conversation workspace: {}", e),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+        let execution_context =
+            match crate::user_data_db::conversation_execution_contexts::get(conversation_id) {
+                Ok(context) => context,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: format!("Failed to load execution context: {}", e),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+
+        raw_work_dir = Some(
+            execution_context
+                .and_then(|context| context.worktree_path)
+                .unwrap_or(workspace.work_dir),
+        );
+        env = serde_json::from_str::<HashMap<String, String>>(&workspace.env)
+            .map(Some)
+            .unwrap_or(None);
+        capture_thoughts = workspace.capture_thoughts;
+        workspace_id = Some(resolved_workspace_id);
+    }
+
+    let workspace_id = workspace_id.expect("workspace_id is checked above");
+
+    if !is_valid_workspace_id(&workspace_id) {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -378,16 +503,13 @@ pub async fn spawn_agent(
     }
 
     let runtime = crate::context::get_app_context().agent_runtime.clone();
-    let env = req.env.unwrap_or_default();
+    let env = env.unwrap_or_default();
 
     // SECURITY (P1 #13): validate and canonicalize the work_dir.
     // Rejects path traversal, non-existent dirs, and (optionally) paths outside
     // ERGATAI_WORKSPACE_ROOT. The canonical path is what the agent process will
     // actually use as its cwd.
-    let raw_work_dir = req
-        .work_dir
-        .clone()
-        .unwrap_or_else(|| state.default_cwd.clone());
+    let raw_work_dir = raw_work_dir.unwrap_or_else(|| state.default_cwd.clone());
     let work_dir = match crate::validate_cwd(&raw_work_dir) {
         Ok(p) => p,
         Err(msg) => {
@@ -397,11 +519,11 @@ pub async fn spawn_agent(
     let work_dir_str = work_dir.to_string_lossy().into_owned();
 
     let spec = WorkspaceSpec {
-        id: req.workspace_id,
+        id: workspace_id,
         work_dir: work_dir_str.as_str().into(),
         env,
         resources: ResourceLimits::default(),
-        capture_thoughts: false,
+        capture_thoughts,
     };
 
     match runtime
@@ -1921,6 +2043,9 @@ pub struct PromptAgentRequest {
     /// Optional sub-chat associated with this prompt.
     #[serde(default)]
     pub sub_chat_id: Option<String>,
+    /// Conversation associated with this prompt; preferred over sub_chat_id.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
     /// Optional sender identity for agent-to-agent UI rendering.
     #[serde(default)]
     pub sender_agent_id: Option<String>,
@@ -1983,7 +2108,200 @@ pub async fn prompt_agent(
 
     let prompt_id = uuid::Uuid::new_v4().to_string();
 
-    if let Some(sub_chat_id) = body.sub_chat_id.as_deref() {
+    if let Some(conversation_id) = body.conversation_id.as_deref() {
+        let conversation = match crate::user_data_db::conversations::get(conversation_id) {
+            Ok(Some(conversation)) => conversation,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: "Conversation not found".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to load conversation: {}", e),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+        let workspace_id =
+            match crate::user_data_db::conversations::resolve_workspace_id(conversation_id) {
+                Ok(Some(workspace_id)) => workspace_id,
+                Ok(None) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: "Conversation has no workspace".to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: format!("Failed to resolve conversation workspace: {}", e),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+
+        let agent_info = crate::services::agent_service::get_agent_info(&runtime_id).await;
+        if let Some(info) = &agent_info {
+            if info.workspace_id != workspace_id {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: "Agent workspace does not match the conversation workspace"
+                            .to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+
+        let metadata = if body.sender_agent_id.is_some() {
+            serde_json::json!({
+                "source": "agent",
+                "senderAgentId": body.sender_agent_id,
+                "senderAgentName": body.sender_agent_name,
+            })
+        } else {
+            serde_json::json!({ "source": "user" })
+        };
+
+        let mut parts = vec![serde_json::json!({
+            "type": "text",
+            "text": body.message,
+        })];
+        for image in &body.images {
+            parts.push(serde_json::json!({
+                "type": "data-image",
+                "data": image,
+            }));
+        }
+
+        let agent_name = agent_info
+            .and_then(|info| info.stable_id)
+            .or_else(|| conversation.name.clone())
+            .unwrap_or_else(|| runtime_id.clone());
+
+        // Persist the user turn before dispatching. A prompt is never accepted
+        // while its durable conversation record is missing.
+        if let Err(e) = crate::user_data_db::messages::append(
+            conversation_id,
+            "user",
+            serde_json::Value::Array(parts),
+            metadata,
+        ) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to persist prompt: {}", e),
+                }),
+            )
+                .into_response();
+        }
+
+        if body.wait_for_stream {
+            if let Err(e) = crate::services::agent_service::enqueue_prompt(
+                &runtime_id,
+                crate::services::agent_service::PendingPrompt {
+                    id: prompt_id.clone(),
+                    agent_id: runtime_id.clone(),
+                    message: body.message.clone(),
+                    images: body.images.clone(),
+                    sub_chat_id: Some(conversation_id.to_string()),
+                    agent_name: agent_name.clone(),
+                    created_at: std::time::Instant::now(),
+                },
+            ) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to enqueue prompt: {}", e),
+                    }),
+                )
+                    .into_response();
+            }
+        } else if let Err(e) = crate::services::agent_service::prompt_agent_with_images(
+            &runtime_id,
+            &body.message,
+            body.images,
+        )
+        .await
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+
+        if let Some(session_id) =
+            crate::services::agent_service::get_agent_session_id(&runtime_id).await
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            if let Err(e) = crate::user_data_db::agent_sessions::upsert(
+                conversation_id,
+                Some(&session_id),
+                &conversation.mode,
+                now,
+            ) {
+                tracing::warn!(
+                    error = %e,
+                    conversation_id = %conversation_id,
+                    "Prompt dispatched but failed to persist agent session"
+                );
+            }
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let root_conversation_id = conversation
+            .parent_id
+            .clone()
+            .unwrap_or_else(|| conversation.id.clone());
+        let binding = crate::user_data_db::GroupAgentBinding {
+            workspace_id,
+            chat_id: root_conversation_id,
+            agent_id: runtime_id.clone(),
+            agent_name: agent_name.clone(),
+            agent_command: Some(id.clone()),
+            sub_chat_id: conversation.id,
+            created_at: now,
+            updated_at: now,
+        };
+        if let Err(e) = crate::user_data_db::group_agent_bindings::upsert(binding) {
+            tracing::warn!(
+                error = %e,
+                conversation_id = %conversation_id,
+                runtime_id = %runtime_id,
+                "Prompt dispatched but failed to bind agent"
+            );
+        }
+
+        (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "status": "queued", "prompt_id": prompt_id })),
+        )
+            .into_response()
+    } else if let Some(sub_chat_id) = body.sub_chat_id.as_deref() {
         let sub_chat = match crate::user_data_db::sub_chats::get(sub_chat_id) {
             Ok(Some(sub_chat)) => sub_chat,
             Ok(None) => {
@@ -2169,16 +2487,25 @@ pub async fn stream_agent_output(
         }
     };
 
-    if let Some(prompt_id) = query.prompt_id.as_deref() {
+    let claimed_prompt = if let Some(prompt_id) = query.prompt_id.as_deref() {
         // Wrap in timeout to prevent holding HTTP connection open indefinitely
         // when the paired prompt SSE client never connects.
-        let has_turn = match tokio::time::timeout(
+        let claimed_prompt = match tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            crate::services::agent_service::wait_pending_prompt_turn(&runtime_id, prompt_id),
+            crate::services::agent_service::claim_pending_prompt(&runtime_id, prompt_id),
         )
         .await
         {
-            Ok(result) => result,
+            Ok(Ok(claimed_prompt)) => claimed_prompt,
+            Ok(Err(error)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: error.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
             Err(_) => {
                 return (
                     StatusCode::REQUEST_TIMEOUT,
@@ -2189,16 +2516,10 @@ pub async fn stream_agent_output(
                     .into_response();
             }
         };
-        if !has_turn {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: format!("Prompt {} not found", prompt_id),
-                }),
-            )
-                .into_response();
-        }
-    }
+        Some(claimed_prompt)
+    } else {
+        None
+    };
 
     let receiver = match crate::services::agent_service::subscribe_agent_output(&runtime_id).await {
         Ok(Some(rx)) => rx,
@@ -2225,20 +2546,21 @@ pub async fn stream_agent_output(
     // Now that we're subscribed to the broadcast channel, execute this prompt
     // in FIFO order. Without a prompt_id, flush remaining prompts for older
     // clients that do not know their prompt ID.
-    match query.prompt_id.as_deref() {
-        Some(prompt_id) => {
-            let agent_id_for_prompt = runtime_id.clone();
-            let prompt_id = prompt_id.to_string();
+    match claimed_prompt {
+        Some((prompt, dispatch_guard)) => {
             tokio::spawn(async move {
-                if let Err(e) = crate::services::agent_service::run_pending_prompt(
-                    &agent_id_for_prompt,
-                    Some(&prompt_id),
+                let result = crate::services::agent_service::prompt_agent_with_images(
+                    &prompt.agent_id,
+                    &prompt.message,
+                    prompt.images,
                 )
-                .await
-                {
+                .await;
+                drop(dispatch_guard);
+
+                if let Err(e) = result {
                     tracing::warn!(
-                        agent_id = %agent_id_for_prompt,
-                        prompt_id = %prompt_id,
+                        agent_id = %prompt.agent_id,
+                        prompt_id = %prompt.id,
                         "Failed to run pending prompt: {}", e
                     );
                 }
@@ -2327,7 +2649,7 @@ mod tests {
             "command": "claude"
         }))
         .unwrap();
-        assert_eq!(req.workspace_id, "ws-1");
+        assert_eq!(req.workspace_id.as_deref(), Some("ws-1"));
         assert_eq!(req.command, "claude");
         assert!(req.instruction.is_none());
         assert!(req.work_dir.is_none());
@@ -2352,10 +2674,10 @@ mod tests {
     }
 
     #[test]
-    fn test_spawn_agent_request_missing_workspace_id_fails() {
+    fn test_spawn_agent_request_without_target_ids_fails() {
         let result: Result<SpawnAgentRequest, _> =
             serde_json::from_value(json!({"command": "claude"}));
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     #[test]

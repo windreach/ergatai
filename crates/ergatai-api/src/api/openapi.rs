@@ -41,6 +41,18 @@ use utoipa::OpenApi;
         crate::api::agents::kill_agent,
         crate::api::agents::send_message,
         crate::api::agents::prompt_agent,
+        crate::api::user_conversations::list_workspace_conversations,
+        crate::api::user_conversations::create_workspace_conversation,
+        crate::api::user_conversations::get_conversation,
+        crate::api::user_conversations::update_conversation,
+        crate::api::user_conversations::delete_conversation,
+        crate::api::user_conversations::archive_conversation,
+        crate::api::user_conversations::unarchive_conversation,
+        crate::api::user_conversations::list_child_conversations,
+        crate::api::user_conversations::create_child_conversation,
+        crate::api::user_conversations::list_conversation_messages,
+        crate::api::user_conversations::append_conversation_message,
+        crate::api::user_conversations::replace_conversation_messages,
     ),
     components(schemas(
         crate::api::ApiError,
@@ -67,6 +79,12 @@ use utoipa::OpenApi;
         crate::api::agents::PromptAgentRequest,
         crate::api::agents::AgentInfoResponse,
         crate::api::agents::ConfigOptionInfo,
+        crate::api::user_conversations::CreateConversationRequest,
+        crate::api::user_conversations::UpdateConversationRequest,
+        crate::api::user_conversations::AppendConversationMessageRequest,
+        crate::api::user_conversations::ReplaceConversationMessagesRequest,
+        crate::user_data_db::Conversation,
+        crate::user_data_db::Message,
     ))
 )]
 pub struct ApiDoc;

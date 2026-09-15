@@ -13,7 +13,7 @@ use axum::{
     http::{header, Request, StatusCode},
     middleware::{self, Next},
     response::IntoResponse,
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -327,12 +327,60 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::locks::get_lock_contention),
         )
         .route(
-            "/api/v1/conversations",
+            "/api/v1/runtime/conversations",
             get(api::conversations::list_conversations),
         )
         .route(
-            "/api/v1/conversations/:id",
+            "/api/v1/runtime/conversations/:id",
             get(api::conversations::get_conversation_detail),
+        )
+        .route(
+            "/api/v1/workspaces/:workspace_id/conversations",
+            get(api::user_conversations::list_workspace_conversations),
+        )
+        .route(
+            "/api/v1/workspaces/:workspace_id/conversations",
+            post(api::user_conversations::create_workspace_conversation),
+        )
+        .route(
+            "/api/v1/conversations/:id",
+            get(api::user_conversations::get_conversation),
+        )
+        .route(
+            "/api/v1/conversations/:id",
+            patch(api::user_conversations::update_conversation),
+        )
+        .route(
+            "/api/v1/conversations/:id",
+            delete(api::user_conversations::delete_conversation),
+        )
+        .route(
+            "/api/v1/conversations/:id/archive",
+            post(api::user_conversations::archive_conversation),
+        )
+        .route(
+            "/api/v1/conversations/:id/unarchive",
+            post(api::user_conversations::unarchive_conversation),
+        )
+        .route(
+            "/api/v1/conversations/:id/children",
+            get(api::user_conversations::list_child_conversations),
+        )
+        .route(
+            "/api/v1/conversations/:id/children",
+            post(api::user_conversations::create_child_conversation),
+        )
+        .route(
+            "/api/v1/conversations/:id/messages",
+            get(api::user_conversations::list_conversation_messages),
+        )
+        .route(
+            "/api/v1/conversations/:id/messages",
+            post(api::user_conversations::append_conversation_message),
+        )
+        .route(
+            "/api/v1/conversations/:id/messages",
+            put(api::user_conversations::replace_conversation_messages),
         )
         .route(
             "/api/v1/stats/message-types",
