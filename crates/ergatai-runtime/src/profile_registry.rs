@@ -657,10 +657,7 @@ impl ProfileRegistry {
         })?;
 
         let rows_affected = conn
-            .execute(
-                "DELETE FROM agent_registrations WHERE id = ?1",
-                params![id],
-            )
+            .execute("DELETE FROM agent_registrations WHERE id = ?1", params![id])
             .map_err(|e| {
                 ErgataiError::internal(format!("Failed to delete agent profile: {}", e))
             })?;
@@ -907,19 +904,21 @@ impl ProfileRegistry {
 
         let result = profiles
             .into_iter()
-            .map(|(id, name, command, agent_type, package_name, avatar_url, created_at)| {
-                let installed = binary_detection::is_installed(&command);
-                ProfileWithStatus {
-                    id,
-                    name,
-                    command,
-                    agent_type,
-                    package_name,
-                    avatar_url,
-                    installed,
-                    created_at,
-                }
-            })
+            .map(
+                |(id, name, command, agent_type, package_name, avatar_url, created_at)| {
+                    let installed = binary_detection::is_installed(&command);
+                    ProfileWithStatus {
+                        id,
+                        name,
+                        command,
+                        agent_type,
+                        package_name,
+                        avatar_url,
+                        installed,
+                        created_at,
+                    }
+                },
+            )
             .collect();
 
         Ok(result)
@@ -935,9 +934,10 @@ impl ProfileRegistry {
     /// - Profile has no `package_name` (not npm-installable)
     /// - npm install fails
     pub async fn install(&self, id: &str) -> ErgataiResult<String> {
-        let profile = self.get(id).await?.ok_or_else(|| {
-            ErgataiError::InvalidArgument(format!("Profile '{}' not found", id))
-        })?;
+        let profile = self
+            .get(id)
+            .await?
+            .ok_or_else(|| ErgataiError::InvalidArgument(format!("Profile '{}' not found", id)))?;
 
         let package_name = profile.package_name.ok_or_else(|| {
             ErgataiError::InvalidArgument(format!(
@@ -954,9 +954,10 @@ impl ProfileRegistry {
     /// Looks up the profile, extracts the `package_name`, and runs
     /// `npm uninstall -g`. Returns the npm stdout on success.
     pub async fn uninstall(&self, id: &str) -> ErgataiResult<String> {
-        let profile = self.get(id).await?.ok_or_else(|| {
-            ErgataiError::InvalidArgument(format!("Profile '{}' not found", id))
-        })?;
+        let profile = self
+            .get(id)
+            .await?
+            .ok_or_else(|| ErgataiError::InvalidArgument(format!("Profile '{}' not found", id)))?;
 
         let package_name = profile.package_name.ok_or_else(|| {
             ErgataiError::InvalidArgument(format!(
@@ -1058,10 +1059,7 @@ mod tests {
         );
         let id = registration.id.clone();
 
-        registry
-            .register(registration)
-            .await
-            .unwrap();
+        registry.register(registration).await.unwrap();
 
         assert!(registry.delete(&id).await.unwrap());
         assert!(registry.get(&id).await.unwrap().is_none());

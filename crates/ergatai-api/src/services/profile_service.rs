@@ -50,7 +50,11 @@ fn seed_default_profiles(registry: &ProfileRegistry) {
             for reg in all {
                 if reg.command.contains("/adapters/") {
                     let _ = registry.delete(&reg.id).await;
-                    tracing::info!("Removed stale adapter profile '{}' (id: {})", reg.name, reg.id);
+                    tracing::info!(
+                        "Removed stale adapter profile '{}' (id: {})",
+                        reg.name,
+                        reg.id
+                    );
                 }
             }
         })
@@ -180,13 +184,8 @@ pub async fn register_profile(
     avatar_url: Option<String>,
 ) -> Result<()> {
     let registry = get_profile_registry()?;
-    let registration = AgentRegistration::with_avatar_url(
-        name,
-        command,
-        agent_type,
-        package_name,
-        avatar_url,
-    );
+    let registration =
+        AgentRegistration::with_avatar_url(name, command, agent_type, package_name, avatar_url);
     registry
         .register(registration)
         .await
