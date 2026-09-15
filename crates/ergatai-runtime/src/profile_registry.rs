@@ -40,7 +40,9 @@ use crate::{agent_installer, binary_detection};
 /// User-registered agent template.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRegistration {
-    /// Profile name (user-friendly identifier, unique).
+    /// Profile ID (stable identifier, primary key).
+    pub id: String,
+    /// Profile name (user-friendly display name, can be changed).
     pub name: String,
     /// Command to start the agent (e.g., "python3 agent.py" or "npx @anthropic/claude-acp").
     pub command: String,
@@ -49,18 +51,23 @@ pub struct AgentRegistration {
     /// NPM package name for install/uninstall (e.g., "@anthropic-ai/claude-code").
     /// None for agents that are not installed via npm.
     pub package_name: Option<String>,
+    /// Avatar URL (data URL or HTTP URL) for UI display.
+    pub avatar_url: Option<String>,
     /// When the profile was registered.
     pub created_at: DateTime<Utc>,
 }
 
 impl AgentRegistration {
     /// Create a new agent registration with the current timestamp.
+    /// Generates a UUID for the id field.
     pub fn new(name: String, command: String, agent_type: String) -> Self {
         Self {
+            id: uuid::Uuid::new_v4().to_string(),
             name,
             command,
             agent_type,
             package_name: None,
+            avatar_url: None,
             created_at: Utc::now(),
         }
     }
@@ -73,10 +80,50 @@ impl AgentRegistration {
         package_name: Option<String>,
     ) -> Self {
         Self {
+            id: uuid::Uuid::new_v4().to_string(),
             name,
             command,
             agent_type,
             package_name,
+            avatar_url: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    /// Create a new agent registration with an avatar URL.
+    pub fn with_avatar_url(
+        name: String,
+        command: String,
+        agent_type: String,
+        package_name: Option<String>,
+        avatar_url: Option<String>,
+    ) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            command,
+            agent_type,
+            package_name,
+            avatar_url,
+            created_at: Utc::now(),
+        }
+    }
+
+    /// Create a new agent registration with a specific ID (for migrations/defaults).
+    pub fn with_id(
+        id: String,
+        name: String,
+        command: String,
+        agent_type: String,
+        package_name: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            command,
+            agent_type,
+            package_name,
+            avatar_url: None,
             created_at: Utc::now(),
         }
     }
@@ -113,7 +160,9 @@ impl AgentRegistration {
 /// whether each registered agent's binary is currently available on the system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfileWithStatus {
-    /// Profile name (unique identifier).
+    /// Profile ID (stable identifier).
+    pub id: String,
+    /// Profile name (user-friendly display name).
     pub name: String,
     /// Command to start the agent.
     pub command: String,
@@ -121,6 +170,8 @@ pub struct ProfileWithStatus {
     pub agent_type: String,
     /// NPM package name (if installable via npm).
     pub package_name: Option<String>,
+    /// Avatar URL for UI display.
+    pub avatar_url: Option<String>,
     /// Whether the agent's binary is currently detected on the system.
     pub installed: bool,
     /// When the profile was registered (RFC3339 string).
@@ -184,7 +235,8 @@ impl ProfileRegistry {
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS agent_registrations (
-                name TEXT PRIMARY KEY,
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
                 command TEXT NOT NULL,
                 agent_type TEXT NOT NULL,
                 created_at TEXT NOT NULL
@@ -251,7 +303,53 @@ impl ProfileRegistry {
             ErgataiError::internal(format!("Failed to open profile registry database: {}", e))
         })?;
 
-        // Migration: add package_name column (v1 → v2)
+        // Migration v3 → v4: Add id column and migrate from name-based primary key
+        // Check if we need to migrate from old schema (name as PRIMARY KEY)
+        let has_id_column: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('agent_registrations') WHERE name='id'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| ErgataiError::internal(format!("Failed to check schema: {}", e)))?;
+
+        if !has_id_column {
+            // Need to migrate: create new table with id, copy data, replace old table
+            info!("Migrating profile_registry schema: adding id column as primary key");
+
+            conn.execute_batch(
+                "
+                -- Create new table with id as primary key
+                CREATE TABLE agent_registrations_new (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    command TEXT NOT NULL,
+                    agent_type TEXT NOT NULL,
+                    package_name TEXT,
+                    avatar_url TEXT,
+                    created_at TEXT NOT NULL
+                );
+
+                -- Migrate existing data: use name as id for backward compatibility
+                INSERT INTO agent_registrations_new (id, name, command, agent_type, package_name, avatar_url, created_at)
+                SELECT name, name, command, agent_type, package_name, avatar_url, created_at
+                FROM agent_registrations;
+
+                -- Drop old table
+                DROP TABLE agent_registrations;
+
+                -- Rename new table
+                ALTER TABLE agent_registrations_new RENAME TO agent_registrations;
+                "
+            )
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to migrate schema to add id column: {}", e))
+            })?;
+
+            info!("Schema migration complete: id column added as primary key");
+        }
+
+        // Migration: add package_name column (v1 → v2) - kept for reference but handled in v4 migration
         let has_package_name: bool = conn
             .query_row(
                 "SELECT COUNT(*) > 0 FROM pragma_table_info('agent_registrations') WHERE name='package_name'",
@@ -269,6 +367,26 @@ impl ProfileRegistry {
                 ErgataiError::internal(format!("Failed to add package_name column: {}", e))
             })?;
             info!("Migrated profile_registry schema: added package_name column");
+        }
+
+        // Migration: add avatar_url column (v2 → v3) - kept for reference but handled in v4 migration
+        let has_avatar_url: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('agent_registrations') WHERE name='avatar_url'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| ErgataiError::internal(format!("Failed to check schema: {}", e)))?;
+
+        if !has_avatar_url {
+            conn.execute(
+                "ALTER TABLE agent_registrations ADD COLUMN avatar_url TEXT",
+                [],
+            )
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to add avatar_url column: {}", e))
+            })?;
+            info!("Migrated profile_registry schema: added avatar_url column");
         }
 
         Ok(())
@@ -300,70 +418,80 @@ impl ProfileRegistry {
 
         let defaults = vec![
             // OpenAI Codex CLI adapter (已验证 - adapters/codex-acp)
-            AgentRegistration::with_package_name(
+            AgentRegistration::with_id(
+                "codex".to_string(),
                 "codex".to_string(),
                 codex_cmd,
                 "acp".to_string(),
                 Some("@openai/codex".to_string()),
             ),
             // Anthropic Claude Agent adapter (已验证 - adapters/claude-agent-acp)
-            AgentRegistration::with_package_name(
+            AgentRegistration::with_id(
+                "claude".to_string(),
                 "claude".to_string(),
                 claude_cmd,
                 "acp".to_string(),
                 Some("@anthropic-ai/claude-code".to_string()),
             ),
             // OpenCode (已验证 - https://opencode.ai/docs/acp/)
-            AgentRegistration::with_package_name(
+            AgentRegistration::with_id(
+                "opencode".to_string(),
                 "opencode".to_string(),
                 "opencode acp".to_string(),
                 "acp".to_string(),
                 Some("opencode-ai".to_string()),
             ),
             // Gemini CLI (已验证 - https://geminicli.com/docs/cli/acp-mode/)
-            AgentRegistration::with_package_name(
+            AgentRegistration::with_id(
+                "gemini".to_string(),
                 "gemini".to_string(),
                 "gemini --acp".to_string(),
                 "acp".to_string(),
                 Some("@anthropic-ai/claude-code".to_string()),
             ),
             // Goose (已验证 - https://goose-docs.ai/docs/guides/acp-clients/)
-            AgentRegistration::with_package_name(
+            AgentRegistration::with_id(
+                "goose".to_string(),
                 "goose".to_string(),
                 "goose run --acp".to_string(),
                 "acp".to_string(),
                 None,
             ),
             // Cline (已验证 - ACP registry)
-            AgentRegistration::with_package_name(
+            AgentRegistration::with_id(
+                "cline".to_string(),
                 "cline".to_string(),
                 "cline --acp".to_string(),
                 "acp".to_string(),
                 None,
             ),
             // Kiro CLI (已验证 - ACP registry)
-            AgentRegistration::with_package_name(
+            AgentRegistration::with_id(
+                "kiro".to_string(),
                 "kiro".to_string(),
                 "kiro-cli acp".to_string(),
                 "acp".to_string(),
                 None,
             ),
             // Auggie CLI (已验证 - ACP registry)
-            AgentRegistration::with_package_name(
+            AgentRegistration::with_id(
+                "auggie".to_string(),
                 "auggie".to_string(),
                 "auggie --acp".to_string(),
                 "acp".to_string(),
                 None,
             ),
             // OpenClaw (已验证 - ACP registry)
-            AgentRegistration::with_package_name(
+            AgentRegistration::with_id(
+                "openclaw".to_string(),
                 "openclaw".to_string(),
                 "openclaw acp".to_string(),
                 "acp".to_string(),
                 None,
             ),
             // Hermes Agent (已验证 - ACP registry)
-            AgentRegistration::with_package_name(
+            AgentRegistration::with_id(
+                "hermes".to_string(),
                 "hermes".to_string(),
                 "hermes acp".to_string(),
                 "acp".to_string(),
@@ -375,10 +503,10 @@ impl ProfileRegistry {
             // Try to register, ignore if already exists
             if let Err(e) = self.register_sync(profile.clone()) {
                 if !e.to_string().contains("already exists") {
-                    debug!(name = %profile.name, error = %e, "Failed to register default profile");
+                    debug!(id = %profile.id, name = %profile.name, error = %e, "Failed to register default profile");
                 }
             } else {
-                info!(name = %profile.name, "Registered default agent profile");
+                info!(id = %profile.id, name = %profile.name, "Registered default agent profile");
             }
         }
 
@@ -394,13 +522,15 @@ impl ProfileRegistry {
         })?;
 
         conn.execute(
-            "INSERT INTO agent_registrations (name, command, agent_type, package_name, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO agent_registrations (id, name, command, agent_type, package_name, avatar_url, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
+                registration.id,
                 registration.name,
                 registration.command,
                 registration.agent_type,
                 registration.package_name,
+                registration.avatar_url,
                 registration.created_at.to_rfc3339()
             ],
         )
@@ -408,7 +538,7 @@ impl ProfileRegistry {
             if e.to_string().contains("UNIQUE constraint failed") {
                 ErgataiError::InvalidArgument(format!(
                     "Agent profile '{}' already exists",
-                    registration.name
+                    registration.id
                 ))
             } else {
                 ErgataiError::internal(format!("Failed to register agent profile: {}", e))
@@ -427,40 +557,63 @@ impl ProfileRegistry {
         })?;
 
         conn.execute(
-            "INSERT INTO agent_registrations (name, command, agent_type, package_name, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO agent_registrations (id, name, command, agent_type, package_name, avatar_url, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
+                registration.id,
                 registration.name,
                 registration.command,
                 registration.agent_type,
                 registration.package_name,
+                registration.avatar_url,
                 registration.created_at.to_rfc3339()
             ],
         )
         .map_err(|e| {
             if e.to_string().contains("UNIQUE constraint failed") {
                 ErgataiError::InvalidArgument(format!(
-                    "Agent profile '{}' already exists",
-                    registration.name
+                    "Agent profile with id '{}' already exists",
+                    registration.id
                 ))
             } else {
                 ErgataiError::internal(format!("Failed to register agent profile: {}", e))
             }
         })?;
 
-        info!(name = %registration.name, agent_type = %registration.agent_type, "Registered agent profile");
+        info!(id = %registration.id, name = %registration.name, agent_type = %registration.agent_type, "Registered agent profile");
         Ok(())
     }
 
-    /// Get a profile by name.
-    pub async fn get(&self, name: &str) -> ErgataiResult<Option<AgentRegistration>> {
+    /// Get a profile by ID.
+    pub async fn get(&self, id: &str) -> ErgataiResult<Option<AgentRegistration>> {
         let conn = Connection::open(&self.db_path).map_err(|e| {
             ErgataiError::internal(format!("Failed to open profile registry database: {}", e))
         })?;
 
         let mut stmt = conn
             .prepare(
-                "SELECT name, command, agent_type, package_name, created_at
+                "SELECT id, name, command, agent_type, package_name, avatar_url, created_at
+                 FROM agent_registrations WHERE id = ?1",
+            )
+            .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
+
+        let result = stmt
+            .query_row(params![id], parse_agent_registration_row)
+            .optional()
+            .map_err(|e| ErgataiError::internal(format!("Failed to get agent profile: {}", e)))?;
+
+        Ok(result)
+    }
+
+    /// Get a profile by name (convenience method for backward compatibility).
+    pub async fn get_by_name(&self, name: &str) -> ErgataiResult<Option<AgentRegistration>> {
+        let conn = Connection::open(&self.db_path).map_err(|e| {
+            ErgataiError::internal(format!("Failed to open profile registry database: {}", e))
+        })?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, command, agent_type, package_name, avatar_url, created_at
                  FROM agent_registrations WHERE name = ?1",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -481,7 +634,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT name, command, agent_type, package_name, created_at
+                "SELECT id, name, command, agent_type, package_name, avatar_url, created_at
                  FROM agent_registrations ORDER BY created_at DESC",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -497,23 +650,23 @@ impl ProfileRegistry {
         Ok(profiles)
     }
 
-    /// Delete a profile by name.
-    pub async fn delete(&self, name: &str) -> ErgataiResult<bool> {
+    /// Delete a profile by ID.
+    pub async fn delete(&self, id: &str) -> ErgataiResult<bool> {
         let conn = Connection::open(&self.db_path).map_err(|e| {
             ErgataiError::internal(format!("Failed to open profile registry database: {}", e))
         })?;
 
         let rows_affected = conn
             .execute(
-                "DELETE FROM agent_registrations WHERE name = ?1",
-                params![name],
+                "DELETE FROM agent_registrations WHERE id = ?1",
+                params![id],
             )
             .map_err(|e| {
                 ErgataiError::internal(format!("Failed to delete agent profile: {}", e))
             })?;
 
         if rows_affected > 0 {
-            info!(name = %name, "Deleted agent profile");
+            info!(id = %id, "Deleted agent profile");
         }
 
         Ok(rows_affected > 0)
@@ -728,19 +881,21 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT name, command, agent_type, package_name, created_at
+                "SELECT id, name, command, agent_type, package_name, avatar_url, created_at
                  FROM agent_registrations ORDER BY created_at DESC",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
 
         let profiles = stmt
             .query_map([], |row| {
-                let created_at_str: String = row.get(4)?;
+                let created_at_str: String = row.get(6)?;
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
                     created_at_str,
                 ))
             })
@@ -752,13 +907,15 @@ impl ProfileRegistry {
 
         let result = profiles
             .into_iter()
-            .map(|(name, command, agent_type, package_name, created_at)| {
+            .map(|(id, name, command, agent_type, package_name, avatar_url, created_at)| {
                 let installed = binary_detection::is_installed(&command);
                 ProfileWithStatus {
+                    id,
                     name,
                     command,
                     agent_type,
                     package_name,
+                    avatar_url,
                     installed,
                     created_at,
                 }
@@ -768,7 +925,7 @@ impl ProfileRegistry {
         Ok(result)
     }
 
-    /// Install an agent by its profile name.
+    /// Install an agent by its profile ID.
     ///
     /// Looks up the profile, extracts the `package_name`, and runs
     /// `npm install -g`. Returns the npm stdout on success.
@@ -777,34 +934,34 @@ impl ProfileRegistry {
     /// - Profile not found
     /// - Profile has no `package_name` (not npm-installable)
     /// - npm install fails
-    pub async fn install(&self, name: &str) -> ErgataiResult<String> {
-        let profile = self.get(name).await?.ok_or_else(|| {
-            ErgataiError::InvalidArgument(format!("Profile '{}' not found", name))
+    pub async fn install(&self, id: &str) -> ErgataiResult<String> {
+        let profile = self.get(id).await?.ok_or_else(|| {
+            ErgataiError::InvalidArgument(format!("Profile '{}' not found", id))
         })?;
 
         let package_name = profile.package_name.ok_or_else(|| {
             ErgataiError::InvalidArgument(format!(
                 "Profile '{}' has no package_name — cannot be installed via npm",
-                name
+                id
             ))
         })?;
 
         agent_installer::install_and_verify(&profile.command, &package_name).await
     }
 
-    /// Uninstall an agent by its profile name.
+    /// Uninstall an agent by its profile ID.
     ///
     /// Looks up the profile, extracts the `package_name`, and runs
     /// `npm uninstall -g`. Returns the npm stdout on success.
-    pub async fn uninstall(&self, name: &str) -> ErgataiResult<String> {
-        let profile = self.get(name).await?.ok_or_else(|| {
-            ErgataiError::InvalidArgument(format!("Profile '{}' not found", name))
+    pub async fn uninstall(&self, id: &str) -> ErgataiResult<String> {
+        let profile = self.get(id).await?.ok_or_else(|| {
+            ErgataiError::InvalidArgument(format!("Profile '{}' not found", id))
         })?;
 
         let package_name = profile.package_name.ok_or_else(|| {
             ErgataiError::InvalidArgument(format!(
                 "Profile '{}' has no package_name — cannot be uninstalled via npm",
-                name
+                id
             ))
         })?;
 
@@ -815,16 +972,18 @@ impl ProfileRegistry {
 /// Parse a database row into an AgentRegistration struct.
 /// Used by both `get` and `list` methods.
 fn parse_agent_registration_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRegistration> {
-    let created_at_str: String = row.get(4)?;
+    let created_at_str: String = row.get(6)?;
     let created_at = DateTime::parse_from_rfc3339(&created_at_str)
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now());
 
     Ok(AgentRegistration {
-        name: row.get(0)?,
-        command: row.get(1)?,
-        agent_type: row.get(2)?,
-        package_name: row.get(3)?,
+        id: row.get(0)?,
+        name: row.get(1)?,
+        command: row.get(2)?,
+        agent_type: row.get(3)?,
+        package_name: row.get(4)?,
+        avatar_url: row.get(5)?,
         created_at,
     })
 }
@@ -845,9 +1004,10 @@ mod tests {
             "acp".to_string(),
         );
 
+        let id = registration.id.clone();
         registry.register(registration.clone()).await.unwrap();
 
-        let loaded = registry.get("test-agent").await.unwrap().unwrap();
+        let loaded = registry.get(&id).await.unwrap().unwrap();
         assert_eq!(loaded.name, "test-agent");
         assert_eq!(loaded.command, "python3 test.py");
         assert_eq!(loaded.agent_type, "acp");
@@ -891,31 +1051,37 @@ mod tests {
         let temp_file = NamedTempFile::new().unwrap();
         let registry = ProfileRegistry::new(temp_file.path()).unwrap();
 
+        let registration = AgentRegistration::new(
+            "to-delete".to_string(),
+            "cmd".to_string(),
+            "acp".to_string(),
+        );
+        let id = registration.id.clone();
+
         registry
-            .register(AgentRegistration::new(
-                "to-delete".to_string(),
-                "cmd".to_string(),
-                "acp".to_string(),
-            ))
+            .register(registration)
             .await
             .unwrap();
 
-        assert!(registry.delete("to-delete").await.unwrap());
-        assert!(registry.get("to-delete").await.unwrap().is_none());
+        assert!(registry.delete(&id).await.unwrap());
+        assert!(registry.get(&id).await.unwrap().is_none());
     }
 
     #[tokio::test]
-    async fn test_duplicate_name_error() {
+    async fn test_duplicate_id_error() {
         let temp_file = NamedTempFile::new().unwrap();
         let registry = ProfileRegistry::new(temp_file.path()).unwrap();
 
-        let registration = AgentRegistration::new(
+        let mut registration = AgentRegistration::new(
             "duplicate".to_string(),
             "cmd1".to_string(),
             "acp".to_string(),
         );
 
         registry.register(registration.clone()).await.unwrap();
+
+        // Try to register another profile with the same ID
+        registration.name = "different-name".to_string();
         let result = registry.register(registration).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already exists"));

@@ -49,8 +49,8 @@ fn seed_default_profiles(registry: &ProfileRegistry) {
             };
             for reg in all {
                 if reg.command.contains("/adapters/") {
-                    let _ = registry.delete(&reg.name).await;
-                    tracing::info!("Removed stale adapter profile '{}'", reg.name);
+                    let _ = registry.delete(&reg.id).await;
+                    tracing::info!("Removed stale adapter profile '{}' (id: {})", reg.name, reg.id);
                 }
             }
         })
@@ -100,7 +100,9 @@ fn seed_default_profiles(registry: &ProfileRegistry) {
             continue;
         }
 
-        let registration = AgentRegistration::with_package_name(
+        // Use name as the stable ID for default profiles
+        let registration = AgentRegistration::with_id(
+            name.to_string(),
             name.to_string(),
             command.to_string(),
             agent_type.to_string(),
@@ -165,19 +167,26 @@ pub fn get_profile_registry() -> Result<&'static ProfileRegistry> {
 /// 注册新的 agent profile。
 ///
 /// # Arguments
-/// * `name` - profile 名称（唯一）
+/// * `name` - profile 显示名称（用户友好的名称）
 /// * `command` - agent 启动命令
 /// * `agent_type` - agent 类型标识
 /// * `package_name` - npm 包名（可选，用于安装/卸载）
+/// * `avatar_url` - 头像 URL（可选）
 pub async fn register_profile(
     name: String,
     command: String,
     agent_type: String,
     package_name: Option<String>,
+    avatar_url: Option<String>,
 ) -> Result<()> {
     let registry = get_profile_registry()?;
-    let registration =
-        AgentRegistration::with_package_name(name, command, agent_type, package_name);
+    let registration = AgentRegistration::with_avatar_url(
+        name,
+        command,
+        agent_type,
+        package_name,
+        avatar_url,
+    );
     registry
         .register(registration)
         .await
@@ -193,24 +202,24 @@ pub async fn list_profiles() -> Result<Vec<AgentRegistration>> {
         .map_err(|e| anyhow::anyhow!("Failed to list profiles: {}", e))
 }
 
-/// 获取指定名称的 agent profile。
+/// 获取指定 ID 的 agent profile。
 ///
 /// 返回 None 表示 profile 不存在。
-pub async fn get_profile(name: &str) -> Result<Option<AgentRegistration>> {
+pub async fn get_profile(id: &str) -> Result<Option<AgentRegistration>> {
     let registry = get_profile_registry()?;
     registry
-        .get(name)
+        .get(id)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to get profile: {}", e))
 }
 
-/// 删除指定名称的 agent profile。
+/// 删除指定 ID 的 agent profile。
 ///
 /// 返回 true 表示删除成功，false 表示 profile 不存在。
-pub async fn delete_profile(name: &str) -> Result<bool> {
+pub async fn delete_profile(id: &str) -> Result<bool> {
     let registry = get_profile_registry()?;
     registry
-        .delete(name)
+        .delete(id)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to delete profile: {}", e))
 }
@@ -223,20 +232,20 @@ pub fn list_profiles_with_status() -> Result<Vec<ProfileWithStatus>> {
         .map_err(|e| anyhow::anyhow!("Failed to list profiles with status: {}", e))
 }
 
-/// 安装指定 profile 对应的 agent（通过 npm install -g）。
-pub async fn install_agent(name: &str) -> Result<String> {
+/// 安装指定 profile ID 对应的 agent（通过 npm install -g）。
+pub async fn install_agent(id: &str) -> Result<String> {
     let registry = get_profile_registry()?;
     registry
-        .install(name)
+        .install(id)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to install agent: {}", e))
 }
 
-/// 卸载指定 profile 对应的 agent（通过 npm uninstall -g）。
-pub async fn uninstall_agent(name: &str) -> Result<String> {
+/// 卸载指定 profile ID 对应的 agent（通过 npm uninstall -g）。
+pub async fn uninstall_agent(id: &str) -> Result<String> {
     let registry = get_profile_registry()?;
     registry
-        .uninstall(name)
+        .uninstall(id)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to uninstall agent: {}", e))
 }

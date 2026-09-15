@@ -17,25 +17,30 @@ pub struct RegisterProfileRequest {
     pub command: String,
     pub agent_type: String,
     pub package_name: Option<String>,
+    pub avatar_url: Option<String>,
 }
 
 /// Response for a single agent profile
 #[derive(Debug, Serialize)]
 pub struct ProfileResponse {
+    pub id: String,
     pub name: String,
     pub command: String,
     pub agent_type: String,
     pub package_name: Option<String>,
+    pub avatar_url: Option<String>,
     pub created_at: String,
 }
 
 impl From<AgentRegistration> for ProfileResponse {
     fn from(reg: AgentRegistration) -> Self {
         Self {
+            id: reg.id,
             name: reg.name,
             command: reg.command,
             agent_type: reg.agent_type,
             package_name: reg.package_name,
+            avatar_url: reg.avatar_url,
             created_at: reg.created_at.to_rfc3339(),
         }
     }
@@ -56,6 +61,7 @@ pub async fn register_profile(Json(request): Json<RegisterProfileRequest>) -> im
         request.command.clone(),
         request.agent_type.clone(),
         request.package_name.clone(),
+        request.avatar_url.clone(),
     )
     .await
     {
@@ -131,9 +137,9 @@ pub async fn list_profiles() -> impl IntoResponse {
 
 /// Get a specific agent profile
 ///
-/// GET /api/v1/agent-profiles/:name
-pub async fn get_profile(Path(name): Path<String>) -> impl IntoResponse {
-    match profile_service::get_profile(&name).await {
+/// GET /api/v1/agent-profiles/:id
+pub async fn get_profile(Path(id): Path<String>) -> impl IntoResponse {
+    match profile_service::get_profile(&id).await {
         Ok(Some(registration)) => match serde_json::to_value(ProfileResponse::from(registration)) {
             Ok(value) => (StatusCode::OK, Json(value)),
             Err(e) => (
@@ -146,7 +152,7 @@ pub async fn get_profile(Path(name): Path<String>) -> impl IntoResponse {
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({
-                "error": format!("Agent profile '{}' not found", name)
+                "error": format!("Agent profile '{}' not found", id)
             })),
         ),
         Err(e) => (
@@ -160,20 +166,20 @@ pub async fn get_profile(Path(name): Path<String>) -> impl IntoResponse {
 
 /// Delete an agent profile
 ///
-/// DELETE /api/v1/agent-profiles/:name
-pub async fn delete_profile(Path(name): Path<String>) -> impl IntoResponse {
-    match profile_service::delete_profile(&name).await {
+/// DELETE /api/v1/agent-profiles/:id
+pub async fn delete_profile(Path(id): Path<String>) -> impl IntoResponse {
+    match profile_service::delete_profile(&id).await {
         Ok(true) => (
             StatusCode::OK,
             Json(serde_json::json!({
                 "status": "success",
-                "message": format!("Agent profile '{}' deleted successfully", name)
+                "message": format!("Agent profile '{}' deleted successfully", id)
             })),
         ),
         Ok(false) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({
-                "error": format!("Agent profile '{}' not found", name)
+                "error": format!("Agent profile '{}' not found", id)
             })),
         ),
         Err(e) => (
@@ -188,10 +194,12 @@ pub async fn delete_profile(Path(name): Path<String>) -> impl IntoResponse {
 /// Response for a profile with installation status
 #[derive(Debug, Serialize)]
 pub struct ProfileWithStatusResponse {
+    pub id: String,
     pub name: String,
     pub command: String,
     pub agent_type: String,
     pub package_name: Option<String>,
+    pub avatar_url: Option<String>,
     pub installed: bool,
     pub created_at: String,
 }
@@ -199,10 +207,12 @@ pub struct ProfileWithStatusResponse {
 impl From<ergatai_runtime::profile_registry::ProfileWithStatus> for ProfileWithStatusResponse {
     fn from(p: ergatai_runtime::profile_registry::ProfileWithStatus) -> Self {
         Self {
+            id: p.id,
             name: p.name,
             command: p.command,
             agent_type: p.agent_type,
             package_name: p.package_name,
+            avatar_url: p.avatar_url,
             installed: p.installed,
             created_at: p.created_at,
         }
@@ -246,16 +256,16 @@ pub async fn list_with_status() -> impl IntoResponse {
     }
 }
 
-/// Install an agent by profile name (npm install -g)
+/// Install an agent by profile ID (npm install -g)
 ///
-/// POST /api/v1/agent-profiles/:name/install
-pub async fn install_agent(Path(name): Path<String>) -> impl IntoResponse {
-    match profile_service::install_agent(&name).await {
+/// POST /api/v1/agent-profiles/:id/install
+pub async fn install_agent(Path(id): Path<String>) -> impl IntoResponse {
+    match profile_service::install_agent(&id).await {
         Ok(output) => (
             StatusCode::OK,
             Json(serde_json::json!({
                 "status": "success",
-                "message": format!("Agent '{}' installed successfully", name),
+                "message": format!("Agent '{}' installed successfully", id),
                 "output": output
             })),
         ),
@@ -283,16 +293,16 @@ pub async fn install_agent(Path(name): Path<String>) -> impl IntoResponse {
     }
 }
 
-/// Uninstall an agent by profile name (npm uninstall -g)
+/// Uninstall an agent by profile ID (npm uninstall -g)
 ///
-/// DELETE /api/v1/agent-profiles/:name/uninstall
-pub async fn uninstall_agent(Path(name): Path<String>) -> impl IntoResponse {
-    match profile_service::uninstall_agent(&name).await {
+/// DELETE /api/v1/agent-profiles/:id/uninstall
+pub async fn uninstall_agent(Path(id): Path<String>) -> impl IntoResponse {
+    match profile_service::uninstall_agent(&id).await {
         Ok(output) => (
             StatusCode::OK,
             Json(serde_json::json!({
                 "status": "success",
-                "message": format!("Agent '{}' uninstalled successfully", name),
+                "message": format!("Agent '{}' uninstalled successfully", id),
                 "output": output
             })),
         ),
