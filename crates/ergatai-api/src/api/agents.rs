@@ -2546,6 +2546,12 @@ pub async fn stream_agent_output(
     // Now that we're subscribed to the broadcast channel, execute this prompt
     // in FIFO order. Without a prompt_id, flush remaining prompts for older
     // clients that do not know their prompt ID.
+    // Extract conversation_id from claimed prompt for assistant response persistence
+    let conversation_id_for_persist = match &claimed_prompt {
+        Some((prompt, _)) => prompt.sub_chat_id.clone(),
+        None => None,
+    };
+
     match claimed_prompt {
         Some((prompt, dispatch_guard)) => {
             tokio::spawn(async move {
@@ -2575,12 +2581,23 @@ pub async fn stream_agent_output(
     }
 
     let agent_id_for_stream = runtime_id.clone();
-    let event_stream = stream::unfold(receiver, move |mut rx| {
+    // State: (receiver, accumulated_text, conversation_id for persistence)
+    let stream_state = (
+        receiver,
+        String::new(),
+        conversation_id_for_persist,
+    );
+    let event_stream = stream::unfold(stream_state, move |(mut rx, mut acc_text, conv_id)| {
         let aid = agent_id_for_stream.clone();
         async move {
             loop {
                 match rx.recv().await {
                     Ok(event) => {
+                        // Accumulate text deltas for persistence
+                        if let ergatai_runtime::AgentOutputEvent::Text { delta } = &event {
+                            acc_text.push_str(delta);
+                        }
+
                         if let Ok(json) = serde_json::to_string(&event) {
                             let event_type = match &event {
                                 ergatai_runtime::AgentOutputEvent::Text { .. } => "text",
@@ -2603,12 +2620,44 @@ pub async fn stream_agent_output(
                             let sse_event = Event::default().event(event_type).data(json);
                             let is_done =
                                 matches!(event, ergatai_runtime::AgentOutputEvent::Done { .. });
-                            let result = Some((Ok(sse_event), rx));
+
+                            // Persist assistant response on Done
                             if is_done {
-                                // After yielding Done, end the stream on next iteration
-                                return result;
+                                if let Some(ref cid) = conv_id {
+                                    if !acc_text.is_empty() {
+                                        let cid_clone = cid.clone();
+                                        let text_to_persist = acc_text.clone();
+                                        tokio::task::spawn_blocking(move || {
+                                            let parts = serde_json::json!([{
+                                                "type": "text",
+                                                "text": text_to_persist,
+                                            }]);
+                                            let metadata = serde_json::json!({
+                                                "source": "agent",
+                                            });
+                                            if let Err(e) = crate::user_data_db::messages::append(
+                                                &cid_clone,
+                                                "assistant",
+                                                parts,
+                                                metadata,
+                                            ) {
+                                                tracing::warn!(
+                                                    conversation_id = %cid_clone,
+                                                    "Failed to persist assistant response: {}", e
+                                                );
+                                            } else {
+                                                tracing::debug!(
+                                                    conversation_id = %cid_clone,
+                                                    text_len = text_to_persist.len(),
+                                                    "Persisted assistant response"
+                                                );
+                                            }
+                                        });
+                                    }
+                                }
+                                return Some((Ok(sse_event), (rx, acc_text, conv_id)));
                             }
-                            return result;
+                            return Some((Ok(sse_event), (rx, acc_text, conv_id)));
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
