@@ -351,27 +351,45 @@ impl MessageSender {
                         )
                         .await;
 
-                    // Persist message to sub_chat AFTER successful delivery
-                    if let Some(sub_chat_id) = target_sub_chat_id.clone() {
+                    // Persist message AFTER successful delivery
+                    // Dual-write: new `messages` table + legacy `sub_chats` table for backward compatibility
+                    if let Some(conversation_id) = target_sub_chat_id.clone() {
                         let message = req.message.clone();
                         let from = req.from.clone();
                         let sender_name = sender_display.clone();
                         // Wrap synchronous DB call in spawn_blocking
                         if let Err(e) = tokio::task::spawn_blocking(move || {
-                            user_data_db::sub_chats::append_message(
-                                &sub_chat_id,
+                            let parts = serde_json::json!([{
+                                "type": "text",
+                                "text": message,
+                            }]);
+                            let metadata = serde_json::json!({
+                                "source": "agent",
+                                "senderAgentId": from,
+                                "senderAgentName": sender_name,
+                            });
+                            // Write to new messages table
+                            if let Err(e) = user_data_db::messages::append(
+                                &conversation_id,
+                                "assistant",
+                                parts,
+                                metadata.clone(),
+                            ) {
+                                warn!("Failed to persist A-to-A message to messages table: {}", e);
+                            }
+                            // Write to legacy sub_chats table for backward compatibility
+                            if let Err(e) = user_data_db::sub_chats::append_message(
+                                &conversation_id,
                                 "assistant",
                                 &message,
-                                serde_json::json!({
-                                    "source": "agent",
-                                    "senderAgentId": from,
-                                    "senderAgentName": sender_name,
-                                }),
-                            )
+                                metadata,
+                            ) {
+                                warn!("Failed to persist A-to-A message to sub_chats table: {}", e);
+                            }
                         })
                         .await
                         {
-                            warn!("Failed to persist delivered message to sub_chat: {}", e);
+                            warn!("Failed to persist delivered message: {}", e);
                         }
                     }
 
@@ -406,27 +424,45 @@ impl MessageSender {
                     )
                     .await;
 
-                // Persist message to sub_chat AFTER successful delivery
-                if let Some(sub_chat_id) = target_sub_chat_id.clone() {
+                // Persist message AFTER successful delivery
+                // Dual-write: new `messages` table + legacy `sub_chats` table for backward compatibility
+                if let Some(conversation_id) = target_sub_chat_id.clone() {
                     let message = req.message.clone();
                     let from = req.from.clone();
                     let sender_name = sender_display.clone();
                     // Wrap synchronous DB call in spawn_blocking
                     if let Err(e) = tokio::task::spawn_blocking(move || {
-                        user_data_db::sub_chats::append_message(
-                            &sub_chat_id,
+                        let parts = serde_json::json!([{
+                            "type": "text",
+                            "text": message,
+                        }]);
+                        let metadata = serde_json::json!({
+                            "source": "agent",
+                            "senderAgentId": from,
+                            "senderAgentName": sender_name,
+                        });
+                        // Write to new messages table
+                        if let Err(e) = user_data_db::messages::append(
+                            &conversation_id,
+                            "user",
+                            parts,
+                            metadata.clone(),
+                        ) {
+                            warn!("Failed to persist A-to-A message to messages table: {}", e);
+                        }
+                        // Write to legacy sub_chats table for backward compatibility
+                        if let Err(e) = user_data_db::sub_chats::append_message(
+                            &conversation_id,
                             "user",
                             &message,
-                            serde_json::json!({
-                                "source": "agent",
-                                "senderAgentId": from,
-                                "senderAgentName": sender_name,
-                            }),
-                        )
+                            metadata,
+                        ) {
+                            warn!("Failed to persist A-to-A message to sub_chats table: {}", e);
+                        }
                     })
                     .await
                     {
-                        warn!("Failed to persist delivered message to sub_chat: {}", e);
+                        warn!("Failed to persist delivered message: {}", e);
                     }
                 }
 
