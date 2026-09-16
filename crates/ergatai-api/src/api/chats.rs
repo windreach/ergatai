@@ -228,6 +228,74 @@ pub async fn create_chat(
     State(_state): State<AppState>,
     Json(req): Json<CreateChatRequest>,
 ) -> impl IntoResponse {
+    // Validate required fields are non-empty
+    if req.project_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Project ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Validate project exists
+    match user_data_db::projects::get(&req.project_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Project {} not found", req.project_id),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to validate project: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    // Validate workspace_id if provided
+    if let Some(ref workspace_id) = req.workspace_id {
+        if workspace_id.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Workspace ID cannot be empty".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        match user_data_db::workspaces::get(workspace_id) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Workspace {} not found", workspace_id),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to validate workspace: {}", e),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

@@ -239,6 +239,8 @@ impl ProfileRegistry {
                 name TEXT NOT NULL,
                 command TEXT NOT NULL,
                 agent_type TEXT NOT NULL,
+                package_name TEXT,
+                avatar_url TEXT,
                 created_at TEXT NOT NULL
             )",
             [],

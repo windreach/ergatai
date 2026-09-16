@@ -2582,11 +2582,7 @@ pub async fn stream_agent_output(
 
     let agent_id_for_stream = runtime_id.clone();
     // State: (receiver, accumulated_text, conversation_id for persistence)
-    let stream_state = (
-        receiver,
-        String::new(),
-        conversation_id_for_persist,
-    );
+    let stream_state = (receiver, String::new(), conversation_id_for_persist);
     let event_stream = stream::unfold(stream_state, move |(mut rx, mut acc_text, conv_id)| {
         let aid = agent_id_for_stream.clone();
         async move {

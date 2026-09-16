@@ -88,15 +88,26 @@ pub async fn list_workspace_conversations(
     State(_state): State<AppState>,
     Path(workspace_id): Path<String>,
 ) -> impl IntoResponse {
+    // Validate workspace_id is non-empty
+    if workspace_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Workspace ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     match user_data_db::workspaces::get(&workspace_id) {
         Ok(Some(_workspace)) => {}
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(error) => return db_error("Failed to load workspace", error).into_response(),
+        Err(error) => return db_error("Failed to load workspace", error),
     }
 
     match user_data_db::conversations::list_roots(None, Some(&workspace_id)) {
         Ok(conversations) => (StatusCode::OK, Json(conversations)).into_response(),
-        Err(error) => db_error("Failed to list conversations", error).into_response(),
+        Err(error) => db_error("Failed to list conversations", error),
     }
 }
 
@@ -117,10 +128,21 @@ pub async fn create_workspace_conversation(
     Path(workspace_id): Path<String>,
     Json(request): Json<CreateConversationRequest>,
 ) -> impl IntoResponse {
+    // Validate workspace_id is non-empty
+    if workspace_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Workspace ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let workspace = match user_data_db::workspaces::get(&workspace_id) {
         Ok(Some(workspace)) => workspace,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(error) => return db_error("Failed to load workspace", error).into_response(),
+        Err(error) => return db_error("Failed to load workspace", error),
     };
 
     let now = now_unix_seconds();
@@ -138,7 +160,7 @@ pub async fn create_workspace_conversation(
 
     match user_data_db::conversations::create(conversation) {
         Ok(conversation) => (StatusCode::CREATED, Json(conversation)).into_response(),
-        Err(error) => db_error("Failed to create conversation", error).into_response(),
+        Err(error) => db_error("Failed to create conversation", error),
     }
 }
 
@@ -160,7 +182,7 @@ pub async fn get_conversation(
     match user_data_db::conversations::get(&id) {
         Ok(Some(conversation)) => (StatusCode::OK, Json(conversation)).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(error) => db_error("Failed to load conversation", error).into_response(),
+        Err(error) => db_error("Failed to load conversation", error),
     }
 }
 
@@ -191,18 +213,16 @@ pub async fn update_conversation(
 
             match user_data_db::conversations::update(conversation) {
                 Ok(()) => {}
-                Err(error) => {
-                    return db_error("Failed to update conversation", error).into_response()
-                }
+                Err(error) => return db_error("Failed to update conversation", error),
             }
             match user_data_db::conversations::get(&id) {
                 Ok(Some(conversation)) => (StatusCode::OK, Json(conversation)).into_response(),
                 Ok(None) => StatusCode::NOT_FOUND.into_response(),
-                Err(error) => db_error("Failed to reload conversation", error).into_response(),
+                Err(error) => db_error("Failed to reload conversation", error),
             }
         }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(error) => db_error("Failed to load conversation", error).into_response(),
+        Err(error) => db_error("Failed to load conversation", error),
     }
 }
 
@@ -223,12 +243,12 @@ pub async fn archive_conversation(
 ) -> impl IntoResponse {
     match user_data_db::conversations::archive(&id, now_unix_seconds()) {
         Ok(()) => {}
-        Err(error) => return db_error("Failed to archive conversation", error).into_response(),
+        Err(error) => return db_error("Failed to archive conversation", error),
     }
     match user_data_db::conversations::get(&id) {
         Ok(Some(conversation)) => (StatusCode::OK, Json(conversation)).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(error) => db_error("Failed to load conversation", error).into_response(),
+        Err(error) => db_error("Failed to load conversation", error),
     }
 }
 
@@ -249,12 +269,12 @@ pub async fn unarchive_conversation(
 ) -> impl IntoResponse {
     match user_data_db::conversations::unarchive(&id, now_unix_seconds()) {
         Ok(()) => {}
-        Err(error) => return db_error("Failed to unarchive conversation", error).into_response(),
+        Err(error) => return db_error("Failed to unarchive conversation", error),
     }
     match user_data_db::conversations::get(&id) {
         Ok(Some(conversation)) => (StatusCode::OK, Json(conversation)).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(error) => db_error("Failed to load conversation", error).into_response(),
+        Err(error) => db_error("Failed to load conversation", error),
     }
 }
 
@@ -274,7 +294,7 @@ pub async fn delete_conversation(
 ) -> impl IntoResponse {
     match user_data_db::conversations::delete(&id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => db_error("Failed to delete conversation", error).into_response(),
+        Err(error) => db_error("Failed to delete conversation", error),
     }
 }
 
@@ -294,7 +314,7 @@ pub async fn list_child_conversations(
 ) -> impl IntoResponse {
     match user_data_db::conversations::list_children(&id) {
         Ok(conversations) => (StatusCode::OK, Json(conversations)).into_response(),
-        Err(error) => db_error("Failed to list child conversations", error).into_response(),
+        Err(error) => db_error("Failed to list child conversations", error),
     }
 }
 
@@ -315,10 +335,21 @@ pub async fn create_child_conversation(
     Path(id): Path<String>,
     Json(request): Json<CreateConversationRequest>,
 ) -> impl IntoResponse {
+    // Validate parent ID is non-empty
+    if id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Parent conversation ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let parent = match user_data_db::conversations::get(&id) {
         Ok(Some(parent)) => parent,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(error) => return db_error("Failed to load parent conversation", error).into_response(),
+        Err(error) => return db_error("Failed to load parent conversation", error),
     };
 
     let now = now_unix_seconds();
@@ -336,7 +367,7 @@ pub async fn create_child_conversation(
 
     match user_data_db::conversations::create(conversation) {
         Ok(conversation) => (StatusCode::CREATED, Json(conversation)).into_response(),
-        Err(error) => db_error("Failed to create conversation", error).into_response(),
+        Err(error) => db_error("Failed to create conversation", error),
     }
 }
 
@@ -356,7 +387,7 @@ pub async fn list_conversation_messages(
 ) -> impl IntoResponse {
     match user_data_db::messages::list(&id) {
         Ok(messages) => (StatusCode::OK, Json(messages)).into_response(),
-        Err(error) => db_error("Failed to list messages", error).into_response(),
+        Err(error) => db_error("Failed to list messages", error),
     }
 }
 
@@ -396,7 +427,7 @@ pub async fn append_conversation_message(
 
     match user_data_db::messages::append(&id, &request.role, parts, metadata) {
         Ok(message) => (StatusCode::CREATED, Json(message)).into_response(),
-        Err(error) => db_error("Failed to append message", error).into_response(),
+        Err(error) => db_error("Failed to append message", error),
     }
 }
 
@@ -421,7 +452,7 @@ pub async fn replace_conversation_messages(
     match crate::user_data_db::conversations::get(&id) {
         Ok(Some(_conversation)) => {}
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(error) => return db_error("Failed to load conversation", error).into_response(),
+        Err(error) => return db_error("Failed to load conversation", error),
     }
 
     let messages = match serde_json::to_string(&request.messages) {
@@ -439,11 +470,11 @@ pub async fn replace_conversation_messages(
 
     let now = now_unix_seconds();
     if let Err(error) = crate::user_data_db::messages::replace_legacy(&id, &messages, now) {
-        return db_error("Failed to replace messages", error).into_response();
+        return db_error("Failed to replace messages", error);
     }
 
     match crate::user_data_db::messages::list(&id) {
         Ok(messages) => (StatusCode::OK, Json(messages)).into_response(),
-        Err(error) => db_error("Failed to list messages", error).into_response(),
+        Err(error) => db_error("Failed to list messages", error),
     }
 }

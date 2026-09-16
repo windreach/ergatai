@@ -91,6 +91,17 @@ pub async fn create_workspace(
 ) -> impl IntoResponse {
     let runtime = crate::context::get_app_context().agent_runtime.clone();
 
+    // Validate workspace ID is non-empty
+    if req.id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Workspace ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     // SECURITY (P1 #15): Enforce a workspace cap to prevent a runaway client
     // from exhausting host resources (memory, file descriptors, NATS subjects).
     // Default: 100 workspaces. Override with ERGATAI_MAX_WORKSPACES.
@@ -130,6 +141,18 @@ pub async fn create_workspace(
     // Falls back to the server's default_cwd (already validated at startup)
     // when the client omits it.
     let raw_work_dir = req.work_dir.unwrap_or_else(|| state.default_cwd.clone());
+
+    // Validate work_dir is non-empty
+    if raw_work_dir.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Work directory cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let work_dir = match crate::validate_cwd(&raw_work_dir) {
         Ok(p) => p,
         Err(msg) => {
@@ -317,6 +340,58 @@ pub async fn list_persistent_workspaces(
 pub async fn create_persistent_workspace(
     Json(req): Json<PersistentWorkspaceRequest>,
 ) -> impl IntoResponse {
+    // Validate required fields are non-empty
+    if req.id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Workspace ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    if req.project_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Project ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    if req.work_dir.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Work directory cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Validate project exists
+    match crate::user_data_db::projects::get(&req.project_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Project {} not found", req.project_id),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to validate project: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    }
+
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

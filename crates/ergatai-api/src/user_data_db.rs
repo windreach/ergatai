@@ -307,48 +307,33 @@ fn migrate_legacy_conversations(conn: &Connection) -> Result<()> {
     for (conversation_id, legacy_messages, fallback_created_at) in legacy_sub_chats {
         let parsed: serde_json::Value =
             serde_json::from_str(&legacy_messages).unwrap_or_else(|_| serde_json::json!([]));
-        let Some(items) = parsed.as_array() else {
+        let messages = parsed.as_array().cloned().unwrap_or_default();
+        if messages.is_empty() {
             continue;
-        };
+        }
 
-        for (index, value) in items.iter().enumerate() {
-            let message_id = value
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("legacy_{}_{}", conversation_id, index));
-            let role = value
+        let mut insert_stmt = conn.prepare(
+            "INSERT OR IGNORE INTO messages (id, conversation_id, role, content, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for (idx, msg) in messages.iter().enumerate() {
+            let role = msg
                 .get("role")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("user")
-                .to_string();
-            let parts = match value.get("parts") {
-                Some(parts) => parts.to_string(),
-                None => value.to_string(),
-            };
-            let metadata = value
-                .get("metadata")
-                .filter(|value| !value.is_null())
-                .map(serde_json::Value::to_string);
-            let timestamp = value
-                .get("createdAt")
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or(fallback_created_at);
-
-            conn.execute(
-                "INSERT OR IGNORE INTO messages
-                    (id, conversation_id, sequence, role, parts, metadata, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-                params![
-                    message_id,
-                    conversation_id,
-                    index as i64,
-                    role,
-                    parts,
-                    metadata,
-                    timestamp,
-                ],
-            )?;
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let content = msg
+                .get("content")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!(""));
+            let content_str = serde_json::to_string(&content).unwrap_or_default();
+            let msg_id = format!("{conversation_id}-msg-{idx}");
+            let _ = insert_stmt.execute(params![
+                msg_id,
+                conversation_id,
+                role,
+                content_str,
+                fallback_created_at,
+            ]);
         }
     }
 
