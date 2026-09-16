@@ -982,7 +982,7 @@ pub async fn bind_agent(
         agent_id: req.agent_id,
         agent_name: req.agent_name,
         agent_command: req.agent_command,
-        sub_chat_id: sub_chat.id,
+        conversation_id: sub_chat.id,
         created_at: now,
         updated_at: now,
     };

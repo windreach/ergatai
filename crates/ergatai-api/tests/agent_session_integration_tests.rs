@@ -154,7 +154,7 @@ async fn test_agent_binding_persistence() {
         agent_id: "agent-f".to_string(),
         agent_name: "codex".to_string(),
         agent_command: Some("codex".to_string()),
-        sub_chat_id: "subchat-789".to_string(),
+        conversation_id: "subchat-789".to_string(),
         created_at: 1234567890,
         updated_at: 1234567890,
     };

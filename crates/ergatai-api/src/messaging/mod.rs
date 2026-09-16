@@ -209,12 +209,12 @@ impl MessageSender {
                 // Wrap synchronous DB call in spawn_blocking to avoid blocking async runtime
                 let candidate = candidate.to_string();
                 match tokio::task::spawn_blocking(move || {
-                    user_data_db::group_agent_bindings::find_sub_chat_id(&candidate)
+                    user_data_db::group_agent_bindings::find_conversation_id(&candidate)
                 })
                 .await
                 {
-                    Ok(Ok(Some(sub_chat_id))) => {
-                        target_sub_chat_id = Some(sub_chat_id);
+                    Ok(Ok(Some(conversation_id))) => {
+                        target_sub_chat_id = Some(conversation_id);
                         break;
                     }
                     Ok(Ok(None)) => {}

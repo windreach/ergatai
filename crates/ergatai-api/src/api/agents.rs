@@ -858,7 +858,7 @@ pub async fn send_message(
                     agent_id: new_agent_id.clone(),
                     agent_name: target_command.clone(),
                     agent_command: Some(target_command.clone()),
-                    sub_chat_id: req.sub_chat_id.clone().unwrap_or_else(|| chat_id.clone()),
+                    conversation_id: req.sub_chat_id.clone().unwrap_or_else(|| chat_id.clone()),
                     created_at: now,
                     updated_at: now,
                 };
@@ -2283,7 +2283,7 @@ pub async fn prompt_agent(
             agent_id: runtime_id.clone(),
             agent_name: agent_name.clone(),
             agent_command: Some(id.clone()),
-            sub_chat_id: conversation.id,
+            conversation_id: conversation.id,
             created_at: now,
             updated_at: now,
         };
@@ -2422,7 +2422,7 @@ pub async fn prompt_agent(
             agent_id: runtime_id.clone(),
             agent_name: agent_name.clone(),
             agent_command: Some(id.clone()),
-            sub_chat_id: sub_chat.id,
+            conversation_id: sub_chat.id,
             created_at: now,
             updated_at: now,
         };

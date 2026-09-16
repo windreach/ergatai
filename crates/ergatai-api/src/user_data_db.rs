@@ -168,12 +168,12 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             agent_id TEXT NOT NULL,
             agent_name TEXT NOT NULL,
             agent_command TEXT,
-            sub_chat_id TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             PRIMARY KEY (chat_id, agent_id),
             FOREIGN KEY (chat_id) REFERENCES conversations(id) ON DELETE CASCADE,
-            FOREIGN KEY (sub_chat_id) REFERENCES conversations(id) ON DELETE CASCADE
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS group_agent_bindings (
@@ -209,6 +209,12 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
     // Migration: Remove `id` column from group_agent_bindings if it exists
     // (SQLite 3.35.0+ supports DROP COLUMN)
     let _ = conn.execute_batch("ALTER TABLE group_agent_bindings DROP COLUMN id;");
+
+    // Migration: Rename sub_chat_id to conversation_id in conversation_agent_bindings
+    // (SQLite 3.25.0+ supports RENAME COLUMN)
+    let _ = conn.execute_batch(
+        "ALTER TABLE conversation_agent_bindings RENAME COLUMN sub_chat_id TO conversation_id;",
+    );
 
     // Migration: Remove `stream_id` column from sub_chats if it exists
     let _ = conn.execute_batch("ALTER TABLE sub_chats DROP COLUMN stream_id;");
@@ -274,7 +280,7 @@ fn migrate_legacy_conversations(conn: &Connection) -> Result<()> {
         WHERE s.id IN (SELECT id FROM conversations);
 
         INSERT OR IGNORE INTO conversation_agent_bindings
-            (workspace_id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at)
+            (workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at)
         SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
         FROM group_agent_bindings
         WHERE chat_id IN (SELECT id FROM conversations)
@@ -480,8 +486,8 @@ pub struct GroupAgentBinding {
     pub agent_name: String,
     /// Profile name for matching (e.g., "coder") - NOT full command path
     pub agent_command: Option<String>,
-    /// Sub-chat ID for this agent's conversation thread
-    pub sub_chat_id: String,
+    /// Conversation ID for this agent's conversation thread
+    pub conversation_id: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -2025,7 +2031,7 @@ pub mod group_agent_bindings {
             agent_id: row.get(2)?,
             agent_name: row.get(3)?,
             agent_command: row.get(4)?,
-            sub_chat_id: row.get(5)?,
+            conversation_id: row.get(5)?,
             created_at: row.get(6)?,
             updated_at: row.get(7)?,
         })
@@ -2036,13 +2042,13 @@ pub mod group_agent_bindings {
         let conn = db.lock().unwrap();
 
         conn.execute(
-            "INSERT INTO conversation_agent_bindings (workspace_id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at)
+            "INSERT INTO conversation_agent_bindings (workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(chat_id, agent_id) DO UPDATE SET
                workspace_id = excluded.workspace_id,
                agent_name = excluded.agent_name,
                agent_command = excluded.agent_command,
-               sub_chat_id = excluded.sub_chat_id,
+               conversation_id = excluded.conversation_id,
                updated_at = excluded.updated_at",
             params![
                 binding.workspace_id,
@@ -2050,14 +2056,14 @@ pub mod group_agent_bindings {
                 binding.agent_id,
                 binding.agent_name,
                 binding.agent_command,
-                binding.sub_chat_id,
+                binding.conversation_id,
                 binding.created_at,
                 binding.updated_at,
             ],
         )?;
 
         let mut stmt = conn.prepare(
-            "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
+            "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at
              FROM conversation_agent_bindings WHERE chat_id = ?1 AND agent_id = ?2",
         )?;
         let mut rows =
@@ -2071,19 +2077,19 @@ pub mod group_agent_bindings {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
+            "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at
              FROM conversation_agent_bindings WHERE chat_id = ?1 ORDER BY created_at ASC",
         )?;
         let bindings = stmt.query_map(params![chat_id], row_to_binding)?;
         bindings.collect()
     }
 
-    pub fn find_sub_chat_id(agent_id: &str) -> Result<Option<String>> {
+    pub fn find_conversation_id(agent_id: &str) -> Result<Option<String>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
         let mut stmt = conn
-            .prepare("SELECT sub_chat_id FROM conversation_agent_bindings WHERE agent_id = ?1 ORDER BY created_at ASC LIMIT 1")?;
+            .prepare("SELECT conversation_id FROM conversation_agent_bindings WHERE agent_id = ?1 ORDER BY created_at ASC LIMIT 1")?;
         let mut rows = stmt.query_map(params![agent_id], |row| row.get::<_, String>(0))?;
         rows.next().transpose()
     }
