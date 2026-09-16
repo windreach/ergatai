@@ -1691,8 +1691,8 @@ fn parse_command_output(command: &str, output: &str) -> Option<serde_json::Value
 
 /// Parse `/model` output to extract model list and current model.
 ///
-/// Looks for lines containing model identifiers (e.g. `claude-sonnet-4-20250514`)
-/// and detects which model is marked as current via `(current)` or similar markers.
+/// Parses "Current model: XXX" for the current model.
+/// Also parses "Available: A, B, C, ..." for the full list of available models.
 fn parse_model_output(output: &str) -> Option<serde_json::Value> {
     let mut models = Vec::new();
     let mut current_model = None;
@@ -1700,19 +1700,32 @@ fn parse_model_output(output: &str) -> Option<serde_json::Value> {
     for line in output.lines() {
         let trimmed = line.trim();
 
-        // Extract model identifiers from the line.
-        if let Some(model_name) = extract_model_name(trimmed) {
-            if !models.contains(&model_name) {
-                models.push(model_name.clone());
+        // Parse "Current model: XXX" or "Current model: `XXX`"
+        if trimmed.starts_with("Current model:") {
+            if let Some(model) = trimmed.strip_prefix("Current model:").map(|s| s.trim()) {
+                let clean_model = model.trim_matches('`');
+                if !clean_model.is_empty() {
+                    current_model = Some(clean_model.to_string());
+                    if !models.contains(&clean_model.to_string()) {
+                        models.push(clean_model.to_string());
+                    }
+                }
             }
+        }
 
-            // Detect current model marker.
-            if trimmed.contains("(current)")
-                || trimmed.contains("(selected)")
-                || trimmed.contains("✓")
-                || trimmed.contains("✔")
-            {
-                current_model = Some(model_name);
+        // Parse "Available: A, B, C, ..."
+        if trimmed.starts_with("Available:") {
+            if let Some(available) = trimmed.strip_prefix("Available:").map(|s| s.trim()) {
+                // Remove trailing period if present
+                let available = available.strip_suffix('.').unwrap_or(available);
+                for part in available.split(',') {
+                    let name = part.trim();
+                    if !name.is_empty() && !name.starts_with("or ") && name != "default" {
+                        if !models.contains(&name.to_string()) {
+                            models.push(name.to_string());
+                        }
+                    }
+                }
             }
         }
     }
@@ -1727,27 +1740,6 @@ fn parse_model_output(output: &str) -> Option<serde_json::Value> {
     }))
 }
 
-/// Extract a model name from a line of text.
-///
-/// Matches common model name patterns: `claude-*`, `gpt-*`, `o1-*`, `o3-*`, `o4-*`.
-fn extract_model_name(line: &str) -> Option<String> {
-    // Simple pattern matching without regex dependency.
-    let prefixes = ["claude-", "gpt-", "o1-", "o3-", "o4-"];
-    for prefix in &prefixes {
-        if let Some(start) = line.find(prefix) {
-            let rest = &line[start..];
-            // Extract the model name: alphanumeric, hyphens, dots.
-            let end = rest
-                .find(|c: char| !c.is_alphanumeric() && c != '-' && c != '.')
-                .unwrap_or(rest.len());
-            let name = &rest[..end];
-            if name.len() > prefix.len() {
-                return Some(name.to_string());
-            }
-        }
-    }
-    None
-}
 
 /// Get configuration options reported by the agent.
 pub async fn get_agent_config_options(
