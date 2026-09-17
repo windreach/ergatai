@@ -61,6 +61,10 @@ crates/ergatai-binary/resources/
 build.log
 build_output.txt
 
+# Coverage reports
+lcov.info
+target/llvm-cov/
+
 # Embedded adapter repos (separate git repos)
 adapters/claude-agent-acp/
 adapters/codex-acp/
