@@ -1720,10 +1720,12 @@ fn parse_model_output(output: &str) -> Option<serde_json::Value> {
                 let available = available.strip_suffix('.').unwrap_or(available);
                 for part in available.split(',') {
                     let name = part.trim();
-                    if !name.is_empty() && !name.starts_with("or ") && name != "default" {
-                        if !models.contains(&name.to_string()) {
-                            models.push(name.to_string());
-                        }
+                    if !name.is_empty()
+                        && !name.starts_with("or ")
+                        && name != "default"
+                        && !models.contains(&name.to_string())
+                    {
+                        models.push(name.to_string());
                     }
                 }
             }
@@ -1739,7 +1741,6 @@ fn parse_model_output(output: &str) -> Option<serde_json::Value> {
         "current": current_model,
     }))
 }
-
 
 /// Get configuration options reported by the agent.
 pub async fn get_agent_config_options(
