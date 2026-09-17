@@ -20,6 +20,8 @@ use ergatai_nats::NatsConnection;
 use ergatai_runtime::AgentRuntime;
 use rusqlite::Connection;
 
+use crate::services::collab_runtime::CollabRuntimeManager;
+
 /// Centralized application context holding all shared state.
 ///
 /// This replaces the previous pattern of accessing global singletons via
@@ -44,6 +46,10 @@ pub struct AppContext {
     /// User data database connection (SQLite).
     /// Previously accessed via `get_user_data_db()`.
     pub user_data_db: Arc<Mutex<Connection>>,
+
+    /// Optional implicit collaboration runtime sidecar. This remains `None`
+    /// when the server is started without `--collab-runtime-program`.
+    pub collab_runtime: Option<Arc<CollabRuntimeManager>>,
 }
 
 impl AppContext {
@@ -59,7 +65,14 @@ impl AppContext {
             agent_runtime,
             nats_connection,
             user_data_db,
+            collab_runtime: None,
         }
+    }
+
+    /// Attach an initialized collaboration runtime sidecar.
+    pub fn with_collab_runtime(mut self, manager: Option<Arc<CollabRuntimeManager>>) -> Self {
+        self.collab_runtime = manager;
+        self
     }
 
     /// Create an `AppContext` for testing.
@@ -78,6 +91,7 @@ impl AppContext {
             ))),
             nats_connection: None,
             user_data_db: db,
+            collab_runtime: None,
         }
     }
 }

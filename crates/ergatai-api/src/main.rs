@@ -11,6 +11,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
@@ -66,6 +67,30 @@ struct Args {
     /// Can also be set via ERGATAI_SESSION_PREFIX environment variable.
     #[arg(long, env = "ERGATAI_SESSION_PREFIX", default_value = "ergatai")]
     session_prefix: String,
+
+    /// Optional program used to launch the implicit collaboration runtime.
+    /// For development, this can be `bun`; for packaging it should be the
+    /// compiled sidecar executable. Omit to disable the runtime.
+    #[arg(long, env = "ERGATAI_COLLAB_RUNTIME_PROGRAM")]
+    collab_runtime_program: Option<PathBuf>,
+
+    /// Arguments passed to the collaboration runtime program. Repeat the flag
+    /// or provide a comma-separated value through
+    /// ERGATAI_COLLAB_RUNTIME_ARGS.
+    #[arg(
+        long = "collab-runtime-arg",
+        env = "ERGATAI_COLLAB_RUNTIME_ARGS",
+        value_delimiter = ','
+    )]
+    collab_runtime_args: Vec<String>,
+
+    /// Directory used by the collaboration runtime for checkpoints and state.
+    #[arg(
+        long,
+        env = "ERGATAI_COLLAB_RUNTIME_DATA_DIR",
+        default_value = ".ergatai/collab-runtime"
+    )]
+    collab_runtime_data_dir: PathBuf,
 
     /// Explicitly opt out of API authentication.
     ///
@@ -404,6 +429,10 @@ async fn async_main(args: Args) -> Result<()> {
         mcp_cancellation_token.clone(),
     );
 
+    let mut collab_runtime_manager: Option<
+        Arc<ergatai_api::services::collab_runtime::CollabRuntimeManager>,
+    > = None;
+
     // Initialize NATS
     match nats::init_nats().await {
         Ok(conn) => {
@@ -443,11 +472,28 @@ async fn async_main(args: Args) -> Result<()> {
             }
 
             // Initialize AppContext (centralized dependency injection)
+            if let Some(program) = args.collab_runtime_program.clone() {
+                let config = ergatai_api::services::collab_runtime::CollabRuntimeConfig {
+                    program,
+                    args: args.collab_runtime_args.clone(),
+                    data_dir: args.collab_runtime_data_dir.clone(),
+                    token: uuid::Uuid::new_v4().to_string(),
+                    startup_timeout: std::time::Duration::from_secs(10),
+                    request_timeout: std::time::Duration::from_secs(5),
+                };
+                let manager = Arc::new(
+                    ergatai_api::services::collab_runtime::CollabRuntimeManager::new(config),
+                );
+                manager.start().await?;
+                collab_runtime_manager = Some(manager);
+            }
+
             let app_context = ergatai_api::context::AppContext::new(
                 ergatai_runtime::get_agent_runtime(),
                 Some(conn.clone()),
                 ergatai_api::user_data_db::get_user_data_db(),
-            );
+            )
+            .with_collab_runtime(collab_runtime_manager.clone());
             ergatai_api::context::init_app_context(app_context);
             tracing::info!("✅ AppContext initialized");
 
@@ -619,5 +665,10 @@ async fn async_main(args: Args) -> Result<()> {
     }
 
     mcp_cancellation_token.cancel();
+    if let Some(collab_runtime_manager) = collab_runtime_manager {
+        if let Err(error) = collab_runtime_manager.shutdown().await {
+            tracing::warn!(error = %error, "Failed to shut down collaboration runtime cleanly");
+        }
+    }
     Ok(())
 }

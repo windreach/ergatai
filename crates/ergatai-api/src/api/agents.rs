@@ -236,6 +236,29 @@ fn is_valid_workspace_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
+fn workspace_resource_limits(workspace_id: &str) -> Result<ResourceLimits, (StatusCode, String)> {
+    let workspace = crate::user_data_db::workspaces::get(workspace_id)
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to load workspace: {}", error),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Workspace {} not found", workspace_id),
+            )
+        })?;
+
+    serde_json::from_str::<ResourceLimits>(&workspace.resources).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Invalid workspace resources: {}", error),
+        )
+    })
+}
+
 /// Validate command against whitelist.
 ///
 /// Strict mode is enabled by default. Commands must match `STRICT_MODE_ALLOWED_COMMANDS`,
@@ -517,12 +540,18 @@ pub async fn spawn_agent(
         }
     };
     let work_dir_str = work_dir.to_string_lossy().into_owned();
+    let resources = match workspace_resource_limits(&workspace_id) {
+        Ok(resources) => resources,
+        Err((status, error)) => {
+            return (status, Json(ErrorResponse { error })).into_response();
+        }
+    };
 
     let spec = WorkspaceSpec {
         id: workspace_id,
         work_dir: work_dir_str.as_str().into(),
         env,
-        resources: ResourceLimits::default(),
+        resources,
         capture_thoughts,
     };
 
@@ -823,12 +852,18 @@ pub async fn send_message(
             .get("work_dir")
             .cloned()
             .unwrap_or_else(|| "/tmp".to_string());
+        let resources = match workspace_resource_limits(&sender_info.workspace_id) {
+            Ok(resources) => resources,
+            Err((status, error)) => {
+                return (status, Json(ErrorResponse { error })).into_response();
+            }
+        };
 
         let spec = WorkspaceSpec {
             id: chat_id.clone(),
             work_dir: work_dir.as_str().into(),
             env: std::collections::HashMap::new(),
-            resources: ResourceLimits::default(),
+            resources,
             capture_thoughts: false,
         };
 
@@ -1094,12 +1129,18 @@ pub async fn spawn_session(
         .get("work_dir")
         .cloned()
         .unwrap_or_else(|| state.default_cwd.clone());
+    let resources = match workspace_resource_limits(&workspace_id) {
+        Ok(resources) => resources,
+        Err((status, error)) => {
+            return (status, Json(ErrorResponse { error })).into_response();
+        }
+    };
 
     let spec = WorkspaceSpec {
         id: workspace_id.clone(),
         work_dir: work_dir.as_str().into(),
         env: std::collections::HashMap::new(),
-        resources: ResourceLimits::default(),
+        resources,
         capture_thoughts: false,
     };
 
@@ -2603,6 +2644,9 @@ pub async fn stream_agent_output(
                                 ergatai_runtime::AgentOutputEvent::ToolCallError { .. } => {
                                     "tool_call_error"
                                 }
+                                ergatai_runtime::AgentOutputEvent::SessionTitleUpdate {
+                                    ..
+                                } => "session_title_update",
                                 ergatai_runtime::AgentOutputEvent::Done { .. } => "done",
                                 ergatai_runtime::AgentOutputEvent::Error { .. } => "error",
                             };

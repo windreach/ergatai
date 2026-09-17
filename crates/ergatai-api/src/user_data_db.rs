@@ -70,9 +70,25 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             env TEXT DEFAULT '{}',
             resources TEXT DEFAULT '{}',
             capture_thoughts INTEGER DEFAULT 0,
+            collaboration_mode TEXT NOT NULL DEFAULT 'supervisor',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+
+        -- Workspace-owned project registrations. This is the management model;
+        -- workspaces.project_id remains a compatibility/default-project field.
+        CREATE TABLE IF NOT EXISTS workspace_projects (
+            workspace_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active',
+            settings_json TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (workspace_id, project_id),
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE RESTRICT
         );
 
         -- Chats table (conversation containers; workspace_id references a related workspace,
@@ -192,6 +208,8 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
 
         -- Create indexes for performance
         CREATE INDEX IF NOT EXISTS idx_workspaces_project_id ON workspaces(project_id);
+        CREATE INDEX IF NOT EXISTS idx_workspace_projects_project
+            ON workspace_projects(project_id);
         CREATE INDEX IF NOT EXISTS idx_chats_project_id ON chats(project_id);
         CREATE INDEX IF NOT EXISTS idx_sub_chats_chat_id ON sub_chats(chat_id);
         CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_chat_id ON group_agent_bindings(chat_id);
@@ -242,7 +260,53 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_workspace_id ON group_agent_bindings(workspace_id);",
     );
 
+    // Migration: add a lifecycle status to persistent workspaces without
+    // changing their public identity.
+    let _ = conn
+        .execute_batch("ALTER TABLE workspaces ADD COLUMN status TEXT NOT NULL DEFAULT 'active';");
+
+    backfill_workspace_projects(conn)?;
+
     migrate_legacy_conversations(conn)?;
+
+    Ok(())
+}
+
+fn backfill_workspace_projects(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        INSERT OR IGNORE INTO workspace_projects
+            (workspace_id, project_id, is_default, status, settings_json, created_at, updated_at)
+        SELECT id, project_id, 1, 'active', '{}', created_at, updated_at
+        FROM workspaces;
+        "#,
+    )?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    conn.execute(
+        r#"
+        INSERT OR IGNORE INTO workspaces
+            (id, project_id, name, work_dir, env, resources, capture_thoughts, status, created_at, updated_at)
+        SELECT 'ws-import-' || p.id, p.id, p.name, p.path, '{}', '{}', 0, 'active', ?1, ?1
+        FROM projects p
+        WHERE NOT EXISTS (SELECT 1 FROM workspace_projects wp WHERE wp.project_id = p.id)
+          AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.project_id = p.id)
+        "#,
+        params![now],
+    )?;
+    conn.execute(
+        r#"
+        INSERT OR IGNORE INTO workspace_projects
+            (workspace_id, project_id, is_default, status, settings_json, created_at, updated_at)
+        SELECT id, project_id, 1, 'active', '{}', created_at, updated_at
+        FROM workspaces
+        WHERE id LIKE 'ws-import-%'
+        "#,
+        [],
+    )?;
 
     Ok(())
 }
@@ -370,6 +434,19 @@ pub struct Workspace {
     pub env: String,       // JSON string
     pub resources: String, // JSON string
     pub capture_thoughts: bool,
+    pub collaboration_mode: String,
+    pub status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct WorkspaceProject {
+    pub workspace_id: String,
+    pub project_id: String,
+    pub is_default: bool,
+    pub status: String,
+    pub settings_json: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -1077,9 +1154,15 @@ pub mod projects {
 
     pub fn delete(id: &str) -> Result<()> {
         let db = get_user_data_db();
-        let conn = db.lock().unwrap();
+        let mut conn = db.lock().unwrap();
+        let transaction = conn.transaction()?;
 
-        conn.execute("DELETE FROM projects WHERE id = ?1", params![id])?;
+        transaction.execute(
+            "DELETE FROM workspace_projects WHERE project_id = ?1",
+            params![id],
+        )?;
+        transaction.execute("DELETE FROM projects WHERE id = ?1", params![id])?;
+        transaction.commit()?;
 
         Ok(())
     }
@@ -1093,8 +1176,8 @@ pub mod workspaces {
         let conn = db.lock().unwrap();
 
         conn.execute(
-            "INSERT INTO workspaces (id, project_id, name, work_dir, env, resources, capture_thoughts, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO workspaces (id, project_id, name, work_dir, env, resources, capture_thoughts, collaboration_mode, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 workspace.id,
                 workspace.project_id,
@@ -1103,6 +1186,8 @@ pub mod workspaces {
                 workspace.env,
                 workspace.resources,
                 workspace.capture_thoughts,
+                workspace.collaboration_mode,
+                workspace.status,
                 workspace.created_at,
                 workspace.updated_at,
             ],
@@ -1111,49 +1196,112 @@ pub mod workspaces {
         Ok(workspace)
     }
 
-    pub fn list(project_id: Option<&str>) -> Result<Vec<Workspace>> {
+    /// Create a workspace and its default project registration atomically.
+    pub fn create_with_default_project(workspace: Workspace) -> Result<Workspace> {
+        let db = get_user_data_db();
+        let mut conn = db.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        tx.execute(
+            "INSERT INTO workspaces (id, project_id, name, work_dir, env, resources, capture_thoughts, collaboration_mode, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                workspace.id,
+                workspace.project_id,
+                workspace.name,
+                workspace.work_dir,
+                workspace.env,
+                workspace.resources,
+                workspace.capture_thoughts,
+                workspace.collaboration_mode,
+                workspace.status,
+                workspace.created_at,
+                workspace.updated_at,
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO workspace_projects
+             (workspace_id, project_id, is_default, status, settings_json, created_at, updated_at)
+             VALUES (?1, ?2, 1, 'active', '{}', ?3, ?3)",
+            params![workspace.id, workspace.project_id, workspace.created_at],
+        )?;
+        tx.commit()?;
+        Ok(workspace)
+    }
+
+    pub fn set_status(id: &str, status: &str) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let count = conn.execute(
+            "UPDATE workspaces SET status = ?2, updated_at = strftime('%s', 'now') WHERE id = ?1",
+            params![id, status],
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Replace the default project and keep the legacy compatibility field in
+    /// the same transaction as the managed registration.
+    pub fn set_default_project(id: &str, project_id: &str) -> Result<bool> {
+        let db = get_user_data_db();
+        let mut conn = db.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT OR IGNORE INTO workspace_projects
+             (workspace_id, project_id, is_default, status, settings_json, created_at, updated_at)
+             VALUES (?1, ?2, 0, 'active', '{}', strftime('%s', 'now'), strftime('%s', 'now'))",
+            params![id, project_id],
+        )?;
+        tx.execute(
+            "UPDATE workspace_projects SET is_default = 0, updated_at = strftime('%s', 'now')
+             WHERE workspace_id = ?1",
+            params![id],
+        )?;
+        let count = tx.execute(
+            "UPDATE workspace_projects SET is_default = 1, status = 'active', updated_at = strftime('%s', 'now')
+             WHERE workspace_id = ?1 AND project_id = ?2",
+            params![id, project_id],
+        )?;
+        if count == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        tx.execute(
+            "UPDATE workspaces SET project_id = ?2, updated_at = strftime('%s', 'now') WHERE id = ?1",
+            params![id, project_id],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    pub fn list(
+        project_id: Option<&str>,
+        collaboration_mode: Option<&str>,
+    ) -> Result<Vec<Workspace>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
-        if let Some(pid) = project_id {
-            let mut stmt = conn.prepare(
-                "SELECT id, project_id, name, work_dir, env, resources, capture_thoughts, created_at, updated_at
-                 FROM workspaces WHERE project_id = ?1 ORDER BY created_at DESC"
-            )?;
-            let workspaces = stmt.query_map(params![pid], |row| {
-                Ok(Workspace {
-                    id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    name: row.get(2)?,
-                    work_dir: row.get(3)?,
-                    env: row.get(4)?,
-                    resources: row.get(5)?,
-                    capture_thoughts: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                })
-            })?;
-            workspaces.collect()
-        } else {
-            let mut stmt = conn.prepare(
-                "SELECT id, project_id, name, work_dir, env, resources, capture_thoughts, created_at, updated_at
-                 FROM workspaces ORDER BY created_at DESC"
-            )?;
-            let workspaces = stmt.query_map([], |row| {
-                Ok(Workspace {
-                    id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    name: row.get(2)?,
-                    work_dir: row.get(3)?,
-                    env: row.get(4)?,
-                    resources: row.get(5)?,
-                    capture_thoughts: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                })
-            })?;
-            workspaces.collect()
-        }
+        let mut stmt = conn.prepare(
+            "SELECT id, project_id, name, work_dir, env, resources, capture_thoughts, collaboration_mode, status, created_at, updated_at
+             FROM workspaces
+             WHERE (?1 IS NULL OR project_id = ?1)
+               AND (?2 IS NULL OR collaboration_mode = ?2)
+             ORDER BY created_at DESC",
+        )?;
+        let workspaces = stmt.query_map(params![project_id, collaboration_mode], |row| {
+            Ok(Workspace {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                name: row.get(2)?,
+                work_dir: row.get(3)?,
+                env: row.get(4)?,
+                resources: row.get(5)?,
+                capture_thoughts: row.get(6)?,
+                collaboration_mode: row.get(7)?,
+                status: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
+            })
+        })?;
+        workspaces.collect()
     }
 
     pub fn get(id: &str) -> Result<Option<Workspace>> {
@@ -1161,7 +1309,7 @@ pub mod workspaces {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, project_id, name, work_dir, env, resources, capture_thoughts, created_at, updated_at
+            "SELECT id, project_id, name, work_dir, env, resources, capture_thoughts, collaboration_mode, status, created_at, updated_at
              FROM workspaces WHERE id = ?1"
         )?;
 
@@ -1174,8 +1322,10 @@ pub mod workspaces {
                 env: row.get(4)?,
                 resources: row.get(5)?,
                 capture_thoughts: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
+                collaboration_mode: row.get(7)?,
+                status: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
             })
         })?;
 
@@ -1193,14 +1343,15 @@ pub mod workspaces {
         conn.execute(
             "UPDATE workspaces
              SET name = ?1, work_dir = ?2, env = ?3, resources = ?4,
-                 capture_thoughts = ?5, updated_at = ?6
-             WHERE id = ?7",
+                 capture_thoughts = ?5, status = ?6, updated_at = ?7
+             WHERE id = ?8",
             params![
                 workspace.name,
                 workspace.work_dir,
                 workspace.env,
                 workspace.resources,
                 workspace.capture_thoughts,
+                workspace.status,
                 workspace.updated_at,
                 workspace.id,
             ],
@@ -1213,6 +1364,106 @@ pub mod workspaces {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         let count = conn.execute("DELETE FROM workspaces WHERE id = ?1", params![id])?;
+        Ok(count > 0)
+    }
+}
+
+pub mod workspace_projects {
+    use super::*;
+
+    fn row_to_project(row: &rusqlite::Row<'_>) -> Result<WorkspaceProject> {
+        Ok(WorkspaceProject {
+            workspace_id: row.get(0)?,
+            project_id: row.get(1)?,
+            is_default: row.get::<_, i64>(2)? != 0,
+            status: row.get(3)?,
+            settings_json: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+        })
+    }
+
+    pub fn create(link: WorkspaceProject) -> Result<WorkspaceProject> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO workspace_projects
+             (workspace_id, project_id, is_default, status, settings_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                link.workspace_id,
+                link.project_id,
+                link.is_default,
+                link.status,
+                link.settings_json,
+                link.created_at,
+                link.updated_at,
+            ],
+        )?;
+        Ok(link)
+    }
+
+    pub fn list(workspace_id: &str) -> Result<Vec<WorkspaceProject>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT workspace_id, project_id, is_default, status, settings_json, created_at, updated_at
+             FROM workspace_projects WHERE workspace_id = ?1
+             ORDER BY is_default DESC, created_at ASC",
+        )?;
+        let rows = stmt.query_map(params![workspace_id], row_to_project)?;
+        rows.collect()
+    }
+
+    pub fn get(workspace_id: &str, project_id: &str) -> Result<Option<WorkspaceProject>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            "SELECT workspace_id, project_id, is_default, status, settings_json, created_at, updated_at
+             FROM workspace_projects WHERE workspace_id = ?1 AND project_id = ?2",
+            params![workspace_id, project_id],
+            row_to_project,
+        )
+        .optional()
+    }
+
+    pub fn update(
+        workspace_id: &str,
+        project_id: &str,
+        status: Option<&str>,
+        is_default: Option<bool>,
+        settings_json: Option<&str>,
+    ) -> Result<bool> {
+        let db = get_user_data_db();
+        let mut conn = db.lock().unwrap();
+        let tx = conn.transaction()?;
+        if is_default == Some(true) {
+            tx.execute(
+                "UPDATE workspace_projects SET is_default = 0, updated_at = strftime('%s', 'now')
+                 WHERE workspace_id = ?1",
+                params![workspace_id],
+            )?;
+        }
+        let count = tx.execute(
+            "UPDATE workspace_projects
+             SET status = COALESCE(?3, status),
+                 is_default = COALESCE(?4, is_default),
+                 settings_json = COALESCE(?5, settings_json),
+                 updated_at = strftime('%s', 'now')
+             WHERE workspace_id = ?1 AND project_id = ?2",
+            params![workspace_id, project_id, status, is_default, settings_json],
+        )?;
+        tx.commit()?;
+        Ok(count > 0)
+    }
+
+    pub fn delete(workspace_id: &str, project_id: &str) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let count = conn.execute(
+            "DELETE FROM workspace_projects WHERE workspace_id = ?1 AND project_id = ?2",
+            params![workspace_id, project_id],
+        )?;
         Ok(count > 0)
     }
 }
@@ -2105,18 +2356,29 @@ pub mod group_agent_bindings {
 mod tests {
     use super::*;
 
+    static TEST_DB_MUTEX: Mutex<()> = Mutex::new(());
+    static TEST_DB_DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+    fn lock_user_data_db_for_tests() -> std::sync::MutexGuard<'static, ()> {
+        let guard = TEST_DB_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        TEST_DB_DATA_DIR.get_or_init(|| {
+            let data_dir = std::env::temp_dir()
+                .join("ergatai-user-data-tests")
+                .join(std::process::id().to_string());
+            let _ = std::fs::remove_dir_all(&data_dir);
+            std::fs::create_dir_all(&data_dir).unwrap();
+            std::env::set_var("ERGATAI_DATA_DIR", &data_dir);
+            data_dir
+        });
+        Lazy::force(&USER_DATA_DB);
+        guard
+    }
+
     #[test]
     fn test_project_crud() {
-        // NOTE: This test uses set_var which is not thread-safe in parallel test contexts.
-        // We use process ID to create a unique directory per test process, reducing race risk.
-        // For full safety, this test should be run with `cargo test -- --test-threads=1` or
-        // refactored to not rely on env vars (requires get_db_path() to accept a parameter).
-        let data_dir = std::env::temp_dir()
-            .join("ergatai-user-data-tests")
-            .join(std::process::id().to_string());
-        let _ = std::fs::remove_dir_all(&data_dir);
-        std::fs::create_dir_all(&data_dir).unwrap();
-        std::env::set_var("ERGATAI_DATA_DIR", &data_dir);
+        let _database_guard = lock_user_data_db_for_tests();
 
         let project = Project {
             id: "test-1".to_string(),
@@ -2147,8 +2409,6 @@ mod tests {
         projects::delete(&project.id).unwrap();
         let deleted = projects::get(&project.id).unwrap();
         assert!(deleted.is_none());
-
-        let _ = std::fs::remove_dir_all(&data_dir);
     }
 
     fn make_chat(id: &str, project_id: &str, workspace_id: Option<&str>) -> Chat {
@@ -2175,6 +2435,7 @@ mod tests {
 
     #[test]
     fn test_chat_list_all_filter_combinations() {
+        let _database_guard = lock_user_data_db_for_tests();
         let prefix = format!("cl-{}", std::process::id());
         let pid1 = format!("{prefix}-p1");
         let pid2 = format!("{prefix}-p2");
@@ -2221,6 +2482,8 @@ mod tests {
             env: "{}".into(),
             resources: "{}".into(),
             capture_thoughts: false,
+            collaboration_mode: "supervisor".into(),
+            status: "active".into(),
             created_at: 1000,
             updated_at: 1000,
         };
@@ -2232,6 +2495,8 @@ mod tests {
             env: "{}".into(),
             resources: "{}".into(),
             capture_thoughts: false,
+            collaboration_mode: "supervisor".into(),
+            status: "active".into(),
             created_at: 1000,
             updated_at: 1000,
         };
@@ -2243,6 +2508,8 @@ mod tests {
             env: "{}".into(),
             resources: "{}".into(),
             capture_thoughts: false,
+            collaboration_mode: "supervisor".into(),
+            status: "active".into(),
             created_at: 1000,
             updated_at: 1000,
         };
@@ -2275,18 +2542,13 @@ mod tests {
         assert_eq!(by_both[0].id, cid1);
 
         // Cleanup
-        let _ = chats::get(&cid1);
-        let _ = chats::get(&cid2);
-        let _ = chats::get(&cid3);
-        let _ = workspaces::delete(&wid1);
-        let _ = workspaces::delete(&wid2);
-        let _ = workspaces::delete(&wid3);
-        let _ = projects::delete(&pid1);
-        let _ = projects::delete(&pid2);
+        projects::delete(&pid1).unwrap();
+        projects::delete(&pid2).unwrap();
     }
 
     #[test]
     fn test_conversation_tree_messages_and_workspace_resolution() {
+        let _database_guard = lock_user_data_db_for_tests();
         let prefix = format!("conversation-tree-{}", std::process::id());
         let project_id = format!("{prefix}-project");
         let workspace_id = format!("{prefix}-workspace");
@@ -2314,6 +2576,8 @@ mod tests {
             env: "{}".to_string(),
             resources: "{}".to_string(),
             capture_thoughts: false,
+            collaboration_mode: "supervisor".to_string(),
+            status: "active".to_string(),
             created_at: 1000,
             updated_at: 1000,
         })
@@ -2393,7 +2657,216 @@ mod tests {
         conversations::delete(&root_id).unwrap();
         assert!(conversations::get(&child_id).unwrap().is_none());
         assert!(messages::list(&child_id).unwrap().is_empty());
-        workspaces::delete(&workspace_id).unwrap();
         projects::delete(&project_id).unwrap();
+        assert!(workspaces::get(&workspace_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_workspace_project_backfill_single_project() {
+        let _database_guard = lock_user_data_db_for_tests();
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let project_id = format!("wp-single-{suffix}");
+        let workspace_id = format!("wp-single-ws-{suffix}");
+
+        projects::create(Project {
+            id: project_id.clone(),
+            name: "Single project".to_string(),
+            path: format!("/tmp/{project_id}"),
+            git_remote_url: None,
+            git_provider: None,
+            git_owner: None,
+            git_repo: None,
+            icon_path: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+        workspaces::create(Workspace {
+            id: workspace_id.clone(),
+            project_id: project_id.clone(),
+            name: None,
+            work_dir: format!("/tmp/{workspace_id}"),
+            env: "{}".to_string(),
+            resources: "{}".to_string(),
+            capture_thoughts: false,
+            collaboration_mode: "supervisor".to_string(),
+            status: "active".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+
+        backfill_workspace_projects(&get_user_data_db().lock().unwrap()).unwrap();
+
+        let links = workspace_projects::list(&workspace_id).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].project_id, project_id);
+        assert!(links[0].is_default);
+
+        projects::delete(&project_id).unwrap();
+        assert!(workspaces::get(&workspace_id).unwrap().is_none());
+        assert!(workspace_projects::list(&workspace_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_workspace_list_filters_by_collaboration_mode() {
+        let _database_guard = lock_user_data_db_for_tests();
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let project_id = format!("ws-mode-{suffix}");
+        let supervisor_workspace_id = format!("ws-mode-supervisor-{suffix}");
+        let group_workspace_id = format!("ws-mode-group-{suffix}");
+
+        projects::create(Project {
+            id: project_id.clone(),
+            name: "Workspace mode".to_string(),
+            path: format!("/tmp/{project_id}"),
+            git_remote_url: None,
+            git_provider: None,
+            git_owner: None,
+            git_repo: None,
+            icon_path: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+
+        for (workspace_id, collaboration_mode) in [
+            (&supervisor_workspace_id, "supervisor"),
+            (&group_workspace_id, "group"),
+        ] {
+            workspaces::create(Workspace {
+                id: workspace_id.to_string(),
+                project_id: project_id.clone(),
+                name: None,
+                work_dir: format!("/tmp/{workspace_id}"),
+                env: "{}".to_string(),
+                resources: "{}".to_string(),
+                capture_thoughts: false,
+                collaboration_mode: collaboration_mode.to_string(),
+                status: "active".to_string(),
+                created_at: 1000,
+                updated_at: 1000,
+            })
+            .unwrap();
+        }
+
+        let project_workspaces = workspaces::list(Some(&project_id), None).unwrap();
+        assert_eq!(project_workspaces.len(), 2);
+
+        let supervisor_workspaces =
+            workspaces::list(Some(&project_id), Some("supervisor")).unwrap();
+        assert_eq!(
+            supervisor_workspaces
+                .iter()
+                .map(|workspace| workspace.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![supervisor_workspace_id.as_str()]
+        );
+
+        let group_workspaces = workspaces::list(Some(&project_id), Some("group")).unwrap();
+        assert_eq!(
+            group_workspaces
+                .iter()
+                .map(|workspace| workspace.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![group_workspace_id.as_str()]
+        );
+
+        projects::delete(&project_id).unwrap();
+        assert!(workspaces::get(&supervisor_workspace_id).unwrap().is_none());
+        assert!(workspaces::get(&group_workspace_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_workspace_project_backfill_multi_workspace() {
+        let _database_guard = lock_user_data_db_for_tests();
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let project_id = format!("wp-multi-{suffix}");
+        let workspace_one = format!("wp-multi-ws1-{suffix}");
+        let workspace_two = format!("wp-multi-ws2-{suffix}");
+
+        projects::create(Project {
+            id: project_id.clone(),
+            name: "Multi workspace".to_string(),
+            path: format!("/tmp/{project_id}"),
+            git_remote_url: None,
+            git_provider: None,
+            git_owner: None,
+            git_repo: None,
+            icon_path: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+        for workspace_id in [&workspace_one, &workspace_two] {
+            workspaces::create(Workspace {
+                id: workspace_id.clone(),
+                project_id: project_id.clone(),
+                name: None,
+                work_dir: format!("/tmp/{workspace_id}"),
+                env: "{}".to_string(),
+                resources: "{}".to_string(),
+                capture_thoughts: false,
+                collaboration_mode: "supervisor".to_string(),
+                status: "active".to_string(),
+                created_at: 1000,
+                updated_at: 1000,
+            })
+            .unwrap();
+        }
+
+        backfill_workspace_projects(&get_user_data_db().lock().unwrap()).unwrap();
+
+        for workspace_id in [&workspace_one, &workspace_two] {
+            let links = workspace_projects::list(workspace_id).unwrap();
+            assert_eq!(links.len(), 1);
+            assert_eq!(links[0].project_id, project_id);
+            assert!(links[0].is_default);
+        }
+
+        projects::delete(&project_id).unwrap();
+        assert!(workspaces::get(&workspace_one).unwrap().is_none());
+        assert!(workspaces::get(&workspace_two).unwrap().is_none());
+        assert!(workspace_projects::list(&workspace_one).unwrap().is_empty());
+        assert!(workspace_projects::list(&workspace_two).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_workspace_project_backfill_orphan_project() {
+        let _database_guard = lock_user_data_db_for_tests();
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let project_id = format!("wp-orphan-{suffix}");
+        let imported_workspace_id = format!("ws-import-{project_id}");
+
+        projects::create(Project {
+            id: project_id.clone(),
+            name: "Orphan project".to_string(),
+            path: format!("/tmp/{project_id}"),
+            git_remote_url: None,
+            git_provider: None,
+            git_owner: None,
+            git_repo: None,
+            icon_path: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+
+        backfill_workspace_projects(&get_user_data_db().lock().unwrap()).unwrap();
+
+        let workspace = workspaces::get(&imported_workspace_id)
+            .unwrap()
+            .expect("orphan project should be imported into a workspace");
+        assert_eq!(workspace.project_id, project_id);
+        let links = workspace_projects::list(&imported_workspace_id).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].project_id, project_id);
+        assert!(links[0].is_default);
+
+        projects::delete(&project_id).unwrap();
+        assert!(workspaces::get(&imported_workspace_id).unwrap().is_none());
+        assert!(workspace_projects::list(&imported_workspace_id)
+            .unwrap()
+            .is_empty());
     }
 }

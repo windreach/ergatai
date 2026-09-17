@@ -134,6 +134,51 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/workspaces/persistent/:id",
             delete(api::workspaces::delete_persistent_workspace),
         )
+        // Managed workspace routes
+        .route(
+            "/api/v1/workspaces/managed",
+            get(api::workspaces::list_managed_workspaces),
+        )
+        .route(
+            "/api/v1/workspaces/managed",
+            post(api::workspaces::create_managed_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/managed/:id",
+            get(api::workspaces::get_managed_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/managed/:id",
+            patch(api::workspaces::update_managed_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/managed/:id",
+            delete(api::workspaces::delete_managed_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/managed/:id/archive",
+            post(api::workspaces::archive_managed_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/managed/:id/restore",
+            post(api::workspaces::restore_managed_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/managed/:id/projects",
+            get(api::workspaces::list_managed_workspace_projects),
+        )
+        .route(
+            "/api/v1/workspaces/managed/:id/projects",
+            post(api::workspaces::register_managed_workspace_project),
+        )
+        .route(
+            "/api/v1/workspaces/managed/:id/projects/:project_id",
+            delete(api::workspaces::remove_managed_workspace_project),
+        )
+        .route(
+            "/api/v1/workspaces/managed/:id/status",
+            get(api::workspaces::managed_workspace_status),
+        )
         .route("/api/v1/agents", get(api::agents::list_agents))
         .route("/api/v1/agents", post(api::agents::spawn_agent))
         .route("/api/v1/agents/:id", delete(api::agents::kill_agent))
@@ -393,6 +438,14 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/activity/stream",
             get(api::activity_routes::stream_events),
+        )
+        .route(
+            "/api/v1/collab-runtime/interactions",
+            post(api::collab_runtime::submit_interaction),
+        )
+        .route(
+            "/api/v1/collab-runtime/stream",
+            get(api::collab_runtime::stream_events),
         )
         .route("/api/v1/dag", post(submit_dag))
         .route("/api/v1/dag/validate", post(validate_dag))

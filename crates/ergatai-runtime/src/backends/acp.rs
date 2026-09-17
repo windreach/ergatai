@@ -246,6 +246,8 @@ pub enum AgentOutputEvent {
     },
     /// Tool call failed.
     ToolCallError { id: String, error: String },
+    /// Session title updated by the agent.
+    SessionTitleUpdate { title: String },
     /// Prompt completed.
     Done { stop_reason: String },
     /// An error occurred during prompt execution.
@@ -1571,6 +1573,9 @@ impl AcpBackendInterface for AcpBackend {
         let task_plan = plan.clone();
         let task_elicitations = elicitations.clone();
         let task_session_title = session_title.clone();
+        // Task-local counter for session title change optimization.
+        // Not stored in AcpAgentEntry since it's only used within the connection task.
+        let task_session_title_no_change_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let task_stop_reason = stop_reason.clone();
         let task_continuation_count = continuation_count.clone();
         let task_config_options = config_options.clone();
@@ -1773,7 +1778,37 @@ impl AcpBackendInterface for AcpBackend {
                                     // Extract title if present (Value variant).
                                     if let Some(title) = info.title.value() {
                                         debug!(title = %title, "ACP session title updated");
-                                        *task_session_title.write() = Some(title.clone());
+
+                                        // Check if title has changed
+                                        let current_title = task_session_title.read().clone();
+                                        let title_changed = current_title.as_ref() != Some(title);
+
+                                        if title_changed {
+                                            // Title changed: reset counter, update title, broadcast
+                                            debug!(old_title = ?current_title, new_title = %title, "Session title changed");
+                                            *task_session_title.write() = Some(title.clone());
+                                            task_session_title_no_change_count.store(0, std::sync::atomic::Ordering::SeqCst);
+
+                                            // Broadcast session title update event to SSE subscribers
+                                            let _ = output_tx.send(AgentOutputEvent::SessionTitleUpdate {
+                                                title: title.clone()
+                                            });
+                                        } else {
+                                            // Title unchanged: increment counter
+                                            let count = task_session_title_no_change_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                                            debug!(count = count, "Session title unchanged");
+
+                                            // Check if we should stop broadcasting (after 3 consecutive no-changes)
+                                            if count >= 3 {
+                                                debug!("Session title stabilized, stopping broadcasts");
+                                            } else {
+                                                // Still broadcasting phase - send event even though title unchanged
+                                                // This helps frontend track the counting
+                                                let _ = output_tx.send(AgentOutputEvent::SessionTitleUpdate {
+                                                    title: title.clone()
+                                                });
+                                            }
+                                        }
                                     }
                                 }
                                 SessionUpdate::ConfigOptionUpdate(config_update) => {

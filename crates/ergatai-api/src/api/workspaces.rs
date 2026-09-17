@@ -2,6 +2,7 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
+    response::Response,
     Json,
 };
 use ergatai_runtime::{ResourceLimits, WorkspaceSpec};
@@ -9,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use utoipa::ToSchema;
 
-use crate::{services::agent_service, AppState};
+use crate::{
+    services::{agent_service, workspace_manager as manager},
+    AppState,
+};
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateWorkspaceRequest {
@@ -30,6 +34,19 @@ pub struct WorkspaceResponse {
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     pub error: String,
+}
+
+fn managed_error(error: manager::WorkspaceManagerError, context: &'static str) -> Response {
+    let (status, message) = match error {
+        manager::WorkspaceManagerError::Validation(message) => (StatusCode::BAD_REQUEST, message),
+        manager::WorkspaceManagerError::NotFound(message) => (StatusCode::NOT_FOUND, message),
+        manager::WorkspaceManagerError::Conflict(message) => (StatusCode::CONFLICT, message),
+        manager::WorkspaceManagerError::Internal(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            crate::sanitize_error(&error, context),
+        ),
+    };
+    (status, Json(ErrorResponse { error: message })).into_response()
 }
 
 #[utoipa::path(
@@ -252,8 +269,6 @@ pub async fn delete_workspace(
 
 // ── Persistent Workspace APIs ──
 
-use crate::user_data_db::{workspaces, Workspace};
-
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct PersistentWorkspaceRequest {
     pub id: String,
@@ -263,6 +278,7 @@ pub struct PersistentWorkspaceRequest {
     pub env: Option<String>,
     pub resources: Option<String>,
     pub capture_thoughts: Option<bool>,
+    pub collaboration_mode: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -274,13 +290,32 @@ pub struct PersistentWorkspaceResponse {
     pub env: String,
     pub resources: String,
     pub capture_thoughts: bool,
+    pub collaboration_mode: String,
+    pub status: String,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+pub fn persistent_response(workspace: manager::ManagedWorkspace) -> PersistentWorkspaceResponse {
+    PersistentWorkspaceResponse {
+        id: workspace.id,
+        project_id: workspace.project_id,
+        name: workspace.name,
+        work_dir: workspace.work_dir,
+        env: workspace.env,
+        resources: workspace.resources,
+        capture_thoughts: workspace.capture_thoughts,
+        collaboration_mode: workspace.collaboration_mode,
+        status: workspace.status,
+        created_at: workspace.created_at,
+        updated_at: workspace.updated_at,
+    }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ListPersistentWorkspacesQuery {
     pub project_id: Option<String>,
+    pub collaboration_mode: Option<String>,
 }
 
 #[utoipa::path(
@@ -288,7 +323,8 @@ pub struct ListPersistentWorkspacesQuery {
     path = "/api/v1/workspaces/persistent",
     tag = "PersistentWorkspaces",
     params(
-        ("project_id" = Option<String>, Query, description = "Filter by project ID")
+        ("project_id" = Option<String>, Query, description = "Filter by project ID"),
+        ("collaboration_mode" = Option<String>, Query, description = "Filter by collaboration mode")
     ),
     responses(
         (status = 200, description = "List persistent workspaces", body = Vec<PersistentWorkspaceResponse>),
@@ -298,31 +334,21 @@ pub struct ListPersistentWorkspacesQuery {
 pub async fn list_persistent_workspaces(
     axum::extract::Query(query): axum::extract::Query<ListPersistentWorkspacesQuery>,
 ) -> impl IntoResponse {
-    match workspaces::list(query.project_id.as_deref()) {
-        Ok(ws_list) => {
-            let response: Vec<PersistentWorkspaceResponse> = ws_list
-                .into_iter()
-                .map(|w| PersistentWorkspaceResponse {
-                    id: w.id,
-                    project_id: w.project_id,
-                    name: w.name,
-                    work_dir: w.work_dir,
-                    env: w.env,
-                    resources: w.resources,
-                    capture_thoughts: w.capture_thoughts,
-                    created_at: w.created_at,
-                    updated_at: w.updated_at,
-                })
-                .collect();
-            (StatusCode::OK, Json(response)).into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
+    match manager::list(
+        query.project_id.as_deref(),
+        query.collaboration_mode.as_deref(),
+    ) {
+        Ok(ws_list) => (
+            StatusCode::OK,
+            Json(
+                ws_list
+                    .into_iter()
+                    .map(persistent_response)
+                    .collect::<Vec<_>>(),
+            ),
         )
             .into_response(),
+        Err(error) => managed_error(error, "list_persistent_workspaces"),
     }
 }
 
@@ -340,97 +366,52 @@ pub async fn list_persistent_workspaces(
 pub async fn create_persistent_workspace(
     Json(req): Json<PersistentWorkspaceRequest>,
 ) -> impl IntoResponse {
-    // Validate required fields are non-empty
-    if req.id.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Workspace ID cannot be empty".to_string(),
-            }),
-        )
-            .into_response();
-    }
-    if req.project_id.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Project ID cannot be empty".to_string(),
-            }),
-        )
-            .into_response();
-    }
-    if req.work_dir.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Work directory cannot be empty".to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    // Validate project exists
-    match crate::user_data_db::projects::get(&req.project_id) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Project {} not found", req.project_id),
-                }),
+    let env = req
+        .env
+        .as_deref()
+        .map(serde_json::from_str::<HashMap<String, String>>);
+    let env = match env {
+        Some(Ok(env)) => Some(env),
+        Some(Err(e)) => {
+            return managed_error(
+                manager::WorkspaceManagerError::Validation(e.to_string()),
+                "create_persistent_workspace",
             )
-                .into_response();
         }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to validate project: {}", e),
-                }),
+        None => None,
+    };
+    let resources = req
+        .resources
+        .as_deref()
+        .map(serde_json::from_str::<serde_json::Value>);
+    let resources = match resources {
+        Some(Ok(resources)) => Some(resources),
+        Some(Err(e)) => {
+            return managed_error(
+                manager::WorkspaceManagerError::Validation(e.to_string()),
+                "create_persistent_workspace",
             )
-                .into_response();
         }
-    }
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
-
-    let workspace = Workspace {
-        id: req.id,
-        project_id: req.project_id,
-        name: req.name,
-        work_dir: req.work_dir,
-        env: req.env.unwrap_or_else(|| "{}".to_string()),
-        resources: req.resources.unwrap_or_else(|| "{}".to_string()),
-        capture_thoughts: req.capture_thoughts.unwrap_or(false),
-        created_at: now,
-        updated_at: now,
+        None => None,
     };
 
-    match workspaces::create(workspace) {
-        Ok(w) => {
-            let response = PersistentWorkspaceResponse {
-                id: w.id,
-                project_id: w.project_id,
-                name: w.name,
-                work_dir: w.work_dir,
-                env: w.env,
-                resources: w.resources,
-                capture_thoughts: w.capture_thoughts,
-                created_at: w.created_at,
-                updated_at: w.updated_at,
-            };
-            (StatusCode::CREATED, Json(response)).into_response()
+    let request = manager::CreateManagedWorkspaceRequest {
+        id: Some(req.id),
+        name: req.name,
+        work_dir: req.work_dir,
+        project_id: Some(req.project_id),
+        project_path: None,
+        project_name: None,
+        env,
+        resources,
+        capture_thoughts: req.capture_thoughts.unwrap_or(false),
+        collaboration_mode: req.collaboration_mode,
+    };
+    match manager::create(request) {
+        Ok(workspace) => {
+            (StatusCode::CREATED, Json(persistent_response(workspace))).into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
-        )
-            .into_response(),
+        Err(error) => managed_error(error, "create_persistent_workspace"),
     }
 }
 
@@ -446,35 +427,9 @@ pub async fn create_persistent_workspace(
     )
 )]
 pub async fn get_persistent_workspace(Path(id): Path<String>) -> impl IntoResponse {
-    match workspaces::get(&id) {
-        Ok(Some(w)) => {
-            let response = PersistentWorkspaceResponse {
-                id: w.id,
-                project_id: w.project_id,
-                name: w.name,
-                work_dir: w.work_dir,
-                env: w.env,
-                resources: w.resources,
-                capture_thoughts: w.capture_thoughts,
-                created_at: w.created_at,
-                updated_at: w.updated_at,
-            };
-            (StatusCode::OK, Json(response)).into_response()
-        }
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: format!("Workspace {} not found", id),
-            }),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
-        )
-            .into_response(),
+    match manager::get(&id) {
+        Ok(workspace) => (StatusCode::OK, Json(persistent_response(workspace))).into_response(),
+        Err(error) => managed_error(error, "get_persistent_workspace"),
     }
 }
 
@@ -494,80 +449,47 @@ pub async fn update_persistent_workspace(
     Path(id): Path<String>,
     Json(req): Json<PersistentWorkspaceRequest>,
 ) -> impl IntoResponse {
-    // Check if workspace exists
-    match workspaces::get(&id) {
-        Ok(Some(existing)) => {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64;
-
-            let workspace = Workspace {
-                id: id.clone(),
-                project_id: req.project_id,
-                name: req.name,
-                work_dir: req.work_dir,
-                env: req.env.unwrap_or(existing.env),
-                resources: req.resources.unwrap_or(existing.resources),
-                capture_thoughts: req.capture_thoughts.unwrap_or(existing.capture_thoughts),
-                created_at: existing.created_at,
-                updated_at: now,
-            };
-
-            match workspaces::update(workspace) {
-                Ok(()) => match workspaces::get(&id) {
-                    Ok(Some(w)) => {
-                        let response = PersistentWorkspaceResponse {
-                            id: w.id,
-                            project_id: w.project_id,
-                            name: w.name,
-                            work_dir: w.work_dir,
-                            env: w.env,
-                            resources: w.resources,
-                            capture_thoughts: w.capture_thoughts,
-                            created_at: w.created_at,
-                            updated_at: w.updated_at,
-                        };
-                        (StatusCode::OK, Json(response)).into_response()
-                    }
-                    Ok(None) => (
-                        StatusCode::NOT_FOUND,
-                        Json(ErrorResponse {
-                            error: format!("Workspace {} not found after update", id),
-                        }),
-                    )
-                        .into_response(),
-                    Err(e) => (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: e.to_string(),
-                        }),
-                    )
-                        .into_response(),
-                },
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: e.to_string(),
-                    }),
-                )
-                    .into_response(),
-            }
+    let env = req
+        .env
+        .as_deref()
+        .map(serde_json::from_str::<HashMap<String, String>>);
+    let env = match env {
+        Some(Ok(env)) => Some(env),
+        Some(Err(error)) => {
+            return managed_error(
+                manager::WorkspaceManagerError::Validation(error.to_string()),
+                "update_persistent_workspace",
+            )
         }
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: format!("Workspace {} not found", id),
-            }),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
-        )
-            .into_response(),
+        None => None,
+    };
+    let resources = req
+        .resources
+        .as_deref()
+        .map(serde_json::from_str::<serde_json::Value>);
+    let resources = match resources {
+        Some(Ok(resources)) => Some(resources),
+        Some(Err(error)) => {
+            return managed_error(
+                manager::WorkspaceManagerError::Validation(error.to_string()),
+                "update_persistent_workspace",
+            )
+        }
+        None => None,
+    };
+
+    let request = manager::UpdateManagedWorkspaceRequest {
+        name: req.name,
+        work_dir: Some(req.work_dir),
+        env,
+        resources,
+        capture_thoughts: req.capture_thoughts,
+        status: None,
+        default_project_id: Some(req.project_id),
+    };
+    match manager::update(&id, request) {
+        Ok(workspace) => (StatusCode::OK, Json(persistent_response(workspace))).into_response(),
+        Err(error) => managed_error(error, "update_persistent_workspace"),
     }
 }
 
@@ -583,22 +505,250 @@ pub async fn update_persistent_workspace(
     )
 )]
 pub async fn delete_persistent_workspace(Path(id): Path<String>) -> impl IntoResponse {
-    match workspaces::delete(&id) {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: format!("Workspace {} not found", id),
-            }),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
-        )
-            .into_response(),
+    match manager::delete(&id, false).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => managed_error(error, "delete_persistent_workspace"),
+    }
+}
+
+// ── Managed Workspace APIs ──
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteManagedWorkspaceQuery {
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListManagedWorkspacesQuery {
+    pub collaboration_mode: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/managed",
+    tag = "ManagedWorkspaces",
+    params(
+        ("collaboration_mode" = Option<String>, Query, description = "Filter by collaboration mode")
+    ),
+    responses(
+        (status = 200, description = "List managed workspaces", body = Vec<manager::ManagedWorkspace>),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn list_managed_workspaces(
+    axum::extract::Query(query): axum::extract::Query<ListManagedWorkspacesQuery>,
+) -> impl IntoResponse {
+    match manager::list(None, query.collaboration_mode.as_deref()) {
+        Ok(workspaces) => (StatusCode::OK, Json(workspaces)).into_response(),
+        Err(error) => managed_error(error, "list_managed_workspaces"),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces/managed",
+    tag = "ManagedWorkspaces",
+    request_body = manager::CreateManagedWorkspaceRequest,
+    responses(
+        (status = 201, description = "Managed workspace created", body = manager::ManagedWorkspace),
+        (status = 400, description = "Invalid workspace", body = crate::api::ApiError),
+        (status = 409, description = "Workspace already exists", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn create_managed_workspace(
+    Json(request): Json<manager::CreateManagedWorkspaceRequest>,
+) -> impl IntoResponse {
+    match manager::create(request) {
+        Ok(workspace) => (StatusCode::CREATED, Json(workspace)).into_response(),
+        Err(error) => managed_error(error, "create_managed_workspace"),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/managed/{id}",
+    tag = "ManagedWorkspaces",
+    params(("id" = String, Path, description = "Workspace ID")),
+    responses(
+        (status = 200, description = "Managed workspace found", body = manager::ManagedWorkspace),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn get_managed_workspace(Path(id): Path<String>) -> impl IntoResponse {
+    match manager::get(&id) {
+        Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
+        Err(error) => managed_error(error, "get_managed_workspace"),
+    }
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/v1/workspaces/managed/{id}",
+    tag = "ManagedWorkspaces",
+    params(("id" = String, Path, description = "Workspace ID")),
+    request_body = manager::UpdateManagedWorkspaceRequest,
+    responses(
+        (status = 200, description = "Managed workspace updated", body = manager::ManagedWorkspace),
+        (status = 400, description = "Invalid workspace", body = crate::api::ApiError),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn update_managed_workspace(
+    Path(id): Path<String>,
+    Json(request): Json<manager::UpdateManagedWorkspaceRequest>,
+) -> impl IntoResponse {
+    match manager::update(&id, request) {
+        Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
+        Err(error) => managed_error(error, "update_managed_workspace"),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces/managed/{id}/archive",
+    tag = "ManagedWorkspaces",
+    params(("id" = String, Path, description = "Workspace ID")),
+    responses(
+        (status = 200, description = "Managed workspace archived", body = manager::ManagedWorkspace),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn archive_managed_workspace(Path(id): Path<String>) -> impl IntoResponse {
+    match manager::set_status(&id, "archived") {
+        Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
+        Err(error) => managed_error(error, "archive_managed_workspace"),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces/managed/{id}/restore",
+    tag = "ManagedWorkspaces",
+    params(("id" = String, Path, description = "Workspace ID")),
+    responses(
+        (status = 200, description = "Managed workspace restored", body = manager::ManagedWorkspace),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn restore_managed_workspace(Path(id): Path<String>) -> impl IntoResponse {
+    match manager::set_status(&id, "active") {
+        Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
+        Err(error) => managed_error(error, "restore_managed_workspace"),
+    }
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/workspaces/managed/{id}",
+    tag = "ManagedWorkspaces",
+    params(
+        ("id" = String, Path, description = "Workspace ID"),
+        ("force" = Option<bool>, Query, description = "Stop active agents before deletion")
+    ),
+    responses(
+        (status = 204, description = "Managed workspace deleted"),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 409, description = "Workspace has active runtime resources", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn delete_managed_workspace(
+    Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<DeleteManagedWorkspaceQuery>,
+) -> impl IntoResponse {
+    match manager::delete(&id, query.force).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => managed_error(error, "delete_managed_workspace"),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/managed/{id}/projects",
+    tag = "ManagedWorkspaces",
+    params(("id" = String, Path, description = "Workspace ID")),
+    responses(
+        (status = 200, description = "Workspace projects", body = Vec<manager::ManagedWorkspaceProject>),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn list_managed_workspace_projects(Path(id): Path<String>) -> impl IntoResponse {
+    match manager::list_projects(&id) {
+        Ok(projects) => (StatusCode::OK, Json(projects)).into_response(),
+        Err(error) => managed_error(error, "list_managed_workspace_projects"),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces/managed/{id}/projects",
+    tag = "ManagedWorkspaces",
+    params(("id" = String, Path, description = "Workspace ID")),
+    request_body = manager::RegisterWorkspaceProjectRequest,
+    responses(
+        (status = 200, description = "Project registered", body = manager::ManagedWorkspace),
+        (status = 400, description = "Invalid project", body = crate::api::ApiError),
+        (status = 404, description = "Workspace or project not found", body = crate::api::ApiError),
+        (status = 409, description = "Project already registered", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn register_managed_workspace_project(
+    Path(id): Path<String>,
+    Json(request): Json<manager::RegisterWorkspaceProjectRequest>,
+) -> impl IntoResponse {
+    match manager::register_project(&id, request) {
+        Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
+        Err(error) => managed_error(error, "register_managed_workspace_project"),
+    }
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/workspaces/managed/{id}/projects/{project_id}",
+    tag = "ManagedWorkspaces",
+    params(
+        ("id" = String, Path, description = "Workspace ID"),
+        ("project_id" = String, Path, description = "Project ID")
+    ),
+    responses(
+        (status = 200, description = "Project registration removed", body = manager::ManagedWorkspace),
+        (status = 404, description = "Workspace or project link not found", body = crate::api::ApiError),
+        (status = 409, description = "Workspace must retain one project", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn remove_managed_workspace_project(
+    Path((id, project_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    match manager::remove_project(&id, &project_id) {
+        Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
+        Err(error) => managed_error(error, "remove_managed_workspace_project"),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/managed/{id}/status",
+    tag = "ManagedWorkspaces",
+    params(("id" = String, Path, description = "Workspace ID")),
+    responses(
+        (status = 200, description = "Workspace status", body = manager::WorkspaceStatus),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn managed_workspace_status(Path(id): Path<String>) -> impl IntoResponse {
+    match manager::status(&id).await {
+        Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+        Err(error) => managed_error(error, "managed_workspace_status"),
     }
 }
 
