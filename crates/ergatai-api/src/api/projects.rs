@@ -139,6 +139,28 @@ pub async fn create_project(
     State(_state): State<AppState>,
     Json(req): Json<CreateProjectRequest>,
 ) -> impl IntoResponse {
+    // Validate name is not empty/whitespace
+    if req.name.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Project name cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Validate path is not empty/whitespace
+    if req.path.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Project path cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

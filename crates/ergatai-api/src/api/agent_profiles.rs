@@ -129,7 +129,7 @@ pub async fn list_profiles() -> impl IntoResponse {
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
-                "error": format!("Failed to list profiles: {}", e)
+                "error": crate::sanitize_error(&e, "list_profiles")
             })),
         ),
     }
@@ -158,7 +158,7 @@ pub async fn get_profile(Path(id): Path<String>) -> impl IntoResponse {
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
-                "error": format!("Failed to get profile: {}", e)
+                "error": crate::sanitize_error(&e, "get_profile")
             })),
         ),
     }
@@ -185,7 +185,7 @@ pub async fn delete_profile(Path(id): Path<String>) -> impl IntoResponse {
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
-                "error": format!("Failed to delete profile: {}", e)
+                "error": crate::sanitize_error(&e, "delete_profile")
             })),
         ),
     }
@@ -250,7 +250,7 @@ pub async fn list_with_status() -> impl IntoResponse {
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
-                "error": format!("Failed to list profiles: {}", e)
+                "error": crate::sanitize_error(&e, "list_with_status")
             })),
         ),
     }

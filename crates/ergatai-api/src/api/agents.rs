@@ -750,6 +750,43 @@ pub async fn send_message(
     Path(id): Path<String>,
     Json(req): Json<SendMessageRequest>,
 ) -> impl IntoResponse {
+    // Validate message is not empty/whitespace
+    if req.message.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Message cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Validate message_type if provided
+    if let Some(ref msg_type) = req.message_type {
+        if !matches!(msg_type.as_str(), "request" | "response" | "broadcast") {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "message_type must be one of: request, response, broadcast".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    // Validate from if provided (non-empty)
+    if let Some(ref from) = req.from {
+        if from.trim().is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "from cannot be empty".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
     let sender = match get_message_sender() {
         Some(s) => s,
         None => {
@@ -1398,7 +1435,7 @@ pub async fn get_agent_thoughts(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "get_agent_thoughts"),
             }),
         )
             .into_response(),
@@ -1460,7 +1497,7 @@ pub async fn get_agent_tool_calls(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "monitoring_handler"),
             }),
         )
             .into_response(),
@@ -1529,7 +1566,7 @@ pub async fn get_agent_plan(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "monitoring_handler"),
             }),
         )
             .into_response(),
@@ -1675,7 +1712,7 @@ pub async fn get_agent_elicitations(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "monitoring_handler"),
             }),
         )
             .into_response(),
@@ -1717,7 +1754,7 @@ pub async fn get_agent_available_commands(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "monitoring_handler"),
             }),
         )
             .into_response(),
@@ -1747,7 +1784,7 @@ pub async fn execute_agent_command(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "monitoring_handler"),
             }),
         )
             .into_response(),
@@ -1777,7 +1814,7 @@ pub async fn list_agent_sessions(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "monitoring_handler"),
             }),
         )
             .into_response(),
@@ -1802,7 +1839,7 @@ pub async fn create_agent_session(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "monitoring_handler"),
             }),
         )
             .into_response(),
@@ -1819,7 +1856,7 @@ pub async fn load_agent_session(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "monitoring_handler"),
             }),
         )
             .into_response(),
@@ -1836,7 +1873,7 @@ pub async fn delete_agent_session(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "monitoring_handler"),
             }),
         )
             .into_response(),
@@ -1951,7 +1988,7 @@ pub async fn get_agent_config_options(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "monitoring_handler"),
             }),
         )
             .into_response(),
@@ -2032,7 +2069,7 @@ pub async fn get_agent_usage(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "monitoring_handler"),
             }),
         )
             .into_response(),
@@ -2071,7 +2108,7 @@ pub async fn get_agent_output(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "monitoring_handler"),
             }),
         )
             .into_response(),
@@ -2111,7 +2148,7 @@ pub async fn get_agent_last_output(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "monitoring_handler"),
             }),
         )
             .into_response(),
@@ -2153,7 +2190,7 @@ pub async fn get_agent_exit_code(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "monitoring_handler"),
             }),
         )
             .into_response(),
@@ -2187,7 +2224,7 @@ pub async fn get_agent_pid(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "monitoring_handler"),
             }),
         )
             .into_response(),
@@ -2436,7 +2473,7 @@ pub async fn prompt_agent(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
-                    error: e.to_string(),
+                    error: crate::sanitize_error(&e, "monitoring_handler"),
                 }),
             )
                 .into_response();
@@ -2604,7 +2641,7 @@ pub async fn prompt_agent(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
-                    error: e.to_string(),
+                    error: crate::sanitize_error(&e, "monitoring_handler"),
                 }),
             )
                 .into_response();
@@ -2685,7 +2722,7 @@ pub async fn prompt_agent(
             Err(e) => (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
-                    error: e.to_string(),
+                    error: crate::sanitize_error(&e, "prompt_agent_direct"),
                 }),
             )
                 .into_response(),
@@ -2730,7 +2767,7 @@ pub async fn stream_agent_output(
                 return (
                     StatusCode::NOT_FOUND,
                     Json(ErrorResponse {
-                        error: error.to_string(),
+                        error: crate::sanitize_error(&error, "claim_pending_prompt"),
                     }),
                 )
                     .into_response();
@@ -2765,7 +2802,7 @@ pub async fn stream_agent_output(
             return (
                 StatusCode::NOT_FOUND,
                 Json(ErrorResponse {
-                    error: e.to_string(),
+                    error: crate::sanitize_error(&e, "subscribe_agent_output"),
                 }),
             )
                 .into_response();

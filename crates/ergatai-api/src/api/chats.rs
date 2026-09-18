@@ -256,6 +256,20 @@ pub async fn create_chat(
             .into_response();
     }
 
+    // Validate collaboration_mode if provided
+    if let Some(ref mode) = req.collaboration_mode {
+        if !matches!(mode.as_str(), "supervisor" | "mesh" | "star" | "group") {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "collaboration_mode must be one of: supervisor, mesh, star, group"
+                        .to_string(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
     // Validate project exists
     let project_id_for_check = req.project_id.clone();
     match tokio::task::spawn_blocking(move || user_data_db::projects::get(&project_id_for_check))
@@ -1387,6 +1401,28 @@ pub async fn append_sub_chat_message(
     Path((chat_id, sub_chat_id)): Path<(String, String)>,
     Json(req): Json<AppendSubChatMessageRequest>,
 ) -> impl IntoResponse {
+    // Validate role is not empty
+    if req.role.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Role cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Validate role is one of the allowed values
+    if !matches!(req.role.as_str(), "user" | "assistant" | "system") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Role must be one of: user, assistant, system".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     // Verify the sub-chat belongs to the specified chat
     let sub_chat_id_for_check = sub_chat_id.clone();
     let chat_id_for_cmp = chat_id.clone();
