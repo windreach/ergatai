@@ -170,21 +170,11 @@ fn sub_chat_to_response(sub_chat: SubChat) -> SubChatResponse {
 }
 
 fn generate_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("chat_{}", timestamp)
+    format!("chat_{}", uuid::Uuid::new_v4().as_simple())
 }
 
 fn generate_sub_chat_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("subchat_{}", timestamp)
+    format!("subchat_{}", uuid::Uuid::new_v4().as_simple())
 }
 
 // ── Chat API Handlers ────────────────────────────────────────────────────────

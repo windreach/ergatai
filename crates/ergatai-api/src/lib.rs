@@ -17,7 +17,9 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tokio::sync::broadcast;
+use tower_http::cors::{Any, CorsLayer};
 use utoipa::OpenApi;
 
 use ergatai_core::nats;
@@ -459,6 +461,16 @@ pub fn build_rest_app(state: AppState) -> Router {
             state.clone(),
             auth_middleware,
         ))
+        // CORS layer — outermost so preflight `OPTIONS` requests bypass auth.
+        // Permissive development config: any origin, any method, any header.
+        // Lock this down in production via environment-specific configuration.
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any)
+                .max_age(Duration::from_secs(3600)),
+        )
 }
 
 async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {

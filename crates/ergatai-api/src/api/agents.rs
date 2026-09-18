@@ -229,11 +229,16 @@ fn matches_pattern(command: &str, pattern: &str) -> bool {
 }
 
 /// Validate that a workspace_id contains only safe characters.
-fn is_valid_workspace_id(id: &str) -> bool {
-    !id.is_empty()
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+///
+/// SECURITY: rejects empty IDs, path separators, `..` components, control
+/// characters, and any non-ASCII symbol. Prevents path-traversal and
+/// filesystem-namespace injection via the workspace creation API.
+pub(crate) fn is_valid_workspace_id(id: &str) -> bool {
+    if id.is_empty() || id.contains("..") {
+        return false;
+    }
+    id.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
 async fn workspace_resource_limits(

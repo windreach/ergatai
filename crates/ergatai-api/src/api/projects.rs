@@ -74,12 +74,7 @@ fn project_to_response(project: Project) -> ProjectResponse {
 }
 
 fn generate_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("proj_{}", timestamp)
+    format!("proj_{}", uuid::Uuid::new_v4().as_simple())
 }
 
 fn db_error(operation: &'static str, error: rusqlite::Error) -> Response {

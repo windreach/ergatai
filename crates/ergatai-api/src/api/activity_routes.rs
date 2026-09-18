@@ -54,6 +54,9 @@ fn default_limit() -> usize {
     50
 }
 
+/// Maximum number of recent events a single request may retrieve.
+const MAX_RECENT_LIMIT: usize = 1000;
+
 /// GET /api/v1/activity/recent — get recent activity events
 pub async fn get_recent_events(
     State(_state): State<AppState>,
@@ -66,7 +69,8 @@ pub async fn get_recent_events(
         }
     };
 
-    let events = feed.recent(params.limit).await;
+    let limit = params.limit.min(MAX_RECENT_LIMIT);
+    let events = feed.recent(limit).await;
     Json(events).into_response()
 }
 

@@ -71,6 +71,7 @@ tokio-util = "0.7"
 # HTTP server
 axum = { version = "0.7", features = ["ws"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
+tower-http = { version = "0.6", features = ["cors"] }
 
 # Metrics (Prometheus)
 metrics = "0.24"

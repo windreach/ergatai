@@ -108,12 +108,14 @@ pub async fn create_workspace(
 ) -> impl IntoResponse {
     let runtime = crate::context::get_app_context().agent_runtime.clone();
 
-    // Validate workspace ID is non-empty
-    if req.id.is_empty() {
+    // Validate workspace ID is non-empty and contains only safe characters
+    // (alphanumeric, `-`, `_`, `.`). Rejects path separators, `..`, and
+    // control characters to prevent path-traversal / filesystem injection.
+    if !crate::api::agents::is_valid_workspace_id(&req.id) {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Workspace ID cannot be empty".to_string(),
+                error: "Workspace ID must contain only alphanumeric characters, hyphens, underscores, or dots".to_string(),
             }),
         )
             .into_response();
