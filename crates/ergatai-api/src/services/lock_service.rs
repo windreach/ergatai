@@ -16,9 +16,13 @@ use ergatai_lock::{get_lock_manager, AuditEntry, FileLock, FileLockManager};
 /// 过滤内部路径的逻辑放在 handler 层。
 pub async fn list_active_locks() -> Result<Vec<FileLock>> {
     let manager = get_default_manager().await?;
-    manager
-        .get_all_active_locks()
-        .map_err(|e| anyhow::anyhow!("Failed to get active locks: {}", e))
+    tokio::task::spawn_blocking(move || {
+        manager
+            .get_all_active_locks()
+            .map_err(|e| anyhow::anyhow!("Failed to get active locks: {}", e))
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("Task join error: {}", e))?
 }
 
 /// 查询审计日志。
@@ -36,9 +40,23 @@ pub async fn query_audit(
 ) -> Result<Vec<AuditEntry>> {
     let manager = get_default_manager().await?;
     let audit = manager.audit_manager();
-    audit
-        .query_audit_log(agent_id, action, file_path, None, None, limit)
-        .map_err(|e| anyhow::anyhow!("Failed to query audit log: {}", e))
+    let agent_id = agent_id.map(|s| s.to_string());
+    let action = action.map(|s| s.to_string());
+    let file_path = file_path.map(|s| s.to_string());
+    tokio::task::spawn_blocking(move || {
+        audit
+            .query_audit_log(
+                agent_id.as_deref(),
+                action.as_deref(),
+                file_path.as_deref(),
+                None,
+                None,
+                limit,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to query audit log: {}", e))
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("Task join error: {}", e))?
 }
 
 /// 锁竞争信息 — 一个文件被多个 agent 争用时的状态。

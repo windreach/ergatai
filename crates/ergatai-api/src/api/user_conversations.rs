@@ -67,7 +67,7 @@ fn db_error(operation: &'static str, error: rusqlite::Error) -> Response {
     let response = (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ErrorResponse {
-            error: format!("{operation}: {error}"),
+            error: crate::sanitize_error(&error, operation),
         }),
     );
     response.into_response()
@@ -99,15 +99,44 @@ pub async fn list_workspace_conversations(
             .into_response();
     }
 
-    match user_data_db::workspaces::get(&workspace_id) {
-        Ok(Some(_workspace)) => {}
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(error) => return db_error("Failed to load workspace", error),
+    // Validate workspace exists
+    let workspace_id_for_check = workspace_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::workspaces::get(&workspace_id_for_check)
+    })
+    .await
+    {
+        Ok(Ok(Some(_workspace))) => {}
+        Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => return db_error("Failed to load workspace", error),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     }
 
-    match user_data_db::conversations::list_roots(None, Some(&workspace_id)) {
-        Ok(conversations) => (StatusCode::OK, Json(conversations)).into_response(),
-        Err(error) => db_error("Failed to list conversations", error),
+    let workspace_id_for_list = workspace_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::conversations::list_roots(None, Some(&workspace_id_for_list))
+    })
+    .await
+    {
+        Ok(Ok(conversations)) => (StatusCode::OK, Json(conversations)).into_response(),
+        Ok(Err(error)) => db_error("Failed to list conversations", error),
+        Err(e) => {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -139,10 +168,24 @@ pub async fn create_workspace_conversation(
             .into_response();
     }
 
-    let workspace = match user_data_db::workspaces::get(&workspace_id) {
-        Ok(Some(workspace)) => workspace,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(error) => return db_error("Failed to load workspace", error),
+    let workspace_id_for_get = workspace_id.clone();
+    let workspace = match tokio::task::spawn_blocking(move || {
+        user_data_db::workspaces::get(&workspace_id_for_get)
+    })
+    .await
+    {
+        Ok(Ok(Some(workspace))) => workspace,
+        Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => return db_error("Failed to load workspace", error),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     };
 
     let now = now_unix_seconds();
@@ -158,9 +201,22 @@ pub async fn create_workspace_conversation(
         archived_at: None,
     };
 
-    match user_data_db::conversations::create(conversation) {
-        Ok(conversation) => (StatusCode::CREATED, Json(conversation)).into_response(),
-        Err(error) => db_error("Failed to create conversation", error),
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::conversations::create(conversation)
+    })
+    .await
+    {
+        Ok(Ok(conversation)) => (StatusCode::CREATED, Json(conversation)).into_response(),
+        Ok(Err(error)) => db_error("Failed to create conversation", error),
+        Err(e) => {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -179,10 +235,32 @@ pub async fn get_conversation(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match user_data_db::conversations::get(&id) {
-        Ok(Some(conversation)) => (StatusCode::OK, Json(conversation)).into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(error) => db_error("Failed to load conversation", error),
+    if id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Conversation ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let id_for_get = id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get))
+        .await
+    {
+        Ok(Ok(Some(conversation))) => (StatusCode::OK, Json(conversation)).into_response(),
+        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => db_error("Failed to load conversation", error),
+        Err(e) => {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -203,26 +281,72 @@ pub async fn update_conversation(
     Path(id): Path<String>,
     Json(request): Json<UpdateConversationRequest>,
 ) -> impl IntoResponse {
-    match user_data_db::conversations::get(&id) {
-        Ok(Some(existing)) => {
-            let conversation = Conversation {
-                name: request.name.or(existing.name),
-                mode: request.mode.unwrap_or_else(|| existing.mode.clone()),
-                ..existing
-            };
+    if id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Conversation ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
 
-            match user_data_db::conversations::update(conversation) {
-                Ok(()) => {}
-                Err(error) => return db_error("Failed to update conversation", error),
-            }
-            match user_data_db::conversations::get(&id) {
-                Ok(Some(conversation)) => (StatusCode::OK, Json(conversation)).into_response(),
-                Ok(None) => StatusCode::NOT_FOUND.into_response(),
-                Err(error) => db_error("Failed to reload conversation", error),
-            }
+    let id_for_get = id.clone();
+    let existing = match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get))
+        .await
+    {
+        Ok(Ok(Some(existing))) => existing,
+        Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => return db_error("Failed to load conversation", error),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
         }
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(error) => db_error("Failed to load conversation", error),
+    };
+
+    let conversation = Conversation {
+        name: request.name.or(existing.name),
+        mode: request.mode.unwrap_or_else(|| existing.mode.clone()),
+        ..existing
+    };
+
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::update(conversation))
+        .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return db_error("Failed to update conversation", error),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
+    }
+
+    let id_for_reload = id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_reload))
+        .await
+    {
+        Ok(Ok(Some(conversation))) => (StatusCode::OK, Json(conversation)).into_response(),
+        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => db_error("Failed to reload conversation", error),
+        Err(e) => {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -241,14 +365,51 @@ pub async fn archive_conversation(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match user_data_db::conversations::archive(&id, now_unix_seconds()) {
-        Ok(()) => {}
-        Err(error) => return db_error("Failed to archive conversation", error),
+    if id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Conversation ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
     }
-    match user_data_db::conversations::get(&id) {
-        Ok(Some(conversation)) => (StatusCode::OK, Json(conversation)).into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(error) => db_error("Failed to load conversation", error),
+
+    let id_for_archive = id.clone();
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::conversations::archive(&id_for_archive, now_unix_seconds())
+    })
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return db_error("Failed to archive conversation", error),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
+    }
+
+    let id_for_get = id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get))
+        .await
+    {
+        Ok(Ok(Some(conversation))) => (StatusCode::OK, Json(conversation)).into_response(),
+        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => db_error("Failed to load conversation", error),
+        Err(e) => {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -267,14 +428,51 @@ pub async fn unarchive_conversation(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match user_data_db::conversations::unarchive(&id, now_unix_seconds()) {
-        Ok(()) => {}
-        Err(error) => return db_error("Failed to unarchive conversation", error),
+    if id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Conversation ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
     }
-    match user_data_db::conversations::get(&id) {
-        Ok(Some(conversation)) => (StatusCode::OK, Json(conversation)).into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(error) => db_error("Failed to load conversation", error),
+
+    let id_for_unarchive = id.clone();
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::conversations::unarchive(&id_for_unarchive, now_unix_seconds())
+    })
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return db_error("Failed to unarchive conversation", error),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
+    }
+
+    let id_for_get = id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get))
+        .await
+    {
+        Ok(Ok(Some(conversation))) => (StatusCode::OK, Json(conversation)).into_response(),
+        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => db_error("Failed to load conversation", error),
+        Err(e) => {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -292,9 +490,31 @@ pub async fn delete_conversation(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match user_data_db::conversations::delete(&id) {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => db_error("Failed to delete conversation", error),
+    if id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Conversation ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let id_for_delete = id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::delete(&id_for_delete))
+        .await
+    {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(error)) => db_error("Failed to delete conversation", error),
+        Err(e) => {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -312,9 +532,31 @@ pub async fn list_child_conversations(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match user_data_db::conversations::list_children(&id) {
-        Ok(conversations) => (StatusCode::OK, Json(conversations)).into_response(),
-        Err(error) => db_error("Failed to list child conversations", error),
+    if id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Conversation ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let id_for_children = id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::list_children(&id_for_children))
+        .await
+    {
+        Ok(Ok(conversations)) => (StatusCode::OK, Json(conversations)).into_response(),
+        Ok(Err(error)) => db_error("Failed to list child conversations", error),
+        Err(e) => {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -346,10 +588,22 @@ pub async fn create_child_conversation(
             .into_response();
     }
 
-    let parent = match user_data_db::conversations::get(&id) {
-        Ok(Some(parent)) => parent,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(error) => return db_error("Failed to load parent conversation", error),
+    let id_for_get = id.clone();
+    let parent = match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get))
+        .await
+    {
+        Ok(Ok(Some(parent))) => parent,
+        Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => return db_error("Failed to load parent conversation", error),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     };
 
     let now = now_unix_seconds();
@@ -365,9 +619,20 @@ pub async fn create_child_conversation(
         archived_at: None,
     };
 
-    match user_data_db::conversations::create(conversation) {
-        Ok(conversation) => (StatusCode::CREATED, Json(conversation)).into_response(),
-        Err(error) => db_error("Failed to create conversation", error),
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::create(conversation))
+        .await
+    {
+        Ok(Ok(conversation)) => (StatusCode::CREATED, Json(conversation)).into_response(),
+        Ok(Err(error)) => db_error("Failed to create conversation", error),
+        Err(e) => {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -385,9 +650,31 @@ pub async fn list_conversation_messages(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match user_data_db::messages::list(&id) {
-        Ok(messages) => (StatusCode::OK, Json(messages)).into_response(),
-        Err(error) => db_error("Failed to list messages", error),
+    if id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Conversation ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let id_for_list = id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::messages::list(&id_for_list))
+        .await
+    {
+        Ok(Ok(messages)) => (StatusCode::OK, Json(messages)).into_response(),
+        Ok(Err(error)) => db_error("Failed to list messages", error),
+        Err(e) => {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -408,6 +695,27 @@ pub async fn append_conversation_message(
     Path(id): Path<String>,
     Json(request): Json<AppendConversationMessageRequest>,
 ) -> impl IntoResponse {
+    if id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Conversation ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Validate role against allowed values
+    if !matches!(request.role.as_str(), "user" | "assistant" | "system") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Role must be one of: user, assistant, system".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let (parts, metadata) = match (request.parts, request.text) {
         (Some(parts), _) => (parts, request.metadata.unwrap_or(serde_json::Value::Null)),
         (None, Some(text)) => (
@@ -425,9 +733,24 @@ pub async fn append_conversation_message(
         }
     };
 
-    match user_data_db::messages::append(&id, &request.role, parts, metadata) {
-        Ok(message) => (StatusCode::CREATED, Json(message)).into_response(),
-        Err(error) => db_error("Failed to append message", error),
+    let id_for_append = id.clone();
+    let role = request.role.clone();
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::messages::append(&id_for_append, &role, parts, metadata)
+    })
+    .await
+    {
+        Ok(Ok(message)) => (StatusCode::CREATED, Json(message)).into_response(),
+        Ok(Err(error)) => db_error("Failed to append message", error),
+        Err(e) => {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -449,10 +772,32 @@ pub async fn replace_conversation_messages(
     Path(id): Path<String>,
     Json(request): Json<ReplaceConversationMessagesRequest>,
 ) -> impl IntoResponse {
-    match crate::user_data_db::conversations::get(&id) {
-        Ok(Some(_conversation)) => {}
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(error) => return db_error("Failed to load conversation", error),
+    if id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Conversation ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let id_for_get = id.clone();
+    match tokio::task::spawn_blocking(move || crate::user_data_db::conversations::get(&id_for_get))
+        .await
+    {
+        Ok(Ok(Some(_conversation))) => {}
+        Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => return db_error("Failed to load conversation", error),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     }
 
     let messages = match serde_json::to_string(&request.messages) {
@@ -469,12 +814,40 @@ pub async fn replace_conversation_messages(
     };
 
     let now = now_unix_seconds();
-    if let Err(error) = crate::user_data_db::messages::replace_legacy(&id, &messages, now) {
-        return db_error("Failed to replace messages", error);
+    let id_for_replace = id.clone();
+    let messages_for_replace = messages.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::user_data_db::messages::replace_legacy(&id_for_replace, &messages_for_replace, now)
+    })
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return db_error("Failed to replace messages", error),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     }
 
-    match crate::user_data_db::messages::list(&id) {
-        Ok(messages) => (StatusCode::OK, Json(messages)).into_response(),
-        Err(error) => db_error("Failed to list messages", error),
+    let id_for_list = id.clone();
+    match tokio::task::spawn_blocking(move || crate::user_data_db::messages::list(&id_for_list))
+        .await
+    {
+        Ok(Ok(messages)) => (StatusCode::OK, Json(messages)).into_response(),
+        Ok(Err(error)) => db_error("Failed to list messages", error),
+        Err(e) => {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
     }
 }

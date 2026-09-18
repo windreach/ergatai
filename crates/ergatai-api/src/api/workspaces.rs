@@ -337,7 +337,9 @@ pub async fn list_persistent_workspaces(
     match manager::list(
         query.project_id.as_deref(),
         query.collaboration_mode.as_deref(),
-    ) {
+    )
+    .await
+    {
         Ok(ws_list) => (
             StatusCode::OK,
             Json(
@@ -407,7 +409,7 @@ pub async fn create_persistent_workspace(
         capture_thoughts: req.capture_thoughts.unwrap_or(false),
         collaboration_mode: req.collaboration_mode,
     };
-    match manager::create(request) {
+    match manager::create(request).await {
         Ok(workspace) => {
             (StatusCode::CREATED, Json(persistent_response(workspace))).into_response()
         }
@@ -427,7 +429,7 @@ pub async fn create_persistent_workspace(
     )
 )]
 pub async fn get_persistent_workspace(Path(id): Path<String>) -> impl IntoResponse {
-    match manager::get(&id) {
+    match manager::get(&id).await {
         Ok(workspace) => (StatusCode::OK, Json(persistent_response(workspace))).into_response(),
         Err(error) => managed_error(error, "get_persistent_workspace"),
     }
@@ -487,7 +489,7 @@ pub async fn update_persistent_workspace(
         status: None,
         default_project_id: Some(req.project_id),
     };
-    match manager::update(&id, request) {
+    match manager::update(&id, request).await {
         Ok(workspace) => (StatusCode::OK, Json(persistent_response(workspace))).into_response(),
         Err(error) => managed_error(error, "update_persistent_workspace"),
     }
@@ -539,7 +541,7 @@ pub struct ListManagedWorkspacesQuery {
 pub async fn list_managed_workspaces(
     axum::extract::Query(query): axum::extract::Query<ListManagedWorkspacesQuery>,
 ) -> impl IntoResponse {
-    match manager::list(None, query.collaboration_mode.as_deref()) {
+    match manager::list(None, query.collaboration_mode.as_deref()).await {
         Ok(workspaces) => (StatusCode::OK, Json(workspaces)).into_response(),
         Err(error) => managed_error(error, "list_managed_workspaces"),
     }
@@ -560,7 +562,7 @@ pub async fn list_managed_workspaces(
 pub async fn create_managed_workspace(
     Json(request): Json<manager::CreateManagedWorkspaceRequest>,
 ) -> impl IntoResponse {
-    match manager::create(request) {
+    match manager::create(request).await {
         Ok(workspace) => (StatusCode::CREATED, Json(workspace)).into_response(),
         Err(error) => managed_error(error, "create_managed_workspace"),
     }
@@ -578,7 +580,7 @@ pub async fn create_managed_workspace(
     )
 )]
 pub async fn get_managed_workspace(Path(id): Path<String>) -> impl IntoResponse {
-    match manager::get(&id) {
+    match manager::get(&id).await {
         Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
         Err(error) => managed_error(error, "get_managed_workspace"),
     }
@@ -601,7 +603,7 @@ pub async fn update_managed_workspace(
     Path(id): Path<String>,
     Json(request): Json<manager::UpdateManagedWorkspaceRequest>,
 ) -> impl IntoResponse {
-    match manager::update(&id, request) {
+    match manager::update(&id, request).await {
         Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
         Err(error) => managed_error(error, "update_managed_workspace"),
     }
@@ -619,7 +621,7 @@ pub async fn update_managed_workspace(
     )
 )]
 pub async fn archive_managed_workspace(Path(id): Path<String>) -> impl IntoResponse {
-    match manager::set_status(&id, "archived") {
+    match manager::set_status(&id, "archived").await {
         Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
         Err(error) => managed_error(error, "archive_managed_workspace"),
     }
@@ -637,7 +639,7 @@ pub async fn archive_managed_workspace(Path(id): Path<String>) -> impl IntoRespo
     )
 )]
 pub async fn restore_managed_workspace(Path(id): Path<String>) -> impl IntoResponse {
-    match manager::set_status(&id, "active") {
+    match manager::set_status(&id, "active").await {
         Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
         Err(error) => managed_error(error, "restore_managed_workspace"),
     }
@@ -680,7 +682,7 @@ pub async fn delete_managed_workspace(
     )
 )]
 pub async fn list_managed_workspace_projects(Path(id): Path<String>) -> impl IntoResponse {
-    match manager::list_projects(&id) {
+    match manager::list_projects(&id).await {
         Ok(projects) => (StatusCode::OK, Json(projects)).into_response(),
         Err(error) => managed_error(error, "list_managed_workspace_projects"),
     }
@@ -704,7 +706,7 @@ pub async fn register_managed_workspace_project(
     Path(id): Path<String>,
     Json(request): Json<manager::RegisterWorkspaceProjectRequest>,
 ) -> impl IntoResponse {
-    match manager::register_project(&id, request) {
+    match manager::register_project(&id, request).await {
         Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
         Err(error) => managed_error(error, "register_managed_workspace_project"),
     }
@@ -728,7 +730,7 @@ pub async fn register_managed_workspace_project(
 pub async fn remove_managed_workspace_project(
     Path((id, project_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match manager::remove_project(&id, &project_id) {
+    match manager::remove_project(&id, &project_id).await {
         Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
         Err(error) => managed_error(error, "remove_managed_workspace_project"),
     }

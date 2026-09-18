@@ -5,7 +5,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -126,6 +126,16 @@ fn now_unix_seconds() -> i64 {
         .as_secs() as i64
 }
 
+fn db_error(operation: &'static str, error: rusqlite::Error) -> Response {
+    let response = (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse {
+            error: crate::sanitize_error(&error, operation),
+        }),
+    );
+    response.into_response()
+}
+
 // ── Helper Functions ─────────────────────────────────────────────────────────
 
 fn chat_to_response(chat: Chat) -> ChatResponse {
@@ -196,15 +206,22 @@ pub async fn list_chats(
     State(_state): State<AppState>,
     Query(params): Query<ListChatsParams>,
 ) -> impl IntoResponse {
-    match user_data_db::chats::list(params.project_id.as_deref(), params.workspace_id.as_deref()) {
-        Ok(chats) => {
+    let project_id = params.project_id.clone();
+    let workspace_id = params.workspace_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::chats::list(project_id.as_deref(), workspace_id.as_deref())
+    })
+    .await
+    {
+        Ok(Ok(chats)) => {
             let response: Vec<ChatResponse> = chats.into_iter().map(chat_to_response).collect();
             (StatusCode::OK, Json(response)).into_response()
         }
+        Ok(Err(error)) => db_error("Failed to list chats", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to list chats: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -240,9 +257,12 @@ pub async fn create_chat(
     }
 
     // Validate project exists
-    match user_data_db::projects::get(&req.project_id) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
+    let project_id_for_check = req.project_id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::projects::get(&project_id_for_check))
+        .await
+    {
+        Ok(Ok(Some(_))) => {}
+        Ok(Ok(None)) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
@@ -251,11 +271,14 @@ pub async fn create_chat(
             )
                 .into_response();
         }
+        Ok(Err(error)) => {
+            return db_error("Failed to validate project", error);
+        }
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to validate project: {}", e),
+                    error: format!("Task join error: {}", e),
                 }),
             )
                 .into_response();
@@ -273,9 +296,14 @@ pub async fn create_chat(
             )
                 .into_response();
         }
-        match user_data_db::workspaces::get(workspace_id) {
-            Ok(Some(_)) => {}
-            Ok(None) => {
+        let workspace_id_for_check = workspace_id.clone();
+        match tokio::task::spawn_blocking(move || {
+            user_data_db::workspaces::get(&workspace_id_for_check)
+        })
+        .await
+        {
+            Ok(Ok(Some(_))) => {}
+            Ok(Ok(None)) => {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
@@ -284,11 +312,14 @@ pub async fn create_chat(
                 )
                     .into_response();
             }
+            Ok(Err(error)) => {
+                return db_error("Failed to validate workspace", error);
+            }
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
-                        error: format!("Failed to validate workspace: {}", e),
+                        error: format!("Task join error: {}", e),
                     }),
                 )
                     .into_response();
@@ -319,15 +350,16 @@ pub async fn create_chat(
         pr_number: None,
     };
 
-    match user_data_db::chats::create(chat) {
-        Ok(created) => {
+    match tokio::task::spawn_blocking(move || user_data_db::chats::create(chat)).await {
+        Ok(Ok(created)) => {
             let response = chat_to_response(created);
             (StatusCode::CREATED, Json(response)).into_response()
         }
+        Ok(Err(error)) => db_error("Failed to create chat", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to create chat: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -349,22 +381,24 @@ pub async fn create_chat(
     )
 )]
 pub async fn get_chat(State(_state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
-    match user_data_db::chats::get(&id) {
-        Ok(Some(chat)) => {
+    let id_for_get = id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::chats::get(&id_for_get)).await {
+        Ok(Ok(Some(chat))) => {
             let response = chat_to_response(chat);
             (StatusCode::OK, Json(response)).into_response()
         }
-        Ok(None) => (
+        Ok(Ok(None)) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: format!("Chat not found: {}", id),
             }),
         )
             .into_response(),
+        Ok(Err(error)) => db_error("Failed to get chat", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to get chat: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -392,9 +426,12 @@ pub async fn update_chat(
     Json(req): Json<UpdateChatRequest>,
 ) -> impl IntoResponse {
     // First, get the existing chat
-    let existing = match user_data_db::chats::get(&id) {
-        Ok(Some(chat)) => chat,
-        Ok(None) => {
+    let id_for_get = id.clone();
+    let existing = match tokio::task::spawn_blocking(move || user_data_db::chats::get(&id_for_get))
+        .await
+    {
+        Ok(Ok(Some(chat))) => chat,
+        Ok(Ok(None)) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(ErrorResponse {
@@ -403,14 +440,17 @@ pub async fn update_chat(
             )
                 .into_response()
         }
+        Ok(Err(error)) => {
+            return db_error("Failed to load chat", error);
+        }
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to load chat: {}", e),
+                    error: format!("Task join error: {}", e),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -446,28 +486,37 @@ pub async fn update_chat(
         pr_number,
     };
 
-    match user_data_db::chats::update(updated_chat) {
-        Ok(_) => match user_data_db::chats::get(&id) {
-            Ok(Some(chat)) => (StatusCode::OK, Json(chat_to_response(chat))).into_response(),
-            Ok(None) => (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: format!("Chat not found: {}", id),
-                }),
-            )
-                .into_response(),
-            Err(e) => (
+    let id_for_update = id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::chats::update(updated_chat)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            return db_error("Failed to update chat", error);
+        }
+        Err(e) => {
+            return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to load chat: {}", e),
+                    error: format!("Task join error: {}", e),
                 }),
             )
-                .into_response(),
-        },
+                .into_response();
+        }
+    }
+
+    match tokio::task::spawn_blocking(move || user_data_db::chats::get(&id_for_update)).await {
+        Ok(Ok(Some(chat))) => (StatusCode::OK, Json(chat_to_response(chat))).into_response(),
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Chat not found: {}", id),
+            }),
+        )
+            .into_response(),
+        Ok(Err(error)) => db_error("Failed to load chat", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to update chat: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -491,12 +540,14 @@ pub async fn archive_chat(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match user_data_db::chats::archive(&id) {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+    let id_for_archive = id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::chats::archive(&id_for_archive)).await {
+        Ok(Ok(_)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(error)) => db_error("Failed to archive chat", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to archive chat: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -520,12 +571,16 @@ pub async fn unarchive_chat(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match user_data_db::chats::unarchive(&id) {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+    let id_for_unarchive = id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::chats::unarchive(&id_for_unarchive))
+        .await
+    {
+        Ok(Ok(_)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(error)) => db_error("Failed to unarchive chat", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to unarchive chat: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -549,12 +604,14 @@ pub async fn delete_chat(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match user_data_db::chats::delete(&id) {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+    let id_for_delete = id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::chats::delete(&id_for_delete)).await {
+        Ok(Ok(_)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(error)) => db_error("Failed to delete chat", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to delete chat: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -568,38 +625,84 @@ pub async fn lookup_registered_worktree(
     State(_state): State<AppState>,
     Query(params): Query<WorktreeLookupParams>,
 ) -> impl IntoResponse {
-    let lookup = || -> Result<RegisteredWorktreeResponse, rusqlite::Error> {
-        // Use indexed lookup instead of full table scan
-        let chat = user_data_db::chats::find_by_worktree_path(&params.path)?;
-
-        if let Some(chat) = chat {
-            let project = user_data_db::projects::get(&chat.project_id)?;
-            let project_path = project.map(|project| project.path);
-            return Ok(RegisteredWorktreeResponse {
-                chat: Some(chat_to_response(chat)),
-                project_path,
-            });
+    let path_for_lookup = params.path.clone();
+    let chat_result = match tokio::task::spawn_blocking(move || {
+        user_data_db::chats::find_by_worktree_path(&path_for_lookup)
+    })
+    .await
+    {
+        Ok(Ok(chat)) => chat,
+        Ok(Err(error)) => {
+            return db_error("Failed to lookup registered worktree", error);
         }
-
-        // Use indexed lookup for projects too
-        let project = user_data_db::projects::find_by_path(&params.path)?;
-
-        Ok(RegisteredWorktreeResponse {
-            chat: None,
-            project_path: project.map(|project| project.path),
-        })
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response();
+        }
     };
 
-    match lookup() {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to lookup registered worktree: {}", e),
+    if let Some(chat) = chat_result {
+        let project_id_for_get = chat.project_id.clone();
+        let project_result = match tokio::task::spawn_blocking(move || {
+            user_data_db::projects::get(&project_id_for_get)
+        })
+        .await
+        {
+            Ok(Ok(project)) => project,
+            Ok(Err(error)) => return db_error("Failed to lookup registered worktree", error),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Task join error: {}", e),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let project_path = project_result.map(|p| p.path);
+        return (
+            StatusCode::OK,
+            Json(RegisteredWorktreeResponse {
+                chat: Some(chat_to_response(chat)),
+                project_path,
             }),
         )
-            .into_response(),
+            .into_response();
     }
+
+    let path_for_project_lookup = params.path.clone();
+    let project_result = match tokio::task::spawn_blocking(move || {
+        user_data_db::projects::find_by_path(&path_for_project_lookup)
+    })
+    .await
+    {
+        Ok(Ok(project)) => project,
+        Ok(Err(error)) => return db_error("Failed to lookup registered worktree", error),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let project_path = project_result.map(|p| p.path);
+    (
+        StatusCode::OK,
+        Json(RegisteredWorktreeResponse {
+            chat: None,
+            project_path,
+        }),
+    )
+        .into_response()
 }
 
 // ── Sub-Chat API Handlers ────────────────────────────────────────────────────
@@ -621,16 +724,20 @@ pub async fn list_sub_chats(
     State(_state): State<AppState>,
     Path(chat_id): Path<String>,
 ) -> impl IntoResponse {
-    match user_data_db::sub_chats::list(&chat_id) {
-        Ok(sub_chats) => {
+    let chat_id_for_list = chat_id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::sub_chats::list(&chat_id_for_list))
+        .await
+    {
+        Ok(Ok(sub_chats)) => {
             let response: Vec<SubChatResponse> =
                 sub_chats.into_iter().map(sub_chat_to_response).collect();
             (StatusCode::OK, Json(response)).into_response()
         }
+        Ok(Err(error)) => db_error("Failed to list sub-chats", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to list sub-chats: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -658,9 +765,10 @@ pub async fn create_sub_chat(
     Json(req): Json<CreateSubChatRequest>,
 ) -> impl IntoResponse {
     // Verify chat exists
-    match user_data_db::chats::get(&chat_id) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
+    let chat_id_for_check = chat_id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::chats::get(&chat_id_for_check)).await {
+        Ok(Ok(Some(_))) => {}
+        Ok(Ok(None)) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(ErrorResponse {
@@ -669,11 +777,14 @@ pub async fn create_sub_chat(
             )
                 .into_response()
         }
+        Ok(Err(error)) => {
+            return db_error("Failed to get chat", error);
+        }
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to get chat: {}", e),
+                    error: format!("Task join error: {}", e),
                 }),
             )
                 .into_response()
@@ -696,15 +807,16 @@ pub async fn create_sub_chat(
         updated_at: now,
     };
 
-    match user_data_db::sub_chats::create(sub_chat) {
-        Ok(created) => {
+    match tokio::task::spawn_blocking(move || user_data_db::sub_chats::create(sub_chat)).await {
+        Ok(Ok(created)) => {
             let response = sub_chat_to_response(created);
             (StatusCode::CREATED, Json(response)).into_response()
         }
+        Ok(Err(error)) => db_error("Failed to create sub-chat", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to create sub-chat: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -728,12 +840,18 @@ pub async fn delete_sub_chat(
     State(_state): State<AppState>,
     Path((_chat_id, sub_chat_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match user_data_db::sub_chats::delete(&sub_chat_id) {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+    let sub_chat_id_for_delete = sub_chat_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::sub_chats::delete(&sub_chat_id_for_delete)
+    })
+    .await
+    {
+        Ok(Ok(_)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(error)) => db_error("Failed to delete sub-chat", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to delete sub-chat: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -758,22 +876,26 @@ pub async fn get_sub_chat(
     State(_state): State<AppState>,
     Path((_chat_id, sub_chat_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match user_data_db::sub_chats::get(&sub_chat_id) {
-        Ok(Some(sub_chat)) => {
+    let sub_chat_id_for_get = sub_chat_id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::sub_chats::get(&sub_chat_id_for_get))
+        .await
+    {
+        Ok(Ok(Some(sub_chat))) => {
             let response = sub_chat_to_response(sub_chat);
             (StatusCode::OK, Json(response)).into_response()
         }
-        Ok(None) => (
+        Ok(Ok(None)) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: "Sub-chat not found".to_string(),
             }),
         )
             .into_response(),
+        Ok(Err(error)) => db_error("Failed to get sub-chat", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to get sub-chat: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -798,22 +920,26 @@ pub async fn get_sub_chat_by_id(
     State(_state): State<AppState>,
     Path(sub_chat_id): Path<String>,
 ) -> impl IntoResponse {
-    match user_data_db::sub_chats::get(&sub_chat_id) {
-        Ok(Some(sub_chat)) => {
+    let sub_chat_id_for_get = sub_chat_id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::sub_chats::get(&sub_chat_id_for_get))
+        .await
+    {
+        Ok(Ok(Some(sub_chat))) => {
             let response = sub_chat_to_response(sub_chat);
             (StatusCode::OK, Json(response)).into_response()
         }
-        Ok(None) => (
+        Ok(Ok(None)) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: "Sub-chat not found".to_string(),
             }),
         )
             .into_response(),
+        Ok(Err(error)) => db_error("Failed to get sub-chat", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to get sub-chat: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -845,41 +971,59 @@ pub async fn update_sub_chat(
         .unwrap()
         .as_secs() as i64;
 
-    match user_data_db::sub_chats::update_full(
-        &sub_chat_id,
-        req.name.as_deref(),
-        req.session_id.as_deref(),
-        req.mode.as_deref(),
-        req.messages.as_deref(),
-        now,
-    ) {
-        Ok(_) => {
-            // Fetch and return the updated sub-chat
-            match user_data_db::sub_chats::get(&sub_chat_id) {
-                Ok(Some(sub_chat)) => {
-                    let response = sub_chat_to_response(sub_chat);
-                    (StatusCode::OK, Json(response)).into_response()
-                }
-                Ok(None) => (
-                    StatusCode::NOT_FOUND,
-                    Json(ErrorResponse {
-                        error: "Sub-chat not found after update".to_string(),
-                    }),
-                )
-                    .into_response(),
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("Failed to fetch updated sub-chat: {}", e),
-                    }),
-                )
-                    .into_response(),
-            }
+    let sub_chat_id_for_update = sub_chat_id.clone();
+    let name = req.name.clone();
+    let session_id = req.session_id.clone();
+    let mode = req.mode.clone();
+    let messages = req.messages.clone();
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::sub_chats::update_full(
+            &sub_chat_id_for_update,
+            name.as_deref(),
+            session_id.as_deref(),
+            mode.as_deref(),
+            messages.as_deref(),
+            now,
+        )
+    })
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            return db_error("Failed to update sub-chat", error);
         }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    // Fetch and return the updated sub-chat
+    let sub_chat_id_for_get = sub_chat_id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::sub_chats::get(&sub_chat_id_for_get))
+        .await
+    {
+        Ok(Ok(Some(sub_chat))) => {
+            let response = sub_chat_to_response(sub_chat);
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Sub-chat not found after update".to_string(),
+            }),
+        )
+            .into_response(),
+        Ok(Err(error)) => db_error("Failed to fetch updated sub-chat", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to update sub-chat: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -908,38 +1052,58 @@ pub async fn update_sub_chat_by_id(
 ) -> impl IntoResponse {
     let now = now_unix_seconds();
 
-    match user_data_db::sub_chats::update_full(
-        &sub_chat_id,
-        req.name.as_deref(),
-        req.session_id.as_deref(),
-        req.mode.as_deref(),
-        req.messages.as_deref(),
-        now,
-    ) {
-        Ok(_) => match user_data_db::sub_chats::get(&sub_chat_id) {
-            Ok(Some(sub_chat)) => {
-                let response = sub_chat_to_response(sub_chat);
-                (StatusCode::OK, Json(response)).into_response()
-            }
-            Ok(None) => (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: "Sub-chat not found after update".to_string(),
-                }),
-            )
-                .into_response(),
-            Err(e) => (
+    let sub_chat_id_for_update = sub_chat_id.clone();
+    let name = req.name.clone();
+    let session_id = req.session_id.clone();
+    let mode = req.mode.clone();
+    let messages = req.messages.clone();
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::sub_chats::update_full(
+            &sub_chat_id_for_update,
+            name.as_deref(),
+            session_id.as_deref(),
+            mode.as_deref(),
+            messages.as_deref(),
+            now,
+        )
+    })
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            return db_error("Failed to update sub-chat", error);
+        }
+        Err(e) => {
+            return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to fetch updated sub-chat: {}", e),
+                    error: format!("Task join error: {}", e),
                 }),
             )
-                .into_response(),
-        },
+                .into_response();
+        }
+    }
+
+    let sub_chat_id_for_get = sub_chat_id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::sub_chats::get(&sub_chat_id_for_get))
+        .await
+    {
+        Ok(Ok(Some(sub_chat))) => {
+            let response = sub_chat_to_response(sub_chat);
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Sub-chat not found after update".to_string(),
+            }),
+        )
+            .into_response(),
+        Ok(Err(error)) => db_error("Failed to fetch updated sub-chat", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to update sub-chat: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -961,12 +1125,18 @@ pub async fn list_agent_bindings(
     State(_state): State<AppState>,
     Path(chat_id): Path<String>,
 ) -> impl IntoResponse {
-    match user_data_db::group_agent_bindings::list(&chat_id) {
-        Ok(bindings) => (StatusCode::OK, Json(bindings)).into_response(),
+    let chat_id_for_list = chat_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::group_agent_bindings::list(&chat_id_for_list)
+    })
+    .await
+    {
+        Ok(Ok(bindings)) => (StatusCode::OK, Json(bindings)).into_response(),
+        Ok(Err(error)) => db_error("Failed to list agent bindings", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to list agent bindings: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -992,9 +1162,10 @@ pub async fn bind_agent(
     Path(chat_id): Path<String>,
     Json(req): Json<BindGroupAgentRequest>,
 ) -> impl IntoResponse {
-    match user_data_db::chats::get(&chat_id) {
-        Ok(Some(_)) => {} // Chat exists, proceed
-        Ok(None) => {
+    let chat_id_for_check = chat_id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::chats::get(&chat_id_for_check)).await {
+        Ok(Ok(Some(_))) => {} // Chat exists, proceed
+        Ok(Ok(None)) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(ErrorResponse {
@@ -1003,20 +1174,29 @@ pub async fn bind_agent(
             )
                 .into_response();
         }
+        Ok(Err(error)) => {
+            return db_error("Failed to get chat", error);
+        }
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to get chat: {}", e),
+                    error: format!("Task join error: {}", e),
                 }),
             )
                 .into_response();
         }
     }
 
-    let sub_chat = match user_data_db::sub_chats::get(&req.sub_chat_id) {
-        Ok(Some(sub_chat)) if sub_chat.chat_id == chat_id => sub_chat,
-        Ok(_) => {
+    let sub_chat_id_for_get = req.sub_chat_id.clone();
+    let chat_id_for_cmp = chat_id.clone();
+    let sub_chat = match tokio::task::spawn_blocking(move || {
+        user_data_db::sub_chats::get(&sub_chat_id_for_get)
+    })
+    .await
+    {
+        Ok(Ok(Some(sub_chat))) if sub_chat.chat_id == chat_id_for_cmp => sub_chat,
+        Ok(Ok(_)) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
@@ -1025,11 +1205,14 @@ pub async fn bind_agent(
             )
                 .into_response();
         }
+        Ok(Err(error)) => {
+            return db_error("Failed to get sub-chat", error);
+        }
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to get sub-chat: {}", e),
+                    error: format!("Task join error: {}", e),
                 }),
             )
                 .into_response();
@@ -1055,12 +1238,15 @@ pub async fn bind_agent(
         updated_at: now,
     };
 
-    match user_data_db::group_agent_bindings::upsert(binding) {
-        Ok(binding) => (StatusCode::OK, Json(binding)).into_response(),
+    match tokio::task::spawn_blocking(move || user_data_db::group_agent_bindings::upsert(binding))
+        .await
+    {
+        Ok(Ok(binding)) => (StatusCode::OK, Json(binding)).into_response(),
+        Ok(Err(error)) => db_error("Failed to bind agent", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to bind agent: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -1083,13 +1269,20 @@ pub async fn unbind_agent(
     State(_state): State<AppState>,
     Path((chat_id, agent_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match user_data_db::group_agent_bindings::delete(&chat_id, &agent_id) {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+    let chat_id_for_delete = chat_id.clone();
+    let agent_id_for_delete = agent_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::group_agent_bindings::delete(&chat_id_for_delete, &agent_id_for_delete)
+    })
+    .await
+    {
+        Ok(Ok(true)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(false)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => db_error("Failed to unbind agent", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to unbind agent: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),
@@ -1106,7 +1299,7 @@ pub struct ChatAgentResponse {
 }
 
 /// GET /api/v1/chats/:chat_id/agents
-/// Returns all agents bound to this chat with their current status
+/// Returns all bound agents to this chat with their current status
 #[utoipa::path(
     get,
     path = "/api/v1/chats/{chat_id}/agents",
@@ -1122,13 +1315,21 @@ pub async fn list_chat_agents(
     Path(chat_id): Path<String>,
 ) -> impl IntoResponse {
     // Get all agent bindings for this chat
-    let bindings = match user_data_db::group_agent_bindings::list(&chat_id) {
-        Ok(bindings) => bindings,
+    let chat_id_for_list = chat_id.clone();
+    let bindings = match tokio::task::spawn_blocking(move || {
+        user_data_db::group_agent_bindings::list(&chat_id_for_list)
+    })
+    .await
+    {
+        Ok(Ok(bindings)) => bindings,
+        Ok(Err(error)) => {
+            return db_error("Failed to list agent bindings", error);
+        }
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to list agent bindings: {}", e),
+                    error: format!("Task join error: {}", e),
                 }),
             )
                 .into_response();
@@ -1187,9 +1388,13 @@ pub async fn append_sub_chat_message(
     Json(req): Json<AppendSubChatMessageRequest>,
 ) -> impl IntoResponse {
     // Verify the sub-chat belongs to the specified chat
-    match user_data_db::sub_chats::get(&sub_chat_id) {
-        Ok(Some(sc)) if sc.chat_id == chat_id => {}
-        Ok(Some(_)) => {
+    let sub_chat_id_for_check = sub_chat_id.clone();
+    let chat_id_for_cmp = chat_id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::sub_chats::get(&sub_chat_id_for_check))
+        .await
+    {
+        Ok(Ok(Some(sc))) if sc.chat_id == chat_id_for_cmp => {}
+        Ok(Ok(Some(_))) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
@@ -1198,32 +1403,39 @@ pub async fn append_sub_chat_message(
             )
                 .into_response();
         }
-        Ok(None) => {
+        Ok(Ok(None)) => {
             return StatusCode::NOT_FOUND.into_response();
+        }
+        Ok(Err(error)) => {
+            return db_error("Failed to get sub-chat", error);
         }
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to get sub-chat: {}", e),
+                    error: format!("Task join error: {}", e),
                 }),
             )
                 .into_response();
         }
     }
 
-    match user_data_db::sub_chats::append_message(
-        &sub_chat_id,
-        &req.role,
-        &req.text,
-        req.metadata.unwrap_or(serde_json::Value::Null),
-    ) {
-        Ok(()) => StatusCode::CREATED.into_response(),
-        Err(rusqlite::Error::QueryReturnedNoRows) => StatusCode::NOT_FOUND.into_response(),
+    let sub_chat_id_for_append = sub_chat_id.clone();
+    let role = req.role.clone();
+    let text = req.text.clone();
+    let metadata = req.metadata.unwrap_or(serde_json::Value::Null);
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::sub_chats::append_message(&sub_chat_id_for_append, &role, &text, metadata)
+    })
+    .await
+    {
+        Ok(Ok(())) => StatusCode::CREATED.into_response(),
+        Ok(Err(rusqlite::Error::QueryReturnedNoRows)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => db_error("Failed to append message", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Failed to append message: {}", e),
+                error: format!("Task join error: {}", e),
             }),
         )
             .into_response(),

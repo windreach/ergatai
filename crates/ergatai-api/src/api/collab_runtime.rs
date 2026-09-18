@@ -61,10 +61,16 @@ pub async fn submit_interaction(
 }
 
 /// GET /api/v1/collab-runtime/stream
-pub async fn stream_events() -> Sse<Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>> {
+pub async fn stream_events() -> axum::response::Response {
     let manager = collaboration_runtime();
     let Some(manager) = manager else {
-        return Sse::new(Box::pin(stream::empty()));
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "Collaboration runtime is not enabled"
+            })),
+        )
+            .into_response();
     };
 
     let recent = manager.recent_events(50).await;
@@ -93,4 +99,5 @@ pub async fn stream_events() -> Sse<Pin<Box<dyn Stream<Item = Result<Event, Infa
 
     Sse::new(Box::pin(stream::iter(recent_events).chain(live_events))
         as Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>)
+        .into_response()
 }

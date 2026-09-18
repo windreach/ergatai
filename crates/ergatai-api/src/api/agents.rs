@@ -236,20 +236,36 @@ fn is_valid_workspace_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
-fn workspace_resource_limits(workspace_id: &str) -> Result<ResourceLimits, (StatusCode, String)> {
-    let workspace = crate::user_data_db::workspaces::get(workspace_id)
-        .map_err(|error| {
-            (
+async fn workspace_resource_limits(
+    workspace_id: &str,
+) -> Result<ResourceLimits, (StatusCode, String)> {
+    let workspace_id_for_get = workspace_id.to_string();
+    let workspace = match tokio::task::spawn_blocking(move || {
+        crate::user_data_db::workspaces::get(&workspace_id_for_get)
+    })
+    .await
+    {
+        Ok(Ok(workspace)) => workspace,
+        Ok(Err(error)) => {
+            return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to load workspace: {}", error),
-            )
-        })?
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                format!("Workspace {} not found", workspace_id),
-            )
-        })?;
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Task join error: {}", e),
+            ))
+        }
+    };
+
+    let workspace = workspace.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Workspace {} not found", workspace_id),
+        )
+    })?;
 
     serde_json::from_str::<ResourceLimits>(&workspace.resources).map_err(|error| {
         (
@@ -264,7 +280,7 @@ fn workspace_resource_limits(workspace_id: &str) -> Result<ResourceLimits, (Stat
 /// Strict mode is enabled by default. Commands must match `STRICT_MODE_ALLOWED_COMMANDS`,
 /// the `ERGATAI_ALLOWED_COMMANDS` env var, OR any binary registered in the ProfileRegistry.
 /// Set `ERGATAI_STRICT_MODE=0` to disable validation (not recommended).
-fn validate_command(command: &str) -> Result<(), String> {
+async fn validate_command(command: &str) -> Result<(), String> {
     // Skip validation only when strict mode is explicitly disabled
     if !is_strict_mode() {
         return Ok(());
@@ -300,25 +316,32 @@ fn validate_command(command: &str) -> Result<(), String> {
     }
 
     // Dynamic whitelist: accept any binary registered in the ProfileRegistry.
-    // Uses list_with_status() (sync) to avoid async context issues.
-    if let Ok(registry) = crate::services::profile_service::get_profile_registry() {
-        if let Ok(profiles) = registry.list_with_status() {
-            for profile in profiles {
-                // Match against profile name (e.g. "claude-code" matches profile "claude-code")
-                if profile.name == binary_name || profile.name == program {
-                    return Ok(());
-                }
-                if let Some(cmd_binary) = profile.command.split_whitespace().next() {
-                    let cmd_basename = std::path::Path::new(cmd_binary)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(cmd_binary);
-                    if cmd_basename == binary_name || cmd_binary == program {
+    match tokio::task::spawn_blocking(move || {
+        crate::services::profile_service::get_profile_registry()
+    })
+    .await
+    {
+        Ok(Ok(registry)) => {
+            if let Ok(profiles) = registry.list_with_status() {
+                for profile in profiles {
+                    // Match against profile name (e.g. "claude-code" matches profile "claude-code")
+                    if profile.name == binary_name || profile.name == program {
                         return Ok(());
+                    }
+                    if let Some(cmd_binary) = profile.command.split_whitespace().next() {
+                        let cmd_basename = std::path::Path::new(cmd_binary)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(cmd_binary);
+                        if cmd_basename == binary_name || cmd_binary == program {
+                            return Ok(());
+                        }
                     }
                 }
             }
         }
+        Ok(Err(_)) => {} // Registry not available, continue with static whitelist
+        Err(_) => {}     // Task join error, continue with static whitelist
     }
 
     Err(format!(
@@ -345,7 +368,7 @@ pub async fn spawn_agent(
     Json(req): Json<SpawnAgentRequest>,
 ) -> impl IntoResponse {
     // Security: validate command against whitelist before execution
-    if let Err(e) = validate_command(&req.command) {
+    if let Err(e) = validate_command(&req.command).await {
         return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
     }
 
@@ -353,18 +376,23 @@ pub async fn spawn_agent(
     // Frontend sends the profile name (e.g. "claude-code"); the runtime
     // needs the full command (e.g. "npx @anthropic-ai/claude-code --acp").
     let resolved_command =
-        if let Ok(registry) = crate::services::profile_service::get_profile_registry() {
-            if let Ok(profiles) = registry.list_with_status() {
-                profiles
-                    .into_iter()
-                    .find(|p| p.name == req.command)
-                    .map(|p| p.command)
-                    .unwrap_or_else(|| req.command.clone())
-            } else {
-                req.command.clone()
+        match tokio::task::spawn_blocking(move || {
+            crate::services::profile_service::get_profile_registry()
+        })
+        .await
+        {
+            Ok(Ok(registry)) => {
+                if let Ok(profiles) = registry.list_with_status() {
+                    profiles
+                        .into_iter()
+                        .find(|p| p.name == req.command)
+                        .map(|p| p.command)
+                        .unwrap_or_else(|| req.command.clone())
+                } else {
+                    req.command.clone()
+                }
             }
-        } else {
-            req.command.clone()
+            _ => req.command.clone(),
         };
 
     if req.workspace_id.is_none() && req.conversation_id.is_none() {
@@ -383,9 +411,14 @@ pub async fn spawn_agent(
     let mut capture_thoughts = false;
 
     if let Some(conversation_id) = req.conversation_id.as_deref() {
-        match crate::user_data_db::conversations::get(conversation_id) {
-            Ok(Some(_conversation)) => {}
-            Ok(None) => {
+        let conversation_id_for_get = conversation_id.to_string();
+        match tokio::task::spawn_blocking(move || {
+            crate::user_data_db::conversations::get(&conversation_id_for_get)
+        })
+        .await
+        {
+            Ok(Ok(Some(_conversation))) => {}
+            Ok(Ok(None)) => {
                 return (
                     StatusCode::NOT_FOUND,
                     Json(ErrorResponse {
@@ -394,7 +427,7 @@ pub async fn spawn_agent(
                 )
                     .into_response();
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
@@ -403,12 +436,26 @@ pub async fn spawn_agent(
                 )
                     .into_response();
             }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Task join error: {}", e),
+                    }),
+                )
+                    .into_response();
+            }
         }
 
+        let conversation_id_for_resolve = conversation_id.to_string();
         let resolved_workspace_id =
-            match crate::user_data_db::conversations::resolve_workspace_id(conversation_id) {
-                Ok(Some(workspace_id)) => workspace_id,
-                Ok(None) => {
+            match tokio::task::spawn_blocking(move || {
+                crate::user_data_db::conversations::resolve_workspace_id(&conversation_id_for_resolve)
+            })
+            .await
+            {
+                Ok(Ok(Some(workspace_id))) => workspace_id,
+                Ok(Ok(None)) => {
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(ErrorResponse {
@@ -417,11 +464,20 @@ pub async fn spawn_agent(
                     )
                         .into_response();
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse {
                             error: format!("Failed to resolve conversation workspace: {}", e),
+                        }),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: format!("Task join error: {}", e),
                         }),
                     )
                         .into_response();
@@ -440,9 +496,14 @@ pub async fn spawn_agent(
             }
         }
 
-        let workspace = match crate::user_data_db::workspaces::get(&resolved_workspace_id) {
-            Ok(Some(workspace)) => workspace,
-            Ok(None) => {
+        let resolved_workspace_id_for_get = resolved_workspace_id.clone();
+        let workspace = match tokio::task::spawn_blocking(move || {
+            crate::user_data_db::workspaces::get(&resolved_workspace_id_for_get)
+        })
+        .await
+        {
+            Ok(Ok(Some(workspace))) => workspace,
+            Ok(Ok(None)) => {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
@@ -451,7 +512,7 @@ pub async fn spawn_agent(
                 )
                     .into_response();
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
@@ -460,16 +521,39 @@ pub async fn spawn_agent(
                 )
                     .into_response();
             }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Task join error: {}", e),
+                    }),
+                )
+                    .into_response();
+            }
         };
 
+        let conversation_id_for_context = conversation_id.to_string();
         let execution_context =
-            match crate::user_data_db::conversation_execution_contexts::get(conversation_id) {
-                Ok(context) => context,
-                Err(e) => {
+            match tokio::task::spawn_blocking(move || {
+                crate::user_data_db::conversation_execution_contexts::get(&conversation_id_for_context)
+            })
+            .await
+            {
+                Ok(Ok(context)) => context,
+                Ok(Err(e)) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse {
                             error: format!("Failed to load execution context: {}", e),
+                        }),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: format!("Task join error: {}", e),
                         }),
                     )
                         .into_response();
@@ -540,7 +624,7 @@ pub async fn spawn_agent(
         }
     };
     let work_dir_str = work_dir.to_string_lossy().into_owned();
-    let resources = match workspace_resource_limits(&workspace_id) {
+    let resources = match workspace_resource_limits(&workspace_id).await {
         Ok(resources) => resources,
         Err((status, error)) => {
             return (status, Json(ErrorResponse { error })).into_response();
@@ -696,8 +780,13 @@ pub async fn send_message(
 
         // Get the actual chat_id from sub_chat_id or fallback to workspace_id
         let chat_id = if let Some(sub_chat_id) = &req.sub_chat_id {
-            match crate::user_data_db::sub_chats::get(sub_chat_id) {
-                Ok(Some(sub_chat)) => sub_chat.chat_id,
+            let sub_chat_id_for_get = sub_chat_id.clone();
+            match tokio::task::spawn_blocking(move || {
+                crate::user_data_db::sub_chats::get(&sub_chat_id_for_get)
+            })
+            .await
+            {
+                Ok(Ok(Some(sub_chat))) => sub_chat.chat_id,
                 _ => sender_info.workspace_id.clone(), // Fallback to workspace_id if sub_chat not found
             }
         } else {
@@ -709,7 +798,17 @@ pub async fn send_message(
 
         if !force_new {
             // Try to find an existing agent with the target command bound to this chat
-            if let Ok(bindings) = crate::user_data_db::group_agent_bindings::list(&chat_id) {
+            let chat_id_for_list = chat_id.clone();
+            let bindings_result = match tokio::task::spawn_blocking(move || {
+                crate::user_data_db::group_agent_bindings::list(&chat_id_for_list)
+            })
+            .await
+            {
+                Ok(Ok(bindings)) => Some(bindings),
+                _ => None,
+            };
+
+            if let Some(bindings) = bindings_result {
                 for binding in bindings {
                     if binding.agent_command.as_deref() == Some(target_command) {
                         // Check if this agent is alive
@@ -771,10 +870,16 @@ pub async fn send_message(
                                 }
                             } else {
                                 // Agent is dead - clean up stale binding
-                                if let Err(e) = crate::user_data_db::group_agent_bindings::delete(
-                                    &chat_id,
-                                    &binding.agent_id,
-                                ) {
+                                let chat_id_for_delete = chat_id.clone();
+                                let agent_id_for_delete = binding.agent_id.clone();
+                                if let Err(e) = tokio::task::spawn_blocking(move || {
+                                    crate::user_data_db::group_agent_bindings::delete(
+                                        &chat_id_for_delete,
+                                        &agent_id_for_delete,
+                                    )
+                                })
+                                .await
+                                {
                                     tracing::warn!(
                                         agent_id = %binding.agent_id,
                                         error = %e,
@@ -784,10 +889,16 @@ pub async fn send_message(
                             }
                         } else {
                             // Agent not found - clean up stale binding
-                            if let Err(e) = crate::user_data_db::group_agent_bindings::delete(
-                                &chat_id,
-                                &binding.agent_id,
-                            ) {
+                            let chat_id_for_delete = chat_id.clone();
+                            let agent_id_for_delete = binding.agent_id.clone();
+                            if let Err(e) = tokio::task::spawn_blocking(move || {
+                                crate::user_data_db::group_agent_bindings::delete(
+                                    &chat_id_for_delete,
+                                    &agent_id_for_delete,
+                                )
+                            })
+                            .await
+                            {
                                 tracing::warn!(
                                     agent_id = %binding.agent_id,
                                     error = %e,
@@ -803,22 +914,27 @@ pub async fn send_message(
         // No existing agent found or force_new_session is true - spawn a new one
         // Resolve profile name to actual command
         let resolved_command =
-            if let Ok(registry) = crate::services::profile_service::get_profile_registry() {
-                if let Ok(profiles) = registry.list_with_status() {
-                    profiles
-                        .into_iter()
-                        .find(|p| p.name == *target_command)
-                        .map(|p| p.command)
-                        .unwrap_or_else(|| target_command.clone())
-                } else {
-                    target_command.clone()
+            match tokio::task::spawn_blocking(move || {
+                crate::services::profile_service::get_profile_registry()
+            })
+            .await
+            {
+                Ok(Ok(registry)) => {
+                    if let Ok(profiles) = registry.list_with_status() {
+                        profiles
+                            .into_iter()
+                            .find(|p| p.name == *target_command)
+                            .map(|p| p.command)
+                            .unwrap_or_else(|| target_command.clone())
+                    } else {
+                        target_command.clone()
+                    }
                 }
-            } else {
-                target_command.clone()
+                _ => target_command.clone(),
             };
 
         // Security: validate command
-        if let Err(e) = validate_command(&resolved_command) {
+        if let Err(e) = validate_command(&resolved_command).await {
             return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
         }
 
@@ -852,7 +968,7 @@ pub async fn send_message(
             .get("work_dir")
             .cloned()
             .unwrap_or_else(|| "/tmp".to_string());
-        let resources = match workspace_resource_limits(&sender_info.workspace_id) {
+        let resources = match workspace_resource_limits(&sender_info.workspace_id).await {
             Ok(resources) => resources,
             Err((status, error)) => {
                 return (status, Json(ErrorResponse { error })).into_response();
@@ -898,7 +1014,11 @@ pub async fn send_message(
                     updated_at: now,
                 };
 
-                if let Err(e) = crate::user_data_db::group_agent_bindings::upsert(binding) {
+                if let Err(e) = tokio::task::spawn_blocking(move || {
+                    crate::user_data_db::group_agent_bindings::upsert(binding)
+                })
+                .await
+                {
                     tracing::warn!(
                         error = %e,
                         "Failed to bind new agent to chat (non-fatal)"
@@ -1061,22 +1181,27 @@ pub async fn spawn_session(
 
     // Resolve profile name to actual command
     let resolved_command =
-        if let Ok(registry) = crate::services::profile_service::get_profile_registry() {
-            if let Ok(profiles) = registry.list_with_status() {
-                profiles
-                    .into_iter()
-                    .find(|p| p.name == req.target_command)
-                    .map(|p| p.command)
-                    .unwrap_or_else(|| req.target_command.clone())
-            } else {
-                req.target_command.clone()
+        match tokio::task::spawn_blocking(move || {
+            crate::services::profile_service::get_profile_registry()
+        })
+        .await
+        {
+            Ok(Ok(registry)) => {
+                if let Ok(profiles) = registry.list_with_status() {
+                    profiles
+                        .into_iter()
+                        .find(|p| p.name == req.target_command)
+                        .map(|p| p.command)
+                        .unwrap_or_else(|| req.target_command.clone())
+                } else {
+                    req.target_command.clone()
+                }
             }
-        } else {
-            req.target_command.clone()
+            _ => req.target_command.clone(),
         };
 
     // Security: validate command
-    if let Err(e) = validate_command(&resolved_command) {
+    if let Err(e) = validate_command(&resolved_command).await {
         return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
     }
 
@@ -1129,7 +1254,7 @@ pub async fn spawn_session(
         .get("work_dir")
         .cloned()
         .unwrap_or_else(|| state.default_cwd.clone());
-    let resources = match workspace_resource_limits(&workspace_id) {
+    let resources = match workspace_resource_limits(&workspace_id).await {
         Ok(resources) => resources,
         Err((status, error)) => {
             return (status, Json(ErrorResponse { error })).into_response();
@@ -2143,9 +2268,14 @@ pub async fn prompt_agent(
     let prompt_id = uuid::Uuid::new_v4().to_string();
 
     if let Some(conversation_id) = body.conversation_id.as_deref() {
-        let conversation = match crate::user_data_db::conversations::get(conversation_id) {
-            Ok(Some(conversation)) => conversation,
-            Ok(None) => {
+        let conversation_id_for_get = conversation_id.to_string();
+        let conversation = match tokio::task::spawn_blocking(move || {
+            crate::user_data_db::conversations::get(&conversation_id_for_get)
+        })
+        .await
+        {
+            Ok(Ok(Some(conversation))) => conversation,
+            Ok(Ok(None)) => {
                 return (
                     StatusCode::NOT_FOUND,
                     Json(ErrorResponse {
@@ -2154,7 +2284,7 @@ pub async fn prompt_agent(
                 )
                     .into_response();
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
@@ -2163,12 +2293,26 @@ pub async fn prompt_agent(
                 )
                     .into_response();
             }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Task join error: {}", e),
+                    }),
+                )
+                    .into_response();
+            }
         };
 
+        let conversation_id_for_resolve = conversation_id.to_string();
         let workspace_id =
-            match crate::user_data_db::conversations::resolve_workspace_id(conversation_id) {
-                Ok(Some(workspace_id)) => workspace_id,
-                Ok(None) => {
+            match tokio::task::spawn_blocking(move || {
+                crate::user_data_db::conversations::resolve_workspace_id(&conversation_id_for_resolve)
+            })
+            .await
+            {
+                Ok(Ok(Some(workspace_id))) => workspace_id,
+                Ok(Ok(None)) => {
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(ErrorResponse {
@@ -2177,11 +2321,20 @@ pub async fn prompt_agent(
                     )
                         .into_response();
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse {
                             error: format!("Failed to resolve conversation workspace: {}", e),
+                        }),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: format!("Task join error: {}", e),
                         }),
                     )
                         .into_response();
@@ -2230,12 +2383,19 @@ pub async fn prompt_agent(
 
         // Persist the user turn before dispatching. A prompt is never accepted
         // while its durable conversation record is missing.
-        if let Err(e) = crate::user_data_db::messages::append(
-            conversation_id,
-            "user",
-            serde_json::Value::Array(parts),
-            metadata,
-        ) {
+        let conversation_id_for_append = conversation_id.to_string();
+        let parts_for_append = parts.clone();
+        let metadata_for_append = metadata.clone();
+        if let Err(e) = tokio::task::spawn_blocking(move || {
+            crate::user_data_db::messages::append(
+                &conversation_id_for_append,
+                "user",
+                serde_json::Value::Array(parts_for_append),
+                metadata_for_append,
+            )
+        })
+        .await
+        {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -2289,12 +2449,18 @@ pub async fn prompt_agent(
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as i64;
-            if let Err(e) = crate::user_data_db::agent_sessions::upsert(
-                conversation_id,
-                Some(&session_id),
-                &conversation.mode,
-                now,
-            ) {
+            let conversation_id_for_upsert = conversation_id.to_string();
+            let conversation_mode = conversation.mode.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || {
+                crate::user_data_db::agent_sessions::upsert(
+                    &conversation_id_for_upsert,
+                    Some(&session_id),
+                    &conversation_mode,
+                    now,
+                )
+            })
+            .await
+            {
                 tracing::warn!(
                     error = %e,
                     conversation_id = %conversation_id,
@@ -2321,7 +2487,11 @@ pub async fn prompt_agent(
             created_at: now,
             updated_at: now,
         };
-        if let Err(e) = crate::user_data_db::group_agent_bindings::upsert(binding) {
+        if let Err(e) = tokio::task::spawn_blocking(move || {
+            crate::user_data_db::group_agent_bindings::upsert(binding)
+        })
+        .await
+        {
             tracing::warn!(
                 error = %e,
                 conversation_id = %conversation_id,
@@ -2336,9 +2506,14 @@ pub async fn prompt_agent(
         )
             .into_response()
     } else if let Some(sub_chat_id) = body.sub_chat_id.as_deref() {
-        let sub_chat = match crate::user_data_db::sub_chats::get(sub_chat_id) {
-            Ok(Some(sub_chat)) => sub_chat,
-            Ok(None) => {
+        let sub_chat_id_for_get = sub_chat_id.to_string();
+        let sub_chat = match tokio::task::spawn_blocking(move || {
+            crate::user_data_db::sub_chats::get(&sub_chat_id_for_get)
+        })
+        .await
+        {
+            Ok(Ok(Some(sub_chat))) => sub_chat,
+            Ok(Ok(None)) => {
                 return (
                     StatusCode::NOT_FOUND,
                     Json(ErrorResponse {
@@ -2347,11 +2522,20 @@ pub async fn prompt_agent(
                 )
                     .into_response();
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
                         error: format!("Failed to get sub-chat: {}", e),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Task join error: {}", e),
                     }),
                 )
                     .into_response();
@@ -2427,12 +2611,19 @@ pub async fn prompt_agent(
         }
 
         // Prompt accepted — now persist side effects
-        if let Err(e) = crate::user_data_db::sub_chats::append_message_parts(
-            sub_chat_id,
-            "user",
-            serde_json::Value::Array(parts),
-            metadata,
-        ) {
+        let sub_chat_id_for_append = sub_chat_id.to_string();
+        let parts_for_append = parts.clone();
+        let metadata_for_append = metadata.clone();
+        if let Err(e) = tokio::task::spawn_blocking(move || {
+            crate::user_data_db::sub_chats::append_message_parts(
+                &sub_chat_id_for_append,
+                "user",
+                serde_json::Value::Array(parts_for_append),
+                metadata_for_append,
+            )
+        })
+        .await
+        {
             tracing::warn!(
                 sub_chat_id = %sub_chat_id,
                 "Prompt enqueued but failed to persist message: {}", e
@@ -2460,7 +2651,11 @@ pub async fn prompt_agent(
             created_at: now,
             updated_at: now,
         };
-        if let Err(e) = crate::user_data_db::group_agent_bindings::upsert(binding) {
+        if let Err(e) = tokio::task::spawn_blocking(move || {
+            crate::user_data_db::group_agent_bindings::upsert(binding)
+        })
+        .await
+        {
             tracing::warn!(
                 sub_chat_id = %sub_chat_id,
                 runtime_id = %runtime_id,

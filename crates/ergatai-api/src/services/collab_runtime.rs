@@ -72,15 +72,8 @@ impl CollabRuntimeManager {
 
     pub async fn recent_events(&self, limit: usize) -> Vec<Value> {
         let history = self.inner.event_history.lock().await;
-        history
-            .iter()
-            .rev()
-            .take(limit)
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect()
+        let start = history.len().saturating_sub(limit);
+        history.iter().skip(start).cloned().collect()
     }
 
     pub async fn start(&self) -> Result<()> {
