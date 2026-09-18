@@ -699,7 +699,6 @@ impl ConversationManager {
     }
 
     /// Get a conversation by ID.
-    #[allow(dead_code)]
     pub async fn get_conversation(&self, conv_id: &str) -> Option<Conversation> {
         let conversations = self.conversations.read().await;
         conversations.get(conv_id).cloned()

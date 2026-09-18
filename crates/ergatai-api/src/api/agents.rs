@@ -128,39 +128,37 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
     )
     .await;
 
-    let response: Vec<AgentInfoResponse> =
-        futures::future::join_all(items.into_iter().map(|a| async move {
-            let session_title =
-                crate::services::agent_service::get_agent_session_title(&a.agent_id).await;
-            let session_id =
-                crate::services::agent_service::get_agent_session_id(&a.agent_id).await;
-            let stop_reason =
-                crate::services::agent_service::get_agent_stop_reason(&a.agent_id).await;
-            let continuation_count =
-                crate::services::agent_service::get_agent_continuation_count(&a.agent_id).await;
+    // Collect all agent IDs and fetch session metadata in one batch.
+    // Each agent's 5 backend queries run in parallel via tokio::join!,
+    // and all agents are processed concurrently via join_all — replacing
+    // the previous N+1 sequential pattern.
+    let agent_ids: Vec<&str> = items.iter().map(|a| a.agent_id.as_str()).collect();
+    let snapshots =
+        crate::services::agent_service::agent_snapshot_batch(&agent_ids).await;
 
-            // Get config options (includes modes like auto-approval, plan mode)
-            let config_options =
-                crate::services::agent_service::get_agent_config_options(&a.agent_id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|opts| {
-                        opts.into_iter()
-                            .map(|o| {
-                                let category = o.category.map(|c| format!("{:?}", c));
-                                let description = o.description.clone();
-                                let kind_json = serde_json::to_value(&o.kind).ok();
-                                ConfigOptionInfo {
-                                    id: o.id.to_string(),
-                                    name: o.name,
-                                    description,
-                                    category,
-                                    kind: kind_json,
-                                }
-                            })
-                            .collect()
-                    });
+    let response: Vec<AgentInfoResponse> = items
+        .into_iter()
+        .map(|a| {
+            let snapshot = snapshots.get(&a.agent_id);
+
+            let config_options = snapshot
+                .and_then(|s| s.config_options.as_ref())
+                .map(|opts| {
+                    opts.iter()
+                        .map(|o| {
+                            let category = o.category.clone().map(|c| format!("{:?}", c));
+                            let description = o.description.clone();
+                            let kind_json = serde_json::to_value(&o.kind).ok();
+                            ConfigOptionInfo {
+                                id: o.id.to_string(),
+                                name: o.name.clone(),
+                                description,
+                                category,
+                                kind: kind_json,
+                            }
+                        })
+                        .collect()
+                });
 
             AgentInfoResponse {
                 agent_id: a.agent_id,
@@ -177,18 +175,18 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
                 is_processing: a.is_processing,
                 created_at: a.created_at,
                 last_heartbeat: a.last_heartbeat,
-                session_title,
-                session_id,
-                stop_reason,
-                continuation_count,
+                session_title: snapshot.and_then(|s| s.session_title.clone()),
+                session_id: snapshot.and_then(|s| s.session_id.clone()),
+                stop_reason: snapshot.and_then(|s| s.stop_reason.clone()),
+                continuation_count: snapshot.map_or(0, |s| s.continuation_count),
                 config_options,
                 profile: a.profile,
                 capabilities: a.capabilities,
                 state_changed_at: a.state_changed_at,
                 state_history: a.state_history,
             }
-        }))
-        .await;
+        })
+        .collect();
 
     Json(response)
 }

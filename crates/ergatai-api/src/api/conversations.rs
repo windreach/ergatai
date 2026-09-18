@@ -94,10 +94,9 @@ pub async fn get_conversation_detail(
     };
 
     let manager = sender.conversation_manager();
-    let conversations = manager.list_all_conversations().await;
 
-    // Find the conversation by ID
-    let Some(conv) = conversations.into_iter().find(|c| c.id == conv_id) else {
+    // Direct O(1) lookup instead of linear scan over all conversations.
+    let Some(conv) = manager.get_conversation(&conv_id).await else {
         return Json(None::<ConversationDetail>).into_response();
     };
 

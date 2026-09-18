@@ -134,6 +134,66 @@ pub async fn get_agent_continuation_count(agent_id: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// Agent snapshot with session metadata, fetched in batch.
+///
+/// Contains the per-agent metadata that `list_agents` needs beyond the basic
+/// `AgentListItem` fields. Fetching these in batch (all agents in parallel,
+/// all fields per agent in parallel) avoids the N+1 pattern where each agent
+/// incurred 5 sequential backend roundtrips.
+pub struct AgentSnapshot {
+    pub session_title: Option<String>,
+    pub session_id: Option<String>,
+    pub stop_reason: Option<String>,
+    pub continuation_count: usize,
+    pub config_options: Option<
+        Vec<agent_client_protocol::schema::v1::SessionConfigOption>,
+    >,
+}
+
+/// Fetch session metadata for multiple agents in one batch.
+///
+/// All agents are processed concurrently; within each agent, all 5 backend
+/// queries run in parallel via `tokio::join!`. This turns O(N * 5) sequential
+/// roundtrips into O(N) concurrent work — for 50 agents, from ~250 serial
+/// calls down to ~50 parallel batches of 5 concurrent calls each.
+pub async fn agent_snapshot_batch(
+    agent_ids: &[&str],
+) -> HashMap<String, AgentSnapshot> {
+    let futures: Vec<_> = agent_ids
+        .iter()
+        .map(|id| {
+            let id_owned = id.to_string();
+            async move {
+                let (session_title, session_id, stop_reason, continuation_count, config_options) =
+                    tokio::join!(
+                        get_agent_session_title(&id_owned),
+                        get_agent_session_id(&id_owned),
+                        get_agent_stop_reason(&id_owned),
+                        async { get_agent_continuation_count(&id_owned).await },
+                        async {
+                            get_agent_config_options(&id_owned).await.ok().flatten()
+                        },
+                    );
+                (
+                    id_owned,
+                    AgentSnapshot {
+                        session_title,
+                        session_id,
+                        stop_reason,
+                        continuation_count,
+                        config_options,
+                    },
+                )
+            }
+        })
+        .collect();
+
+    futures::future::join_all(futures)
+        .await
+        .into_iter()
+        .collect()
+}
+
 /// Resolve an agent ID (profile name, stable ID, or runtime ID) to a runtime ID.
 /// Returns `None` if the agent is not found or not running.
 pub async fn resolve_to_runtime_id(agent_id: &str) -> Option<String> {

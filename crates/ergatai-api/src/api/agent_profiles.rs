@@ -56,12 +56,15 @@ pub struct ListProfilesResponse {
 ///
 /// POST /api/v1/agent-profiles
 pub async fn register_profile(Json(request): Json<RegisterProfileRequest>) -> impl IntoResponse {
+    // Capture the name before moving fields into the service call, so we can
+    // reuse it in the success response without an extra clone.
+    let profile_name = request.name.clone();
     match profile_service::register_profile(
-        request.name.clone(),
-        request.command.clone(),
-        request.agent_type.clone(),
-        request.package_name.clone(),
-        request.avatar_url.clone(),
+        request.name,
+        request.command,
+        request.agent_type,
+        request.package_name,
+        request.avatar_url,
     )
     .await
     {
@@ -69,7 +72,7 @@ pub async fn register_profile(Json(request): Json<RegisterProfileRequest>) -> im
             StatusCode::CREATED,
             Json(serde_json::json!({
                 "status": "success",
-                "message": format!("Agent profile '{}' registered successfully", request.name)
+                "message": format!("Agent profile '{}' registered successfully", profile_name)
             })),
         ),
         Err(e) => {

@@ -518,7 +518,7 @@ async fn async_main(args: Args) -> Result<()> {
                             .collect()
                     }
                 },
-                std::time::Duration::from_millis(50),
+                std::time::Duration::from_millis(200),
             );
 
             if let Err(e) = ergatai_lock::init_file_access_with_enforcer(
