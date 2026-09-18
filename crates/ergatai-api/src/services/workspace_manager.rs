@@ -167,6 +167,17 @@ async fn is_dirty_worktree(path: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// Count how many of the given worktree paths have uncommitted changes.
+/// Checks are performed in parallel via `futures::future::join_all`.
+async fn count_dirty_worktrees(paths: &[&str]) -> usize {
+    let checks: Vec<_> = paths.iter().map(|path| is_dirty_worktree(path)).collect();
+    futures::future::join_all(checks)
+        .await
+        .into_iter()
+        .filter(|&dirty| dirty)
+        .count()
+}
+
 async fn find_or_create_project(
     project_id: Option<&str>,
     project_path: Option<&str>,
@@ -607,12 +618,7 @@ pub async fn status(workspace_id: &str) -> Result<WorkspaceStatus, WorkspaceMana
         .filter_map(|chat| chat.worktree_path.as_deref())
         .filter(|path| !path.is_empty())
         .collect();
-    let mut dirty_worktree_count = 0;
-    for path in worktree_paths {
-        if is_dirty_worktree(path).await {
-            dirty_worktree_count += 1;
-        }
-    }
+    let dirty_worktree_count = count_dirty_worktrees(&worktree_paths).await;
     let work_dir_exists = std::path::Path::new(&workspace.work_dir).is_dir();
     Ok(WorkspaceStatus {
         workspace_id: workspace.id,
@@ -671,12 +677,7 @@ pub async fn delete(workspace_id: &str, force: bool) -> Result<(), WorkspaceMana
         .filter_map(|conversation| conversation.worktree_path.as_deref())
         .filter(|path| !path.is_empty())
         .collect();
-    let mut dirty_worktree_count = 0;
-    for path in worktree_paths {
-        if is_dirty_worktree(path).await {
-            dirty_worktree_count += 1;
-        }
-    }
+    let dirty_worktree_count = count_dirty_worktrees(&worktree_paths).await;
     if dirty_worktree_count > 0 {
         return Err(WorkspaceManagerError::Conflict(format!(
             "Workspace has {} dirty worktree(s); commit or discard changes before deletion",

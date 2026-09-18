@@ -462,15 +462,34 @@ pub fn build_rest_app(state: AppState) -> Router {
             auth_middleware,
         ))
         // CORS layer — outermost so preflight `OPTIONS` requests bypass auth.
-        // Permissive development config: any origin, any method, any header.
-        // Lock this down in production via environment-specific configuration.
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any)
-                .max_age(Duration::from_secs(3600)),
-        )
+        // Configure allowed origins via ERGATAI_CORS_ALLOWED_ORIGINS (comma-separated).
+        // When unset, falls back to permissive development config (any origin).
+        .layer({
+            match std::env::var("ERGATAI_CORS_ALLOWED_ORIGINS") {
+                Ok(origins) => {
+                    let allowed: Vec<_> = origins
+                        .split(',')
+                        .filter_map(|s| s.trim().parse().ok())
+                        .collect();
+                    tracing::info!("CORS configured with {} allowed origins", allowed.len());
+                    CorsLayer::new()
+                        .allow_origin(allowed)
+                        .allow_methods(Any)
+                        .allow_headers(Any)
+                        .max_age(Duration::from_secs(3600))
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "CORS: no ERGATAI_CORS_ALLOWED_ORIGINS set, using permissive config"
+                    );
+                    CorsLayer::new()
+                        .allow_origin(Any)
+                        .allow_methods(Any)
+                        .allow_headers(Any)
+                        .max_age(Duration::from_secs(3600))
+                }
+            }
+        })
 }
 
 async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {

@@ -370,10 +370,12 @@ pub async fn list_persistent_workspaces(
 pub async fn create_persistent_workspace(
     Json(req): Json<PersistentWorkspaceRequest>,
 ) -> impl IntoResponse {
-    // Validate id is not empty/whitespace
-    if req.id.trim().is_empty() {
+    // Validate workspace ID contains only safe characters
+    if !crate::api::agents::is_valid_workspace_id(&req.id) {
         return managed_error(
-            manager::WorkspaceManagerError::Validation("Workspace ID cannot be empty".to_string()),
+            manager::WorkspaceManagerError::Validation(
+                "Workspace ID contains invalid characters".to_string(),
+            ),
             "create_persistent_workspace",
         );
     }
@@ -477,10 +479,12 @@ pub async fn update_persistent_workspace(
     Path(id): Path<String>,
     Json(req): Json<PersistentWorkspaceRequest>,
 ) -> impl IntoResponse {
-    // Validate id is not empty/whitespace
-    if req.id.trim().is_empty() {
+    // Validate workspace ID contains only safe characters
+    if !crate::api::agents::is_valid_workspace_id(&req.id) {
         return managed_error(
-            manager::WorkspaceManagerError::Validation("Workspace ID cannot be empty".to_string()),
+            manager::WorkspaceManagerError::Validation(
+                "Workspace ID contains invalid characters".to_string(),
+            ),
             "update_persistent_workspace",
         );
     }

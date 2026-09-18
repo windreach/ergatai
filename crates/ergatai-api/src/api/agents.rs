@@ -232,7 +232,7 @@ fn matches_pattern(command: &str, pattern: &str) -> bool {
 /// characters, and any non-ASCII symbol. Prevents path-traversal and
 /// filesystem-namespace injection via the workspace creation API.
 pub(crate) fn is_valid_workspace_id(id: &str) -> bool {
-    if id.is_empty() || id.contains("..") {
+    if id.is_empty() || id.contains("..") || id == "." {
         return false;
     }
     id.chars()
@@ -252,13 +252,13 @@ async fn workspace_resource_limits(
         Ok(Err(error)) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to load workspace: {}", error),
+                crate::sanitize_error(&error, "workspace_load"),
             ))
         }
         Err(e) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Task join error: {}", e),
+                crate::sanitize_error(&e, "workspace_load_join"),
             ))
         }
     };
@@ -273,7 +273,7 @@ async fn workspace_resource_limits(
     serde_json::from_str::<ResourceLimits>(&workspace.resources).map_err(|error| {
         (
             StatusCode::BAD_REQUEST,
-            format!("Invalid workspace resources: {}", error),
+            crate::sanitize_error(&error, "workspace_resources_parse"),
         )
     })
 }
@@ -434,7 +434,7 @@ pub async fn spawn_agent(
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
-                        error: format!("Failed to load conversation: {}", e),
+                        error: crate::sanitize_error(&e, "conversation_load"),
                     }),
                 )
                     .into_response();
@@ -443,7 +443,7 @@ pub async fn spawn_agent(
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
-                        error: format!("Task join error: {}", e),
+                        error: crate::sanitize_error(&e, "conversation_load_join"),
                     }),
                 )
                     .into_response();
@@ -471,7 +471,7 @@ pub async fn spawn_agent(
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse {
-                            error: format!("Failed to resolve conversation workspace: {}", e),
+                            error: crate::sanitize_error(&e, "conversation_resolve_workspace"),
                         }),
                     )
                         .into_response();
@@ -480,7 +480,7 @@ pub async fn spawn_agent(
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse {
-                            error: format!("Task join error: {}", e),
+                            error: crate::sanitize_error(&e, "conversation_resolve_workspace_join"),
                         }),
                     )
                         .into_response();
@@ -519,7 +519,7 @@ pub async fn spawn_agent(
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
-                        error: format!("Failed to load conversation workspace: {}", e),
+                        error: crate::sanitize_error(&e, "conversation_workspace_load"),
                     }),
                 )
                     .into_response();
@@ -528,7 +528,7 @@ pub async fn spawn_agent(
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
-                        error: format!("Task join error: {}", e),
+                        error: crate::sanitize_error(&e, "conversation_workspace_load_join"),
                     }),
                 )
                     .into_response();
@@ -547,7 +547,7 @@ pub async fn spawn_agent(
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse {
-                            error: format!("Failed to load execution context: {}", e),
+                            error: crate::sanitize_error(&e, "execution_context_load"),
                         }),
                     )
                         .into_response();
@@ -556,7 +556,7 @@ pub async fn spawn_agent(
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse {
-                            error: format!("Task join error: {}", e),
+                            error: crate::sanitize_error(&e, "execution_context_load_join"),
                         }),
                     )
                         .into_response();
@@ -1121,7 +1121,7 @@ pub async fn send_message(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({
                         "status": "error",
-                        "message": format!("Failed to spawn new agent: {}", crate::sanitize_error(&e, "send_message")),
+                        "message": crate::sanitize_error(&e, "send_message_spawn_agent"),
                     })),
                 )
                     .into_response();
@@ -2328,7 +2328,7 @@ pub async fn prompt_agent(
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
-                        error: format!("Failed to load conversation: {}", e),
+                        error: crate::sanitize_error(&e, "prompt_conversation_load"),
                     }),
                 )
                     .into_response();
@@ -2337,7 +2337,7 @@ pub async fn prompt_agent(
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
-                        error: format!("Task join error: {}", e),
+                        error: crate::sanitize_error(&e, "prompt_conversation_load_join"),
                     }),
                 )
                     .into_response();
@@ -2365,7 +2365,7 @@ pub async fn prompt_agent(
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse {
-                            error: format!("Failed to resolve conversation workspace: {}", e),
+                            error: crate::sanitize_error(&e, "prompt_conversation_resolve_workspace"),
                         }),
                     )
                         .into_response();
@@ -2374,7 +2374,7 @@ pub async fn prompt_agent(
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse {
-                            error: format!("Task join error: {}", e),
+                            error: crate::sanitize_error(&e, "prompt_conversation_resolve_workspace_join"),
                         }),
                     )
                         .into_response();
@@ -2439,7 +2439,7 @@ pub async fn prompt_agent(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to persist prompt: {}", e),
+                    error: crate::sanitize_error(&e, "persist_prompt"),
                 }),
             )
                 .into_response();
@@ -2461,7 +2461,7 @@ pub async fn prompt_agent(
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
-                        error: format!("Failed to enqueue prompt: {}", e),
+                        error: crate::sanitize_error(&e, "enqueue_prompt"),
                     }),
                 )
                     .into_response();
@@ -2566,7 +2566,7 @@ pub async fn prompt_agent(
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
-                        error: format!("Failed to get sub-chat: {}", e),
+                        error: crate::sanitize_error(&e, "sub_chat_load"),
                     }),
                 )
                     .into_response();
@@ -2575,7 +2575,7 @@ pub async fn prompt_agent(
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
-                        error: format!("Task join error: {}", e),
+                        error: crate::sanitize_error(&e, "sub_chat_load_join"),
                     }),
                 )
                     .into_response();
@@ -2629,7 +2629,7 @@ pub async fn prompt_agent(
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
-                        error: format!("Failed to enqueue prompt: {}", e),
+                        error: crate::sanitize_error(&e, "enqueue_prompt_subchat"),
                     }),
                 )
                     .into_response();
