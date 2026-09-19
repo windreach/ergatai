@@ -11,7 +11,6 @@
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
-use ergatai_runtime::binary_detection;
 use ergatai_runtime::profile_registry::{AgentRegistration, ProfileRegistry, ProfileWithStatus};
 
 /// ProfileRegistry 全局单例。
@@ -31,132 +30,7 @@ pub fn init_profile_registry() -> Result<&'static ProfileRegistry> {
         ProfileRegistry::new(PROFILE_REGISTRY_DB_PATH)
             .expect("Failed to open profile registry database")
     });
-    seed_default_profiles(registry);
     Ok(registry)
-}
-
-/// Official agent profiles auto-registered at startup if not already present.
-fn seed_default_profiles(registry: &ProfileRegistry) {
-    // Remove stale dev-adapter registrations (command contains "/adapters/")
-    // These were manually registered before auto-seeding existed and use
-    // `node .../adapters/...` commands that pass the is_installed check
-    // because `node` itself is on PATH.
-    tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(async {
-            let all = match registry.list().await {
-                Ok(items) => items,
-                Err(_) => return,
-            };
-            for reg in all {
-                if reg.command.contains("/adapters/") {
-                    let _ = registry.delete(&reg.id).await;
-                    tracing::info!(
-                        "Removed stale adapter profile '{}' (id: {})",
-                        reg.name,
-                        reg.id
-                    );
-                }
-            }
-        })
-    });
-
-    let defaults: &[(&str, &str, &str, &str, Option<&str>)] = &[
-        (
-            "claude-code",
-            "npx -y @agentclientprotocol/claude-agent-acp@latest",
-            "claude",
-            "acp",
-            Some("@agentclientprotocol/claude-agent-acp"),
-        ),
-        (
-            "codex",
-            "npx -y @agentclientprotocol/codex-acp@latest",
-            "codex",
-            "acp",
-            Some("@agentclientprotocol/codex-acp"),
-        ),
-        (
-            "gemini",
-            "gemini --acp",
-            "gemini",
-            "acp",
-            Some("@google/gemini-cli"),
-        ),
-        ("goose", "goose run --acp", "goose", "acp", None),
-        (
-            "opencode",
-            "opencode acp",
-            "opencode",
-            "acp",
-            Some("opencode"),
-        ),
-        ("cline", "cline --acp", "cline", "acp", Some("cline")),
-        ("kiro", "kiro-cli acp", "kiro-cli", "acp", Some("@kiro/cli")),
-        ("hermes", "hermes acp", "hermes", "acp", None),
-        ("openclaw", "openclaw acp", "openclaw", "acp", None),
-        ("auggie", "auggie --acp", "auggie", "acp", None),
-    ];
-
-    for (name, command, host_binary, agent_type, package_name) in defaults {
-        // Only register agents whose binary is actually installed on the system
-        if !binary_detection::is_installed(host_binary) {
-            tracing::debug!("Default profile '{}' skipped — binary not installed", name);
-            continue;
-        }
-
-        // Use name as the stable ID for default profiles
-        let registration = AgentRegistration::with_id(
-            name.to_string(),
-            name.to_string(),
-            command.to_string(),
-            agent_type.to_string(),
-            package_name.map(|s| s.to_string()),
-        );
-        let registry_ref = registry;
-        // Upsert: register if missing, update if command differs
-        match tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                match registry_ref.get(name).await {
-                    Ok(Some(existing))
-                        if existing.command == *command
-                            && existing.package_name == package_name.map(|s| s.to_string()) =>
-                    {
-                        Ok(())
-                    }
-                    Ok(Some(_existing)) => {
-                        // Stale command — replace with the canonical default
-                        let _ = registry_ref.delete(name).await;
-                        registry_ref.register(registration).await
-                    }
-                    Ok(None) => registry_ref.register(registration).await,
-                    Err(_) => Ok(()),
-                }
-            })
-        }) {
-            Ok(_) => {}
-            Err(e) => {
-                tracing::debug!("Default profile '{}' skipped: {}", name, e);
-            }
-        }
-
-        // Background update: silently update npm adapter packages for installed agents
-        if let Some(pkg) = package_name {
-            if binary_detection::is_installed(host_binary) {
-                let pkg = pkg.to_string();
-                tokio::spawn(async move {
-                    tracing::info!(package = %pkg, "Updating adapter package in background");
-                    match ergatai_runtime::agent_installer::install_npm(&pkg).await {
-                        Ok(_) => {
-                            tracing::info!(package = %pkg, "Adapter package updated");
-                        }
-                        Err(e) => {
-                            tracing::debug!(package = %pkg, error = %e, "Background adapter update skipped");
-                        }
-                    }
-                });
-            }
-        }
-    }
 }
 
 /// 获取 ProfileRegistry 全局单例引用（handler 中调用）。

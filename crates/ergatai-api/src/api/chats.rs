@@ -431,32 +431,31 @@ pub async fn update_chat(
 ) -> impl IntoResponse {
     // First, get the existing chat
     let id_for_get = id.clone();
-    let existing = match tokio::task::spawn_blocking(move || user_data_db::chats::get(&id_for_get))
-        .await
-    {
-        Ok(Ok(Some(chat))) => chat,
-        Ok(Ok(None)) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: format!("Chat not found: {}", id),
-                }),
-            )
-                .into_response()
-        }
-        Ok(Err(error)) => {
-            return db_error("Failed to load chat", error);
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response();
-        }
-    };
+    let existing =
+        match tokio::task::spawn_blocking(move || user_data_db::chats::get(&id_for_get)).await {
+            Ok(Ok(Some(chat))) => chat,
+            Ok(Ok(None)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("Chat not found: {}", id),
+                    }),
+                )
+                    .into_response()
+            }
+            Ok(Err(error)) => {
+                return db_error("Failed to load chat", error);
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Task join error: {}", e),
+                    }),
+                )
+                    .into_response();
+            }
+        };
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

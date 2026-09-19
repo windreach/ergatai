@@ -71,6 +71,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             resources TEXT DEFAULT '{}',
             capture_thoughts INTEGER DEFAULT 0,
             collaboration_mode TEXT NOT NULL DEFAULT 'supervisor',
+            status TEXT NOT NULL DEFAULT 'active',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
@@ -211,9 +212,11 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_workspace_projects_project
             ON workspace_projects(project_id);
         CREATE INDEX IF NOT EXISTS idx_chats_project_id ON chats(project_id);
+        CREATE INDEX IF NOT EXISTS idx_chats_workspace_id ON chats(workspace_id);
         CREATE INDEX IF NOT EXISTS idx_sub_chats_chat_id ON sub_chats(chat_id);
         CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_chat_id ON group_agent_bindings(chat_id);
         CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_agent_id ON group_agent_bindings(agent_id);
+        CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_workspace_id ON group_agent_bindings(workspace_id);
         CREATE INDEX IF NOT EXISTS idx_chats_archived_at ON chats(archived_at);
         CREATE INDEX IF NOT EXISTS idx_conversations_parent_id ON conversations(parent_id);
         CREATE INDEX IF NOT EXISTS idx_conversations_project_id ON conversations(project_id);
@@ -221,183 +224,53 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
         CREATE INDEX IF NOT EXISTS idx_conversation_agent_bindings_agent_id
             ON conversation_agent_bindings(agent_id);
+
+        -- Backfill chats created before workspace binding became mandatory.
+        -- Root chats inherit the active workspace matching their project and
+        -- collaboration mode; child conversations then inherit their root.
+        UPDATE conversations
+        SET workspace_id = (
+            SELECT workspaces.id
+            FROM workspaces
+            WHERE workspaces.project_id = conversations.project_id
+              AND workspaces.collaboration_mode = conversations.mode
+            ORDER BY workspaces.created_at DESC
+            LIMIT 1
+        )
+        WHERE parent_id IS NULL
+          AND workspace_id IS NULL;
+
+        UPDATE conversations
+        SET workspace_id = (
+            SELECT roots.workspace_id
+            FROM conversations AS roots
+            WHERE roots.id = conversations.parent_id
+        )
+        WHERE parent_id IS NOT NULL
+          AND workspace_id IS NULL;
         "#,
     )?;
 
-    // Migration: Remove `id` column from group_agent_bindings if it exists
-    // (SQLite 3.35.0+ supports DROP COLUMN)
-    let _ = conn.execute_batch("ALTER TABLE group_agent_bindings DROP COLUMN id;");
-
-    // Migration: Rename sub_chat_id to conversation_id in conversation_agent_bindings
-    // (SQLite 3.25.0+ supports RENAME COLUMN)
-    let _ = conn.execute_batch(
-        "ALTER TABLE conversation_agent_bindings RENAME COLUMN sub_chat_id TO conversation_id;",
-    );
-
-    // Migration: Remove `stream_id` column from sub_chats if it exists
-    let _ = conn.execute_batch("ALTER TABLE sub_chats DROP COLUMN stream_id;");
-
-    // Migration: Add `workspace_id` column to group_agent_bindings if it doesn't exist.
-    // Legacy rows predate a separate workspace ID and used the chat ID as the workspace identifier.
-    // Backfill it only so old rows keep resolving; the current model keeps workspace and chat IDs distinct.
-    let _ = conn.execute_batch(
-        "ALTER TABLE group_agent_bindings ADD COLUMN workspace_id TEXT NOT NULL DEFAULT '';",
-    );
-    let _ = conn.execute_batch(
-        "UPDATE group_agent_bindings SET workspace_id = chat_id WHERE workspace_id = '';",
-    );
-
-    // Migration: Add `workspace_id` column to chats if it doesn't exist.
-    // Existing rows are left unlinked rather than assuming that a chat is itself a workspace.
-    let _ = conn.execute_batch(
-        "ALTER TABLE chats ADD COLUMN workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL;",
-    );
-    let _ = conn
-        .execute_batch("CREATE INDEX IF NOT EXISTS idx_chats_workspace_id ON chats(workspace_id);");
-
-    // Create index on workspace_id after migration (column may not exist in older databases)
-    let _ = conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_workspace_id ON group_agent_bindings(workspace_id);",
-    );
-
-    // Migration: add a lifecycle status to persistent workspaces without
-    // changing their public identity.
-    let _ = conn
-        .execute_batch("ALTER TABLE workspaces ADD COLUMN status TEXT NOT NULL DEFAULT 'active';");
-
-    backfill_workspace_projects(conn)?;
-
-    migrate_legacy_conversations(conn)?;
-
-    Ok(())
-}
-
-fn backfill_workspace_projects(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        r#"
-        INSERT OR IGNORE INTO workspace_projects
-            (workspace_id, project_id, is_default, status, settings_json, created_at, updated_at)
-        SELECT id, project_id, 1, 'active', '{}', created_at, updated_at
-        FROM workspaces;
-        "#,
-    )?;
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-    conn.execute(
-        r#"
-        INSERT OR IGNORE INTO workspaces
-            (id, project_id, name, work_dir, env, resources, capture_thoughts, status, created_at, updated_at)
-        SELECT 'ws-import-' || p.id, p.id, p.name, p.path, '{}', '{}', 0, 'active', ?1, ?1
-        FROM projects p
-        WHERE NOT EXISTS (SELECT 1 FROM workspace_projects wp WHERE wp.project_id = p.id)
-          AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.project_id = p.id)
-        "#,
-        params![now],
-    )?;
-    conn.execute(
-        r#"
-        INSERT OR IGNORE INTO workspace_projects
-            (workspace_id, project_id, is_default, status, settings_json, created_at, updated_at)
-        SELECT id, project_id, 1, 'active', '{}', created_at, updated_at
-        FROM workspaces
-        WHERE id LIKE 'ws-import-%'
-        "#,
-        [],
-    )?;
-
-    Ok(())
-}
-
-/// Copy legacy chat/sub-chat rows into the unified conversation model.
-///
-/// The legacy tables remain only as migration sources; all runtime reads and
-/// writes use the unified tables after startup.
-fn migrate_legacy_conversations(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        r#"
-        INSERT OR IGNORE INTO conversations
-            (id, parent_id, project_id, workspace_id, name, mode, created_at, updated_at, archived_at)
-        SELECT id, NULL, project_id, workspace_id, name, collaboration_mode,
-               created_at, updated_at, archived_at
-        FROM chats;
-
-        INSERT OR IGNORE INTO conversation_execution_contexts
-            (conversation_id, worktree_path, branch, base_branch, pr_url, pr_number)
-        SELECT id, worktree_path, branch, base_branch, pr_url, pr_number
-        FROM chats
-        WHERE id IN (SELECT id FROM conversations);
-
-        INSERT OR IGNORE INTO conversations
-            (id, parent_id, project_id, workspace_id, name, mode, created_at, updated_at, archived_at)
-        SELECT s.id, c.id, c.project_id, c.workspace_id, s.name, s.mode,
-               s.created_at, s.updated_at, NULL
-        FROM sub_chats AS s
-        JOIN chats AS c ON c.id = s.chat_id;
-
-        INSERT OR IGNORE INTO agent_sessions
-            (conversation_id, session_id, mode, created_at, updated_at)
-        SELECT s.id, s.session_id, s.mode, s.created_at, s.updated_at
-        FROM sub_chats AS s
-        WHERE s.id IN (SELECT id FROM conversations);
-
-        INSERT OR IGNORE INTO conversation_agent_bindings
-            (workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at)
-        SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, sub_chat_id, created_at, updated_at
-        FROM group_agent_bindings
-        WHERE chat_id IN (SELECT id FROM conversations)
-          AND sub_chat_id IN (SELECT id FROM conversations);
-        "#,
-    )?;
-
-    // Legacy messages are stored as a JSON array inside each sub-chat row.
-    // Expand them once; stable synthetic IDs make this migration idempotent.
-    let mut stmt = conn.prepare(
-        "SELECT id, messages, created_at FROM sub_chats WHERE id IN (SELECT id FROM conversations)",
-    )?;
-    let legacy_sub_chats = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    drop(stmt);
-
-    for (conversation_id, legacy_messages, fallback_created_at) in legacy_sub_chats {
-        let parsed: serde_json::Value =
-            serde_json::from_str(&legacy_messages).unwrap_or_else(|_| serde_json::json!([]));
-        let messages = parsed.as_array().cloned().unwrap_or_default();
-        if messages.is_empty() {
-            continue;
+    // Incremental migrations for existing databases.
+    // These are no-ops if the columns already exist (SQLite ignores errors).
+    // For databases created by older versions, these add missing columns.
+    if let Err(e) = conn
+        .execute_batch("ALTER TABLE workspaces ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+    {
+        if !e.to_string().contains("duplicate column name") {
+            tracing::warn!(error = %e, "Failed to add workspaces.status column");
         }
-
-        let mut insert_stmt = conn.prepare(
-            "INSERT OR IGNORE INTO messages (id, conversation_id, role, content, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-        )?;
-        for (idx, msg) in messages.iter().enumerate() {
-            let role = msg
-                .get("role")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let content = msg
-                .get("content")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!(""));
-            let content_str = serde_json::to_string(&content).unwrap_or_default();
-            let msg_id = format!("{conversation_id}-msg-{idx}");
-            let _ = insert_stmt.execute(params![
-                msg_id,
-                conversation_id,
-                role,
-                content_str,
-                fallback_created_at,
-            ]);
+    }
+    if let Err(e) = conn.execute_batch("ALTER TABLE chats ADD COLUMN workspace_id TEXT") {
+        if !e.to_string().contains("duplicate column name") {
+            tracing::warn!(error = %e, "Failed to add chats.workspace_id column");
+        }
+    }
+    if let Err(e) = conn.execute_batch(
+        "ALTER TABLE group_agent_bindings ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''",
+    ) {
+        if !e.to_string().contains("duplicate column name") {
+            tracing::warn!(error = %e, "Failed to add group_agent_bindings.workspace_id column");
         }
     }
 
@@ -2662,53 +2535,6 @@ mod tests {
     }
 
     #[test]
-    fn test_workspace_project_backfill_single_project() {
-        let _database_guard = lock_user_data_db_for_tests();
-        let suffix = uuid::Uuid::new_v4().simple().to_string();
-        let project_id = format!("wp-single-{suffix}");
-        let workspace_id = format!("wp-single-ws-{suffix}");
-
-        projects::create(Project {
-            id: project_id.clone(),
-            name: "Single project".to_string(),
-            path: format!("/tmp/{project_id}"),
-            git_remote_url: None,
-            git_provider: None,
-            git_owner: None,
-            git_repo: None,
-            icon_path: None,
-            created_at: 1000,
-            updated_at: 1000,
-        })
-        .unwrap();
-        workspaces::create(Workspace {
-            id: workspace_id.clone(),
-            project_id: project_id.clone(),
-            name: None,
-            work_dir: format!("/tmp/{workspace_id}"),
-            env: "{}".to_string(),
-            resources: "{}".to_string(),
-            capture_thoughts: false,
-            collaboration_mode: "supervisor".to_string(),
-            status: "active".to_string(),
-            created_at: 1000,
-            updated_at: 1000,
-        })
-        .unwrap();
-
-        backfill_workspace_projects(&get_user_data_db().lock().unwrap()).unwrap();
-
-        let links = workspace_projects::list(&workspace_id).unwrap();
-        assert_eq!(links.len(), 1);
-        assert_eq!(links[0].project_id, project_id);
-        assert!(links[0].is_default);
-
-        projects::delete(&project_id).unwrap();
-        assert!(workspaces::get(&workspace_id).unwrap().is_none());
-        assert!(workspace_projects::list(&workspace_id).unwrap().is_empty());
-    }
-
-    #[test]
     fn test_workspace_list_filters_by_collaboration_mode() {
         let _database_guard = lock_user_data_db_for_tests();
         let suffix = uuid::Uuid::new_v4().simple().to_string();
@@ -2775,98 +2601,5 @@ mod tests {
         projects::delete(&project_id).unwrap();
         assert!(workspaces::get(&supervisor_workspace_id).unwrap().is_none());
         assert!(workspaces::get(&group_workspace_id).unwrap().is_none());
-    }
-
-    #[test]
-    fn test_workspace_project_backfill_multi_workspace() {
-        let _database_guard = lock_user_data_db_for_tests();
-        let suffix = uuid::Uuid::new_v4().simple().to_string();
-        let project_id = format!("wp-multi-{suffix}");
-        let workspace_one = format!("wp-multi-ws1-{suffix}");
-        let workspace_two = format!("wp-multi-ws2-{suffix}");
-
-        projects::create(Project {
-            id: project_id.clone(),
-            name: "Multi workspace".to_string(),
-            path: format!("/tmp/{project_id}"),
-            git_remote_url: None,
-            git_provider: None,
-            git_owner: None,
-            git_repo: None,
-            icon_path: None,
-            created_at: 1000,
-            updated_at: 1000,
-        })
-        .unwrap();
-        for workspace_id in [&workspace_one, &workspace_two] {
-            workspaces::create(Workspace {
-                id: workspace_id.clone(),
-                project_id: project_id.clone(),
-                name: None,
-                work_dir: format!("/tmp/{workspace_id}"),
-                env: "{}".to_string(),
-                resources: "{}".to_string(),
-                capture_thoughts: false,
-                collaboration_mode: "supervisor".to_string(),
-                status: "active".to_string(),
-                created_at: 1000,
-                updated_at: 1000,
-            })
-            .unwrap();
-        }
-
-        backfill_workspace_projects(&get_user_data_db().lock().unwrap()).unwrap();
-
-        for workspace_id in [&workspace_one, &workspace_two] {
-            let links = workspace_projects::list(workspace_id).unwrap();
-            assert_eq!(links.len(), 1);
-            assert_eq!(links[0].project_id, project_id);
-            assert!(links[0].is_default);
-        }
-
-        projects::delete(&project_id).unwrap();
-        assert!(workspaces::get(&workspace_one).unwrap().is_none());
-        assert!(workspaces::get(&workspace_two).unwrap().is_none());
-        assert!(workspace_projects::list(&workspace_one).unwrap().is_empty());
-        assert!(workspace_projects::list(&workspace_two).unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_workspace_project_backfill_orphan_project() {
-        let _database_guard = lock_user_data_db_for_tests();
-        let suffix = uuid::Uuid::new_v4().simple().to_string();
-        let project_id = format!("wp-orphan-{suffix}");
-        let imported_workspace_id = format!("ws-import-{project_id}");
-
-        projects::create(Project {
-            id: project_id.clone(),
-            name: "Orphan project".to_string(),
-            path: format!("/tmp/{project_id}"),
-            git_remote_url: None,
-            git_provider: None,
-            git_owner: None,
-            git_repo: None,
-            icon_path: None,
-            created_at: 1000,
-            updated_at: 1000,
-        })
-        .unwrap();
-
-        backfill_workspace_projects(&get_user_data_db().lock().unwrap()).unwrap();
-
-        let workspace = workspaces::get(&imported_workspace_id)
-            .unwrap()
-            .expect("orphan project should be imported into a workspace");
-        assert_eq!(workspace.project_id, project_id);
-        let links = workspace_projects::list(&imported_workspace_id).unwrap();
-        assert_eq!(links.len(), 1);
-        assert_eq!(links[0].project_id, project_id);
-        assert!(links[0].is_default);
-
-        projects::delete(&project_id).unwrap();
-        assert!(workspaces::get(&imported_workspace_id).unwrap().is_none());
-        assert!(workspace_projects::list(&imported_workspace_id)
-            .unwrap()
-            .is_empty());
     }
 }

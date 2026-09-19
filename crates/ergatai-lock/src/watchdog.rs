@@ -263,6 +263,24 @@ impl Watchdog {
                     }
                 }
 
+                // Check hard TTL first (expires_at field)
+                // This is the absolute deadline, regardless of heartbeat
+                if now > token.expires_at {
+                    warn!(
+                        token_id = %token_id,
+                        session_id = %session_id,
+                        expires_at = %token.expires_at,
+                        now = %now,
+                        "Hard TTL expired, immediately reclaiming locks"
+                    );
+                    actions.push(StateAction {
+                        token_id,
+                        session_id,
+                        kind: StateActionKind::Reclaim,
+                    });
+                    continue;
+                }
+
                 // Calculate timeout threshold
                 let heartbeat_interval = token.heartbeat_interval_secs as i64;
                 let timeout_threshold =

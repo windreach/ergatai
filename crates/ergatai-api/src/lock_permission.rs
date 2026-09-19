@@ -10,29 +10,117 @@
 //!   locks succeed → approve; if any lock fails → reject.
 //! - **Execute**: auto-approve (process execution is not file-lock controlled).
 //!
-//! If the lock manager is not initialized for the project (e.g., during tests
-//! or on non-Linux platforms without fanotify), the handler falls back to
-//! auto-approve with a warning (fail-open).
+//! The handler extracts the workspace_id from the agent_id (format: `{workspace_id}-agent-{counter}`)
+//! and uses the workspace's work_dir as the project root for lock management.
+//! This ensures each workspace has its own isolated lock manager.
 
 use async_trait::async_trait;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 use agent_client_protocol::schema::v1::{PermissionOptionKind, RequestPermissionRequest, ToolKind};
 use ergatai_runtime::permission::{PermissionDecision, PermissionHandler};
+
+/// Workspace information for lock manager initialization
+pub struct WorkspaceInfo {
+    pub work_dir: PathBuf,
+}
 
 /// Permission handler that enforces `ergatai-lock` file access control.
 ///
 /// Write operations (Edit, Delete, Move) trigger `auto_acquire_write_lock()`
 /// for each file in the tool call's locations. Read and non-file operations
 /// are auto-approved.
+///
+/// Each workspace gets its own lock manager initialized with the workspace's work_dir
+/// as the project root. This ensures proper path validation and lock isolation.
 pub struct LockPermissionHandler {
-    /// Project identifier used to look up the `FileLockManager`.
-    project_id: String,
+    /// Cache of initialized lock managers per workspace (workspace_id → WorkspaceInfo)
+    workspaces: Arc<RwLock<HashMap<String, WorkspaceInfo>>>,
+}
+
+impl Default for LockPermissionHandler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LockPermissionHandler {
-    pub fn new(project_id: String) -> Self {
-        Self { project_id }
+    pub fn new() -> Self {
+        Self {
+            workspaces: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Register a workspace with its work_dir for lock manager initialization
+    pub async fn register_workspace(&self, workspace_id: &str, work_dir: PathBuf) {
+        let mut workspaces = self.workspaces.write().await;
+        debug!(workspace_id = workspace_id, work_dir = %work_dir.display(), "Registered workspace for lock management");
+        workspaces.insert(workspace_id.to_string(), WorkspaceInfo { work_dir });
+    }
+
+    /// Unregister a workspace when it's deleted (prevents memory leak in long-running processes)
+    pub async fn unregister_workspace(&self, workspace_id: &str) {
+        let mut workspaces = self.workspaces.write().await;
+        if workspaces.remove(workspace_id).is_some() {
+            debug!(
+                workspace_id = workspace_id,
+                "Unregistered workspace from lock management"
+            );
+        }
+    }
+
+    /// Extract workspace_id from agent_id (format: `{workspace_id}-agent-{counter}`)
+    fn extract_workspace_id(agent_id: &str) -> Option<&str> {
+        // agent_id format: {workspace_id}-agent-{counter}
+        // Find the last occurrence of "-agent-" to split
+        agent_id.rfind("-agent-").map(|pos| &agent_id[..pos])
+    }
+
+    /// Get or initialize the lock manager for a workspace
+    async fn get_lock_manager_for_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Option<Arc<ergatai_lock::FileLockManager>> {
+        // Try to get existing lock manager
+        if let Ok(mgr) = ergatai_lock::get_lock_manager(workspace_id).await {
+            return Some(mgr);
+        }
+
+        // Lock manager not initialized - try to initialize it
+        let workspaces = self.workspaces.read().await;
+        if let Some(workspace_info) = workspaces.get(workspace_id) {
+            let work_dir = &workspace_info.work_dir;
+
+            // Initialize lock manager for this workspace
+            match ergatai_lock::init_file_access(workspace_id, work_dir).await {
+                Ok(()) => {
+                    debug!(workspace_id = workspace_id, work_dir = %work_dir.display(), "Initialized lock manager for workspace");
+                    // Now try to get it again
+                    if let Ok(mgr) = ergatai_lock::get_lock_manager(workspace_id).await {
+                        return Some(mgr);
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        workspace_id = workspace_id,
+                        work_dir = %work_dir.display(),
+                        "Failed to initialize lock manager for workspace"
+                    );
+                }
+            }
+        } else {
+            warn!(
+                workspace_id = workspace_id,
+                "Workspace not registered, cannot initialize lock manager"
+            );
+        }
+
+        None
     }
 }
 
@@ -70,13 +158,26 @@ impl PermissionHandler for LockPermissionHandler {
                     return select_allow_option(request);
                 }
 
-                let lock_mgr = match ergatai_lock::get_lock_manager(&self.project_id).await {
-                    Ok(mgr) => mgr,
-                    Err(e) => {
+                // Extract workspace_id from agent_id
+                let workspace_id = match Self::extract_workspace_id(agent_id) {
+                    Some(id) => id,
+                    None => {
                         warn!(
-                            error = %e,
-                            project_id = %self.project_id,
-                            "Lock manager not initialized, falling back to auto-approve"
+                            agent_id = %agent_id,
+                            "Failed to extract workspace_id from agent_id, falling back to auto-approve"
+                        );
+                        return select_allow_option(request);
+                    }
+                };
+
+                // Get lock manager for this workspace
+                let lock_mgr = match self.get_lock_manager_for_workspace(workspace_id).await {
+                    Some(mgr) => mgr,
+                    None => {
+                        warn!(
+                            workspace_id = %workspace_id,
+                            agent_id = %agent_id,
+                            "Lock manager not available for workspace, falling back to auto-approve"
                         );
                         return select_allow_option(request);
                     }
@@ -84,13 +185,14 @@ impl PermissionHandler for LockPermissionHandler {
 
                 for path in &locations {
                     match lock_mgr
-                        .auto_acquire_write_lock(path, agent_id, session_id, &self.project_id)
+                        .auto_acquire_write_lock(path, agent_id, session_id, workspace_id)
                         .await
                     {
                         Ok(()) => {
                             debug!(
                                 path = %path,
                                 agent_id = %agent_id,
+                                workspace_id = %workspace_id,
                                 "Acquired write lock for ACP permission"
                             );
                         }
@@ -98,6 +200,7 @@ impl PermissionHandler for LockPermissionHandler {
                             warn!(
                                 path = %path,
                                 agent_id = %agent_id,
+                                workspace_id = %workspace_id,
                                 error = %e,
                                 "Failed to acquire write lock, rejecting permission"
                             );

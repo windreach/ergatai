@@ -102,7 +102,7 @@ fn db_error(operation: &'static str, error: rusqlite::Error) -> Response {
     )
 )]
 pub async fn list_projects(State(_state): State<AppState>) -> impl IntoResponse {
-    match tokio::task::spawn_blocking(move || user_data_db::projects::list()).await {
+    match tokio::task::spawn_blocking(user_data_db::projects::list).await {
         Ok(Ok(projects)) => {
             let response: Vec<ProjectResponse> =
                 projects.into_iter().map(project_to_response).collect();
@@ -250,28 +250,29 @@ pub async fn update_project(
 ) -> impl IntoResponse {
     // First check if project exists
     let id_for_get = id.clone();
-    let existing = match tokio::task::spawn_blocking(move || user_data_db::projects::get(&id_for_get)).await {
-        Ok(Ok(Some(project))) => project,
-        Ok(Ok(None)) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: format!("Project not found: {}", id),
-                }),
-            )
-                .into_response()
-        }
-        Ok(Err(error)) => return db_error("Failed to get project", error),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
-    };
+    let existing =
+        match tokio::task::spawn_blocking(move || user_data_db::projects::get(&id_for_get)).await {
+            Ok(Ok(Some(project))) => project,
+            Ok(Ok(None)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("Project not found: {}", id),
+                    }),
+                )
+                    .into_response()
+            }
+            Ok(Err(error)) => return db_error("Failed to get project", error),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Task join error: {}", e),
+                    }),
+                )
+                    .into_response()
+            }
+        };
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -299,7 +300,8 @@ pub async fn update_project(
         updated_at: now,
     };
 
-    match tokio::task::spawn_blocking(move || user_data_db::projects::update(updated_project)).await {
+    match tokio::task::spawn_blocking(move || user_data_db::projects::update(updated_project)).await
+    {
         Ok(Ok(_)) => {}
         Ok(Err(error)) => return db_error("Failed to update project", error),
         Err(e) => {
@@ -354,7 +356,8 @@ pub async fn delete_project(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let id_for_delete = id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::projects::delete(&id_for_delete)).await {
+    match tokio::task::spawn_blocking(move || user_data_db::projects::delete(&id_for_delete)).await
+    {
         Ok(Ok(_)) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(error)) => db_error("Failed to delete project", error),
         Err(e) => (

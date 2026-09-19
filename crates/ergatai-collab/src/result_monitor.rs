@@ -487,4 +487,60 @@ mod tests {
         assert!(r.unwrap().is_err()); // oneshot::Canceled
         assert_eq!(monitor.watcher_count(), 0);
     }
+
+    #[test]
+    fn test_parse_result_filename_valid() {
+        let path = Path::new("abcd1234-abcd-1234-abcd-123456789abc-agent1.md");
+        let result = parse_result_filename(path);
+        assert_eq!(
+            result,
+            Some("abcd1234-abcd-1234-abcd-123456789abc".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_result_filename_invalid_extension() {
+        let path = Path::new("abcd1234-abcd-1234-abcd-123456789abc-agent1.txt");
+        let result = parse_result_filename(path);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_result_filename_too_short() {
+        let path = Path::new("short-agent1.md");
+        let result = parse_result_filename(path);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_result_filename_invalid_uuid_format() {
+        let path = Path::new("not-a-uuid-format-at-all-xxxxxxxxxxxxxxxxxxxx-agent1.md");
+        let result = parse_result_filename(path);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_is_uuid_shape_valid() {
+        assert!(is_uuid_shape("abcd1234-abcd-1234-abcd-123456789abc"));
+        assert!(is_uuid_shape("00000000-0000-0000-0000-000000000000"));
+        assert!(is_uuid_shape("ffffffff-ffff-ffff-ffff-ffffffffffff"));
+    }
+
+    #[test]
+    fn test_is_uuid_shape_invalid_length() {
+        assert!(!is_uuid_shape("abcd1234-abcd-1234-abcd-123456789ab")); // 35 chars
+        assert!(!is_uuid_shape("abcd1234-abcd-1234-abcd-123456789abcd")); // 37 chars
+    }
+
+    #[test]
+    fn test_is_uuid_shape_invalid_dash_positions() {
+        assert!(!is_uuid_shape("abcd12340abcd-1234-abcd-123456789abc")); // dash at wrong pos
+        assert!(!is_uuid_shape("abcd1234-abcd01234-abcd-123456789abc")); // dash at wrong pos
+    }
+
+    #[test]
+    fn test_is_uuid_shape_invalid_hex() {
+        assert!(!is_uuid_shape("abcd123g-abcd-1234-abcd-123456789abc")); // 'g' not hex
+        assert!(!is_uuid_shape("abcd1234-abcd-1234-abcd-123456789abz")); // 'z' not hex
+    }
 }

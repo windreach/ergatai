@@ -145,9 +145,7 @@ pub struct AgentSnapshot {
     pub session_id: Option<String>,
     pub stop_reason: Option<String>,
     pub continuation_count: usize,
-    pub config_options: Option<
-        Vec<agent_client_protocol::schema::v1::SessionConfigOption>,
-    >,
+    pub config_options: Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>,
 }
 
 /// Fetch session metadata for multiple agents in one batch.
@@ -156,37 +154,39 @@ pub struct AgentSnapshot {
 /// queries run in parallel via `tokio::join!`. This turns O(N * 5) sequential
 /// roundtrips into O(N) concurrent work — for 50 agents, from ~250 serial
 /// calls down to ~50 parallel batches of 5 concurrent calls each.
-pub async fn agent_snapshot_batch(
-    agent_ids: &[&str],
-) -> HashMap<String, AgentSnapshot> {
-    let futures: Vec<_> = agent_ids
-        .iter()
-        .map(|id| {
-            let id_owned = id.to_string();
-            async move {
-                let (session_title, session_id, stop_reason, continuation_count, config_options) =
-                    tokio::join!(
-                        get_agent_session_title(&id_owned),
-                        get_agent_session_id(&id_owned),
-                        get_agent_stop_reason(&id_owned),
-                        async { get_agent_continuation_count(&id_owned).await },
-                        async {
-                            get_agent_config_options(&id_owned).await.ok().flatten()
-                        },
-                    );
-                (
-                    id_owned,
-                    AgentSnapshot {
+pub async fn agent_snapshot_batch(agent_ids: &[&str]) -> HashMap<String, AgentSnapshot> {
+    let futures: Vec<_> =
+        agent_ids
+            .iter()
+            .map(|id| {
+                let id_owned = id.to_string();
+                async move {
+                    let (
                         session_title,
                         session_id,
                         stop_reason,
                         continuation_count,
                         config_options,
-                    },
-                )
-            }
-        })
-        .collect();
+                    ) = tokio::join!(
+                        get_agent_session_title(&id_owned),
+                        get_agent_session_id(&id_owned),
+                        get_agent_stop_reason(&id_owned),
+                        async { get_agent_continuation_count(&id_owned).await },
+                        async { get_agent_config_options(&id_owned).await.ok().flatten() },
+                    );
+                    (
+                        id_owned,
+                        AgentSnapshot {
+                            session_title,
+                            session_id,
+                            stop_reason,
+                            continuation_count,
+                            config_options,
+                        },
+                    )
+                }
+            })
+            .collect();
 
     futures::future::join_all(futures)
         .await
@@ -673,4 +673,35 @@ pub async fn prompt_agent(
         .inject_message_with_images(&runtime_id, message, images)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dispatch_lock_creation() {
+        let lock1 = dispatch_lock("agent-1").unwrap();
+        let lock2 = dispatch_lock("agent-1").unwrap();
+
+        // Same agent should get the same lock
+        assert!(std::sync::Arc::ptr_eq(&lock1, &lock2));
+    }
+
+    #[test]
+    fn test_dispatch_lock_different_agents() {
+        let lock1 = dispatch_lock("agent-1").unwrap();
+        let lock2 = dispatch_lock("agent-2").unwrap();
+
+        // Different agents should get different locks
+        assert!(!std::sync::Arc::ptr_eq(&lock1, &lock2));
+    }
+
+    #[test]
+    fn test_prompt_queue_state_initialization() {
+        let state = prompt_queue_state();
+        // Should not panic and should be accessible
+        assert!(state.queues.lock().is_ok());
+        assert!(state.dispatch_locks.lock().is_ok());
+    }
 }

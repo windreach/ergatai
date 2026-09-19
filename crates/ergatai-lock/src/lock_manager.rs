@@ -715,11 +715,12 @@ impl FileLockManager {
         // will get a UNIQUE constraint violation, which we log and ignore (the
         // second agent's lock will be picked up by the normal acquire_lock path).
         let now = Utc::now();
-        let ttl_secs = 300u64; // 5 minutes default TTL for auto-acquired locks
-                               // Reduced from 1 hour to 5 minutes for faster lock reclamation.
-                               // If agent crashes, locks will be reclaimed within 5 minutes instead of 1 hour.
-                               // Checked conversion: ttl_secs as i64 would silently overflow if > i64::MAX,
-                               // causing chrono::Duration::seconds() to panic with a negative value.
+        let ttl_secs = 15u64; // 15 seconds initial TTL for auto-acquired locks
+                              // Reduced from 30 seconds since most write operations complete in seconds.
+                              // Combined with tool completion hooks, this covers:
+                              // - Normal case: locks released immediately after write completes
+                              // - Edge case (bash commands): locks expire in 15 seconds max
+                              // If agent crashes, locks will be reclaimed within 15 seconds.
         let ttl_i64 = i64::try_from(ttl_secs).unwrap_or(i64::MAX);
         let expires_at = now + chrono::Duration::seconds(ttl_i64);
 
@@ -756,7 +757,7 @@ impl FileLockManager {
                 format!("auto-acquired on FAN_MODIFY (snapshot: {})", snapshot_hash),
                 now.to_rfc3339(),
                 expires_at.to_rfc3339(),
-                60i64, // heartbeat_interval_secs
+                5i64, // heartbeat_interval_secs: must be well under TTL (15s) to prevent premature expiration
                 now.to_rfc3339(),
                 2i64,  // priority: medium
                 initial_hash,
@@ -1384,14 +1385,15 @@ impl FileLockManager {
                 ErgataiError::internal(format!("Failed to log audit: {}", e))
             })?;
 
-            // Invalidate cache
+            // Commit transaction before invalidating cache
+            tx.commit()
+                .map_err(|e| ErgataiError::internal(format!("Failed to commit: {}", e)))?;
+
+            // Invalidate cache after successful commit
             if mode == "WRITE" || mode == "ADMIN" {
                 let mut cache = self.active_write_locks_cache.write();
                 cache.remove(&normalized_path);
             }
-
-            tx.commit()
-                .map_err(|e| ErgataiError::internal(format!("Failed to commit: {}", e)))?;
 
             info!(token_id = token_id, file_path = %normalized_path, "Expired lock via watchdog");
             Ok(())
@@ -1399,6 +1401,216 @@ impl FileLockManager {
             debug!(token_id = token_id, file_path = %normalized_path, "No active lock to expire");
             Ok(())
         }
+    }
+
+    /// Release a lock immediately after a write tool completes.
+    ///
+    /// This is called by the ACP tool completion hook to release locks as soon as
+    /// the write operation finishes, rather than waiting for TTL expiration.
+    /// This dramatically reduces lock hold time from 30s to milliseconds.
+    ///
+    /// # Arguments
+    /// * `file_path` - The file path to release the lock for
+    /// * `agent_id` - The agent that holds the lock
+    /// * `session_id` - The session that holds the lock
+    ///
+    /// # Returns
+    /// * `Ok(true)` if a lock was released
+    /// * `Ok(false)` if no active lock was found
+    /// * `Err` if there was a database error
+    pub fn release_lock_on_tool_complete(
+        &self,
+        file_path: &str,
+        agent_id: &str,
+        session_id: &str,
+    ) -> Result<bool, ErgataiError> {
+        let normalized_path = self.validate_and_normalize_path(file_path)?;
+        let conn = self.conn.lock();
+
+        let tx = TransactionGuard::begin(&conn)
+            .map_err(|e| ErgataiError::internal(format!("Failed to begin transaction: {}", e)))?;
+
+        // Get lock info for audit
+        let lock_info: Option<(String, String, String, String)> = match conn.query_row(
+            "SELECT token_id, agent_id, session_id, mode FROM file_locks
+             WHERE file_path = ?1 AND agent_id = ?2 AND session_id = ?3 AND status = 'ACTIVE'
+             LIMIT 1",
+            params![normalized_path, agent_id, session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ) {
+            Ok(info) => Some(info),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                return Err(ErgataiError::internal(format!(
+                    "Failed to query lock info for release: {}",
+                    e
+                )));
+            }
+        };
+
+        if let Some((token_id, lock_agent_id, lock_session_id, mode)) = lock_info {
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                "UPDATE file_locks SET status = 'RELEASED', updated_at = ?1
+                 WHERE file_path = ?2 AND agent_id = ?3 AND session_id = ?4 AND status = 'ACTIVE'",
+                params![now, normalized_path, agent_id, session_id],
+            )
+            .map_err(|e| ErgataiError::internal(format!("Failed to release lock: {}", e)))?;
+
+            // Audit log
+            conn.execute(
+                "INSERT INTO audit_log (timestamp, agent_id, session_id, action, file_path, mode, reason)
+                 VALUES (?1, ?2, ?3, 'LOCK_RELEASED_TOOL_COMPLETE', ?4, ?5, ?6)",
+                params![now, lock_agent_id, lock_session_id, normalized_path, mode, "tool-completed"],
+            )
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to log audit: {}", e))
+            })?;
+
+            // Commit transaction before invalidating cache
+            tx.commit()
+                .map_err(|e| ErgataiError::internal(format!("Failed to commit: {}", e)))?;
+
+            // Invalidate cache after successful commit
+            if mode == "WRITE" || mode == "ADMIN" {
+                let mut cache = self.active_write_locks_cache.write();
+                cache.remove(&normalized_path);
+            }
+
+            debug!(
+                token_id = token_id,
+                file_path = %normalized_path,
+                agent_id = %agent_id,
+                session_id = %session_id,
+                "Released lock immediately after tool completion"
+            );
+            Ok(true)
+        } else {
+            debug!(
+                file_path = %normalized_path,
+                agent_id = %agent_id,
+                session_id = %session_id,
+                "No active lock to release on tool completion"
+            );
+            Ok(false)
+        }
+    }
+
+    /// Renew a lock's expiration time when a write tool starts.
+    ///
+    /// Uses an increasing TTL strategy:
+    /// - 1st renewal: +15 seconds
+    /// - 2nd renewal: +20 seconds
+    /// - 3rd renewal: +30 seconds
+    /// - 4th+ renewals: +20 seconds each
+    ///
+    /// This allows short operations to fail fast while supporting longer operations
+    /// that need more time. The lock tracks renewal_count in the reason field to avoid
+    /// schema migrations.
+    ///
+    /// # Arguments
+    /// * `agent_id` - The agent renewing the lock
+    /// * `session_id` - The session renewing the lock
+    ///
+    /// # Returns
+    /// * `Ok(true)` if locks were renewed
+    /// * `Ok(false)` if no active locks found
+    /// * `Err` if there was a database error
+    pub fn renew_lock_on_tool_start(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+    ) -> Result<bool, ErgataiError> {
+        let conn = self.conn.lock();
+        let now = Utc::now();
+
+        // Get all active locks for this agent/session
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, expires_at, reason FROM file_locks
+                 WHERE agent_id = ?1 AND session_id = ?2 AND status = 'ACTIVE'",
+            )
+            .map_err(|e| ErgataiError::internal(format!("Failed to prepare statement: {}", e)))?;
+
+        let locks: Vec<(String, String, String)> = stmt
+            .query_map(params![agent_id, session_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(|e| ErgataiError::internal(format!("Failed to query locks: {}", e)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| ErgataiError::internal(format!("Failed to collect locks: {}", e)))?;
+
+        if locks.is_empty() {
+            debug!(
+                agent_id = %agent_id,
+                session_id = %session_id,
+                "No active locks to renew on tool start"
+            );
+            return Ok(false);
+        }
+
+        // Wrap all updates in a transaction for atomicity
+        let tx = TransactionGuard::begin(&conn)
+            .map_err(|e| ErgataiError::internal(format!("Failed to begin transaction: {}", e)))?;
+
+        // Renew each lock with increasing TTL
+        for (lock_id, _current_expires_at, reason) in locks {
+            // Extract renewal count from reason field (format: "... (renewals: N)")
+            let renewal_count = reason
+                .rsplit("(renewals: ")
+                .next()
+                .and_then(|s| s.split(')').next())
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0);
+
+            // Calculate TTL increment based on renewal count
+            let ttl_increment = match renewal_count {
+                0 => 15, // 1st renewal: +15s
+                1 => 20, // 2nd renewal: +20s
+                2 => 30, // 3rd renewal: +30s
+                _ => 20, // 4th+ renewals: +20s
+            };
+
+            let new_expires_at = now + chrono::Duration::seconds(ttl_increment);
+            let new_reason = if reason.contains("(renewals: ") {
+                // Update existing renewal count
+                let base = reason.split("(renewals: ").next().unwrap_or(&reason);
+                format!("{}(renewals: {})", base, renewal_count + 1)
+            } else {
+                // Add first renewal count
+                format!("{} (renewals: 1)", reason)
+            };
+
+            conn.execute(
+                "UPDATE file_locks
+                 SET expires_at = ?1, heartbeat_at = ?2, reason = ?3, updated_at = ?4
+                 WHERE id = ?5 AND status = 'ACTIVE'",
+                params![
+                    new_expires_at.to_rfc3339(),
+                    now.to_rfc3339(),
+                    new_reason,
+                    now.to_rfc3339(),
+                    lock_id,
+                ],
+            )
+            .map_err(|e| ErgataiError::internal(format!("Failed to renew lock: {}", e)))?;
+
+            debug!(
+                lock_id = %lock_id,
+                agent_id = %agent_id,
+                session_id = %session_id,
+                renewal_count = renewal_count + 1,
+                ttl_increment = ttl_increment,
+                new_expires_at = %new_expires_at,
+                "Renewed lock on tool start"
+            );
+        }
+
+        // Commit the transaction
+        tx.commit()
+            .map_err(|e| ErgataiError::internal(format!("Failed to commit transaction: {}", e)))?;
+
+        Ok(true)
     }
 
     // ============================================================
@@ -2379,5 +2591,31 @@ mod hash_version_tests {
         fs::write(&file_path, "different content").unwrap();
         let hash3 = manager.compute_file_hash(test_file).unwrap();
         assert_ne!(hash, hash3);
+    }
+
+    #[test]
+    fn test_parse_file_mode() {
+        assert_eq!(parse_file_mode("READ"), FileMode::Read);
+        assert_eq!(parse_file_mode("read"), FileMode::Read);
+        assert_eq!(parse_file_mode("Read"), FileMode::Read);
+        assert_eq!(parse_file_mode("WRITE"), FileMode::Write);
+        assert_eq!(parse_file_mode("write"), FileMode::Write);
+        assert_eq!(parse_file_mode("ADMIN"), FileMode::Admin);
+        assert_eq!(parse_file_mode("admin"), FileMode::Admin);
+        // Unknown mode defaults to Read (least privilege)
+        assert_eq!(parse_file_mode("UNKNOWN"), FileMode::Read);
+        assert_eq!(parse_file_mode(""), FileMode::Read);
+    }
+
+    #[test]
+    fn test_parse_token_status() {
+        assert_eq!(parse_token_status("ACTIVE"), TokenStatus::Active);
+        assert_eq!(parse_token_status("active"), TokenStatus::Active);
+        assert_eq!(parse_token_status("Active"), TokenStatus::Active);
+        assert_eq!(parse_token_status("EXPIRED"), TokenStatus::Expired);
+        assert_eq!(parse_token_status("expired"), TokenStatus::Expired);
+        // Unknown status defaults to Expired (fail-safe)
+        assert_eq!(parse_token_status("UNKNOWN"), TokenStatus::Expired);
+        assert_eq!(parse_token_status(""), TokenStatus::Expired);
     }
 }

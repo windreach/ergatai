@@ -8,6 +8,7 @@ pub mod collab_runtime;
 pub mod conversations;
 pub mod locks;
 pub mod openapi;
+pub mod permissions;
 pub mod projects;
 pub mod status;
 pub mod user_conversations;

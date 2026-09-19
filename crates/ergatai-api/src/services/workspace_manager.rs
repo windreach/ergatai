@@ -1,6 +1,7 @@
 //! Workspace-first management service.
 
 use ergatai_runtime::ResourceLimits;
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use utoipa::ToSchema;
@@ -185,13 +186,13 @@ async fn find_or_create_project(
 ) -> Result<Project, WorkspaceManagerError> {
     if let Some(project_id) = project_id.filter(|id| !id.is_empty()) {
         let project_id = project_id.to_string();
-        let result = tokio::task::spawn_blocking(move || {
-            crate::user_data_db::projects::get(&project_id)
-        })
-        .await
-        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
-        .map_err(WorkspaceManagerError::from)?;
-        return result.ok_or_else(|| WorkspaceManagerError::NotFound("Project not found".to_string()));
+        let result =
+            tokio::task::spawn_blocking(move || crate::user_data_db::projects::get(&project_id))
+                .await
+                .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+                .map_err(WorkspaceManagerError::from)?;
+        return result
+            .ok_or_else(|| WorkspaceManagerError::NotFound("Project not found".to_string()));
     }
 
     let raw_path = project_path
@@ -233,12 +234,10 @@ async fn find_or_create_project(
         updated_at: timestamp,
     };
     let project_clone = project.clone();
-    tokio::task::spawn_blocking(move || {
-        crate::user_data_db::projects::create(project_clone)
-    })
-    .await
-    .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
-    .map_err(WorkspaceManagerError::from)?;
+    tokio::task::spawn_blocking(move || crate::user_data_db::projects::create(project_clone))
+        .await
+        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+        .map_err(WorkspaceManagerError::from)?;
     Ok(project)
 }
 
@@ -259,25 +258,22 @@ fn project_link(link: WorkspaceProject, project: &Project) -> ManagedWorkspacePr
 pub async fn to_managed(workspace: Workspace) -> Result<ManagedWorkspace, WorkspaceManagerError> {
     validate_resource_json(&workspace.resources)?;
     let workspace_id = workspace.id.clone();
-    let project_ids = tokio::task::spawn_blocking(move || {
-        workspace_projects::list(&workspace_id)
-    })
-    .await
-    .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
-    .map_err(WorkspaceManagerError::from)?;
+    let project_ids = tokio::task::spawn_blocking(move || workspace_projects::list(&workspace_id))
+        .await
+        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+        .map_err(WorkspaceManagerError::from)?;
 
     let mut projects = Vec::new();
     for link in project_ids {
         let project_id = link.project_id.clone();
-        let project = tokio::task::spawn_blocking(move || {
-            crate::user_data_db::projects::get(&project_id)
-        })
-        .await
-        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
-        .map_err(WorkspaceManagerError::from)?
-        .ok_or_else(|| {
-            WorkspaceManagerError::Internal(anyhow::anyhow!("Registered project missing"))
-        })?;
+        let project =
+            tokio::task::spawn_blocking(move || crate::user_data_db::projects::get(&project_id))
+                .await
+                .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+                .map_err(WorkspaceManagerError::from)?
+                .ok_or_else(|| {
+                    WorkspaceManagerError::Internal(anyhow::anyhow!("Registered project missing"))
+                })?;
         projects.push(project_link(link, &project));
     }
 
@@ -313,7 +309,10 @@ pub async fn list(
     let project_id_owned = project_id.map(|s| s.to_string());
     let collaboration_mode_owned = collaboration_mode.map(|s| s.to_string());
     let workspaces = tokio::task::spawn_blocking(move || {
-        workspaces::list(project_id_owned.as_deref(), collaboration_mode_owned.as_deref())
+        workspaces::list(
+            project_id_owned.as_deref(),
+            collaboration_mode_owned.as_deref(),
+        )
     })
     .await
     .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
@@ -388,12 +387,10 @@ pub async fn create(
         updated_at: timestamp,
     };
     let workspace_clone = workspace.clone();
-    tokio::task::spawn_blocking(move || {
-        workspaces::create_with_default_project(workspace_clone)
-    })
-    .await
-    .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
-    .map_err(WorkspaceManagerError::from)?;
+    tokio::task::spawn_blocking(move || workspaces::create_with_default_project(workspace_clone))
+        .await
+        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+        .map_err(WorkspaceManagerError::from)?;
     get(&workspace.id).await
 }
 
@@ -472,12 +469,11 @@ pub async fn set_status(id: &str, status: &str) -> Result<ManagedWorkspace, Work
     }
     let id_owned = id.to_string();
     let status_owned = status.to_string();
-    let success = tokio::task::spawn_blocking(move || {
-        workspaces::set_status(&id_owned, &status_owned)
-    })
-    .await
-    .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
-    .map_err(WorkspaceManagerError::from)?;
+    let success =
+        tokio::task::spawn_blocking(move || workspaces::set_status(&id_owned, &status_owned))
+            .await
+            .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+            .map_err(WorkspaceManagerError::from)?;
     if !success {
         return Err(WorkspaceManagerError::NotFound(id.to_string()));
     }
@@ -650,39 +646,84 @@ pub async fn delete(workspace_id: &str, force: bool) -> Result<(), WorkspaceMana
             active_agents.len()
         )));
     }
+
+    // Data safety checks: prevent deletion when active conversations or dirty worktrees exist
+    // (unless force=true). These guards protect in-progress user work from accidental destruction.
+    if !force {
+        // Check for active (non-archived) conversations
+        let workspace_id_str = workspace_id.to_string();
+        let conversations_result = tokio::task::spawn_blocking(move || {
+            crate::user_data_db::conversations::list_roots(None, Some(&workspace_id_str))
+        })
+        .await;
+
+        match conversations_result {
+            Ok(Ok(conversations)) => {
+                let active_conversations: Vec<_> = conversations
+                    .iter()
+                    .filter(|c| c.archived_at.is_none())
+                    .collect();
+                if !active_conversations.is_empty() {
+                    return Err(WorkspaceManagerError::Conflict(format!(
+                        "Workspace has {} active conversation(s) (in-progress work); archive them or use force",
+                        active_conversations.len()
+                    )));
+                }
+            }
+            Ok(Err(e)) => {
+                return Err(WorkspaceManagerError::from(e));
+            }
+            Err(e) => {
+                return Err(WorkspaceManagerError::Internal(e.into()));
+            }
+        }
+
+        // Check for dirty worktrees (uncommitted changes)
+        // Query worktree paths from conversation_execution_contexts for this workspace's conversations
+        let workspace_id_str = workspace_id.to_string();
+        let worktree_result = tokio::task::spawn_blocking(move || {
+            let db = crate::user_data_db::get_user_data_db();
+            let conn = db.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT e.worktree_path
+                 FROM conversation_execution_contexts e
+                 JOIN conversations c ON c.id = e.conversation_id
+                 WHERE c.workspace_id = ?1 AND e.worktree_path IS NOT NULL",
+            )?;
+            let paths: Vec<String> = stmt
+                .query_map(params![workspace_id_str], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, rusqlite::Error>(paths)
+        })
+        .await;
+
+        match worktree_result {
+            Ok(Ok(worktree_paths)) => {
+                let worktree_refs: Vec<&str> = worktree_paths.iter().map(|s| s.as_str()).collect();
+                let dirty_worktree_count = count_dirty_worktrees(&worktree_refs).await;
+                if dirty_worktree_count > 0 {
+                    return Err(WorkspaceManagerError::Conflict(format!(
+                        "Workspace has {} dirty worktree(s) with uncommitted changes; commit or discard them or use force",
+                        dirty_worktree_count
+                    )));
+                }
+            }
+            Ok(Err(e)) => {
+                return Err(WorkspaceManagerError::from(e));
+            }
+            Err(e) => {
+                return Err(WorkspaceManagerError::Internal(e.into()));
+            }
+        }
+    }
+
     for agent in active_agents {
         let _ = runtime.stop_agent(&agent.agent_id).await;
     }
 
-    let workspace_id_owned = workspace_id.to_string();
-    let conversations = tokio::task::spawn_blocking(move || {
-        crate::user_data_db::chats::list(None, Some(&workspace_id_owned))
-    })
-    .await
-    .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
-    .map_err(WorkspaceManagerError::from)?;
-    let active_conversation_count = conversations
-        .iter()
-        .filter(|conversation| conversation.archived_at.is_none())
-        .count();
-    if active_conversation_count > 0 {
-        return Err(WorkspaceManagerError::Conflict(format!(
-            "Workspace has {} active conversation(s); archive them before deletion",
-            active_conversation_count
-        )));
-    }
-
-    let worktree_paths: Vec<&str> = conversations
-        .iter()
-        .filter_map(|conversation| conversation.worktree_path.as_deref())
-        .filter(|path| !path.is_empty())
-        .collect();
-    let dirty_worktree_count = count_dirty_worktrees(&worktree_paths).await;
-    if dirty_worktree_count > 0 {
-        return Err(WorkspaceManagerError::Conflict(format!(
-            "Workspace has {} dirty worktree(s); commit or discard changes before deletion",
-            dirty_worktree_count
-        )));
+    // Unregister workspace from permission handler to prevent memory leak
+    if let Some(permission_handler) = crate::get_permission_handler() {
+        permission_handler.unregister_workspace(workspace_id).await;
     }
 
     let workspace_id_delete = workspace_id.to_string();
@@ -691,4 +732,60 @@ pub async fn delete(workspace_id: &str, force: bool) -> Result<(), WorkspaceMana
         .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
         .map_err(WorkspaceManagerError::from)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_json_settings_valid() {
+        let env = Some(HashMap::from([("KEY1".to_string(), "value1".to_string())]));
+        let resources = Some(serde_json::json!({
+            "max_cpu": 2.0,
+            "max_memory_mb": 1024
+        }));
+
+        let result = validate_json_settings(env, resources);
+        assert!(result.is_ok());
+
+        let (env_json, resources_json) = result.unwrap();
+        assert!(env_json.contains("KEY1"));
+        assert!(resources_json.contains("max_cpu"));
+    }
+
+    #[test]
+    fn test_validate_json_settings_defaults() {
+        let result = validate_json_settings(None, None);
+        assert!(result.is_ok());
+
+        let (env_json, resources_json) = result.unwrap();
+        assert_eq!(env_json, "{}");
+        assert_eq!(resources_json, "{}");
+    }
+
+    #[test]
+    fn test_validate_resource_json_valid() {
+        let json = r#"{"max_cpu": 2.0, "max_memory_mb": 1024}"#;
+        let result = validate_resource_json(json);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_resource_json_invalid() {
+        let result = validate_resource_json("invalid json");
+        assert!(matches!(result, Err(WorkspaceManagerError::Validation(_))));
+    }
+
+    #[test]
+    fn test_canonical_path_valid() {
+        let result = canonical_path("/tmp");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_now() {
+        let timestamp = now();
+        assert!(timestamp > 0);
+    }
 }

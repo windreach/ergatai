@@ -799,3 +799,133 @@ async fn compute_progress_detail(scheduler: &DagScheduler) -> DagProgressDetail 
         percent,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_layers_single_root() {
+        // Single node with no dependencies
+        let nodes = vec![(
+            "node1".to_string(),
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
+            vec![],
+        )];
+        let layers = compute_layers(&nodes);
+        assert_eq!(layers.get("node1"), Some(&0));
+    }
+
+    #[test]
+    fn test_compute_layers_linear_chain() {
+        // Linear chain: node1 -> node2 -> node3
+        let nodes = vec![
+            (
+                "node1".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                vec![],
+            ),
+            (
+                "node2".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                vec!["node1".to_string()],
+            ),
+            (
+                "node3".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                vec!["node2".to_string()],
+            ),
+        ];
+        let layers = compute_layers(&nodes);
+        assert_eq!(layers.get("node1"), Some(&0));
+        assert_eq!(layers.get("node2"), Some(&1));
+        assert_eq!(layers.get("node3"), Some(&2));
+    }
+
+    #[test]
+    fn test_compute_layers_diamond() {
+        // Diamond: node1 -> node2, node3; node2, node3 -> node4
+        let nodes = vec![
+            (
+                "node1".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                vec![],
+            ),
+            (
+                "node2".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                vec!["node1".to_string()],
+            ),
+            (
+                "node3".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                vec!["node1".to_string()],
+            ),
+            (
+                "node4".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                vec!["node2".to_string(), "node3".to_string()],
+            ),
+        ];
+        let layers = compute_layers(&nodes);
+        assert_eq!(layers.get("node1"), Some(&0));
+        assert_eq!(layers.get("node2"), Some(&1));
+        assert_eq!(layers.get("node3"), Some(&1));
+        assert_eq!(layers.get("node4"), Some(&2));
+    }
+
+    #[test]
+    fn test_compute_layers_multiple_roots() {
+        // Multiple root nodes
+        let nodes = vec![
+            (
+                "root1".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                vec![],
+            ),
+            (
+                "root2".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                vec![],
+            ),
+            (
+                "child".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                vec!["root1".to_string(), "root2".to_string()],
+            ),
+        ];
+        let layers = compute_layers(&nodes);
+        assert_eq!(layers.get("root1"), Some(&0));
+        assert_eq!(layers.get("root2"), Some(&0));
+        assert_eq!(layers.get("child"), Some(&1));
+    }
+
+    #[test]
+    fn test_compute_layers_empty() {
+        let nodes: Vec<(String, String, String, String, Vec<String>)> = vec![];
+        let layers = compute_layers(&nodes);
+        assert!(layers.is_empty());
+    }
+}

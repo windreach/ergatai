@@ -133,8 +133,7 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
     // and all agents are processed concurrently via join_all — replacing
     // the previous N+1 sequential pattern.
     let agent_ids: Vec<&str> = items.iter().map(|a| a.agent_id.as_str()).collect();
-    let snapshots =
-        crate::services::agent_service::agent_snapshot_batch(&agent_ids).await;
+    let snapshots = crate::services::agent_service::agent_snapshot_batch(&agent_ids).await;
 
     let response: Vec<AgentInfoResponse> = items
         .into_iter()
@@ -378,25 +377,24 @@ pub async fn spawn_agent(
     // Resolve profile name to its actual launch command.
     // Frontend sends the profile name (e.g. "claude-code"); the runtime
     // needs the full command (e.g. "npx @anthropic-ai/claude-code --acp").
-    let resolved_command =
-        match tokio::task::spawn_blocking(move || {
-            crate::services::profile_service::get_profile_registry()
-        })
-        .await
-        {
-            Ok(Ok(registry)) => {
-                if let Ok(profiles) = registry.list_with_status() {
-                    profiles
-                        .into_iter()
-                        .find(|p| p.name == req.command)
-                        .map(|p| p.command)
-                        .unwrap_or_else(|| req.command.clone())
-                } else {
-                    req.command.clone()
-                }
+    let resolved_command = match tokio::task::spawn_blocking(move || {
+        crate::services::profile_service::get_profile_registry()
+    })
+    .await
+    {
+        Ok(Ok(registry)) => {
+            if let Ok(profiles) = registry.list_with_status() {
+                profiles
+                    .into_iter()
+                    .find(|p| p.name == req.command)
+                    .map(|p| p.command)
+                    .unwrap_or_else(|| req.command.clone())
+            } else {
+                req.command.clone()
             }
-            _ => req.command.clone(),
-        };
+        }
+        _ => req.command.clone(),
+    };
 
     if req.workspace_id.is_none() && req.conversation_id.is_none() {
         return (
@@ -451,41 +449,40 @@ pub async fn spawn_agent(
         }
 
         let conversation_id_for_resolve = conversation_id.to_string();
-        let resolved_workspace_id =
-            match tokio::task::spawn_blocking(move || {
-                crate::user_data_db::conversations::resolve_workspace_id(&conversation_id_for_resolve)
-            })
-            .await
-            {
-                Ok(Ok(Some(workspace_id))) => workspace_id,
-                Ok(Ok(None)) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: "Conversation has no workspace".to_string(),
-                        }),
-                    )
-                        .into_response();
-                }
-                Ok(Err(e)) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: crate::sanitize_error(&e, "conversation_resolve_workspace"),
-                        }),
-                    )
-                        .into_response();
-                }
-                Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: crate::sanitize_error(&e, "conversation_resolve_workspace_join"),
-                        }),
-                    )
-                        .into_response();
-                }
-            };
+        let resolved_workspace_id = match tokio::task::spawn_blocking(move || {
+            crate::user_data_db::conversations::resolve_workspace_id(&conversation_id_for_resolve)
+        })
+        .await
+        {
+            Ok(Ok(Some(workspace_id))) => workspace_id,
+            Ok(Ok(None)) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Conversation has no workspace".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            Ok(Err(e)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: crate::sanitize_error(&e, "conversation_resolve_workspace"),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: crate::sanitize_error(&e, "conversation_resolve_workspace_join"),
+                    }),
+                )
+                    .into_response();
+            }
+        };
 
         if let Some(requested_workspace_id) = &workspace_id {
             if requested_workspace_id != &resolved_workspace_id {
@@ -536,32 +533,31 @@ pub async fn spawn_agent(
         };
 
         let conversation_id_for_context = conversation_id.to_string();
-        let execution_context =
-            match tokio::task::spawn_blocking(move || {
-                crate::user_data_db::conversation_execution_contexts::get(&conversation_id_for_context)
-            })
-            .await
-            {
-                Ok(Ok(context)) => context,
-                Ok(Err(e)) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: crate::sanitize_error(&e, "execution_context_load"),
-                        }),
-                    )
-                        .into_response();
-                }
-                Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: crate::sanitize_error(&e, "execution_context_load_join"),
-                        }),
-                    )
-                        .into_response();
-                }
-            };
+        let execution_context = match tokio::task::spawn_blocking(move || {
+            crate::user_data_db::conversation_execution_contexts::get(&conversation_id_for_context)
+        })
+        .await
+        {
+            Ok(Ok(context)) => context,
+            Ok(Err(e)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: crate::sanitize_error(&e, "execution_context_load"),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: crate::sanitize_error(&e, "execution_context_load_join"),
+                    }),
+                )
+                    .into_response();
+            }
+        };
 
         raw_work_dir = Some(
             execution_context
@@ -953,25 +949,24 @@ pub async fn send_message(
 
         // No existing agent found or force_new_session is true - spawn a new one
         // Resolve profile name to actual command
-        let resolved_command =
-            match tokio::task::spawn_blocking(move || {
-                crate::services::profile_service::get_profile_registry()
-            })
-            .await
-            {
-                Ok(Ok(registry)) => {
-                    if let Ok(profiles) = registry.list_with_status() {
-                        profiles
-                            .into_iter()
-                            .find(|p| p.name == *target_command)
-                            .map(|p| p.command)
-                            .unwrap_or_else(|| target_command.clone())
-                    } else {
-                        target_command.clone()
-                    }
+        let resolved_command = match tokio::task::spawn_blocking(move || {
+            crate::services::profile_service::get_profile_registry()
+        })
+        .await
+        {
+            Ok(Ok(registry)) => {
+                if let Ok(profiles) = registry.list_with_status() {
+                    profiles
+                        .into_iter()
+                        .find(|p| p.name == *target_command)
+                        .map(|p| p.command)
+                        .unwrap_or_else(|| target_command.clone())
+                } else {
+                    target_command.clone()
                 }
-                _ => target_command.clone(),
-            };
+            }
+            _ => target_command.clone(),
+        };
 
         // Security: validate command
         if let Err(e) = validate_command(&resolved_command).await {
@@ -1220,25 +1215,24 @@ pub async fn spawn_session(
     };
 
     // Resolve profile name to actual command
-    let resolved_command =
-        match tokio::task::spawn_blocking(move || {
-            crate::services::profile_service::get_profile_registry()
-        })
-        .await
-        {
-            Ok(Ok(registry)) => {
-                if let Ok(profiles) = registry.list_with_status() {
-                    profiles
-                        .into_iter()
-                        .find(|p| p.name == req.target_command)
-                        .map(|p| p.command)
-                        .unwrap_or_else(|| req.target_command.clone())
-                } else {
-                    req.target_command.clone()
-                }
+    let resolved_command = match tokio::task::spawn_blocking(move || {
+        crate::services::profile_service::get_profile_registry()
+    })
+    .await
+    {
+        Ok(Ok(registry)) => {
+            if let Ok(profiles) = registry.list_with_status() {
+                profiles
+                    .into_iter()
+                    .find(|p| p.name == req.target_command)
+                    .map(|p| p.command)
+                    .unwrap_or_else(|| req.target_command.clone())
+            } else {
+                req.target_command.clone()
             }
-            _ => req.target_command.clone(),
-        };
+        }
+        _ => req.target_command.clone(),
+    };
 
     // Security: validate command
     if let Err(e) = validate_command(&resolved_command).await {
@@ -2345,41 +2339,43 @@ pub async fn prompt_agent(
         };
 
         let conversation_id_for_resolve = conversation_id.to_string();
-        let workspace_id =
-            match tokio::task::spawn_blocking(move || {
-                crate::user_data_db::conversations::resolve_workspace_id(&conversation_id_for_resolve)
-            })
-            .await
-            {
-                Ok(Ok(Some(workspace_id))) => workspace_id,
-                Ok(Ok(None)) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: "Conversation has no workspace".to_string(),
-                        }),
-                    )
-                        .into_response();
-                }
-                Ok(Err(e)) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: crate::sanitize_error(&e, "prompt_conversation_resolve_workspace"),
-                        }),
-                    )
-                        .into_response();
-                }
-                Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: crate::sanitize_error(&e, "prompt_conversation_resolve_workspace_join"),
-                        }),
-                    )
-                        .into_response();
-                }
-            };
+        let workspace_id = match tokio::task::spawn_blocking(move || {
+            crate::user_data_db::conversations::resolve_workspace_id(&conversation_id_for_resolve)
+        })
+        .await
+        {
+            Ok(Ok(Some(workspace_id))) => workspace_id,
+            Ok(Ok(None)) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Conversation has no workspace".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            Ok(Err(e)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: crate::sanitize_error(&e, "prompt_conversation_resolve_workspace"),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: crate::sanitize_error(
+                            &e,
+                            "prompt_conversation_resolve_workspace_join",
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+        };
 
         let agent_info = crate::services::agent_service::get_agent_info(&runtime_id).await;
         if let Some(info) = &agent_info {

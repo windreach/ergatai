@@ -52,6 +52,10 @@ pub struct AppState {
 
 static APP_STATE: OnceLock<AppState> = OnceLock::new();
 
+/// Global permission handler for ACP tool execution (manages per-workspace lock managers)
+static PERMISSION_HANDLER: OnceLock<Arc<crate::lock_permission::LockPermissionHandler>> =
+    OnceLock::new();
+
 /// Initialize the global AppState (called once at startup or in tests).
 pub fn app_state_with_token(token: Option<String>) -> &'static AppState {
     APP_STATE.get_or_init(|| {
@@ -64,6 +68,17 @@ pub fn app_state_with_token(token: Option<String>) -> &'static AppState {
             event_tx: Arc::new(event_tx),
         }
     })
+}
+
+/// Set the global permission handler (called once at startup).
+pub fn set_permission_handler(handler: Arc<crate::lock_permission::LockPermissionHandler>) {
+    let _ = PERMISSION_HANDLER.set(handler);
+}
+
+/// Get the global permission handler reference.
+pub fn get_permission_handler(
+) -> Option<&'static Arc<crate::lock_permission::LockPermissionHandler>> {
+    PERMISSION_HANDLER.get()
 }
 
 /// Get the global AppState reference.
@@ -264,6 +279,27 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::agents::get_agent_exit_code),
         )
         .route("/api/v1/agents/:id/pid", get(api::agents::get_agent_pid))
+        // Permission requests (unified approval feed)
+        .route(
+            "/api/v1/permissions/pending",
+            get(api::permissions::list_pending),
+        )
+        .route(
+            "/api/v1/permissions/stream",
+            get(api::permissions::stream_permissions),
+        )
+        .route(
+            "/api/v1/permissions/mode",
+            get(api::permissions::get_mode),
+        )
+        .route(
+            "/api/v1/permissions/mode",
+            post(api::permissions::set_mode),
+        )
+        .route(
+            "/api/v1/permissions/:id/respond",
+            post(api::permissions::respond_permission),
+        )
         // Projects CRUD
         .route("/api/v1/projects", get(api::projects::list_projects))
         .route("/api/v1/projects", post(api::projects::create_project))
@@ -467,16 +503,47 @@ pub fn build_rest_app(state: AppState) -> Router {
         .layer({
             match std::env::var("ERGATAI_CORS_ALLOWED_ORIGINS") {
                 Ok(origins) => {
-                    let allowed: Vec<_> = origins
-                        .split(',')
-                        .filter_map(|s| s.trim().parse().ok())
-                        .collect();
-                    tracing::info!("CORS configured with {} allowed origins", allowed.len());
-                    CorsLayer::new()
-                        .allow_origin(allowed)
-                        .allow_methods(Any)
-                        .allow_headers(Any)
-                        .max_age(Duration::from_secs(3600))
+                    let mut allowed = Vec::new();
+                    for part in origins.split(',') {
+                        let trimmed = part.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        match trimmed.parse() {
+                            Ok(origin) => allowed.push(origin),
+                            Err(_) => {
+                                tracing::warn!(
+                                    "CORS: ignoring invalid origin {:?} from ERGATAI_CORS_ALLOWED_ORIGINS",
+                                    trimmed
+                                );
+                            }
+                        }
+                    }
+
+                    if allowed.is_empty() {
+                        tracing::error!(
+                            "CORS: ERGATAI_CORS_ALLOWED_ORIGINS set but no valid origins parsed; \
+                             denying all cross-origin requests (fail-safe). \
+                             Check your configuration for typos or invalid origins."
+                        );
+                        // Fail-safe: when env var is explicitly set but yields no valid origins,
+                        // deny all cross-origin requests rather than opening to all origins.
+                        // Don't set allow_origin - default behavior is to deny all.
+                        CorsLayer::new()
+                            .allow_methods(Any)
+                            .allow_headers(Any)
+                            .max_age(Duration::from_secs(3600))
+                    } else {
+                        tracing::info!(
+                            "CORS configured with {} allowed origin(s)",
+                            allowed.len()
+                        );
+                        CorsLayer::new()
+                            .allow_origin(allowed)
+                            .allow_methods(Any)
+                            .allow_headers(Any)
+                            .max_age(Duration::from_secs(3600))
+                    }
                 }
                 Err(_) => {
                     tracing::warn!(

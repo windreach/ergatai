@@ -128,15 +128,13 @@ pub async fn list_workspace_conversations(
     {
         Ok(Ok(conversations)) => (StatusCode::OK, Json(conversations)).into_response(),
         Ok(Err(error)) => db_error("Failed to list conversations", error),
-        Err(e) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -201,22 +199,18 @@ pub async fn create_workspace_conversation(
         archived_at: None,
     };
 
-    match tokio::task::spawn_blocking(move || {
-        user_data_db::conversations::create(conversation)
-    })
-    .await
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::create(conversation))
+        .await
     {
         Ok(Ok(conversation)) => (StatusCode::CREATED, Json(conversation)).into_response(),
         Ok(Err(error)) => db_error("Failed to create conversation", error),
-        Err(e) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -246,21 +240,17 @@ pub async fn get_conversation(
     }
 
     let id_for_get = id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get))
-        .await
-    {
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get)).await {
         Ok(Ok(Some(conversation))) => (StatusCode::OK, Json(conversation)).into_response(),
         Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
         Ok(Err(error)) => db_error("Failed to load conversation", error),
-        Err(e) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -292,22 +282,23 @@ pub async fn update_conversation(
     }
 
     let id_for_get = id.clone();
-    let existing = match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get))
-        .await
-    {
-        Ok(Ok(Some(existing))) => existing,
-        Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
-        Ok(Err(error)) => return db_error("Failed to load conversation", error),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
-    };
+    let existing =
+        match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get))
+            .await
+        {
+            Ok(Ok(Some(existing))) => existing,
+            Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
+            Ok(Err(error)) => return db_error("Failed to load conversation", error),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Task join error: {}", e),
+                    }),
+                )
+                    .into_response()
+            }
+        };
 
     let conversation = Conversation {
         name: request.name.or(existing.name),
@@ -338,15 +329,13 @@ pub async fn update_conversation(
         Ok(Ok(Some(conversation))) => (StatusCode::OK, Json(conversation)).into_response(),
         Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
         Ok(Err(error)) => db_error("Failed to reload conversation", error),
-        Err(e) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -395,21 +384,17 @@ pub async fn archive_conversation(
     }
 
     let id_for_get = id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get))
-        .await
-    {
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get)).await {
         Ok(Ok(Some(conversation))) => (StatusCode::OK, Json(conversation)).into_response(),
         Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
         Ok(Err(error)) => db_error("Failed to load conversation", error),
-        Err(e) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -458,21 +443,17 @@ pub async fn unarchive_conversation(
     }
 
     let id_for_get = id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get))
-        .await
-    {
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get)).await {
         Ok(Ok(Some(conversation))) => (StatusCode::OK, Json(conversation)).into_response(),
         Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
         Ok(Err(error)) => db_error("Failed to load conversation", error),
-        Err(e) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -506,15 +487,13 @@ pub async fn delete_conversation(
     {
         Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(error)) => db_error("Failed to delete conversation", error),
-        Err(e) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -543,20 +522,20 @@ pub async fn list_child_conversations(
     }
 
     let id_for_children = id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::conversations::list_children(&id_for_children))
-        .await
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::conversations::list_children(&id_for_children)
+    })
+    .await
     {
         Ok(Ok(conversations)) => (StatusCode::OK, Json(conversations)).into_response(),
         Ok(Err(error)) => db_error("Failed to list child conversations", error),
-        Err(e) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -589,22 +568,23 @@ pub async fn create_child_conversation(
     }
 
     let id_for_get = id.clone();
-    let parent = match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get))
-        .await
-    {
-        Ok(Ok(Some(parent))) => parent,
-        Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
-        Ok(Err(error)) => return db_error("Failed to load parent conversation", error),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
-    };
+    let parent =
+        match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get))
+            .await
+        {
+            Ok(Ok(Some(parent))) => parent,
+            Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
+            Ok(Err(error)) => return db_error("Failed to load parent conversation", error),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Task join error: {}", e),
+                    }),
+                )
+                    .into_response()
+            }
+        };
 
     let now = now_unix_seconds();
     let conversation = Conversation {
@@ -624,15 +604,13 @@ pub async fn create_child_conversation(
     {
         Ok(Ok(conversation)) => (StatusCode::CREATED, Json(conversation)).into_response(),
         Ok(Err(error)) => db_error("Failed to create conversation", error),
-        Err(e) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -661,20 +639,16 @@ pub async fn list_conversation_messages(
     }
 
     let id_for_list = id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::messages::list(&id_for_list))
-        .await
-    {
+    match tokio::task::spawn_blocking(move || user_data_db::messages::list(&id_for_list)).await {
         Ok(Ok(messages)) => (StatusCode::OK, Json(messages)).into_response(),
         Ok(Err(error)) => db_error("Failed to list messages", error),
-        Err(e) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -742,15 +716,13 @@ pub async fn append_conversation_message(
     {
         Ok(Ok(message)) => (StatusCode::CREATED, Json(message)).into_response(),
         Ok(Err(error)) => db_error("Failed to append message", error),
-        Err(e) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -840,14 +812,12 @@ pub async fn replace_conversation_messages(
     {
         Ok(Ok(messages)) => (StatusCode::OK, Json(messages)).into_response(),
         Ok(Err(error)) => db_error("Failed to list messages", error),
-        Err(e) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
     }
 }

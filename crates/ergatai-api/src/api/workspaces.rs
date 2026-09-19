@@ -181,7 +181,7 @@ pub async fn create_workspace(
 
     let spec = WorkspaceSpec {
         id: req.id,
-        work_dir,
+        work_dir: work_dir.clone(),
         env,
         resources: ResourceLimits::default(),
         capture_thoughts: false,
@@ -189,6 +189,13 @@ pub async fn create_workspace(
 
     match runtime.backend().create_workspace(spec).await {
         Ok(handle) => {
+            // Register the workspace with the permission handler for lock management
+            if let Some(permission_handler) = crate::get_permission_handler() {
+                permission_handler
+                    .register_workspace(&handle.id, work_dir)
+                    .await;
+            }
+
             let capture_thoughts = agent_service::get_workspace_capture_thoughts(&handle.id)
                 .await
                 .ok()
@@ -391,7 +398,9 @@ pub async fn create_persistent_workspace(
     // Validate work_dir is not empty/whitespace
     if req.work_dir.trim().is_empty() {
         return managed_error(
-            manager::WorkspaceManagerError::Validation("Work directory cannot be empty".to_string()),
+            manager::WorkspaceManagerError::Validation(
+                "Work directory cannot be empty".to_string(),
+            ),
             "create_persistent_workspace",
         );
     }
@@ -500,7 +509,9 @@ pub async fn update_persistent_workspace(
     // Validate work_dir is not empty/whitespace
     if req.work_dir.trim().is_empty() {
         return managed_error(
-            manager::WorkspaceManagerError::Validation("Work directory cannot be empty".to_string()),
+            manager::WorkspaceManagerError::Validation(
+                "Work directory cannot be empty".to_string(),
+            ),
             "update_persistent_workspace",
         );
     }

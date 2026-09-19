@@ -99,5 +99,5 @@ pub async fn stream_events() -> axum::response::Response {
 
     Sse::new(Box::pin(stream::iter(recent_events).chain(live_events))
         as Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>)
-        .into_response()
+    .into_response()
 }

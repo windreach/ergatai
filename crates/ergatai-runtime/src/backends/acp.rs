@@ -243,6 +243,7 @@ pub enum AgentOutputEvent {
         name: String,
         input: Option<serde_json::Value>,
         output: Option<serde_json::Value>,
+        locations: Vec<ToolCallLocation>,
     },
     /// Tool call failed.
     ToolCallError { id: String, error: String },
@@ -414,6 +415,12 @@ impl ToolCallTracker {
             .take(limit)
             .filter_map(|id| calls.get(id).cloned())
             .collect()
+    }
+
+    /// Get a specific tool call by ID.
+    fn get_by_id(&self, tool_call_id: &str) -> Option<TrackedToolCall> {
+        let calls = self.calls.read();
+        calls.get(tool_call_id).cloned()
     }
 }
 
@@ -1586,6 +1593,7 @@ impl AcpBackendInterface for AcpBackend {
         let task_alive = alive.clone();
         let task_exit_code = exit_code.clone();
         let task_agent_id = agent_id.clone();
+        let task_agent_id_label = agent_id.clone();
         let task_dead_agents = self.dead_agents.clone();
         let task_permission_handler = self.permission_handler.clone();
         let task_shared_session_id = shared_session_id.clone();
@@ -1635,6 +1643,7 @@ impl AcpBackendInterface for AcpBackend {
         // Separate clone for session save inside the connect_with closure.
         // We can't capture `task_agent_id` itself because it's needed after the closure exits.
         let task_agent_id_for_save = task_agent_id.clone();
+        let connection_agent_id = task_agent_id.clone();
 
         // Note: We manually called spawn_process() above to get the PID for file lock attribution.
         // Now we use ByteStreams to establish the ACP connection with the spawned process.
@@ -1681,7 +1690,7 @@ impl AcpBackendInterface for AcpBackend {
             // Build the ACP client with notification and permission handlers.
             let result = Client
                 .builder()
-                .name(format!("ergatai-acp-{}", task_agent_id))
+                .name(format!("ergatai-acp-{}", task_agent_id_label))
                 .on_receive_notification(
                     {
                         let out = task_output.clone();
@@ -1691,6 +1700,9 @@ impl AcpBackendInterface for AcpBackend {
                         let capture_thoughts = task_capture_thoughts;
                         let last_out = task_last_output_at.clone();
                         let output_tx = task_output_tx.clone();
+                        // Clone for use in this closure (will also be used in on_receive_request)
+                        let notify_agent_id = task_agent_id.clone();
+                        let notify_session_id = task_shared_session_id.clone();
                         async move |notification: SessionNotification, _cx| {
                             // Extract text from session notifications and write to output buffer.
                             match &notification.update {
@@ -1721,6 +1733,40 @@ impl AcpBackendInterface for AcpBackend {
                                         kind = ?tc.kind,
                                         "ACP tool call started"
                                     );
+
+                                    // Renew locks for write operations
+                                    // This extends the TTL with increasing intervals:
+                                    // 1st: +15s, 2nd: +20s, 3rd: +30s, 4th+: +20s
+                                    if matches!(tc.kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move) {
+                                        if let Some(workspace_id) = notify_agent_id.rfind("-agent-").map(|pos| &notify_agent_id[..pos]) {
+                                                if let Ok(lock_mgr) = ergatai_lock::get_lock_manager(workspace_id).await {
+                                                    let session_id = notify_session_id.read().clone().unwrap_or_default();
+                                                    match lock_mgr.renew_lock_on_tool_start(&notify_agent_id, &session_id) {
+                                                        Ok(true) => {
+                                                            debug!(
+                                                                agent_id = %notify_agent_id,
+                                                                workspace_id = %workspace_id,
+                                                                "Renewed locks on tool start"
+                                                            );
+                                                        }
+                                                        Ok(false) => {
+                                                            debug!(
+                                                                agent_id = %notify_agent_id,
+                                                                "No active locks to renew on tool start"
+                                                            );
+                                                        }
+                                                        Err(e) => {
+                                                            warn!(
+                                                                agent_id = %notify_agent_id,
+                                                                error = %e,
+                                                                "Failed to renew locks on tool start"
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                    }
+
                                     tool_calls.record_initial(tc);
                                     let _ = output_tx.send(AgentOutputEvent::ToolCallStart {
                                         id: tc.tool_call_id.to_string(),
@@ -1732,6 +1778,8 @@ impl AcpBackendInterface for AcpBackend {
                                         id = %update.tool_call_id,
                                         status = ?update.fields.status,
                                         title = ?update.fields.title,
+                                        locations = ?update.fields.locations,
+                                        raw_input = ?update.fields.raw_input,
                                         "ACP tool call update"
                                     );
                                     let is_complete = matches!(
@@ -1743,18 +1791,83 @@ impl AcpBackendInterface for AcpBackend {
                                         Some(ToolCallStatus::Failed)
                                     );
                                     tool_calls.apply_update(update);
-                                    if is_complete {
-                                        let _ = output_tx.send(AgentOutputEvent::ToolCallComplete {
-                                            id: update.tool_call_id.to_string(),
-                                            name: update.fields.title.clone().unwrap_or_default(),
-                                            input: update.fields.raw_input.clone(),
-                                            output: update.fields.raw_output.clone(),
-                                        });
-                                    } else if is_error {
-                                        let _ = output_tx.send(AgentOutputEvent::ToolCallError {
-                                            id: update.tool_call_id.to_string(),
-                                            error: update.fields.title.clone().unwrap_or_else(|| "tool call failed".to_string()),
-                                        });
+                                    if is_complete || is_error {
+                                        // Retrieve the tracked tool call to get locations and kind
+                                        let tracked = tool_calls.get_by_id(&update.tool_call_id.to_string());
+
+                                        // Extract locations and kind from tracked call (if found)
+                                        let locations = tracked.as_ref().map(|tc| tc.locations.clone()).unwrap_or_default();
+                                        let kind = tracked.as_ref().and_then(|tc| tc.kind);
+
+                                        // Log warning if tracked call not found (indicates tracker eviction or bug)
+                                        if tracked.is_none() {
+                                            warn!(
+                                                tool_call_id = %update.tool_call_id,
+                                                "Tool call completion/error event for untracked tool call"
+                                            );
+                                        }
+
+                                        // Release locks immediately after write operations complete
+                                        // This covers ~90% of cases (agents using Edit/Delete/Move tools)
+                                        // Remaining ~10% (bash commands) will rely on 15s TTL fallback
+                                        if let Some(ref kind) = kind {
+                                            if matches!(kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move) {
+                                                // Extract workspace_id from agent_id (format: {workspace_id}-agent-{counter})
+                                                if let Some(workspace_id) = notify_agent_id.rfind("-agent-").map(|pos| &notify_agent_id[..pos]) {
+                                                    // Get lock manager for this workspace
+                                                    if let Ok(lock_mgr) = ergatai_lock::get_lock_manager(workspace_id).await {
+                                                        // Get session_id (parking_lot RwLock, no .await needed)
+                                                        let session_id = notify_session_id.read().clone().unwrap_or_default();
+
+                                                        // Release locks for each location
+                                                        for loc in &locations {
+                                                            let path_str = loc.path.to_string_lossy().to_string();
+                                                            match lock_mgr.release_lock_on_tool_complete(&path_str, &notify_agent_id, &session_id) {
+                                                                Ok(true) => {
+                                                                    debug!(
+                                                                        file_path = %path_str,
+                                                                        agent_id = %notify_agent_id,
+                                                                        workspace_id = %workspace_id,
+                                                                        "Released lock immediately after tool completion"
+                                                                    );
+                                                                }
+                                                                Ok(false) => {
+                                                                    debug!(
+                                                                        file_path = %path_str,
+                                                                        agent_id = %notify_agent_id,
+                                                                        "No active lock to release on tool completion"
+                                                                    );
+                                                                }
+                                                                Err(e) => {
+                                                                    warn!(
+                                                                        file_path = %path_str,
+                                                                        agent_id = %notify_agent_id,
+                                                                        error = %e,
+                                                                        "Failed to release lock on tool completion"
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Always send completion/error events (even if tracked call not found)
+                                        if is_complete {
+                                            let _ = output_tx.send(AgentOutputEvent::ToolCallComplete {
+                                                id: update.tool_call_id.to_string(),
+                                                name: update.fields.title.clone().unwrap_or_default(),
+                                                input: update.fields.raw_input.clone(),
+                                                output: update.fields.raw_output.clone(),
+                                                locations,
+                                            });
+                                        } else {
+                                            let _ = output_tx.send(AgentOutputEvent::ToolCallError {
+                                                id: update.tool_call_id.to_string(),
+                                                error: update.fields.title.clone().unwrap_or_else(|| "tool call failed".to_string()),
+                                            });
+                                        }
                                     }
                                 }
                                 SessionUpdate::Plan(acp_plan) => {
@@ -1890,7 +2003,39 @@ impl AcpBackendInterface for AcpBackend {
                                 message_bytes = request.message.len(),
                                 "ACP elicitation request received (awaiting frontend response)"
                             );
+                            let elicitation_input = serde_json::json!({
+                                "message": request.message.clone(),
+                                "mode": mode_str.clone(),
+                            });
                             elics.record(elicitation_id.clone(), request.message.clone(), mode_str);
+
+                            // Surface the elicitation in the unified permission feed.
+                            crate::permission_service::global_permission_service().register(
+                                crate::permission_service::PendingPermissionRequest {
+                                    request_id: elicitation_id.clone(),
+                                    kind: crate::permission_service::PermissionRequestKind::Tool,
+                                    agent_id: Some(aid.clone()),
+                                    session_id: None,
+                                    title: {
+                                        let char_count = request.message.chars().count();
+                                        let mut preview: String =
+                                            request.message.chars().take(120).collect();
+                                        if char_count > 120 {
+                                            preview.push('…');
+                                        }
+                                        if preview.is_empty() {
+                                            "Agent input request".to_string()
+                                        } else {
+                                            preview
+                                        }
+                                    },
+                                    tool_name: Some("Elicitation".to_string()),
+                                    input: Some(elicitation_input),
+                                    locations: Vec::new(),
+                                    source: crate::permission_service::PermissionSource::Elicitation,
+                                    created_at_ms: crate::permission_service::now_ms(),
+                                },
+                            );
 
                             // Create a oneshot channel for the response.
                             let (response_tx, response_rx) = tokio::sync::oneshot::channel::<ElicitationResponse>();
@@ -1910,6 +2055,14 @@ impl AcpBackendInterface for AcpBackend {
                                 Ok(Ok(resp)) => {
                                     info!(elicitation_id = %elicitation_id, action = %resp.action, "Elicitation responded");
                                     elics.mark_responded(&elicitation_id, resp.action.clone());
+                                    let decision_kind = if resp.action == "accept" {
+                                        crate::permission_service::PermissionDecisionKind::AllowOnce
+                                    } else {
+                                        crate::permission_service::PermissionDecisionKind::RejectOnce
+                                    };
+                                    crate::permission_service::global_permission_service()
+                                        .resolve(&elicitation_id, decision_kind)
+                                        .await;
                                     match resp.action.as_str() {
                                         "accept" => {
                                             // TODO: parse form_data into ElicitationContentValue map
@@ -1922,6 +2075,9 @@ impl AcpBackendInterface for AcpBackend {
                                 _ => {
                                     warn!(elicitation_id = %elicitation_id, "Elicitation timeout or cancelled, auto-declining");
                                     elics.mark_responded(&elicitation_id, "decline".to_string());
+                                    crate::permission_service::global_permission_service()
+                                        .resolve(&elicitation_id, crate::permission_service::PermissionDecisionKind::RejectOnce)
+                                        .await;
                                     ElicitationAction::Decline
                                 }
                             };
@@ -2052,6 +2208,9 @@ impl AcpBackendInterface for AcpBackend {
                                             stop_reason = %sr,
                                             "ACP prompt completed"
                                         );
+                                        crate::permission_service::global_permission_service()
+                                            .force_resolve_rejected_for_agent(&connection_agent_id)
+                                            .await;
                                         *task_stop_reason.write() = Some(sr.clone());
                                         let _ = task_output_tx.send(AgentOutputEvent::Done { stop_reason: sr.clone() });
                                         let _ = response_tx.send(Ok(()));

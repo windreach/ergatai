@@ -44,3 +44,42 @@ pub fn parse_rfc3339_datetime(s: &str, strategy: OnErrorStrategy, context: &str)
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Datelike;
+
+    #[test]
+    fn test_parse_valid_datetime() {
+        let result = parse_rfc3339_datetime("2024-01-15T10:30:00Z", OnErrorStrategy::Now, "test");
+        assert_eq!(result.year(), 2024);
+        assert_eq!(result.month(), 1);
+        assert_eq!(result.day(), 15);
+    }
+
+    #[test]
+    fn test_parse_invalid_datetime_current_time() {
+        let before = Utc::now();
+        let result = parse_rfc3339_datetime("invalid-datetime", OnErrorStrategy::Now, "test");
+        let after = Utc::now();
+
+        // Should return current time (within a reasonable range)
+        assert!(result >= before && result <= after);
+    }
+
+    #[test]
+    fn test_parse_invalid_datetime_epoch() {
+        let result = parse_rfc3339_datetime("invalid-datetime", OnErrorStrategy::Epoch, "test");
+
+        // Should return UNIX_EPOCH
+        assert_eq!(result, DateTime::UNIX_EPOCH);
+    }
+
+    #[test]
+    fn test_parse_datetime_with_timezone() {
+        let result =
+            parse_rfc3339_datetime("2024-01-15T10:30:00+08:00", OnErrorStrategy::Now, "test");
+        assert_eq!(result.year(), 2024);
+    }
+}

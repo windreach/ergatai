@@ -41,6 +41,7 @@ pub mod binary_detection;
 pub mod cgroups;
 pub mod mcp_over_acp;
 pub mod permission;
+pub mod permission_service;
 pub mod profile_registry;
 pub mod session_store;
 pub mod types;
@@ -69,7 +70,13 @@ pub use backends::acp::{
     AcpBackend, AgentOutputEvent, ElicitationResponse, TrackedElicitation, TrackedPlan,
     TrackedPlanEntry, TrackedToolCall,
 };
-pub use permission::{PermissionDecision, PermissionHandler, YoloPermissionHandler};
+pub use permission::{
+    InteractivePermissionHandler, PermissionDecision, PermissionHandler, YoloPermissionHandler,
+};
+pub use permission_service::{
+    global_permission_service, PermissionDecisionKind, PermissionEvent, PermissionRequestKind,
+    PermissionRequestService, PermissionSource,
+};
 pub use runtime::{get_agent_runtime, init_agent_runtime, AgentRuntime};
 pub use session_store::{SessionRecord, SessionStore};
 pub use types::{

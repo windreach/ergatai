@@ -249,8 +249,72 @@ impl ProfileRegistry {
             ErgataiError::internal(format!("Failed to create agent_registrations table: {}", e))
         })?;
 
-        // Run schema migrations (additive, non-destructive)
-        self.migrate_schema()?;
+        // Incremental migrations for existing databases.
+        // Old schema used `name` as PRIMARY KEY without `id`, `package_name`, or `avatar_url` columns.
+        // Check if migration is needed by looking for the `id` column.
+        let has_id_column = conn
+            .prepare("PRAGMA table_info(agent_registrations)")
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+                let columns: Vec<String> = rows.collect::<Result<Vec<_>, _>>()?;
+                Ok(columns.contains(&"id".to_string()))
+            })
+            .unwrap_or(false);
+
+        if !has_id_column {
+            // Migrate old schema: recreate table with new schema and migrate data.
+            // Old schema: PRIMARY KEY was `name`, no `id`, `package_name`, or `avatar_url` columns.
+            conn.execute_batch(
+                "
+                -- Create temporary table with old data
+                CREATE TEMPORARY TABLE IF NOT EXISTS agent_registrations_backup AS
+                SELECT name, command, agent_type, created_at FROM agent_registrations;
+
+                -- Drop old table
+                DROP TABLE agent_registrations;
+
+                -- Recreate with new schema
+                CREATE TABLE agent_registrations (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    command TEXT NOT NULL,
+                    agent_type TEXT NOT NULL,
+                    package_name TEXT,
+                    avatar_url TEXT,
+                    created_at TEXT NOT NULL
+                );
+
+                -- Migrate data: use name as id for backward compatibility
+                INSERT INTO agent_registrations (id, name, command, agent_type, package_name, avatar_url, created_at)
+                SELECT name, name, command, agent_type, NULL, NULL, created_at
+                FROM agent_registrations_backup;
+
+                -- Clean up temporary table
+                DROP TABLE agent_registrations_backup;
+                ",
+            )
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to migrate agent_registrations schema: {}", e))
+            })?;
+            info!("Migrated agent_registrations table to new schema with id, package_name, avatar_url columns");
+        } else {
+            // Table has id column, but may be missing package_name or avatar_url (intermediate versions).
+            // Add them if missing (idempotent - SQLite ignores errors if column already exists).
+            if let Err(e) =
+                conn.execute_batch("ALTER TABLE agent_registrations ADD COLUMN package_name TEXT")
+            {
+                if !e.to_string().contains("duplicate column name") {
+                    warn!(error = %e, "Failed to add package_name column");
+                }
+            }
+            if let Err(e) =
+                conn.execute_batch("ALTER TABLE agent_registrations ADD COLUMN avatar_url TEXT")
+            {
+                if !e.to_string().contains("duplicate column name") {
+                    warn!(error = %e, "Failed to add avatar_url column");
+                }
+            }
+        }
 
         debug!(
             "Profile registry initialized at {} (WAL mode)",
@@ -291,104 +355,6 @@ impl ProfileRegistry {
             });
         } else {
             debug!("Adapter auto-update disabled (set ERGATAI_ADAPTERS_AUTO_UPDATE=1 to enable)");
-        }
-
-        Ok(())
-    }
-
-    /// Run additive schema migrations (non-destructive).
-    ///
-    /// Called from `init_db` after CREATE TABLE IF NOT EXISTS.
-    /// Each migration checks for the column's existence before ALTER TABLE.
-    fn migrate_schema(&self) -> ErgataiResult<()> {
-        let conn = Connection::open(&self.db_path).map_err(|e| {
-            ErgataiError::internal(format!("Failed to open profile registry database: {}", e))
-        })?;
-
-        // Migration v3 → v4: Add id column and migrate from name-based primary key
-        // Check if we need to migrate from old schema (name as PRIMARY KEY)
-        let has_id_column: bool = conn
-            .query_row(
-                "SELECT COUNT(*) > 0 FROM pragma_table_info('agent_registrations') WHERE name='id'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| ErgataiError::internal(format!("Failed to check schema: {}", e)))?;
-
-        if !has_id_column {
-            // Need to migrate: create new table with id, copy data, replace old table
-            info!("Migrating profile_registry schema: adding id column as primary key");
-
-            conn.execute_batch(
-                "
-                -- Create new table with id as primary key
-                CREATE TABLE agent_registrations_new (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    command TEXT NOT NULL,
-                    agent_type TEXT NOT NULL,
-                    package_name TEXT,
-                    avatar_url TEXT,
-                    created_at TEXT NOT NULL
-                );
-
-                -- Migrate existing data: use name as id for backward compatibility
-                INSERT INTO agent_registrations_new (id, name, command, agent_type, package_name, avatar_url, created_at)
-                SELECT name, name, command, agent_type, package_name, avatar_url, created_at
-                FROM agent_registrations;
-
-                -- Drop old table
-                DROP TABLE agent_registrations;
-
-                -- Rename new table
-                ALTER TABLE agent_registrations_new RENAME TO agent_registrations;
-                "
-            )
-            .map_err(|e| {
-                ErgataiError::internal(format!("Failed to migrate schema to add id column: {}", e))
-            })?;
-
-            info!("Schema migration complete: id column added as primary key");
-        }
-
-        // Migration: add package_name column (v1 → v2) - kept for reference but handled in v4 migration
-        let has_package_name: bool = conn
-            .query_row(
-                "SELECT COUNT(*) > 0 FROM pragma_table_info('agent_registrations') WHERE name='package_name'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| ErgataiError::internal(format!("Failed to check schema: {}", e)))?;
-
-        if !has_package_name {
-            conn.execute(
-                "ALTER TABLE agent_registrations ADD COLUMN package_name TEXT",
-                [],
-            )
-            .map_err(|e| {
-                ErgataiError::internal(format!("Failed to add package_name column: {}", e))
-            })?;
-            info!("Migrated profile_registry schema: added package_name column");
-        }
-
-        // Migration: add avatar_url column (v2 → v3) - kept for reference but handled in v4 migration
-        let has_avatar_url: bool = conn
-            .query_row(
-                "SELECT COUNT(*) > 0 FROM pragma_table_info('agent_registrations') WHERE name='avatar_url'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| ErgataiError::internal(format!("Failed to check schema: {}", e)))?;
-
-        if !has_avatar_url {
-            conn.execute(
-                "ALTER TABLE agent_registrations ADD COLUMN avatar_url TEXT",
-                [],
-            )
-            .map_err(|e| {
-                ErgataiError::internal(format!("Failed to add avatar_url column: {}", e))
-            })?;
-            info!("Migrated profile_registry schema: added avatar_url column");
         }
 
         Ok(())

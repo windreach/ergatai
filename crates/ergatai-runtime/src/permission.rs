@@ -10,13 +10,15 @@
 //! - Integrators can implement [`PermissionHandler`] to plug in custom policy
 //!   (e.g., `ergatai-lock` file access control).
 
-use async_trait::async_trait;
-use tracing::debug;
+use std::sync::Arc;
+use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
     PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome,
+    RequestPermissionResponse, SelectedPermissionOutcome, ToolKind,
 };
+use async_trait::async_trait;
+use tracing::debug;
 
 /// Decision returned by a [`PermissionHandler`].
 ///
@@ -112,6 +114,166 @@ impl PermissionHandler for YoloPermissionHandler {
                 PermissionDecision::cancel()
             }
         }
+    }
+}
+
+/// How long to wait for a user decision before default-deny.
+const INTERACTIVE_PERMISSION_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Whether a tool kind never requires user approval.
+fn is_auto_approve_kind(kind: &ToolKind) -> bool {
+    matches!(
+        kind,
+        ToolKind::Read | ToolKind::Think | ToolKind::SwitchMode | ToolKind::Other
+    )
+}
+
+/// Human-readable label for a tool kind.
+fn tool_kind_label(kind: &ToolKind) -> &'static str {
+    match kind {
+        ToolKind::Read => "Read",
+        ToolKind::Edit => "Edit",
+        ToolKind::Delete => "Delete",
+        ToolKind::Move => "Move",
+        ToolKind::Search => "Search",
+        ToolKind::Execute => "Execute",
+        ToolKind::Think => "Think",
+        ToolKind::Fetch => "Fetch",
+        ToolKind::SwitchMode => "SwitchMode",
+        ToolKind::Other => "Tool",
+        // The schema enum is non-exhaustive; future kinds fall back to Tool.
+        _ => "Tool",
+    }
+}
+
+/// Select the request option matching a decision kind.
+fn select_decision_option(
+    request: &RequestPermissionRequest,
+    decision: crate::permission_service::PermissionDecisionKind,
+) -> PermissionDecision {
+    let want_allow = decision.is_allow();
+    let option = request.options.iter().find(|opt| match opt.kind {
+        PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways => want_allow,
+        PermissionOptionKind::RejectOnce | PermissionOptionKind::RejectAlways => !want_allow,
+        // The schema enum is non-exhaustive; unknown option kinds never match.
+        _ => false,
+    });
+    match option {
+        Some(opt) => PermissionDecision::select(opt.option_id.to_string()),
+        None => PermissionDecision::cancel(),
+    }
+}
+
+/// Select the first allow option (used for auto-approved kinds).
+fn select_allow_option(request: &RequestPermissionRequest) -> PermissionDecision {
+    select_decision_option(
+        request,
+        crate::permission_service::PermissionDecisionKind::AllowOnce,
+    )
+}
+
+/// Permission handler that routes user-decision tool kinds (edit, delete,
+/// move, execute) through the unified permission request service so clients
+/// can approve them in real time. Read-class operations are auto-approved.
+///
+/// An optional inner handler (e.g. lock-based checks) is consulted after the
+/// user allows an operation, so workspace file-locking policies still apply.
+pub struct InteractivePermissionHandler {
+    inner: Option<Arc<dyn PermissionHandler>>,
+}
+
+impl InteractivePermissionHandler {
+    pub fn new(inner: Option<Arc<dyn PermissionHandler>>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl PermissionHandler for InteractivePermissionHandler {
+    async fn evaluate(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+        request: &RequestPermissionRequest,
+    ) -> PermissionDecision {
+        use crate::permission_service::{get_permission_mode, PermissionMode};
+
+        let kind = request.tool_call.fields.kind.unwrap_or(ToolKind::Other);
+
+        if is_auto_approve_kind(&kind) {
+            debug!(agent_id = %agent_id, kind = ?kind, "InteractivePermissionHandler: auto-approving read-class request");
+            return select_allow_option(request);
+        }
+
+        let mode = get_permission_mode();
+        if mode != PermissionMode::Ask {
+            debug!(agent_id = %agent_id, ?mode, "InteractivePermissionHandler: auto-approving per permission mode");
+            if mode == PermissionMode::FullAccess {
+                return select_allow_option(request);
+            }
+            if let Some(inner) = &self.inner {
+                return inner.evaluate(agent_id, session_id, request).await;
+            }
+            return select_allow_option(request);
+        }
+
+        let service = crate::permission_service::global_permission_service();
+        let title = request
+            .tool_call
+            .fields
+            .title
+            .clone()
+            .unwrap_or_else(|| format!("{} operation approval", tool_kind_label(&kind)));
+        let locations = request
+            .tool_call
+            .fields
+            .locations
+            .as_ref()
+            .map(|locs| {
+                locs.iter()
+                    .map(|loc| loc.path.to_string_lossy().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let (decision_tx, decision_rx) = tokio::sync::oneshot::channel();
+        let request_id = service.register_with_waiter(
+            crate::permission_service::PendingPermissionRequest {
+                request_id: String::new(),
+                kind: crate::permission_service::PermissionRequestKind::Tool,
+                agent_id: Some(agent_id.to_string()),
+                session_id: Some(session_id.to_string()),
+                title,
+                tool_name: Some(tool_kind_label(&kind).to_string()),
+                input: request.tool_call.fields.raw_input.clone(),
+                locations,
+                source: crate::permission_service::PermissionSource::Acp,
+                created_at_ms: crate::permission_service::now_ms(),
+            },
+            decision_tx,
+        );
+
+        debug!(agent_id = %agent_id, request_id = %request_id, "InteractivePermissionHandler: awaiting user decision");
+        let decision = match tokio::time::timeout(INTERACTIVE_PERMISSION_TIMEOUT, decision_rx).await
+        {
+            Ok(Ok(decision)) => Some(decision),
+            _ => None,
+        };
+
+        let Some(decision) = decision else {
+            service.force_resolve_rejected(&request_id).await;
+            return select_decision_option(
+                request,
+                crate::permission_service::PermissionDecisionKind::RejectOnce,
+            );
+        };
+
+        if decision.is_allow() {
+            if let Some(inner) = &self.inner {
+                return inner.evaluate(agent_id, session_id, request).await;
+            }
+        }
+        select_decision_option(request, decision)
     }
 }
 

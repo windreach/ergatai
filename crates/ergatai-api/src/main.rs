@@ -270,17 +270,33 @@ async fn async_main(args: Args) -> Result<()> {
     // Attach a SessionStore so agent sessions survive API-server restarts.
     // On next start, `start_agent` will attempt `session/load` before `session/new`.
     //
-    // Attach a LockPermissionHandler so ACP permission requests for file writes
-    // go through ergatai-lock (zero-trust file access control). Falls back to
-    // YOLO auto-approve when the lock manager isn't initialized.
+    // Attach an InteractivePermissionHandler so user-decision ACP permission
+    // requests (edit, delete, move, execute, fetch, search) surface to clients through the
+    // permission request service. The lock handler is consulted after user
+    // approval so per-workspace file access control still applies.
+    // ERGATAI_PERMISSION_MODE=yolo restores legacy auto-approval.
     //
     // ERGATAI_AUTO_CONTINUE=1 enables automatic prompt continuation when the
     // agent's stop_reason is max_tokens or max_turn_requests (up to 3 retries).
+    let lock_handler =
+        std::sync::Arc::new(ergatai_api::lock_permission::LockPermissionHandler::new());
+    ergatai_api::set_permission_handler(lock_handler.clone());
+
+    let permission_handler: std::sync::Arc<dyn ergatai_runtime::PermissionHandler> =
+        if std::env::var("ERGATAI_PERMISSION_MODE")
+            .map(|value| value.eq_ignore_ascii_case("yolo"))
+            .unwrap_or(false)
+        {
+            std::sync::Arc::new(ergatai_runtime::YoloPermissionHandler)
+        } else {
+            std::sync::Arc::new(ergatai_runtime::InteractivePermissionHandler::new(Some(
+                lock_handler,
+            )))
+        };
+
     let runtime_backend: std::sync::Arc<dyn ergatai_runtime::AcpBackendInterface> = {
         let mut backend =
-            ergatai_runtime::AcpBackend::new().with_permission_handler(std::sync::Arc::new(
-                ergatai_api::lock_permission::LockPermissionHandler::new("default".to_string()),
-            ));
+            ergatai_runtime::AcpBackend::new().with_permission_handler(permission_handler);
         if std::env::var("ERGATAI_AUTO_CONTINUE")
             .map(|v| v == "1" || v.to_lowercase() == "true")
             .unwrap_or(false)
@@ -497,43 +513,44 @@ async fn async_main(args: Args) -> Result<()> {
             ergatai_api::context::init_app_context(app_context);
             tracing::info!("✅ AppContext initialized");
 
-            // File access control
-            let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let runtime_for_resolver = ergatai_api::context::get_app_context()
-                .agent_runtime
-                .clone();
-            let pid_resolver = ergatai_lock::CallbackPidResolver::with_cache(
-                {
-                    let runtime = runtime_for_resolver.clone();
-                    move || {
-                        let agents = tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current().block_on(runtime.list_agents())
-                        });
-                        agents
-                            .into_iter()
-                            .filter_map(|info| {
-                                let pid: u32 = info.handle.process_id?.parse().ok()?;
-                                Some((pid, info.agent_id.clone(), info.workspace_id.clone()))
-                            })
-                            .collect()
-                    }
-                },
-                std::time::Duration::from_millis(200),
-            );
+            // Register existing workspaces with the permission handler so file access control
+            // works after server restart. Without this, pre-existing workspaces would have no
+            // lock manager initialized and file writes would fall back to auto-approve.
+            if let Some(permission_handler) = ergatai_api::get_permission_handler() {
+                let list_result = tokio::task::spawn_blocking(|| {
+                    ergatai_api::user_data_db::workspaces::list(None, None)
+                })
+                .await;
 
-            if let Err(e) = ergatai_lock::init_file_access_with_enforcer(
-                "default",
-                &project_root,
-                std::sync::Arc::new(pid_resolver),
-            )
-            .await
-            {
-                tracing::warn!("File access control initialization failed: {}", e);
-            } else {
-                tracing::info!("✅ File access control initialized");
+                match list_result {
+                    Ok(Ok(workspaces)) => {
+                        let ws_count = workspaces.len();
+                        for ws in workspaces {
+                            permission_handler
+                                .register_workspace(&ws.id, ws.work_dir.into())
+                                .await;
+                        }
+                        tracing::info!(
+                            "✅ Registered {} existing workspace(s) with permission handler",
+                            ws_count
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        tracing::error!(error = %e, "Failed to list existing workspaces for permission handler registration");
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to spawn blocking task for workspace listing");
+                    }
+                }
             }
 
+            // File access control is now initialized per-workspace when workspaces are created.
+            // The LockPermissionHandler will lazily initialize lock managers for each workspace
+            // using the workspace's work_dir as the project root.
+            tracing::info!("File access control will be initialized per-workspace on demand");
+
             // DAG recovery
+            let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             match DagScheduler::load_all_from_disk(project_root.clone()).await {
                 Ok(schedulers) if !schedulers.is_empty() => {
                     tracing::info!("🔄 Recovering {} DAG(s) from disk...", schedulers.len());
