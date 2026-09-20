@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, warn};
 
 use agent_client_protocol::schema::v1::{PermissionOptionKind, RequestPermissionRequest, ToolKind};
@@ -40,6 +40,8 @@ pub struct WorkspaceInfo {
 pub struct LockPermissionHandler {
     /// Cache of initialized lock managers per workspace (workspace_id → WorkspaceInfo)
     workspaces: Arc<RwLock<HashMap<String, WorkspaceInfo>>>,
+    /// Per-workspace initialization locks to prevent race conditions during lock manager setup
+    initialization_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl Default for LockPermissionHandler {
@@ -52,6 +54,7 @@ impl LockPermissionHandler {
     pub fn new() -> Self {
         Self {
             workspaces: Arc::new(RwLock::new(HashMap::new())),
+            initialization_locks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -71,6 +74,9 @@ impl LockPermissionHandler {
                 "Unregistered workspace from lock management"
             );
         }
+        // Also clean up the initialization lock to prevent memory leak
+        let mut init_locks = self.initialization_locks.lock().await;
+        init_locks.remove(workspace_id);
     }
 
     /// Extract workspace_id from agent_id (format: `{workspace_id}-agent-{counter}`)
@@ -85,12 +91,30 @@ impl LockPermissionHandler {
         &self,
         workspace_id: &str,
     ) -> Option<Arc<ergatai_lock::FileLockManager>> {
-        // Try to get existing lock manager
+        // Try to get existing lock manager (fast path)
         if let Ok(mgr) = ergatai_lock::get_lock_manager(workspace_id).await {
             return Some(mgr);
         }
 
-        // Lock manager not initialized - try to initialize it
+        // Lock manager not initialized - acquire per-workspace initialization lock
+        // to prevent race conditions when multiple tasks try to initialize simultaneously
+        let init_lock = {
+            let mut locks = self.initialization_locks.lock().await;
+            locks
+                .entry(workspace_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+
+        // Hold the initialization lock while checking and initializing
+        let _guard = init_lock.lock().await;
+
+        // Double-check after acquiring lock (another task may have initialized while we waited)
+        if let Ok(mgr) = ergatai_lock::get_lock_manager(workspace_id).await {
+            return Some(mgr);
+        }
+
+        // Still not initialized - try to initialize it
         let workspaces = self.workspaces.read().await;
         if let Some(workspace_info) = workspaces.get(workspace_id) {
             let work_dir = &workspace_info.work_dir;
@@ -249,4 +273,172 @@ fn select_reject_option(request: &RequestPermissionRequest) -> PermissionDecisio
         })
         .map(|opt| PermissionDecision::select(opt.option_id.to_string()))
         .unwrap_or_else(PermissionDecision::cancel)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_extract_workspace_id_valid() {
+        // 标准格式: {workspace_id}-agent-{counter}
+        assert_eq!(
+            LockPermissionHandler::extract_workspace_id("ws1-agent-1"),
+            Some("ws1")
+        );
+        assert_eq!(
+            LockPermissionHandler::extract_workspace_id("my-workspace-agent-42"),
+            Some("my-workspace")
+        );
+        assert_eq!(
+            LockPermissionHandler::extract_workspace_id("test.workspace-agent-100"),
+            Some("test.workspace")
+        );
+    }
+
+    #[test]
+    fn test_extract_workspace_id_invalid() {
+        // 不包含 "-agent-"
+        assert_eq!(LockPermissionHandler::extract_workspace_id("ws1"), None);
+        assert_eq!(LockPermissionHandler::extract_workspace_id(""), None);
+        assert_eq!(
+            LockPermissionHandler::extract_workspace_id("no_agent_here"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_extract_workspace_id_edge_cases() {
+        // workspace_id 本身包含 "-agent-"（应该取最后一个）
+        assert_eq!(
+            LockPermissionHandler::extract_workspace_id("ws-agent-test-agent-1"),
+            Some("ws-agent-test")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_register_and_unregister_workspace() {
+        let handler = LockPermissionHandler::new();
+        let work_dir = PathBuf::from("/tmp/test-workspace");
+
+        // 注册工作区
+        handler.register_workspace("ws1", work_dir.clone()).await;
+
+        // 验证工作区已注册
+        let workspaces = handler.workspaces.read().await;
+        assert!(workspaces.contains_key("ws1"));
+        assert_eq!(workspaces.get("ws1").unwrap().work_dir, work_dir);
+        drop(workspaces);
+
+        // 注销工作区
+        handler.unregister_workspace("ws1").await;
+
+        // 验证工作区已移除
+        let workspaces = handler.workspaces.read().await;
+        assert!(!workspaces.contains_key("ws1"));
+    }
+
+    #[tokio::test]
+    async fn test_unregister_nonexistent_workspace() {
+        let handler = LockPermissionHandler::new();
+
+        // 注销不存在的工作区不应该 panic
+        handler.unregister_workspace("nonexistent").await;
+    }
+
+    #[tokio::test]
+    async fn test_initialization_locks_cleanup() {
+        let handler = LockPermissionHandler::new();
+        let work_dir = PathBuf::from("/tmp/test-workspace");
+
+        // 注册工作区
+        handler.register_workspace("ws1", work_dir).await;
+
+        // 触发初始化锁的创建（通过 get_lock_manager_for_workspace）
+        // 注意：由于 ergatai_lock 未初始化，这会返回 None，但会创建初始化锁
+        let _ = handler.get_lock_manager_for_workspace("ws1").await;
+
+        // 验证初始化锁已创建
+        let init_locks = handler.initialization_locks.lock().await;
+        assert!(init_locks.contains_key("ws1"));
+        drop(init_locks);
+
+        // 注销工作区
+        handler.unregister_workspace("ws1").await;
+
+        // 验证初始化锁也已清理
+        let init_locks = handler.initialization_locks.lock().await;
+        assert!(!init_locks.contains_key("ws1"));
+    }
+
+    #[tokio::test]
+    async fn test_multiple_workspace_isolation() {
+        let handler = LockPermissionHandler::new();
+
+        // 注册多个工作区
+        handler
+            .register_workspace("ws1", PathBuf::from("/tmp/ws1"))
+            .await;
+        handler
+            .register_workspace("ws2", PathBuf::from("/tmp/ws2"))
+            .await;
+
+        // 验证工作区已注册
+        {
+            let workspaces = handler.workspaces.read().await;
+            assert!(workspaces.contains_key("ws1"));
+            assert!(workspaces.contains_key("ws2"));
+        }
+
+        // 注销一个工作区
+        handler.unregister_workspace("ws1").await;
+
+        // 验证只移除了指定的工作区
+        {
+            let workspaces = handler.workspaces.read().await;
+            assert!(!workspaces.contains_key("ws1"));
+            assert!(workspaces.contains_key("ws2"));
+        }
+    }
+
+    #[test]
+    fn test_select_allow_option() {
+        use agent_client_protocol::schema::v1::{
+            PermissionOption, PermissionOptionKind, RequestPermissionRequest, SessionId,
+            ToolCallUpdate, ToolCallUpdateFields,
+        };
+
+        let tool_call = ToolCallUpdate::new("test-tool", ToolCallUpdateFields::new());
+        let options = vec![
+            PermissionOption::new("allow-once", "Allow once", PermissionOptionKind::AllowOnce),
+            PermissionOption::new("reject", "Reject", PermissionOptionKind::RejectOnce),
+        ];
+        let request = RequestPermissionRequest::new(SessionId::new("test-session"), tool_call, options);
+
+        let decision = select_allow_option(&request);
+        assert_eq!(decision.option_id.as_deref(), Some("allow-once"));
+    }
+
+    #[test]
+    fn test_select_reject_option() {
+        use agent_client_protocol::schema::v1::{
+            PermissionOption, PermissionOptionKind, RequestPermissionRequest, SessionId,
+            ToolCallUpdate, ToolCallUpdateFields,
+        };
+
+        let tool_call = ToolCallUpdate::new("test-tool", ToolCallUpdateFields::new());
+        let options = vec![
+            PermissionOption::new("allow", "Allow", PermissionOptionKind::AllowOnce),
+            PermissionOption::new(
+                "reject-once",
+                "Reject once",
+                PermissionOptionKind::RejectOnce,
+            ),
+        ];
+        let request = RequestPermissionRequest::new(SessionId::new("test-session"), tool_call, options);
+
+        let decision = select_reject_option(&request);
+        assert_eq!(decision.option_id.as_deref(), Some("reject-once"));
+    }
 }

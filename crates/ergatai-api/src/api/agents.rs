@@ -760,6 +760,22 @@ pub async fn send_message(
             .into_response();
     }
 
+    // Validate message length to prevent resource exhaustion
+    const MAX_MESSAGE_LENGTH: usize = 1_000_000; // 1MB limit
+    if req.message.len() > MAX_MESSAGE_LENGTH {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "Message too large: {} bytes (max: {} bytes)",
+                    req.message.len(),
+                    MAX_MESSAGE_LENGTH
+                ),
+            }),
+        )
+            .into_response();
+    }
+
     // Validate message_type if provided
     if let Some(ref msg_type) = req.message_type {
         if !matches!(msg_type.as_str(), "request" | "response" | "broadcast") {
