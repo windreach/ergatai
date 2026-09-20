@@ -1,7 +1,12 @@
 use anyhow::Result;
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::Duration;
+
+/// Default request timeout for CLI client (30 seconds)
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
 
 pub struct ErgataiClient {
     client: Client,
@@ -11,8 +16,13 @@ pub struct ErgataiClient {
 
 impl ErgataiClient {
     pub fn new(base_url: &str, token: Option<&str>) -> Self {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS))
+            .build()
+            .expect("Failed to build HTTP client");
+
         Self {
-            client: Client::new(),
+            client,
             base_url: base_url.to_string(),
             token: token.map(|t| t.to_string()),
         }
@@ -24,6 +34,11 @@ impl ErgataiClient {
         } else {
             req
         }
+    }
+
+    /// URL-encode a path segment to prevent path injection attacks
+    fn encode_path_segment(segment: &str) -> String {
+        utf8_percent_encode(segment, NON_ALPHANUMERIC).to_string()
     }
 
     pub async fn list_workspaces(&self) -> Result<Vec<WorkspaceResponse>> {
@@ -63,7 +78,8 @@ impl ErgataiClient {
     }
 
     pub async fn delete_workspace(&self, id: &str) -> Result<()> {
-        let url = format!("{}/api/v1/workspaces/{}", self.base_url, id);
+        let encoded_id = Self::encode_path_segment(id);
+        let url = format!("{}/api/v1/workspaces/{}", self.base_url, encoded_id);
         let req = self.client.delete(&url);
         let req = self.add_auth(req);
         let response = req.send().await?;
@@ -117,7 +133,8 @@ impl ErgataiClient {
     }
 
     pub async fn kill_agent(&self, id: &str) -> Result<()> {
-        let url = format!("{}/api/v1/agents/{}", self.base_url, id);
+        let encoded_id = Self::encode_path_segment(id);
+        let url = format!("{}/api/v1/agents/{}", self.base_url, encoded_id);
         let req = self.client.delete(&url);
         let req = self.add_auth(req);
         let response = req.send().await?;
@@ -131,7 +148,8 @@ impl ErgataiClient {
     }
 
     pub async fn send_message(&self, id: &str, message: &str) -> Result<()> {
-        let url = format!("{}/api/v1/agents/{}/message", self.base_url, id);
+        let encoded_id = Self::encode_path_segment(id);
+        let url = format!("{}/api/v1/agents/{}/message", self.base_url, encoded_id);
         let body = SendMessageRequest {
             message: message.to_string(),
             correlation_id: None,
@@ -207,7 +225,8 @@ impl ErgataiClient {
     pub async fn get_dag_status(&self, dag_id: Option<&str>) -> Result<DagStatusResponse> {
         let mut url = format!("{}/api/v1/dag/status", self.base_url);
         if let Some(id) = dag_id {
-            url.push_str(&format!("?dag_id={}", id));
+            let encoded_id = Self::encode_path_segment(id);
+            url.push_str(&format!("?dag_id={}", encoded_id));
         }
         let req = self.client.get(&url);
         let req = self.add_auth(req);
@@ -223,7 +242,11 @@ impl ErgataiClient {
 
     pub async fn submit_dag(&self, definition: &str) -> Result<SubmitDagResponse> {
         let url = format!("{}/api/v1/dag", self.base_url);
-        let req = self.client.post(&url).body(definition.to_string());
+        let req = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/yaml")
+            .body(definition.to_string());
         let req = self.add_auth(req);
         let response = req.send().await?;
 
@@ -274,7 +297,8 @@ impl ErgataiClient {
     }
 
     pub async fn delete_profile(&self, name: &str) -> Result<()> {
-        let url = format!("{}/api/v1/agent-profiles/{}", self.base_url, name);
+        let encoded_name = Self::encode_path_segment(name);
+        let url = format!("{}/api/v1/agent-profiles/{}", self.base_url, encoded_name);
         let req = self.client.delete(&url);
         let req = self.add_auth(req);
         let response = req.send().await?;

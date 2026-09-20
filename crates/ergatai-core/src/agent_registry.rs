@@ -45,8 +45,8 @@ pub struct AgentInfo {
     pub lifecycle: Option<ergatai_runtime::AgentLifecycleState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<String>>,
-    pub connected_at: String,
-    pub last_heartbeat: String,
+    pub connected_at: DateTime<Utc>,
+    pub last_heartbeat: DateTime<Utc>,
     /// Enabled subscription presets for this agent (e.g., ["lifecycle", "receipts"])
     #[serde(default = "default_subscription_presets")]
     pub subscription_presets: Vec<String>,
@@ -95,14 +95,14 @@ impl AgentRegistry {
         agent_id: String,
         mcp_connection_id: String,
         capabilities: Option<Vec<String>>,
-    ) -> Result<(), String> {
-        let now = Utc::now().to_rfc3339();
+    ) {
+        let now = Utc::now();
         let info = AgentInfo {
             agent_id: agent_id.clone(),
             status: AgentConnectionStatus::Active,
             lifecycle: None,
             capabilities,
-            connected_at: now.clone(),
+            connected_at: now,
             last_heartbeat: now,
             subscription_presets: default_subscription_presets(),
         };
@@ -113,15 +113,21 @@ impl AgentRegistry {
         };
 
         let mut agents = self.agents.write().await;
+        // Check for duplicate registration (log but allow overwrite for reconnection scenarios)
+        if agents.contains_key(&agent_id) {
+            tracing::warn!(
+                agent_id = %agent_id,
+                "Agent re-registered (overwriting existing entry)"
+            );
+        }
         agents.insert(agent_id, record);
-        Ok(())
     }
 
     /// Update agent heartbeat
     pub async fn update_heartbeat(&self, agent_id: &str) {
         let mut agents = self.agents.write().await;
         if let Some(record) = agents.get_mut(agent_id) {
-            record.info.last_heartbeat = Utc::now().to_rfc3339();
+            record.info.last_heartbeat = Utc::now();
             record.info.status = AgentConnectionStatus::Active;
         }
     }
@@ -166,13 +172,18 @@ impl AgentRegistry {
         let now = Utc::now();
         let mut agents = self.agents.write().await;
 
-        agents.retain(|_, record| {
-            if let Ok(last_heartbeat) = DateTime::parse_from_rfc3339(&record.info.last_heartbeat) {
-                let elapsed = now.signed_duration_since(last_heartbeat.with_timezone(&Utc));
-                elapsed.num_seconds() < timeout_seconds
-            } else {
-                true // Keep if we can't parse the timestamp
+        agents.retain(|agent_id, record| {
+            let elapsed = now.signed_duration_since(record.info.last_heartbeat);
+            let is_stale = elapsed.num_seconds() >= timeout_seconds;
+            if is_stale {
+                tracing::info!(
+                    agent_id = %agent_id,
+                    elapsed_seconds = elapsed.num_seconds(),
+                    timeout_seconds = timeout_seconds,
+                    "Removing stale agent (no heartbeat)"
+                );
             }
+            !is_stale
         });
     }
 }
@@ -214,14 +225,13 @@ mod tests {
     #[tokio::test]
     async fn test_register_agent_stores_info() {
         let registry = AgentRegistry::new();
-        let result = registry
+        registry
             .register_agent(
                 "agent-1".to_string(),
                 "conn-1".to_string(),
                 Some(vec!["tool_a".to_string()]),
             )
             .await;
-        assert!(result.is_ok());
 
         let agent = registry.get_agent("agent-1").await;
         assert!(agent.is_some());
@@ -236,8 +246,7 @@ mod tests {
         let registry = AgentRegistry::new();
         registry
             .register_agent("agent-2".to_string(), "conn-2".to_string(), None)
-            .await
-            .unwrap();
+            .await;
 
         let info = registry.get_agent("agent-2").await.unwrap();
         assert!(info.capabilities.is_none());
@@ -246,15 +255,16 @@ mod tests {
     #[tokio::test]
     async fn test_register_agent_sets_connected_at() {
         let registry = AgentRegistry::new();
+        let before = Utc::now();
         registry
             .register_agent("agent-3".to_string(), "conn-3".to_string(), None)
-            .await
-            .unwrap();
+            .await;
+        let after = Utc::now();
 
         let info = registry.get_agent("agent-3").await.unwrap();
-        // connected_at should be a valid RFC3339 timestamp
-        assert!(DateTime::parse_from_rfc3339(&info.connected_at).is_ok());
-        assert!(DateTime::parse_from_rfc3339(&info.last_heartbeat).is_ok());
+        // connected_at should be between before and after
+        assert!(info.connected_at >= before && info.connected_at <= after);
+        assert!(info.last_heartbeat >= before && info.last_heartbeat <= after);
     }
 
     #[tokio::test]
@@ -262,16 +272,13 @@ mod tests {
         let registry = AgentRegistry::new();
         registry
             .register_agent("a1".to_string(), "c1".to_string(), None)
-            .await
-            .unwrap();
+            .await;
         registry
             .register_agent("a2".to_string(), "c2".to_string(), None)
-            .await
-            .unwrap();
+            .await;
         registry
             .register_agent("a3".to_string(), "c3".to_string(), None)
-            .await
-            .unwrap();
+            .await;
 
         assert_eq!(registry.list_agents().await.len(), 3);
         assert_eq!(registry.active_count().await, 3);
@@ -282,16 +289,14 @@ mod tests {
         let registry = AgentRegistry::new();
         registry
             .register_agent("agent-x".to_string(), "conn-old".to_string(), None)
-            .await
-            .unwrap();
+            .await;
         registry
             .register_agent(
                 "agent-x".to_string(),
                 "conn-new".to_string(),
                 Some(vec!["new_tool".to_string()]),
             )
-            .await
-            .unwrap();
+            .await;
 
         let agents = registry.list_agents().await;
         assert_eq!(agents.len(), 1);
@@ -312,8 +317,7 @@ mod tests {
         let registry = AgentRegistry::new();
         registry
             .register_agent("agent-1".to_string(), "conn-1".to_string(), None)
-            .await
-            .unwrap();
+            .await;
 
         let a = registry.get_agent("agent-1").await.unwrap();
         let b = registry.get_agent("agent-1").await.unwrap();
@@ -329,12 +333,10 @@ mod tests {
         let registry = AgentRegistry::new();
         registry
             .register_agent("a1".to_string(), "c1".to_string(), None)
-            .await
-            .unwrap();
+            .await;
         registry
             .register_agent("a2".to_string(), "c2".to_string(), None)
-            .await
-            .unwrap();
+            .await;
 
         let agents = registry.list_agents().await;
         assert_eq!(agents.len(), 2);
@@ -356,8 +358,7 @@ mod tests {
         let registry = AgentRegistry::new();
         registry
             .register_agent("agent-hb".to_string(), "conn".to_string(), None)
-            .await
-            .unwrap();
+            .await;
 
         let before = registry.get_agent("agent-hb").await.unwrap().last_heartbeat;
         // Small delay so timestamps differ
@@ -373,8 +374,7 @@ mod tests {
         let registry = AgentRegistry::new();
         registry
             .register_agent("agent-hb2".to_string(), "conn".to_string(), None)
-            .await
-            .unwrap();
+            .await;
         registry
             .update_status("agent-hb2", AgentConnectionStatus::Idle)
             .await;
@@ -404,8 +404,7 @@ mod tests {
         let registry = AgentRegistry::new();
         registry
             .register_agent("agent-s".to_string(), "conn".to_string(), None)
-            .await
-            .unwrap();
+            .await;
         registry
             .update_status("agent-s", AgentConnectionStatus::Idle)
             .await;
@@ -421,8 +420,7 @@ mod tests {
         let registry = AgentRegistry::new();
         registry
             .register_agent("agent-d".to_string(), "conn".to_string(), None)
-            .await
-            .unwrap();
+            .await;
         registry
             .update_status("agent-d", AgentConnectionStatus::Disconnected)
             .await;
@@ -450,16 +448,13 @@ mod tests {
         let registry = AgentRegistry::new();
         registry
             .register_agent("a-active".to_string(), "c1".to_string(), None)
-            .await
-            .unwrap();
+            .await;
         registry
             .register_agent("a-idle".to_string(), "c2".to_string(), None)
-            .await
-            .unwrap();
+            .await;
         registry
             .register_agent("a-disc".to_string(), "c3".to_string(), None)
-            .await
-            .unwrap();
+            .await;
 
         registry
             .update_status("a-idle", AgentConnectionStatus::Idle)
@@ -477,8 +472,7 @@ mod tests {
         for i in 0..5 {
             registry
                 .register_agent(format!("a{}", i), format!("c{}", i), None)
-                .await
-                .unwrap();
+                .await;
         }
         assert_eq!(registry.active_count().await, 5);
     }
@@ -488,8 +482,7 @@ mod tests {
         let registry = AgentRegistry::new();
         registry
             .register_agent("a1".to_string(), "c1".to_string(), None)
-            .await
-            .unwrap();
+            .await;
         registry
             .update_status("a1", AgentConnectionStatus::Idle)
             .await;
@@ -503,8 +496,7 @@ mod tests {
         let registry = AgentRegistry::new();
         registry
             .register_agent("agent-rm".to_string(), "conn".to_string(), None)
-            .await
-            .unwrap();
+            .await;
         assert!(registry.get_agent("agent-rm").await.is_some());
 
         registry.unregister_agent("agent-rm").await;
@@ -523,12 +515,10 @@ mod tests {
         let registry = AgentRegistry::new();
         registry
             .register_agent("a1".to_string(), "c1".to_string(), None)
-            .await
-            .unwrap();
+            .await;
         registry
             .register_agent("a2".to_string(), "c2".to_string(), None)
-            .await
-            .unwrap();
+            .await;
         assert_eq!(registry.active_count().await, 2);
 
         registry.unregister_agent("a1").await;
@@ -542,19 +532,17 @@ mod tests {
         let registry = AgentRegistry::new();
         registry
             .register_agent("fresh".to_string(), "c1".to_string(), None)
-            .await
-            .unwrap();
+            .await;
         registry
             .register_agent("stale".to_string(), "c2".to_string(), None)
-            .await
-            .unwrap();
+            .await;
 
         // Manually backdate the stale agent's heartbeat
         {
             let mut agents = registry.agents.write().await;
             let stale = agents.get_mut("stale").unwrap();
             let old_time = Utc::now() - chrono::Duration::seconds(120);
-            stale.info.last_heartbeat = old_time.to_rfc3339();
+            stale.info.last_heartbeat = old_time;
         }
 
         // Timeout of 60s — fresh should stay, stale should go
@@ -569,34 +557,13 @@ mod tests {
         let registry = AgentRegistry::new();
         registry
             .register_agent("a1".to_string(), "c1".to_string(), None)
-            .await
-            .unwrap();
+            .await;
         registry
             .register_agent("a2".to_string(), "c2".to_string(), None)
-            .await
-            .unwrap();
+            .await;
 
         registry.cleanup_stale_agents(60).await;
         assert_eq!(registry.list_agents().await.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_cleanup_stale_agents_handles_invalid_timestamp() {
-        let registry = AgentRegistry::new();
-        registry
-            .register_agent("bad-ts".to_string(), "c1".to_string(), None)
-            .await
-            .unwrap();
-
-        // Corrupt the timestamp — cleanup should retain (not panic)
-        {
-            let mut agents = registry.agents.write().await;
-            agents.get_mut("bad-ts").unwrap().info.last_heartbeat = "not-a-timestamp".to_string();
-        }
-
-        registry.cleanup_stale_agents(60).await;
-        // Kept because the timestamp couldn't be parsed
-        assert!(registry.get_agent("bad-ts").await.is_some());
     }
 
     #[tokio::test]
@@ -604,8 +571,7 @@ mod tests {
         let registry = AgentRegistry::new();
         registry
             .register_agent("a1".to_string(), "c1".to_string(), None)
-            .await
-            .unwrap();
+            .await;
 
         // Even freshly registered agents have elapsed >= 0, so timeout=0 removes all
         // (elapsed.num_seconds() < 0 is always false)
@@ -652,8 +618,12 @@ mod tests {
             status: AgentConnectionStatus::Active,
             lifecycle: None,
             capabilities: Some(vec!["tool1".to_string(), "tool2".to_string()]),
-            connected_at: "2024-01-01T00:00:00+00:00".to_string(),
-            last_heartbeat: "2024-01-01T00:00:00+00:00".to_string(),
+            connected_at: DateTime::parse_from_rfc3339("2024-01-01T00:00:00+00:00")
+                .unwrap()
+                .with_timezone(&Utc),
+            last_heartbeat: DateTime::parse_from_rfc3339("2024-01-01T00:00:00+00:00")
+                .unwrap()
+                .with_timezone(&Utc),
             subscription_presets: vec!["lifecycle".to_string(), "receipts".to_string()],
         };
 
@@ -670,8 +640,12 @@ mod tests {
             status: AgentConnectionStatus::Idle,
             lifecycle: None,
             capabilities: None,
-            connected_at: "2024-01-01T00:00:00+00:00".to_string(),
-            last_heartbeat: "2024-01-01T00:00:00+00:00".to_string(),
+            connected_at: DateTime::parse_from_rfc3339("2024-01-01T00:00:00+00:00")
+                .unwrap()
+                .with_timezone(&Utc),
+            last_heartbeat: DateTime::parse_from_rfc3339("2024-01-01T00:00:00+00:00")
+                .unwrap()
+                .with_timezone(&Utc),
             subscription_presets: vec![],
         };
 
@@ -686,8 +660,12 @@ mod tests {
             status: AgentConnectionStatus::Disconnected,
             lifecycle: None,
             capabilities: Some(vec!["x".to_string()]),
-            connected_at: "2024-06-01T12:00:00+00:00".to_string(),
-            last_heartbeat: "2024-06-01T12:00:00+00:00".to_string(),
+            connected_at: DateTime::parse_from_rfc3339("2024-06-01T12:00:00+00:00")
+                .unwrap()
+                .with_timezone(&Utc),
+            last_heartbeat: DateTime::parse_from_rfc3339("2024-06-01T12:00:00+00:00")
+                .unwrap()
+                .with_timezone(&Utc),
             subscription_presets: vec!["lifecycle".to_string()],
         };
 
@@ -716,8 +694,7 @@ mod tests {
 
         registry
             .register_agent("shared".to_string(), "c".to_string(), None)
-            .await
-            .unwrap();
+            .await;
 
         // Both see the same agent
         assert!(clone.get_agent("shared").await.is_some());

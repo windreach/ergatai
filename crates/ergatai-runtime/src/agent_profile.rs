@@ -232,26 +232,29 @@ pub fn load_profile(
 /// * `profile_name` - Name of the profile
 ///
 /// # Returns
-/// Path to the profile file (may not exist)
+/// `Ok(PathBuf)` - Path to the profile file (may not exist)
+/// `Err(ErgataiError)` - If profile_name contains invalid characters
 ///
 /// # Security
-/// Validates that profile_name doesn't contain path separators or ".." to prevent
-/// path traversal attacks.
-pub fn get_profile_path(project_root: &Path, profile_name: &str) -> PathBuf {
+/// Validates that profile_name doesn't contain path separators, "..", or null bytes to prevent
+/// path traversal attacks. Returns an error instead of silently returning a fake path.
+pub fn get_profile_path(project_root: &Path, profile_name: &str) -> Result<PathBuf, ErgataiError> {
     // Validate profile_name to prevent path traversal
-    if profile_name.contains('/') || profile_name.contains('\\') || profile_name.contains("..") {
-        // Return a path that won't exist rather than panicking
-        // This is safer than allowing arbitrary path construction
-        return project_root
-            .join(".ergatai")
-            .join("profiles")
-            .join("INVALID_PROFILE_NAME.yaml");
+    if profile_name.contains('/')
+        || profile_name.contains('\\')
+        || profile_name.contains("..")
+        || profile_name.contains('\0')
+    {
+        return Err(ErgataiError::InvalidArgument(format!(
+            "Invalid profile name '{}': must not contain path separators, '..', or null bytes",
+            profile_name
+        )));
     }
 
-    project_root
+    Ok(project_root
         .join(".ergatai")
         .join("profiles")
-        .join(format!("{}.yaml", profile_name))
+        .join(format!("{}.yaml", profile_name)))
 }
 
 #[cfg(test)]

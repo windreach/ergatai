@@ -413,6 +413,7 @@ fn lifecycle_valid_transition_chain_created_to_terminated() {
             task_id: "task-42".into(),
             phase: ProcessingPhase::Writing,
             started_at: now(),
+            last_heartbeat: now(),
         },
         None,
         serde_json::json!({}),
@@ -694,6 +695,7 @@ fn lifecycle_non_terminal_states_are_alive() {
             task_id: "t".into(),
             phase: ProcessingPhase::Planning,
             started_at: now(),
+            last_heartbeat: now(),
         },
         AgentLifecycleState::Stopping {
             reason: StopReason::Shutdown,
@@ -1029,6 +1031,7 @@ async fn runtime_lifecycle_state_visible_in_agent_info() {
                 task_id: "task-abc".into(),
                 phase: ProcessingPhase::Testing,
                 started_at: now(),
+                last_heartbeat: now(),
             },
         )
         .await

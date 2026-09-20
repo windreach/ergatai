@@ -45,6 +45,36 @@ fn get_db_path() -> PathBuf {
 
 /// Initialize all required tables
 fn initialize_tables(conn: &Connection) -> Result<()> {
+    // Incremental migrations for existing databases MUST run BEFORE the backfill queries.
+    // These are no-ops if the columns already exist (SQLite ignores errors).
+    // For databases created by older versions, these add missing columns.
+    if let Err(e) = conn.execute_batch(
+        "ALTER TABLE workspaces ADD COLUMN collaboration_mode TEXT NOT NULL DEFAULT 'supervisor'",
+    ) {
+        if !e.to_string().contains("duplicate column name") {
+            tracing::warn!(error = %e, "Failed to add workspaces.collaboration_mode column");
+        }
+    }
+    if let Err(e) = conn
+        .execute_batch("ALTER TABLE workspaces ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+    {
+        if !e.to_string().contains("duplicate column name") {
+            tracing::warn!(error = %e, "Failed to add workspaces.status column");
+        }
+    }
+    if let Err(e) = conn.execute_batch("ALTER TABLE chats ADD COLUMN workspace_id TEXT") {
+        if !e.to_string().contains("duplicate column name") {
+            tracing::warn!(error = %e, "Failed to add chats.workspace_id column");
+        }
+    }
+    if let Err(e) = conn.execute_batch(
+        "ALTER TABLE group_agent_bindings ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''",
+    ) {
+        if !e.to_string().contains("duplicate column name") {
+            tracing::warn!(error = %e, "Failed to add group_agent_bindings.workspace_id column");
+        }
+    }
+
     conn.execute_batch(
         r#"
         -- Projects table
@@ -250,29 +280,6 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
           AND workspace_id IS NULL;
         "#,
     )?;
-
-    // Incremental migrations for existing databases.
-    // These are no-ops if the columns already exist (SQLite ignores errors).
-    // For databases created by older versions, these add missing columns.
-    if let Err(e) = conn
-        .execute_batch("ALTER TABLE workspaces ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
-    {
-        if !e.to_string().contains("duplicate column name") {
-            tracing::warn!(error = %e, "Failed to add workspaces.status column");
-        }
-    }
-    if let Err(e) = conn.execute_batch("ALTER TABLE chats ADD COLUMN workspace_id TEXT") {
-        if !e.to_string().contains("duplicate column name") {
-            tracing::warn!(error = %e, "Failed to add chats.workspace_id column");
-        }
-    }
-    if let Err(e) = conn.execute_batch(
-        "ALTER TABLE group_agent_bindings ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''",
-    ) {
-        if !e.to_string().contains("duplicate column name") {
-            tracing::warn!(error = %e, "Failed to add group_agent_bindings.workspace_id column");
-        }
-    }
 
     Ok(())
 }

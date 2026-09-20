@@ -432,24 +432,6 @@ impl AgentLauncher {
         let instruction_file = work_dir.join(format!(".ergatai-task-{}.md", agent_id));
         tokio::fs::write(&instruction_file, &instruction).await?;
 
-        // Create running agent record
-        let running_agent = RunningAgent {
-            task_id: plan.task_id.clone(),
-            agent_name: assignment.agent_name.clone(),
-            worktree_path: work_dir.clone(),
-            plan_file: plan.plan_file.clone(),
-            result_file: result_file.clone(),
-            status: AgentSessionStatus::Starting,
-            lifecycle: None,
-            pane_id: None,
-            token_id: Some(file_token.id.to_string()),
-        };
-
-        self.running_agents
-            .lock()
-            .await
-            .insert(agent_id.clone(), running_agent);
-
         // Launch agent — check if it already exists in the registry first.
         // Extract node_id from plan file (DAG nodes use {node_id}.md naming)
         let node_id = plan
@@ -466,7 +448,7 @@ impl AgentLauncher {
             .find_registered_agent(&runtime, &assignment.agent_name)
             .await;
 
-        if let Some(runtime_agent_id) = existing_agent_id {
+        let pane_id = if let Some(runtime_agent_id) = existing_agent_id {
             // Agent already exists — deliver task via message injection instead of launching new process
             tracing::info!(
                 agent = %agent_id,
@@ -474,15 +456,6 @@ impl AgentLauncher {
                 runtime_agent_id = %runtime_agent_id,
                 "✅ Reusing existing registered agent — delivering task via inject_message"
             );
-
-            // Update running agent status to Running
-            {
-                let mut agents = self.running_agents.lock().await;
-                if let Some(agent) = agents.get_mut(&agent_id) {
-                    let _ = agent.status.transition_to(AgentSessionStatus::Running);
-                    agent.pane_id = Some(runtime_agent_id.clone());
-                }
-            }
 
             // Inject the instruction as a message to the existing agent
             if let Err(e) = runtime
@@ -507,6 +480,8 @@ impl AgentLauncher {
                 self.spawn_result_file_watcher(&agent_id, &runtime_agent_id, node_id_val)
                     .await;
             }
+
+            Some(runtime_agent_id)
         } else {
             // Agent not found in registry — launch a new process
             self.spawn_agent_session(
@@ -517,7 +492,26 @@ impl AgentLauncher {
                 node_id,
             )
             .await?;
-        }
+            None
+        };
+
+        // Create running agent record AFTER successful launch to prevent registry leaks
+        let running_agent = RunningAgent {
+            task_id: plan.task_id.clone(),
+            agent_name: assignment.agent_name.clone(),
+            worktree_path: work_dir.clone(),
+            plan_file: plan.plan_file.clone(),
+            result_file: result_file.clone(),
+            status: AgentSessionStatus::Running,
+            lifecycle: None,
+            pane_id,
+            token_id: Some(file_token.id.to_string()),
+        };
+
+        self.running_agents
+            .lock()
+            .await
+            .insert(agent_id.clone(), running_agent);
 
         Ok(agent_id)
     }

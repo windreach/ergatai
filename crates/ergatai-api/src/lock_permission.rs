@@ -414,7 +414,8 @@ mod tests {
             PermissionOption::new("allow-once", "Allow once", PermissionOptionKind::AllowOnce),
             PermissionOption::new("reject", "Reject", PermissionOptionKind::RejectOnce),
         ];
-        let request = RequestPermissionRequest::new(SessionId::new("test-session"), tool_call, options);
+        let request =
+            RequestPermissionRequest::new(SessionId::new("test-session"), tool_call, options);
 
         let decision = select_allow_option(&request);
         assert_eq!(decision.option_id.as_deref(), Some("allow-once"));
@@ -436,7 +437,8 @@ mod tests {
                 PermissionOptionKind::RejectOnce,
             ),
         ];
-        let request = RequestPermissionRequest::new(SessionId::new("test-session"), tool_call, options);
+        let request =
+            RequestPermissionRequest::new(SessionId::new("test-session"), tool_call, options);
 
         let decision = select_reject_option(&request);
         assert_eq!(decision.option_id.as_deref(), Some("reject-once"));

@@ -146,16 +146,28 @@ impl AgentRecord {
     }
 
     /// Update the agent's lifecycle state and record the transition
+    ///
+    /// Validates that the transition is allowed before applying it.
+    /// Returns Err if the transition is invalid (e.g., from Terminated state).
     pub fn transition_to(
         &mut self,
         new_state: AgentLifecycleState,
         reason: Option<String>,
         metadata: serde_json::Value,
-    ) {
+    ) -> Result<(), String> {
+        // Validate transition: cannot transition from terminal state
+        if self.state.is_terminal() {
+            return Err(format!(
+                "Cannot transition from terminal state '{}' to '{}'",
+                self.state.state_name(),
+                new_state.state_name()
+            ));
+        }
+
         let from_state = self.state.state_name().to_string();
         let to_state = new_state.state_name().to_string();
 
-        // Get heartbeat before moving new_state
+        // Get heartbeat before moving to new state
         let new_heartbeat = new_state.last_heartbeat();
 
         let transition = StateTransition {
@@ -173,13 +185,24 @@ impl AgentRecord {
             let drain_count = self.state_history.len() - MAX_HISTORY;
             self.state_history.drain(..drain_count);
         }
+
+        // Update stable_id from handle metadata if it changed
+        if let Some(new_stable_id) = self.handle.metadata.get("ergatai_agent_id") {
+            self.stable_id = Some(new_stable_id.clone());
+        }
+
         self.state = new_state;
         self.state_changed_at = Utc::now();
 
         // Update last_heartbeat if the new state has one
         if let Some(hb) = new_heartbeat {
             self.last_heartbeat = hb;
+        } else if self.state.is_terminal() {
+            // For terminal states without heartbeat, set to current time
+            self.last_heartbeat = Utc::now();
         }
+
+        Ok(())
     }
 
     /// Update the heartbeat timestamp
@@ -271,12 +294,13 @@ mod tests {
             context_source: Some("AGENT.md".to_string()),
         };
 
-        record.transition_to(
+        let result = record.transition_to(
             new_state,
             Some("Starting initialization".to_string()),
             serde_json::json!({"source": "test"}),
         );
 
+        assert!(result.is_ok());
         assert_eq!(record.state.state_name(), "initializing");
         assert_eq!(record.state_history.len(), 1);
         assert_eq!(record.state_history[0].from_state, "created");
@@ -319,44 +343,51 @@ mod tests {
         assert!(!record.is_processing());
 
         // Idle state
-        record.transition_to(
-            AgentLifecycleState::Idle {
-                ready_since: Utc::now(),
-                capabilities: vec![],
-            },
-            None,
-            serde_json::json!({}),
-        );
+        record
+            .transition_to(
+                AgentLifecycleState::Idle {
+                    ready_since: Utc::now(),
+                    capabilities: vec![],
+                },
+                None,
+                serde_json::json!({}),
+            )
+            .unwrap();
         assert!(record.is_alive());
         assert!(!record.is_terminal());
         assert!(record.is_idle());
         assert!(!record.is_processing());
 
         // Processing state
-        record.transition_to(
-            AgentLifecycleState::Processing {
-                task_id: "task-123".to_string(),
-                phase: crate::agent_lifecycle::ProcessingPhase::Planning,
-                started_at: Utc::now(),
-            },
-            None,
-            serde_json::json!({}),
-        );
+        record
+            .transition_to(
+                AgentLifecycleState::Processing {
+                    task_id: "task-123".to_string(),
+                    phase: crate::agent_lifecycle::ProcessingPhase::Planning,
+                    started_at: Utc::now(),
+                    last_heartbeat: Utc::now(),
+                },
+                None,
+                serde_json::json!({}),
+            )
+            .unwrap();
         assert!(record.is_alive());
         assert!(!record.is_terminal());
         assert!(!record.is_idle());
         assert!(record.is_processing());
 
         // Terminated state
-        record.transition_to(
-            AgentLifecycleState::Terminated {
-                outcome: crate::agent_lifecycle::ExitOutcome::Exited { exit_code: Some(0) },
-                terminated_at: Utc::now(),
-                duration_secs: 100,
-            },
-            None,
-            serde_json::json!({}),
-        );
+        record
+            .transition_to(
+                AgentLifecycleState::Terminated {
+                    outcome: crate::agent_lifecycle::ExitOutcome::Exited { exit_code: Some(0) },
+                    terminated_at: Utc::now(),
+                    duration_secs: 100,
+                },
+                None,
+                serde_json::json!({}),
+            )
+            .unwrap();
         assert!(!record.is_alive());
         assert!(record.is_terminal());
         assert!(!record.is_idle());
@@ -374,15 +405,17 @@ mod tests {
 
         assert_eq!(record.current_task_id(), None);
 
-        record.transition_to(
-            AgentLifecycleState::Running {
-                task_id: Some("task-456".to_string()),
-                started_at: Utc::now(),
-                last_heartbeat: Utc::now(),
-            },
-            None,
-            serde_json::json!({}),
-        );
+        record
+            .transition_to(
+                AgentLifecycleState::Running {
+                    task_id: Some("task-456".to_string()),
+                    started_at: Utc::now(),
+                    last_heartbeat: Utc::now(),
+                },
+                None,
+                serde_json::json!({}),
+            )
+            .unwrap();
         assert_eq!(record.current_task_id(), Some("task-456"));
     }
 
@@ -415,5 +448,44 @@ mod tests {
         assert_eq!(record.agent_uuid, decoded.agent_uuid);
         assert_eq!(record.agent_id, decoded.agent_id);
         assert_eq!(record.state.state_name(), decoded.state.state_name());
+    }
+
+    #[test]
+    fn test_cannot_transition_from_terminal_state() {
+        let mut record = AgentRecord::new(
+            "uuid-123".to_string(),
+            "agent-1".to_string(),
+            "ws-1".to_string(),
+            create_test_handle(),
+        );
+
+        // Transition to terminal state
+        record
+            .transition_to(
+                AgentLifecycleState::Terminated {
+                    outcome: crate::agent_lifecycle::ExitOutcome::Exited { exit_code: Some(0) },
+                    terminated_at: Utc::now(),
+                    duration_secs: 100,
+                },
+                None,
+                serde_json::json!({}),
+            )
+            .unwrap();
+
+        // Attempt to transition from terminal state should fail
+        let result = record.transition_to(
+            AgentLifecycleState::Running {
+                task_id: None,
+                started_at: Utc::now(),
+                last_heartbeat: Utc::now(),
+            },
+            None,
+            serde_json::json!({}),
+        );
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Cannot transition from terminal state"));
     }
 }

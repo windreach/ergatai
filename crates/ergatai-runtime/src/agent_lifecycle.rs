@@ -167,6 +167,8 @@ pub enum AgentLifecycleState {
         phase: ProcessingPhase,
         /// When processing started
         started_at: DateTime<Utc>,
+        /// Last heartbeat timestamp (for hang detection)
+        last_heartbeat: DateTime<Utc>,
     },
 
     /// Agent stopping gracefully (shutdown in progress)
@@ -228,7 +230,7 @@ impl AgentLifecycleState {
     pub fn last_heartbeat(&self) -> Option<DateTime<Utc>> {
         match self {
             AgentLifecycleState::Running { last_heartbeat, .. } => Some(*last_heartbeat),
-            AgentLifecycleState::Processing { .. } => None, // Could be extended to track heartbeat
+            AgentLifecycleState::Processing { last_heartbeat, .. } => Some(*last_heartbeat),
             _ => None,
         }
     }
@@ -331,6 +333,7 @@ mod tests {
             task_id: "task-456".to_string(),
             phase: ProcessingPhase::Planning,
             started_at: Utc::now(),
+            last_heartbeat: Utc::now(),
         };
         assert_eq!(processing.task_id(), Some("task-456"));
 
@@ -350,6 +353,14 @@ mod tests {
             last_heartbeat: now,
         };
         assert_eq!(running.last_heartbeat(), Some(now));
+
+        let processing = AgentLifecycleState::Processing {
+            task_id: "task-789".to_string(),
+            phase: ProcessingPhase::Writing,
+            started_at: now,
+            last_heartbeat: now,
+        };
+        assert_eq!(processing.last_heartbeat(), Some(now));
 
         let idle = AgentLifecycleState::Idle {
             ready_since: now,
@@ -458,6 +469,7 @@ mod tests {
             task_id: "task-789".to_string(),
             phase: ProcessingPhase::Writing,
             started_at: Utc::now(),
+            last_heartbeat: Utc::now(),
         };
         assert!(processing.is_alive());
         assert!(!processing.is_terminal());

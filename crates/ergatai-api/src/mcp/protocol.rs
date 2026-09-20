@@ -41,16 +41,9 @@ impl ServerHandler for ErgataiMcpServer {
         *self.session_agent_id().write().await = Some(unique_agent_id.clone());
 
         // Register agent in registry
-        if let Err(e) = self
-            .registry()
+        self.registry()
             .register_agent(unique_agent_id.clone(), connection_id.clone(), None)
-            .await
-        {
-            return Err(ErrorData::invalid_params(
-                format!("Failed to register agent: {}", e),
-                None::<serde_json::Value>,
-            ));
-        }
+            .await;
 
         // Save the peer handle for pushing notifications to this agent
         self.peer_registry()

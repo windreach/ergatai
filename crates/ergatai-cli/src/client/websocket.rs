@@ -145,9 +145,25 @@ pub async fn attach_terminal(agent_id: &str, api_url: &str, token: Option<&str>)
     });
 
     // 7. Wait for either task to exit
-    tokio::select! {
-        _ = writer_handle => {}
-        _ = reader_handle => {}
+    let result = tokio::select! {
+        res = writer_handle => {
+            if let Err(ref e) = res {
+                tracing::warn!(error = %e, "Writer task failed");
+            }
+            res
+        }
+        res = reader_handle => {
+            if let Err(ref e) = res {
+                tracing::warn!(error = %e, "Reader task failed");
+            }
+            res
+        }
+    };
+
+    // Check if either task panicked
+    if let Err(e) = result {
+        disable_raw_mode().ok(); // Best effort restore
+        return Err(anyhow::anyhow!("Terminal session task failed: {}", e));
     }
 
     // 8. Restore terminal
@@ -157,7 +173,17 @@ pub async fn attach_terminal(agent_id: &str, api_url: &str, token: Option<&str>)
 }
 
 /// Build WebSocket URL from HTTP API URL.
+///
+/// Validates that the input URL starts with http:// or https:// before conversion.
 fn build_ws_url(api_url: &str, agent_id: &str) -> Result<String> {
+    // Validate URL scheme before replacement
+    if !api_url.starts_with("http://") && !api_url.starts_with("https://") {
+        return Err(anyhow::anyhow!(
+            "Invalid API URL scheme: must start with http:// or https://, got: {}",
+            api_url
+        ));
+    }
+
     let ws_url = api_url
         .replace("http://", "ws://")
         .replace("https://", "wss://");

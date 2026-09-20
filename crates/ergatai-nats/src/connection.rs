@@ -7,10 +7,13 @@ use std::time::Duration;
 use async_nats::jetstream;
 use async_nats::jetstream::stream::{self, Config};
 use async_nats::Client;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::server::NatsServer;
 use ergatai_error::{ErgataiError, ErgataiResult};
+
+/// Default timeout for JetStream ack operations (10 seconds)
+const DEFAULT_JETSTREAM_ACK_TIMEOUT_SECS: u64 = 10;
 
 /// NATS connection wrapper
 ///
@@ -20,6 +23,8 @@ use ergatai_error::{ErgataiError, ErgataiResult};
 pub struct NatsConnection {
     client: Client,
     jetstream: jetstream::Context,
+    /// Timeout for JetStream ack operations (configurable)
+    jetstream_ack_timeout: Duration,
 }
 
 impl NatsConnection {
@@ -47,7 +52,11 @@ impl NatsConnection {
 
         info!("Connected to NATS");
 
-        Ok(Self { client, jetstream })
+        Ok(Self {
+            client,
+            jetstream,
+            jetstream_ack_timeout: Duration::from_secs(DEFAULT_JETSTREAM_ACK_TIMEOUT_SECS),
+        })
     }
 
     /// Connect to a NATS server with token authentication.
@@ -73,7 +82,11 @@ impl NatsConnection {
 
         info!("Connected to NATS (authenticated)");
 
-        Ok(Self { client, jetstream })
+        Ok(Self {
+            client,
+            jetstream,
+            jetstream_ack_timeout: Duration::from_secs(DEFAULT_JETSTREAM_ACK_TIMEOUT_SECS),
+        })
     }
 
     /// Connect to an embedded NatsServer instance using its auth token.
@@ -89,6 +102,15 @@ impl NatsConnection {
     /// Get the JetStream context
     pub fn jetstream(&self) -> &jetstream::Context {
         &self.jetstream
+    }
+
+    /// Set the timeout for JetStream ack operations.
+    ///
+    /// This controls how long `publish_jetstream` will wait for the stream
+    /// to acknowledge a message before returning a timeout error.
+    pub fn with_jetstream_ack_timeout(mut self, timeout: Duration) -> Self {
+        self.jetstream_ack_timeout = timeout;
+        self
     }
 
     /// Publish a message to a subject (core NATS — no persistence, no ack)
@@ -135,12 +157,13 @@ impl NatsConnection {
             })?;
         // Timeout the ack await — a stalled NATS server (network partition, slow disk,
         // leader election) should not block the caller indefinitely.
-        let ack = tokio::time::timeout(Duration::from_secs(10), ack_future)
+        let ack = tokio::time::timeout(self.jetstream_ack_timeout, ack_future)
             .await
             .map_err(|_| {
                 ErgataiError::NatsError(format!(
-                    "JetStream ack for {} timed out after 10s",
-                    subject
+                    "JetStream ack for {} timed out after {}s",
+                    subject,
+                    self.jetstream_ack_timeout.as_secs()
                 ))
             })?
             .map_err(|e| {
@@ -231,8 +254,13 @@ impl NatsConnection {
     }
 
     /// Wait for connection to be ready (useful after server startup)
+    ///
+    /// Uses exponential backoff: 50ms, 100ms, 200ms, 400ms, 800ms, then 1s for remaining attempts.
+    /// Total worst-case wait: ~5.5 seconds across 10 attempts.
     pub async fn wait_for_ready(&self) -> ErgataiResult<()> {
         // Try a flush to verify the connection is actually working
+        // Use exponential backoff: 50ms, 100ms, 200ms, 400ms, 800ms, 1s, 1s, 1s, 1s
+        let mut delay_ms = 50u64;
         for attempt in 0..10 {
             match self.client.flush().await {
                 Ok(()) => {
@@ -240,14 +268,24 @@ impl NatsConnection {
                     return Ok(());
                 }
                 Err(e) => {
-                    debug!(attempt = attempt, error = %e, "NATS not ready, retrying");
+                    if attempt < 9 {
+                        // Don't warn on the last attempt — we'll return an error
+                        warn!(
+                            attempt = attempt,
+                            delay_ms = delay_ms,
+                            error = %e,
+                            "NATS not ready, retrying with backoff"
+                        );
+                    }
                 }
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            // Exponential backoff: double the delay, capped at 1000ms
+            delay_ms = (delay_ms * 2).min(1000);
         }
 
         Err(ErgataiError::NatsError(
-            "NATS connection not ready after 1 second".to_string(),
+            "NATS connection not ready after 10 attempts (~5.5s)".to_string(),
         ))
     }
 }

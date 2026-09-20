@@ -220,14 +220,14 @@ impl AuditManager {
 
         // Use a single aggregated query instead of N+1 queries (🔴-13 fix)
         let query = if cutoff.is_some() {
-            "SELECT action, agent_id, mode, COUNT(*) as cnt
+            "SELECT action, agent_id, mode, file_path, COUNT(*) as cnt
              FROM audit_log
              WHERE timestamp >= ?1
-             GROUP BY action, agent_id, mode"
+             GROUP BY action, agent_id, mode, file_path"
         } else {
-            "SELECT action, agent_id, mode, COUNT(*) as cnt
+            "SELECT action, agent_id, mode, file_path, COUNT(*) as cnt
              FROM audit_log
-             GROUP BY action, agent_id, mode"
+             GROUP BY action, agent_id, mode, file_path"
         };
 
         let mut stmt = conn
@@ -237,7 +237,10 @@ impl AuditManager {
         // Process rows — handle cutoff as optional param
         let row_iter: Box<
             dyn Iterator<
-                Item = Result<(String, Option<String>, Option<String>, u64), rusqlite::Error>,
+                Item = Result<
+                    (String, Option<String>, Option<String>, Option<String>, u64),
+                    rusqlite::Error,
+                >,
             >,
         > = if let Some(ref cutoff) = cutoff {
             Box::new(stmt.query_map(params![cutoff], |row| {
@@ -245,7 +248,8 @@ impl AuditManager {
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
-                    row.get::<_, u64>(3)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, u64>(4)?,
                 ))
             })?)
         } else {
@@ -254,13 +258,18 @@ impl AuditManager {
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
-                    row.get::<_, u64>(3)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, u64>(4)?,
                 ))
             })?)
         };
 
+        // Track lock duration sum and count for average calculation
+        let mut lock_duration_sum: f64 = 0.0;
+        let mut lock_duration_count: u64 = 0;
+
         for row in row_iter {
-            let (action, agent_id, mode, cnt) = row
+            let (action, agent_id, mode, file_path, cnt) = row
                 .map_err(|e| ErgataiError::internal(format!("Failed to read stats row: {}", e)))?;
 
             match action.as_str() {
@@ -275,11 +284,30 @@ impl AuditManager {
                     if let Some(ref m) = mode {
                         *stats.accesses_by_mode.entry(m.clone()).or_insert(0) += cnt;
                     }
+                    if let Some(ref path) = file_path {
+                        *stats.accesses_by_file.entry(path.clone()).or_insert(0) += cnt;
+                    }
                 }
                 "LOCK_RELEASED" => stats.total_releases += cnt,
                 a if a.contains("CONFLICT") => stats.total_conflicts += cnt,
+                "SENSITIVE_ACCESS" => stats.total_sensitive_accesses += cnt,
+                "LOCK_DURATION" => {
+                    // Track lock duration for average calculation
+                    // file_path contains duration in seconds as string
+                    if let Some(ref duration_str) = file_path {
+                        if let Ok(duration) = duration_str.parse::<f64>() {
+                            lock_duration_sum += duration * cnt as f64;
+                            lock_duration_count += cnt;
+                        }
+                    }
+                }
                 _ => {}
             }
+        }
+
+        // Calculate average lock duration
+        if lock_duration_count > 0 {
+            stats.avg_lock_duration_secs = lock_duration_sum / lock_duration_count as f64;
         }
 
         Ok(stats)

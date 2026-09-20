@@ -93,29 +93,49 @@ impl UnifiedAgentRegistry {
         let agent_id = record.agent_id.clone();
         let mcp_id = record.mcp_agent_id.clone();
 
-        // Step 1: Collect cleanup information using read locks (no mutations)
-        let (old_uuid_by_agent_id, old_record_by_agent_id, old_uuid_by_mcp_id) = {
+        // Acquire write locks in FIXED ORDER and perform all operations atomically
+        // Order: agents_by_uuid → mcp_id_to_uuid → agent_id_to_uuid
+        // This prevents TOCTOU races by holding locks throughout the entire operation
+
+        // 1. Remove old records from agents_by_uuid and collect cleanup info
+        let (old_uuid_by_agent_id, old_uuid_by_mcp_id) = {
+            let mut agents = self.agents_by_uuid.write().await;
             let id_to_uuid = self.agent_id_to_uuid.read().await;
+
             let old_uuid_by_agent = id_to_uuid.get(&agent_id).cloned();
 
-            let old_record = if let Some(ref old_uuid) = old_uuid_by_agent {
+            // Remove old agent_id binding if it points to a different UUID
+            if let Some(ref old_uuid) = old_uuid_by_agent {
                 if *old_uuid != uuid {
-                    self.agents_by_uuid.read().await.get(old_uuid).cloned()
-                } else {
-                    None
+                    warn!(
+                        old_agent_uuid = %old_uuid,
+                        new_agent_uuid = %uuid,
+                        agent_id = %agent_id,
+                        "agent_id re-bound to different UUID — removing old record"
+                    );
+                    agents.remove(old_uuid);
                 }
-            } else {
-                None
-            };
+            }
 
+            // Check for old mcp_id binding
             let mcp_to_uuid = self.mcp_id_to_uuid.read().await;
             let old_uuid_by_mcp = if let Some(ref mcp) = mcp_id {
                 mcp_to_uuid.get(mcp).cloned()
             } else {
                 None
             };
+
             let old_uuid_by_mcp = if let Some(ref old_uuid) = old_uuid_by_mcp {
                 if *old_uuid != uuid {
+                    if let Some(ref mcp) = mcp_id {
+                        warn!(
+                            old_agent_uuid = %old_uuid,
+                            new_agent_uuid = %uuid,
+                            mcp_agent_id = %mcp,
+                            "mcp_agent_id re-bound to different UUID — removing old record"
+                        );
+                    }
+                    agents.remove(old_uuid);
                     Some(old_uuid.clone())
                 } else {
                     None
@@ -124,64 +144,22 @@ impl UnifiedAgentRegistry {
                 None
             };
 
-            (old_uuid_by_agent, old_record, old_uuid_by_mcp)
-        };
-        // All read locks dropped here
-
-        // Step 2: Log warnings before acquiring write locks
-        if let Some(ref old_uuid) = old_uuid_by_agent_id {
-            warn!(
-                old_agent_uuid = %old_uuid,
-                new_agent_uuid = %uuid,
-                agent_id = %agent_id,
-                "agent_id re-bound to different UUID — removing old record"
-            );
-        }
-        if let Some(ref old_uuid) = old_uuid_by_mcp_id {
-            if let Some(ref mcp) = mcp_id {
-                warn!(
-                    old_agent_uuid = %old_uuid,
-                    new_agent_uuid = %uuid,
-                    mcp_agent_id = %mcp,
-                    "mcp_agent_id re-bound to different UUID — removing old record"
-                );
-            }
-        }
-
-        // Step 3: Acquire write locks in FIXED ORDER and perform all mutations
-        // Order: agents_by_uuid → mcp_id_to_uuid → agent_id_to_uuid
-
-        // 3a. Remove old records from agents_by_uuid
-        {
-            let mut agents = self.agents_by_uuid.write().await;
-            if let Some(ref old_uuid) = old_uuid_by_agent_id {
-                agents.remove(old_uuid);
-            }
-            if let Some(ref old_uuid) = old_uuid_by_mcp_id {
-                agents.remove(old_uuid);
-            }
             // Insert new record
             agents.insert(uuid.clone(), record);
-        }
 
-        // 3b. Update mcp_id_to_uuid
+            (old_uuid_by_agent, old_uuid_by_mcp)
+        };
+
+        // 2. Update mcp_id_to_uuid
         {
             let mut mcp_to_uuid = self.mcp_id_to_uuid.write().await;
             // Remove stale mcp_id bindings
-            if let Some(ref old_rec) = old_record_by_agent_id {
-                if let Some(ref old_mcp_id) = old_rec.mcp_agent_id {
-                    if mcp_to_uuid.get(old_mcp_id) == old_uuid_by_agent_id.as_ref() {
-                        mcp_to_uuid.remove(old_mcp_id);
-                    }
-                }
+            if let Some(ref old_uuid) = old_uuid_by_agent_id {
+                // Find and remove any mcp_id that pointed to old_uuid
+                mcp_to_uuid.retain(|_, v| v != old_uuid);
             }
             if let Some(ref old_uuid) = old_uuid_by_mcp_id {
-                // Find and remove the mcp_id that pointed to old_uuid
-                if let Some(ref mcp) = mcp_id {
-                    if mcp_to_uuid.get(mcp) == Some(old_uuid) {
-                        mcp_to_uuid.remove(mcp);
-                    }
-                }
+                mcp_to_uuid.retain(|_, v| v != old_uuid);
             }
             // Insert new mcp_id binding
             if let Some(ref mcp) = mcp_id {
@@ -189,7 +167,7 @@ impl UnifiedAgentRegistry {
             }
         }
 
-        // 3c. Update agent_id_to_uuid
+        // 3. Update agent_id_to_uuid
         {
             let mut id_to_uuid = self.agent_id_to_uuid.write().await;
             // Remove stale agent_id binding if it pointed to a different UUID
@@ -261,7 +239,9 @@ impl UnifiedAgentRegistry {
             let from_state = record.state.state_name().to_string();
             let task_id = record.task_id.clone();
 
-            record.transition_to(new_state, reason.clone(), metadata.clone());
+            record
+                .transition_to(new_state, reason.clone(), metadata.clone())
+                .map_err(|e| format!("State transition failed: {}", e))?;
 
             let to_state = record.state.state_name().to_string();
             let is_terminal = record.state.is_terminal();

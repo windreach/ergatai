@@ -669,8 +669,7 @@ mod tests {
         // Register an agent first
         registry
             .register_agent("agent-1".to_string(), "conn-1".to_string(), None)
-            .await
-            .unwrap();
+            .await;
 
         // Verify it's registered
         let agents = registry.list_agents().await;
@@ -706,8 +705,7 @@ mod tests {
 
         registry
             .register_agent("agent-1".to_string(), "conn-1".to_string(), None)
-            .await
-            .unwrap();
+            .await;
 
         // Call unregister twice — second call should be a no-op
         do_unregister_agent(&registry, &peer_registry, "agent-1", "test1").await;
@@ -727,8 +725,7 @@ mod tests {
         // Register agent manually
         registry
             .register_agent("drop-agent".to_string(), "conn".to_string(), None)
-            .await
-            .unwrap();
+            .await;
 
         {
             let server = ErgataiMcpServer::new(registry.clone(), peer_registry.clone(), None);
@@ -752,8 +749,7 @@ mod tests {
         // Register a different agent (not the one tied to this session)
         registry
             .register_agent("other-agent".to_string(), "conn".to_string(), None)
-            .await
-            .unwrap();
+            .await;
 
         {
             let _server = ErgataiMcpServer::new(registry.clone(), peer_registry.clone(), None);

@@ -81,11 +81,17 @@ pub enum CommunicationCheck {
 }
 
 impl CommunicationCheck {
+    /// Returns true if communication is explicitly allowed.
+    /// Note: NotApplicable means "no opinion" (not a participant), not "allowed".
     pub fn is_allowed(&self) -> bool {
-        matches!(
-            self,
-            CommunicationCheck::Allowed | CommunicationCheck::NotApplicable
-        )
+        matches!(self, CommunicationCheck::Allowed)
+    }
+
+    /// Returns true if communication is not explicitly denied.
+    /// This includes both explicit allowance and "no opinion" (NotApplicable).
+    /// Use this when you want to allow communication unless explicitly blocked.
+    pub fn is_not_denied(&self) -> bool {
+        !self.is_denied()
     }
 
     pub fn is_denied(&self) -> bool {
@@ -106,11 +112,14 @@ pub struct CollaborationSession {
     pub participants: HashSet<String>,
     /// Communication policy for this session.
     pub policy: MeshPolicy,
-    /// Pre-computed bidirectional adjacent pairs as combined keys "from\0to".
+    /// Pre-computed bidirectional adjacent pairs as (from, to) tuples.
     /// Populated from the graph at construction time for O(1) lookups.
-    /// Using a single String key reduces allocations from 2 to 1 per lookup.
+    /// Using tuple keys instead of concatenated strings prevents null byte collision attacks.
+    pub adjacent_pairs: HashSet<(String, String)>,
+    /// Pre-computed bidirectional restricted pairs as (from, to) tuples.
+    /// Populated from MeshPolicy::Restricted at construction time for O(1) lookups.
     #[serde(skip)]
-    pub adjacent_pairs: HashSet<String>,
+    pub restricted_pairs: HashSet<(String, String)>,
     /// Unix timestamp (seconds) when the session was created.
     pub created_at: u64,
 }
@@ -121,28 +130,47 @@ impl CollaborationSession {
     pub fn from_graph(dag_id: &str, graph: &TaskGraph, policy: MeshPolicy) -> Self {
         let participants: HashSet<String> = graph.nodes.iter().map(|n| n.agent.clone()).collect();
         let adjacent_pairs = Self::compute_adjacency(graph);
+        let restricted_pairs = Self::compute_restricted_pairs(&policy);
         Self {
             dag_id: dag_id.to_string(),
             participants,
             policy,
             adjacent_pairs,
+            restricted_pairs,
             created_at: chrono::Utc::now().timestamp() as u64,
         }
     }
 
     /// Pre-compute the set of bidirectional adjacent agent pairs from the graph.
-    /// Uses combined keys "from\0to" to reduce allocations.
-    fn compute_adjacency(graph: &TaskGraph) -> HashSet<String> {
+    /// Uses tuple keys (from, to) to prevent null byte collision attacks.
+    fn compute_adjacency(graph: &TaskGraph) -> HashSet<(String, String)> {
         let mut pairs = HashSet::new();
         for node in &graph.nodes {
             for dep_id in &node.depends_on {
                 if let Some(dep_node) = graph.find_node(dep_id) {
                     if node.agent != dep_node.agent {
                         // Bidirectional: insert both directions
-                        pairs.insert(format!("{}\0{}", node.agent, dep_node.agent));
-                        pairs.insert(format!("{}\0{}", dep_node.agent, node.agent));
+                        pairs.insert((node.agent.clone(), dep_node.agent.clone()));
+                        pairs.insert((dep_node.agent.clone(), node.agent.clone()));
                     }
                 }
+            }
+        }
+        pairs
+    }
+
+    /// Pre-compute the set of bidirectional restricted agent pairs from the policy.
+    /// Uses tuple keys (from, to) for O(1) lookups.
+    fn compute_restricted_pairs(policy: &MeshPolicy) -> HashSet<(String, String)> {
+        let mut pairs = HashSet::new();
+        if let MeshPolicy::Restricted {
+            pairs: allowed_pairs,
+        } = policy
+        {
+            for (a, b) in allowed_pairs {
+                // Bidirectional: insert both directions
+                pairs.insert((a.clone(), b.clone()));
+                pairs.insert((b.clone(), a.clone()));
             }
         }
         pairs
@@ -158,12 +186,15 @@ impl CollaborationSession {
             MeshPolicy::Open => true,
             MeshPolicy::Star { hub } => from == hub || to == hub,
             MeshPolicy::Adjacent => {
-                // Single allocation instead of two (format vs to_string + to_string)
-                self.adjacent_pairs.contains(&format!("{}\0{}", from, to))
+                // Use tuple lookup instead of string formatting
+                self.adjacent_pairs
+                    .contains(&(from.to_string(), to.to_string()))
             }
-            MeshPolicy::Restricted { pairs } => pairs
-                .iter()
-                .any(|(a, b)| (a == from && b == to) || (a == to && b == from)),
+            MeshPolicy::Restricted { .. } => {
+                // Use pre-computed HashSet for O(1) lookup
+                self.restricted_pairs
+                    .contains(&(from.to_string(), to.to_string()))
+            }
         }
     }
 }
@@ -285,15 +316,27 @@ mod tests {
         let g = sample_graph();
         let s = CollaborationSession::from_graph("dag-1", &g, MeshPolicy::Adjacent);
         // A↔B edge → a1↔a2
-        assert!(s.adjacent_pairs.contains("a1\0a2"));
-        assert!(s.adjacent_pairs.contains("a2\0a1"));
+        assert!(s
+            .adjacent_pairs
+            .contains(&("a1".to_string(), "a2".to_string())));
+        assert!(s
+            .adjacent_pairs
+            .contains(&("a2".to_string(), "a1".to_string())));
         // B↔C edge → a2↔a3
-        assert!(s.adjacent_pairs.contains("a2\0a3"));
-        assert!(s.adjacent_pairs.contains("a3\0a2"));
+        assert!(s
+            .adjacent_pairs
+            .contains(&("a2".to_string(), "a3".to_string())));
+        assert!(s
+            .adjacent_pairs
+            .contains(&("a3".to_string(), "a2".to_string())));
         // No A↔C edge
-        assert!(!s.adjacent_pairs.contains("a1\0a3"));
+        assert!(!s
+            .adjacent_pairs
+            .contains(&("a1".to_string(), "a3".to_string())));
         // No A↔D edge (D isolated)
-        assert!(!s.adjacent_pairs.contains("a1\0a4"));
+        assert!(!s
+            .adjacent_pairs
+            .contains(&("a1".to_string(), "a4".to_string())));
         // Adjacent policy uses precomputed set
         assert!(s.allows("a1", "a2"));
         assert!(s.allows("a2", "a3"));

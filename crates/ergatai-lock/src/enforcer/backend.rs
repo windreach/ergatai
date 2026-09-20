@@ -136,6 +136,19 @@ pub trait EnforcerBackend: Send + Sync + 'static {
     /// result, no other thread reads the fanotify queue — causing a deadlock.
     /// Draining self-PID events from the blocking thread breaks this cycle.
     ///
+    /// # Security Contract
+    ///
+    /// **CRITICAL**: Implementations MUST unconditionally ALLOW all self-PID events.
+    /// This is a security-sensitive behavior: the enforcer process is trusted and
+    /// only opens database files (.ergatai/locks.db, audit logs). By unconditionally
+    /// allowing these events, we prevent deadlocks while maintaining the security
+    /// guarantee that external processes are still subject to policy enforcement.
+    ///
+    /// **Constraints on enforcer process file operations:**
+    /// - The enforcer process MUST only open files it owns (database files, logs)
+    /// - It MUST NOT open files based on untrusted input
+    /// - All file operations by the enforcer are implicitly allowed to prevent deadlock
+    ///
     /// Default implementation is a no-op (non-fanotify backends don't need this).
     /// Returns `true` if any events were processed (used by the drain thread
     /// for adaptive sleep: no sleep when events are flowing, longer sleep when idle).

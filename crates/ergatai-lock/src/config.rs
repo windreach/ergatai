@@ -151,11 +151,30 @@ impl ConfigManager {
             ))
         })?;
 
+        // Validate all glob patterns at load time to fail fast on invalid config
+        // This prevents silent security bypasses from typos in pattern definitions
+        for pattern_str in &config.sensitive_paths {
+            if let Err(e) = glob::Pattern::new(pattern_str) {
+                return Err(ErgataiError::internal(format!(
+                    "Invalid glob pattern in sensitive_paths '{}': {}. Config loading aborted to prevent security bypass.",
+                    pattern_str, e
+                )));
+            }
+        }
+        for pattern_str in &config.forbidden_paths {
+            if let Err(e) = glob::Pattern::new(pattern_str) {
+                return Err(ErgataiError::internal(format!(
+                    "Invalid glob pattern in forbidden_paths '{}': {}. Config loading aborted to prevent security bypass.",
+                    pattern_str, e
+                )));
+            }
+        }
+
         info!(
             config_path = ?config_path,
             sensitive_paths = config.sensitive_paths.len(),
             forbidden_paths = config.forbidden_paths.len(),
-            "Loaded project configuration"
+            "Loaded project configuration (all patterns validated)"
         );
 
         Ok(config)

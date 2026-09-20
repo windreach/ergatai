@@ -131,9 +131,11 @@ impl DagContext {
             }
             MergeStrategy::Append => {
                 debug!(node_id = %id, "Merging outputs (append)");
-                if let Some(existing) = self.node_outputs.get(&id) {
+                // Take ownership of existing value to avoid cloning
+                let existing = self.node_outputs.remove(&id);
+                if let Some(existing_val) = existing {
                     // If existing is an array, append new values
-                    if let Value::Array(mut existing_arr) = existing.clone() {
+                    if let Value::Array(mut existing_arr) = existing_val {
                         if let Value::Array(new_arr) = outputs {
                             existing_arr.extend(new_arr);
                             self.node_outputs.insert(id, Value::Array(existing_arr));
@@ -144,7 +146,7 @@ impl DagContext {
                         }
                     } else {
                         // Existing is not an array, convert to array and append
-                        let mut new_arr = vec![existing.clone()];
+                        let mut new_arr = vec![existing_val];
                         if let Value::Array(arr) = outputs {
                             new_arr.extend(arr);
                         } else {
@@ -204,10 +206,14 @@ impl DagContext {
                     self.node_outputs.insert(id, outputs);
                 }
             }
-            MergeStrategy::Reducer { expr: _ } => {
+            MergeStrategy::Reducer { expr } => {
                 // TODO: Implement custom reducer expressions
-                // For now, fall back to overwrite
-                debug!(node_id = %id, "Merging outputs (reducer - not implemented, falling back to overwrite)");
+                // For now, fall back to overwrite with a warning
+                tracing::warn!(
+                    node_id = %id,
+                    expr = %expr,
+                    "Reducer merge strategy not yet implemented, falling back to overwrite"
+                );
                 self.node_outputs.insert(id, outputs);
             }
         }
