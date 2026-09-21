@@ -466,6 +466,10 @@ pub fn build_rest_app(state: AppState) -> Router {
             put(api::user_conversations::replace_conversation_messages),
         )
         .route(
+            "/api/v1/conversations/:id/file-changes",
+            get(api::user_conversations::list_conversation_file_changes),
+        )
+        .route(
             "/api/v1/stats/message-types",
             get(api::conversations::get_message_type_stats),
         )

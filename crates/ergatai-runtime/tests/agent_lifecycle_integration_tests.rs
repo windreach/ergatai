@@ -1,4 +1,5 @@
 //! Integration tests for agent lifecycle, record, and runtime behavior.
+#![allow(unused_must_use)]
 //!
 //! Covers:
 //! 1. State machine transitions (valid and invalid)

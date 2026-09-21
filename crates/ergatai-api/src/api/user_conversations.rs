@@ -1,5 +1,7 @@
 //! Conversation-first user data REST API.
 
+use std::collections::HashMap;
+
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -52,6 +54,15 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationFileChange {
+    pub file_path: String,
+    pub display_path: String,
+    pub additions: u64,
+    pub deletions: u64,
+}
+
 fn now_unix_seconds() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -71,6 +82,180 @@ fn db_error(operation: &'static str, error: rusqlite::Error) -> Response {
         }),
     );
     response.into_response()
+}
+
+#[derive(Debug)]
+struct ConversationFileState {
+    original_content: Option<String>,
+    current_content: Option<String>,
+    display_path: String,
+}
+
+fn json_object_string<'a>(
+    input: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<&'a str> {
+    input.get(key).and_then(serde_json::Value::as_str)
+}
+
+fn resolve_tool_file_path(input: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    input
+        .get("_locations")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|locations| locations.first())
+        .and_then(|location| location.get("path"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| json_object_string(input, "file_path").map(str::to_owned))
+        .or_else(|| json_object_string(input, "path").map(str::to_owned))
+        .or_else(|| json_object_string(input, "file").map(str::to_owned))
+        .filter(|path| !path.is_empty())
+}
+
+fn is_session_file(path: &str) -> bool {
+    path.contains("claude-sessions") || path.contains("Application Support")
+}
+
+fn strip_path_prefix<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
+    let prefix = prefix.trim_end_matches('/');
+    let suffix = path.strip_prefix(prefix)?;
+    Some(suffix.strip_prefix('/').unwrap_or(suffix))
+}
+
+fn display_file_path(
+    path: &str,
+    worktree_path: Option<&str>,
+    project_path: Option<&str>,
+) -> String {
+    for base_path in [worktree_path, project_path].into_iter().flatten() {
+        if let Some(relative_path) = strip_path_prefix(path, base_path) {
+            return relative_path.to_owned();
+        }
+    }
+
+    for prefix in ["/workspace", "/project/sandbox", "/project"] {
+        if let Some(relative_path) = strip_path_prefix(path, prefix) {
+            return relative_path.to_owned();
+        }
+    }
+
+    for marker in [".ergatai/worktrees/", ".21st/worktrees/"] {
+        if let Some(marker_index) = path.find(marker) {
+            let after_worktrees = &path[marker_index + marker.len()..];
+            let mut segments = after_worktrees.splitn(3, '/');
+            let _project_segment = segments.next();
+            let _conversation_segment = segments.next();
+            if let Some(relative_path) = segments.next() {
+                return relative_path.to_owned();
+            }
+        }
+    }
+
+    path.to_owned()
+}
+
+fn line_count(content: Option<&str>) -> u64 {
+    content
+        .map(|content| {
+            if content.is_empty() {
+                0
+            } else {
+                content.split('\n').count() as u64
+            }
+        })
+        .unwrap_or(0)
+}
+
+fn calculate_conversation_file_changes(
+    messages: &[user_data_db::Message],
+    worktree_path: Option<&str>,
+    project_path: Option<&str>,
+) -> Vec<ConversationFileChange> {
+    let mut file_states: HashMap<String, ConversationFileState> = HashMap::new();
+
+    for message in messages {
+        if message.role != "assistant" {
+            continue;
+        }
+
+        let Ok(parts) = serde_json::from_str::<serde_json::Value>(&message.parts) else {
+            continue;
+        };
+        let Some(parts) = parts.as_array() else {
+            continue;
+        };
+
+        for part in parts {
+            let Some(part_type) = part.get("type").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let is_write = part_type == "tool-Write";
+            if !is_write && part_type != "tool-Edit" {
+                continue;
+            }
+
+            let Some(input) = part.get("input").and_then(serde_json::Value::as_object) else {
+                continue;
+            };
+            let Some(file_path) = resolve_tool_file_path(input) else {
+                continue;
+            };
+            if is_session_file(&file_path) {
+                continue;
+            }
+
+            let new_string = if is_write {
+                json_object_string(input, "content")
+            } else {
+                json_object_string(input, "new_string")
+            };
+            let old_string = if is_write {
+                None
+            } else {
+                json_object_string(input, "old_string")
+            };
+            let Some(new_string) = new_string else {
+                continue;
+            };
+            if !is_write && old_string.is_none() {
+                continue;
+            }
+
+            let file_state =
+                file_states
+                    .entry(file_path.clone())
+                    .or_insert_with(|| ConversationFileState {
+                        original_content: None,
+                        current_content: None,
+                        display_path: display_file_path(&file_path, worktree_path, project_path),
+                    });
+
+            if is_write {
+                file_state.original_content = None;
+            } else if file_state.current_content.is_none() {
+                file_state.original_content = old_string.map(str::to_owned);
+            }
+            file_state.current_content = Some(new_string.to_owned());
+        }
+    }
+
+    file_states
+        .into_iter()
+        .filter_map(|(file_path, state)| {
+            let current_content = state.current_content?;
+            let original_content = state.original_content.clone().unwrap_or_default();
+            if current_content == original_content {
+                return None;
+            }
+
+            Some(ConversationFileChange {
+                file_path,
+                display_path: state.display_path,
+                additions: line_count(Some(&current_content)),
+                deletions: line_count(state.original_content.as_deref()),
+            })
+        })
+        .collect()
 }
 
 #[utoipa::path(
@@ -649,6 +834,203 @@ pub async fn list_conversation_messages(
             }),
         )
             .into_response(),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/conversations/{id}/file-changes",
+    tag = "Conversations",
+    params(("id" = String, Path, description = "Conversation ID")),
+    responses(
+        (status = 200, description = "Derived conversation file changes", body = Vec<ConversationFileChange>),
+        (status = 404, description = "Conversation not found"),
+        (status = 500, description = "Internal server error"),
+    )
+)]
+pub async fn list_conversation_file_changes(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Conversation ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let id_for_changes = id.clone();
+    match tokio::task::spawn_blocking(move || {
+        let Some(conversation) = user_data_db::conversations::get(&id_for_changes)? else {
+            return Ok(None);
+        };
+
+        let context = user_data_db::conversation_execution_contexts::get(&id_for_changes)?;
+        let project_path =
+            user_data_db::projects::get(&conversation.project_id)?.map(|project| project.path);
+        let messages = user_data_db::messages::list(&id_for_changes)?;
+        let worktree_path = context.and_then(|context| context.worktree_path);
+
+        Ok(Some(calculate_conversation_file_changes(
+            &messages,
+            worktree_path.as_deref(),
+            project_path.as_deref(),
+        )))
+    })
+    .await
+    {
+        Ok(Ok(Some(file_changes))) => (StatusCode::OK, Json(file_changes)).into_response(),
+        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => db_error("Failed to derive file changes", error),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod conversation_file_change_tests {
+    use super::*;
+    use crate::user_data_db::Message;
+
+    fn message(role: &str, parts: serde_json::Value) -> Message {
+        Message {
+            id: format!("msg_{}", role),
+            conversation_id: "conversation_test".to_owned(),
+            sequence: 0,
+            role: role.to_owned(),
+            parts: parts.to_string(),
+            metadata: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    fn edit_part(path: &str, old_string: &str, new_string: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "tool-Edit",
+            "input": {
+                "_locations": [{ "path": path }],
+                "old_string": old_string,
+                "new_string": new_string,
+            },
+        })
+    }
+
+    #[test]
+    fn write_creates_additions_only() {
+        let messages = [message(
+            "assistant",
+            serde_json::json!([{
+                "type": "tool-Write",
+                "input": {
+                    "_locations": [{ "path": "/worktrees/chat/src/main.rs" }],
+                    "content": "fn main() {}\nfn helper() {}",
+                },
+            }]),
+        )];
+
+        let changes = calculate_conversation_file_changes(&messages, Some("/worktrees/chat"), None);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].file_path, "/worktrees/chat/src/main.rs");
+        assert_eq!(changes[0].display_path, "src/main.rs");
+        assert_eq!(changes[0].additions, 2);
+        assert_eq!(changes[0].deletions, 0);
+    }
+
+    #[test]
+    fn edit_counts_changed_lines() {
+        let messages = [message(
+            "assistant",
+            serde_json::json!([edit_part(
+                "/project/src/lib.rs",
+                "let old = 1;\nlet stale = 2;",
+                "let new = 3;\nlet extra = 4;",
+            )]),
+        )];
+
+        let changes = calculate_conversation_file_changes(&messages, None, Some("/project"));
+        assert_eq!(changes[0].file_path, "/project/src/lib.rs");
+        assert_eq!(changes[0].display_path, "src/lib.rs");
+        assert_eq!(changes[0].additions, 2);
+        assert_eq!(changes[0].deletions, 2);
+    }
+
+    #[test]
+    fn duplicate_paths_use_latest_state() {
+        let messages = [
+            message(
+                "assistant",
+                serde_json::json!([edit_part(
+                    "/project/src/lib.rs",
+                    "let original = 1;",
+                    "let intermediate = 2;",
+                )]),
+            ),
+            message(
+                "assistant",
+                serde_json::json!([edit_part(
+                    "/project/src/lib.rs",
+                    "let intermediate = 2;",
+                    "let latest = 3;",
+                )]),
+            ),
+        ];
+
+        let changes = calculate_conversation_file_changes(&messages, None, Some("/project"));
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].additions, 1);
+        assert_eq!(changes[0].deletions, 1);
+    }
+
+    #[test]
+    fn session_files_and_invalid_parts_are_excluded() {
+        let messages = [message(
+            "assistant",
+            serde_json::json!([
+                {
+                    "type": "tool-Write",
+                    "input": {
+                        "_locations": [{ "path": "/tmp/claude-sessions/plan.md" }],
+                        "content": "plan",
+                    },
+                },
+                {
+                    "type": "tool-Edit",
+                    "input": { "old_string": "old" },
+                },
+            ]),
+        )];
+
+        assert!(calculate_conversation_file_changes(&messages, None, None).is_empty());
+    }
+
+    #[test]
+    fn common_path_fallback_is_used() {
+        let messages = [message(
+            "assistant",
+            serde_json::json!([{
+                "type": "tool-Edit",
+                "input": {
+                    "file_path": "/workspace/src/app.tsx",
+                    "old_string": "const old = 1;",
+                    "new_string": "const new = 2;\nconst added = 3;",
+                },
+            }]),
+        )];
+
+        let changes = calculate_conversation_file_changes(&messages, None, None);
+        assert_eq!(changes[0].file_path, "/workspace/src/app.tsx");
+        assert_eq!(changes[0].display_path, "src/app.tsx");
+        assert_eq!(changes[0].additions, 2);
+        assert_eq!(changes[0].deletions, 1);
     }
 }
 

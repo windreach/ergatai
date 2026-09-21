@@ -119,6 +119,24 @@ pub struct FileLockManager {
     /// or stale entry. Negative entries are honored for `LOCK_CACHE_NEGATIVE_TTL` to
     /// avoid hammering SQLite on every `open()` of an unlocked file.
     active_write_locks_cache: Arc<parking_lot::RwLock<HashMap<String, LockCacheEntry>>>,
+
+    /// File descriptors holding flock(2) advisory locks for pre-emptively locked files.
+    ///
+    /// Key: normalized file path
+    /// Value: open `File` handle with an exclusive flock held on it.
+    ///
+    /// When a WRITE lock is pre-emptively acquired via `try_acquire_write_lock_preemptive`,
+    /// we also take an `flock(LOCK_EX)` on the file. This provides kernel-level advisory
+    /// locking that blocks other cooperative processes (e.g., other agents using Edit tools)
+    /// from modifying the file concurrently. The fd is kept open until the lock is released
+    /// via `release_lock_on_tool_complete`, at which point the fd is closed and the flock
+    /// is automatically released by the kernel.
+    ///
+    /// Note: flock is advisory — processes that don't call flock (e.g., raw Bash commands)
+    /// are not blocked. But for cooperative processes (Edit/Delete/Move tools), this provides
+    /// a second layer of mutual exclusion on top of the SQLite pre-lock, reducing the chance
+    /// of "write → watcher detects → rollback → agent retries" cycles that waste tokens.
+    flock_fds: Arc<Mutex<HashMap<String, std::fs::File>>>,
 }
 
 /// TTL for negative ("known unlocked") cache entries. 50ms is short enough to
@@ -194,6 +212,7 @@ impl FileLockManager {
             waiters: Arc::new(Mutex::new(HashMap::new())),
             active_session_count: Arc::new(AtomicUsize::new(0)),
             active_write_locks_cache: Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            flock_fds: Arc::new(Mutex::new(HashMap::new())),
         };
 
         // Start background task to periodically clean up stale cache entries.
@@ -829,6 +848,363 @@ impl FileLockManager {
         }
     }
 
+    /// Attempt to acquire an exclusive flock(2) advisory lock on a file.
+    ///
+    /// Opens the file (creating it if necessary) and calls `flock(LOCK_EX | LOCK_NB)`.
+    /// Returns the open `File` handle on success; the caller must keep it alive until
+    /// the lock should be released (closing the fd releases the flock automatically).
+    ///
+    /// This is a **non-blocking** attempt: if another process holds the flock, returns
+    /// `Err` immediately rather than waiting.
+    ///
+    /// # Arguments
+    /// * `file_path` — absolute or project-relative path to the file
+    ///
+    /// # Errors
+    /// Returns `Err` if the file cannot be opened or if the flock is already held.
+    #[cfg(unix)]
+    fn acquire_flock(&self, file_path: &str) -> Result<std::fs::File, ErgataiError> {
+        use std::os::unix::io::AsRawFd;
+
+        // Resolve to absolute path relative to project root if not already absolute.
+        let abs_path = if Path::new(file_path).is_absolute() {
+            PathBuf::from(file_path)
+        } else {
+            self.project_root_canonical.join(file_path)
+        };
+
+        // Open the file for flock. If the file exists, open read-only to avoid
+        // modifying timestamps. If it doesn't exist, we need write access to create it.
+        // Note: creating a file will set its mtime, but this is unavoidable for new files.
+        let file_exists = abs_path.exists();
+        let file = if file_exists {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(false)
+                .create(false)
+                .open(&abs_path)
+        } else {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&abs_path)
+        }
+        .map_err(|e| {
+            ErgataiError::internal(format!(
+                "Failed to open file for flock at {:?}: {}",
+                abs_path, e
+            ))
+        })?;
+
+        // Attempt non-blocking exclusive flock.
+        let fd = file.as_raw_fd();
+        let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+        if ret != 0 {
+            let errno = std::io::Error::last_os_error();
+            return Err(ErgataiError::internal(format!(
+                "flock(LOCK_EX|LOCK_NB) failed on {:?}: {}",
+                abs_path, errno
+            )));
+        }
+
+        tracing::debug!(
+            file_path = %file_path,
+            abs_path = ?abs_path,
+            "Acquired exclusive flock on file"
+        );
+
+        Ok(file)
+    }
+
+    /// Release a previously acquired flock by closing the file descriptor.
+    ///
+    /// Dropping the `File` handle automatically releases the flock. This method
+    /// removes the entry from `flock_fds` and drops it.
+    ///
+    /// # Arguments
+    /// * `file_path` — normalized file path (must match the key used when acquiring)
+    #[cfg(unix)]
+    fn release_flock(&self, file_path: &str) {
+        let mut fds = self.flock_fds.lock();
+        if let Some(file) = fds.remove(file_path) {
+            // Dropping the File closes the fd, which releases the flock.
+            drop(file);
+            tracing::debug!(
+                file_path = %file_path,
+                "Released flock on file"
+            );
+        }
+    }
+
+    /// Pre-emptively acquire a WRITE lock BEFORE the agent modifies the file.
+    ///
+    /// Called from the ACP permission approval path (see `permission.rs`) — at the
+    /// moment an Edit/Delete/Move tool is approved, we take the lock so that when
+    /// the tool actually executes the lock is already in place. This provides
+    /// real conflict detection: if another agent already holds a WRITE lock on
+    /// the same file, the permission request is rejected instead of letting two
+    /// agents stomp on each other's changes.
+    ///
+    /// # Conflict behavior
+    ///
+    /// Unlike [`auto_acquire_write_lock`] (which silently succeeds when another
+    /// agent holds the lock — "fail-open" for the watcher path), this method
+    /// returns `Err(ErgataiError::LockConflict)` when the file is already locked
+    /// by a different (agent_id, session_id) pair. The SAME (agent_id, session_id)
+    /// re-acquiring is treated as idempotent success, matching the renewal
+    /// semantics of `renew_lock_on_tool_start`.
+    ///
+    /// # TTL
+    ///
+    /// Initial TTL is 60 seconds (vs 15s for auto-acquire). The extra headroom
+    /// covers the permission round-trip + the tool execution. The existing
+    /// `renew_lock_on_tool_start` call (triggered on `ToolCallStart`) extends
+    /// the TTL further, and `release_lock_on_tool_complete` releases the lock
+    /// immediately after the tool finishes — so 60s is a safe upper bound, not
+    /// the expected lifetime.
+    ///
+    /// # Arguments
+    /// * `file_path` — file path (relative to project root, or absolute)
+    /// * `agent_id` — agent requesting the lock
+    /// * `session_id` — session of the agent
+    /// * `project_id` — project identifier (used to locate the SnapshotManager)
+    pub async fn try_acquire_write_lock_preemptive(
+        &self,
+        file_path: &str,
+        agent_id: &str,
+        session_id: &str,
+        project_id: &str,
+    ) -> Result<(), ErgataiError> {
+        let normalized_path = self.validate_and_normalize_path(file_path)?;
+
+        // Fast path: in-memory cache conflict check. Avoids hitting SQLite for
+        // the common case where the file is already known-locked.
+        {
+            let cache = self.active_write_locks_cache.read();
+            if let Some(LockCacheEntry::Locked {
+                agent_id: cached_agent,
+                session_id: cached_session,
+            }) = cache.get(&normalized_path)
+            {
+                if cached_agent == agent_id && cached_session == session_id {
+                    // Same (agent, session) already holds it — idempotent success.
+                    tracing::debug!(
+                        file_path = %normalized_path,
+                        agent_id = %agent_id,
+                        "Pre-emptive acquire: same holder already in cache, no-op"
+                    );
+                    return Ok(());
+                }
+                // Different holder — immediate conflict.
+                return Err(ErgataiError::LockConflict(format!(
+                    "File {} already locked for writing by agent {} (session {})",
+                    normalized_path, cached_agent, cached_session
+                )));
+            }
+        }
+
+        // Snapshot capture: best-effort pre-modification baseline. The file
+        // hasn't been touched yet (we're in the permission gate), so this
+        // captures the true original content — even more useful than the
+        // auto_acquire snapshot which fires after the first write.
+        let snapshot_hash = match crate::manager::get_snapshot_manager(project_id).await {
+            Ok(snapshot_mgr) => {
+                let hash = snapshot_mgr
+                    .create_snapshot(&normalized_path, agent_id)
+                    .unwrap_or_default();
+                if !hash.is_empty() {
+                    let conn = self.conn.lock();
+                    let _ = SnapshotManager::store_snapshot_record(
+                        &conn,
+                        &normalized_path,
+                        &hash,
+                        agent_id,
+                    );
+                }
+                hash
+            }
+            Err(_) => {
+                tracing::debug!(
+                    project_id,
+                    file_path = %normalized_path,
+                    "snapshot manager not available, skipping snapshot"
+                );
+                String::new()
+            }
+        };
+
+        let now = Utc::now();
+        let ttl_secs = 60u64; // 60s initial TTL; renewed by renew_lock_on_tool_start
+        let ttl_i64 = i64::try_from(ttl_secs).unwrap_or(i64::MAX);
+        let expires_at = now + chrono::Duration::seconds(ttl_i64);
+
+        let conn = self.conn.lock();
+
+        // Begin IMMEDIATE transaction — takes a reserved write lock up front,
+        // so the conflict check + insert are atomic with respect to other
+        // preemptive/acquire callers.
+        let tx = TransactionGuard::begin(&conn)
+            .map_err(|e| ErgataiError::internal(format!("Failed to begin transaction: {}", e)))?;
+
+        // Authoritative conflict check inside the transaction.
+        let existing = conn
+            .query_row(
+                "SELECT agent_id, session_id FROM file_locks
+                 WHERE file_path = ?1 AND mode = 'WRITE' AND status = 'ACTIVE'
+                 LIMIT 1",
+                params![normalized_path],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .ok();
+
+        if let Some((holder_agent, holder_session)) = existing {
+            if holder_agent == agent_id && holder_session == session_id {
+                // Same (agent, session) already holds it — idempotent success.
+                // Don't insert a duplicate record; the UNIQUE index would
+                // reject it anyway, but we want to return Ok rather than
+                // hitting the constraint path.
+                tracing::debug!(
+                    file_path = %normalized_path,
+                    agent_id = %agent_id,
+                    "Pre-emptive acquire: same holder already in DB, no-op"
+                );
+                drop(tx); // rollback (nothing to commit)
+                return Ok(());
+            }
+            // Different holder — explicit conflict, surface to caller.
+            drop(tx); // rollback
+            return Err(ErgataiError::LockConflict(format!(
+                "File {} already locked for writing by agent {} (session {})",
+                normalized_path, holder_agent, holder_session
+            )));
+        }
+
+        // Enforce per-agent lock limit under the same transaction.
+        let active_count = Self::count_active_locks_by_agent_with_conn(&conn, agent_id)?;
+        Self::check_agent_lock_limit_with_count(agent_id, active_count)?;
+
+        let lock_id = uuid::Uuid::new_v4().to_string();
+        let token_id = TokenId::new().to_string();
+        let initial_hash = self.compute_file_hash(&normalized_path).ok();
+
+        let insert_result = conn.execute(
+            "INSERT INTO file_locks (
+                id, file_path, agent_id, session_id, mode, scope, token_id,
+                reason, approved_by, created_at, expires_at,
+                heartbeat_interval_secs, heartbeat_at, status, priority,
+                current_hash, version, violation_count
+            ) VALUES (?1, ?2, ?3, ?4, 'WRITE', '**', ?5, ?6, 'preemptive', ?7, ?8, ?9, ?10, 'ACTIVE', ?11, ?12, 1, 0)",
+            params![
+                lock_id,
+                normalized_path,
+                agent_id,
+                session_id,
+                token_id,
+                format!("preemptive-acquire on permission approve (snapshot: {})", snapshot_hash),
+                now.to_rfc3339(),
+                expires_at.to_rfc3339(),
+                10i64, // heartbeat_interval_secs: well under 60s TTL
+                now.to_rfc3339(),
+                3i64,  // priority: high (preemptive locks outrank auto-acquired)
+                initial_hash,
+            ],
+        );
+
+        match insert_result {
+            Ok(_) => {
+                // Audit log
+                conn.execute(
+                    "INSERT INTO audit_log (timestamp, agent_id, session_id, action, file_path, mode, reason)
+                     VALUES (?1, ?2, ?3, 'LOCK_ACQUIRED_PREEMPTIVE', ?4, 'WRITE', ?5)",
+                    params![
+                        now.to_rfc3339(),
+                        agent_id,
+                        session_id,
+                        normalized_path,
+                        format!("preemptive-write (snapshot: {})", snapshot_hash),
+                    ],
+                )
+                .map_err(|e| {
+                    ErgataiError::internal(format!("Failed to log preemptive-acquire audit: {}", e))
+                })?;
+
+                // Update in-memory cache before commit
+                {
+                    let mut cache = self.active_write_locks_cache.write();
+                    cache.insert(
+                        normalized_path.clone(),
+                        LockCacheEntry::Locked {
+                            agent_id: agent_id.to_string(),
+                            session_id: session_id.to_string(),
+                        },
+                    );
+                }
+
+                tx.commit().map_err(|e| {
+                    ErgataiError::internal(format!("Failed to commit preemptive-acquire: {}", e))
+                })?;
+
+                // Acquire flock(2) advisory lock as a second layer of protection.
+                // This blocks other cooperative processes (Edit/Delete/Move tools) from
+                // concurrently modifying the file, reducing "write → watcher → rollback → retry"
+                // cycles that waste tokens. Best-effort: if flock fails (e.g., file doesn't exist
+                // yet, permission denied), log warning but don't fail the pre-lock — SQLite lock
+                // is the primary mechanism.
+                #[cfg(unix)]
+                match self.acquire_flock(&normalized_path) {
+                    Ok(file) => {
+                        let mut fds = self.flock_fds.lock();
+                        fds.insert(normalized_path.clone(), file);
+                        tracing::info!(
+                            file_path = %normalized_path,
+                            agent_id = %agent_id,
+                            session_id = %session_id,
+                            "Acquired flock advisory lock alongside SQLite pre-lock"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            file_path = %normalized_path,
+                            agent_id = %agent_id,
+                            error = %e,
+                            "Failed to acquire flock (SQLite pre-lock succeeded, continuing without flock)"
+                        );
+                    }
+                }
+
+                tracing::info!(
+                    file_path = %normalized_path,
+                    agent_id = %agent_id,
+                    session_id = %session_id,
+                    snapshot_hash = %snapshot_hash,
+                    lock_id = %lock_id,
+                    "Pre-emptively acquired WRITE lock on permission approve"
+                );
+
+                Ok(())
+            }
+            Err(e) if e.to_string().contains("UNIQUE constraint failed") => {
+                // Lost the race to another preemptive/acquire caller between
+                // our SELECT and INSERT. Treat as conflict so the permission
+                // layer can reject the tool call.
+                drop(tx); // rollback
+                Err(ErgataiError::LockConflict(format!(
+                    "File {} became locked by another agent during pre-emptive acquire",
+                    normalized_path
+                )))
+            }
+            Err(e) => {
+                drop(tx); // rollback via Drop
+                Err(ErgataiError::internal(format!(
+                    "Failed to pre-emptively acquire WRITE lock on {}: {}",
+                    normalized_path, e
+                )))
+            }
+        }
+    }
+
     /// Look up the latest Git snapshot hash for a file.
     ///
     /// Queries the `snapshots` table for the most recent entry matching
@@ -1449,6 +1825,11 @@ impl FileLockManager {
         };
 
         if let Some((token_id, lock_agent_id, lock_session_id, mode)) = lock_info {
+            // Release flock advisory lock BEFORE releasing SQLite lock.
+            // Closing the fd releases the flock automatically.
+            #[cfg(unix)]
+            self.release_flock(&normalized_path);
+
             let now = Utc::now().to_rfc3339();
             conn.execute(
                 "UPDATE file_locks SET status = 'RELEASED', updated_at = ?1
@@ -2617,5 +2998,63 @@ mod hash_version_tests {
         // Unknown status defaults to Expired (fail-safe)
         assert_eq!(parse_token_status("UNKNOWN"), TokenStatus::Expired);
         assert_eq!(parse_token_status(""), TokenStatus::Expired);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_flock_acquire_and_release() {
+        let (manager, temp_dir) = create_test_manager();
+
+        // Create a test file
+        let test_file = "flock_test.txt";
+        let file_path = temp_dir.path().join(test_file);
+        fs::write(&file_path, "test content").unwrap();
+
+        // Acquire flock
+        let file = manager.acquire_flock(test_file).unwrap();
+
+        // Verify flock is held (try to acquire again — should fail)
+        let result = manager.acquire_flock(test_file);
+        assert!(result.is_err(), "Second flock acquire should fail");
+
+        // Release flock by dropping the file handle
+        drop(file);
+
+        // Now we should be able to acquire again
+        let file2 = manager.acquire_flock(test_file).unwrap();
+        drop(file2);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_flock_stored_in_fds_map() {
+        let (manager, temp_dir) = create_test_manager();
+
+        // Create a test file
+        let test_file = "fds_map_test.txt";
+        let file_path = temp_dir.path().join(test_file);
+        fs::write(&file_path, "test content").unwrap();
+
+        // Acquire flock via the helper (simulating what try_acquire_write_lock_preemptive does)
+        let file = manager.acquire_flock(test_file).unwrap();
+        {
+            let mut fds = manager.flock_fds.lock();
+            fds.insert(test_file.to_string(), file);
+        }
+
+        // Verify flock fd is stored
+        {
+            let fds = manager.flock_fds.lock();
+            assert!(fds.contains_key(test_file));
+        }
+
+        // Release flock via the helper (simulating what release_lock_on_tool_complete does)
+        manager.release_flock(test_file);
+
+        // Verify flock fd is removed
+        {
+            let fds = manager.flock_fds.lock();
+            assert!(!fds.contains_key(test_file));
+        }
     }
 }

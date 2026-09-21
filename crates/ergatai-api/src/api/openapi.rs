@@ -64,6 +64,7 @@ use utoipa::OpenApi;
         crate::api::user_conversations::list_conversation_messages,
         crate::api::user_conversations::append_conversation_message,
         crate::api::user_conversations::replace_conversation_messages,
+        crate::api::user_conversations::list_conversation_file_changes,
     ),
     components(schemas(
         crate::api::ApiError,
@@ -100,6 +101,7 @@ use utoipa::OpenApi;
         crate::api::user_conversations::UpdateConversationRequest,
         crate::api::user_conversations::AppendConversationMessageRequest,
         crate::api::user_conversations::ReplaceConversationMessagesRequest,
+        crate::api::user_conversations::ConversationFileChange,
         crate::user_data_db::Conversation,
         crate::user_data_db::Message,
     ))

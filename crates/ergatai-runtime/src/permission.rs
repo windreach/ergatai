@@ -200,31 +200,9 @@ impl PermissionHandler for InteractivePermissionHandler {
 
         let kind = request.tool_call.fields.kind.unwrap_or(ToolKind::Other);
 
-        if is_auto_approve_kind(&kind) {
-            debug!(agent_id = %agent_id, kind = ?kind, "InteractivePermissionHandler: auto-approving read-class request");
-            return select_allow_option(request);
-        }
-
-        let mode = get_permission_mode();
-        if mode != PermissionMode::Ask {
-            debug!(agent_id = %agent_id, ?mode, "InteractivePermissionHandler: auto-approving per permission mode");
-            if mode == PermissionMode::FullAccess {
-                return select_allow_option(request);
-            }
-            if let Some(inner) = &self.inner {
-                return inner.evaluate(agent_id, session_id, request).await;
-            }
-            return select_allow_option(request);
-        }
-
-        let service = crate::permission_service::global_permission_service();
-        let title = request
-            .tool_call
-            .fields
-            .title
-            .clone()
-            .unwrap_or_else(|| format!("{} operation approval", tool_kind_label(&kind)));
-        let locations = request
+        // Extract locations once — used by all allow-paths for pre-locking and
+        // by the Ask-mode registration.
+        let locations: Vec<String> = request
             .tool_call
             .fields
             .locations
@@ -236,6 +214,72 @@ impl PermissionHandler for InteractivePermissionHandler {
             })
             .unwrap_or_default();
 
+        if is_auto_approve_kind(&kind) {
+            debug!(agent_id = %agent_id, kind = ?kind, "InteractivePermissionHandler: auto-approving read-class request");
+            return select_allow_option(request);
+        }
+
+        let mode = get_permission_mode();
+        if mode != PermissionMode::Ask {
+            debug!(agent_id = %agent_id, ?mode, "InteractivePermissionHandler: auto-approving per permission mode");
+            if mode == PermissionMode::FullAccess {
+                // Lock pre-shift: acquire WRITE lock BEFORE the tool executes.
+                // If another agent holds the lock, reject the tool call so we
+                // get real mutual exclusion instead of post-hoc audit.
+                if let Err(reason) = try_pre_lock_files(
+                    agent_id,
+                    session_id,
+                    &kind,
+                    &locations,
+                    request.tool_call.fields.raw_input.as_ref(),
+                )
+                .await
+                {
+                    debug!(
+                        agent_id = %agent_id,
+                        reason = %reason,
+                        "Pre-lock failed in FullAccess mode, rejecting"
+                    );
+                    return select_decision_option(
+                        request,
+                        crate::permission_service::PermissionDecisionKind::RejectOnce,
+                    );
+                }
+                return select_allow_option(request);
+            }
+            if let Some(inner) = &self.inner {
+                return inner.evaluate(agent_id, session_id, request).await;
+            }
+            if let Err(reason) = try_pre_lock_files(
+                agent_id,
+                session_id,
+                &kind,
+                &locations,
+                request.tool_call.fields.raw_input.as_ref(),
+            )
+            .await
+            {
+                debug!(
+                    agent_id = %agent_id,
+                    reason = %reason,
+                    "Pre-lock failed in auto-approve mode, rejecting"
+                );
+                return select_decision_option(
+                    request,
+                    crate::permission_service::PermissionDecisionKind::RejectOnce,
+                );
+            }
+            return select_allow_option(request);
+        }
+
+        let service = crate::permission_service::global_permission_service();
+        let title = request
+            .tool_call
+            .fields
+            .title
+            .clone()
+            .unwrap_or_else(|| format!("{} operation approval", tool_kind_label(&kind)));
+
         let (decision_tx, decision_rx) = tokio::sync::oneshot::channel();
         let request_id = service.register_with_waiter(
             crate::permission_service::PendingPermissionRequest {
@@ -246,7 +290,7 @@ impl PermissionHandler for InteractivePermissionHandler {
                 title,
                 tool_name: Some(tool_kind_label(&kind).to_string()),
                 input: request.tool_call.fields.raw_input.clone(),
-                locations,
+                locations: locations.clone(),
                 source: crate::permission_service::PermissionSource::Acp,
                 created_at_ms: crate::permission_service::now_ms(),
             },
@@ -269,12 +313,181 @@ impl PermissionHandler for InteractivePermissionHandler {
         };
 
         if decision.is_allow() {
+            // Lock pre-shift: even when the user explicitly allows, refuse the
+            // tool if another agent holds the WRITE lock. The user's "allow"
+            // grants permission-to-try, not permission-to-stomp.
+            if let Err(reason) = try_pre_lock_files(
+                agent_id,
+                session_id,
+                &kind,
+                &locations,
+                request.tool_call.fields.raw_input.as_ref(),
+            )
+            .await
+            {
+                debug!(
+                    agent_id = %agent_id,
+                    reason = %reason,
+                    "Pre-lock failed after user allow, rejecting"
+                );
+                return select_decision_option(
+                    request,
+                    crate::permission_service::PermissionDecisionKind::RejectOnce,
+                );
+            }
+
             if let Some(inner) = &self.inner {
                 return inner.evaluate(agent_id, session_id, request).await;
             }
         }
         select_decision_option(request, decision)
     }
+}
+
+/// Pre-emptively acquire WRITE locks for files about to be modified.
+///
+/// Called from the ACP permission approval path — when the user/system allows
+/// a tool, we take the lock NOW (before the tool executes) so two agents
+/// cannot stomp on the same file. This is the "lock pre-shift" mechanism
+/// described in the project design.
+///
+/// # Behavior by tool kind
+///
+/// | ToolKind | Action |
+/// |----------|--------|
+/// | `Edit`, `Delete`, `Move` | Attempt pre-lock on each location. Conflict → `Err`. |
+/// | `Execute` (Bash) | Extract write targets from command via static analysis, then pre-lock. Extraction failure → `Ok(())` (proceed without pre-lock, watcher catches post-hoc). |
+/// | Other (Read, Search, …) | No-op — returns `Ok(())`. |
+///
+/// # Degradation
+///
+/// The function **never blocks approval on infrastructure failures**:
+/// - `workspace_id` cannot be derived from `agent_id` → log + return `Ok(())`
+/// - `get_lock_manager(workspace_id)` fails (lock subsystem not initialized) → log + return `Ok(())`
+/// - Per-agent limit (50 locks) exceeded → return `Err` (caller rejects tool)
+/// - SQLite error → return `Err` (caller rejects tool)
+/// - `LockConflict` → return `Err` with holder info (caller rejects tool)
+///
+/// Returning `Ok(())` on infra failure means the tool will run, and the
+/// FileSystemWatcher's auto-acquire path will catch the modification as a
+/// post-hoc fallback. This keeps the system usable even when the lock
+/// subsystem is partially initialized.
+async fn try_pre_lock_files(
+    agent_id: &str,
+    session_id: &str,
+    kind: &ToolKind,
+    locations: &[String],
+    raw_input: Option<&serde_json::Value>,
+) -> Result<(), ergatai_error::ErgataiError> {
+    // Determine which paths to pre-lock based on tool kind.
+    let paths_to_lock: Vec<String> = match kind {
+        ToolKind::Edit | ToolKind::Delete | ToolKind::Move => {
+            // ACP provides locations directly for these tool kinds.
+            if locations.is_empty() {
+                return Ok(());
+            }
+            locations.to_vec()
+        }
+        ToolKind::Execute => {
+            // For Bash, extract write targets via static analysis.
+            // If extraction yields nothing, proceed without pre-locking —
+            // the watcher will catch modifications post-hoc.
+            let Some(input) = raw_input else {
+                tracing::debug!(
+                    agent_id = %agent_id,
+                    "Execute tool: no raw_input available, proceeding without pre-lock"
+                );
+                return Ok(());
+            };
+            let command = extract_command_from_raw_input(input);
+            if command.is_empty() {
+                tracing::debug!(
+                    agent_id = %agent_id,
+                    "Execute tool: no command in raw_input, proceeding without pre-lock"
+                );
+                return Ok(());
+            }
+            let extracted = crate::bash_path_extractor::extract_bash_write_targets(&command);
+            if extracted.is_empty() {
+                tracing::debug!(
+                    agent_id = %agent_id,
+                    cmd_preview = %command.chars().take(100).collect::<String>(),
+                    "Execute tool: bash path extraction yielded no targets, proceeding without pre-lock"
+                );
+                return Ok(());
+            }
+            tracing::debug!(
+                agent_id = %agent_id,
+                extracted_paths = ?extracted,
+                "Execute tool: extracted write targets for pre-lock"
+            );
+            extracted
+        }
+        _ => return Ok(()),
+    };
+
+    if paths_to_lock.is_empty() {
+        return Ok(());
+    }
+
+    // Derive workspace_id from agent_id using the project-wide convention
+    // `{workspace_id}-agent-{counter}` (see acp.rs:1741, acp.rs:1816).
+    let Some(workspace_id) = agent_id.rfind("-agent-").map(|pos| &agent_id[..pos]) else {
+        tracing::debug!(
+            agent_id = %agent_id,
+            "try_pre_lock_files: cannot derive workspace_id from agent_id, degrading to no-op"
+        );
+        return Ok(());
+    };
+
+    // Resolve the lock manager for this workspace. Failure means the lock
+    // subsystem is not initialized for this project — degrade gracefully
+    // rather than blocking all edits.
+    let lock_mgr = match ergatai_lock::get_lock_manager(workspace_id).await {
+        Ok(mgr) => mgr,
+        Err(e) => {
+            tracing::debug!(
+                agent_id = %agent_id,
+                workspace_id = %workspace_id,
+                error = %e,
+                "try_pre_lock_files: lock manager unavailable, degrading to no-op"
+            );
+            return Ok(());
+        }
+    };
+
+    // Attempt a pre-emptive acquire on each path. First failure short-
+    // circuits the loop — we don't want to hold locks on some files while
+    // rejecting the tool overall.
+    for path in &paths_to_lock {
+        if let Err(e) = lock_mgr
+            .try_acquire_write_lock_preemptive(path, agent_id, session_id, workspace_id)
+            .await
+        {
+            return Err(ergatai_error::ErgataiError::LockConflict(format!(
+                "{}: {}",
+                path, e
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Extract the command string from ACP raw_input JSON.
+///
+/// For Execute tools, the raw_input typically has the structure:
+/// ```json
+/// { "command": "echo hello > output.txt" }
+/// ```
+///
+/// Returns an empty string if extraction fails.
+fn extract_command_from_raw_input(raw_input: &serde_json::Value) -> String {
+    raw_input
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Helper: respond to a permission request using a `PermissionDecision`.

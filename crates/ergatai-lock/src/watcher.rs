@@ -268,13 +268,42 @@ impl FileSystemWatcher {
             }
 
             // File is unlocked and was modified → auto-acquire WRITE lock.
-            // Non-Linux platforms have no PID available, so all locks are
-            // attributed to "system". The lock still prevents concurrent writes.
+            //
+            // Pre-lock check: the ACP permission approval path (see `permission.rs`)
+            // acquires WRITE locks *before* Edit/Delete/Move tools execute. If a
+            // lock is already present here, it was placed by that pre-lock path —
+            // skip the auto-acquire to avoid a redundant record. The tool's
+            // `release_lock_on_tool_complete` hook will release it at the right time.
+            match lock_manager.is_file_locked(&relative_path) {
+                Ok(true) => {
+                    debug!(
+                        file_path = %relative_path,
+                        "watcher: file already locked (pre-lock from ACP permission path), skipping auto-acquire"
+                    );
+                    continue;
+                }
+                Ok(false) => { /* fall through to auto-acquire */ }
+                Err(e) => {
+                    // is_file_locked failing is not fatal — fall through and let
+                    // auto_acquire_write_lock's UNIQUE constraint handle races.
+                    debug!(
+                        file_path = %relative_path,
+                        error = %e,
+                        "watcher: is_file_locked check failed, falling through to auto-acquire"
+                    );
+                }
+            }
+
             info!(
                 file_path = %relative_path,
                 "watcher: auto-acquiring WRITE lock on detected modification"
             );
 
+            // No pre-lock found. This modification came from a path that doesn't
+            // go through the ACP permission gate — typically a Bash/Execute
+            // command (whose write targets ACP cannot predict) or an external
+            // process outside ergatai's control. Attribute to "system" honestly
+            // rather than guessing a specific agent via time-window matching.
             if let Err(e) = lock_manager
                 .auto_acquire_write_lock(
                     &relative_path,
@@ -292,6 +321,11 @@ impl FileSystemWatcher {
                 // Fall back to logging the violation
                 Self::log_violation(lock_manager, &relative_path, "unauthorized_modification")
                     .await?;
+            } else {
+                info!(
+                    file_path = %relative_path,
+                    "watcher: WRITE lock auto-acquired on post-hoc modification (Bash/external)"
+                );
             }
         }
 
