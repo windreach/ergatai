@@ -433,7 +433,7 @@ async fn try_pre_lock_files(
     // Derive workspace_id from agent_id using the project-wide convention
     // `{workspace_id}-agent-{counter}` (see acp.rs:1741, acp.rs:1816).
     let Some(workspace_id) = agent_id.rfind("-agent-").map(|pos| &agent_id[..pos]) else {
-        tracing::debug!(
+        tracing::warn!(
             agent_id = %agent_id,
             "try_pre_lock_files: cannot derive workspace_id from agent_id, degrading to no-op"
         );
@@ -446,7 +446,7 @@ async fn try_pre_lock_files(
     let lock_mgr = match ergatai_lock::get_lock_manager(workspace_id).await {
         Ok(mgr) => mgr,
         Err(e) => {
-            tracing::debug!(
+            tracing::info!(
                 agent_id = %agent_id,
                 workspace_id = %workspace_id,
                 error = %e,
@@ -557,33 +557,167 @@ impl PermissionHandler for LockAwarePermissionHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_client_protocol::schema::v1::{
+        PermissionOption, RequestPermissionRequest, ToolCallId, ToolCallUpdate,
+    };
+
+    #[test]
+    fn test_permission_decision_select() {
+        let decision = PermissionDecision::select("option-1".to_string());
+        assert_eq!(decision.option_id, Some("option-1".to_string()));
+    }
+
+    #[test]
+    fn test_permission_decision_cancel() {
+        let decision = PermissionDecision::cancel();
+        assert_eq!(decision.option_id, None);
+    }
+
+    #[test]
+    fn test_permission_decision_into_outcome_selected() {
+        let decision = PermissionDecision::select("option-1".to_string());
+        let outcome = decision.into_outcome();
+        match outcome {
+            RequestPermissionOutcome::Selected(selected) => {
+                assert_eq!(selected.option_id.to_string(), "option-1");
+            }
+            RequestPermissionOutcome::Cancelled => {
+                panic!("Expected Selected, got Cancelled");
+            }
+            _ => panic!("Unexpected outcome variant"),
+        }
+    }
+
+    #[test]
+    fn test_permission_decision_into_outcome_cancelled() {
+        let decision = PermissionDecision::cancel();
+        let outcome = decision.into_outcome();
+        assert!(matches!(outcome, RequestPermissionOutcome::Cancelled));
+    }
+
+    #[test]
+    fn test_extract_command_from_raw_input_with_command() {
+        let raw_input = serde_json::json!({
+            "command": "echo hello > output.txt"
+        });
+        let command = extract_command_from_raw_input(&raw_input);
+        assert_eq!(command, "echo hello > output.txt");
+    }
+
+    #[test]
+    fn test_extract_command_from_raw_input_without_command() {
+        let raw_input = serde_json::json!({
+            "other_field": "value"
+        });
+        let command = extract_command_from_raw_input(&raw_input);
+        assert_eq!(command, "");
+    }
+
+    #[test]
+    fn test_extract_command_from_raw_input_empty_object() {
+        let raw_input = serde_json::json!({});
+        let command = extract_command_from_raw_input(&raw_input);
+        assert_eq!(command, "");
+    }
+
+    #[test]
+    fn test_extract_command_from_raw_input_non_string_command() {
+        let raw_input = serde_json::json!({
+            "command": 123
+        });
+        let command = extract_command_from_raw_input(&raw_input);
+        assert_eq!(command, "");
+    }
+
+    fn create_test_request(options: Vec<PermissionOption>) -> RequestPermissionRequest {
+        let tool_call = ToolCallUpdate::new(
+            ToolCallId::from("test-tool-call"),
+            agent_client_protocol::schema::v1::ToolCallUpdateFields::default(),
+        );
+        RequestPermissionRequest::new("test-session", tool_call, options)
+    }
+
+    #[tokio::test]
+    async fn test_yolo_permission_handler_with_allow_once() {
+        let handler = YoloPermissionHandler;
+        let request = create_test_request(vec![
+            PermissionOption::new(
+                "reject".to_string(),
+                "Reject".to_string(),
+                PermissionOptionKind::RejectOnce,
+            ),
+            PermissionOption::new(
+                "allow".to_string(),
+                "Allow".to_string(),
+                PermissionOptionKind::AllowOnce,
+            ),
+        ]);
+
+        let decision = handler.evaluate("agent-1", "session-1", &request).await;
+        assert_eq!(decision.option_id, Some("allow".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_yolo_permission_handler_with_allow_always() {
+        let handler = YoloPermissionHandler;
+        let request = create_test_request(vec![
+            PermissionOption::new(
+                "reject".to_string(),
+                "Reject".to_string(),
+                PermissionOptionKind::RejectOnce,
+            ),
+            PermissionOption::new(
+                "allow-always".to_string(),
+                "Allow Always".to_string(),
+                PermissionOptionKind::AllowAlways,
+            ),
+        ]);
+
+        let decision = handler.evaluate("agent-1", "session-1", &request).await;
+        assert_eq!(decision.option_id, Some("allow-always".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_yolo_permission_handler_no_allow_option() {
+        let handler = YoloPermissionHandler;
+        let request = create_test_request(vec![PermissionOption::new(
+            "reject".to_string(),
+            "Reject".to_string(),
+            PermissionOptionKind::RejectOnce,
+        )]);
+
+        let decision = handler.evaluate("agent-1", "session-1", &request).await;
+        assert_eq!(decision.option_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_yolo_permission_handler_empty_options() {
+        let handler = YoloPermissionHandler;
+        let request = create_test_request(vec![]);
+
+        let decision = handler.evaluate("agent-1", "session-1", &request).await;
+        assert_eq!(decision.option_id, None);
+    }
 
     #[tokio::test]
     async fn test_lock_aware_permission_handler() {
         // Test that LockAwarePermissionHandler delegates to YoloPermissionHandler
         // and auto-approves (current simplified implementation)
-        let _handler = LockAwarePermissionHandler;
-
-        // Create a minimal mock request (using builder pattern if available)
-        // For now, we just verify the handler can be instantiated and called
-        // A full integration test would require constructing a RequestPermissionRequest
+        let handler = LockAwarePermissionHandler;
 
         // Verify the handler implements PermissionHandler trait
         fn assert_permission_handler<T: PermissionHandler>() {}
         assert_permission_handler::<LockAwarePermissionHandler>();
 
-        // Success - compilation test passes
-    }
+        // Create a request with an allow option
+        let request = create_test_request(vec![PermissionOption::new(
+            "allow".to_string(),
+            "Allow".to_string(),
+            PermissionOptionKind::AllowOnce,
+        )]);
 
-    #[tokio::test]
-    async fn test_yolo_permission_handler_still_works() {
-        // Verify YoloPermissionHandler still works after our changes
-        let _handler = YoloPermissionHandler;
-
-        // Verify the handler implements PermissionHandler trait
-        fn assert_permission_handler<T: PermissionHandler>() {}
-        assert_permission_handler::<YoloPermissionHandler>();
-
-        // Success - compilation test passes
+        let decision = handler.evaluate("agent-1", "session-1", &request).await;
+        // Should auto-approve like YoloPermissionHandler
+        assert_eq!(decision.option_id, Some("allow".to_string()));
     }
 }

@@ -424,4 +424,283 @@ mod tests {
         )];
         format_workspaces_table(&workspaces);
     }
+
+    #[test]
+    fn test_format_agents_table_empty_v2() {
+        format_agents_table(&[]);
+    }
+
+    #[test]
+    fn test_format_agents_table_single_running() {
+        let agents = vec![make_agent("agent-1", "ws-1", "running")];
+        format_agents_table(&agents);
+    }
+
+    #[test]
+    fn test_format_agents_table_multiple_states() {
+        let agents = vec![
+            make_agent("agent-1", "ws-1", "running"),
+            make_agent("agent-2", "ws-1", "idle"),
+            make_agent("agent-3", "ws-1", "stopped"),
+        ];
+        format_agents_table(&agents);
+    }
+
+    #[test]
+    fn test_format_agents_table_with_task_id() {
+        let mut agent = make_agent("agent-1", "ws-1", "running");
+        agent.task_id = Some("task-123".to_string());
+        format_agents_table(&[agent]);
+    }
+
+    #[test]
+    fn test_format_agents_table_with_profile() {
+        let mut agent = make_agent("agent-1", "ws-1", "running");
+        agent.profile = Some("default-profile".to_string());
+        format_agents_table(&[agent]);
+    }
+
+    #[test]
+    fn test_format_status_with_nats() {
+        let status = StatusResponse {
+            nats_initialized: true,
+            nats_port: Some(4222),
+            active_agents: 5,
+        };
+        format_status(&status);
+    }
+
+    #[test]
+    fn test_format_status_without_nats() {
+        let status = StatusResponse {
+            nats_initialized: false,
+            nats_port: None,
+            active_agents: 0,
+        };
+        format_status(&status);
+    }
+
+    #[test]
+    fn test_format_status_many_agents() {
+        let status = StatusResponse {
+            nats_initialized: true,
+            nats_port: Some(4222),
+            active_agents: 100,
+        };
+        format_status(&status);
+    }
+
+    #[test]
+    fn test_format_locks_table_empty() {
+        format_locks_table(&[]);
+    }
+
+    #[test]
+    fn test_format_locks_table_single() {
+        let lock = LockInfoResponse {
+            id: "lock-1".to_string(),
+            file_path: "/path/to/file.rs".to_string(),
+            agent_id: "agent-1".to_string(),
+            session_id: "session-1".to_string(),
+            mode: "write".to_string(),
+            scope: "exclusive".to_string(),
+            created_at: "2024-01-01T12:00:00Z".to_string(),
+            expires_at: "2024-01-01T12:30:45Z".to_string(),
+            heartbeat_at: "2024-01-01T12:15:00Z".to_string(),
+            status: "active".to_string(),
+        };
+        format_locks_table(&[lock]);
+    }
+
+    #[test]
+    fn test_format_locks_table_multiple() {
+        let locks = vec![
+            LockInfoResponse {
+                id: "lock-1".to_string(),
+                file_path: "/path/to/file1.rs".to_string(),
+                agent_id: "agent-1".to_string(),
+                session_id: "session-1".to_string(),
+                mode: "write".to_string(),
+                scope: "exclusive".to_string(),
+                created_at: "2024-01-01T12:00:00Z".to_string(),
+                expires_at: "2024-01-01T12:30:45Z".to_string(),
+                heartbeat_at: "2024-01-01T12:15:00Z".to_string(),
+                status: "active".to_string(),
+            },
+            LockInfoResponse {
+                id: "lock-2".to_string(),
+                file_path: "/path/to/file2.rs".to_string(),
+                agent_id: "agent-2".to_string(),
+                session_id: "session-2".to_string(),
+                mode: "read".to_string(),
+                scope: "shared".to_string(),
+                created_at: "2024-01-01T12:30:00Z".to_string(),
+                expires_at: "2024-01-01T13:00:00Z".to_string(),
+                heartbeat_at: "2024-01-01T12:45:00Z".to_string(),
+                status: "pending".to_string(),
+            },
+        ];
+        format_locks_table(&locks);
+    }
+
+    #[test]
+    fn test_format_locks_table_short_expires() {
+        let lock = LockInfoResponse {
+            id: "lock-1".to_string(),
+            file_path: "/path/to/file.rs".to_string(),
+            agent_id: "agent-1".to_string(),
+            session_id: "session-1".to_string(),
+            mode: "write".to_string(),
+            scope: "exclusive".to_string(),
+            created_at: "2024-01-01T12:00:00Z".to_string(),
+            expires_at: "short".to_string(),
+            heartbeat_at: "2024-01-01T12:15:00Z".to_string(),
+            status: "active".to_string(),
+        };
+        format_locks_table(&[lock]);
+    }
+
+    #[test]
+    fn test_format_contention_table_empty() {
+        format_contention_table(&[]);
+    }
+
+    #[test]
+    fn test_format_contention_table_single() {
+        let contention = LockContentionResponse {
+            file_path: "/path/to/file.rs".to_string(),
+            current_holder: "agent-1".to_string(),
+            waiting_agents: vec!["agent-2".to_string(), "agent-3".to_string()],
+            wait_time_secs: 30,
+            conflict_count: 2,
+        };
+        format_contention_table(&[contention]);
+    }
+
+    #[test]
+    fn test_format_contention_table_no_waiters() {
+        let contention = LockContentionResponse {
+            file_path: "/path/to/file.rs".to_string(),
+            current_holder: "agent-1".to_string(),
+            waiting_agents: vec![],
+            wait_time_secs: 10,
+            conflict_count: 0,
+        };
+        format_contention_table(&[contention]);
+    }
+
+    #[test]
+    fn test_format_dags_table_empty() {
+        format_dags_table(&[]);
+    }
+
+    #[test]
+    fn test_format_dags_table_single_running() {
+        let dag = DagInfoResponse {
+            dag_id: "dag-1".to_string(),
+            progress: 0.5,
+            is_complete: false,
+            status_prompt: "Processing task".to_string(),
+        };
+        format_dags_table(&[dag]);
+    }
+
+    #[test]
+    fn test_format_dags_table_single_completed() {
+        let dag = DagInfoResponse {
+            dag_id: "dag-2".to_string(),
+            progress: 1.0,
+            is_complete: true,
+            status_prompt: "Done".to_string(),
+        };
+        format_dags_table(&[dag]);
+    }
+
+    #[test]
+    fn test_format_dags_table_multiple() {
+        let dags = vec![
+            DagInfoResponse {
+                dag_id: "dag-1".to_string(),
+                progress: 0.3,
+                is_complete: false,
+                status_prompt: "Running".to_string(),
+            },
+            DagInfoResponse {
+                dag_id: "dag-2".to_string(),
+                progress: 1.0,
+                is_complete: true,
+                status_prompt: "Completed".to_string(),
+            },
+            DagInfoResponse {
+                dag_id: "dag-3".to_string(),
+                progress: 0.7,
+                is_complete: false,
+                status_prompt: "A very long status prompt that exceeds forty characters"
+                    .to_string(),
+            },
+        ];
+        format_dags_table(&dags);
+    }
+
+    #[test]
+    fn test_format_dag_status_not_running() {
+        let status = DagStatusResponse {
+            running: false,
+            progress: None,
+            is_complete: None,
+            status_prompt: None,
+            nodes: None,
+        };
+        format_dag_status(&status);
+    }
+
+    #[test]
+    fn test_format_dag_status_running_with_progress() {
+        let status = DagStatusResponse {
+            running: true,
+            progress: Some(0.65),
+            is_complete: Some(false),
+            status_prompt: Some("Processing".to_string()),
+            nodes: None,
+        };
+        format_dag_status(&status);
+    }
+
+    #[test]
+    fn test_format_dag_status_with_nodes() {
+        use crate::client::http::NodeStatusInfo;
+        let status = DagStatusResponse {
+            running: true,
+            progress: Some(0.5),
+            is_complete: Some(false),
+            status_prompt: Some("Running".to_string()),
+            nodes: Some(vec![
+                NodeStatusInfo {
+                    id: "node-1".to_string(),
+                    agent: "agent-1".to_string(),
+                    status: "completed".to_string(),
+                    task: "Task 1".to_string(),
+                    depends_on: vec![],
+                    output: Some("Output 1".to_string()),
+                },
+                NodeStatusInfo {
+                    id: "node-2".to_string(),
+                    agent: "agent-2".to_string(),
+                    status: "running".to_string(),
+                    task: "A very long task description that exceeds thirty characters".to_string(),
+                    depends_on: vec!["node-1".to_string()],
+                    output: None,
+                },
+                NodeStatusInfo {
+                    id: "node-3".to_string(),
+                    agent: "agent-3".to_string(),
+                    status: "pending".to_string(),
+                    task: "Task 3".to_string(),
+                    depends_on: vec!["node-1".to_string(), "node-2".to_string()],
+                    output: None,
+                },
+            ]),
+        };
+        format_dag_status(&status);
+    }
 }

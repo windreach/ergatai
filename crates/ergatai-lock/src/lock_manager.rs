@@ -107,17 +107,16 @@ pub struct FileLockManager {
     /// lifecycle. Read lock-free via `Ordering::Relaxed`.
     active_session_count: Arc<AtomicUsize>,
 
-    /// In-memory cache of active WRITE locks for fast fanotify decision path.
+    /// In-memory cache of active WRITE locks for fast conflict detection.
     ///
     /// Key: normalized file path
     /// Value: [`LockCacheEntry`] — either a known lock holder, or a "known unlocked"
     /// entry with a timestamp (negative cache).
     ///
-    /// This cache is updated whenever a WRITE lock is acquired or released.
-    /// The fanotify decision path checks this cache first to avoid database access
-    /// for the common case (unlocked files). Falls back to database query on cache miss
-    /// or stale entry. Negative entries are honored for `LOCK_CACHE_NEGATIVE_TTL` to
-    /// avoid hammering SQLite on every `open()` of an unlocked file.
+    /// This cache is checked in `try_acquire_write_lock_preemptive` to quickly reject
+    /// conflicting lock requests without hitting SQLite. Falls back to database query
+    /// on cache miss. Negative entries are honored for `LOCK_CACHE_NEGATIVE_TTL` to
+    /// absorb bursts of lock requests on unlocked files.
     active_write_locks_cache: Arc<parking_lot::RwLock<HashMap<String, LockCacheEntry>>>,
 
     /// File descriptors holding flock(2) advisory locks for pre-emptively locked files.
@@ -148,7 +147,7 @@ const LOCK_CACHE_NEGATIVE_TTL: Duration = Duration::from_millis(50);
 /// Entry in [`FileLockManager::active_write_locks_cache`].
 ///
 /// Either a known WRITE lock holder (positive) or a "known unlocked" marker
-/// with a timestamp (negative). Negative entries let the fanotify hot path
+/// with a timestamp (negative). Negative entries let the pre-emptive lock path
 /// skip SQLite for unlocked files — the dominant case under normal workloads.
 #[derive(Debug, Clone)]
 enum LockCacheEntry {
@@ -675,15 +674,19 @@ impl FileLockManager {
 
     /// Automatically acquire a WRITE lock on first file modification.
     ///
-    /// Called by the fanotify event loop when a `FAN_MODIFY` event is detected.
-    /// Captures the current file content as a Git snapshot (pre-modification baseline),
-    /// then inserts a WRITE lock record directly — no conflict check, since this is
-    /// the *first* modification by this agent.
+    /// Called by FileSystemWatcher (primary) or fanotify enforcer (when enabled)
+    /// when a file modification is detected. This is the **post-facto fallback path**
+    /// — the primary path is `try_acquire_write_lock_preemptive` which acquires locks
+    /// *before* modification during ACP permission approval.
+    ///
+    /// Captures the current file content as a Git snapshot, then inserts a WRITE lock
+    /// record directly — no conflict check, since this is the *first* modification
+    /// detected by the watcher.
     ///
     /// # Arguments
     /// * `file_path` — file path (relative to project root)
-    /// * `agent_id` — agent that performed the modification
-    /// * `session_id` — session of the agent
+    /// * `agent_id` — agent that performed the modification (or "system" for watcher)
+    /// * `session_id` — session of the agent (or "watcher" for watcher)
     /// * `project_id` — project identifier (used to locate the SnapshotManager)
     pub async fn auto_acquire_write_lock(
         &self,
@@ -949,7 +952,7 @@ impl FileLockManager {
     ///
     /// # Conflict behavior
     ///
-    /// Unlike [`auto_acquire_write_lock`] (which silently succeeds when another
+    /// Unlike [`Self::auto_acquire_write_lock`] (which silently succeeds when another
     /// agent holds the lock — "fail-open" for the watcher path), this method
     /// returns `Err(ErgataiError::LockConflict)` when the file is already locked
     /// by a different (agent_id, session_id) pair. The SAME (agent_id, session_id)
@@ -1253,7 +1256,7 @@ impl FileLockManager {
     /// Get the holder of an active WRITE lock on `file_path`.
     ///
     /// Returns `(agent_id, session_id)` if a WRITE or ADMIN lock exists,
-    /// `None` if the file is not locked. Used by the fanotify enforcer to
+    /// `None` if the file is not locked. Used by the enforcer (when enabled) to
     /// decide whether a caller is the lock holder.
     pub fn get_write_lock_holder(
         &self,
@@ -1281,9 +1284,9 @@ impl FileLockManager {
 
     /// Check file lock status and get holder info in a single query.
     ///
-    /// This is an optimized method for the fanotify decision path that combines
-    /// `is_file_locked()` and `get_write_lock_holder()` into a single database
-    /// query, reducing mutex acquisitions from 2 to 1.
+    /// This is an optimized method that combines `is_file_locked()` and
+    /// `get_write_lock_holder()` into a single database query, reducing mutex
+    /// acquisitions from 2 to 1.
     ///
     /// Uses an in-memory cache (positive + negative entries) as a fast path to
     /// avoid database access for the common cases (unlocked files, or a stable
@@ -1293,7 +1296,7 @@ impl FileLockManager {
     ///
     /// The SQLite fallback uses `try_lock()`. If the connection mutex is held
     /// by another task (e.g., a concurrent `acquire_lock`), we fail open
-    /// immediately instead of blocking. This is critical for the fanotify hot
+    /// immediately instead of blocking. This is critical for time-sensitive
     /// path: blocking here would stall the event loop, which in stalls the
     /// kernel's `open()` queue.
     ///
@@ -1309,7 +1312,7 @@ impl FileLockManager {
 
     /// Fast variant of [`Self::check_file_lock_status`] that skips the (expensive)
     /// `canonicalize()` call. Use this when the caller already has a
-    /// properly-normalized path — e.g., the fanotify enforcer, which derives
+    /// properly-normalized path — e.g., the enforcer, which derives
     /// the relative path via `readlink /proc/self/fd/{fd}` + `strip_prefix`.
     ///
     /// Same deadlock-resistant semantics as the canonical variant.
@@ -1338,7 +1341,7 @@ impl FileLockManager {
         // on unlocked files — the dominant case under normal workloads.
         //
         // Use read() lock for lookups — only the stale-entry removal path needs
-        // write(). This avoids serializing all fanotify decisions across tokio
+        // write(). This avoids serializing all lock checks across tokio
         // worker threads on a single write lock.
         {
             let cache = self.active_write_locks_cache.read();
@@ -1374,8 +1377,8 @@ impl FileLockManager {
 
         // Cache miss / stale — query the database.
         //
-        // IMPORTANT: use try_lock(), NOT lock(). The fanotify decision runs on a
-        // tokio worker (via block_in_place); blocking on the SQLite mutex here
+        // IMPORTANT: use try_lock(), NOT lock(). The lock check may run on a
+        // time-sensitive path (e.g., enforcer); blocking on the SQLite mutex here
         // would deadlock if another task holds it. On contention we fail open —
         // a missed denial is far less harmful than a system-wide deadlock.
         let conn = match self.conn.try_lock() {
@@ -1383,7 +1386,7 @@ impl FileLockManager {
             None => {
                 debug!(
                     path = normalized_path,
-                    "fanotify: SQLite mutex busy, failing open to prevent deadlock"
+                    "Lock check: SQLite mutex busy, failing open to prevent deadlock"
                 );
                 return Ok((false, None));
             }

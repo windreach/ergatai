@@ -1032,6 +1032,181 @@ mod conversation_file_change_tests {
         assert_eq!(changes[0].additions, 2);
         assert_eq!(changes[0].deletions, 1);
     }
+
+    #[test]
+    fn test_json_object_string_found() {
+        let value = serde_json::json!({"key": "value"});
+        let map = value.as_object().unwrap();
+        assert_eq!(json_object_string(map, "key"), Some("value"));
+    }
+
+    #[test]
+    fn test_json_object_string_not_found() {
+        let value = serde_json::json!({"key": "value"});
+        let map = value.as_object().unwrap();
+        assert_eq!(json_object_string(map, "missing"), None);
+    }
+
+    #[test]
+    fn test_json_object_string_wrong_type() {
+        let value = serde_json::json!({"key": 123});
+        let map = value.as_object().unwrap();
+        assert_eq!(json_object_string(map, "key"), None);
+    }
+
+    #[test]
+    fn test_is_session_file_claude_sessions() {
+        assert!(is_session_file("/path/to/claude-sessions/abc"));
+    }
+
+    #[test]
+    fn test_is_session_file_application_support() {
+        assert!(is_session_file("/path/Application Support/app"));
+    }
+
+    #[test]
+    fn test_is_session_file_false() {
+        assert!(!is_session_file("/path/to/regular/file.rs"));
+    }
+
+    #[test]
+    fn test_strip_path_prefix_with_slash() {
+        assert_eq!(
+            strip_path_prefix("/project/src/main.rs", "/project"),
+            Some("src/main.rs")
+        );
+    }
+
+    #[test]
+    fn test_strip_path_prefix_without_slash() {
+        assert_eq!(
+            strip_path_prefix("/project/src/main.rs", "/project/"),
+            Some("src/main.rs")
+        );
+    }
+
+    #[test]
+    fn test_strip_path_prefix_no_match() {
+        assert_eq!(strip_path_prefix("/other/path", "/project"), None);
+    }
+
+    #[test]
+    fn test_display_file_path_with_worktree() {
+        let result = display_file_path(
+            "/worktree/project/src/main.rs",
+            Some("/worktree/project"),
+            None,
+        );
+        assert_eq!(result, "src/main.rs");
+    }
+
+    #[test]
+    fn test_display_file_path_with_project() {
+        let result = display_file_path("/project/src/main.rs", None, Some("/project"));
+        assert_eq!(result, "src/main.rs");
+    }
+
+    #[test]
+    fn test_display_file_path_workspace_fallback() {
+        let result = display_file_path("/workspace/src/main.rs", None, None);
+        assert_eq!(result, "src/main.rs");
+    }
+
+    #[test]
+    fn test_display_file_path_project_sandbox_fallback() {
+        let result = display_file_path("/project/sandbox/src/main.rs", None, None);
+        assert_eq!(result, "src/main.rs");
+    }
+
+    #[test]
+    fn test_display_file_path_no_match() {
+        let result = display_file_path("/random/path/file.rs", None, None);
+        assert_eq!(result, "/random/path/file.rs");
+    }
+
+    #[test]
+    fn test_line_count_some_content() {
+        assert_eq!(line_count(Some("line1\nline2\nline3")), 3);
+    }
+
+    #[test]
+    fn test_line_count_empty_content() {
+        assert_eq!(line_count(Some("")), 0);
+    }
+
+    #[test]
+    fn test_line_count_none() {
+        assert_eq!(line_count(None), 0);
+    }
+
+    #[test]
+    fn test_line_count_single_line() {
+        assert_eq!(line_count(Some("single line")), 1);
+    }
+
+    #[test]
+    fn test_resolve_tool_file_path_from_locations() {
+        let value = serde_json::json!({
+            "_locations": [{"path": "/path/to/file.rs"}]
+        });
+        let input = value.as_object().unwrap();
+        assert_eq!(
+            resolve_tool_file_path(input),
+            Some("/path/to/file.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_tool_file_path_from_file_path() {
+        let value = serde_json::json!({
+            "file_path": "/path/to/file.rs"
+        });
+        let input = value.as_object().unwrap();
+        assert_eq!(
+            resolve_tool_file_path(input),
+            Some("/path/to/file.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_tool_file_path_from_path() {
+        let value = serde_json::json!({
+            "path": "/path/to/file.rs"
+        });
+        let input = value.as_object().unwrap();
+        assert_eq!(
+            resolve_tool_file_path(input),
+            Some("/path/to/file.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_tool_file_path_from_file() {
+        let value = serde_json::json!({
+            "file": "/path/to/file.rs"
+        });
+        let input = value.as_object().unwrap();
+        assert_eq!(
+            resolve_tool_file_path(input),
+            Some("/path/to/file.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_tool_file_path_empty() {
+        let value = serde_json::json!({});
+        let input = value.as_object().unwrap();
+        assert_eq!(resolve_tool_file_path(input), None);
+    }
+
+    #[test]
+    fn test_resolve_tool_file_path_empty_string_filtered() {
+        let value = serde_json::json!({
+            "file_path": ""
+        });
+        let input = value.as_object().unwrap();
+        assert_eq!(resolve_tool_file_path(input), None);
+    }
 }
 
 #[utoipa::path(

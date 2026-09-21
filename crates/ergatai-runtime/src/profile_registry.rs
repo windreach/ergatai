@@ -1067,4 +1067,91 @@ mod tests {
             AgentRegistration::new("test".to_string(), "cmd".to_string(), "invalid".to_string());
         assert!(invalid_type.validate().is_err());
     }
+
+    #[test]
+    fn test_validate_empty_command() {
+        let reg = AgentRegistration::new("test".to_string(), "".to_string(), "acp".to_string());
+        assert!(reg.validate().is_err());
+        assert!(reg.validate().unwrap_err().to_string().contains("command"));
+    }
+
+    #[test]
+    fn test_validate_empty_agent_type() {
+        let reg = AgentRegistration::new("test".to_string(), "cmd".to_string(), "".to_string());
+        assert!(reg.validate().is_err());
+        assert!(reg
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("Agent type"));
+    }
+
+    #[test]
+    fn test_validate_whitespace_only_name() {
+        let reg = AgentRegistration::new("   ".to_string(), "cmd".to_string(), "acp".to_string());
+        assert!(reg.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_whitespace_only_command() {
+        let reg = AgentRegistration::new("test".to_string(), "   ".to_string(), "acp".to_string());
+        assert!(reg.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_mcp_type() {
+        let reg = AgentRegistration::new("test".to_string(), "cmd".to_string(), "mcp".to_string());
+        assert!(reg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_case_insensitive_type() {
+        let reg = AgentRegistration::new("test".to_string(), "cmd".to_string(), "ACP".to_string());
+        assert!(reg.validate().is_ok());
+
+        let reg2 = AgentRegistration::new("test".to_string(), "cmd".to_string(), "Mcp".to_string());
+        assert!(reg2.validate().is_ok());
+    }
+
+    #[test]
+    fn test_builder_methods() {
+        let reg = AgentRegistration::with_package_name(
+            "test".to_string(),
+            "cmd".to_string(),
+            "acp".to_string(),
+            Some("my-package".to_string()),
+        );
+        assert_eq!(reg.package_name, Some("my-package".to_string()));
+        assert_eq!(reg.name, "test");
+        assert_eq!(reg.command, "cmd");
+    }
+
+    #[test]
+    fn test_builder_with_avatar() {
+        let reg = AgentRegistration::with_avatar_url(
+            "test".to_string(),
+            "cmd".to_string(),
+            "acp".to_string(),
+            Some("pkg".to_string()),
+            Some("https://example.com/avatar.png".to_string()),
+        );
+        assert_eq!(
+            reg.avatar_url,
+            Some("https://example.com/avatar.png".to_string())
+        );
+        assert_eq!(reg.package_name, Some("pkg".to_string()));
+    }
+
+    #[test]
+    fn test_builder_with_id() {
+        let reg = AgentRegistration::with_id(
+            "custom-id".to_string(),
+            "test".to_string(),
+            "cmd".to_string(),
+            "acp".to_string(),
+            None,
+        );
+        assert_eq!(reg.id, "custom-id");
+        assert!(reg.package_name.is_none());
+    }
 }

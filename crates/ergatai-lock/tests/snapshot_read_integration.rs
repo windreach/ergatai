@@ -3,10 +3,16 @@
 //! These tests verify that when Agent A locks and modifies a file,
 //! Agent B can read the original content via LD_PRELOAD snapshot redirection.
 //!
+//! Note: These tests use the deprecated `init_file_access_with_enforcer` function
+//! for backward compatibility testing. New code should use `init_file_access()`
+//! with ACP pre-emptive locking.
+//!
 //! Requires:
-//! - Docker with fanotify support
+//! - Docker with fanotify support (deprecated)
 //! - libergatai_preload.so built and available
 //! - IPC socket for snapshot queries
+
+#![allow(deprecated)] // Tests use deprecated enforcer for backward compatibility
 
 use std::fs;
 use std::path::PathBuf;

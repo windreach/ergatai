@@ -1,23 +1,40 @@
 //! File access control module.
 //!
 //! Provides zero-trust file access control for multi-agent collaboration.
-//! Two-tier token system: SystemToken (admission) + FileToken (operation permissions).
-//! SQLite-backed lock management with WAL mode for concurrent performance.
-//! Git-based snapshots for Copy-on-Write semantics (TOCTOU prevention).
-//! Watchdog for token expiration and heartbeat monitoring (Phase 5).
-//! File system watcher for detecting unauthorized modifications (Phase 6).
-//! File events consumer for handling file.ready and file.error events (Phase 7).
-//! NATS-based lock waiting queue for blocking lock acquisition (Phase 8).
 //!
-//! # Kernel-level enforcement (Phase 9)
+//! # Lock Acquisition
 //!
-//! [`enforcer::Enforcer`] uses Linux fanotify to intercept `open()` calls at the
-//! VFS layer and deny unauthorized opens when a file is locked. This upgrades
-//! locks from advisory (bypass-able via shell) to mandatory. Fail-open on
-//! non-Linux or insufficient privileges.
+//! File locks are **pre-emptively acquired** during ACP permission approval:
+//!
+//! 1. **Permission approved** → `try_acquire_write_lock_preemptive()` binds:
+//!    - **Snapshot lock**: pre-modification baseline (for rollback if agent bypasses permission)
+//!    - **flock(2)**: kernel-level advisory lock (blocks cooperative Edit/Delete/Move tools)
+//! 2. **Tool starts** → `renew_lock_on_tool_start()` extends TTL
+//! 3. **Tool completes** → `release_lock_on_tool_complete()` releases lock + flock
+//!
+//! For Bash commands, `bash_path_extractor` statically extracts write targets.
+//! If extraction fails, falls back to post-facto detection via FileSystemWatcher.
+//!
+//! # Core Components
+//!
+//! - **SystemToken**: Session-level authorization, used by Watchdog for heartbeat timeout detection
+//! - **SQLite WAL**: High-concurrency lock management
+//! - **Git COW snapshots**: Copy-on-Write for TOCTOU prevention
+//! - **Watchdog**: Token expiration and heartbeat monitoring
+//! - **FileSystemWatcher**: Cross-platform file modification detection (fallback path)
+//! - **flock(2)**: Kernel-level advisory locking for cooperative process mutual exclusion
+//!
+//! # ⚠️ Deprecated Components
+//!
+//! - **`enforcer` module**: Linux fanotify-based kernel enforcement — **deprecated**,
+//!   code preserved for reference. Use ACP pre-emptive locking instead.
+//! - **`init_file_access_with_enforcer`**: Use `init_file_access()` instead.
+//! - **`FileToken`**: Superseded by `file_locks` table — the lock record itself
+//!   serves as the permission proof. No code validates FileToken.
 
 pub mod audit;
 pub mod config;
+/// ⚠️ DEPRECATED: fanotify enforcer — preserved for reference, not used in production.
 pub mod enforcer;
 pub mod file_events_consumer;
 pub mod ipc_server;
@@ -37,11 +54,18 @@ pub mod watcher;
 
 pub use audit::{AuditEntry, AuditManager, FileAccessStats, SecurityReport};
 pub use config::{ConfigManager, FileAccessConfig};
+/// ⚠️ DEPRECATED: fanotify enforcer types — preserved for reference.
+#[deprecated(
+    since = "0.2.0",
+    note = "fanotify enforcer is deprecated; use ACP pre-emptive locking instead"
+)]
 pub use enforcer::{Decision, DecisionEngine, Enforcer, EnforcerConfig};
 pub use file_events_consumer::{FileEvent, FileEventsConsumer};
 pub use ipc_server::{start_ipc_server, IpcServerHandle};
 pub use lock_manager::FileLockManager;
 pub use lock_mode::LockModeManager;
+/// ⚠️ Note: `init_file_access_with_enforcer` and `get_enforcer` are deprecated.
+#[allow(deprecated)] // Re-exporting deprecated items for backward compatibility
 pub use manager::{
     get_enforcer, get_lock_manager, get_snapshot_manager, get_watchdog, init_file_access,
     init_file_access_with_enforcer, register_workspace_for_project, shutdown_file_access,

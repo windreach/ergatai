@@ -923,4 +923,63 @@ mod tests {
         assert_eq!(obj.len(), 1);
         assert!(obj.contains_key("error"));
     }
+
+    #[test]
+    fn test_create_workspace_request_deserialization() {
+        let json = serde_json::json!({
+            "id": "ws-new",
+            "work_dir": null,
+            "env": null
+        });
+        let req: CreateWorkspaceRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.id, "ws-new");
+        assert!(req.work_dir.is_none());
+        assert!(req.env.is_none());
+    }
+
+    #[test]
+    fn test_create_workspace_request_with_all_fields() {
+        let json = serde_json::json!({
+            "id": "ws-full",
+            "work_dir": "/path/to/work",
+            "env": {"KEY": "value"}
+        });
+        let req: CreateWorkspaceRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.id, "ws-full");
+        assert_eq!(req.work_dir, Some("/path/to/work".to_string()));
+        assert_eq!(
+            req.env.as_ref().unwrap().get("KEY"),
+            Some(&"value".to_string())
+        );
+    }
+
+    #[test]
+    fn test_workspace_response_all_fields() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("env".to_string(), "prod".to_string());
+        let resp = WorkspaceResponse {
+            id: "ws-123".to_string(),
+            backend: "local".to_string(),
+            metadata,
+            capture_thoughts: Some(true),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["id"], "ws-123");
+        assert_eq!(json["backend"], "local");
+        assert_eq!(json["metadata"]["env"], "prod");
+        assert_eq!(json["capture_thoughts"], true);
+    }
+
+    #[test]
+    fn test_workspace_response_minimal() {
+        let resp = WorkspaceResponse {
+            id: "ws-minimal".to_string(),
+            backend: "local".to_string(),
+            metadata: std::collections::HashMap::new(),
+            capture_thoughts: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["id"], "ws-minimal");
+        assert!(json["capture_thoughts"].is_null());
+    }
 }

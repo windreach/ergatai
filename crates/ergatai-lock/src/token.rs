@@ -1,8 +1,23 @@
 //! Token data structures for file access control.
 //!
-//! Two-tier token system:
-//! - SystemToken: proves agent is authorized to participate in multi-agent collaboration
-//! - FileToken: grants specific file operation permissions (READ/WRITE)
+//! # Token System
+//!
+//! ## SystemToken (Active)
+//! Proves agent is authorized to participate in multi-agent collaboration.
+//! Used by Watchdog for heartbeat-based timeout detection and lock reclamation.
+//!
+//! ## FileToken (⚠️ DEPRECATED)
+//! Originally designed to grant specific file operation permissions (READ/WRITE).
+//! **This mechanism has been superseded by the `file_locks` table** — the lock record
+//! itself now serves as both the permission proof and the operation tracker.
+//!
+//! Current lock flow:
+//! 1. `try_acquire_write_lock_preemptive()` → creates `file_locks` record
+//! 2. Lock record tracks: agent_id, session_id, mode, TTL, heartbeat
+//! 3. No separate FileToken needed
+//!
+//! The `FileToken` type and `file_tokens` table are preserved for backward
+//! compatibility but should not be used in new code.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -153,7 +168,22 @@ impl SystemToken {
 
 /// File access token: grants specific file operation permissions.
 ///
-/// Bound to agentId + sessionId. Covers multiple files within scope.
+/// # ⚠️ DEPRECATED
+///
+/// **FileToken has been superseded by the `file_locks` mechanism.**
+/// The lock record in `file_locks` table now serves as both the permission
+/// proof and the operation tracker. No code validates FileToken before
+/// performing file operations.
+///
+/// Current flow: `try_acquire_write_lock_preemptive()` creates a `file_locks`
+/// record directly, without requiring a separate FileToken.
+///
+/// This type is preserved for backward compatibility but should not be used
+/// in new code.
+///
+/// ---
+///
+/// Original design: Bound to agentId + sessionId. Covers multiple files within scope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileToken {
     /// Unique token identifier.

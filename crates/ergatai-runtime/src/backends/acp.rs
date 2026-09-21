@@ -31,12 +31,14 @@ use tracing::{debug, error, info, warn};
 use agent_client_protocol::schema::v1::{
     ContentBlock, CreateElicitationRequest, CreateElicitationResponse, DeleteSessionRequest,
     ElicitationAction, ImageContent, InitializeRequest, ListSessionsRequest, LoadSessionRequest,
-    NewSessionRequest, Plan, PromptRequest, RequestPermissionRequest, RequestPermissionResponse,
-    SessionNotification, SessionUpdate, TextContent, ToolCall as AcpToolCall, ToolCallLocation,
-    ToolCallStatus, ToolCallUpdate, ToolKind,
+    McpServer, McpServerHttp, NewSessionRequest, Plan, PromptRequest, RequestPermissionRequest,
+    RequestPermissionResponse, SessionNotification, SessionUpdate, TextContent,
+    ToolCall as AcpToolCall, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{AcpAgent, Agent, ByteStreams, Client, ConnectionTo};
+
+use crate::mcp_over_acp::AcpMcpBridge;
 
 use ergatai_error::{ErgataiError, ErgataiResult};
 
@@ -234,7 +236,12 @@ pub enum AgentOutputEvent {
     /// Incremental thinking/reasoning content.
     Thinking { delta: String },
     /// A tool call has started.
-    ToolCallStart { id: String, name: String },
+    ToolCallStart {
+        id: String,
+        name: String,
+        input: Option<serde_json::Value>,
+        locations: Vec<ToolCallLocation>,
+    },
     /// Streaming tool call input (JSON delta).
     ToolCallInput { id: String, delta: String },
     /// Tool call input is complete and results are available.
@@ -710,6 +717,10 @@ pub struct AcpBackend {
     /// Optional MCP server factory for MCP-over-ACP. When enabled, agents can call
     /// ergatai's MCP tools through the native ACP transport.
     mcp_server_factory: Option<Arc<dyn crate::mcp_over_acp::McpServerFactory>>,
+    /// HTTP MCP endpoint URL for agents that don't support MCP-over-ACP but do
+    /// support HTTP MCP. When set and the agent advertises `mcp_capabilities.http`,
+    /// an HTTP MCP declaration is injected instead of the ACP transport.
+    http_mcp_url: Option<String>,
     /// PID to agent_id mapping for file lock system.
     /// Enables detection of which agent modified a file.
     pid_to_agent: Arc<RwLock<HashMap<u32, String>>>,
@@ -730,6 +741,7 @@ impl AcpBackend {
             max_auto_continues: 3,
             pending_elicitations: Arc::new(RwLock::new(HashMap::new())),
             mcp_server_factory: None,
+            http_mcp_url: None,
             pid_to_agent: Arc::new(RwLock::new(HashMap::new())),
             agent_pids: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -782,6 +794,15 @@ impl AcpBackend {
         factory: impl crate::mcp_over_acp::McpServerFactory,
     ) -> Self {
         self.mcp_server_factory = Some(Arc::new(factory));
+        self
+    }
+
+    /// Set the HTTP MCP endpoint URL for agents that don't support MCP-over-ACP.
+    ///
+    /// When set, agents advertising `mcp_capabilities.http` will receive an
+    /// HTTP MCP declaration pointing to this URL instead of skipping injection.
+    pub fn with_http_mcp_url(mut self, url: impl Into<String>) -> Self {
+        self.http_mcp_url = Some(url.into());
         self
     }
 
@@ -1638,6 +1659,7 @@ impl AcpBackendInterface for AcpBackend {
         // Clone for the connection task — session_store is shared via Arc.
         let task_session_store = self.session_store.clone();
         let task_mcp_server_factory = self.mcp_server_factory.clone();
+        let task_http_mcp_url = self.http_mcp_url.clone();
         let task_command_for_save = command.to_string();
         let task_cwd_for_save = cwd.clone();
         // Separate clone for session save inside the connect_with closure.
@@ -1771,6 +1793,8 @@ impl AcpBackendInterface for AcpBackend {
                                     let _ = output_tx.send(AgentOutputEvent::ToolCallStart {
                                         id: tc.tool_call_id.to_string(),
                                         name: tc.title.clone(),
+                                        input: tc.raw_input.clone(),
+                                        locations: tc.locations.clone(),
                                     });
                                 }
                                 SessionUpdate::ToolCallUpdate(update) => {
@@ -1806,6 +1830,16 @@ impl AcpBackendInterface for AcpBackend {
                                                 "Tool call completion/error event for untracked tool call"
                                             );
                                         }
+                                        // Completion updates may omit raw_input/raw_output. The tracker
+                                        // retains the fields recorded on the initial ToolCall event.
+                                        let raw_input = tracked
+                                            .as_ref()
+                                            .and_then(|call| call.raw_input.clone())
+                                            .or_else(|| update.fields.raw_input.clone());
+                                        let raw_output = tracked
+                                            .as_ref()
+                                            .and_then(|call| call.raw_output.clone())
+                                            .or_else(|| update.fields.raw_output.clone());
 
                                         // Release locks immediately after write operations complete
                                         // This covers ~90% of cases (agents using Edit/Delete/Move tools)
@@ -1858,8 +1892,8 @@ impl AcpBackendInterface for AcpBackend {
                                             let _ = output_tx.send(AgentOutputEvent::ToolCallComplete {
                                                 id: update.tool_call_id.to_string(),
                                                 name: update.fields.title.clone().unwrap_or_default(),
-                                                input: update.fields.raw_input.clone(),
-                                                output: update.fields.raw_output.clone(),
+                                                input: raw_input,
+                                                output: raw_output,
                                                 locations,
                                             });
                                         } else {
@@ -2099,11 +2133,65 @@ impl AcpBackendInterface for AcpBackend {
                         "ACP agent initialized"
                     );
 
+                    let mcp_acp_supported = init_response
+                        .agent_capabilities
+                        .mcp_capabilities
+                        .acp;
+                    let mcp_http_supported = init_response
+                        .agent_capabilities
+                        .mcp_capabilities
+                        .http;
+                    let (_mcp_guard, mcp_declaration) = match &task_mcp_server_factory {
+                        Some(factory) if mcp_acp_supported => {
+                            let bridge = AcpMcpBridge::new(factory.clone());
+                            let declaration = bridge.declaration();
+                            let guard = connection.add_dynamic_handler(bridge)?;
+                            info!(
+                                mcp_server_name = %factory.server_name(),
+                                "MCP-over-ACP attached to ACP connection"
+                            );
+                            (Some(guard), Some(declaration))
+                        }
+                        Some(factory) => {
+                            if mcp_http_supported {
+                                if let Some(url) = &task_http_mcp_url {
+                                    let declaration = McpServer::Http(
+                                        McpServerHttp::new(factory.server_name(), url.as_str()),
+                                    );
+                                    info!(
+                                        mcp_server_name = %factory.server_name(),
+                                        mcp_url = %url,
+                                        "Agent does not support MCP-over-ACP; using HTTP MCP fallback"
+                                    );
+                                    (None, Some(declaration))
+                                } else {
+                                    debug!(
+                                        mcp_server_name = %factory.server_name(),
+                                        "Agent supports HTTP MCP but no HTTP MCP URL is configured"
+                                    );
+                                    (None, None)
+                                }
+                            } else {
+                                debug!(
+                                    mcp_server_name = %factory.server_name(),
+                                    "Agent does not advertise MCP-over-ACP or HTTP MCP support"
+                                );
+                                (None, None)
+                            }
+                        }
+                        None => (None, None),
+                    };
+
                     // Step 2: Create or load an ACP session.
                     let mut session_id = if let Some(saved_sid) = saved_session_id {
                         info!(session_id = %saved_sid, "Attempting session/load");
+                        let mut load_request =
+                            LoadSessionRequest::new(saved_sid.clone(), &cwd);
+                        if let Some(declaration) = &mcp_declaration {
+                            load_request.mcp_servers.push(declaration.clone());
+                        }
                         match connection
-                            .send_request(LoadSessionRequest::new(saved_sid.clone(), &cwd))
+                            .send_request(load_request)
                             .block_task()
                             .await
                         {
@@ -2119,34 +2207,29 @@ impl AcpBackendInterface for AcpBackend {
                                     saved_session_id = %saved_sid,
                                     "session/load failed, falling back to session/new"
                                 );
+                                let mut new_request = NewSessionRequest::new(&cwd);
+                                if let Some(declaration) = &mcp_declaration {
+                                    new_request.mcp_servers.push(declaration.clone());
+                                }
                                 let new_resp = connection
-                                    .send_request(NewSessionRequest::new(&cwd))
+                                    .send_request(new_request)
                                     .block_task()
                                     .await?;
                                 new_resp.session_id
                             }
                         }
                     } else {
+                        let mut new_request = NewSessionRequest::new(&cwd);
+                        if let Some(declaration) = &mcp_declaration {
+                            new_request.mcp_servers.push(declaration.clone());
+                        }
                         let new_resp = connection
-                            .send_request(NewSessionRequest::new(&cwd))
+                            .send_request(new_request)
                             .block_task()
                             .await?;
                         new_resp.session_id
                     };
                     info!(session_id = %session_id, "ACP session ready");
-
-                    // Log MCP server configuration if enabled.
-                    if let Some(mcp_factory) = &task_mcp_server_factory {
-                        info!(
-                            mcp_server_name = %mcp_factory.server_name(),
-                            "MCP-over-ACP factory configured for agent session"
-                        );
-                        // TODO: Create and attach MCP server to session.
-                        // This requires using the factory to create an McpServer instance
-                        // and attaching it using the ACP SDK's session builder API.
-                        // The factory returns a Box<dyn Any> that needs to be downcast
-                        // to the concrete McpServer type.
-                    }
 
                     // Publish session_id for the permission handler closure.
                     *task_shared_session_id.write() = Some(session_id.to_string());
@@ -2339,8 +2422,12 @@ impl AcpBackendInterface for AcpBackend {
                             Some(AcpCommand::CreateSession { response_tx }) => {
                                 debug!("ACP connection task received create_session command");
                                 let cwd = task_cwd_for_save.clone();
+                                let mut request = NewSessionRequest::new(&cwd);
+                                if let Some(declaration) = &mcp_declaration {
+                                    request.mcp_servers.push(declaration.clone());
+                                }
                                 let result = connection
-                                    .send_request(NewSessionRequest::new(&cwd))
+                                    .send_request(request)
                                     .block_task()
                                     .await;
                                 match result {
@@ -2376,11 +2463,15 @@ impl AcpBackendInterface for AcpBackend {
                                     "ACP connection task received load_session command"
                                 );
                                 let cwd = task_cwd_for_save.clone();
-                                let result = connection
-                                    .send_request(LoadSessionRequest::new(
+                                let mut request = LoadSessionRequest::new(
                                         target_session_id.clone(),
                                         &cwd,
-                                    ))
+                                );
+                                if let Some(declaration) = &mcp_declaration {
+                                    request.mcp_servers.push(declaration.clone());
+                                }
+                                let result = connection
+                                    .send_request(request)
                                     .block_task()
                                     .await;
                                 match result {

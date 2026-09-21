@@ -401,4 +401,131 @@ mod tests {
         // Current implementation doesn't handle touch, so empty
         assert!(paths.is_empty());
     }
+
+    #[test]
+    fn test_empty_command() {
+        let paths = extract_bash_write_targets("");
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_whitespace_only_command() {
+        let paths = extract_bash_write_targets("   ");
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_command_with_only_options() {
+        let paths = extract_bash_write_targets("ls -la --color=auto");
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_redirect_with_quotes() {
+        let paths = extract_bash_write_targets("echo hello > \"output file.txt\"");
+        // Simple whitespace split doesn't handle quoted strings correctly
+        // This is a known limitation - quotes are not parsed
+        assert_eq!(paths, vec!["output"]);
+    }
+
+    #[test]
+    fn test_redirect_with_single_quotes() {
+        let paths = extract_bash_write_targets("echo hello > 'output.txt'");
+        assert_eq!(paths, vec!["output.txt"]);
+    }
+
+    #[test]
+    fn test_multiple_redirects_same_file() {
+        let paths = extract_bash_write_targets("echo a > out.txt && echo b >> out.txt");
+        // Should deduplicate
+        assert_eq!(paths, vec!["out.txt"]);
+    }
+
+    #[test]
+    fn test_mixed_commands() {
+        let paths = extract_bash_write_targets("sed -i 's/a/b/' file.txt && echo done > log.txt");
+        // The extractor doesn't handle '&&' command chaining well
+        // It only extracts from the redirect pattern
+        assert_eq!(paths, vec!["log.txt"]);
+    }
+
+    #[test]
+    fn test_rm_command() {
+        let paths = extract_bash_write_targets("rm -rf temp_dir");
+        assert_eq!(paths, vec!["temp_dir"]);
+    }
+
+    #[test]
+    fn test_mkdir_command() {
+        let paths = extract_bash_write_targets("mkdir -p new_dir/subdir");
+        assert_eq!(paths, vec!["new_dir/subdir"]);
+    }
+
+    #[test]
+    fn test_cp_command() {
+        let paths = extract_bash_write_targets("cp source.txt dest.txt");
+        assert_eq!(paths, vec!["dest.txt"]);
+    }
+
+    #[test]
+    fn test_mv_command() {
+        let paths = extract_bash_write_targets("mv old.txt new.txt");
+        assert_eq!(paths, vec!["new.txt"]);
+    }
+
+    #[test]
+    fn test_curl_with_output() {
+        let paths = extract_bash_write_targets("curl -o downloaded.html https://example.com");
+        assert_eq!(paths, vec!["downloaded.html"]);
+    }
+
+    #[test]
+    fn test_wget_with_output() {
+        let paths = extract_bash_write_targets("wget -O file.zip https://example.com/file.zip");
+        assert_eq!(paths, vec!["file.zip"]);
+    }
+
+    #[test]
+    fn test_shell_variable_filtered() {
+        let paths = extract_bash_write_targets("echo hello > $OUTPUT_FILE");
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_command_substitution_filtered() {
+        let paths = extract_bash_write_targets("echo hello > $(mktemp)");
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_path_with_trailing_semicolon() {
+        let paths = extract_bash_write_targets("echo hello > output.txt; echo done");
+        assert_eq!(paths, vec!["output.txt"]);
+    }
+
+    #[test]
+    fn test_path_with_trailing_ampersand() {
+        let paths = extract_bash_write_targets("echo hello > output.txt &");
+        assert_eq!(paths, vec!["output.txt"]);
+    }
+
+    #[test]
+    fn test_path_with_trailing_pipe() {
+        let paths = extract_bash_write_targets("echo hello > output.txt | grep hello");
+        assert_eq!(paths, vec!["output.txt"]);
+    }
+
+    #[test]
+    fn test_awk_inplace() {
+        let paths = extract_bash_write_targets("awk -i inplace '{print}' file.txt");
+        // awk -i inplace is not handled by the current implementation
+        // This is a known limitation
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_ln_command() {
+        let paths = extract_bash_write_targets("ln -s target.txt link.txt");
+        assert_eq!(paths, vec!["link.txt"]);
+    }
 }

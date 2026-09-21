@@ -1,5 +1,21 @@
 //! Kernel-level file access enforcement.
 //!
+//! # ⚠️ DEPRECATED — Code Preserved for Reference
+//!
+//! **This module is no longer used in production.** The current enforcement mechanism
+//! is **pre-emptive locking** during ACP permission approval:
+//! - `try_acquire_write_lock_preemptive()` binds snapshot + flock to tool lifecycle
+//! - `bash_path_extractor` statically extracts write targets from Bash commands
+//! - FileSystemWatcher provides post-facto fallback detection
+//!
+//! This fanotify-based enforcer was the original kernel-level approach but has been
+//! superseded by the ACP permission-integrated locking. The code is preserved for
+//! potential future use or reference.
+//!
+//! ---
+//!
+//! ## Original Documentation (for reference)
+//!
 //! This module implements mandatory file locking on Linux by intercepting
 //! `open()` syscalls at the VFS layer using fanotify's `FAN_OPEN_PERM` events.
 //!
@@ -9,7 +25,7 @@
 //!
 //! - [`DecisionEngine`]: pure logic — given a file path and caller PID, returns
 //!   Allow or Deny based on the current lock state. No I/O; unit-testable.
-//! - [`Enforcer`]: facade that owns a platform [`EnforcerBackend`] and runs a
+//! - [`Enforcer`]: facade that owns a platform `EnforcerBackend` and runs a
 //!   unified event loop. The backend handles OS-specific interception
 //!   (fanotify on Linux, Endpoint Security on macOS, etc.); the facade handles
 //!   path normalization, decision dispatch, and NATS audit events.

@@ -60,11 +60,8 @@ tracing-subscriber.workspace = true
 clap.workspace = true
 
 # MCP protocol (rmcp SDK)
-# Note: We use two versions of rmcp:
-# - rmcp 3.x for HTTP MCP server (existing implementation)
-# - rmcp 2.x (as rmcp2) for ACP MCP integration (required by agent-client-protocol-rmcp)
-rmcp = { version = "3", features = ["server", "transport-streamable-http-server", "macros", "elicitation"] }
-rmcp2 = { package = "rmcp", version = "2", features = ["server", "macros"] }
+# Using rmcp 2.x for both HTTP MCP and ACP MCP (unified version)
+rmcp = { version = "2", features = ["server", "transport-streamable-http-server", "macros"] }
 schemars = "1.0"
 tokio-util = "0.7"
 

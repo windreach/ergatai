@@ -3,10 +3,17 @@
 //! Provides lazy initialization of FileLockManager, SnapshotManager, and Watchdog.
 //! Similar to NatsManager, this provides a central point for file access control.
 //!
-//! Phase 9 adds an optional [`Enforcer`] that uses Linux fanotify to enforce
-//! locks at the kernel level. The enforcer is created by
-//! [`init_file_access_with_enforcer`]; the original [`init_file_access`] leaves
-//! enforcement disabled (advisory-only mode) for backward compatibility.
+//! # Lock Enforcement
+//!
+//! The primary enforcement mechanism is **pre-emptive locking** during ACP permission
+//! approval: `try_acquire_write_lock_preemptive()` binds a snapshot lock + flock(2) to
+//! the tool lifecycle.
+//!
+//! # ⚠️ DEPRECATED: fanotify Enforcer
+//!
+//! The optional [`Enforcer`] (Linux fanotify) is **deprecated and no longer used**.
+//! Code is preserved for reference. Use `init_file_access()` — the `init_file_access_with_enforcer`
+//! function exists but the enforcer should not be enabled in new deployments.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -31,15 +38,16 @@ struct ProjectFileAccess {
     lock_manager: Arc<FileLockManager>,
     snapshot_manager: Arc<SnapshotManager>,
     watchdog: Arc<RwLock<Watchdog>>,
-    /// Optional kernel-level enforcer (Phase 9). `None` in advisory-only mode.
+    /// ⚠️ DEPRECATED: fanotify enforcer — preserved for reference, not used.
+    #[allow(dead_code)]
     enforcer: Option<Arc<Enforcer>>,
     /// IPC server handle for LD_PRELOAD snapshot queries. Cleaned up on drop.
     /// `None` if IPC server failed to start (non-fatal — agents still work).
     #[allow(dead_code)] // Used for Drop semantics — socket cleanup on shutdown.
     ipc_handle: Option<IpcServerHandle>,
-    /// Cross-platform file system watcher (fallback for non-Linux where fanotify
-    /// is unavailable). Auto-acquires WRITE locks on detected modifications.
-    /// `None` when the enforcer is active (fanotify handles auto-locking).
+    /// Cross-platform file system watcher — post-facto fallback for detecting
+    /// file modifications when pre-emptive locking (via ACP permission) doesn't apply
+    /// (e.g., dynamic bash paths that couldn't be statically extracted).
     ///
     /// Note: watcher uses agent_id="system" for all auto-acquired locks —
     /// no per-agent attribution is possible without PID information.
@@ -133,6 +141,19 @@ pub async fn init_file_access(project_id: &str, project_root: &Path) -> ErgataiR
 
 /// Initialize file access control with kernel-level enforcement (Phase 9).
 ///
+/// # ⚠️ DEPRECATED
+///
+/// This function is **deprecated and should not be used in new deployments**.
+/// The fanotify-based enforcer has been superseded by ACP permission-integrated
+/// pre-emptive locking (`try_acquire_write_lock_preemptive`). Use [`init_file_access`]
+/// instead.
+///
+/// This function is preserved for backward compatibility and reference.
+///
+/// ---
+///
+/// ## Original Documentation
+///
 /// Like [`init_file_access`], but also creates a fanotify-based [`Enforcer`]
 /// that intercepts `open()` calls and denies access to locked files. The
 /// `pid_resolver` maps kernel-reported PIDs to ergatai agent identities.
@@ -142,6 +163,10 @@ pub async fn init_file_access(project_id: &str, project_root: &Path) -> ErgataiR
 /// to function normally.
 ///
 /// Idempotent — calling multiple times is safe.
+#[deprecated(
+    since = "0.2.0",
+    note = "fanotify enforcer is deprecated; use init_file_access() with ACP pre-emptive locking"
+)]
 pub async fn init_file_access_with_enforcer(
     project_id: &str,
     project_root: &Path,

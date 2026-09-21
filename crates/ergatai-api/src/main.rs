@@ -306,7 +306,7 @@ async fn async_main(args: Args) -> Result<()> {
         }
         // Configure MCP-over-ACP if enabled
         if ergatai_runtime::mcp_over_acp::is_enabled() {
-            tracing::info!("MCP-over-ACP enabled (ERGATAI_MCP_OVER_ACP_ENABLED=1)");
+            tracing::info!("MCP-over-ACP enabled (set ERGATAI_MCP_OVER_ACP_ENABLED=0 to disable)");
             // Create the MCP server factory for ACP sessions
             let mcp_factory = ergatai_api::mcp::ErgataiMcpServerFactory::new(
                 mcp_registry.clone(),
@@ -314,6 +314,7 @@ async fn async_main(args: Args) -> Result<()> {
                 "Ergatai MCP Tools".to_string(),
             );
             backend = backend.with_mcp_server_factory(mcp_factory);
+            backend = backend.with_http_mcp_url(format!("http://{}:{}/mcp", args.host, args.port));
         }
         match ergatai_runtime::SessionStore::open(".ergatai/sessions.db") {
             Ok(store) => {

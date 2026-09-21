@@ -217,15 +217,17 @@ async fn record_mcp_approvals(identifiers: &[String]) {
         .join("settings.json");
 
     // Ensure parent directory exists before validation to prevent path traversal
-    if let Some(parent) = settings_path.parent() {
-        if let Err(e) = tokio::fs::create_dir_all(parent).await {
-            tracing::warn!(error = %e, path = %parent.display(), "Failed to create parent directory");
-            return;
-        }
+    let Some(parent) = settings_path.parent() else {
+        tracing::warn!(path = %settings_path.display(), "Settings path has no parent directory");
+        return;
+    };
+    if let Err(e) = tokio::fs::create_dir_all(parent).await {
+        tracing::warn!(error = %e, path = %parent.display(), "Failed to create parent directory");
+        return;
     }
 
     // Validate path to prevent path traversal attacks - now parent exists so canonicalize should work
-    let canonical_path = match tokio::fs::canonicalize(settings_path.parent().unwrap()).await {
+    let canonical_path = match tokio::fs::canonicalize(parent).await {
         Ok(path) => path,
         Err(e) => {
             tracing::warn!(error = %e, path = %settings_path.display(), "Failed to canonicalize settings path (security check failed)");

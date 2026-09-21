@@ -533,36 +533,54 @@ JetStream Streams:
 
 零信任文件访问控制，面向多 agent 协作：
 
-- **双层 Token**: `SystemToken`（准入）+ `FileToken`（操作权限）
+- **SystemToken**: Session 级别授权，Watchdog 用于心跳超时检测和锁回收
 - **SQLite WAL**: 高并发锁管理
 - **Git COW 快照**: Copy-on-Write 防止 TOCTOU
 - **Watchdog**: Token 过期 + 心跳监控
-- **File Watcher**: 跨平台文件修改检测 + 自动上锁（`notify` crate，Linux/macOS/Windows）
+- **File Watcher**: 跨平台文件修改检测 + 自动上锁（`notify` crate, Linux/macOS/Windows）
 
-### 自动化模型
+> **Note**: 原设计的 `FileToken`（操作权限 token）已废弃，被 `file_locks` 表替代。锁记录本身就是权限证明。
 
-文件锁完全自动化，无需任何 MCP 工具调用（原 `request_file_access` / `release_file_access` / `list_active_locks` 已删除）：
+### 锁获取机制
 
-| 操作 | 行为 |
-|------|------|
-| **READ** | 直接读取，无需申请锁 |
-| **WRITE** | `notify::RecommendedWatcher` 检测到修改事件后自动上锁（post-facto） |
+文件锁基于 **ACP 权限审批** 前置获取，绑定到工具生命周期：
 
-**工作原理（FileSystemWatcher）：**
+| 阶段 | 触发点 | 行为 |
+|------|--------|------|
+| **权限审批** | `RequestPermissionRequest` 被允许时 | `try_pre_lock_files()` 调用 `try_acquire_write_lock_preemptive()` |
+| **工具开始** | `ToolCallStart` 事件 | `renew_lock_on_tool_start()` 续期 TTL |
+| **工具完成** | `ToolCallComplete` 事件 | `release_lock_on_tool_complete()` 释放锁 |
 
-`init_file_access_with_enforcer()` 启动 `FileSystemWatcher`：
-1. Agent 写入文件 → `notify::RecommendedWatcher` 检测到修改事件
-2. 调用 `auto_acquire_write_lock()` 创建快照 + WRITE 锁
-3. 所有锁统一使用 agent_id=`"system"`, session_id=`"watcher"`（无 per-agent 归属）
+### 双层保护
 
-**已知限制：**
+前置锁同时绑定两种机制：
+
+| 机制 | 作用 | 防御对象 |
+|------|------|----------|
+| **快照锁（Snapshot）** | pre-modification baseline | Agent 绕过权限模型（如 bash 注入）— 快照捕获原始内容用于回滚 |
+| **flock（kernel advisory）** | `flock(LOCK_EX)` 内核级锁 | 正常 agent 工具并发写入（Edit/Delete/Move）— 阻止协作进程同时修改 |
+
+**flock 说明**：flock 是 advisory — 不调用 flock 的进程（如 raw bash）不受阻。但对协作进程（Edit/Delete/Move 工具）提供第二层互斥，减少 "写入 → watcher 检测 → 回滚 → 重试" 的 token 浪费循环。
+
+### Bash 路径提取
+
+`bash_path_extractor::extract_bash_write_targets()` 静态分析 Bash 命令，提取写入目标：
+
+- 输出重定向（`>`, `>>`）
+- 就地编辑器（`sed -i`, `perl -pi`）
+- Tee (`tee file1 file2`)
+- 文件操作（`mv`, `cp`, `ln` 目标参数）
+- 下载（`curl -o`, `wget -O`）
+
+提取的路径在权限审批时前置加锁。如果无法提取（动态路径），降级到 FileSystemWatcher post-facto 检测。
+
+### 已知限制
 
 | 限制 | 说明 |
 |------|------|
-| 无阻断 | 写入已完成后才检测到，无法阻止并发写入 |
-| Post-facto 快照 | 快照捕获的是修改后的内容 |
-| 无 PID | 无法精确识别修改进程，所有锁归属 `"system"`（无法区分 agent） |
-| Advisory-only | 锁记录在 SQLite，无内核级强制，依赖 agent 查询锁状态 |
+| 动态路径 | 无法提取 `$VAR` 或 `$(...)` 等动态路径，降级到 post-facto |
+| Bash 注入 | 恶意 agent 可通过复杂 shell 语法绕过静态分析，快照锁提供回滚能力 |
+| 非协作进程 | 不调用 flock 的进程不受 flock 保护，依赖快照锁 + 审计 |
 
 ---
 

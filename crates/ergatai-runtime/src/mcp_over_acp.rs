@@ -1,81 +1,271 @@
 //! MCP-over-ACP — Provide MCP tools to ACP agents via native ACP transport.
 //!
-//! This module allows ergatai to expose its MCP tools (list_agents, send_message,
-//! submit_orchestration, etc.) to ACP agents using the native ACP MCP transport.
-//!
-//! # How it works
-//!
-//! When an ACP agent is started, ergatai can attach an MCP server to the session.
-//! The agent can then call MCP tools through the ACP protocol using:
-//! - `mcp/connect` - Establish MCP connection
-//! - `mcp/message` - Send MCP requests/responses
-//! - `mcp/disconnect` - Close MCP connection
-//!
-//! # Architecture
-//!
-//! The MCP server implementation lives in `ergatai-api` (using rmcp). This module
-//! provides a trait-based abstraction so `ergatai-runtime` can attach MCP servers
-//! to ACP sessions without directly depending on the implementation.
-//!
-//! # Configuration
-//!
-//! Enable via environment variable:
-//! ```bash
-//! ERGATAI_MCP_OVER_ACP_ENABLED=1
-//! ERGATAI_MCP_SERVER_NAME="Ergatai MCP Tools"
-//! ```
+//! The bridge declares an ACP-transport MCP server in `session/new` or
+//! `session/load`, then translates the ACP `mcp/*` envelope messages to and
+//! from the concrete MCP server component supplied by the application.
 
-use tracing::{debug, info};
+use std::collections::HashMap;
+use std::sync::Arc;
 
-/// Trait for creating MCP servers that can be attached to ACP sessions.
-///
-/// This trait abstracts the MCP server creation so that `ergatai-runtime` doesn't
-/// need to know about the concrete implementation (which lives in `ergatai-api`).
-///
-/// The factory returns a type-erased MCP server that will be downcast when attaching
-/// to ACP sessions.
+use agent_client_protocol::schema::v1::{
+    ConnectMcpRequest, ConnectMcpResponse, DisconnectMcpRequest, DisconnectMcpResponse,
+    McpConnectionId, McpServer, McpServerAcp, McpServerAcpId, MessageMcpNotification,
+    MessageMcpRequest, MessageMcpResponse,
+};
+use agent_client_protocol::util::MatchDispatchFrom;
+use agent_client_protocol::{
+    role, Agent, Channel, ConnectTo, ConnectionTo, Dispatch, DynConnectTo, HandleDispatchFrom,
+    Handled, JsonRpcResponse, Responder, UntypedMessage,
+};
+use futures::{SinkExt, StreamExt};
+use serde_json::Value;
+use tracing::{debug, info, warn};
+
+/// Creates MCP server components for ACP sessions.
 pub trait McpServerFactory: Send + Sync + 'static {
-    /// Create an MCP server instance.
-    ///
-    /// Returns a boxed MCP server that can be attached to ACP sessions.
-    /// The concrete type should be `McpServer<role::mcp::Client, impl RunWithConnectionTo<role::mcp::Client>>`.
-    fn create_mcp_server(&self) -> Box<dyn std::any::Any + Send + Sync>;
+    /// Create a component that can serve one MCP-over-ACP connection.
+    fn create_mcp_server(&self) -> DynConnectTo<role::mcp::Client>;
 
-    /// Get the server name (for logging/display).
+    /// Get the server name used in the ACP declaration.
     fn server_name(&self) -> &str;
 }
 
-/// Wrapper that holds a concrete MCP server for ACP integration.
-///
-/// This is created by the factory and passed to `AcpBackend`.
-pub struct AcpMcpServer {
-    /// The underlying MCP server (type-erased for cross-crate compatibility).
-    inner: Box<dyn std::any::Any + Send + Sync>,
-    /// Server name for logging.
-    name: String,
+/// Native ACP MCP-over-ACP bridge for one agent connection.
+pub struct AcpMcpBridge {
+    server_id: McpServerAcpId,
+    factory: Arc<dyn McpServerFactory>,
+    connections: HashMap<McpConnectionId, futures::channel::mpsc::Sender<Dispatch>>,
 }
 
-impl AcpMcpServer {
-    /// Create a new wrapper.
-    pub fn new(inner: Box<dyn std::any::Any + Send + Sync>, name: String) -> Self {
-        Self { inner, name }
+impl AcpMcpBridge {
+    pub fn new(factory: Arc<dyn McpServerFactory>) -> Self {
+        Self {
+            server_id: McpServerAcpId::new(format!("ergatai-mcp:{}", uuid::Uuid::new_v4())),
+            factory,
+            connections: HashMap::new(),
+        }
     }
 
-    /// Get the server name.
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn declaration(&self) -> McpServer {
+        McpServer::Acp(McpServerAcp::new(
+            self.factory.server_name(),
+            self.server_id.clone(),
+        ))
     }
 
-    /// Try to downcast to the concrete MCP server type.
-    ///
-    /// Returns `None` if the inner type doesn't match.
-    pub fn downcast<T: 'static>(&self) -> Option<&T> {
-        self.inner.downcast_ref::<T>()
+    fn handle_connect_request(
+        &mut self,
+        request: ConnectMcpRequest,
+        responder: Responder<ConnectMcpResponse>,
+        acp_connection: &ConnectionTo<Agent>,
+    ) -> Result<
+        Handled<(ConnectMcpRequest, Responder<ConnectMcpResponse>)>,
+        agent_client_protocol::Error,
+    > {
+        if request.server_id != self.server_id {
+            return Ok(Handled::No {
+                message: (request, responder),
+                retry: false,
+            });
+        }
+
+        let connection_id =
+            McpConnectionId::new(format!("mcp-over-acp-connection:{}", uuid::Uuid::new_v4()));
+        let (mcp_server_tx, mut mcp_server_rx) = futures::channel::mpsc::channel::<Dispatch>(128);
+        self.connections
+            .insert(connection_id.clone(), mcp_server_tx);
+
+        let (client_channel, server_channel) = Channel::duplex();
+        let client_component = {
+            let connection_id = connection_id.clone();
+            let acp_connection = acp_connection.clone();
+            role::mcp::Client
+                .builder()
+                .on_receive_dispatch(
+                    async move |message: Dispatch, _mcp_connection| match message {
+                        Dispatch::Request(request, responder) => {
+                            let (method, params) = request.into_parts();
+                            let params = match params {
+                                Value::Object(params) => Some(params),
+                                Value::Null => None,
+                                invalid => {
+                                    warn!(?invalid, "Ignoring MCP request with positional params");
+                                    return Ok(());
+                                }
+                            };
+                            let request = MessageMcpRequest::new(connection_id.clone(), method)
+                                .params(params);
+                            let responder = responder.wrap_params(|method, result| {
+                                result.and_then(|response: MessageMcpResponse| {
+                                    response.into_json(method)
+                                })
+                            });
+                            acp_connection.send_proxied_message_to(
+                                Agent,
+                                Dispatch::<MessageMcpRequest, MessageMcpNotification>::Request(
+                                    request, responder,
+                                ),
+                            )
+                        }
+                        Dispatch::Notification(notification) => {
+                            let (method, params) = notification.into_parts();
+                            let params = match params {
+                                Value::Object(params) => Some(params),
+                                Value::Null => None,
+                                invalid => {
+                                    warn!(
+                                        ?invalid,
+                                        "Ignoring MCP notification with positional params"
+                                    );
+                                    return Ok(());
+                                }
+                            };
+                            let notification =
+                                MessageMcpNotification::new(connection_id.clone(), method)
+                                    .params(params);
+                            acp_connection.send_proxied_message_to(
+                                Agent,
+                                Dispatch::<MessageMcpRequest, MessageMcpNotification>::Notification(
+                                    notification,
+                                ),
+                            )
+                        }
+                        Dispatch::Response(result, router) => router.route_with_result(result),
+                    },
+                    agent_client_protocol::on_receive_dispatch!(),
+                )
+                .with_spawned(move |mcp_connection| async move {
+                    while let Some(message) = mcp_server_rx.next().await {
+                        mcp_connection.send_proxied_message_to(role::mcp::Server, message)?;
+                    }
+                    Ok(())
+                })
+        };
+
+        let spawned_server = self.factory.create_mcp_server();
+        let spawn_results = acp_connection
+            .spawn(async move { client_component.connect_to(client_channel).await })
+            .and_then(|()| {
+                acp_connection.spawn(async move { spawned_server.connect_to(server_channel).await })
+            });
+
+        match spawn_results {
+            Ok(()) => {
+                responder.respond(ConnectMcpResponse::new(connection_id))?;
+                Ok(Handled::Yes)
+            }
+            Err(error) => {
+                self.connections.remove(&connection_id);
+                responder.respond_with_error(error)?;
+                Ok(Handled::Yes)
+            }
+        }
     }
 
-    /// Consume the wrapper and return the inner value.
-    pub fn into_inner(self) -> Box<dyn std::any::Any + Send + Sync> {
-        self.inner
+    async fn handle_message_request(
+        &mut self,
+        request: MessageMcpRequest,
+        responder: Responder<MessageMcpResponse>,
+    ) -> Result<
+        Handled<(MessageMcpRequest, Responder<MessageMcpResponse>)>,
+        agent_client_protocol::Error,
+    > {
+        let Some(mcp_server_tx) = self.connections.get_mut(&request.connection_id) else {
+            return Ok(Handled::No {
+                message: (request, responder),
+                retry: false,
+            });
+        };
+        let method = request.method.clone();
+        let untyped = UntypedMessage {
+            method,
+            params: request.params.map(Value::Object).unwrap_or(Value::Null),
+        };
+        let responder = responder.wrap_params(|method, result| {
+            result.and_then(|response| MessageMcpResponse::from_value(method, response))
+        });
+        mcp_server_tx
+            .send(Dispatch::Request(untyped, responder))
+            .await
+            .map_err(|error| {
+                agent_client_protocol::Error::internal_error().data(error.to_string())
+            })?;
+        Ok(Handled::Yes)
+    }
+
+    async fn handle_message_notification(
+        &mut self,
+        notification: MessageMcpNotification,
+    ) -> Result<Handled<MessageMcpNotification>, agent_client_protocol::Error> {
+        let Some(mcp_server_tx) = self.connections.get_mut(&notification.connection_id) else {
+            return Ok(Handled::No {
+                message: notification,
+                retry: false,
+            });
+        };
+        let untyped = UntypedMessage {
+            method: notification.method.clone(),
+            params: notification
+                .params
+                .map(Value::Object)
+                .unwrap_or(Value::Null),
+        };
+        mcp_server_tx
+            .send(Dispatch::Notification(untyped))
+            .await
+            .map_err(|error| {
+                agent_client_protocol::Error::internal_error().data(error.to_string())
+            })?;
+        Ok(Handled::Yes)
+    }
+
+    fn handle_disconnect_request(
+        &mut self,
+        request: DisconnectMcpRequest,
+        responder: Responder<DisconnectMcpResponse>,
+    ) -> Result<
+        Handled<(DisconnectMcpRequest, Responder<DisconnectMcpResponse>)>,
+        agent_client_protocol::Error,
+    > {
+        if self.connections.remove(&request.connection_id).is_none() {
+            return Ok(Handled::No {
+                message: (request, responder),
+                retry: false,
+            });
+        }
+        responder.respond(DisconnectMcpResponse::new())?;
+        Ok(Handled::Yes)
+    }
+}
+
+impl HandleDispatchFrom<Agent> for AcpMcpBridge {
+    async fn handle_dispatch_from(
+        &mut self,
+        message: Dispatch,
+        connection: ConnectionTo<Agent>,
+    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
+        MatchDispatchFrom::new(message, &connection)
+            .if_request_from(Agent, async |request: ConnectMcpRequest, responder| {
+                self.handle_connect_request(request, responder, &connection)
+            })
+            .await
+            .if_request_from(Agent, async |request: MessageMcpRequest, responder| {
+                self.handle_message_request(request, responder).await
+            })
+            .await
+            .if_notification_from(Agent, async |notification: MessageMcpNotification| {
+                self.handle_message_notification(notification).await
+            })
+            .await
+            .if_request_from(Agent, async |request: DisconnectMcpRequest, responder| {
+                self.handle_disconnect_request(request, responder)
+            })
+            .await
+            .done()
+    }
+
+    fn describe_chain(&self) -> impl std::fmt::Debug {
+        format!("AcpMcpBridge({})", self.factory.server_name())
     }
 }
 
@@ -92,9 +282,10 @@ impl McpOverAcpConfig {
     /// Load configuration from environment variables.
     pub fn from_env() -> Self {
         Self {
-            enabled: std::env::var("ERGATAI_MCP_OVER_ACP_ENABLED")
-                .map(|v| v == "1" || v.to_lowercase() == "true")
-                .unwrap_or(false),
+            enabled: match std::env::var("ERGATAI_MCP_OVER_ACP_ENABLED") {
+                Ok(value) => !matches!(value.trim().to_lowercase().as_str(), "0" | "false"),
+                Err(_) => true,
+            },
             server_name: std::env::var("ERGATAI_MCP_SERVER_NAME")
                 .unwrap_or_else(|_| "Ergatai MCP Tools".to_string()),
         }
@@ -126,6 +317,10 @@ mod tests {
     fn test_config_from_env() {
         std::env::remove_var("ERGATAI_MCP_OVER_ACP_ENABLED");
         let config = McpOverAcpConfig::from_env();
+        assert!(config.enabled);
+
+        std::env::set_var("ERGATAI_MCP_OVER_ACP_ENABLED", "0");
+        let config = McpOverAcpConfig::from_env();
         assert!(!config.enabled);
 
         std::env::set_var("ERGATAI_MCP_OVER_ACP_ENABLED", "1");
@@ -133,13 +328,5 @@ mod tests {
         assert!(config.enabled);
 
         std::env::remove_var("ERGATAI_MCP_OVER_ACP_ENABLED");
-    }
-
-    #[test]
-    fn test_acp_mcp_server_wrapper() {
-        let inner = Box::new(42i32);
-        let server = AcpMcpServer::new(inner, "test-server".to_string());
-        assert_eq!(server.name(), "test-server");
-        assert_eq!(server.downcast::<i32>(), Some(&42));
     }
 }
