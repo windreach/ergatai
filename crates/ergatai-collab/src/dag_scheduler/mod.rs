@@ -32,6 +32,28 @@ use tokio::sync::Mutex;
 use super::task_scheduler::TaskScheduler;
 use ergatai_dag::{TaskGraph, TaskStatus};
 
+/// Correlates one DAG execution with the authoritative collaboration session.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CollaborationExecutionScope {
+    pub session_id: String,
+    pub chat_id: Option<String>,
+    pub plan_revision_id: String,
+}
+
+impl CollaborationExecutionScope {
+    pub fn new(
+        session_id: impl Into<String>,
+        chat_id: Option<String>,
+        plan_revision_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            chat_id,
+            plan_revision_id: plan_revision_id.into(),
+        }
+    }
+}
+
 /// DAG Scheduler - manages DAG-based task orchestration
 #[derive(Clone)]
 pub struct DagScheduler {
@@ -100,6 +122,10 @@ pub struct DagScheduler {
 
     /// ID of the last created checkpoint (for parent-child chaining)
     last_checkpoint_id: Arc<Mutex<Option<String>>>,
+
+    /// Authoritative collaboration session context, when this run was activated
+    /// through the collaboration session runtime.
+    collaboration_scope: Option<CollaborationExecutionScope>,
 }
 
 impl DagScheduler {
@@ -111,6 +137,17 @@ impl DagScheduler {
     /// Get a clone of the task graph
     pub fn graph(&self) -> Arc<Mutex<TaskGraph>> {
         self.graph.clone()
+    }
+
+    /// Return the collaboration execution scope, if present.
+    pub fn collaboration_scope(&self) -> Option<&CollaborationExecutionScope> {
+        self.collaboration_scope.as_ref()
+    }
+
+    /// Bind a scheduler to a collaboration session execution.
+    pub fn with_collaboration_scope(mut self, scope: CollaborationExecutionScope) -> Self {
+        self.collaboration_scope = Some(scope);
+        self
     }
 
     /// Set a global variable in the context

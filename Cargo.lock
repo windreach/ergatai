@@ -1141,6 +1141,7 @@ dependencies = [
  "ergatai-nats",
  "ergatai-runtime",
  "futures",
+ "http-body-util",
  "metrics",
  "metrics-exporter-prometheus",
  "once_cell",

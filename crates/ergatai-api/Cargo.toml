@@ -80,6 +80,7 @@ chrono.workspace = true
 once_cell = "1.19"
 
 [dev-dependencies]
+http-body-util = "0.1"
 tempfile = "3.27.0"
 tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }

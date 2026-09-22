@@ -725,6 +725,9 @@ impl AgentLauncher {
                                 serde_json::Value::Object(serde_json::Map::new())
                             },
                             result_file: result_file_path.map(|p| p.to_string_lossy().to_string()),
+                            session_id: None,
+                            chat_id: None,
+                            plan_revision_id: None,
                         };
                         if let Err(e) = bus.publish_node_complete(&payload).await {
                             tracing::error!(
@@ -745,6 +748,9 @@ impl AgentLauncher {
                             agent_name: agent_name_monitor.clone(),
                             error: "Result file not produced within timeout".to_string(),
                             retryable: false,
+                            session_id: None,
+                            chat_id: None,
+                            plan_revision_id: None,
                         };
                         if let Err(e) = bus.publish_node_failed(&payload).await {
                             tracing::error!(
@@ -1364,6 +1370,9 @@ identifiers, configuration values, etc.).
                                     },
                                     result_file: result_file_path
                                         .map(|p| p.to_string_lossy().to_string()),
+                                    session_id: None,
+                                    chat_id: None,
+                                    plan_revision_id: None,
                                 };
                                 if let Err(e) = bus.publish_node_complete(&payload).await {
                                     tracing::error!(
@@ -1380,6 +1389,9 @@ identifiers, configuration values, etc.).
                                     agent_name: agent_name_monitor.clone(),
                                     error: error_msg.unwrap_or_default(),
                                     retryable: false,
+                                    session_id: None,
+                                    chat_id: None,
+                                    plan_revision_id: None,
                                 };
                                 if let Err(e) = bus.publish_node_failed(&payload).await {
                                     tracing::error!(

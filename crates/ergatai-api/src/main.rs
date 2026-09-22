@@ -22,6 +22,7 @@ use ergatai_api::mcp::{
     start_peer_reaper,
 };
 use ergatai_api::messaging::{get_message_sender, init_message_sender};
+use ergatai_api::services::collaboration_session_dag::recover_session_dag;
 use ergatai_api::{app_state_with_token, auth_middleware, build_rest_app};
 use ergatai_core::cross_agent::{set_dag_scheduler, DagScheduler};
 use ergatai_core::nats;
@@ -558,6 +559,33 @@ async fn async_main(args: Args) -> Result<()> {
                     for scheduler in schedulers {
                         let dag_id = scheduler.dag_id().to_string();
                         tracing::info!(dag_id = %dag_id, "Recovering DAG...");
+                        if scheduler.collaboration_scope().is_some() {
+                            match recover_session_dag(scheduler).await {
+                                Ok(Some(activation)) => {
+                                    tracing::info!(
+                                        session_id = %activation.session.session.id,
+                                        dag_id = %activation.dag_id,
+                                        submitted_nodes = activation.submitted_nodes,
+                                        "✅ Collaboration session DAG recovery complete"
+                                    );
+                                }
+                                Ok(None) => {
+                                    tracing::info!(
+                                        dag_id = %dag_id,
+                                        "Collaboration session DAG is no longer active; skipping"
+                                    );
+                                }
+                                Err(error) => {
+                                    tracing::error!(
+                                        dag_id = %dag_id,
+                                        error = %error,
+                                        "Failed to recover collaboration session DAG"
+                                    );
+                                }
+                            }
+                            continue;
+                        }
+
                         if let Err(e) = scheduler.rollback_running_nodes().await {
                             tracing::warn!(dag_id = %dag_id, "Failed to rollback: {}", e);
                             continue;

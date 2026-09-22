@@ -13,8 +13,10 @@ pub mod timeout_tier; // Three-stage node timeout escalation (warn → escalate 
 pub use agent_launcher::{AgentLauncher, AgentSessionStatus, RunningAgent};
 pub use collaboration::{CollaborationSession, CommunicationCheck, MeshPolicy};
 pub use dag_scheduler::{
-    clear_dag_scheduler, clear_dag_scheduler_by_id, get_dag_scheduler, get_dag_scheduler_by_id,
-    list_dag_schedulers, set_dag_scheduler, DagScheduler,
+    clear_dag_scheduler, clear_dag_scheduler_by_id, clear_session_dag_scheduler, get_dag_scheduler,
+    get_dag_scheduler_by_id, get_session_dag_scheduler, list_dag_schedulers, set_dag_scheduler,
+    set_session_dag_scheduler, try_set_session_dag_scheduler, CollaborationExecutionScope,
+    DagScheduler,
 };
 pub use plan_watcher::PollingWatcher;
 pub use task_coordinator::TaskCoordinator;

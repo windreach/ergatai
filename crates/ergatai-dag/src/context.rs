@@ -35,6 +35,10 @@ pub struct DagContext {
     /// Available as `{{node_id.key}}` (flattened for template rendering)
     #[serde(default)]
     node_outputs: HashMap<String, Value>,
+
+    /// Serialized collaboration execution scope, used by session DAG recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collaboration_scope: Option<Value>,
 }
 
 impl DagContext {
@@ -44,6 +48,7 @@ impl DagContext {
             global_vars,
             parameters: HashMap::new(),
             node_outputs: HashMap::new(),
+            collaboration_scope: None,
         }
     }
 
@@ -56,6 +61,7 @@ impl DagContext {
             global_vars,
             parameters,
             node_outputs: HashMap::new(),
+            collaboration_scope: None,
         }
     }
 

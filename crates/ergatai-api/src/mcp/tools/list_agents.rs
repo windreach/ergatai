@@ -44,6 +44,27 @@ pub(crate) async fn handle(
     let agents_json: Vec<serde_json::Value> = items
         .into_iter()
         .map(|info| {
+            // Determine health status based on ACP connection and process liveness
+            let health = if info.is_alive {
+                "healthy"
+            } else {
+                "unhealthy"
+            };
+
+            // Determine availability based on liveness and processing state
+            let availability = if !info.is_alive {
+                "unavailable"
+            } else if info.is_processing {
+                "busy"
+            } else if info.is_idle {
+                "available"
+            } else {
+                "idle"
+            };
+
+            // Direct boolean for convenience
+            let can_receive_messages = info.is_alive && !info.is_processing;
+
             serde_json::json!({
                 "agent_id": info.agent_id,
                 "agent_uuid": info.agent_uuid,
@@ -53,6 +74,11 @@ pub(crate) async fn handle(
                 "state": info.state,
                 "lifecycle_state": info.state,
                 "task_id": info.task_id,
+                // New semantic fields
+                "health": health,
+                "availability": availability,
+                "can_receive_messages": can_receive_messages,
+                // Legacy fields for backward compatibility
                 "is_alive": info.is_alive,
                 "is_idle": info.is_idle,
                 "is_processing": info.is_processing,

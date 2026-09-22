@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 
+use super::CollaborationExecutionScope;
 use ergatai_dag::context::DagContext;
 use ergatai_dag::{TaskGraph, TaskStatus};
 use ergatai_error::{ErgataiError, ErgataiResult};
@@ -96,6 +97,17 @@ impl DagScheduler {
         let collaboration =
             crate::collaboration::CollaborationSession::from_graph(&dag_id, &graph, policy);
 
+        let collaboration_scope = context
+            .collaboration_scope
+            .clone()
+            .and_then(|scope| match serde_json::from_value::<CollaborationExecutionScope>(scope) {
+                Ok(scope) => Some(scope),
+                Err(error) => {
+                    tracing::warn!(dag_id = %dag_id, error = %error, "Invalid persisted collaboration scope");
+                    None
+                }
+            });
+
         Self {
             graph: Arc::new(Mutex::new(graph)),
             context: Arc::new(Mutex::new(context)),
@@ -116,6 +128,7 @@ impl DagScheduler {
             auto_checkpoint: Arc::new(AtomicBool::new(false)),
             checkpoint_sequence: Arc::new(AtomicU64::new(0)),
             last_checkpoint_id: Arc::new(Mutex::new(None)),
+            collaboration_scope,
         }
     }
 
@@ -128,6 +141,7 @@ impl DagScheduler {
     /// could contradict graph state — atomic rename eliminates this window.
     pub(super) async fn save_graph_unlocked(&self) -> ErgataiResult<()> {
         let ergatai_dir = self.project_root.join(".ergatai");
+        tokio::fs::create_dir_all(&ergatai_dir).await?;
         // Use per-DAG filenames to support multiple concurrent DAGs
         let dag_id_safe = self
             .dag_id
@@ -146,8 +160,16 @@ impl DagScheduler {
 
         // Serialize context
         let context_json = {
-            let ctx = self.context.lock().await;
-            serde_json::to_string(&*ctx)
+            let mut ctx = self.context.lock().await.clone();
+            ctx.collaboration_scope = self
+                .collaboration_scope
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|e| {
+                    ErgataiError::json_with_source("Failed to serialize collaboration scope", e)
+                })?;
+            serde_json::to_string(&ctx)
                 .map_err(|e| ErgataiError::json_with_source("Failed to serialize context", e))?
         };
         let context_file = ergatai_dir.join(format!("dag-context-{}.json", dag_id_safe));
@@ -164,6 +186,7 @@ impl DagScheduler {
     /// Called during finalization before the scheduler is removed from the registry.
     pub(super) async fn save_collaboration_meta(&self) -> ErgataiResult<()> {
         let ergatai_dir = self.project_root.join(".ergatai");
+        tokio::fs::create_dir_all(&ergatai_dir).await?;
         let dag_id_safe = self
             .dag_id
             .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_");
@@ -516,6 +539,7 @@ impl DagScheduler {
 mod tests {
     use std::path::PathBuf;
 
+    use crate::CollaborationExecutionScope;
     use ergatai_dag::{TaskGraph, TaskNode, TaskStatus};
 
     use super::super::DagScheduler;
@@ -626,6 +650,33 @@ mod tests {
         assert!(n2.metadata.contains_key("recovery_error"));
         // Completed nodes should not be affected
         assert_eq!(g.find_node("n3").unwrap().status, TaskStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn test_collaboration_scope_survives_disk_recovery() {
+        let graph = TaskGraph::new(vec![TaskNode::new("n1", "agent-a", "Task A")]);
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".ergatai").join("dags")).unwrap();
+        let scheduler = DagScheduler::new(temp_dir.path().to_path_buf(), graph)
+            .with_collaboration_scope(CollaborationExecutionScope::new(
+                "collab-session",
+                Some("chat-session".to_string()),
+                "plan-revision",
+            ));
+
+        scheduler.save_graph_unlocked().await.unwrap();
+        let schedulers = DagScheduler::load_all_from_disk(temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
+        assert_eq!(schedulers.len(), 1);
+        assert_eq!(
+            schedulers[0].collaboration_scope(),
+            Some(&CollaborationExecutionScope::new(
+                "collab-session",
+                Some("chat-session".to_string()),
+                "plan-revision",
+            ))
+        );
     }
 }
 

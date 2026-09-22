@@ -19,10 +19,56 @@ use std::sync::atomic::Ordering;
 use ergatai_dag::{TaskGraph, TaskNode, TaskStatus};
 use ergatai_error::{ErgataiError, ErgataiResult};
 
-use super::registry::clear_dag_scheduler_by_id;
+use super::registry::{clear_dag_scheduler_by_id, clear_session_dag_scheduler};
 use super::{rand_delay, DagScheduler};
 
 impl DagScheduler {
+    /// Cancel pending and running work without consuming retry budgets.
+    pub async fn cancel_remaining_nodes(&self, reason: &str) -> ErgataiResult<()> {
+        // Collect both Running and Pending nodes in a single lock acquisition to prevent
+        // TOCTOU race: between lock releases, a Pending node could transition to Running,
+        // leaving its watchers/tasks orphaned if we only collected Running nodes first.
+        let nodes_to_cancel: Vec<(String, TaskStatus)> = {
+            let graph = self.graph.lock().await;
+            graph
+                .nodes
+                .iter()
+                .filter(|node| node.status == TaskStatus::Running || node.status == TaskStatus::Pending)
+                .map(|node| (node.id.clone(), node.status.clone()))
+                .collect()
+        };
+
+        for (node_id, status) in nodes_to_cancel {
+            self.cancel_timeout_watcher(&node_id).await;
+            if status == TaskStatus::Running {
+                self.scheduler.cancel_running_task(&node_id).await;
+            }
+        }
+
+        {
+            let mut graph = self.graph.lock().await;
+            for node in graph.nodes.iter_mut() {
+                match node.status {
+                    TaskStatus::Running => {
+                        node.status = TaskStatus::Failed;
+                        node.metadata
+                            .insert("cancellation_reason".to_string(), reason.to_string());
+                    }
+                    TaskStatus::Pending => {
+                        node.status = TaskStatus::Skipped;
+                        node.metadata
+                            .insert("cancellation_reason".to_string(), reason.to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        self.save_graph_unlocked().await?;
+        self.finalize_if_terminal().await;
+        Ok(())
+    }
+
     /// Fail all Pending and Running nodes in the DAG (called on DAG timeout or cancellation).
     ///
     /// Marks all non-completed nodes as Failed with the given reason, and publishes
@@ -541,6 +587,18 @@ impl DagScheduler {
                     completed_nodes: completed,
                     failed_nodes: failed,
                     duration_secs: self.elapsed_secs(),
+                    session_id: self
+                        .collaboration_scope
+                        .as_ref()
+                        .map(|scope| scope.session_id.clone()),
+                    chat_id: self
+                        .collaboration_scope
+                        .as_ref()
+                        .and_then(|scope| scope.chat_id.clone()),
+                    plan_revision_id: self
+                        .collaboration_scope
+                        .as_ref()
+                        .map(|scope| scope.plan_revision_id.clone()),
                 };
                 if let Err(e) = bus.publish_dag_complete(&payload).await {
                     tracing::error!(error = %e, "Failed to publish DAG complete event");
@@ -555,6 +613,11 @@ impl DagScheduler {
 
         // DAG execution finished: remove the scheduler from the global registry.
         clear_dag_scheduler_by_id(Some(&self.dag_id));
+        clear_session_dag_scheduler(
+            self.collaboration_scope
+                .as_ref()
+                .map(|scope| scope.session_id.as_str()),
+        );
         tracing::info!(
             dag_id = %self.dag_id,
             "DAG terminal — collaboration session cleared from registry"

@@ -217,6 +217,7 @@ impl DagScheduler {
                 let bus = ergatai_nats::EventBus::new(conn);
                 let plan_content = tokio::fs::read_to_string(&plan_file).await?;
                 let dag_id = self.dag_id().to_string();
+                let scope = self.collaboration_scope.clone();
 
                 let payload = ergatai_nats::TaskSubmitPayload {
                     task_id: task_id.clone(),
@@ -227,6 +228,9 @@ impl DagScheduler {
                     timeout_secs: adjusted_timeout,
                     dag_id: Some(dag_id),
                     expected_outputs: node.expected_outputs.clone(),
+                    session_id: scope.as_ref().map(|scope| scope.session_id.clone()),
+                    chat_id: scope.as_ref().and_then(|scope| scope.chat_id.clone()),
+                    plan_revision_id: scope.as_ref().map(|scope| scope.plan_revision_id.clone()),
                 };
 
                 bus.publish_task_submit(&payload).await?;

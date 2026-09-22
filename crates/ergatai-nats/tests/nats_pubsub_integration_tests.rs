@@ -256,6 +256,7 @@ async fn test_event_bus_node_complete_as_dag_event() {
         result_summary: Some("ok".to_string()),
         outputs: serde_json::Value::Object(outputs),
         result_file: None,
+        ..Default::default()
     };
 
     bus.publish_node_complete(&payload).await.unwrap();
@@ -310,6 +311,7 @@ async fn test_event_bus_task_submit_via_pull_consumer() {
         timeout_secs: Some(300),
         dag_id: Some("dag-7".to_string()),
         expected_outputs: Default::default(),
+        ..Default::default()
     };
 
     let ack = bus
@@ -430,6 +432,7 @@ async fn test_stream_persistence_consumer_after_publish() {
         timeout_secs: None,
         dag_id: None,
         expected_outputs: Default::default(),
+        ..Default::default()
     };
     let json = serde_json::to_vec(&payload).expect("serialize");
     let ack = conn

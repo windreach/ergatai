@@ -5,6 +5,9 @@
 
 pub mod agent_service;
 pub mod collab_runtime;
+pub mod collaboration_planner;
+pub mod collaboration_session;
+pub mod collaboration_session_dag;
 pub mod dag_service;
 pub mod lock_service;
 pub mod profile_service;

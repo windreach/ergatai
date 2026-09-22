@@ -808,6 +808,7 @@ mod tests {
             timeout_secs: Some(60),
             dag_id: Some("dag-1".to_string()),
             expected_outputs: Default::default(),
+            ..Default::default()
         };
 
         bus.publish_task_submit(&payload).await.unwrap();
@@ -871,6 +872,7 @@ mod tests {
             result_summary: Some("ok".to_string()),
             outputs: serde_json::Value::Object(outputs),
             result_file: None,
+            ..Default::default()
         };
 
         bus.publish_node_complete(&payload).await.unwrap();
@@ -928,6 +930,7 @@ mod tests {
             agent_name: "codex".to_string(),
             error: "crash".to_string(),
             retryable: false,
+            ..Default::default()
         };
 
         bus.publish_node_failed(&payload).await.unwrap();
@@ -1023,6 +1026,7 @@ mod tests {
             completed_nodes: 5,
             failed_nodes: 0,
             duration_secs: 42,
+            ..Default::default()
         };
 
         bus.publish_dag_complete(&payload).await.unwrap();

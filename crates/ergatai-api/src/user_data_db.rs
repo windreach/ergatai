@@ -237,6 +237,79 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             FOREIGN KEY (sub_chat_id) REFERENCES sub_chats(id) ON DELETE CASCADE
         );
 
+        -- Authoritative collaboration sessions for Supervisor and Group modes.
+        CREATE TABLE IF NOT EXISTS collaboration_sessions (
+            id TEXT PRIMARY KEY,
+            chat_id TEXT NOT NULL UNIQUE,
+            workspace_id TEXT,
+            project_id TEXT,
+            mode TEXT NOT NULL CHECK (mode IN ('supervisor', 'group')),
+            state TEXT NOT NULL CHECK (state IN (
+                'idle', 'planning', 'executing', 'waiting_input',
+                'waiting_approval', 'synthesizing', 'completed',
+                'failed', 'cancelled'
+            )),
+            goal TEXT,
+            active_plan_revision TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS collaboration_session_participants (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'peer',
+            status TEXT NOT NULL DEFAULT 'ready',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES collaboration_sessions(id) ON DELETE CASCADE,
+            UNIQUE (session_id, agent_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS collaboration_context_events (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            actor_type TEXT NOT NULL,
+            actor_id TEXT,
+            payload TEXT NOT NULL DEFAULT '{}',
+            visibility TEXT NOT NULL DEFAULT 'shared',
+            artifact_refs TEXT NOT NULL DEFAULT '[]',
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES collaboration_sessions(id) ON DELETE CASCADE,
+            UNIQUE (session_id, sequence)
+        );
+
+        CREATE TABLE IF NOT EXISTS collaboration_plan_revisions (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            source_event_id TEXT,
+            dag_snapshot TEXT NOT NULL DEFAULT '{}',
+            summary TEXT,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES collaboration_sessions(id) ON DELETE CASCADE,
+            UNIQUE (session_id, revision)
+        );
+
+        CREATE TABLE IF NOT EXISTS collaboration_approvals (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            plan_revision_id TEXT,
+            node_id TEXT,
+            kind TEXT NOT NULL,
+            request TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled')),
+            decided_by TEXT,
+            decision_payload TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            decided_at INTEGER,
+            FOREIGN KEY (session_id) REFERENCES collaboration_sessions(id) ON DELETE CASCADE
+        );
+
         -- Create indexes for performance
         CREATE INDEX IF NOT EXISTS idx_workspaces_project_id ON workspaces(project_id);
         CREATE INDEX IF NOT EXISTS idx_workspace_projects_project
@@ -254,6 +327,12 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
         CREATE INDEX IF NOT EXISTS idx_conversation_agent_bindings_agent_id
             ON conversation_agent_bindings(agent_id);
+        CREATE INDEX IF NOT EXISTS idx_collaboration_sessions_workspace_id
+            ON collaboration_sessions(workspace_id);
+        CREATE INDEX IF NOT EXISTS idx_collaboration_participants_agent_id
+            ON collaboration_session_participants(agent_id);
+        CREATE INDEX IF NOT EXISTS idx_collaboration_context_events_session
+            ON collaboration_context_events(session_id, sequence);
 
         -- Backfill chats created before workspace binding became mandatory.
         -- Root chats inherit the active workspace matching their project and

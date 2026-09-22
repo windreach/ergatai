@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Carries the rendered plan content inline so the TaskScheduler
 /// doesn't need to read the file from disk.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TaskSubmitPayload {
     /// Task ID (== node_id for DAG tasks)
     pub task_id: String,
@@ -56,13 +56,22 @@ pub struct TaskSubmitPayload {
     /// tell the agent which keys to produce in the result file frontmatter.
     #[serde(default)]
     pub expected_outputs: std::collections::HashMap<String, String>,
+    /// Collaboration session that owns this execution, when applicable.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// Chat associated with the collaboration session.
+    #[serde(default)]
+    pub chat_id: Option<String>,
+    /// Immutable plan revision being executed.
+    #[serde(default)]
+    pub plan_revision_id: Option<String>,
 }
 
 /// Node completion: AgentLauncher → DagScheduler
 ///
 /// Carries structured outputs so `DagContext.record_output()` can be
 /// called directly from the NATS message — no file parsing needed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NodeCompletePayload {
     /// DAG node ID
     pub node_id: String,
@@ -76,10 +85,19 @@ pub struct NodeCompletePayload {
     pub outputs: serde_json::Value,
     /// Optional path to the full result file (for large outputs)
     pub result_file: Option<String>,
+    /// Collaboration session that owns this execution, when applicable.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// Chat associated with the collaboration session.
+    #[serde(default)]
+    pub chat_id: Option<String>,
+    /// Immutable plan revision being executed.
+    #[serde(default)]
+    pub plan_revision_id: Option<String>,
 }
 
 /// Node failure: AgentLauncher → DagScheduler
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NodeFailedPayload {
     /// DAG node ID
     pub node_id: String,
@@ -91,10 +109,19 @@ pub struct NodeFailedPayload {
     pub error: String,
     /// Whether this failure is retryable
     pub retryable: bool,
+    /// Collaboration session that owns this execution, when applicable.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// Chat associated with the collaboration session.
+    #[serde(default)]
+    pub chat_id: Option<String>,
+    /// Immutable plan revision being executed.
+    #[serde(default)]
+    pub plan_revision_id: Option<String>,
 }
 
 /// DAG completion: DagScheduler → Observers
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DagCompletePayload {
     /// DAG identifier (project root hash or explicit ID)
     pub dag_id: String,
@@ -106,6 +133,15 @@ pub struct DagCompletePayload {
     pub failed_nodes: u32,
     /// Execution duration in seconds
     pub duration_secs: u64,
+    /// Collaboration session that owns this execution, when applicable.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// Chat associated with the collaboration session.
+    #[serde(default)]
+    pub chat_id: Option<String>,
+    /// Immutable plan revision being executed.
+    #[serde(default)]
+    pub plan_revision_id: Option<String>,
 }
 
 /// Agent-to-agent message: Agent A → Ergatai → Agent B
@@ -587,6 +623,7 @@ mod tests {
             timeout_secs: Some(300),
             dag_id: Some("dag-abc".to_string()),
             expected_outputs: Default::default(),
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -610,6 +647,7 @@ mod tests {
             timeout_secs: None,
             dag_id: None,
             expected_outputs: Default::default(),
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -640,6 +678,7 @@ mod tests {
             result_summary: Some("Done".to_string()),
             outputs: serde_json::Value::Object(outputs.clone()),
             result_file: Some(".ergatai/.dag-results/n1.md".to_string()),
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -670,6 +709,7 @@ mod tests {
             result_summary: None,
             outputs: serde_json::Value::Object(serde_json::Map::new()),
             result_file: None,
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -687,6 +727,7 @@ mod tests {
             agent_name: "codex".to_string(),
             error: "timeout after 300s".to_string(),
             retryable: true,
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -707,6 +748,7 @@ mod tests {
             completed_nodes: 4,
             failed_nodes: 1,
             duration_secs: 120,
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -730,6 +772,7 @@ mod tests {
             result_summary: Some("ok".to_string()),
             outputs: serde_json::Value::Object(serde_json::Map::new()),
             result_file: None,
+            ..Default::default()
         });
 
         let json = serde_json::to_string(&event).unwrap();
@@ -755,6 +798,7 @@ mod tests {
                 timeout_secs: None,
                 dag_id: None,
                 expected_outputs: Default::default(),
+                ..Default::default()
             }),
             DagEvent::NodeFailed(NodeFailedPayload {
                 node_id: "n".to_string(),
@@ -762,6 +806,7 @@ mod tests {
                 agent_name: "a".to_string(),
                 error: "err".to_string(),
                 retryable: false,
+                ..Default::default()
             }),
             DagEvent::DagComplete(DagCompletePayload {
                 dag_id: "d".to_string(),
@@ -769,6 +814,7 @@ mod tests {
                 completed_nodes: 3,
                 failed_nodes: 0,
                 duration_secs: 60,
+                ..Default::default()
             }),
             DagEvent::AgentMessage(AgentMessagePayload {
                 from_agent: "claude-code".to_string(),
