@@ -759,7 +759,7 @@ pub async fn recover_session_dag(
     })?;
 
     // Atomic check-and-set to prevent TOCTOU race
-    if let Err(_) = try_set_session_dag_scheduler(scheduler.clone()) {
+    if try_set_session_dag_scheduler(scheduler.clone()).is_err() {
         tracing::warn!(
             session_id = %scope.session_id,
             "Concurrent DAG recovery detected, aborting duplicate"
@@ -884,13 +884,14 @@ pub async fn replace_session_plan_revision(
     .with_collaboration_scope(scope);
 
     // Atomic check-and-set to prevent TOCTOU race between clear and set
-    if let Err(_) = try_set_session_dag_scheduler(scheduler.clone()) {
+    if try_set_session_dag_scheduler(scheduler.clone()).is_err() {
         tracing::error!(
             session_id,
             "Failed to register replacement DAG scheduler after clearing old one"
         );
         return Err(CollaborationSessionDagError::Execution(
-            "Failed to register replacement plan revision due to concurrent modification".to_string(),
+            "Failed to register replacement plan revision due to concurrent modification"
+                .to_string(),
         ));
     }
     let event_listener = scheduler.clone().start_event_listener();
@@ -989,6 +990,7 @@ mod tests {
         crate::services::collaboration_session::CollaborationSessionParticipant {
             id: format!("participant-{agent_id}"),
             session_id: "session".to_string(),
+            conversation_id: format!("conv-{agent_id}"),
             agent_id: agent_id.to_string(),
             role: role.to_string(),
             status: "ready".to_string(),

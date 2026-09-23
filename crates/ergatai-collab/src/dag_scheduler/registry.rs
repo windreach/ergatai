@@ -161,6 +161,7 @@ pub fn get_session_dag_scheduler(session_id: Option<&str>) -> Option<DagSchedule
 ///
 /// Returns `Ok(())` if registration succeeded, or `Err(existing_scheduler)` if a scheduler
 /// was already registered for this session.
+#[allow(clippy::result_large_err)]
 pub fn try_set_session_dag_scheduler(scheduler: DagScheduler) -> Result<(), DagScheduler> {
     let Some(scope) = scheduler.collaboration_scope() else {
         tracing::warn!(

@@ -133,7 +133,8 @@ impl SessionState {
 pub struct CollaborationSessionParticipant {
     pub id: String,
     pub session_id: String,
-    pub agent_id: String,
+    pub conversation_id: String, // ✅ 新增：关联 Conversation
+    pub agent_id: String,        // 保留：从 conversation 获取
     pub role: String,
     pub status: String,
     pub created_at: i64,
@@ -178,7 +179,8 @@ pub struct CollaborationSessionDetail {
 
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct ParticipantInput {
-    pub agent_id: String,
+    pub conversation_id: String, // ✅ 新增：Conversation ID
+    pub agent_id: String,        // 保留：Agent ID（从 conversation 获取）
     #[serde(default = "default_participant_role")]
     pub role: String,
     #[serde(default = "default_participant_status")]
@@ -438,15 +440,17 @@ fn participant_from_row(
     Ok(CollaborationSessionParticipant {
         id: row.get(0)?,
         session_id: row.get(1)?,
-        agent_id: row.get(2)?,
-        role: row.get(3)?,
-        status: row.get(4)?,
-        created_at: row.get(5)?,
-        updated_at: row.get(6)?,
+        conversation_id: row.get(2)?, // ✅ 新增
+        agent_id: row.get(3)?,
+        role: row.get(4)?,
+        status: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
     })
 }
 
-const PARTICIPANT_COLUMNS: &str = "id, session_id, agent_id, role, status, created_at, updated_at";
+const PARTICIPANT_COLUMNS: &str =
+    "id, session_id, conversation_id, agent_id, role, status, created_at, updated_at";
 
 fn context_event_from_row(
     row: &rusqlite::Row<'_>,
@@ -524,6 +528,11 @@ fn insert_participant(
     participant: &ParticipantInput,
     timestamp: i64,
 ) -> Result<(), CollaborationSessionError> {
+    if participant.conversation_id.trim().is_empty() {
+        return Err(CollaborationSessionError::Validation(
+            "participant conversation_id cannot be empty".to_string(),
+        ));
+    }
     if participant.agent_id.trim().is_empty() {
         return Err(CollaborationSessionError::Validation(
             "participant agent_id cannot be empty".to_string(),
@@ -531,15 +540,17 @@ fn insert_participant(
     }
     transaction.execute(
         "INSERT INTO collaboration_session_participants
-         (id, session_id, agent_id, role, status, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT(session_id, agent_id) DO UPDATE SET
+         (id, session_id, conversation_id, agent_id, role, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(session_id, conversation_id) DO UPDATE SET
+           agent_id = excluded.agent_id,
            role = excluded.role,
            status = excluded.status,
            updated_at = excluded.updated_at",
         params![
             format!("part-{}", uuid::Uuid::new_v4().as_simple()),
             session_id,
+            participant.conversation_id.trim(),
             participant.agent_id.trim(),
             participant.role,
             participant.status,

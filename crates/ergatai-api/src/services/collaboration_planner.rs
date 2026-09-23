@@ -610,6 +610,7 @@ mod tests {
         CollaborationSessionParticipant {
             id: format!("participant-{agent_id}"),
             session_id: "session".to_string(),
+            conversation_id: format!("conv-{agent_id}"),
             agent_id: agent_id.to_string(),
             role: role.to_string(),
             status: "ready".to_string(),

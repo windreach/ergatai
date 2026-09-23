@@ -60,6 +60,7 @@ fn recovery_queries_track_active_sessions_plans_and_approvals() {
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Recover after restart".to_string()),
         participants: vec![ParticipantInput {
+            conversation_id: "conv-agent-recovery".to_string(),
             agent_id: "agent-recovery".to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
@@ -145,6 +146,7 @@ async fn concurrent_session_dag_registries_stay_isolated() {
             mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
             goal: Some("Execute concurrent session DAGs".to_string()),
             participants: vec![ParticipantInput {
+                conversation_id: format!("conv-{agent_id}"),
                 agent_id: agent_id.to_string(),
                 role: "peer".to_string(),
                 status: "ready".to_string(),
@@ -250,6 +252,7 @@ async fn inactive_session_plan_is_not_recovered() {
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Do not recover inactive plan".to_string()),
         participants: vec![ParticipantInput {
+            conversation_id: "conv-agent-inactive".to_string(),
             agent_id: "agent-inactive".to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
@@ -294,6 +297,7 @@ async fn executing_user_message_hot_swaps_active_revision() {
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Hot-swap the active plan".to_string()),
         participants: vec![ParticipantInput {
+            conversation_id: "conv-peer-a".to_string(),
             agent_id: "peer-a".to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
@@ -421,11 +425,13 @@ fn collaboration_interaction_routes_lightweight_and_plans() {
         goal: Some("Route interactions".to_string()),
         participants: vec![
             ParticipantInput {
+                conversation_id: "conv-peer-a".to_string(),
                 agent_id: "peer-a".to_string(),
                 role: "peer".to_string(),
                 status: "ready".to_string(),
             },
             ParticipantInput {
+                conversation_id: "conv-peer-b".to_string(),
                 agent_id: "peer-b".to_string(),
                 role: "peer".to_string(),
                 status: "ready".to_string(),
@@ -498,6 +504,7 @@ async fn collaboration_session_stream_replays_requested_events() {
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Stream replay".to_string()),
         participants: vec![ParticipantInput {
+            conversation_id: "conv-agent-stream".to_string(),
             agent_id: "agent-stream".to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
@@ -543,6 +550,7 @@ fn collaboration_session_persists_context_plans_and_approvals() {
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Supervisor,
         goal: Some("Fix the failing test".to_string()),
         participants: vec![ParticipantInput {
+            conversation_id: "conv-agent-1".to_string(),
             agent_id: "agent-1".to_string(),
             role: "worker".to_string(),
             status: "ready".to_string(),
@@ -656,6 +664,7 @@ async fn approval_rejection_and_cancellation_cancel_pending_work() {
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Cancel rejected and pending work".to_string()),
         participants: vec![ParticipantInput {
+            conversation_id: "conv-agent-lifecycle".to_string(),
             agent_id: "agent-lifecycle".to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
@@ -789,6 +798,7 @@ fn plan_revision_preserves_completed_outputs() {
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Preserve outputs across revisions".to_string()),
         participants: vec![ParticipantInput {
+            conversation_id: "conv-agent-preserve".to_string(),
             agent_id: "agent-preserve".to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),

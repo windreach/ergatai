@@ -33,7 +33,9 @@ impl DagScheduler {
             graph
                 .nodes
                 .iter()
-                .filter(|node| node.status == TaskStatus::Running || node.status == TaskStatus::Pending)
+                .filter(|node| {
+                    node.status == TaskStatus::Running || node.status == TaskStatus::Pending
+                })
                 .map(|node| (node.id.clone(), node.status.clone()))
                 .collect()
         };

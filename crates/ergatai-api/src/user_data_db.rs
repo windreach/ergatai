@@ -74,6 +74,14 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             tracing::warn!(error = %e, "Failed to add group_agent_bindings.workspace_id column");
         }
     }
+    // ✅ Migration: Add conversation_id to collaboration_session_participants
+    if let Err(e) = conn.execute_batch(
+        "ALTER TABLE collaboration_session_participants ADD COLUMN conversation_id TEXT NOT NULL DEFAULT ''",
+    ) {
+        if !e.to_string().contains("duplicate column name") {
+            tracing::warn!(error = %e, "Failed to add collaboration_session_participants.conversation_id column");
+        }
+    }
 
     conn.execute_batch(
         r#"
@@ -258,13 +266,14 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS collaboration_session_participants (
             id TEXT PRIMARY KEY,
             session_id TEXT NOT NULL,
-            agent_id TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,  -- ✅ 新增：Conversation ID
+            agent_id TEXT NOT NULL,  -- 保留：Agent ID（从 conversation 获取）
             role TEXT NOT NULL DEFAULT 'peer',
             status TEXT NOT NULL DEFAULT 'ready',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             FOREIGN KEY (session_id) REFERENCES collaboration_sessions(id) ON DELETE CASCADE,
-            UNIQUE (session_id, agent_id)
+            UNIQUE (session_id, conversation_id)  -- ✅ 改为基于 conversation_id 的唯一约束
         );
 
         CREATE TABLE IF NOT EXISTS collaboration_context_events (
