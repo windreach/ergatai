@@ -332,7 +332,7 @@ impl AdmissionGate for AgentHealthGate {
             None => {
                 return AdmissionResult::Denied {
                     reason: format!(
-                        "Agent {} not found. Agent must connect via MCP or be running in a PTY workspace.",
+                        "Agent {} not found. Agent must connect via MCP or be running as an ACP agent.",
                         request.to
                     ),
                 };

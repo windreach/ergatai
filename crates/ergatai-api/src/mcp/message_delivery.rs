@@ -1,7 +1,7 @@
 //! Message delivery consumer — reliable agent message delivery via NATS JetStream
 //!
 //! Pulls messages from the `AGENT_MESSAGES` JetStream stream and delivers each
-//! to the target agent via AgentRuntime injection (PTY write).
+//! to the target agent via AgentRuntime injection (ACP protocol).
 //!
 //! ## Reliability semantics
 //!
@@ -14,13 +14,17 @@
 //!
 //! ```text
 //! AGENT_MESSAGES stream (JetStream, file-backed)
-//!   ↓ pull
+//!   ↓ pull (filter: ergatai.agent.message.* only)
 //! MessageDeliveryConsumer
 //!   ↓ deserialize AgentMessagePayload
-//!   ↓ AgentRuntime injection (PTY send_text)
+//!   ↓ AgentRuntime injection (ACP protocol)
 //!   ├─ OK → ack
 //!   └─ fail → nak (JetStream retries)
 //! ```
+//!
+//! Note: Receipts (ergatai.agent.receipt.*) and request timeouts
+//! (ergatai.agent.request_timeout.*) are filtered out at the consumer level
+//! and handled separately by their own monitoring systems.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -129,9 +133,9 @@ async fn init_pull_consumer(
         connection,
         AGENT_MESSAGES_STREAM,
         CONSUMER_NAME,
-        "", // No filter for agent messages
-        30, // ack_wait: 30s
-        20, // max_deliver: 20 attempts
+        "ergatai.agent.message.*", // Only receive agent messages, not receipts or timeouts
+        30,                        // ack_wait: 30s
+        20,                        // max_deliver: 20 attempts
     )
     .await
     .map_err(ErgataiError::NatsError)
@@ -327,9 +331,8 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
             .unwrap_or_else(|| payload.to_agent.clone())
     };
 
-    // ── Deliver via AgentRuntime injection (PTY write) ──
-    // Writes the message directly into the target agent's PTY,
-    // simulating keyboard input.
+    // ── Deliver via AgentRuntime injection (ACP protocol) ──
+    // Sends the message to the target agent via ACP protocol.
 
     info!(
         from = from,
@@ -350,8 +353,20 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
             );
 
             // Ack FIRST to prevent duplicates on redelivery
-            if let Err(e) = msg.ack().await {
-                warn!("Failed to ack delivery: {}", e);
+            match msg.ack().await {
+                Ok(_) => {
+                    debug!(
+                        message_id = %payload.message_id,
+                        "Message ack successful"
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        message_id = %payload.message_id,
+                        error = %e,
+                        "Failed to ack message delivery - NATS will redeliver"
+                    );
+                }
             }
 
             // Publish read receipt if required (after ack to avoid duplicates)
@@ -402,14 +417,21 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
 
             // Record pending response for implicit correlation_id tracking
             // (so when the recipient sends a response, system auto-fills correlation_id)
-            if let Some(corr_id) = &payload.correlation_id {
-                crate::messaging::record_pending_response(to, corr_id).await;
-                debug!(
-                    message_id = %payload.message_id,
-                    to = %to,
-                    correlation_id = %corr_id,
-                    "Recorded pending response for implicit tracking"
-                );
+            if payload.requires_receipt {
+                if let Some(corr_id) = &payload.correlation_id {
+                    crate::messaging::record_pending_response(
+                        to,
+                        corr_id,
+                        payload.thread_id.as_deref(),
+                    )
+                    .await;
+                    debug!(
+                        message_id = %payload.message_id,
+                        to = %to,
+                        correlation_id = %corr_id,
+                        "Recorded pending response for implicit tracking"
+                    );
+                }
             }
         }
         Err(e) => {

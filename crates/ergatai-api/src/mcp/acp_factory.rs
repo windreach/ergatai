@@ -18,6 +18,7 @@ use rmcp::{
 use tracing::{info, warn};
 
 use ergatai_core::agent_registry::AgentRegistry;
+use ergatai_runtime::mcp_over_acp::McpServerContext;
 use ergatai_runtime::mcp_over_acp::McpServerFactory;
 
 use super::params::{
@@ -50,11 +51,11 @@ impl ErgataiMcpServerFactory {
 }
 
 impl McpServerFactory for ErgataiMcpServerFactory {
-    fn create_mcp_server(&self) -> DynConnectTo<role::mcp::Client> {
+    fn create_mcp_server(&self, context: McpServerContext) -> DynConnectTo<role::mcp::Client> {
         let registry = self.registry.clone();
         let peer_registry = self.peer_registry.clone();
 
-        let service = ErgataiAcpMcpService::new(registry, peer_registry);
+        let service = ErgataiAcpMcpService::new(registry, peer_registry, context);
 
         let mcp_server =
             McpServer::<role::mcp::Client>::from_rmcp(&self.name, move || service.clone());
@@ -103,14 +104,24 @@ pub struct ErgataiAcpMcpService {
     /// Peer registry — kept for potential future use (e.g., notifications).
     #[allow(dead_code)]
     peer_registry: PeerRegistry,
+    /// Calling agent context used to scope discovery.
+    caller_agent_id: Option<String>,
+    /// Calling agent's runtime workspace used when no chat binding exists.
+    caller_workspace_id: Option<String>,
 }
 
 impl ErgataiAcpMcpService {
     /// Create a new service.
-    pub fn new(registry: Arc<AgentRegistry>, peer_registry: PeerRegistry) -> Self {
+    pub fn new(
+        registry: Arc<AgentRegistry>,
+        peer_registry: PeerRegistry,
+        context: McpServerContext,
+    ) -> Self {
         Self {
             registry,
             peer_registry,
+            caller_agent_id: context.agent_id,
+            caller_workspace_id: context.workspace_id,
         }
     }
 
@@ -167,11 +178,22 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
         params: ListAgentsParams,
     ) -> Result<CallToolResult, ErrorData> {
         let filter = params.filter;
+        let mut exclude = std::collections::HashSet::new();
+        if let Some(ref caller_agent_id) = self.caller_agent_id {
+            exclude.insert(caller_agent_id.clone());
+            if let Some(runtime_id) =
+                crate::services::agent_service::resolve_agent_id(caller_agent_id).await
+            {
+                exclude.insert(runtime_id);
+            }
+        }
 
         let svc_filter = crate::services::agent_service::AgentListFilter {
             in_dag: filter.as_ref().and_then(|f| f.in_dag.clone()),
             status: filter.as_ref().and_then(|f| f.status.clone()),
-            exclude_agent_ids: std::collections::HashSet::new(),
+            exclude_agent_ids: exclude,
+            caller_agent_id: self.caller_agent_id.clone(),
+            caller_workspace_id: self.caller_workspace_id.clone(),
         };
 
         let items = crate::services::agent_service::list_agents_filtered(svc_filter).await;
@@ -190,8 +212,26 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
                     "is_alive": info.is_alive,
                     "is_idle": info.is_idle,
                     "is_processing": info.is_processing,
-                    "status": if info.mcp_agent_id.is_some() { "active" } else { "discovered" },
-                    "ergatai_agent_id": info.mcp_agent_id,
+                    "health": if info.is_alive {
+                        "healthy"
+                    } else {
+                        "unhealthy"
+                    },
+                    "availability": if info.is_alive && !info.is_processing {
+                        if info.is_idle { "available" } else { "idle" }
+                    } else if info.is_alive {
+                        "busy"
+                    } else {
+                        "not_running"
+                    },
+                    "can_receive_messages": info.is_alive && !info.is_processing,
+                    "source": info.source,
+                    "status": if info.mcp_agent_id.is_some() {
+                        "active"
+                    } else {
+                        "discovered"
+                    },
+                    "ergatai_agent_id": info.mcp_agent_id.or(Some(info.agent_id.clone())),
                     "last_heartbeat": info.last_heartbeat,
                 })
             })
@@ -199,7 +239,7 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
 
         let filter_applied = filter.as_ref().is_some_and(|f| {
             f.can_communicate_with.is_some() || f.in_dag.is_some() || f.status.is_some()
-        });
+        }) || self.caller_agent_id.is_some();
 
         let result = serde_json::json!({
             "agents": agents_json,
@@ -231,7 +271,10 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
             "Sending message via ACP MCP"
         );
 
-        let from_agent = "acp-mcp-client".to_string();
+        let from_agent = self
+            .caller_agent_id
+            .clone()
+            .unwrap_or_else(|| "api".to_string());
 
         let sender = match crate::messaging::get_message_sender() {
             Some(s) => s,

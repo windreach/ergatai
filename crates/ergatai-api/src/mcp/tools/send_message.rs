@@ -66,7 +66,7 @@ pub(crate) async fn handle(
                 "delivery_method": "nats_jetstream",
                 "stream": stream,
                 "sequence": sequence,
-                "note": "Message persisted to NATS JetStream. Background consumer will deliver via PTY injection."
+                "note": "Message persisted to NATS JetStream. Background consumer will deliver via ACP protocol."
             });
 
             Ok(CallToolResult::success(vec![ContentBlock::text(
@@ -77,8 +77,8 @@ pub(crate) async fn handle(
             let response_json = serde_json::json!({
                 "status": "direct_delivered",
                 "target_agent": target_agent,
-                "delivery_method": "pty_injection",
-                "note": "NATS unavailable. Message delivered directly via PTY injection (no persistence)."
+                "delivery_method": "acp_protocol",
+                "note": "NATS unavailable. Message delivered directly via ACP protocol (no persistence)."
             });
 
             Ok(CallToolResult::success(vec![ContentBlock::text(

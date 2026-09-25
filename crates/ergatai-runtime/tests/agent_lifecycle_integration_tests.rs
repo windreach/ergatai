@@ -856,7 +856,7 @@ fn agent_record_serialization_roundtrip() {
 async fn runtime_register_and_unregister_agent() {
     let runtime = make_runtime();
     let agent_id = runtime
-        .launch_agent(make_spec("ws-reg"), "cmd", None)
+        .launch_agent(make_spec("ws-reg"), "cmd", None, None)
         .await
         .unwrap();
 
@@ -920,7 +920,7 @@ async fn runtime_register_five_agents_and_list() {
 
     for i in 0..5 {
         let agent_id = runtime
-            .launch_agent(make_spec(&format!("ws-multi-{i}")), "cmd", None)
+            .launch_agent(make_spec(&format!("ws-multi-{i}")), "cmd", None, None)
             .await
             .unwrap();
         ids.push(agent_id);
@@ -966,7 +966,7 @@ async fn runtime_each_agent_gets_unique_uuid() {
 
     for i in 0..10 {
         let agent_id = runtime
-            .launch_agent(make_spec(&format!("ws-uuid-{i}")), "cmd", None)
+            .launch_agent(make_spec(&format!("ws-uuid-{i}")), "cmd", None, None)
             .await
             .unwrap();
         let info = runtime.get_agent(&agent_id).await.unwrap();
@@ -989,7 +989,7 @@ async fn runtime_each_agent_gets_unique_uuid() {
 async fn runtime_uuid_resolution_works() {
     let runtime = make_runtime();
     let agent_id = runtime
-        .launch_agent(make_spec("ws-resolve"), "cmd", None)
+        .launch_agent(make_spec("ws-resolve"), "cmd", None, None)
         .await
         .unwrap();
     let info = runtime.get_agent(&agent_id).await.unwrap();
@@ -1013,7 +1013,7 @@ async fn runtime_uuid_resolution_works() {
 async fn runtime_lifecycle_state_visible_in_agent_info() {
     let runtime = make_runtime();
     let agent_id = runtime
-        .launch_agent(make_spec("ws-lc"), "cmd", None)
+        .launch_agent(make_spec("ws-lc"), "cmd", None, None)
         .await
         .unwrap();
 
@@ -1085,7 +1085,7 @@ async fn runtime_lifecycle_state_visible_in_agent_info() {
 async fn runtime_set_task_id_updates_agent_info() {
     let runtime = make_runtime();
     let agent_id = runtime
-        .launch_agent(make_spec("ws-task"), "cmd", None)
+        .launch_agent(make_spec("ws-task"), "cmd", None, None)
         .await
         .unwrap();
 
@@ -1115,7 +1115,7 @@ async fn runtime_concurrent_registration_from_multiple_tasks() {
     for i in 0..20 {
         let rt = runtime.clone();
         let h = tokio::spawn(async move {
-            rt.launch_agent(make_spec(&format!("ws-conc-{i}")), "cmd", None)
+            rt.launch_agent(make_spec(&format!("ws-conc-{i}")), "cmd", None, None)
                 .await
                 .unwrap()
         });
@@ -1200,7 +1200,7 @@ async fn runtime_prune_unhealthy_agents_no_op_on_unsupported_backend() {
 
     for i in 0..3 {
         runtime
-            .launch_agent(make_spec(&format!("ws-prune-{i}")), "cmd", None)
+            .launch_agent(make_spec(&format!("ws-prune-{i}")), "cmd", None, None)
             .await
             .unwrap();
     }
@@ -1226,7 +1226,7 @@ async fn runtime_shutdown_clears_all_agents() {
 
     for i in 0..5 {
         runtime
-            .launch_agent(make_spec(&format!("ws-sd-{i}")), "cmd", None)
+            .launch_agent(make_spec(&format!("ws-sd-{i}")), "cmd", None, None)
             .await
             .unwrap();
     }
@@ -1247,7 +1247,7 @@ async fn runtime_shutdown_clears_all_agents() {
 async fn runtime_launch_agent_sets_correct_agent_info_fields() {
     let runtime = make_runtime();
     let agent_id = runtime
-        .launch_agent(make_spec("ws-fields"), "some-cmd", None)
+        .launch_agent(make_spec("ws-fields"), "some-cmd", None, None)
         .await
         .unwrap();
 
@@ -1297,7 +1297,7 @@ async fn runtime_launch_agent_sets_correct_agent_info_fields() {
 async fn runtime_resolve_agent_id_direct_match() {
     let runtime = make_runtime();
     let agent_id = runtime
-        .launch_agent(make_spec("ws-res"), "cmd", None)
+        .launch_agent(make_spec("ws-res"), "cmd", None, None)
         .await
         .unwrap();
 
@@ -1318,7 +1318,7 @@ async fn runtime_resolve_agent_id_direct_match() {
 async fn runtime_try_bind_mcp_agent_to_unbound_runtime_agent() {
     let runtime = make_runtime();
     let agent_id = runtime
-        .launch_agent(make_spec("ws-mcp"), "cmd", None)
+        .launch_agent(make_spec("ws-mcp"), "cmd", None, None)
         .await
         .unwrap();
 
@@ -1350,7 +1350,7 @@ async fn runtime_try_bind_mcp_agent_to_unbound_runtime_agent() {
 async fn runtime_try_bind_mcp_agent_idempotent() {
     let runtime = make_runtime();
     let agent_id = runtime
-        .launch_agent(make_spec("ws-mcp2"), "cmd", None)
+        .launch_agent(make_spec("ws-mcp2"), "cmd", None, None)
         .await
         .unwrap();
     let first = runtime.try_bind_mcp_agent("opencode@xyz").await;

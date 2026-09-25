@@ -9,6 +9,7 @@ use axum::{
 };
 use ergatai_runtime::{ResourceLimits, WorkspaceSpec};
 use futures::stream::{self, Stream};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -17,15 +18,22 @@ use utoipa::ToSchema;
 use crate::messaging::{get_message_sender, SendMessageResult, SendRequest};
 use crate::AppState;
 
+/// Request body for spawning a new agent.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SpawnAgentRequest {
     #[serde(default)]
     pub workspace_id: Option<String>,
     #[serde(default)]
     pub conversation_id: Option<String>,
+    /// Agent profile name from the profile registry (e.g., "claude-code", "general-purpose").
+    /// The backend will look up the profile and use its configured command to start the agent.
+    /// For backward compatibility, if the profile is not found, this is treated as a raw command.
     pub command: String,
+    /// Optional instruction/prompt to send to the agent after startup.
     pub instruction: Option<String>,
+    /// Working directory for the agent.
     pub work_dir: Option<String>,
+    /// Environment variables to set for the agent process.
     pub env: Option<HashMap<String, String>>,
 }
 
@@ -375,25 +383,28 @@ pub async fn spawn_agent(
     }
 
     // Resolve profile name to its actual launch command.
-    // Frontend sends the profile name (e.g. "claude-code"); the runtime
-    // needs the full command (e.g. "npx @anthropic-ai/claude-code --acp").
-    let resolved_command = match tokio::task::spawn_blocking(move || {
+    // Frontend sends the profile name (e.g. "claude-code") from list_profiles();
+    // the backend looks up the profile and uses its configured command.
+    // Keep the original profile name for AgentInfo.profile field.
+    //
+    // Backward compatibility: If no matching profile is found, treat req.command
+    // as a raw command (legacy behavior for direct command specification).
+    let (resolved_command, profile_name) = match tokio::task::spawn_blocking(move || {
         crate::services::profile_service::get_profile_registry()
     })
     .await
     {
         Ok(Ok(registry)) => {
             if let Ok(profiles) = registry.list_with_status() {
-                profiles
-                    .into_iter()
-                    .find(|p| p.name == req.command)
-                    .map(|p| p.command)
-                    .unwrap_or_else(|| req.command.clone())
+                match profiles.into_iter().find(|p| p.name == req.command) {
+                    Some(profile) => (profile.command, Some(profile.name)),
+                    None => (req.command.clone(), None),
+                }
             } else {
-                req.command.clone()
+                (req.command.clone(), None)
             }
         }
-        _ => req.command.clone(),
+        _ => (req.command.clone(), None),
     };
 
     if req.workspace_id.is_none() && req.conversation_id.is_none() {
@@ -411,6 +422,8 @@ pub async fn spawn_agent(
     let mut env = req.env.clone();
     let mut capture_thoughts = false;
 
+    let mut spawn_chat_id: Option<String> = None;
+
     if let Some(conversation_id) = req.conversation_id.as_deref() {
         let conversation_id_for_get = conversation_id.to_string();
         match tokio::task::spawn_blocking(move || {
@@ -418,7 +431,14 @@ pub async fn spawn_agent(
         })
         .await
         {
-            Ok(Ok(Some(_conversation))) => {}
+            Ok(Ok(Some(conversation))) => {
+                spawn_chat_id = Some(
+                    conversation
+                        .parent_id
+                        .clone()
+                        .unwrap_or_else(|| conversation.id.clone()),
+                );
+            }
             Ok(Ok(None)) => {
                 return (
                     StatusCode::NOT_FOUND,
@@ -639,7 +659,13 @@ pub async fn spawn_agent(
     };
 
     match runtime
-        .launch_agent(spec, &resolved_command, req.instruction.as_deref())
+        .launch_agent_scoped(
+            spec,
+            &resolved_command,
+            req.instruction.as_deref(),
+            spawn_chat_id.as_deref(),
+            profile_name.as_deref(),
+        )
         .await
     {
         Ok(agent_id) => {
@@ -964,24 +990,23 @@ pub async fn send_message(
         }
 
         // No existing agent found or force_new_session is true - spawn a new one
-        // Resolve profile name to actual command
-        let resolved_command = match tokio::task::spawn_blocking(move || {
+        // Resolve profile name to actual command. Keep the original profile name for AgentInfo.profile.
+        let (resolved_command, profile_name) = match tokio::task::spawn_blocking(move || {
             crate::services::profile_service::get_profile_registry()
         })
         .await
         {
             Ok(Ok(registry)) => {
                 if let Ok(profiles) = registry.list_with_status() {
-                    profiles
-                        .into_iter()
-                        .find(|p| p.name == *target_command)
-                        .map(|p| p.command)
-                        .unwrap_or_else(|| target_command.clone())
+                    match profiles.into_iter().find(|p| p.name == *target_command) {
+                        Some(profile) => (profile.command, Some(profile.name)),
+                        None => (target_command.clone(), None),
+                    }
                 } else {
-                    target_command.clone()
+                    (target_command.clone(), None)
                 }
             }
-            _ => target_command.clone(),
+            _ => (target_command.clone(), None),
         };
 
         // Security: validate command
@@ -1027,7 +1052,7 @@ pub async fn send_message(
         };
 
         let spec = WorkspaceSpec {
-            id: chat_id.clone(),
+            id: sender_info.workspace_id.clone(),
             work_dir: work_dir.as_str().into(),
             env: std::collections::HashMap::new(),
             resources,
@@ -1040,7 +1065,13 @@ pub async fn send_message(
         ));
 
         match runtime
-            .launch_agent(spec, &resolved_command, instruction.as_deref())
+            .launch_agent_scoped(
+                spec,
+                &resolved_command,
+                instruction.as_deref(),
+                Some(&chat_id),
+                profile_name.as_deref(),
+            )
             .await
         {
             Ok(new_agent_id) => {
@@ -1230,24 +1261,23 @@ pub async fn spawn_session(
         }
     };
 
-    // Resolve profile name to actual command
-    let resolved_command = match tokio::task::spawn_blocking(move || {
+    // Resolve profile name to actual command. Keep the original profile name for AgentInfo.profile.
+    let (resolved_command, profile_name) = match tokio::task::spawn_blocking(move || {
         crate::services::profile_service::get_profile_registry()
     })
     .await
     {
         Ok(Ok(registry)) => {
             if let Ok(profiles) = registry.list_with_status() {
-                profiles
-                    .into_iter()
-                    .find(|p| p.name == req.target_command)
-                    .map(|p| p.command)
-                    .unwrap_or_else(|| req.target_command.clone())
+                match profiles.into_iter().find(|p| p.name == req.target_command) {
+                    Some(profile) => (profile.command, Some(profile.name)),
+                    None => (req.target_command.clone(), None),
+                }
             } else {
-                req.target_command.clone()
+                (req.target_command.clone(), None)
             }
         }
-        _ => req.target_command.clone(),
+        _ => (req.target_command.clone(), None),
     };
 
     // Security: validate command
@@ -1334,8 +1364,21 @@ pub async fn spawn_session(
         ))
     };
 
+    let spawn_chat_id = parent_info
+        .handle
+        .workspace
+        .metadata
+        .get("ergatai_chat_id")
+        .cloned();
+
     match runtime
-        .launch_agent(spec, &resolved_command, instruction.as_deref())
+        .launch_agent_scoped(
+            spec,
+            &resolved_command,
+            instruction.as_deref(),
+            spawn_chat_id.as_deref(),
+            profile_name.as_deref(),
+        )
         .await
     {
         Ok(new_agent_id) => {
@@ -2394,6 +2437,7 @@ pub async fn prompt_agent(
         };
 
         let agent_info = crate::services::agent_service::get_agent_info(&runtime_id).await;
+        let agent_profile = agent_info.as_ref().and_then(|info| info.profile.clone());
         if let Some(info) = &agent_info {
             if info.workspace_id != workspace_id {
                 return (
@@ -2534,7 +2578,7 @@ pub async fn prompt_agent(
             chat_id: root_conversation_id,
             agent_id: runtime_id.clone(),
             agent_name: agent_name.clone(),
-            agent_command: Some(id.clone()),
+            agent_command: agent_profile,
             conversation_id: conversation.id,
             created_at: now,
             updated_at: now,
@@ -2616,8 +2660,9 @@ pub async fn prompt_agent(
         }
 
         // Get the target agent's actual name (not the sender's name)
-        let agent_name = crate::services::agent_service::get_agent_info(&runtime_id)
-            .await
+        let agent_info = crate::services::agent_service::get_agent_info(&runtime_id).await;
+        let agent_profile = agent_info.as_ref().and_then(|info| info.profile.clone());
+        let agent_name = agent_info
             .and_then(|info| info.stable_id.clone())
             .or_else(|| sub_chat.name.clone())
             .unwrap_or_else(|| runtime_id.clone());
@@ -2698,7 +2743,7 @@ pub async fn prompt_agent(
             chat_id: sub_chat.chat_id,
             agent_id: runtime_id.clone(),
             agent_name: agent_name.clone(),
-            agent_command: Some(id.clone()),
+            agent_command: agent_profile,
             conversation_id: sub_chat.id,
             created_at: now,
             updated_at: now,
@@ -2875,6 +2920,184 @@ pub async fn stream_agent_output(
                             acc_text.push_str(delta);
                         }
 
+                        // Handle SubagentSpawned event - create child conversation
+                        if let ergatai_runtime::AgentOutputEvent::SubagentSpawned {
+                            subagent_session_id,
+                            name,
+                            task,
+                        } = &event
+                        {
+                            if let Some(ref parent_conv_id) = conv_id {
+                                let parent_id = parent_conv_id.clone();
+                                let subagent_sid = subagent_session_id.clone();
+                                let subagent_name = name.clone();
+                                let subagent_task = task.clone();
+
+                                // Create child conversation in background task
+                                tokio::task::spawn_blocking(move || {
+                                    match crate::user_data_db::conversations::get(&parent_id) {
+                                        Ok(Some(parent_conv)) => {
+                                            let now = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default()
+                                                .as_secs()
+                                                as i64;
+                                            let child_conv_id =
+                                                format!("subconv-{}", uuid::Uuid::new_v4());
+
+                                            let child_conv = crate::user_data_db::Conversation {
+                                                id: child_conv_id.clone(),
+                                                parent_id: Some(parent_id.clone()),
+                                                project_id: parent_conv.project_id.clone(),
+                                                workspace_id: parent_conv.workspace_id.clone(),
+                                                name: Some(subagent_name.clone()),
+                                                mode: "subagent".to_string(),
+                                                created_at: now,
+                                                updated_at: now,
+                                                archived_at: None,
+                                            };
+
+                                            match crate::user_data_db::conversations::create(
+                                                child_conv,
+                                            ) {
+                                                Ok(_) => {
+                                                    // Create agent session binding
+                                                    if let Err(e) =
+                                                        crate::user_data_db::agent_sessions::upsert(
+                                                            &child_conv_id,
+                                                            Some(&subagent_sid),
+                                                            "subagent",
+                                                            now,
+                                                        )
+                                                    {
+                                                        tracing::warn!(
+                                                            child_conversation_id = %child_conv_id,
+                                                            "Failed to create agent session for subagent: {}", e
+                                                        );
+                                                    }
+
+                                                    // Append initial message with task
+                                                    let parts = serde_json::json!([{
+                                                        "type": "text",
+                                                        "text": subagent_task,
+                                                    }]);
+                                                    let metadata = serde_json::json!({
+                                                        "source": "system",
+                                                        "subagent_session_id": subagent_sid,
+                                                    });
+                                                    if let Err(e) =
+                                                        crate::user_data_db::messages::append(
+                                                            &child_conv_id,
+                                                            "user",
+                                                            parts,
+                                                            metadata,
+                                                        )
+                                                    {
+                                                        tracing::warn!(
+                                                            child_conversation_id = %child_conv_id,
+                                                            "Failed to append initial message: {}", e
+                                                        );
+                                                    } else {
+                                                        tracing::info!(
+                                                            parent_conversation_id = %parent_id,
+                                                            child_conversation_id = %child_conv_id,
+                                                            subagent_session_id = %subagent_sid,
+                                                            name = %subagent_name,
+                                                            "Created subagent conversation"
+                                                        );
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    tracing::warn!(
+                                                        parent_conversation_id = %parent_id,
+                                                        "Failed to create subagent conversation: {}", e
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        Ok(None) => {
+                                            tracing::warn!(
+                                                parent_conversation_id = %parent_id,
+                                                "Parent conversation not found"
+                                            );
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                parent_conversation_id = %parent_id,
+                                                "Failed to get parent conversation: {}", e
+                                            );
+                                        }
+                                    }
+                                });
+                            }
+                        }
+
+                        // Handle SubagentStateUpdate event - update conversation state
+                        if let ergatai_runtime::AgentOutputEvent::SubagentStateUpdate {
+                            subagent_session_id,
+                            state,
+                        } = &event
+                        {
+                            let subagent_sid = subagent_session_id.clone();
+                            let new_state = state.clone();
+
+                            // Find conversation by session_id and update
+                            tokio::task::spawn_blocking(move || {
+                                // Query agent_sessions to find conversation_id by session_id
+                                let db = crate::user_data_db::get_user_data_db();
+                                let conn = db.lock().unwrap();
+                                let result: Result<Option<String>, rusqlite::Error> = conn.query_row(
+                                    "SELECT conversation_id FROM agent_sessions WHERE session_id = ?1",
+                                    rusqlite::params![subagent_sid],
+                                    |row| row.get::<_, String>(0),
+                                ).optional();
+
+                                drop(conn);
+
+                                match result {
+                                    Ok(Some(conv_id)) => {
+                                        // Append state update message
+                                        let parts = serde_json::json!([{
+                                            "type": "text",
+                                            "text": format!("State changed to: {}", new_state),
+                                        }]);
+                                        let metadata = serde_json::json!({
+                                            "source": "system",
+                                            "event_type": "state_update",
+                                            "state": new_state,
+                                        });
+
+                                        if let Err(e) = crate::user_data_db::messages::append(
+                                            &conv_id, "system", parts, metadata,
+                                        ) {
+                                            tracing::warn!(
+                                                conversation_id = %conv_id,
+                                                "Failed to append state update message: {}", e
+                                            );
+                                        } else {
+                                            tracing::debug!(
+                                                conversation_id = %conv_id,
+                                                state = %new_state,
+                                                "Updated subagent state"
+                                            );
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        tracing::debug!(
+                                            subagent_session_id = %subagent_sid,
+                                            "No conversation found for subagent session"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            subagent_session_id = %subagent_sid,
+                                            "Failed to query agent_sessions: {}", e
+                                        );
+                                    }
+                                }
+                            });
+                        }
+
                         if let Ok(json) = serde_json::to_string(&event) {
                             let event_type = match &event {
                                 ergatai_runtime::AgentOutputEvent::Text { .. } => "text",
@@ -2894,6 +3117,12 @@ pub async fn stream_agent_output(
                                 ergatai_runtime::AgentOutputEvent::SessionTitleUpdate {
                                     ..
                                 } => "session_title_update",
+                                ergatai_runtime::AgentOutputEvent::SubagentSpawned { .. } => {
+                                    "subagent_spawned"
+                                }
+                                ergatai_runtime::AgentOutputEvent::SubagentStateUpdate {
+                                    ..
+                                } => "subagent_state_update",
                                 ergatai_runtime::AgentOutputEvent::Done { .. } => "done",
                                 ergatai_runtime::AgentOutputEvent::Error { .. } => "error",
                             };

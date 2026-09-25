@@ -12,6 +12,29 @@ use tracing::{info, warn};
 
 use super::server::ErgataiMcpServer;
 
+fn agent_identifier_from_request(context: &RequestContext<rmcp::RoleServer>) -> Option<String> {
+    let parts = context.extensions.get::<axum::http::request::Parts>()?;
+    let path = parts
+        .extensions
+        .get::<axum::extract::OriginalUri>()
+        .map(|uri| uri.path())
+        .unwrap_or(parts.uri.path());
+    agent_identifier_from_path(path)
+}
+
+fn agent_identifier_from_path(path: &str) -> Option<String> {
+    let path = path.strip_prefix("/mcp")?;
+    let encoded_id = path.trim_start_matches('/').trim_end_matches('/');
+    if encoded_id.is_empty() {
+        return None;
+    }
+
+    percent_encoding::percent_decode_str(encoded_id)
+        .decode_utf8()
+        .ok()
+        .map(|id| id.into_owned())
+}
+
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for ErgataiMcpServer {
     /// Handle initialize - auto-register the agent and save peer handle
@@ -30,6 +53,7 @@ impl ServerHandler for ErgataiMcpServer {
         let unique_agent_id = self
             .agent_identifier()
             .clone()
+            .or_else(|| agent_identifier_from_request(&context))
             .unwrap_or_else(|| agent_id.clone());
 
         info!(
@@ -56,7 +80,7 @@ impl ServerHandler for ErgataiMcpServer {
             unique_agent_id, connection_id
         );
 
-        // Try to bind this MCP agent to a runtime agent (PTY pane).
+        // Try to bind this MCP agent to a runtime agent (ACP agent).
         // If agent_identifier is available (from URL path), use precise binding.
         // Otherwise, fall back to FIFO binding (legacy behavior).
         let runtime = crate::context::get_app_context().agent_runtime.clone();
@@ -132,7 +156,7 @@ impl ServerHandler for ErgataiMcpServer {
                         }
                         None => {
                             // Identifier mismatch (e.g. URL path "agent-1" vs runtime
-                            // "ws1-agent-1"). Fall back to FIFO binding so MCP ↔ PTY
+                            // "ws1-agent-1"). Fall back to FIFO binding so MCP ↔ ACP
                             // mapping still works.
                             warn!(
                                 mcp_agent_id = unique_agent_id,
@@ -235,17 +259,22 @@ Use Ergatai MCP tools when the user explicitly requests agent collaboration, or 
 
 | Tool | Purpose |
 |------|---------|
-| `list_agents` | Discover online agents |
-| `send_message` | Send message to another agent |
-| `submit_orchestration` | Submit DAG workflow |
+| `list_agents` | List all available agents (running + configured) |
+| `send_message` | Send message to another agent (auto-spawns if needed) |
+| `submit_orchestration` | Submit DAG workflow (multi-agent orchestration) |
 | `validate_dag_yaml` | Validate DAG YAML without executing (dry-run) |
 | `get_dag_status` | Query DAG execution status |
 
 ### 1.1 Discover agents — `list_agents`
-Returns all online agents. Use `ergatai_agent_id` field (e.g., "agent-2") as `target_agent_id`. Do NOT use `agent_id` field.
+Returns all available agents with their status:
+- `status: "running"` — Agent is running, can receive messages immediately
+- `status: "configured"` — Agent template, will be auto-spawned when messaged
+
+Use the `name` field as `target_agent_id` in `send_message`.
 
 ### 1.2 Send messages — `send_message`
-See tool description for full details.
+Send a message to another agent. If the target is a configured profile (not running),
+the system automatically spawns it and delivers your message.
 
 QUICK REFERENCE (use the `ergatai_agent_id` from `list_agents` as `target_agent_id`):
 ```
@@ -296,7 +325,6 @@ MUST distinguish user messages (free-form) from agent messages (JSON).
   "_reply": "MUST call send_message(target_agent_id=\"agent-1\")",
   "_rules": ["DO NOT write reply as terminal text", "After send_message, output END"]
 }
-```
 
 Fields:
 - `from`: Sender's MCP agent ID (e.g., "agent-1"). This is the unified ID format — use it as `target_agent_id` when replying. `from` and `_reply` always contain the same ID.
@@ -390,5 +418,28 @@ Every reply must contain SUBSTANCE (work done, answer given, data provided). If 
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions(instructions)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agent_identifier_from_path;
+
+    #[test]
+    fn agent_identifier_from_path_extracts_and_decodes_dynamic_id() {
+        assert_eq!(
+            agent_identifier_from_path("/mcp/task%7Cagent-y"),
+            Some("task|agent-y".to_string())
+        );
+        assert_eq!(
+            agent_identifier_from_path("/mcp/agent-1/"),
+            Some("agent-1".to_string())
+        );
+    }
+
+    #[test]
+    fn agent_identifier_from_path_ignores_default_endpoint() {
+        assert_eq!(agent_identifier_from_path("/mcp"), None);
+        assert_eq!(agent_identifier_from_path("/mcp/"), None);
     }
 }

@@ -86,6 +86,17 @@ pub async fn get_profile(id: &str) -> Result<Option<AgentRegistration>> {
         .map_err(|e| anyhow::anyhow!("Failed to get profile: {}", e))
 }
 
+/// 获取指定 name 的 agent profile。
+///
+/// 返回 None 表示 profile 不存在。
+pub async fn get_profile_by_name(name: &str) -> Result<Option<AgentRegistration>> {
+    let registry = get_profile_registry()?;
+    registry
+        .get_by_name(name)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get profile by name: {}", e))
+}
+
 /// 删除指定 ID 的 agent profile。
 ///
 /// 返回 true 表示删除成功，false 表示 profile 不存在。

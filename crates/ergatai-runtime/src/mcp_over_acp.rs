@@ -21,10 +21,19 @@ use futures::{SinkExt, StreamExt};
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
+/// Context for an MCP server attached to one ACP agent connection.
+#[derive(Clone, Debug, Default)]
+pub struct McpServerContext {
+    /// Runtime agent ID that owns the ACP connection.
+    pub agent_id: Option<String>,
+    /// Workspace the owning agent was launched in.
+    pub workspace_id: Option<String>,
+}
+
 /// Creates MCP server components for ACP sessions.
 pub trait McpServerFactory: Send + Sync + 'static {
     /// Create a component that can serve one MCP-over-ACP connection.
-    fn create_mcp_server(&self) -> DynConnectTo<role::mcp::Client>;
+    fn create_mcp_server(&self, context: McpServerContext) -> DynConnectTo<role::mcp::Client>;
 
     /// Get the server name used in the ACP declaration.
     fn server_name(&self) -> &str;
@@ -34,14 +43,16 @@ pub trait McpServerFactory: Send + Sync + 'static {
 pub struct AcpMcpBridge {
     server_id: McpServerAcpId,
     factory: Arc<dyn McpServerFactory>,
+    context: McpServerContext,
     connections: HashMap<McpConnectionId, futures::channel::mpsc::Sender<Dispatch>>,
 }
 
 impl AcpMcpBridge {
-    pub fn new(factory: Arc<dyn McpServerFactory>) -> Self {
+    pub fn new(factory: Arc<dyn McpServerFactory>, context: McpServerContext) -> Self {
         Self {
             server_id: McpServerAcpId::new(format!("ergatai-mcp:{}", uuid::Uuid::new_v4())),
             factory,
+            context,
             connections: HashMap::new(),
         }
     }
@@ -142,7 +153,7 @@ impl AcpMcpBridge {
                 })
         };
 
-        let spawned_server = self.factory.create_mcp_server();
+        let spawned_server = self.factory.create_mcp_server(self.context.clone());
         let spawn_results = acp_connection
             .spawn(async move { client_component.connect_to(client_channel).await })
             .and_then(|()| {

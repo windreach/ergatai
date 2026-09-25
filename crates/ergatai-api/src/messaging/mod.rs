@@ -32,6 +32,30 @@ use admission::{
     RateLimitGate, SelfMessageGate,
 };
 
+const DEFAULT_AGENT_REQUEST_TIMEOUT_MS: u64 = 300_000;
+
+/// Default working directory for auto-spawned agents when no work_dir is specified.
+/// Can be overridden via ERGATAI_DEFAULT_WORK_DIR environment variable.
+const DEFAULT_WORK_DIR: &str = "/tmp";
+
+fn default_work_dir() -> String {
+    std::env::var("ERGATAI_DEFAULT_WORK_DIR").unwrap_or_else(|_| DEFAULT_WORK_DIR.to_string())
+}
+
+fn configured_agent_request_timeout_ms() -> u64 {
+    match std::env::var("ERGATAI_AGENT_REQUEST_TIMEOUT_MS") {
+        Ok(value) => value.parse().unwrap_or_else(|_| {
+            warn!(
+                value = %value,
+                default_ms = DEFAULT_AGENT_REQUEST_TIMEOUT_MS,
+                "Invalid ERGATAI_AGENT_REQUEST_TIMEOUT_MS; using default"
+            );
+            DEFAULT_AGENT_REQUEST_TIMEOUT_MS
+        }),
+        Err(_) => DEFAULT_AGENT_REQUEST_TIMEOUT_MS,
+    }
+}
+
 /// Result of a message send operation.
 #[derive(Debug)]
 pub enum SendMessageResult {
@@ -41,7 +65,7 @@ pub enum SendMessageResult {
         stream: String,
         sequence: u64,
     },
-    /// Message delivered directly via PTY injection (NATS unavailable).
+    /// Message delivered directly via ACP protocol (NATS unavailable).
     DirectDelivered { target_agent: String },
     /// Message was rejected.
     Rejected { reason: String },
@@ -71,6 +95,13 @@ pub struct SendRequest {
     pub sub_chat_id: Option<String>,
 }
 
+/// Context retained while waiting for an agent's response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingResponseContext {
+    correlation_id: String,
+    conversation_id: Option<String>,
+}
+
 /// Unified message sending service.
 ///
 /// Encapsulates the full send pipeline so both REST API and MCP
@@ -81,10 +112,9 @@ pub struct MessageSender {
     /// Request monitor for reqwatch auto-monitoring
     pub request_monitor: Arc<RequestMonitor>,
     /// Tracks pending responses: when agent B receives a request from A,
-    /// record `pending_responses[B] = Vec<correlation_id>`. When B sends a response,
-    /// auto-fill correlation_id from this map (implicit tracking, FIFO order).
-    /// Uses Vec to support multiple concurrent requests to the same agent.
-    pending_responses: Mutex<HashMap<String, Vec<String>>>,
+    /// record its correlation ID and originating conversation. When B sends a
+    /// response, pop this context so the reply is persisted to the same thread.
+    pending_responses: Mutex<HashMap<String, Vec<PendingResponseContext>>>,
     /// Conversation manager for tracking agent conversations (dashboard access).
     conversation_manager: Arc<ConversationManager>,
 }
@@ -146,63 +176,144 @@ impl MessageSender {
             "MessageSender: processing send request"
         );
 
-        // ── Admission control: run all gates ──
+        // ── Step 1: Agent resolution (BEFORE admission control) ──
+        // Resolve both sender and target agents first, auto-spawning if needed.
+        // This ensures rate limiting and other gates see valid runtime agent IDs.
+
+        // 1a. Resolve sender agent (auto-spawn if it's a profile name)
+        let resolved_sender_id = match runtime.resolve_agent_id(&req.from).await {
+            Some(id) => id,
+            None => {
+                // Sender not found — try to auto-spawn from profile
+                // Use a default workspace for sender auto-spawn (sender doesn't need workspace context)
+                match self
+                    .try_auto_spawn_agent_standalone(&runtime, &req.from)
+                    .await
+                {
+                    Some(agent_id) => {
+                        info!(
+                            sender = %req.from,
+                            agent_id = %agent_id,
+                            "Auto-spawned sender from profile"
+                        );
+                        agent_id
+                    }
+                    None => {
+                        // Not a profile — check if it's a system sender
+                        const SYSTEM_SENDERS: &[&str] = &["api", "user", "system"];
+                        if SYSTEM_SENDERS.contains(&req.from.as_str()) {
+                            // System senders bypass resolution
+                            req.from.clone()
+                        } else {
+                            return SendMessageResult::Rejected {
+                                reason: format!(
+                                    "Sender '{}' is not a registered agent or valid profile name. \
+                                     Cannot auto-spawn without profile configuration.",
+                                    req.from
+                                ),
+                            };
+                        }
+                    }
+                }
+            }
+        };
+
+        // 1b. Resolve target agent (auto-spawn if it's a profile name)
+        let resolved_target_id = match self.resolve_target_agent(&runtime, &req.to).await {
+            Some(id) => id,
+            None => {
+                // Target not found — try to spawn from profile
+                match self
+                    .try_auto_spawn_agent(&runtime, &req.to, &resolved_sender_id)
+                    .await
+                {
+                    Some(agent_id) => {
+                        info!(
+                            target = %req.to,
+                            agent_id = %agent_id,
+                            "Spawned target agent from profile (message-driven)"
+                        );
+                        agent_id
+                    }
+                    None => {
+                        return SendMessageResult::Rejected {
+                            reason: format!(
+                                "Agent {} not found. Agent must connect via MCP or be running as an ACP agent. \
+                                 or be a valid profile name.",
+                                req.to
+                            ),
+                        };
+                    }
+                }
+            }
+        };
+
+        // 1c. Create resolved request with actual runtime agent IDs
+        let resolved_req = SendRequest {
+            from: resolved_sender_id.clone(),
+            to: resolved_target_id.clone(),
+            message: req.message.clone(),
+            message_type: req.message_type.clone(),
+            correlation_id: req.correlation_id.clone(),
+            sub_chat_id: req.sub_chat_id.clone(),
+        };
+
+        // ── Step 2: Admission control (AFTER agent resolution) ──
+        // Now all gates see valid runtime agent IDs
         if let admission::AdmissionResult::Denied { reason } =
-            self.admission_gate.check(&req, &runtime).await
+            self.admission_gate.check(&resolved_req, &runtime).await
         {
             return SendMessageResult::Rejected { reason };
         }
 
-        // ── Agent resolution (needed for subsequent steps) ──
-        let resolved_agent_id = match self.resolve_target_agent(&runtime, &req.to).await {
-            Some(id) => id,
-            None => {
-                return SendMessageResult::Rejected {
-                    reason: format!(
-                        "Agent {} not found. Agent must connect via MCP or be running in a PTY workspace.",
-                        req.to
-                    ),
-                };
-            }
-        };
-
-        // ── Resolve sender runtime ID (needed for subsequent steps) ──
-        let from_runtime_id = runtime.resolve_agent_id(&req.from).await;
+        // ── Step 3: Continue with resolved IDs ──
+        // from_runtime_id is now the resolved_sender_id
 
         // ── 3. Resolve stable IDs (used for NATS payload enrichment + formatting) ──
-        let from_stable = runtime.resolve_to_stable_id(&req.from, None).await;
-        let to_stable = runtime.resolve_to_stable_id(&resolved_agent_id, None).await;
+        let from_stable = runtime
+            .resolve_to_stable_id(&resolved_sender_id, None)
+            .await;
+        let to_stable = runtime
+            .resolve_to_stable_id(&resolved_target_id, None)
+            .await;
 
         // ── 4. Resolve sender display name ──
-        // ID Unification: sender must be bound to a runtime agent.
-        // Use the MCP URL path name (e.g., "agent-1") as the `from` field,
-        // so the receiving agent sees the same ID format it uses in its own
-        // MCP path — keeping IDs uniform across the system.
-        let from_runtime_id_for_payload =
-            from_runtime_id.clone().unwrap_or_else(|| req.from.clone());
-        let conversation_receiver = runtime
-            .resolve_agent_id(&req.to)
-            .await
-            .unwrap_or_else(|| req.to.clone());
+        // Use the resolved sender ID for display
+        let from_runtime_id_for_payload = resolved_sender_id.clone();
+        let conversation_receiver = resolved_target_id.clone();
 
-        let sender_display = match self.get_sender_display(&req.from).await {
+        let sender_display = match self.get_sender_display(&resolved_sender_id).await {
             Some(display) => display,
             None => {
                 return SendMessageResult::Rejected {
                     reason: format!(
                         "Sender '{}' is not bound to any runtime agent. \
-                         MCP clients must be bound to PTY agents before sending messages. \
+                         MCP clients must be bound to ACP agents before sending messages. \
                          This ensures consistent ID usage in message routing.",
-                        req.from
+                        resolved_sender_id
                     ),
                 };
             }
         };
 
-        let mut target_sub_chat_id = req.sub_chat_id.clone();
+        let pending_response = if req.message_type == "response" {
+            self.take_pending_response(&resolved_sender_id, req.correlation_id.as_deref())
+                .await
+        } else {
+            None
+        };
+
+        let mut target_sub_chat_id = req.sub_chat_id.clone().or_else(|| {
+            pending_response
+                .as_ref()
+                .and_then(|p| p.conversation_id.clone())
+        });
         if target_sub_chat_id.is_none() {
             for candidate in [
-                resolved_agent_id.as_str(),
+                resolved_sender_id.as_str(),
+                from_stable.as_str(),
+                req.from.as_str(),
+                resolved_target_id.as_str(),
                 to_stable.as_str(),
                 req.to.as_str(),
             ] {
@@ -234,41 +345,26 @@ impl MessageSender {
         // reply target = sender's stable ID (so recipient knows who to reply to)
         //
         // Compute correlation_id + timeout BEFORE format_agent_message so they can be
-        // injected into the NATS payload (but NOT into PTY JSON — agents don't see them).
+        // injected into the NATS payload (but NOT into the message content — agents don't see them).
         let is_request = req.message_type == "request";
-        let timeout_ms: Option<u64> = if is_request { Some(30_000) } else { None };
+        let timeout_ms: Option<u64> = if is_request {
+            Some(configured_agent_request_timeout_ms())
+        } else {
+            None
+        };
         let correlation_id: Option<String> = match req.message_type.as_str() {
             "request" => Some(uuid::Uuid::new_v4().to_string()),
-            "response" => {
-                // Auto-fill from pending_responses if agent didn't provide one
-                // Pop the oldest correlation_id (FIFO) from the Vec
-                if let Some(cid) = req.correlation_id.clone() {
-                    Some(cid)
-                } else {
-                    // Use .await instead of try_lock() to avoid silent failures under contention
-                    let mut pending = self.pending_responses.lock().await;
-                    let cid = pending
-                        .get_mut(&req.from)
-                        .filter(|v| !v.is_empty())
-                        .map(|v| v.remove(0));
-                    // Remove the key if the Vec is now empty to prevent HashMap leak.
-                    // Without this, every agent that ever received a request leaves
-                    // an empty Vec entry behind after its last response is popped.
-                    if pending.get(&req.from).is_some_and(|v| v.is_empty()) {
-                        pending.remove(&req.from);
-                    }
-                    cid
-                }
-            }
+            "response" => req
+                .correlation_id
+                .clone()
+                .or_else(|| pending_response.as_ref().map(|p| p.correlation_id.clone())),
             _ => None,
         };
 
         let formatted_content = Self::format_agent_message(
             &sender_display,
             &req.message,
-            &req.from, // Use MCP URL path name (e.g., "agent-1") as the reply target.
-            // This is the unified ID format — same as what the agent
-            // sees in its own MCP path (/mcp/agent-1/...).
+            &resolved_sender_id, // Use resolved sender ID as the reply target
             &req.message_type,
             correlation_id.as_deref(),
             timeout_ms,
@@ -291,19 +387,19 @@ impl MessageSender {
                 .await
                 .map(|info| info.agent_uuid);
             let to_uuid = runtime
-                .get_agent(&resolved_agent_id)
+                .get_agent(&resolved_target_id)
                 .await
                 .map(|info| info.agent_uuid);
 
             let payload = ergatai_nats::AgentMessagePayload {
-                from_agent: req.from.clone(),
-                to_agent: resolved_agent_id.clone(),
+                from_agent: resolved_sender_id.clone(),
+                to_agent: resolved_target_id.clone(),
                 from_uuid,
                 to_uuid,
                 from_stable: Some(from_stable),
                 to_stable: Some(to_stable),
                 content: formatted_content.clone(),
-                thread_id: None,
+                thread_id: target_sub_chat_id.clone(),
                 timestamp,
                 metadata,
                 // Generate unique message ID for tracking
@@ -311,8 +407,8 @@ impl MessageSender {
                 // Request messages require read receipts
                 requires_receipt: is_request,
                 // correlation_id: generated for requests, echoed from req for responses
-                correlation_id,
-                // Default timeout for requests: 30 seconds
+                correlation_id: correlation_id.clone(),
+                // Default timeout for requests: 5 minutes (configurable)
                 timeout_ms,
             };
 
@@ -342,6 +438,14 @@ impl MessageSender {
 
             match bus.publish_agent_message_reliable(&payload).await {
                 Ok(ack) => {
+                    self.mark_response_delivered(
+                        &req.message_type,
+                        correlation_id.as_deref(),
+                        &resolved_sender_id,
+                        &resolved_target_id,
+                    )
+                    .await;
+
                     self.conversation_manager
                         .record_delivered_message(
                             &from_runtime_id_for_payload,
@@ -351,33 +455,19 @@ impl MessageSender {
                         )
                         .await;
 
-                    // Persist message AFTER successful delivery
-                    // Dual-write: new `messages` table + legacy `sub_chats` table for backward compatibility
+                    // Persist message AFTER successful delivery. The sub-chat helper
+                    // owns writes to the normalized `messages` table.
                     if let Some(conversation_id) = target_sub_chat_id.clone() {
                         let message = req.message.clone();
                         let from = req.from.clone();
                         let sender_name = sender_display.clone();
                         // Wrap synchronous DB call in spawn_blocking
                         if let Err(e) = tokio::task::spawn_blocking(move || {
-                            let parts = serde_json::json!([{
-                                "type": "text",
-                                "text": message,
-                            }]);
                             let metadata = serde_json::json!({
                                 "source": "agent",
                                 "senderAgentId": from,
                                 "senderAgentName": sender_name,
                             });
-                            // Write to new messages table
-                            if let Err(e) = user_data_db::messages::append(
-                                &conversation_id,
-                                "assistant",
-                                parts,
-                                metadata.clone(),
-                            ) {
-                                warn!("Failed to persist A-to-A message to messages table: {}", e);
-                            }
-                            // Write to legacy sub_chats table for backward compatibility
                             if let Err(e) = user_data_db::sub_chats::append_message(
                                 &conversation_id,
                                 "assistant",
@@ -394,7 +484,7 @@ impl MessageSender {
                     }
 
                     return SendMessageResult::Queued {
-                        target_agent: resolved_agent_id,
+                        target_agent: resolved_target_id,
                         stream: ack.stream,
                         sequence: ack.sequence,
                     };
@@ -409,12 +499,20 @@ impl MessageSender {
             }
         }
 
-        // ── Fallback: direct PTY injection ──
+        // ── Fallback: direct delivery via ACP protocol ──
         match runtime
-            .inject_message(&resolved_agent_id, &formatted_content)
+            .inject_message(&resolved_target_id, &formatted_content)
             .await
         {
             Ok(_) => {
+                self.mark_response_delivered(
+                    &req.message_type,
+                    correlation_id.as_deref(),
+                    &resolved_sender_id,
+                    &resolved_target_id,
+                )
+                .await;
+
                 self.conversation_manager
                     .record_delivered_message(
                         &from_runtime_id_for_payload,
@@ -424,33 +522,19 @@ impl MessageSender {
                     )
                     .await;
 
-                // Persist message AFTER successful delivery
-                // Dual-write: new `messages` table + legacy `sub_chats` table for backward compatibility
+                // Persist message AFTER successful delivery. The sub-chat helper
+                // owns writes to the normalized `messages` table.
                 if let Some(conversation_id) = target_sub_chat_id.clone() {
                     let message = req.message.clone();
                     let from = req.from.clone();
                     let sender_name = sender_display.clone();
                     // Wrap synchronous DB call in spawn_blocking
                     if let Err(e) = tokio::task::spawn_blocking(move || {
-                        let parts = serde_json::json!([{
-                            "type": "text",
-                            "text": message,
-                        }]);
-                        let metadata = serde_json::json!({
+                    let metadata = serde_json::json!({
                             "source": "agent",
                             "senderAgentId": from,
                             "senderAgentName": sender_name,
                         });
-                        // Write to new messages table
-                        if let Err(e) = user_data_db::messages::append(
-                            &conversation_id,
-                            "user",
-                            parts,
-                            metadata.clone(),
-                        ) {
-                            warn!("Failed to persist A-to-A message to messages table: {}", e);
-                        }
-                        // Write to legacy sub_chats table for backward compatibility
                         if let Err(e) = user_data_db::sub_chats::append_message(
                             &conversation_id,
                             "user",
@@ -467,16 +551,75 @@ impl MessageSender {
                 }
 
                 SendMessageResult::DirectDelivered {
-                    target_agent: resolved_agent_id,
+                    target_agent: resolved_target_id,
                 }
             }
             Err(e) => SendMessageResult::Rejected {
                 reason: format!(
                     "Failed to deliver message to {}: NATS publish failed and direct injection error: {}",
-                    resolved_agent_id, e
+                    resolved_target_id, e
                 ),
             },
         }
+    }
+
+    async fn mark_response_delivered(
+        &self,
+        message_type: &str,
+        correlation_id: Option<&str>,
+        from_agent: &str,
+        to_agent: &str,
+    ) {
+        if message_type != "response" {
+            return;
+        }
+
+        let Some(correlation_id) = correlation_id else {
+            warn!(
+                from = %from_agent,
+                to = %to_agent,
+                "Response delivered without correlation_id; request timeout cannot be cleared"
+            );
+            return;
+        };
+
+        self.request_monitor.mark_responded(correlation_id).await;
+        info!(
+            correlation_id = %correlation_id,
+            from = %from_agent,
+            to = %to_agent,
+            "Response delivered and request marked as responded"
+        );
+    }
+
+    async fn take_pending_response(
+        &self,
+        responder_agent: &str,
+        correlation_id: Option<&str>,
+    ) -> Option<PendingResponseContext> {
+        let mut pending = self.pending_responses.lock().await;
+        let contexts = pending.get_mut(responder_agent)?;
+        let position = match correlation_id {
+            Some(correlation_id) => contexts
+                .iter()
+                .position(|context| context.correlation_id == correlation_id),
+            None if contexts.is_empty() => None,
+            None => Some(0),
+        };
+        let context = position.map(|position| contexts.remove(position));
+        if contexts.is_empty() {
+            pending.remove(responder_agent);
+        }
+        context
+    }
+
+    async fn store_pending_response(&self, responder_agent: &str, context: PendingResponseContext) {
+        let mut pending = self.pending_responses.lock().await;
+        let contexts = pending.entry(responder_agent.to_string()).or_default();
+        while contexts.len() >= MAX_PENDING_PER_AGENT {
+            contexts.remove(0);
+        }
+        contexts.push(context);
     }
 
     /// Resolve target agent ID from various identifier formats.
@@ -485,16 +628,27 @@ impl MessageSender {
     async fn resolve_target_agent(&self, runtime: &AgentRuntime, target: &str) -> Option<String> {
         // Step 1: Check MCP peer registry first
         if let Some(peer_info) = self.peer_registry.get_agent(target).await {
+            tracing::debug!(
+                target = target,
+                resolved_id = %peer_info.agent_id,
+                "Resolved target via MCP peer registry"
+            );
             return Some(peer_info.agent_id);
         }
 
         // Step 2: Fall back to runtime registry
         let agents = runtime.list_agents().await;
 
-        agents
+        tracing::debug!(
+            target = target,
+            agent_count = agents.len(),
+            "Resolving target in runtime registry"
+        );
+
+        let result = agents
             .iter()
             .find(|a| {
-                a.agent_id == target
+                let matches = a.agent_id == target
                     || a.agent_id.starts_with(&format!("{}@", target))
                     || a.agent_uuid == target
                     || a.task_id.as_deref() == Some(target)
@@ -503,9 +657,196 @@ impl MessageSender {
                         .metadata
                         .get("ergatai_agent_id")
                         .map(|id| id == target)
-                        .unwrap_or(false)
+                        .unwrap_or(false);
+                if matches {
+                    tracing::debug!(
+                        target = target,
+                        matched_agent_id = %a.agent_id,
+                        matched_agent_uuid = %a.agent_uuid,
+                        "Found matching agent in runtime registry"
+                    );
+                }
+                matches
             })
-            .map(|a| a.agent_id.clone())
+            .map(|a| a.agent_id.clone());
+
+        if result.is_none() {
+            tracing::debug!(target = target, "Target not found in any registry");
+        }
+
+        result
+    }
+
+    /// Try to auto-spawn an agent from a profile when target is not found.
+    ///
+    /// This enables "message-driven agent spawning": when an agent sends a message
+    /// to a profile name (e.g., "claude-code") that isn't running, the system
+    /// automatically spawns that agent from the profile registry and delivers the message.
+    ///
+    /// Returns Some(agent_id) if successfully spawned, None otherwise.
+    async fn try_auto_spawn_agent(
+        &self,
+        runtime: &AgentRuntime,
+        target: &str,
+        sender_runtime_id: &str,
+    ) -> Option<String> {
+        // Check if target is a profile name
+        let profile = match crate::services::profile_service::get_profile_by_name(target).await {
+            Ok(Some(p)) => p,
+            Ok(None) => return None, // Not a profile, let it fail normally
+            Err(e) => {
+                warn!(error = %e, target = target, "Failed to look up profile for auto-spawn");
+                return None;
+            }
+        };
+
+        // Get sender's workspace to spawn in the same workspace
+        let sender_info = runtime.get_agent(sender_runtime_id).await?;
+        let workspace_id = sender_info.workspace_id.clone();
+        let work_dir = sender_info
+            .handle
+            .workspace
+            .metadata
+            .get("work_dir")
+            .cloned()
+            .unwrap_or_else(default_work_dir);
+
+        // Build WorkspaceSpec
+        let spec = ergatai_runtime::types::WorkspaceSpec {
+            id: workspace_id.clone(),
+            work_dir: std::path::PathBuf::from(&work_dir),
+            env: std::collections::HashMap::new(),
+            resources: Default::default(),
+            capture_thoughts: false,
+        };
+
+        // Launch the agent
+        info!(
+            target = target,
+            profile_name = %profile.name,
+            workspace = %workspace_id,
+            "Auto-spawning agent from profile (message-driven)"
+        );
+
+        match runtime
+            .launch_agent(
+                spec,
+                &profile.command,
+                None, // No initial instruction — the message itself is the instruction
+                Some(&profile.name),
+            )
+            .await
+        {
+            Ok(agent_id) => {
+                info!(
+                    agent_id = %agent_id,
+                    profile = %profile.name,
+                    "Agent auto-spawned successfully"
+                );
+                Some(agent_id)
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    target = target,
+                    "Failed to auto-spawn agent from profile"
+                );
+                None
+            }
+        }
+    }
+
+    /// Try to auto-spawn an agent from a profile when the SENDER is not found.
+    ///
+    /// This is similar to `try_auto_spawn_agent` but for the sender side.
+    /// Uses a default workspace since the sender doesn't need workspace context.
+    ///
+    /// Returns Some(agent_id) if successfully spawned, None otherwise.
+    async fn try_auto_spawn_agent_standalone(
+        &self,
+        runtime: &AgentRuntime,
+        agent_name: &str,
+    ) -> Option<String> {
+        let agents = runtime.list_agents().await;
+        if let Some(existing_agent) = agents
+            .iter()
+            .filter(|agent| {
+                agent.lifecycle.is_alive()
+                    && agent
+                        .profile
+                        .as_deref()
+                        .is_some_and(|profile| profile.eq_ignore_ascii_case(agent_name))
+            })
+            .max_by_key(|agent| agent.created_at)
+            .map(|agent| agent.agent_id.clone())
+        {
+            info!(
+                agent = %agent_name,
+                agent_id = %existing_agent,
+                "Resolved sender agent by running profile"
+            );
+            return Some(existing_agent);
+        }
+
+        // Check if agent_name is a profile name
+        let profile = match crate::services::profile_service::get_profile_by_name(agent_name).await
+        {
+            Ok(Some(p)) => p,
+            Ok(None) => return None, // Not a profile, let it fail normally
+            Err(e) => {
+                warn!(error = %e, agent = %agent_name, "Failed to look up profile for sender auto-spawn");
+                return None;
+            }
+        };
+
+        // Use a default workspace for sender auto-spawn
+        // The sender will be spawned in a default workspace with default work_dir
+        let workspace_id = format!("auto-{}", uuid::Uuid::new_v4());
+        let work_dir = default_work_dir();
+
+        // Build WorkspaceSpec
+        let spec = ergatai_runtime::types::WorkspaceSpec {
+            id: workspace_id.clone(),
+            work_dir: std::path::PathBuf::from(&work_dir),
+            env: std::collections::HashMap::new(),
+            resources: Default::default(),
+            capture_thoughts: false,
+        };
+
+        // Launch the agent
+        info!(
+            agent = %agent_name,
+            profile_name = %profile.name,
+            workspace = %workspace_id,
+            "Auto-spawning sender agent from profile"
+        );
+
+        match runtime
+            .launch_agent(
+                spec,
+                &profile.command,
+                None, // No initial instruction
+                Some(&profile.name),
+            )
+            .await
+        {
+            Ok(agent_id) => {
+                info!(
+                    agent_id = %agent_id,
+                    profile = %profile.name,
+                    "Sender agent auto-spawned successfully"
+                );
+                Some(agent_id)
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    agent = %agent_name,
+                    "Failed to auto-spawn sender agent from profile"
+                );
+                None
+            }
+        }
     }
 
     /// Get display name for sender (for message formatting).
@@ -538,14 +879,14 @@ impl MessageSender {
     /// ## Unused parameters
     ///
     /// `correlation_id` and `timeout_ms` are retained for future extensibility
-    /// but currently unused. They may be injected into the PTY JSON payload in
+    /// but currently unused. They may be injected into the message payload in
     /// a future version if agents need to see these values for request/response
     /// correlation or timeout awareness.
     ///
     /// ## message_type effects
     ///
     /// Each `message_type` injects different behavioral instructions into the
-    /// PTY JSON payload, matching the expected agent response pattern:
+    /// message payload, matching the expected agent response pattern:
     ///
     /// | message_type  | `_reply` | `_rules` focus                              |
     /// |---------------|----------|---------------------------------------------|
@@ -566,7 +907,7 @@ impl MessageSender {
         timeout_ms: Option<u64>,
     ) -> String {
         // Note: correlation_id and timeout_ms params kept for API compatibility
-        // but intentionally not used in PTY JSON output
+        // but intentionally not used in message output
         let _ = (correlation_id, timeout_ms);
 
         // Build type-specific instructions.
@@ -651,7 +992,7 @@ pub fn get_message_sender() -> Option<&'static MessageSender> {
 /// `correlation_id`, record it so that when `to_agent` sends a response,
 /// the system can auto-fill the correlation_id (implicit tracking).
 ///
-/// Called from `message_delivery.rs` after successful PTY injection.
+/// Called from `message_delivery.rs` after successful message delivery.
 /// Supports multiple concurrent requests by appending to a Vec (FIFO order).
 /// Maximum pending correlation IDs tracked per agent.
 ///
@@ -660,16 +1001,21 @@ pub fn get_message_sender() -> Option<&'static MessageSender> {
 /// usage in long-running sessions with unresponsive agents.
 const MAX_PENDING_PER_AGENT: usize = 100;
 
-pub async fn record_pending_response(to_agent: &str, correlation_id: &str) {
+pub async fn record_pending_response(
+    to_agent: &str,
+    correlation_id: &str,
+    conversation_id: Option<&str>,
+) {
     if let Some(sender) = get_message_sender() {
-        let mut pending = sender.pending_responses.lock().await;
-        let vec = pending.entry(to_agent.to_string()).or_insert_with(Vec::new);
-        // Bound the Vec to prevent unbounded growth when the target agent
-        // never responds. Drop oldest entries (FIFO) to stay under the cap.
-        while vec.len() >= MAX_PENDING_PER_AGENT {
-            vec.remove(0);
-        }
-        vec.push(correlation_id.to_string());
+        sender
+            .store_pending_response(
+                to_agent,
+                PendingResponseContext {
+                    correlation_id: correlation_id.to_string(),
+                    conversation_id: conversation_id.map(str::to_string),
+                },
+            )
+            .await;
     }
 }
 
@@ -680,5 +1026,52 @@ pub async fn clear_pending_response(from_agent: &str) {
     if let Some(sender) = get_message_sender() {
         let mut pending = sender.pending_responses.lock().await;
         pending.remove(from_agent);
+    }
+}
+
+#[cfg(test)]
+mod pending_response_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn pending_response_context_is_taken_by_correlation_then_fifo() {
+        let sender = MessageSender::new(
+            Arc::new(ConversationManager::new(ConversationConfig::default())),
+            Arc::new(ergatai_core::agent_registry::AgentRegistry::new()),
+            Arc::new(RequestMonitor::new()),
+        );
+        sender
+            .store_pending_response(
+                "agent-2",
+                PendingResponseContext {
+                    correlation_id: "corr-1".to_string(),
+                    conversation_id: Some("conversation-1".to_string()),
+                },
+            )
+            .await;
+        sender
+            .store_pending_response(
+                "agent-2",
+                PendingResponseContext {
+                    correlation_id: "corr-2".to_string(),
+                    conversation_id: Some("conversation-2".to_string()),
+                },
+            )
+            .await;
+
+        let matched = sender
+            .take_pending_response("agent-2", Some("corr-2"))
+            .await
+            .expect("matched context");
+        assert_eq!(matched.conversation_id.as_deref(), Some("conversation-2"));
+
+        let oldest = sender.take_pending_response("agent-2", None).await.unwrap();
+        assert_eq!(oldest.correlation_id, "corr-1");
+        assert_eq!(oldest.conversation_id.as_deref(), Some("conversation-1"));
+
+        assert!(sender
+            .take_pending_response("agent-2", None)
+            .await
+            .is_none());
     }
 }

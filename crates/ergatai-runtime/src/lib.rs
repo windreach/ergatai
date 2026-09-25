@@ -26,7 +26,9 @@
 //!     capture_thoughts: false,
 //! };
 //!
-//! let agent_id = runtime.launch_agent(spec, "claude", Some("Read CLAUDE.md")).await?;
+//! let agent_id = runtime
+//!     .launch_agent(spec, "claude", Some("Read CLAUDE.md"), None)
+//!     .await?;
 //! # Ok(())
 //! # }
 //! ```

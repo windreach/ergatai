@@ -196,6 +196,15 @@ impl RequestMonitor {
         }
 
         if !timed_out.is_empty() {
+            for request in &timed_out {
+                warn!(
+                    correlation_id = %request.correlation_id,
+                    from = %request.from_agent,
+                    to = %request.to_agent,
+                    timeout_ms = request.timeout_ms,
+                    "Request timed out without response"
+                );
+            }
             warn!(count = timed_out.len(), "Found timed-out requests");
         }
 

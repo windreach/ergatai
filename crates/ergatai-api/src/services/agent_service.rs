@@ -496,6 +496,10 @@ pub struct AgentListFilter {
     pub status: Option<String>,
     /// Skip these agent IDs from the result. Used by MCP to exclude the caller.
     pub exclude_agent_ids: HashSet<String>,
+    /// Calling agent ID, used to derive its runtime registry scope.
+    pub caller_agent_id: Option<String>,
+    /// Calling agent workspace, used when the caller is unavailable.
+    pub caller_workspace_id: Option<String>,
 }
 
 /// A single agent entry returned by [`list_agents_filtered`].
@@ -525,6 +529,8 @@ pub struct AgentListItem {
     pub capabilities: Vec<String>,
     /// When the lifecycle state last changed.
     pub state_changed_at: String,
+    /// Where this entry came from: the live runtime registry.
+    pub source: String,
     /// State transition history (audit trail).
     pub state_history: Vec<ergatai_runtime::agent_record::StateTransition>,
 }
@@ -560,7 +566,36 @@ pub async fn list_agents_filtered(filter: AgentListFilter) -> Vec<AgentListItem>
 
     let status_filter: Option<String> = filter.status.map(|s| s.to_lowercase());
 
-    runtime_agents
+    let caller_info = if let Some(ref caller_agent_id) = filter.caller_agent_id {
+        match resolve_to_runtime_id(caller_agent_id).await {
+            Some(runtime_id) => get_agent_info(&runtime_id).await,
+            None => None,
+        }
+    } else {
+        None
+    };
+    let dag_query = filter.in_dag.is_some();
+    let workspace_id = if dag_query {
+        None
+    } else {
+        filter
+            .caller_workspace_id
+            .clone()
+            .or_else(|| caller_info.as_ref().map(|info| info.workspace_id.clone()))
+    };
+    let chat_id = if dag_query {
+        None
+    } else {
+        caller_info.as_ref().and_then(|info| {
+            info.handle
+                .workspace
+                .metadata
+                .get("ergatai_chat_id")
+                .cloned()
+        })
+    };
+
+    let items = runtime_agents
         .into_iter()
         .filter(|info| {
             // Skip excluded IDs (e.g., the calling MCP agent).
@@ -573,6 +608,22 @@ pub async fn list_agents_filtered(filter: AgentListFilter) -> Vec<AgentListItem>
                 .is_some_and(|mcp_id| filter.exclude_agent_ids.contains(mcp_id))
             {
                 return false;
+            }
+            if let Some(ref expected_workspace_id) = workspace_id {
+                if &info.workspace_id != expected_workspace_id {
+                    return false;
+                }
+            }
+            if let Some(expected_chat_id) = &chat_id {
+                if info
+                    .handle
+                    .workspace
+                    .metadata
+                    .get("ergatai_chat_id")
+                    != Some(expected_chat_id)
+                {
+                    return false;
+                }
             }
             // Apply in_dag filter.
             if let Some(ref participants) = dag_participants {
@@ -620,9 +671,12 @@ pub async fn list_agents_filtered(filter: AgentListFilter) -> Vec<AgentListItem>
                 capabilities: a.capabilities,
                 state_changed_at: a.state_changed_at.to_rfc3339(),
                 state_history: a.state_history,
+                source: "runtime".to_string(),
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    items
 }
 
 // ── Agent ID resolution (used by MCP server.rs) ──

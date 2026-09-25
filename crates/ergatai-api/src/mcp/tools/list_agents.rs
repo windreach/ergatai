@@ -1,4 +1,10 @@
-//! `list_agents` MCP tool — discover online agents.
+//! `list_agents` MCP tool — discover all available agents (running + configured).
+//!
+//! This tool returns a unified list of:
+//! 1. Running agents (from runtime registry) — can receive messages immediately
+//! 2. Configured profiles (from profile registry) — will be auto-spawned when messaged
+//!
+//! The `status` field indicates which category each agent belongs to.
 
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -16,7 +22,7 @@ pub(crate) async fn handle(
     let _include_capabilities = params.0.include_capabilities.unwrap_or(false);
     let filter = params.0.filter;
 
-    // Get the calling agent's ID to mark is_self.
+    // Get the calling agent's ID to exclude self from the listing.
     let my_agent_id = server.session_agent_id().read().await.clone();
 
     // Resolve caller's runtime ID so we can exclude self from the listing.
@@ -25,7 +31,7 @@ pub(crate) async fn handle(
         None => None,
     };
 
-    // Build the shared filter.
+    // Build the shared filter for running agents.
     let mut exclude = std::collections::HashSet::new();
     if let Some(ref id) = my_agent_id {
         exclude.insert(id.clone());
@@ -37,75 +43,111 @@ pub(crate) async fn handle(
         in_dag: filter.as_ref().and_then(|f| f.in_dag.clone()),
         status: filter.as_ref().and_then(|f| f.status.clone()),
         exclude_agent_ids: exclude,
+        caller_agent_id: my_runtime_id.clone(),
+        caller_workspace_id: match my_runtime_id.as_ref() {
+            Some(id) => crate::services::agent_service::get_agent_info(id)
+                .await
+                .map(|info| info.workspace_id),
+            None => None,
+        },
     };
 
-    let items = crate::services::agent_service::list_agents_filtered(svc_filter).await;
+    // Get running agents
+    let running_agents = crate::services::agent_service::list_agents_filtered(svc_filter).await;
 
-    let agents_json: Vec<serde_json::Value> = items
+    // Get configured profiles
+    let profiles =
+        crate::services::profile_service::list_profiles_with_status().unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to fetch agent profiles");
+            Vec::new()
+        });
+
+    // Build set of profile names that are already running (to avoid duplicates)
+    let running_profile_names: std::collections::HashSet<String> = running_agents
+        .iter()
+        .filter_map(|info| info.profile.clone())
+        .collect();
+
+    // Map running agents to JSON
+    let mut agents_json: Vec<serde_json::Value> = running_agents
         .into_iter()
         .map(|info| {
-            // Determine health status based on ACP connection and process liveness
             let health = if info.is_alive {
                 "healthy"
             } else {
                 "unhealthy"
             };
-
-            // Determine availability based on liveness and processing state
-            let availability = if !info.is_alive {
-                "unavailable"
-            } else if info.is_processing {
+            let availability = if info.is_alive && !info.is_processing {
+                if info.is_idle {
+                    "available"
+                } else {
+                    "idle"
+                }
+            } else if info.is_alive {
                 "busy"
-            } else if info.is_idle {
-                "available"
             } else {
-                "idle"
+                "not_running"
             };
-
-            // Direct boolean for convenience
             let can_receive_messages = info.is_alive && !info.is_processing;
 
             serde_json::json!({
-                "agent_id": info.agent_id,
-                "agent_uuid": info.agent_uuid,
-                "mcp_agent_id": info.mcp_agent_id,
-                "workspace_id": info.workspace_id,
-                // Lifecycle state (lowercase) from unified state machine
+                "name": info.profile.clone().unwrap_or_else(|| info.agent_id.clone()),
+                "status": "running",
                 "state": info.state,
                 "lifecycle_state": info.state,
                 "task_id": info.task_id,
-                // New semantic fields
                 "health": health,
                 "availability": availability,
                 "can_receive_messages": can_receive_messages,
-                // Legacy fields for backward compatibility
                 "is_alive": info.is_alive,
                 "is_idle": info.is_idle,
                 "is_processing": info.is_processing,
-                "status": if info.mcp_agent_id.is_some() { "active" } else { "discovered" },
-                // ID Unification: prefer MCP URL path name (e.g., "agent-1") when
-                // the agent is MCP-bound, so it matches the `from` field in messages
-                // and the `target_agent_id` agents use in send_message.
-                // Fall back to workspace ID (e.g., "start-opencode-3-agent-1") for
-                // agents not yet bound to an MCP connection.
-                "ergatai_agent_id": info.mcp_agent_id,
+                "source": info.source,
+                "ergatai_agent_id": info.mcp_agent_id.or(Some(info.agent_id.clone())),
                 "last_heartbeat": info.last_heartbeat,
+                "installed": true,
             })
         })
         .collect();
 
+    // Add configured profiles that are NOT already running
+    for profile in profiles {
+        // Skip if this profile is already running (avoid duplicates)
+        if running_profile_names.contains(&profile.name) {
+            continue;
+        }
+
+        agents_json.push(serde_json::json!({
+            "name": profile.name,
+            "status": "configured",
+            "state": "configured",
+            "lifecycle_state": "configured",
+            "task_id": null,
+            "health": "not_running",
+            "availability": "not_running",
+            "can_receive_messages": false,
+            "is_alive": false,
+            "is_idle": false,
+            "is_processing": false,
+            "source": "profile",
+            "ergatai_agent_id": profile.name,  // Use profile name as the target for send_message
+            "last_heartbeat": null,
+            "installed": profile.installed,
+            "command": profile.command,
+        }));
+    }
+
     let filter_applied = filter.as_ref().is_some_and(|f| {
         f.can_communicate_with.is_some() || f.in_dag.is_some() || f.status.is_some()
     });
+
     let result = serde_json::json!({
         "agents": agents_json,
         "total": agents_json.len(),
+        "running_count": agents_json.iter().filter(|a| a["status"] == "running").count(),
+        "configured_count": agents_json.iter().filter(|a| a["status"] == "configured").count(),
         "filter_applied": filter_applied,
-        "note": if filter_applied {
-            "User-supplied filter applied."
-        } else {
-            "All online agents are listed."
-        }
+        "note": "Agents with status='running' can receive messages immediately. Agents with status='configured' will be auto-spawned when you send them a message."
     });
 
     Ok(CallToolResult::success(vec![ContentBlock::text(

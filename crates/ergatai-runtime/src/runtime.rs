@@ -121,6 +121,21 @@ impl AgentRuntime {
         spec: WorkspaceSpec,
         command: &str,
         instruction: Option<&str>,
+        profile_name: Option<&str>,
+    ) -> ErgataiResult<String> {
+        self.launch_agent_scoped(spec, command, instruction, None, profile_name)
+            .await
+    }
+
+    /// Launch an agent bound to a chat scope. `chat_id` is runtime registry
+    /// isolation metadata and is independent of the global launch-profile pool.
+    pub async fn launch_agent_scoped(
+        &self,
+        spec: WorkspaceSpec,
+        command: &str,
+        instruction: Option<&str>,
+        chat_id: Option<&str>,
+        profile_name: Option<&str>,
     ) -> ErgataiResult<String> {
         // Check if workspace already exists (e.g., created by CLI POST /api/v1/workspaces).
         // Avoid calling create_workspace again to prevent duplicate workspace entries.
@@ -153,6 +168,11 @@ impl AgentRuntime {
         workspace_with_id
             .metadata
             .insert("precomputed_agent_id".to_string(), agent_id.clone());
+        if let Some(chat_id) = chat_id {
+            workspace_with_id
+                .metadata
+                .insert("ergatai_chat_id".to_string(), chat_id.to_string());
+        }
 
         let handle = self
             .backend
@@ -186,7 +206,7 @@ impl AgentRuntime {
             created_at: now,
             mcp_agent_id: Some(mcp_agent_id.clone()),
             last_heartbeat: now,
-            profile: Some(command.to_string()),
+            profile: profile_name.map(|s| s.to_string()),
             capabilities: Vec::new(),
             state_changed_at: now,
             state_history: Vec::new(),
@@ -959,7 +979,18 @@ impl AgentRuntime {
         }
 
         // MCP ID lookup
-        guard.resolve_mcp_id(agent_id).map(|s| s.to_string())
+        guard
+            .resolve_mcp_id(agent_id)
+            .map(|s| s.to_string())
+            .or_else(|| {
+                // Launcher-created agents use their DAG agent ID as the MCP URL
+                // identity. Match task_id exactly so each session is bound to the
+                // runtime agent that owns that ID, rather than relying on FIFO.
+                guard
+                    .values()
+                    .find(|info| info.task_id.as_deref() == Some(agent_id))
+                    .map(|info| info.agent_id.clone())
+            })
     }
 
     /// Resolve any agent identifier to the stable `ergatai_agent_id` (e.g., "agent-1").
@@ -1649,7 +1680,7 @@ mod tests {
     async fn test_launch_agent() {
         let runtime = make_runtime();
         let spec = make_spec("ws-1");
-        let agent_id = runtime.launch_agent(spec, "cmd", None).await.unwrap();
+        let agent_id = runtime.launch_agent(spec, "cmd", None, None).await.unwrap();
         assert_eq!(agent_id, "agent-ws-1");
     }
 
@@ -1657,7 +1688,7 @@ mod tests {
     async fn test_launch_agent_registers() {
         let runtime = make_runtime();
         runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None)
             .await
             .unwrap();
         let info = runtime.get_agent("agent-ws-1").await;
@@ -1675,11 +1706,11 @@ mod tests {
     async fn test_launch_multiple_agents() {
         let runtime = make_runtime();
         runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None)
             .await
             .unwrap();
         runtime
-            .launch_agent(make_spec("ws-2"), "cmd", None)
+            .launch_agent(make_spec("ws-2"), "cmd", None, None)
             .await
             .unwrap();
         let agents = runtime.list_agents().await;
@@ -1704,7 +1735,7 @@ mod tests {
     async fn test_stop_agent() {
         let runtime = make_runtime();
         let agent_id = runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None)
             .await
             .unwrap();
         runtime.stop_agent(&agent_id).await.unwrap();
@@ -1723,7 +1754,7 @@ mod tests {
     async fn test_inject_message_success() {
         let runtime = make_runtime();
         let agent_id = runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None)
             .await
             .unwrap();
         runtime.inject_message(&agent_id, "hello").await.unwrap();
@@ -1743,7 +1774,7 @@ mod tests {
         let backend = Arc::new(MockBackend::with_inject_fail());
         let runtime = AgentRuntime::new(backend);
         let agent_id = runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None)
             .await
             .unwrap();
         // No MCP integration set → error
@@ -1755,7 +1786,7 @@ mod tests {
     async fn test_set_task_id() {
         let runtime = make_runtime();
         let agent_id = runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None)
             .await
             .unwrap();
         runtime
@@ -1779,7 +1810,7 @@ mod tests {
     async fn test_set_agent_lifecycle() {
         let runtime = make_runtime();
         let agent_id = runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None)
             .await
             .unwrap();
         let now = chrono::Utc::now();
@@ -1821,7 +1852,7 @@ mod tests {
     async fn test_capture_output() {
         let runtime = make_runtime();
         let agent_id = runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None)
             .await
             .unwrap();
         let output = runtime.capture_output(&agent_id).await.unwrap();
@@ -1839,7 +1870,7 @@ mod tests {
     async fn test_wait_for_exit() {
         let runtime = make_runtime();
         let agent_id = runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None)
             .await
             .unwrap();
         let result = runtime.wait_for_exit(&agent_id, None).await.unwrap();
@@ -1860,11 +1891,11 @@ mod tests {
     async fn test_shutdown_stops_all() {
         let runtime = make_runtime();
         runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None)
             .await
             .unwrap();
         runtime
-            .launch_agent(make_spec("ws-2"), "cmd", None)
+            .launch_agent(make_spec("ws-2"), "cmd", None, None)
             .await
             .unwrap();
         runtime.shutdown().await.unwrap();
@@ -1878,7 +1909,7 @@ mod tests {
         let backend = Arc::new(MockBackend::with_inject_fail());
         let runtime = AgentRuntime::new(backend);
         let agent_id = runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None)
             .await
             .unwrap();
 
@@ -1892,7 +1923,7 @@ mod tests {
         // (health check not yet implemented).
         let runtime = make_runtime();
         runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None)
             .await
             .unwrap();
         // Should not panic; agent remains in registry since health check is unsupported.
@@ -2015,7 +2046,7 @@ mod tests {
         let runtime = make_runtime();
         // Launch agent without ergatai_agent_id in metadata
         runtime
-            .launch_agent(make_spec("ws-nostable"), "cmd", None)
+            .launch_agent(make_spec("ws-nostable"), "cmd", None, None)
             .await
             .unwrap();
 

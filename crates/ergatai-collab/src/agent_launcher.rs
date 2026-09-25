@@ -1016,7 +1016,9 @@ identifiers, configuration values, etc.).
         // 3b. Generate MCP config so the agent can connect to ergatai's MCP server.
         //     This gives the agent access to tools like `submit_orchestration`, `check_dag_status`, etc.
         let api_port = std::env::var("ERGATAI_API_PORT").unwrap_or_else(|_| "3000".to_string());
-        let mcp_url = format!("http://127.0.0.1:{}/mcp", api_port);
+        let encoded_agent_id =
+            percent_encoding::utf8_percent_encode(agent_id, percent_encoding::NON_ALPHANUMERIC);
+        let mcp_url = format!("http://127.0.0.1:{}/mcp/{}", api_port, encoded_agent_id);
         let mcp_config = serde_json::json!({
             "mcpServers": {
                 "ergatai": {
@@ -1053,7 +1055,7 @@ identifiers, configuration values, etc.).
 
         // 4. Launch agent via runtime (creates workspace + starts process)
         let runtime_agent_id = runtime
-            .launch_agent(spec, &agent_command, Some(instruction))
+            .launch_agent(spec, &agent_command, Some(instruction), Some(agent_name))
             .await
             .map_err(|e| {
                 ergatai_error::ErgataiError::AgentSpawnFailed(format!(

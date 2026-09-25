@@ -19,7 +19,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -36,7 +36,439 @@ use agent_client_protocol::schema::v1::{
     ToolCall as AcpToolCall, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::{AcpAgent, Agent, ByteStreams, Client, ConnectionTo};
+use agent_client_protocol::{
+    AcpAgent, Agent, ByteStreams, Client, ConnectionTo, JsonRpcMessage, JsonRpcNotification,
+    UntypedMessage,
+};
+
+/// Extended session notification that supports both standard v1 events and extension events
+/// (such as subagent_spawned and subagent_state_update from Claude/Codex adapters).
+#[derive(Debug, Clone)]
+pub enum ExtendedSessionNotification {
+    /// Standard v1 session notification
+    Standard(Box<SessionNotification>),
+    /// Subagent spawned event (extension from Claude/Codex adapters)
+    SubagentSpawned(Box<SubagentSpawnedEvent>),
+    /// Subagent state update event (extension from Claude/Codex adapters)
+    SubagentStateUpdate(Box<SubagentStateUpdateEvent>),
+}
+
+/// Event emitted when a subagent is spawned by the parent agent.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentSpawnedEvent {
+    /// The session ID of the parent session
+    pub session_id: String,
+    /// The session ID of the spawned subagent
+    pub subagent_session_id: String,
+    /// Human-readable name of the subagent
+    pub name: String,
+    /// Task description for the subagent
+    pub task: String,
+    /// Optional capabilities
+    #[serde(default)]
+    pub capabilities: Option<serde_json::Value>,
+    /// Optional metadata
+    #[serde(default)]
+    pub meta: Option<serde_json::Value>,
+}
+
+/// Event emitted when a subagent's state changes.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentStateUpdateEvent {
+    /// The session ID of the parent session
+    pub session_id: String,
+    /// The session ID of the subagent
+    pub subagent_session_id: String,
+    /// New state: "completed", "failed", "cancelled", or "disconnected"
+    pub state: String,
+    /// Optional metadata
+    #[serde(default)]
+    pub meta: Option<serde_json::Value>,
+}
+
+impl JsonRpcMessage for ExtendedSessionNotification {
+    fn matches_method(method: &str) -> bool {
+        method == "session/update"
+    }
+
+    fn method(&self) -> &str {
+        "session/update"
+    }
+
+    fn to_untyped_message(&self) -> Result<UntypedMessage, agent_client_protocol::Error> {
+        match self {
+            ExtendedSessionNotification::Standard(notif) => notif.to_untyped_message(),
+            ExtendedSessionNotification::SubagentSpawned(event) => {
+                let params = serde_json::json!({
+                    "sessionId": event.session_id,
+                    "update": {
+                        "sessionUpdate": "subagent_spawned",
+                        "subagentSessionId": event.subagent_session_id,
+                        "name": event.name,
+                        "task": event.task,
+                        "capabilities": event.capabilities,
+                        "_meta": event.meta,
+                    }
+                });
+                UntypedMessage::new("session/update", params)
+            }
+            ExtendedSessionNotification::SubagentStateUpdate(event) => {
+                let params = serde_json::json!({
+                    "sessionId": event.session_id,
+                    "update": {
+                        "sessionUpdate": "subagent_state_update",
+                        "subagentSessionId": event.subagent_session_id,
+                        "state": event.state,
+                        "_meta": event.meta,
+                    }
+                });
+                UntypedMessage::new("session/update", params)
+            }
+        }
+    }
+
+    fn parse_message(
+        method: &str,
+        params: &impl serde::Serialize,
+    ) -> Result<Self, agent_client_protocol::Error> {
+        if !Self::matches_method(method) {
+            return Err(agent_client_protocol::Error::new(
+                -32602,
+                format!("ExtendedSessionNotification: method mismatch: {}", method),
+            ));
+        }
+
+        // Parse params as raw JSON value
+        let value = serde_json::to_value(params).map_err(|e| {
+            agent_client_protocol::Error::new(-32700, format!("Failed to serialize params: {}", e))
+        })?;
+
+        // Extract the update.sessionUpdate field to determine the event type
+        let session_update_type = value
+            .get("update")
+            .and_then(|u| u.get("sessionUpdate"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+
+        match session_update_type {
+            "subagent_spawned" => {
+                let session_id = value
+                    .get("sessionId")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let update = value.get("update").ok_or_else(|| {
+                    agent_client_protocol::Error::new(-32602, "Missing 'update' field")
+                })?;
+
+                let subagent_session_id = update
+                    .get("subagentSessionId")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let name = update
+                    .get("name")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let task = update
+                    .get("task")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let capabilities = update.get("capabilities").cloned();
+                let meta = update.get("_meta").cloned();
+
+                Ok(ExtendedSessionNotification::SubagentSpawned(
+                    Box::new(SubagentSpawnedEvent {
+                        session_id,
+                        subagent_session_id,
+                        name,
+                        task,
+                        capabilities,
+                        meta,
+                    }),
+                ))
+            }
+            "subagent_state_update" => {
+                let session_id = value
+                    .get("sessionId")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let update = value.get("update").ok_or_else(|| {
+                    agent_client_protocol::Error::new(-32602, "Missing 'update' field")
+                })?;
+
+                let subagent_session_id = update
+                    .get("subagentSessionId")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let state = update
+                    .get("state")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let meta = update.get("_meta").cloned();
+
+                Ok(ExtendedSessionNotification::SubagentStateUpdate(
+                    Box::new(SubagentStateUpdateEvent {
+                        session_id,
+                        subagent_session_id,
+                        state,
+                        meta,
+                    }),
+                ))
+            }
+            _ => {
+                // Try to parse as standard v1 SessionNotification
+                let standard: SessionNotification = serde_json::from_value(value).map_err(|e| {
+                    agent_client_protocol::Error::new(
+                        -32602,
+                        format!("Failed to parse as SessionNotification: {}", e),
+                    )
+                })?;
+                Ok(ExtendedSessionNotification::Standard(Box::new(standard)))
+            }
+        }
+    }
+}
+
+impl JsonRpcNotification for ExtendedSessionNotification {}
+
+/// Helper function to handle standard v1 session notifications.
+/// This contains the original session notification handling logic extracted from the main handler.
+#[allow(clippy::too_many_arguments)]
+async fn handle_standard_session_notification(
+    notification: SessionNotification,
+    out: &OutputBuffer,
+    thoughts: &OutputBuffer,
+    tool_calls: &Arc<ToolCallTracker>,
+    usage: &Arc<UsageTracker>,
+    capture_thoughts: bool,
+    _last_out: &parking_lot::RwLock<Instant>,
+    output_tx: &broadcast::Sender<AgentOutputEvent>,
+    agent_id: &str,
+    session_id: &parking_lot::RwLock<Option<String>>,
+    _workspace_id: &str,
+    plan_state: &RwLock<Option<TrackedPlan>>,
+    text_output_seen: &AtomicBool,
+    session_title: &RwLock<Option<String>>,
+    title_no_change_count: &AtomicUsize,
+    config_opts: &RwLock<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>,
+    available_cmds: &RwLock<Vec<agent_client_protocol::schema::v1::AvailableCommand>>,
+) {
+    match &notification.update {
+        SessionUpdate::AgentMessageChunk(chunk) => {
+            if let Some(text) = extract_text_from_chunk(chunk) {
+                if !text_output_seen.swap(true, Ordering::Relaxed) {
+                    info!(
+                        agent_id = %agent_id,
+                        text_len = text.len(),
+                        "ACP agent text output started"
+                    );
+                } else {
+                    debug!(text_len = text.len(), "ACP agent message chunk");
+                }
+                out.append(text.as_bytes());
+                let _ = output_tx.send(AgentOutputEvent::Text { delta: text });
+            }
+        }
+        SessionUpdate::AgentThoughtChunk(chunk) => {
+            if let Some(text) = extract_text_from_chunk(chunk) {
+                debug!(text_len = text.len(), "ACP agent thought chunk");
+                if capture_thoughts {
+                    thoughts.append(format!("[thinking] {}\n", text).as_bytes());
+                }
+                let _ = output_tx.send(AgentOutputEvent::Thinking { delta: text });
+            }
+        }
+        SessionUpdate::UsageUpdate(usage_update) => {
+            debug!(
+                used = usage_update.used,
+                size = usage_update.size,
+                "ACP usage update"
+            );
+            usage.record(usage_update.used as usize, usage_update.size as usize);
+        }
+        SessionUpdate::ToolCall(tc) => {
+            debug!(
+                id = %tc.tool_call_id,
+                title = %tc.title,
+                kind = ?tc.kind,
+                "ACP tool call started"
+            );
+
+            // Renew locks for write operations
+            if matches!(tc.kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move) {
+                if let Some(workspace_id) = agent_id.rfind("-agent-").map(|pos| &agent_id[..pos]) {
+                    if let Ok(lock_mgr) = ergatai_lock::get_lock_manager(workspace_id).await {
+                        let session_id_str = session_id.read().clone().unwrap_or_default();
+                        match lock_mgr.renew_lock_on_tool_start(agent_id, &session_id_str) {
+                            Ok(true) => {
+                                debug!(agent_id = %agent_id, workspace_id = %workspace_id, "Renewed locks on tool start");
+                            }
+                            Ok(false) => {
+                                debug!(agent_id = %agent_id, "No active locks to renew on tool start");
+                            }
+                            Err(e) => {
+                                warn!(agent_id = %agent_id, error = %e, "Failed to renew locks on tool start");
+                            }
+                        }
+                    }
+                }
+            }
+
+            tool_calls.record_initial(tc);
+            let _ = output_tx.send(AgentOutputEvent::ToolCallStart {
+                id: tc.tool_call_id.to_string(),
+                name: tc.title.clone(),
+                input: tc.raw_input.clone(),
+                locations: tc.locations.clone(),
+            });
+        }
+        SessionUpdate::ToolCallUpdate(update) => {
+            debug!(
+                id = %update.tool_call_id,
+                status = ?update.fields.status,
+                title = ?update.fields.title,
+                locations = ?update.fields.locations,
+                raw_input = ?update.fields.raw_input,
+                "ACP tool call update"
+            );
+            let is_complete = matches!(update.fields.status, Some(ToolCallStatus::Completed));
+            let is_error = matches!(update.fields.status, Some(ToolCallStatus::Failed));
+            tool_calls.apply_update(update);
+
+            if is_complete || is_error {
+                let tracked = tool_calls.get_by_id(&update.tool_call_id.to_string());
+                let locations = tracked
+                    .as_ref()
+                    .map(|tc| tc.locations.clone())
+                    .unwrap_or_default();
+                let kind = tracked.as_ref().and_then(|tc| tc.kind);
+
+                if tracked.is_none() {
+                    warn!(tool_call_id = %update.tool_call_id, "Tool call completion/error event for untracked tool call");
+                }
+
+                let raw_input = tracked
+                    .as_ref()
+                    .and_then(|call| call.raw_input.clone())
+                    .or_else(|| update.fields.raw_input.clone());
+                let raw_output = tracked
+                    .as_ref()
+                    .and_then(|call| call.raw_output.clone())
+                    .or_else(|| update.fields.raw_output.clone());
+
+                // Release locks for write operations
+                if let Some(ref kind) = kind {
+                    if matches!(kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move) {
+                        if let Some(workspace_id) =
+                            agent_id.rfind("-agent-").map(|pos| &agent_id[..pos])
+                        {
+                            if let Ok(lock_mgr) = ergatai_lock::get_lock_manager(workspace_id).await
+                            {
+                                let session_id_str = session_id.read().clone().unwrap_or_default();
+                                for loc in &locations {
+                                    let path_str = loc.path.to_string_lossy().to_string();
+                                    match lock_mgr.release_lock_on_tool_complete(
+                                        &path_str,
+                                        agent_id,
+                                        &session_id_str,
+                                    ) {
+                                        Ok(true) => {
+                                            debug!(file_path = %path_str, agent_id = %agent_id, "Released lock on tool completion");
+                                        }
+                                        Ok(false) => {
+                                            debug!(file_path = %path_str, agent_id = %agent_id, "No active lock to release");
+                                        }
+                                        Err(e) => {
+                                            warn!(file_path = %path_str, agent_id = %agent_id, error = %e, "Failed to release lock");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if is_complete {
+                    let _ = output_tx.send(AgentOutputEvent::ToolCallComplete {
+                        id: update.tool_call_id.to_string(),
+                        name: update.fields.title.clone().unwrap_or_default(),
+                        input: raw_input,
+                        output: raw_output,
+                        locations,
+                    });
+                } else {
+                    let _ = output_tx.send(AgentOutputEvent::ToolCallError {
+                        id: update.tool_call_id.to_string(),
+                        error: update
+                            .fields
+                            .title
+                            .clone()
+                            .unwrap_or_else(|| "tool call failed".to_string()),
+                    });
+                }
+            }
+        }
+        SessionUpdate::Plan(acp_plan) => {
+            debug!(
+                agent_id = agent_id,
+                entries = acp_plan.entries.len(),
+                "ACP plan updated"
+            );
+            *plan_state.write() = Some(TrackedPlan::from_acp(acp_plan));
+        }
+        SessionUpdate::SessionInfoUpdate(info) => {
+            if let Some(new_title) = info.title.value() {
+                let mut title_lock = session_title.write();
+                if title_lock.as_deref() != Some(new_title.as_str()) {
+                    debug!(agent_id = agent_id, title = %new_title, "ACP session title updated");
+                    *title_lock = Some(new_title.clone());
+                    title_no_change_count.store(0, Ordering::Relaxed);
+                    let _ = output_tx.send(AgentOutputEvent::SessionTitleUpdate {
+                        title: new_title.clone(),
+                    });
+                } else {
+                    title_no_change_count.fetch_add(1, Ordering::Relaxed);
+                }
+            } else if info.title.is_null() {
+                let mut title_lock = session_title.write();
+                if title_lock.is_some() {
+                    debug!(agent_id = agent_id, "ACP session title cleared");
+                    *title_lock = None;
+                    title_no_change_count.store(0, Ordering::Relaxed);
+                }
+            }
+        }
+        SessionUpdate::ConfigOptionUpdate(update) => {
+            debug!(
+                agent_id = agent_id,
+                count = update.config_options.len(),
+                "ACP config options updated"
+            );
+            *config_opts.write() = update.config_options.clone();
+        }
+        SessionUpdate::AvailableCommandsUpdate(update) => {
+            debug!(
+                agent_id = agent_id,
+                count = update.available_commands.len(),
+                "ACP available commands updated"
+            );
+            *available_cmds.write() = update.available_commands.clone();
+        }
+        _ => {
+            debug!(update = ?notification.update, "ACP session notification (unhandled)");
+        }
+    }
+}
 
 use crate::mcp_over_acp::AcpMcpBridge;
 
@@ -256,6 +688,22 @@ pub enum AgentOutputEvent {
     ToolCallError { id: String, error: String },
     /// Session title updated by the agent.
     SessionTitleUpdate { title: String },
+    /// A subagent has been spawned by the parent agent.
+    SubagentSpawned {
+        /// Session ID of the spawned subagent
+        subagent_session_id: String,
+        /// Human-readable name of the subagent
+        name: String,
+        /// Task description for the subagent
+        task: String,
+    },
+    /// A subagent's state has changed.
+    SubagentStateUpdate {
+        /// Session ID of the subagent
+        subagent_session_id: String,
+        /// New state: "completed", "failed", "cancelled", or "disconnected"
+        state: String,
+    },
     /// Prompt completed.
     Done { stop_reason: String },
     /// An error occurred during prompt execution.
@@ -465,6 +913,11 @@ enum AcpCommand {
         message: String,
         images: Vec<crate::types::AgentImage>,
         response_tx: oneshot::Sender<ErgataiResult<()>>,
+    },
+    /// Queue a prompt without waiting for the agent turn to complete.
+    QueuePrompt {
+        message: String,
+        images: Vec<crate::types::AgentImage>,
     },
     /// Cancel the current prompt turn (sends `session/cancel` notification).
     Cancel {
@@ -1604,6 +2057,7 @@ impl AcpBackendInterface for AcpBackend {
         // Task-local counter for session title change optimization.
         // Not stored in AcpAgentEntry since it's only used within the connection task.
         let task_session_title_no_change_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let task_text_output_seen = Arc::new(AtomicBool::new(false));
         let task_stop_reason = stop_reason.clone();
         let task_continuation_count = continuation_count.clone();
         let task_config_options = config_options.clone();
@@ -1615,6 +2069,7 @@ impl AcpBackendInterface for AcpBackend {
         let task_exit_code = exit_code.clone();
         let task_agent_id = agent_id.clone();
         let task_agent_id_label = agent_id.clone();
+        let task_workspace_id = handle.id.clone();
         let task_dead_agents = self.dead_agents.clone();
         let task_permission_handler = self.permission_handler.clone();
         let task_shared_session_id = shared_session_id.clone();
@@ -1659,13 +2114,23 @@ impl AcpBackendInterface for AcpBackend {
         // Clone for the connection task — session_store is shared via Arc.
         let task_session_store = self.session_store.clone();
         let task_mcp_server_factory = self.mcp_server_factory.clone();
-        let task_http_mcp_url = self.http_mcp_url.clone();
         let task_command_for_save = command.to_string();
         let task_cwd_for_save = cwd.clone();
         // Separate clone for session save inside the connect_with closure.
         // We can't capture `task_agent_id` itself because it's needed after the closure exits.
         let task_agent_id_for_save = task_agent_id.clone();
         let connection_agent_id = task_agent_id.clone();
+        let task_http_mcp_url = self.http_mcp_url.as_ref().map(|base_url| {
+            let encoded_agent_id = percent_encoding::utf8_percent_encode(
+                &task_agent_id_label,
+                percent_encoding::NON_ALPHANUMERIC,
+            );
+            format!("{}/{}", base_url.trim_end_matches('/'), encoded_agent_id)
+        });
+        let task_mcp_server_context = crate::mcp_over_acp::McpServerContext {
+            agent_id: Some(task_agent_id_label.clone()),
+            workspace_id: Some(handle.id.clone()),
+        };
 
         // Note: We manually called spawn_process() above to get the PID for file lock attribution.
         // Now we use ByteStreams to establish the ACP connection with the spawned process.
@@ -1725,255 +2190,56 @@ impl AcpBackendInterface for AcpBackend {
                         // Clone for use in this closure (will also be used in on_receive_request)
                         let notify_agent_id = task_agent_id.clone();
                         let notify_session_id = task_shared_session_id.clone();
-                        async move |notification: SessionNotification, _cx| {
-                            // Extract text from session notifications and write to output buffer.
-                            match &notification.update {
-                                SessionUpdate::AgentMessageChunk(chunk) => {
-                                    if let Some(text) = extract_text_from_chunk(chunk) {
-                                        debug!(text_len = text.len(), "ACP agent message chunk");
-                                        out.append(text.as_bytes());
-                                        let _ = output_tx.send(AgentOutputEvent::Text { delta: text });
-                                    }
+                        let notify_workspace_id = task_workspace_id.clone();
+                        let notify_plan = task_plan.clone();
+                        let notify_text_output_seen = task_text_output_seen.clone();
+                        let notify_session_title = task_session_title.clone();
+                        let notify_title_no_change = task_session_title_no_change_count.clone();
+                        let notify_config_options = task_config_options.clone();
+                        let notify_available_commands = task_available_commands.clone();
+                        async move |notification: ExtendedSessionNotification, _cx| {
+                            // Handle extended session notifications (including subagent events)
+                            match notification {
+                                ExtendedSessionNotification::Standard(std_notif) => {
+                                    handle_standard_session_notification(
+                                        *std_notif, &out, &thoughts, &tool_calls, &usage,
+                                        capture_thoughts, &last_out, &output_tx,
+                                        &notify_agent_id, &notify_session_id, &notify_workspace_id,
+                                        &notify_plan, &notify_text_output_seen,
+                                        &notify_session_title, &notify_title_no_change,
+                                        &notify_config_options, &notify_available_commands,
+                                    ).await;
                                 }
-                                SessionUpdate::AgentThoughtChunk(chunk) => {
-                                    if let Some(text) = extract_text_from_chunk(chunk) {
-                                        debug!(text_len = text.len(), "ACP agent thought chunk");
-                                        if capture_thoughts {
-                                            thoughts.append(format!("[thinking] {}\n", text).as_bytes());
-                                        }
-                                        let _ = output_tx.send(AgentOutputEvent::Thinking { delta: text });
-                                    }
-                                }
-                                SessionUpdate::UsageUpdate(usage_update) => {
-                                    debug!(used = usage_update.used, size = usage_update.size, "ACP usage update");
-                                    usage.record(usage_update.used as usize, usage_update.size as usize);
-                                }
-                                SessionUpdate::ToolCall(tc) => {
-                                    debug!(
-                                        id = %tc.tool_call_id,
-                                        title = %tc.title,
-                                        kind = ?tc.kind,
-                                        "ACP tool call started"
+                                ExtendedSessionNotification::SubagentSpawned(event) => {
+                                    info!(
+                                        parent_session_id = %event.session_id,
+                                        subagent_session_id = %event.subagent_session_id,
+                                        name = %event.name,
+                                        task = %event.task,
+                                        "Subagent spawned by agent"
                                     );
-
-                                    // Renew locks for write operations
-                                    // This extends the TTL with increasing intervals:
-                                    // 1st: +15s, 2nd: +20s, 3rd: +30s, 4th+: +20s
-                                    if matches!(tc.kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move) {
-                                        if let Some(workspace_id) = notify_agent_id.rfind("-agent-").map(|pos| &notify_agent_id[..pos]) {
-                                                if let Ok(lock_mgr) = ergatai_lock::get_lock_manager(workspace_id).await {
-                                                    let session_id = notify_session_id.read().clone().unwrap_or_default();
-                                                    match lock_mgr.renew_lock_on_tool_start(&notify_agent_id, &session_id) {
-                                                        Ok(true) => {
-                                                            debug!(
-                                                                agent_id = %notify_agent_id,
-                                                                workspace_id = %workspace_id,
-                                                                "Renewed locks on tool start"
-                                                            );
-                                                        }
-                                                        Ok(false) => {
-                                                            debug!(
-                                                                agent_id = %notify_agent_id,
-                                                                "No active locks to renew on tool start"
-                                                            );
-                                                        }
-                                                        Err(e) => {
-                                                            warn!(
-                                                                agent_id = %notify_agent_id,
-                                                                error = %e,
-                                                                "Failed to renew locks on tool start"
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                    }
-
-                                    tool_calls.record_initial(tc);
-                                    let _ = output_tx.send(AgentOutputEvent::ToolCallStart {
-                                        id: tc.tool_call_id.to_string(),
-                                        name: tc.title.clone(),
-                                        input: tc.raw_input.clone(),
-                                        locations: tc.locations.clone(),
+                                    // Emit subagent event for upstream processing
+                                    let _ = output_tx.send(AgentOutputEvent::SubagentSpawned {
+                                        subagent_session_id: event.subagent_session_id.clone(),
+                                        name: event.name.clone(),
+                                        task: event.task.clone(),
                                     });
+                                    // TODO: Create subagent conversation in database
+                                    // This requires access to user_data_db which is in ergatai-api
+                                    // For now, we emit the event and let the API layer handle persistence
                                 }
-                                SessionUpdate::ToolCallUpdate(update) => {
-                                    debug!(
-                                        id = %update.tool_call_id,
-                                        status = ?update.fields.status,
-                                        title = ?update.fields.title,
-                                        locations = ?update.fields.locations,
-                                        raw_input = ?update.fields.raw_input,
-                                        "ACP tool call update"
+                                ExtendedSessionNotification::SubagentStateUpdate(event) => {
+                                    info!(
+                                        subagent_session_id = %event.subagent_session_id,
+                                        state = %event.state,
+                                        "Subagent state updated"
                                     );
-                                    let is_complete = matches!(
-                                        update.fields.status,
-                                        Some(ToolCallStatus::Completed)
-                                    );
-                                    let is_error = matches!(
-                                        update.fields.status,
-                                        Some(ToolCallStatus::Failed)
-                                    );
-                                    tool_calls.apply_update(update);
-                                    if is_complete || is_error {
-                                        // Retrieve the tracked tool call to get locations and kind
-                                        let tracked = tool_calls.get_by_id(&update.tool_call_id.to_string());
-
-                                        // Extract locations and kind from tracked call (if found)
-                                        let locations = tracked.as_ref().map(|tc| tc.locations.clone()).unwrap_or_default();
-                                        let kind = tracked.as_ref().and_then(|tc| tc.kind);
-
-                                        // Log warning if tracked call not found (indicates tracker eviction or bug)
-                                        if tracked.is_none() {
-                                            warn!(
-                                                tool_call_id = %update.tool_call_id,
-                                                "Tool call completion/error event for untracked tool call"
-                                            );
-                                        }
-                                        // Completion updates may omit raw_input/raw_output. The tracker
-                                        // retains the fields recorded on the initial ToolCall event.
-                                        let raw_input = tracked
-                                            .as_ref()
-                                            .and_then(|call| call.raw_input.clone())
-                                            .or_else(|| update.fields.raw_input.clone());
-                                        let raw_output = tracked
-                                            .as_ref()
-                                            .and_then(|call| call.raw_output.clone())
-                                            .or_else(|| update.fields.raw_output.clone());
-
-                                        // Release locks immediately after write operations complete
-                                        // This covers ~90% of cases (agents using Edit/Delete/Move tools)
-                                        // Remaining ~10% (bash commands) will rely on 15s TTL fallback
-                                        if let Some(ref kind) = kind {
-                                            if matches!(kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move) {
-                                                // Extract workspace_id from agent_id (format: {workspace_id}-agent-{counter})
-                                                if let Some(workspace_id) = notify_agent_id.rfind("-agent-").map(|pos| &notify_agent_id[..pos]) {
-                                                    // Get lock manager for this workspace
-                                                    if let Ok(lock_mgr) = ergatai_lock::get_lock_manager(workspace_id).await {
-                                                        // Get session_id (parking_lot RwLock, no .await needed)
-                                                        let session_id = notify_session_id.read().clone().unwrap_or_default();
-
-                                                        // Release locks for each location
-                                                        for loc in &locations {
-                                                            let path_str = loc.path.to_string_lossy().to_string();
-                                                            match lock_mgr.release_lock_on_tool_complete(&path_str, &notify_agent_id, &session_id) {
-                                                                Ok(true) => {
-                                                                    debug!(
-                                                                        file_path = %path_str,
-                                                                        agent_id = %notify_agent_id,
-                                                                        workspace_id = %workspace_id,
-                                                                        "Released lock immediately after tool completion"
-                                                                    );
-                                                                }
-                                                                Ok(false) => {
-                                                                    debug!(
-                                                                        file_path = %path_str,
-                                                                        agent_id = %notify_agent_id,
-                                                                        "No active lock to release on tool completion"
-                                                                    );
-                                                                }
-                                                                Err(e) => {
-                                                                    warn!(
-                                                                        file_path = %path_str,
-                                                                        agent_id = %notify_agent_id,
-                                                                        error = %e,
-                                                                        "Failed to release lock on tool completion"
-                                                                    );
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        // Always send completion/error events (even if tracked call not found)
-                                        if is_complete {
-                                            let _ = output_tx.send(AgentOutputEvent::ToolCallComplete {
-                                                id: update.tool_call_id.to_string(),
-                                                name: update.fields.title.clone().unwrap_or_default(),
-                                                input: raw_input,
-                                                output: raw_output,
-                                                locations,
-                                            });
-                                        } else {
-                                            let _ = output_tx.send(AgentOutputEvent::ToolCallError {
-                                                id: update.tool_call_id.to_string(),
-                                                error: update.fields.title.clone().unwrap_or_else(|| "tool call failed".to_string()),
-                                            });
-                                        }
-                                    }
-                                }
-                                SessionUpdate::Plan(acp_plan) => {
-                                    let entry_count = acp_plan.entries.len();
-                                    let completed = acp_plan
-                                        .entries
-                                        .iter()
-                                        .filter(|e| {
-                                            e.status
-                                                == agent_client_protocol::schema::v1::PlanEntryStatus::Completed
-                                        })
-                                        .count();
-                                    debug!(
-                                        entries = entry_count,
-                                        completed = completed,
-                                        "ACP plan update"
-                                    );
-                                    *task_plan.write() = Some(TrackedPlan::from_acp(acp_plan));
-                                }
-                                SessionUpdate::SessionInfoUpdate(info) => {
-                                    // Extract title if present (Value variant).
-                                    if let Some(title) = info.title.value() {
-                                        debug!(title = %title, "ACP session title updated");
-
-                                        // Check if title has changed
-                                        let current_title = task_session_title.read().clone();
-                                        let title_changed = current_title.as_ref() != Some(title);
-
-                                        if title_changed {
-                                            // Title changed: reset counter, update title, broadcast
-                                            debug!(old_title = ?current_title, new_title = %title, "Session title changed");
-                                            *task_session_title.write() = Some(title.clone());
-                                            task_session_title_no_change_count.store(0, std::sync::atomic::Ordering::SeqCst);
-
-                                            // Broadcast session title update event to SSE subscribers
-                                            let _ = output_tx.send(AgentOutputEvent::SessionTitleUpdate {
-                                                title: title.clone()
-                                            });
-                                        } else {
-                                            // Title unchanged: increment counter
-                                            let count = task_session_title_no_change_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-                                            debug!(count = count, "Session title unchanged");
-
-                                            // Check if we should stop broadcasting (after 3 consecutive no-changes)
-                                            if count >= 3 {
-                                                debug!("Session title stabilized, stopping broadcasts");
-                                            } else {
-                                                // Still broadcasting phase - send event even though title unchanged
-                                                // This helps frontend track the counting
-                                                let _ = output_tx.send(AgentOutputEvent::SessionTitleUpdate {
-                                                    title: title.clone()
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                                SessionUpdate::ConfigOptionUpdate(config_update) => {
-                                    debug!(
-                                        count = config_update.config_options.len(),
-                                        "ACP config options updated"
-                                    );
-                                    *task_config_options.write() = config_update.config_options.clone();
-                                }
-                                SessionUpdate::AvailableCommandsUpdate(cmds_update) => {
-                                    debug!(
-                                        count = cmds_update.available_commands.len(),
-                                        "ACP available commands updated"
-                                    );
-                                    *task_available_commands.write() = cmds_update.available_commands.clone();
-                                }
-                                _ => {
-                                    debug!(update = ?notification.update, "ACP session notification");
+                                    // Emit subagent state update for upstream processing
+                                    let _ = output_tx.send(AgentOutputEvent::SubagentStateUpdate {
+                                        subagent_session_id: event.subagent_session_id.clone(),
+                                        state: event.state.clone(),
+                                    });
+                                    // TODO: Update subagent conversation state in database
                                 }
                             }
                             *last_out.write() = Instant::now();
@@ -2143,7 +2409,10 @@ impl AcpBackendInterface for AcpBackend {
                         .http;
                     let (_mcp_guard, mcp_declaration) = match &task_mcp_server_factory {
                         Some(factory) if mcp_acp_supported => {
-                            let bridge = AcpMcpBridge::new(factory.clone());
+                            let bridge = AcpMcpBridge::new(
+                                factory.clone(),
+                                task_mcp_server_context.clone(),
+                            );
                             let declaration = bridge.declaration();
                             let guard = connection.add_dynamic_handler(bridge)?;
                             info!(
@@ -2252,11 +2521,16 @@ impl AcpBackendInterface for AcpBackend {
                     // Step 3: Command loop — receive prompts from the channel and send to agent.
                     loop {
                         match command_rx.recv().await {
-                            Some(AcpCommand::Prompt {
-                                message,
-                                images,
-                                response_tx,
-                            }) => {
+                            Some(AcpCommand::QueuePrompt { message, images }) => {
+                                task_text_output_seen.store(false, Ordering::Relaxed);
+                                let prompt_started_at = Instant::now();
+                                info!(
+                                    agent_id = %connection_agent_id,
+                                    session_id = %session_id,
+                                    message_bytes = message.len(),
+                                    image_count = images.len(),
+                                    "ACP queued prompt started"
+                                );
                                 let mut content = if message.is_empty() {
                                     Vec::new()
                                 } else {
@@ -2271,13 +2545,74 @@ impl AcpBackendInterface for AcpBackend {
                                 if content.is_empty() {
                                     content.push(ContentBlock::Text(TextContent::new(String::new())));
                                 }
-                                let result = connection
+                                let request = connection
                                     .send_request(PromptRequest::new(
                                         session_id.clone(),
                                         content,
+                                    ));
+
+                                let result = request.block_task().await;
+                                match result {
+                                    Ok(response) => {
+                                        let sr = serde_json::to_string(&response.stop_reason)
+                                            .unwrap_or_else(|_| format!("{:?}", response.stop_reason))
+                                            .trim_matches('"')
+                                            .to_string();
+                                        info!(
+                                            agent_id = %connection_agent_id,
+                                            session_id = %session_id,
+                                            stop_reason = %sr,
+                                            duration_ms = prompt_started_at.elapsed().as_millis() as u64,
+                                            "ACP queued prompt completed"
+                                        );
+                                        crate::permission_service::global_permission_service()
+                                            .force_resolve_rejected_for_agent(&connection_agent_id)
+                                            .await;
+                                        *task_stop_reason.write() = Some(sr.clone());
+                                        let _ = task_output_tx.send(AgentOutputEvent::Done {
+                                            stop_reason: sr,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "ACP queued prompt failed");
+                                    }
+                                }
+                            }
+                            Some(AcpCommand::Prompt {
+                                message,
+                                images,
+                                response_tx,
+                            }) => {
+                                task_text_output_seen.store(false, Ordering::Relaxed);
+                                let prompt_started_at = Instant::now();
+                                info!(
+                                    agent_id = %connection_agent_id,
+                                    session_id = %session_id,
+                                    message_bytes = message.len(),
+                                    image_count = images.len(),
+                                    "ACP prompt started"
+                                );
+                                let mut content = if message.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    vec![ContentBlock::Text(TextContent::new(message.clone()))]
+                                };
+                                content.extend(images.into_iter().map(|image| {
+                                    ContentBlock::Image(ImageContent::new(
+                                        image.base64_data,
+                                        image.media_type,
                                     ))
-                                    .block_task()
-                                    .await;
+                                }));
+                                if content.is_empty() {
+                                    content.push(ContentBlock::Text(TextContent::new(String::new())));
+                                }
+                                let request = connection
+                                    .send_request(PromptRequest::new(
+                                        session_id.clone(),
+                                        content,
+                                    ));
+
+                                let result = request.block_task().await;
 
                                 match result {
                                     Ok(response) => {
@@ -2287,8 +2622,11 @@ impl AcpBackendInterface for AcpBackend {
                                             .unwrap_or_else(|_| format!("{:?}", response.stop_reason))
                                             .trim_matches('"')
                                             .to_string();
-                                        debug!(
+                                        info!(
+                                            agent_id = %connection_agent_id,
+                                            session_id = %session_id,
                                             stop_reason = %sr,
+                                            duration_ms = prompt_started_at.elapsed().as_millis() as u64,
                                             "ACP prompt completed"
                                         );
                                         crate::permission_service::global_permission_service()
@@ -2710,21 +3048,17 @@ impl AcpBackendInterface for AcpBackend {
             }
         };
 
-        let (response_tx, response_rx) = oneshot::channel();
         command_tx
-            .send(AcpCommand::Prompt {
+            .send(AcpCommand::QueuePrompt {
                 message: message.to_string(),
                 images: images.to_vec(),
-                response_tx,
             })
             .await
             .map_err(|_| ErgataiError::internal("ACP command channel closed"))?;
 
-        // Wait for the connection task to finish sending the prompt.
-        match response_rx.await {
-            Ok(result) => result,
-            Err(_) => Err(ErgataiError::internal("ACP response channel closed")),
-        }
+        // The prompt is queued per agent. Return after the command channel accepts
+        // it so message delivery is not blocked by a long-running prior prompt.
+        Ok(())
     }
 
     async fn capture_output(&self, handle: &AgentHandle) -> ErgataiResult<Option<String>> {

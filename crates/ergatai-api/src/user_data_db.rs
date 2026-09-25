@@ -2293,7 +2293,7 @@ pub mod group_agent_bindings {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn
-            .prepare("SELECT conversation_id FROM conversation_agent_bindings WHERE agent_id = ?1 ORDER BY created_at ASC LIMIT 1")?;
+            .prepare("SELECT conversation_id FROM conversation_agent_bindings WHERE agent_id = ?1 ORDER BY updated_at DESC, created_at DESC LIMIT 1")?;
         let mut rows = stmt.query_map(params![agent_id], |row| row.get::<_, String>(0))?;
         rows.next().transpose()
     }
