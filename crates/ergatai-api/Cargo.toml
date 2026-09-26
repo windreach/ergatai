@@ -23,19 +23,16 @@ ergatai-nats = { path = "../ergatai-nats" }
 ergatai-error = { path = "../ergatai-error" }
 # Agent runtime (PTY backend for agent workspace management)
 ergatai-runtime = { path = "../ergatai-runtime" }
-# Binary locator (NATS server)
-ergatai-binary = { path = "../ergatai-binary" }
 # File access control (locks, tokens)
 ergatai-lock = { path = "../ergatai-lock" }
 
 # ACP types for permission handler
 agent-client-protocol.workspace = true
-agent-client-protocol-http.workspace = true
 agent-client-protocol-rmcp.workspace = true
 
 # NATS client (for message forwarding)
 async-nats.workspace = true
-futures = "0.3"
+futures.workspace = true
 
 # Async
 tokio.workspace = true
@@ -54,7 +51,6 @@ rusqlite.workspace = true
 
 # Logging
 tracing.workspace = true
-tracing-subscriber.workspace = true
 
 # CLI
 clap.workspace = true
@@ -63,12 +59,12 @@ clap.workspace = true
 # Using rmcp 2.x for both HTTP MCP and ACP MCP (unified version)
 rmcp = { version = "2", features = ["server", "transport-streamable-http-server", "macros"] }
 schemars = "1.0"
-tokio-util = "0.7"
+tokio-util.workspace = true
 
 # HTTP server
-axum = { version = "0.7", features = ["ws"] }
-axum-server = { version = "0.8", features = ["tls-rustls"] }
-tower-http = { version = "0.6", features = ["cors"] }
+axum.workspace = true
+axum-server.workspace = true
+tower-http.workspace = true
 
 # Metrics (Prometheus)
 metrics = "0.24"
@@ -78,10 +74,10 @@ metrics-exporter-prometheus = "0.16"
 uuid.workspace = true
 chrono.workspace = true
 percent-encoding.workspace = true
-once_cell = "1.19"
+once_cell.workspace = true
 
 [dev-dependencies]
 http-body-util = "0.1"
-tempfile = "3.27.0"
-tokio-test = "0.4"
+tempfile.workspace = true
 tower = { version = "0.5", features = ["util"] }
+serial_test = "3"

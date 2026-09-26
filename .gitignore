@@ -71,3 +71,5 @@ adapters/codex-acp/
 docs/acp/rust-sdk/
 coverage.lcov
 *.lcov
+lcov.info
+*.lcov

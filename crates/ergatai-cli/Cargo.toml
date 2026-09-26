@@ -9,17 +9,15 @@ name = "ergatai"
 path = "src/main.rs"
 
 [dependencies]
-ergatai-error = { path = "../ergatai-error" }
-
 clap = { workspace = true, features = ["derive"] }
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-tokio-tungstenite = "0.20"
+tokio-tungstenite.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-futures-util = "0.3"
+percent-encoding.workspace = true
+futures-util.workspace = true
 crossterm = { workspace = true }
-percent-encoding = "2.3"

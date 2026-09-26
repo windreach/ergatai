@@ -1205,12 +1205,7 @@ mod tests {
     #[test]
     fn test_format_agent_message_request_type() {
         let result = MessageSender::format_agent_message(
-            "agent-1",
-            "Hello",
-            "agent-2",
-            "request",
-            None,
-            None,
+            "agent-1", "Hello", "agent-2", "request", None, None,
         );
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["from"], "agent-1");

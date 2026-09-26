@@ -19,15 +19,11 @@ uuid.workspace = true
 chrono.workspace = true
 rusqlite.workspace = true
 async-nats.workspace = true
-notify = "6.1"
-md5 = "0.7"
-sha2 = "0.10"
-git2 = "0.21"
-walkdir = "2.4"
-rand = "0.8"
-glob = "0.3"
-futures = "0.3"
-futures-util = "0.3"
+notify.workspace = true
+sha2.workspace = true
+git2.workspace = true
+glob.workspace = true
+futures-util.workspace = true
 libc.workspace = true
 tokio-util.workspace = true
 parking_lot.workspace = true
@@ -40,5 +36,4 @@ default = []
 fanotify-integration = []
 
 [dev-dependencies]
-tempfile = "3.10"
-tracing-subscriber = { workspace = true }
+tempfile.workspace = true

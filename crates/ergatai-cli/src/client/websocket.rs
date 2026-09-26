@@ -49,7 +49,7 @@ pub async fn attach_terminal(agent_id: &str, api_url: &str, token: Option<&str>)
     // Send initial terminal size
     let (cols, rows) = crossterm::terminal::size()?;
     let resize_msg = build_resize_message(rows, cols);
-    ws_tx.send(Message::Binary(resize_msg)).await.ok();
+    ws_tx.send(Message::Binary(resize_msg.into())).await.ok();
 
     // 5. Spawn writer task: stdin → WebSocket
     // Read raw bytes from stdin directly (bypasses crossterm event parser which
@@ -89,7 +89,7 @@ pub async fn attach_terminal(agent_id: &str, api_url: &str, token: Option<&str>)
             // Forward raw bytes to WebSocket
             let mut msg = vec![MSG_TYPE_DATA];
             msg.extend(&data);
-            if ws_tx.send(Message::Binary(msg)).await.is_err() {
+            if ws_tx.send(Message::Binary(msg.into())).await.is_err() {
                 break;
             }
 

@@ -335,7 +335,10 @@ mod tests {
         let mut ctx = DagContext::empty();
         ctx.set_global("var1", "value1");
         ctx.set_global("var2", "value2");
-        assert!(Condition::new("{{global.var1}} == \"value1\" && {{global.var2}} == \"value2\"").evaluate(&ctx));
+        assert!(
+            Condition::new("{{global.var1}} == \"value1\" && {{global.var2}} == \"value2\"")
+                .evaluate(&ctx)
+        );
     }
 
     #[test]

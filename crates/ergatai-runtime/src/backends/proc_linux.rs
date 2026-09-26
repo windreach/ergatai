@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn test_process_state_clone() {
         let state = ProcessState::Running;
-        let cloned = state.clone();
+        let cloned = state;
         assert_eq!(state, cloned);
     }
 
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_process_state_all_variants() {
-        let states = vec![
+        let states = [
             ProcessState::Running,
             ProcessState::Sleeping,
             ProcessState::Zombie,

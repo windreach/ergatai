@@ -127,7 +127,7 @@ pub fn build_rest_app(state: AppState) -> Router {
             post(api::workspaces::create_workspace),
         )
         .route(
-            "/api/v1/workspaces/:id",
+            "/api/v1/workspaces/{id}",
             delete(api::workspaces::delete_workspace),
         )
         // Persistent workspace routes
@@ -140,15 +140,15 @@ pub fn build_rest_app(state: AppState) -> Router {
             post(api::workspaces::create_persistent_workspace),
         )
         .route(
-            "/api/v1/workspaces/persistent/:id",
+            "/api/v1/workspaces/persistent/{id}",
             get(api::workspaces::get_persistent_workspace),
         )
         .route(
-            "/api/v1/workspaces/persistent/:id",
+            "/api/v1/workspaces/persistent/{id}",
             put(api::workspaces::update_persistent_workspace),
         )
         .route(
-            "/api/v1/workspaces/persistent/:id",
+            "/api/v1/workspaces/persistent/{id}",
             delete(api::workspaces::delete_persistent_workspace),
         )
         // Managed workspace routes
@@ -161,124 +161,124 @@ pub fn build_rest_app(state: AppState) -> Router {
             post(api::workspaces::create_managed_workspace),
         )
         .route(
-            "/api/v1/workspaces/managed/:id",
+            "/api/v1/workspaces/managed/{id}",
             get(api::workspaces::get_managed_workspace),
         )
         .route(
-            "/api/v1/workspaces/managed/:id",
+            "/api/v1/workspaces/managed/{id}",
             patch(api::workspaces::update_managed_workspace),
         )
         .route(
-            "/api/v1/workspaces/managed/:id",
+            "/api/v1/workspaces/managed/{id}",
             delete(api::workspaces::delete_managed_workspace),
         )
         .route(
-            "/api/v1/workspaces/managed/:id/archive",
+            "/api/v1/workspaces/managed/{id}/archive",
             post(api::workspaces::archive_managed_workspace),
         )
         .route(
-            "/api/v1/workspaces/managed/:id/restore",
+            "/api/v1/workspaces/managed/{id}/restore",
             post(api::workspaces::restore_managed_workspace),
         )
         .route(
-            "/api/v1/workspaces/managed/:id/projects",
+            "/api/v1/workspaces/managed/{id}/projects",
             get(api::workspaces::list_managed_workspace_projects),
         )
         .route(
-            "/api/v1/workspaces/managed/:id/projects",
+            "/api/v1/workspaces/managed/{id}/projects",
             post(api::workspaces::register_managed_workspace_project),
         )
         .route(
-            "/api/v1/workspaces/managed/:id/projects/:project_id",
+            "/api/v1/workspaces/managed/{id}/projects/{project_id}",
             delete(api::workspaces::remove_managed_workspace_project),
         )
         .route(
-            "/api/v1/workspaces/managed/:id/status",
+            "/api/v1/workspaces/managed/{id}/status",
             get(api::workspaces::managed_workspace_status),
         )
         .route("/api/v1/agents", get(api::agents::list_agents))
         .route("/api/v1/agents", post(api::agents::spawn_agent))
-        .route("/api/v1/agents/:id", delete(api::agents::kill_agent))
+        .route("/api/v1/agents/{id}", delete(api::agents::kill_agent))
         .route(
-            "/api/v1/agents/:id/message",
+            "/api/v1/agents/{id}/message",
             post(api::agents::send_message),
         )
         .route(
-            "/api/v1/agents/:id/spawn-session",
+            "/api/v1/agents/{id}/spawn-session",
             post(api::agents::spawn_session),
         )
         .route(
-            "/api/v1/agents/:id/cancel",
+            "/api/v1/agents/{id}/cancel",
             post(api::agents::cancel_prompt),
         )
-        .route("/api/v1/agents/:id/prompt", post(api::agents::prompt_agent))
+        .route("/api/v1/agents/{id}/prompt", post(api::agents::prompt_agent))
         .route(
-            "/api/v1/agents/:id/stream",
+            "/api/v1/agents/{id}/stream",
             get(api::agents::stream_agent_output),
         )
         // ACP monitoring endpoints
         .route(
-            "/api/v1/agents/:id/thoughts",
+            "/api/v1/agents/{id}/thoughts",
             get(api::agents::get_agent_thoughts),
         )
         .route(
-            "/api/v1/agents/:id/tool-calls",
+            "/api/v1/agents/{id}/tool-calls",
             get(api::agents::get_agent_tool_calls),
         )
-        .route("/api/v1/agents/:id/plan", get(api::agents::get_agent_plan))
+        .route("/api/v1/agents/{id}/plan", get(api::agents::get_agent_plan))
         .route(
-            "/api/v1/agents/:id/elicitations",
+            "/api/v1/agents/{id}/elicitations",
             get(api::agents::get_agent_elicitations),
         )
         .route(
-            "/api/v1/agents/:id/elicitations/:elicitation_id/respond",
+            "/api/v1/agents/{id}/elicitations/{elicitation_id}/respond",
             post(api::agents::respond_to_elicitation),
         )
         .route(
-            "/api/v1/agents/:id/config-options",
+            "/api/v1/agents/{id}/config-options",
             get(api::agents::get_agent_config_options),
         )
         .route(
-            "/api/v1/agents/:id/commands",
+            "/api/v1/agents/{id}/commands",
             get(api::agents::get_agent_available_commands),
         )
         .route(
-            "/api/v1/agents/:id/execute-command",
+            "/api/v1/agents/{id}/execute-command",
             post(api::agents::execute_agent_command),
         )
         .route(
-            "/api/v1/agents/:id/sessions",
+            "/api/v1/agents/{id}/sessions",
             get(api::agents::list_agent_sessions),
         )
         .route(
-            "/api/v1/agents/:id/sessions",
+            "/api/v1/agents/{id}/sessions",
             post(api::agents::create_agent_session),
         )
         .route(
-            "/api/v1/agents/:id/sessions/:session_id",
+            "/api/v1/agents/{id}/sessions/{session_id}",
             post(api::agents::load_agent_session),
         )
         .route(
-            "/api/v1/agents/:id/sessions/:session_id",
+            "/api/v1/agents/{id}/sessions/{session_id}",
             delete(api::agents::delete_agent_session),
         )
         .route(
-            "/api/v1/agents/:id/usage",
+            "/api/v1/agents/{id}/usage",
             get(api::agents::get_agent_usage),
         )
         .route(
-            "/api/v1/agents/:id/output",
+            "/api/v1/agents/{id}/output",
             get(api::agents::get_agent_output),
         )
         .route(
-            "/api/v1/agents/:id/last-output",
+            "/api/v1/agents/{id}/last-output",
             get(api::agents::get_agent_last_output),
         )
         .route(
-            "/api/v1/agents/:id/exit-code",
+            "/api/v1/agents/{id}/exit-code",
             get(api::agents::get_agent_exit_code),
         )
-        .route("/api/v1/agents/:id/pid", get(api::agents::get_agent_pid))
+        .route("/api/v1/agents/{id}/pid", get(api::agents::get_agent_pid))
         // Permission requests (unified approval feed)
         .route(
             "/api/v1/permissions/pending",
@@ -297,33 +297,33 @@ pub fn build_rest_app(state: AppState) -> Router {
             post(api::permissions::set_mode),
         )
         .route(
-            "/api/v1/permissions/:id/respond",
+            "/api/v1/permissions/{id}/respond",
             post(api::permissions::respond_permission),
         )
         // Projects CRUD
         .route("/api/v1/projects", get(api::projects::list_projects))
         .route("/api/v1/projects", post(api::projects::create_project))
-        .route("/api/v1/projects/:id", get(api::projects::get_project))
-        .route("/api/v1/projects/:id", put(api::projects::update_project))
+        .route("/api/v1/projects/{id}", get(api::projects::get_project))
+        .route("/api/v1/projects/{id}", put(api::projects::update_project))
         .route(
-            "/api/v1/projects/:id",
+            "/api/v1/projects/{id}",
             delete(api::projects::delete_project),
         )
         // Chats CRUD
         .route("/api/v1/chats", get(api::chats::list_chats))
         .route("/api/v1/chats", post(api::chats::create_chat))
-        .route("/api/v1/chats/:id", get(api::chats::get_chat))
-        .route("/api/v1/chats/:id", put(api::chats::update_chat))
-        .route("/api/v1/chats/:id/archive", post(api::chats::archive_chat))
+        .route("/api/v1/chats/{id}", get(api::chats::get_chat))
+        .route("/api/v1/chats/{id}", put(api::chats::update_chat))
+        .route("/api/v1/chats/{id}/archive", post(api::chats::archive_chat))
         .route(
-            "/api/v1/chats/:id/unarchive",
+            "/api/v1/chats/{id}/unarchive",
             post(api::chats::unarchive_chat),
         )
-        .route("/api/v1/chats/:id", delete(api::chats::delete_chat))
+        .route("/api/v1/chats/{id}", delete(api::chats::delete_chat))
         // Sub-chats CRUD
-        .route("/api/v1/sub-chats/:id", get(api::chats::get_sub_chat_by_id))
+        .route("/api/v1/sub-chats/{id}", get(api::chats::get_sub_chat_by_id))
         .route(
-            "/api/v1/sub-chats/:id",
+            "/api/v1/sub-chats/{id}",
             put(api::chats::update_sub_chat_by_id),
         )
         .route(
@@ -331,43 +331,43 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::chats::lookup_registered_worktree),
         )
         .route(
-            "/api/v1/chats/:id/sub-chats",
+            "/api/v1/chats/{id}/sub-chats",
             get(api::chats::list_sub_chats),
         )
         .route(
-            "/api/v1/chats/:id/sub-chats",
+            "/api/v1/chats/{id}/sub-chats",
             post(api::chats::create_sub_chat),
         )
         .route(
-            "/api/v1/chats/:chat_id/sub-chats/:sub_chat_id",
+            "/api/v1/chats/{chat_id}/sub-chats/{sub_chat_id}",
             get(api::chats::get_sub_chat),
         )
         .route(
-            "/api/v1/chats/:chat_id/sub-chats/:sub_chat_id",
+            "/api/v1/chats/{chat_id}/sub-chats/{sub_chat_id}",
             put(api::chats::update_sub_chat),
         )
         .route(
-            "/api/v1/chats/:chat_id/sub-chats/:sub_chat_id",
+            "/api/v1/chats/{chat_id}/sub-chats/{sub_chat_id}",
             delete(api::chats::delete_sub_chat),
         )
         .route(
-            "/api/v1/chats/:chat_id/agent-bindings",
+            "/api/v1/chats/{chat_id}/agent-bindings",
             get(api::chats::list_agent_bindings),
         )
         .route(
-            "/api/v1/chats/:chat_id/agent-bindings",
+            "/api/v1/chats/{chat_id}/agent-bindings",
             post(api::chats::bind_agent),
         )
         .route(
-            "/api/v1/chats/:chat_id/agent-bindings/:agent_id",
+            "/api/v1/chats/{chat_id}/agent-bindings/{agent_id}",
             delete(api::chats::unbind_agent),
         )
         .route(
-            "/api/v1/chats/:chat_id/agents",
+            "/api/v1/chats/{chat_id}/agents",
             get(api::chats::list_chat_agents),
         )
         .route(
-            "/api/v1/chats/:chat_id/sub-chats/:sub_chat_id/messages",
+            "/api/v1/chats/{chat_id}/sub-chats/{sub_chat_id}/messages",
             post(api::chats::append_sub_chat_message),
         )
         .route(
@@ -383,19 +383,19 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::agent_profiles::list_with_status),
         )
         .route(
-            "/api/v1/agent-profiles/:name/install",
+            "/api/v1/agent-profiles/{name}/install",
             post(api::agent_profiles::install_agent),
         )
         .route(
-            "/api/v1/agent-profiles/:name/uninstall",
+            "/api/v1/agent-profiles/{name}/uninstall",
             delete(api::agent_profiles::uninstall_agent),
         )
         .route(
-            "/api/v1/agent-profiles/:name",
+            "/api/v1/agent-profiles/{name}",
             get(api::agent_profiles::get_profile),
         )
         .route(
-            "/api/v1/agent-profiles/:name",
+            "/api/v1/agent-profiles/{name}",
             delete(api::agent_profiles::delete_profile),
         )
         .route("/api/v1/status", get(api::status::get_status))
@@ -414,59 +414,59 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::conversations::list_conversations),
         )
         .route(
-            "/api/v1/runtime/conversations/:id",
+            "/api/v1/runtime/conversations/{id}",
             get(api::conversations::get_conversation_detail),
         )
         .route(
-            "/api/v1/workspaces/:workspace_id/conversations",
+            "/api/v1/workspaces/{workspace_id}/conversations",
             get(api::user_conversations::list_workspace_conversations),
         )
         .route(
-            "/api/v1/workspaces/:workspace_id/conversations",
+            "/api/v1/workspaces/{workspace_id}/conversations",
             post(api::user_conversations::create_workspace_conversation),
         )
         .route(
-            "/api/v1/conversations/:id",
+            "/api/v1/conversations/{id}",
             get(api::user_conversations::get_conversation),
         )
         .route(
-            "/api/v1/conversations/:id",
+            "/api/v1/conversations/{id}",
             patch(api::user_conversations::update_conversation),
         )
         .route(
-            "/api/v1/conversations/:id",
+            "/api/v1/conversations/{id}",
             delete(api::user_conversations::delete_conversation),
         )
         .route(
-            "/api/v1/conversations/:id/archive",
+            "/api/v1/conversations/{id}/archive",
             post(api::user_conversations::archive_conversation),
         )
         .route(
-            "/api/v1/conversations/:id/unarchive",
+            "/api/v1/conversations/{id}/unarchive",
             post(api::user_conversations::unarchive_conversation),
         )
         .route(
-            "/api/v1/conversations/:id/children",
+            "/api/v1/conversations/{id}/children",
             get(api::user_conversations::list_child_conversations),
         )
         .route(
-            "/api/v1/conversations/:id/children",
+            "/api/v1/conversations/{id}/children",
             post(api::user_conversations::create_child_conversation),
         )
         .route(
-            "/api/v1/conversations/:id/messages",
+            "/api/v1/conversations/{id}/messages",
             get(api::user_conversations::list_conversation_messages),
         )
         .route(
-            "/api/v1/conversations/:id/messages",
+            "/api/v1/conversations/{id}/messages",
             post(api::user_conversations::append_conversation_message),
         )
         .route(
-            "/api/v1/conversations/:id/messages",
+            "/api/v1/conversations/{id}/messages",
             put(api::user_conversations::replace_conversation_messages),
         )
         .route(
-            "/api/v1/conversations/:id/file-changes",
+            "/api/v1/conversations/{id}/file-changes",
             get(api::user_conversations::list_conversation_file_changes),
         )
         .route(
@@ -491,59 +491,59 @@ pub fn build_rest_app(state: AppState) -> Router {
         )
         // Authoritative collaboration session runtime
         .route(
-            "/api/v1/collaboration/sessions/by-chat/:chat_id",
+            "/api/v1/collaboration/sessions/by-chat/{chat_id}",
             get(api::collaboration_sessions::get_collaboration_session_by_chat),
         )
         .route(
-            "/api/v1/collaboration/sessions/:session_id",
+            "/api/v1/collaboration/sessions/{session_id}",
             get(api::collaboration_sessions::get_collaboration_session),
         )
         .route(
-            "/api/v1/collaboration/sessions/:session_id/messages",
+            "/api/v1/collaboration/sessions/{session_id}/messages",
             post(api::collaboration_sessions::append_collaboration_session_message),
         )
         .route(
-            "/api/v1/collaboration/sessions/:session_id/interactions",
+            "/api/v1/collaboration/sessions/{session_id}/interactions",
             post(api::collaboration_sessions::submit_collaboration_session_interaction),
         )
         .route(
-            "/api/v1/collaboration/sessions/:session_id/state",
+            "/api/v1/collaboration/sessions/{session_id}/state",
             post(api::collaboration_sessions::transition_collaboration_session_state),
         )
         .route(
-            "/api/v1/collaboration/sessions/:session_id/events",
+            "/api/v1/collaboration/sessions/{session_id}/events",
             get(api::collaboration_sessions::list_collaboration_session_events),
         )
         .route(
-            "/api/v1/collaboration/sessions/:session_id/stream",
+            "/api/v1/collaboration/sessions/{session_id}/stream",
             get(api::collaboration_sessions::stream_collaboration_session_events),
         )
         .route(
-            "/api/v1/collaboration/sessions/:session_id/plans",
+            "/api/v1/collaboration/sessions/{session_id}/plans",
             post(api::collaboration_sessions::create_collaboration_session_plan),
         )
         .route(
-            "/api/v1/collaboration/sessions/:session_id/plans",
+            "/api/v1/collaboration/sessions/{session_id}/plans",
             get(api::collaboration_sessions::list_collaboration_session_plans),
         )
         .route(
-            "/api/v1/collaboration/sessions/:session_id/plans/:plan_revision_id",
+            "/api/v1/collaboration/sessions/{session_id}/plans/{plan_revision_id}",
             get(api::collaboration_sessions::get_collaboration_session_plan),
         )
         .route(
-            "/api/v1/collaboration/sessions/:session_id/plans/:plan_revision_id/execute",
+            "/api/v1/collaboration/sessions/{session_id}/plans/{plan_revision_id}/execute",
             post(api::collaboration_sessions::execute_collaboration_session_plan),
         )
         .route(
-            "/api/v1/collaboration/sessions/:session_id/approvals",
+            "/api/v1/collaboration/sessions/{session_id}/approvals",
             post(api::collaboration_sessions::create_collaboration_session_approval),
         )
         .route(
-            "/api/v1/collaboration/sessions/:session_id/approvals/:approval_id/decision",
+            "/api/v1/collaboration/sessions/{session_id}/approvals/{approval_id}/decision",
             post(api::collaboration_sessions::decide_collaboration_session_approval),
         )
         .route(
-            "/api/v1/collaboration/sessions/:session_id/cancel",
+            "/api/v1/collaboration/sessions/{session_id}/cancel",
             post(api::collaboration_sessions::cancel_collaboration_session),
         )
         .route(

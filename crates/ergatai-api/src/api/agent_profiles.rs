@@ -365,7 +365,10 @@ mod tests {
         let req: RegisterProfileRequest = serde_json::from_value(json).unwrap();
         assert_eq!(req.name, "test-agent");
         assert_eq!(req.package_name, Some("@anthropic/claude".to_string()));
-        assert_eq!(req.avatar_url, Some("https://example.com/avatar.png".to_string()));
+        assert_eq!(
+            req.avatar_url,
+            Some("https://example.com/avatar.png".to_string())
+        );
     }
 
     #[test]

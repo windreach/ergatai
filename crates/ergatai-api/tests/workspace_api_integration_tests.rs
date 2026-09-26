@@ -16,6 +16,13 @@ fn ensure_app_context_initialized() {
     use std::sync::OnceLock;
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
+        let data_dir = std::env::temp_dir()
+            .join("ergatai-api-integration-tests")
+            .join(std::process::id().to_string());
+        let _ = std::fs::remove_dir_all(&data_dir);
+        std::fs::create_dir_all(&data_dir).expect("create integration test data dir");
+        std::env::set_var("ERGATAI_DATA_DIR", &data_dir);
+
         let runtime = ergatai_runtime::get_agent_runtime();
         let ctx = ergatai_api::context::AppContext::new(
             runtime,

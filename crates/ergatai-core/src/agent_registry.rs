@@ -724,7 +724,11 @@ mod tests {
         let registry = AgentRegistry::new();
         let caps: Vec<String> = (0..100).map(|i| format!("tool_{}", i)).collect();
         registry
-            .register_agent("agent-many-caps".to_string(), "conn-many".to_string(), Some(caps.clone()))
+            .register_agent(
+                "agent-many-caps".to_string(),
+                "conn-many".to_string(),
+                Some(caps.clone()),
+            )
             .await;
 
         let info = registry.get_agent("agent-many-caps").await.unwrap();

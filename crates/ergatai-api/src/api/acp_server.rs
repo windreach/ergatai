@@ -123,8 +123,10 @@ pub fn mount_acp_server(app: Router, _runtime: Arc<AgentRuntime>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
+    #[serial]
     fn test_config_from_env() {
         std::env::remove_var("ERGATAI_ACP_SERVER_ENABLED");
         let config = AcpServerConfig::from_env();
@@ -138,6 +140,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cors_origins_parsing() {
         std::env::set_var(
             "ERGATAI_ACP_SERVER_CORS_ORIGINS",
@@ -152,6 +155,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_config_from_env_disabled_by_default() {
         std::env::remove_var("ERGATAI_ACP_SERVER_ENABLED");
         let config = AcpServerConfig::from_env();
@@ -159,6 +163,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_config_from_env_enabled_with_true() {
         std::env::set_var("ERGATAI_ACP_SERVER_ENABLED", "true");
         let config = AcpServerConfig::from_env();
@@ -167,7 +172,8 @@ mod tests {
     }
 
     #[test]
-    fn test_config_from_env_enabled_with_TRUE() {
+    #[serial]
+    fn test_config_from_env_enabled_with_true_uppercase() {
         std::env::set_var("ERGATAI_ACP_SERVER_ENABLED", "TRUE");
         let config = AcpServerConfig::from_env();
         assert!(config.enabled);
@@ -175,6 +181,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_config_from_env_disabled_with_0() {
         std::env::set_var("ERGATAI_ACP_SERVER_ENABLED", "0");
         let config = AcpServerConfig::from_env();
@@ -183,6 +190,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_config_from_env_disabled_with_false() {
         std::env::set_var("ERGATAI_ACP_SERVER_ENABLED", "false");
         let config = AcpServerConfig::from_env();
@@ -191,6 +199,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_config_cors_origins_with_whitespace() {
         std::env::set_var(
             "ERGATAI_ACP_SERVER_CORS_ORIGINS",
@@ -204,6 +213,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_config_cors_origins_single_origin() {
         std::env::set_var("ERGATAI_ACP_SERVER_CORS_ORIGINS", "http://localhost:3000");
         let config = AcpServerConfig::from_env();
