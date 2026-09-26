@@ -725,6 +725,32 @@ pub fn find_session_by_chat(
     Ok(session)
 }
 
+pub fn upsert_participant(
+    session_id: &str,
+    participant: ParticipantInput,
+) -> Result<CollaborationSessionParticipant, CollaborationSessionError> {
+    lock_db!(mut connection);
+    get_session_with_connection(&connection, session_id)?.ok_or_else(|| {
+        CollaborationSessionError::NotFound("Collaboration session not found".to_string())
+    })?;
+
+    let timestamp = now();
+    let transaction = connection.transaction()?;
+    insert_participant(&transaction, session_id, &participant, timestamp)?;
+    transaction.commit()?;
+
+    let mut statement = connection.prepare(&format!(
+        "SELECT {PARTICIPANT_COLUMNS} FROM collaboration_session_participants
+         WHERE session_id = ?1 AND conversation_id = ?2"
+    ))?;
+    statement
+        .query_row(
+            params![session_id, participant.conversation_id.trim()],
+            participant_from_row,
+        )
+        .map_err(CollaborationSessionError::from)
+}
+
 pub fn get_session(
     session_id: &str,
 ) -> Result<CollaborationSessionDetail, CollaborationSessionError> {

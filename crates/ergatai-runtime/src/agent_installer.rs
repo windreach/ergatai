@@ -124,4 +124,146 @@ mod tests {
         assert!(install_npm("").await.is_err());
         assert!(uninstall_npm("  ").await.is_err());
     }
+
+    #[test]
+    fn handle_npm_output_success_with_stdout() {
+        use std::os::unix::process::ExitStatusExt;
+        let status = std::process::ExitStatus::from_raw(0);
+        let output = Output {
+            status,
+            stdout: b"installed successfully\n".to_vec(),
+            stderr: b"".to_vec(),
+        };
+        let result = handle_npm_output(output, "install", "test-package");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "installed successfully\n");
+    }
+
+    #[test]
+    fn handle_npm_output_failure_with_stderr() {
+        use std::os::unix::process::ExitStatusExt;
+        let status = std::process::ExitStatus::from_raw(256);
+        let output = Output {
+            status,
+            stdout: b"".to_vec(),
+            stderr: b"npm ERR! something went wrong\n".to_vec(),
+        };
+        let result = handle_npm_output(output, "install", "test-package");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("npm install test-package failed"));
+        assert!(err.to_string().contains("npm ERR!"));
+    }
+
+    #[test]
+    fn handle_npm_output_failure_with_stdout_fallback() {
+        use std::os::unix::process::ExitStatusExt;
+        let status = std::process::ExitStatus::from_raw(256);
+        let output = Output {
+            status,
+            stdout: b"some error output\n".to_vec(),
+            stderr: b"".to_vec(),
+        };
+        let result = handle_npm_output(output, "uninstall", "test-package");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("some error output"));
+    }
+
+    #[test]
+    fn handle_npm_output_with_both_stdout_and_stderr() {
+        use std::os::unix::process::ExitStatusExt;
+        let status = std::process::ExitStatus::from_raw(256);
+        let output = Output {
+            status,
+            stdout: b"stdout output\n".to_vec(),
+            stderr: b"stderr error\n".to_vec(),
+        };
+        let result = handle_npm_output(output, "install", "test-package");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        // Should prefer stderr over stdout
+        assert!(err.to_string().contains("stderr error"));
+    }
+
+    #[test]
+    fn handle_npm_output_success_prefers_stdout() {
+        use std::os::unix::process::ExitStatusExt;
+        let status = std::process::ExitStatus::from_raw(0);
+        let output = Output {
+            status,
+            stdout: b"success output\n".to_vec(),
+            stderr: b"warning message\n".to_vec(),
+        };
+        let result = handle_npm_output(output, "install", "test-package");
+        assert!(result.is_ok());
+        // Should return stdout on success
+        assert_eq!(result.unwrap(), "success output\n");
+    }
+
+    #[tokio::test]
+    async fn install_and_verify_with_empty_package() {
+        let result = install_and_verify("some-command", "").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn handle_npm_output_with_empty_strings() {
+        use std::os::unix::process::ExitStatusExt;
+        let status = std::process::ExitStatus::from_raw(0);
+        let output = Output {
+            status,
+            stdout: b"".to_vec(),
+            stderr: b"".to_vec(),
+        };
+        let result = handle_npm_output(output, "install", "test-package");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "");
+    }
+
+    #[test]
+    fn handle_npm_output_with_whitespace_only() {
+        use std::os::unix::process::ExitStatusExt;
+        let status = std::process::ExitStatus::from_raw(0);
+        let output = Output {
+            status,
+            stdout: b"   \n".to_vec(),
+            stderr: b"".to_vec(),
+        };
+        let result = handle_npm_output(output, "install", "test-package");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn handle_npm_output_preserves_newlines() {
+        use std::os::unix::process::ExitStatusExt;
+        let status = std::process::ExitStatus::from_raw(0);
+        let output = Output {
+            status,
+            stdout: b"line1\nline2\nline3\n".to_vec(),
+            stderr: b"".to_vec(),
+        };
+        let result = handle_npm_output(output, "install", "test-package");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "line1\nline2\nline3\n");
+    }
+
+    #[tokio::test]
+    async fn install_and_verify_with_whitespace_only_package() {
+        let result = install_and_verify("some-command", "   ").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn uninstall_with_empty_package() {
+        let result = uninstall_npm("").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn uninstall_with_whitespace_only_package() {
+        let result = uninstall_npm("   ").await;
+        assert!(result.is_err());
+    }
 }

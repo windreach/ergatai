@@ -343,4 +343,144 @@ mod tests {
 
         assert_eq!(channel.merge_strategy_for("issues"), MergeStrategy::Append);
     }
+
+    #[test]
+    fn test_validate_outputs_with_default_value() {
+        let channel = StateChannel {
+            name: "test_channel".to_string(),
+            inputs: vec![],
+            outputs: vec![StateField {
+                name: "status".to_string(),
+                value_type: StateValueType::String,
+                required: true,
+                default: Some(serde_json::Value::String("pending".to_string())),
+                description: None,
+            }],
+            merge_strategies: HashMap::new(),
+        };
+
+        // Required field still needs to be present in values (default is metadata only)
+        let values = json!({"status": "active"});
+        assert!(channel.validate_outputs(&values).is_ok());
+    }
+
+    #[test]
+    fn test_validate_outputs_with_optional_field() {
+        let channel = StateChannel {
+            name: "test_channel".to_string(),
+            inputs: vec![],
+            outputs: vec![StateField {
+                name: "optional_field".to_string(),
+                value_type: StateValueType::String,
+                required: false,
+                default: None,
+                description: None,
+            }],
+            merge_strategies: HashMap::new(),
+        };
+
+        // Empty values should pass because field is optional
+        let values = json!({});
+        assert!(channel.validate_outputs(&values).is_ok());
+    }
+
+    #[test]
+    fn test_validate_outputs_with_boolean_type() {
+        let channel = StateChannel {
+            name: "test_channel".to_string(),
+            inputs: vec![],
+            outputs: vec![StateField {
+                name: "is_valid".to_string(),
+                value_type: StateValueType::Boolean,
+                required: true,
+                default: None,
+                description: None,
+            }],
+            merge_strategies: HashMap::new(),
+        };
+
+        let valid_values = json!({"is_valid": true});
+        assert!(channel.validate_outputs(&valid_values).is_ok());
+
+        let invalid_values = json!({"is_valid": "not a boolean"});
+        assert!(channel.validate_outputs(&invalid_values).is_err());
+    }
+
+    #[test]
+    fn test_validate_outputs_with_array_type() {
+        let channel = StateChannel {
+            name: "test_channel".to_string(),
+            inputs: vec![],
+            outputs: vec![StateField {
+                name: "items".to_string(),
+                value_type: StateValueType::Array,
+                required: true,
+                default: None,
+                description: None,
+            }],
+            merge_strategies: HashMap::new(),
+        };
+
+        let valid_values = json!({"items": [1, 2, 3]});
+        assert!(channel.validate_outputs(&valid_values).is_ok());
+
+        let invalid_values = json!({"items": "not an array"});
+        assert!(channel.validate_outputs(&invalid_values).is_err());
+    }
+
+    #[test]
+    fn test_validate_outputs_with_object_type() {
+        let channel = StateChannel {
+            name: "test_channel".to_string(),
+            inputs: vec![],
+            outputs: vec![StateField {
+                name: "config".to_string(),
+                value_type: StateValueType::Object,
+                required: true,
+                default: None,
+                description: None,
+            }],
+            merge_strategies: HashMap::new(),
+        };
+
+        let valid_values = json!({"config": {"key": "value"}});
+        assert!(channel.validate_outputs(&valid_values).is_ok());
+
+        let invalid_values = json!({"config": "not an object"});
+        assert!(channel.validate_outputs(&invalid_values).is_err());
+    }
+
+    #[test]
+    fn test_merge_strategy_for_unknown_field() {
+        let mut merge_strategies = HashMap::new();
+        merge_strategies.insert("known_field".to_string(), MergeStrategy::Append);
+
+        let channel = StateChannel {
+            name: "test".to_string(),
+            inputs: vec![],
+            outputs: vec![],
+            merge_strategies,
+        };
+
+        // Unknown field should return default strategy
+        assert_eq!(
+            channel.merge_strategy_for("unknown_field"),
+            MergeStrategy::Overwrite
+        );
+    }
+
+    #[test]
+    fn test_state_field_with_description() {
+        let field = StateField {
+            name: "test_field".to_string(),
+            value_type: StateValueType::String,
+            required: true,
+            default: None,
+            description: Some("A test field description".to_string()),
+        };
+
+        assert_eq!(field.name, "test_field");
+        assert!(field.description.is_some());
+        assert_eq!(field.description.unwrap(), "A test field description");
+    }
 }

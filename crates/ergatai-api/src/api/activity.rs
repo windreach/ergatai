@@ -163,8 +163,9 @@ impl ActivityFeed {
 
         while let Some(msg) = subscriber.next().await {
             if let Ok(payload) = serde_json::from_slice::<AgentMessagePayload>(&msg.payload) {
-                let content_preview = if payload.content.len() > 100 {
-                    format!("{}...", &payload.content[..100])
+                let content_preview = if payload.content.chars().count() > 100 {
+                    let preview: String = payload.content.chars().take(100).collect();
+                    format!("{preview}...")
                 } else {
                     payload.content.clone()
                 };

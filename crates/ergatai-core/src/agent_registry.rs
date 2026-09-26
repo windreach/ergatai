@@ -700,4 +700,93 @@ mod tests {
         assert!(clone.get_agent("shared").await.is_some());
         assert_eq!(clone.list_agents().await.len(), 1);
     }
+
+    // ── Additional edge case tests ──
+
+    #[tokio::test]
+    async fn test_register_agent_with_empty_capabilities() {
+        let registry = AgentRegistry::new();
+        registry
+            .register_agent(
+                "agent-empty-caps".to_string(),
+                "conn-empty".to_string(),
+                Some(vec![]),
+            )
+            .await;
+
+        let info = registry.get_agent("agent-empty-caps").await.unwrap();
+        assert!(info.capabilities.is_some());
+        assert_eq!(info.capabilities.as_ref().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_register_agent_with_many_capabilities() {
+        let registry = AgentRegistry::new();
+        let caps: Vec<String> = (0..100).map(|i| format!("tool_{}", i)).collect();
+        registry
+            .register_agent("agent-many-caps".to_string(), "conn-many".to_string(), Some(caps.clone()))
+            .await;
+
+        let info = registry.get_agent("agent-many-caps").await.unwrap();
+        assert_eq!(info.capabilities.as_ref().unwrap().len(), 100);
+    }
+
+    #[tokio::test]
+    async fn test_update_heartbeat_nonexistent_agent() {
+        let registry = AgentRegistry::new();
+        // Updating heartbeat for non-existent agent should not panic
+        registry.update_heartbeat("nonexistent").await;
+    }
+
+    #[tokio::test]
+    async fn test_unregister_nonexistent_agent() {
+        let registry = AgentRegistry::new();
+        // Unregistering non-existent agent should not panic
+        registry.unregister_agent("nonexistent").await;
+    }
+
+    #[tokio::test]
+    async fn test_active_count_after_unregister() {
+        let registry = AgentRegistry::new();
+        registry
+            .register_agent("a1".to_string(), "c1".to_string(), None)
+            .await;
+        registry
+            .register_agent("a2".to_string(), "c2".to_string(), None)
+            .await;
+        assert_eq!(registry.active_count().await, 2);
+
+        registry.unregister_agent("a1").await;
+        assert_eq!(registry.active_count().await, 1);
+    }
+
+    #[test]
+    fn test_agent_connection_status_variants() {
+        // Test all status variants exist and are distinct
+        let active = AgentConnectionStatus::Active;
+        let disconnected = AgentConnectionStatus::Disconnected;
+        assert_ne!(active, disconnected);
+    }
+
+    #[tokio::test]
+    async fn test_list_agents_ordering() {
+        let registry = AgentRegistry::new();
+        registry
+            .register_agent("c-agent".to_string(), "c1".to_string(), None)
+            .await;
+        registry
+            .register_agent("a-agent".to_string(), "c2".to_string(), None)
+            .await;
+        registry
+            .register_agent("b-agent".to_string(), "c3".to_string(), None)
+            .await;
+
+        let agents = registry.list_agents().await;
+        assert_eq!(agents.len(), 3);
+        // Just verify all agents are present (order may vary)
+        let ids: Vec<&str> = agents.iter().map(|a| a.agent_id.as_str()).collect();
+        assert!(ids.contains(&"c-agent"));
+        assert!(ids.contains(&"a-agent"));
+        assert!(ids.contains(&"b-agent"));
+    }
 }

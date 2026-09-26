@@ -445,4 +445,44 @@ mod tests {
         assert!(!gate.is_empty());
         assert_eq!(gate.len(), 2);
     }
+
+    #[test]
+    fn test_admission_result_is_allowed_variants() {
+        let allowed = AdmissionResult::Allowed;
+        assert!(allowed.is_allowed());
+        assert!(!allowed.is_denied());
+
+        let denied = AdmissionResult::Denied {
+            reason: "test".to_string(),
+        };
+        assert!(!denied.is_allowed());
+        assert!(denied.is_denied());
+    }
+
+    #[test]
+    fn test_admission_result_denied_with_string() {
+        let result = AdmissionResult::denied(String::from("custom reason"));
+        assert!(result.is_denied());
+        if let AdmissionResult::Denied { reason } = result {
+            assert_eq!(reason, "custom reason");
+        }
+    }
+
+    #[test]
+    fn test_rate_limit_gate_name() {
+        let gate = RateLimitGate::new();
+        assert_eq!(gate.name(), "RateLimitGate");
+    }
+
+    #[test]
+    fn test_self_message_gate_name() {
+        let gate = SelfMessageGate::new();
+        assert_eq!(gate.name(), "SelfMessageGate");
+    }
+
+    #[test]
+    fn test_composite_gate_name() {
+        let gate = CompositeGate::new();
+        assert_eq!(gate.name(), "CompositeGate");
+    }
 }

@@ -46,3 +46,34 @@ impl EnforcerBackend for AdvisoryBackend {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_advisory_backend_name() {
+        let backend = AdvisoryBackend;
+        assert_eq!(backend.name(), "advisory");
+    }
+
+    #[test]
+    fn test_advisory_backend_not_mandatory() {
+        let backend = AdvisoryBackend;
+        assert!(!backend.is_mandatory());
+    }
+
+    #[tokio::test]
+    async fn test_advisory_backend_next_event_returns_none() {
+        let backend = AdvisoryBackend;
+        let event = backend.next_event().await;
+        assert!(event.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_advisory_backend_stop_succeeds() {
+        let backend = AdvisoryBackend;
+        let result = backend.stop().await;
+        assert!(result.is_ok());
+    }
+}

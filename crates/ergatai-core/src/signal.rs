@@ -230,4 +230,27 @@ mod tests {
         assert_eq!(prev, 1);
         assert_eq!(counter.load(Ordering::SeqCst), 2);
     }
+
+    #[test]
+    fn test_signal_count_multiple_increments() {
+        let counter = Arc::new(AtomicU32::new(0));
+        for _ in 0..10 {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 10);
+    }
+
+    #[test]
+    fn test_signal_count_store_and_load() {
+        let counter = Arc::new(AtomicU32::new(0));
+        counter.store(42, Ordering::SeqCst);
+        assert_eq!(counter.load(Ordering::SeqCst), 42);
+    }
+
+    #[test]
+    fn test_shutdown_timeout_value() {
+        // Verify the exact timeout value matches the constant
+        assert_eq!(SHUTDOWN_TIMEOUT.as_secs(), 15);
+        assert_eq!(SHUTDOWN_TIMEOUT.subsec_nanos(), 0);
+    }
 }

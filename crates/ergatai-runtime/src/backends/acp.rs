@@ -182,16 +182,16 @@ impl JsonRpcMessage for ExtendedSessionNotification {
                 let capabilities = update.get("capabilities").cloned();
                 let meta = update.get("_meta").cloned();
 
-                Ok(ExtendedSessionNotification::SubagentSpawned(
-                    Box::new(SubagentSpawnedEvent {
+                Ok(ExtendedSessionNotification::SubagentSpawned(Box::new(
+                    SubagentSpawnedEvent {
                         session_id,
                         subagent_session_id,
                         name,
                         task,
                         capabilities,
                         meta,
-                    }),
-                ))
+                    },
+                )))
             }
             "subagent_state_update" => {
                 let session_id = value
@@ -216,14 +216,14 @@ impl JsonRpcMessage for ExtendedSessionNotification {
                     .to_string();
                 let meta = update.get("_meta").cloned();
 
-                Ok(ExtendedSessionNotification::SubagentStateUpdate(
-                    Box::new(SubagentStateUpdateEvent {
+                Ok(ExtendedSessionNotification::SubagentStateUpdate(Box::new(
+                    SubagentStateUpdateEvent {
                         session_id,
                         subagent_session_id,
                         state,
                         meta,
-                    }),
-                ))
+                    },
+                )))
             }
             _ => {
                 // Try to parse as standard v1 SessionNotification

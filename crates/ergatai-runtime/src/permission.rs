@@ -720,4 +720,86 @@ mod tests {
         // Should auto-approve like YoloPermissionHandler
         assert_eq!(decision.option_id, Some("allow".to_string()));
     }
+
+    #[tokio::test]
+    async fn test_lock_aware_handler_with_no_allow_option() {
+        let handler = LockAwarePermissionHandler;
+        let request = create_test_request(vec![PermissionOption::new(
+            "reject".to_string(),
+            "Reject".to_string(),
+            PermissionOptionKind::RejectOnce,
+        )]);
+
+        let decision = handler.evaluate("agent-1", "session-1", &request).await;
+        // Should cancel when no allow option is found
+        assert_eq!(decision.option_id, None);
+    }
+
+    #[test]
+    fn test_permission_decision_debug() {
+        let decision = PermissionDecision::select("test-option".to_string());
+        let debug_str = format!("{:?}", decision);
+        assert!(debug_str.contains("test-option"));
+    }
+
+    #[test]
+    fn test_permission_decision_clone() {
+        let decision1 = PermissionDecision::select("option-1".to_string());
+        let decision2 = decision1.clone();
+        assert_eq!(decision1.option_id, decision2.option_id);
+    }
+
+    #[test]
+    fn test_is_auto_approve_kind() {
+        assert!(is_auto_approve_kind(&ToolKind::Read));
+        assert!(is_auto_approve_kind(&ToolKind::Think));
+        assert!(is_auto_approve_kind(&ToolKind::SwitchMode));
+        assert!(is_auto_approve_kind(&ToolKind::Other));
+        assert!(!is_auto_approve_kind(&ToolKind::Edit));
+        assert!(!is_auto_approve_kind(&ToolKind::Delete));
+        assert!(!is_auto_approve_kind(&ToolKind::Execute));
+    }
+
+    #[test]
+    fn test_tool_kind_label() {
+        assert_eq!(tool_kind_label(&ToolKind::Read), "Read");
+        assert_eq!(tool_kind_label(&ToolKind::Edit), "Edit");
+        assert_eq!(tool_kind_label(&ToolKind::Delete), "Delete");
+        assert_eq!(tool_kind_label(&ToolKind::Move), "Move");
+        assert_eq!(tool_kind_label(&ToolKind::Search), "Search");
+        assert_eq!(tool_kind_label(&ToolKind::Execute), "Execute");
+        assert_eq!(tool_kind_label(&ToolKind::Think), "Think");
+        assert_eq!(tool_kind_label(&ToolKind::Fetch), "Fetch");
+        assert_eq!(tool_kind_label(&ToolKind::SwitchMode), "SwitchMode");
+        assert_eq!(tool_kind_label(&ToolKind::Other), "Tool");
+    }
+
+    #[test]
+    fn test_select_allow_option_with_allow() {
+        let request = create_test_request(vec![
+            PermissionOption::new(
+                "reject".to_string(),
+                "Reject".to_string(),
+                PermissionOptionKind::RejectOnce,
+            ),
+            PermissionOption::new(
+                "allow".to_string(),
+                "Allow".to_string(),
+                PermissionOptionKind::AllowOnce,
+            ),
+        ]);
+        let decision = select_allow_option(&request);
+        assert_eq!(decision.option_id, Some("allow".to_string()));
+    }
+
+    #[test]
+    fn test_select_allow_option_without_allow() {
+        let request = create_test_request(vec![PermissionOption::new(
+            "reject".to_string(),
+            "Reject".to_string(),
+            PermissionOptionKind::RejectOnce,
+        )]);
+        let decision = select_allow_option(&request);
+        assert_eq!(decision.option_id, None);
+    }
 }

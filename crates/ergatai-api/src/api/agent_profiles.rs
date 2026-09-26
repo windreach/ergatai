@@ -332,3 +332,98 @@ pub async fn uninstall_agent(Path(id): Path<String>) -> impl IntoResponse {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_register_profile_request_deserialization() {
+        let json = json!({
+            "name": "test-agent",
+            "command": "python3 agent.py",
+            "agent_type": "acp"
+        });
+        let req: RegisterProfileRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "test-agent");
+        assert_eq!(req.command, "python3 agent.py");
+        assert_eq!(req.agent_type, "acp");
+        assert!(req.package_name.is_none());
+        assert!(req.avatar_url.is_none());
+    }
+
+    #[test]
+    fn test_register_profile_request_all_fields() {
+        let json = json!({
+            "name": "test-agent",
+            "command": "python3 agent.py",
+            "agent_type": "acp",
+            "package_name": "@anthropic/claude",
+            "avatar_url": "https://example.com/avatar.png"
+        });
+        let req: RegisterProfileRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "test-agent");
+        assert_eq!(req.package_name, Some("@anthropic/claude".to_string()));
+        assert_eq!(req.avatar_url, Some("https://example.com/avatar.png".to_string()));
+    }
+
+    #[test]
+    fn test_profile_response_serialization() {
+        let resp = ProfileResponse {
+            id: "profile-1".to_string(),
+            name: "test-agent".to_string(),
+            command: "python3 agent.py".to_string(),
+            agent_type: "acp".to_string(),
+            package_name: Some("@anthropic/claude".to_string()),
+            avatar_url: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["id"], "profile-1");
+        assert_eq!(json["name"], "test-agent");
+        assert_eq!(json["agent_type"], "acp");
+        assert_eq!(json["package_name"], "@anthropic/claude");
+    }
+
+    #[test]
+    fn test_list_profiles_response_serialization() {
+        let resp = ListProfilesResponse {
+            profiles: vec![
+                ProfileResponse {
+                    id: "p1".to_string(),
+                    name: "agent-1".to_string(),
+                    command: "cmd1".to_string(),
+                    agent_type: "acp".to_string(),
+                    package_name: None,
+                    avatar_url: None,
+                    created_at: "2026-01-01T00:00:00Z".to_string(),
+                },
+                ProfileResponse {
+                    id: "p2".to_string(),
+                    name: "agent-2".to_string(),
+                    command: "cmd2".to_string(),
+                    agent_type: "mcp".to_string(),
+                    package_name: None,
+                    avatar_url: None,
+                    created_at: "2026-01-01T00:00:00Z".to_string(),
+                },
+            ],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["profiles"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_profile_response_from_agent_registration() {
+        let reg = AgentRegistration::new(
+            "test-agent".to_string(),
+            "python3 agent.py".to_string(),
+            "acp".to_string(),
+        );
+        let resp = ProfileResponse::from(reg.clone());
+        assert_eq!(resp.name, reg.name);
+        assert_eq!(resp.command, reg.command);
+        assert_eq!(resp.agent_type, reg.agent_type);
+    }
+}

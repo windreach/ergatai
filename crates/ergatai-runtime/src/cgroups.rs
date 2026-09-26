@@ -298,4 +298,95 @@ mod tests {
         // Should not panic
         controller.cleanup();
     }
+
+    #[test]
+    fn test_is_active_returns_false_for_inactive_controller() {
+        let controller = CgroupController {
+            cgroup_path: PathBuf::new(),
+            active: false,
+        };
+        assert!(!controller.is_active());
+    }
+
+    #[test]
+    fn test_path_returns_empty_for_inactive_controller() {
+        let controller = CgroupController {
+            cgroup_path: PathBuf::new(),
+            active: false,
+        };
+        assert!(controller.path().as_os_str().is_empty());
+    }
+
+    #[test]
+    fn test_create_rejects_backslash_in_workspace_id() {
+        let controller = CgroupController::create(r"foo\bar", None, Some(512));
+        assert!(!controller.is_active());
+    }
+
+    #[test]
+    fn test_create_rejects_empty_workspace_id() {
+        let controller = CgroupController::create("", None, Some(512));
+        assert!(!controller.is_active());
+    }
+
+    #[test]
+    fn test_create_with_only_cpu_limit() {
+        // When only CPU limit is provided, controller should attempt creation
+        let controller = CgroupController::create("test-cpu-only", Some(2.0), None);
+        // Result depends on cgroups v2 availability
+        // Just verify it doesn't panic
+        let _ = controller.is_active();
+    }
+
+    #[test]
+    fn test_create_with_only_memory_limit() {
+        // When only memory limit is provided, controller should attempt creation
+        let controller = CgroupController::create("test-mem-only", None, Some(512));
+        // Result depends on cgroups v2 availability
+        // Just verify it doesn't panic
+        let _ = controller.is_active();
+    }
+
+    #[test]
+    fn test_create_with_both_limits() {
+        // When both limits are provided, controller should attempt creation
+        let controller = CgroupController::create("test-both-limits", Some(2.0), Some(512));
+        // Result depends on cgroups v2 availability
+        // Just verify it doesn't panic
+        let _ = controller.is_active();
+    }
+
+    #[test]
+    fn test_create_rejects_dot_in_workspace_id() {
+        // Parent reference with dots should be rejected
+        let controller = CgroupController::create("..", None, Some(512));
+        assert!(!controller.is_active());
+    }
+
+    #[test]
+    fn test_create_rejects_path_with_dots() {
+        // Path with parent reference should be rejected
+        let controller = CgroupController::create("test..workspace", None, Some(512));
+        assert!(!controller.is_active());
+    }
+
+    #[test]
+    fn test_path_returns_correct_path_for_inactive_controller() {
+        let controller = CgroupController {
+            cgroup_path: PathBuf::from("/test/path"),
+            active: false,
+        };
+        assert_eq!(controller.path(), Path::new("/test/path"));
+    }
+
+    #[test]
+    fn test_debug_implementation() {
+        let controller = CgroupController {
+            cgroup_path: PathBuf::from("/test/path"),
+            active: false,
+        };
+        let debug_str = format!("{:?}", controller);
+        assert!(debug_str.contains("cgroup_path"));
+        assert!(debug_str.contains("active"));
+    }
 }

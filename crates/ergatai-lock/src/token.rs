@@ -866,4 +866,99 @@ mod tests {
         // Two characters shouldn't match '?'
         assert!(!token.matches_path("src/ab.rs"));
     }
+
+    #[test]
+    fn test_file_token_matches_path_with_bracket_glob() {
+        let token = FileToken::new(
+            "agent".to_string(),
+            "session".to_string(),
+            TokenId::new(),
+            "src/[abc].rs".to_string(),
+            FileMode::Read,
+            None,
+            "system".to_string(),
+            3600,
+            15,
+        );
+        // Bracket matches single character from set
+        assert!(token.matches_path("src/a.rs"));
+        assert!(token.matches_path("src/b.rs"));
+        assert!(token.matches_path("src/c.rs"));
+        // Character outside set shouldn't match
+        assert!(!token.matches_path("src/d.rs"));
+    }
+
+    #[test]
+    fn test_system_token_with_different_ttls() {
+        // Short TTL
+        let short_token = SystemToken::new(
+            "agent".to_string(),
+            "session".to_string(),
+            "/project".to_string(),
+            60, // 1 minute
+            15,
+        );
+        assert!(short_token.is_valid());
+
+        // Long TTL
+        let long_token = SystemToken::new(
+            "agent".to_string(),
+            "session".to_string(),
+            "/project".to_string(),
+            86400, // 24 hours
+            15,
+        );
+        assert!(long_token.is_valid());
+    }
+
+    #[test]
+    fn test_file_token_scope_patterns() {
+        // Test various glob patterns
+        let patterns = vec![
+            ("**/*.rs", "src/main.rs", true),
+            ("**/*.rs", "src/lib/mod.rs", true),
+            ("**/*.rs", "src/main.js", false),
+            ("src/**", "src/main.rs", true),
+            ("src/**", "src/lib/mod.rs", true),
+            ("src/**", "tests/test.rs", false),
+        ];
+
+        for (scope, path, expected) in patterns {
+            let token = FileToken::new(
+                "agent".to_string(),
+                "session".to_string(),
+                TokenId::new(),
+                scope.to_string(),
+                FileMode::Read,
+                None,
+                "system".to_string(),
+                3600,
+                15,
+            );
+            assert_eq!(
+                token.matches_path(path),
+                expected,
+                "Pattern '{}' should {} match path '{}'",
+                scope,
+                if expected { "" } else { "not" },
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn test_file_mode_equality() {
+        assert_eq!(FileMode::Read, FileMode::Read);
+        assert_eq!(FileMode::Write, FileMode::Write);
+        assert_eq!(FileMode::Admin, FileMode::Admin);
+        assert_ne!(FileMode::Read, FileMode::Write);
+        assert_ne!(FileMode::Write, FileMode::Admin);
+    }
+
+    #[test]
+    fn test_token_status_equality() {
+        assert_eq!(TokenStatus::Active, TokenStatus::Active);
+        assert_eq!(TokenStatus::Expired, TokenStatus::Expired);
+        assert_ne!(TokenStatus::Active, TokenStatus::Expired);
+    }
 }

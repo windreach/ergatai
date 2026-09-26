@@ -340,4 +340,21 @@ mod tests {
 
         std::env::remove_var("ERGATAI_MCP_OVER_ACP_ENABLED");
     }
+
+    #[test]
+    fn test_mcp_server_context_default() {
+        let context = McpServerContext::default();
+        assert!(context.agent_id.is_none());
+        assert!(context.workspace_id.is_none());
+    }
+
+    #[test]
+    fn test_mcp_server_context_with_values() {
+        let context = McpServerContext {
+            agent_id: Some("agent-1".to_string()),
+            workspace_id: Some("workspace-1".to_string()),
+        };
+        assert_eq!(context.agent_id, Some("agent-1".to_string()));
+        assert_eq!(context.workspace_id, Some("workspace-1".to_string()));
+    }
 }

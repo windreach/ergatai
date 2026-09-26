@@ -615,13 +615,7 @@ pub async fn list_agents_filtered(filter: AgentListFilter) -> Vec<AgentListItem>
                 }
             }
             if let Some(expected_chat_id) = &chat_id {
-                if info
-                    .handle
-                    .workspace
-                    .metadata
-                    .get("ergatai_chat_id")
-                    != Some(expected_chat_id)
-                {
+                if info.handle.workspace.metadata.get("ergatai_chat_id") != Some(expected_chat_id) {
                     return false;
                 }
             }

@@ -982,4 +982,58 @@ mod tests {
         assert_eq!(json["id"], "ws-minimal");
         assert!(json["capture_thoughts"].is_null());
     }
+
+    #[test]
+    fn test_create_workspace_request_with_unicode_id() {
+        let req: CreateWorkspaceRequest =
+            serde_json::from_value(json!({"id": "workspace-日本語"})).unwrap();
+        assert_eq!(req.id, "workspace-日本語");
+    }
+
+    #[test]
+    fn test_create_workspace_request_with_special_chars_in_id() {
+        let req: CreateWorkspaceRequest =
+            serde_json::from_value(json!({"id": "ws_123-test"})).unwrap();
+        assert_eq!(req.id, "ws_123-test");
+    }
+
+    #[test]
+    fn test_workspace_response_with_complex_metadata() {
+        let mut metadata = HashMap::new();
+        metadata.insert("project".to_string(), "ergatai".to_string());
+        metadata.insert("branch".to_string(), "main".to_string());
+        metadata.insert("version".to_string(), "1.0.0".to_string());
+        let resp = WorkspaceResponse {
+            id: "ws-complex".to_string(),
+            backend: "local".to_string(),
+            metadata,
+            capture_thoughts: Some(false),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["metadata"]["project"], "ergatai");
+        assert_eq!(json["metadata"]["branch"], "main");
+        assert_eq!(json["metadata"]["version"], "1.0.0");
+        assert_eq!(json["capture_thoughts"], false);
+    }
+
+    #[test]
+    fn test_workspace_response_id_formats() {
+        // Test various ID formats
+        let ids = vec![
+            "ws-1",
+            "workspace_with_underscores",
+            "workspace.with.dots",
+            "123-numeric-start",
+        ];
+        for id in ids {
+            let resp = WorkspaceResponse {
+                id: id.to_string(),
+                backend: "local".to_string(),
+                metadata: HashMap::new(),
+                capture_thoughts: None,
+            };
+            let json = serde_json::to_value(&resp).unwrap();
+            assert_eq!(json["id"], id);
+        }
+    }
 }

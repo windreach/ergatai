@@ -302,6 +302,43 @@ mod tests {
     }
 
     #[test]
+    fn test_zero_comparison() {
+        let ctx = DagContext::empty();
+        assert!(Condition::new("0 == 0").evaluate(&ctx));
+        assert!(Condition::new("0 < 1").evaluate(&ctx));
+        assert!(Condition::new("1 > 0").evaluate(&ctx));
+    }
+
+    #[test]
+    fn test_negative_numbers() {
+        let ctx = DagContext::empty();
+        assert!(Condition::new("-1 < 0").evaluate(&ctx));
+        assert!(Condition::new("-1 < 1").evaluate(&ctx));
+    }
+
+    #[test]
+    fn test_complex_logical_expression() {
+        let ctx = DagContext::empty();
+        assert!(Condition::new("(1 == 1 && 2 == 2) && (3 == 3 || 4 == 5)").evaluate(&ctx));
+        assert!(!Condition::new("(1 == 2 || 3 == 4) && (5 == 6)").evaluate(&ctx));
+    }
+
+    #[test]
+    fn test_string_comparison_with_spaces() {
+        let ctx = DagContext::empty();
+        assert!(Condition::new("\"hello world\" == \"hello world\"").evaluate(&ctx));
+        assert!(!Condition::new("\"hello world\" == \"hello  world\"").evaluate(&ctx));
+    }
+
+    #[test]
+    fn test_multiple_template_variables() {
+        let mut ctx = DagContext::empty();
+        ctx.set_global("var1", "value1");
+        ctx.set_global("var2", "value2");
+        assert!(Condition::new("{{global.var1}} == \"value1\" && {{global.var2}} == \"value2\"").evaluate(&ctx));
+    }
+
+    #[test]
     fn test_empty_condition_default_false() {
         let ctx = DagContext::empty();
         // Empty expression evaluates to false (parse_bool treats "" as false)

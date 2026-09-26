@@ -309,6 +309,15 @@ impl MessageSender {
                 .and_then(|p| p.conversation_id.clone())
         });
         if target_sub_chat_id.is_none() {
+            let ensured_conversation_id = self
+                .ensure_target_conversation(&resolved_sender_id, &resolved_target_id, &req.to)
+                .await;
+            if ensured_conversation_id.is_some() {
+                target_sub_chat_id = ensured_conversation_id;
+            }
+        }
+
+        if target_sub_chat_id.is_none() {
             for candidate in [
                 resolved_sender_id.as_str(),
                 from_stable.as_str(),
@@ -561,6 +570,166 @@ impl MessageSender {
                 ),
             },
         }
+    }
+
+    /// Ensure an agent-to-agent target has its own conversation below the chat.
+    ///
+    /// The sender's binding is only used to discover the owning chat. We never
+    /// persist target messages into the supervisor conversation.
+    async fn ensure_target_conversation(
+        &self,
+        sender_id: &str,
+        target_id: &str,
+        target_label: &str,
+    ) -> Option<String> {
+        let sender_id = sender_id.to_string();
+        let seed_conversation_id = match tokio::task::spawn_blocking(move || {
+            user_data_db::group_agent_bindings::find_conversation_id(&sender_id)
+        })
+        .await
+        {
+            Ok(Ok(Some(conversation_id))) => conversation_id,
+            Ok(Ok(None)) => return None,
+            Ok(Err(error)) => {
+                warn!(error = %error, "Failed to resolve sender conversation for agent target");
+                return None;
+            }
+            Err(error) => {
+                warn!(error = %error, "Failed to resolve sender conversation task");
+                return None;
+            }
+        };
+
+        let target_id = target_id.to_string();
+        let target_id_for_lookup = target_id.clone();
+        let context = tokio::task::spawn_blocking(move || -> Result<_, String> {
+            let seed_conversation = user_data_db::conversations::get(&seed_conversation_id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "Sender conversation not found".to_string())?;
+            let chat_id = seed_conversation
+                .parent_id
+                .unwrap_or_else(|| seed_conversation_id.clone());
+            let root_conversation = user_data_db::conversations::get(&chat_id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "Chat conversation not found".to_string())?;
+
+            let existing = user_data_db::group_agent_bindings::list(&chat_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .find(|binding| binding.agent_id == target_id_for_lookup)
+                .map(|binding| binding.conversation_id);
+
+            Ok((chat_id, root_conversation, existing))
+        })
+        .await;
+
+        let (chat_id, root_conversation, existing_conversation_id) = match context {
+            Ok(Ok(context)) => context,
+            Ok(Err(error)) => {
+                warn!(error = %error, "Failed to resolve agent target chat");
+                return None;
+            }
+            Err(error) => {
+                warn!(error = %error, "Failed to resolve agent target chat task");
+                return None;
+            }
+        };
+
+        if let Some(conversation_id) = existing_conversation_id {
+            return Some(conversation_id);
+        }
+
+        let conversation_id = format!("conversation_{}", uuid::Uuid::new_v4());
+        let timestamp = chrono::Utc::now().timestamp();
+        let conversation_id_for_db = conversation_id.clone();
+        let chat_id_for_conversation = chat_id.clone();
+        let chat_id_for_binding = chat_id.clone();
+        let root_conversation_for_db = root_conversation.clone();
+        let target_id_for_db = target_id.clone();
+        let target_label_for_conversation = target_label.to_string();
+        let target_label_for_agent_name = target_label.to_string();
+        let target_label_for_agent_command = target_label.to_string();
+        let conversation_id_for_create = conversation_id_for_db.clone();
+        let conversation_id_for_binding = conversation_id_for_db.clone();
+        let conversation_id_for_agent_session = conversation_id_for_db.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            user_data_db::conversations::create(user_data_db::Conversation {
+                id: conversation_id_for_create,
+                parent_id: Some(chat_id_for_conversation),
+                project_id: root_conversation_for_db.project_id.clone(),
+                workspace_id: root_conversation_for_db.workspace_id.clone(),
+                name: Some(target_label_for_conversation),
+                mode: "agent".to_string(),
+                created_at: timestamp,
+                updated_at: timestamp,
+                archived_at: None,
+            })
+            .map_err(|error| error.to_string())?;
+
+            user_data_db::group_agent_bindings::upsert(user_data_db::GroupAgentBinding {
+                workspace_id: root_conversation_for_db
+                    .workspace_id
+                    .clone()
+                    .unwrap_or_default(),
+                chat_id: chat_id_for_binding,
+                agent_id: target_id_for_db,
+                agent_name: target_label_for_agent_name,
+                agent_command: Some(target_label_for_agent_command),
+                conversation_id: conversation_id_for_binding,
+                created_at: timestamp,
+                updated_at: timestamp,
+            })
+            .map_err(|error| error.to_string())?;
+
+            user_data_db::agent_sessions::upsert(
+                &conversation_id_for_agent_session,
+                None,
+                "agent",
+                timestamp,
+            )
+            .map_err(|error| error.to_string())?;
+
+            Ok(())
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                warn!(error = %error, "Failed to create target agent conversation");
+                return None;
+            }
+            Err(error) => {
+                warn!(error = %error, "Failed to create target agent conversation task");
+                return None;
+            }
+        }
+
+        if let Ok(Ok(Some(session))) = tokio::task::spawn_blocking(move || {
+            crate::services::collaboration_session::find_session_by_chat(&chat_id)
+        })
+        .await
+        {
+            let participant_conversation_id = conversation_id.clone();
+            let participant_agent_id = target_id.clone();
+            if let Err(error) = tokio::task::spawn_blocking(move || {
+                crate::services::collaboration_session::upsert_participant(
+                    &session.id,
+                    crate::services::collaboration_session::ParticipantInput {
+                        conversation_id: participant_conversation_id,
+                        agent_id: participant_agent_id,
+                        role: "peer".to_string(),
+                        status: "ready".to_string(),
+                    },
+                )
+            })
+            .await
+            {
+                warn!(error = %error, "Failed to register target agent participant");
+            }
+        }
+
+        Some(conversation_id)
     }
 
     async fn mark_response_delivered(
@@ -1026,6 +1195,76 @@ pub async fn clear_pending_response(from_agent: &str) {
     if let Some(sender) = get_message_sender() {
         let mut pending = sender.pending_responses.lock().await;
         pending.remove(from_agent);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_agent_message_request_type() {
+        let result = MessageSender::format_agent_message(
+            "agent-1",
+            "Hello",
+            "agent-2",
+            "request",
+            None,
+            None,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["from"], "agent-1");
+        assert_eq!(parsed["message"], "Hello");
+        assert_eq!(parsed["message_type"], "request");
+        assert!(parsed["_reply"].as_str().unwrap().contains("agent-2"));
+        assert!(parsed["_rules"].as_array().unwrap().len() >= 2);
+    }
+
+    #[test]
+    fn test_format_agent_message_response_type() {
+        let result = MessageSender::format_agent_message(
+            "agent-1",
+            "Response",
+            "agent-2",
+            "response",
+            Some("corr-123"),
+            None,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["from"], "agent-1");
+        assert_eq!(parsed["message_type"], "response");
+        assert!(parsed["_reply"].is_null());
+    }
+
+    #[test]
+    fn test_format_agent_message_broadcast_type() {
+        let result = MessageSender::format_agent_message(
+            "agent-1",
+            "Broadcast message",
+            "agent-2",
+            "broadcast",
+            None,
+            Some(60000),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["message_type"], "broadcast");
+        assert!(parsed["_reply"].is_null());
+    }
+
+    #[test]
+    fn test_format_agent_message_unknown_type() {
+        let result = MessageSender::format_agent_message(
+            "agent-1",
+            "Unknown",
+            "agent-2",
+            "unknown_type",
+            None,
+            None,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["message_type"], "unknown_type");
+        // Unknown types are treated like request
+        assert!(parsed["_reply"].as_str().unwrap().contains("agent-2"));
     }
 }
 

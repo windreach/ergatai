@@ -100,4 +100,68 @@ mod tests {
             assert!(is_installed("/bin/sh"));
         }
     }
+
+    #[test]
+    fn detect_binary_returns_pathbuf_for_system_binary() {
+        let result = detect_binary("sh");
+        assert!(result.is_some());
+        assert!(result.unwrap().to_string_lossy().contains("sh"));
+    }
+
+    #[test]
+    fn detect_binary_returns_none_for_empty_command() {
+        assert!(detect_binary("").is_none());
+        assert!(detect_binary("   ").is_none());
+    }
+
+    #[test]
+    fn detect_binary_handles_relative_path() {
+        // Non-existent relative path should return None
+        assert!(detect_binary("./nonexistent-binary-xyz").is_none());
+        assert!(detect_binary("../nonexistent-binary-xyz").is_none());
+    }
+
+    #[test]
+    fn binary_name_trims_whitespace() {
+        assert_eq!(binary_name("  opencode  "), Some("opencode"));
+        assert_eq!(binary_name("\topencode\n"), Some("opencode"));
+    }
+
+    #[test]
+    fn binary_name_with_arguments() {
+        assert_eq!(binary_name("python3 script.py"), Some("python3"));
+        assert_eq!(binary_name("node --version"), Some("node"));
+        assert_eq!(binary_name("go run main.go"), Some("go"));
+    }
+
+    #[test]
+    fn binary_name_with_flags() {
+        assert_eq!(binary_name("cargo build --release"), Some("cargo"));
+        assert_eq!(binary_name("npm install -g package"), Some("npm"));
+    }
+
+    #[test]
+    fn is_installed_with_version_flag() {
+        // Test with version flags
+        assert!(is_installed("sh --version") || is_installed("sh -V"));
+    }
+
+    #[test]
+    fn detect_binary_with_complex_command() {
+        // Complex command should still extract binary name
+        let result = detect_binary("sh -c 'echo hello world'");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn binary_name_preserves_case() {
+        assert_eq!(binary_name("MyBinary arg1"), Some("MyBinary"));
+        assert_eq!(binary_name("CamelCaseBinary"), Some("CamelCaseBinary"));
+    }
+
+    #[test]
+    fn is_installed_returns_false_for_empty_string() {
+        assert!(!is_installed(""));
+        assert!(!is_installed("   "));
+    }
 }

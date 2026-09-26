@@ -150,4 +150,87 @@ mod tests {
 
         std::env::remove_var("ERGATAI_ACP_SERVER_CORS_ORIGINS");
     }
+
+    #[test]
+    fn test_config_from_env_disabled_by_default() {
+        std::env::remove_var("ERGATAI_ACP_SERVER_ENABLED");
+        let config = AcpServerConfig::from_env();
+        assert!(!config.enabled);
+    }
+
+    #[test]
+    fn test_config_from_env_enabled_with_true() {
+        std::env::set_var("ERGATAI_ACP_SERVER_ENABLED", "true");
+        let config = AcpServerConfig::from_env();
+        assert!(config.enabled);
+        std::env::remove_var("ERGATAI_ACP_SERVER_ENABLED");
+    }
+
+    #[test]
+    fn test_config_from_env_enabled_with_TRUE() {
+        std::env::set_var("ERGATAI_ACP_SERVER_ENABLED", "TRUE");
+        let config = AcpServerConfig::from_env();
+        assert!(config.enabled);
+        std::env::remove_var("ERGATAI_ACP_SERVER_ENABLED");
+    }
+
+    #[test]
+    fn test_config_from_env_disabled_with_0() {
+        std::env::set_var("ERGATAI_ACP_SERVER_ENABLED", "0");
+        let config = AcpServerConfig::from_env();
+        assert!(!config.enabled);
+        std::env::remove_var("ERGATAI_ACP_SERVER_ENABLED");
+    }
+
+    #[test]
+    fn test_config_from_env_disabled_with_false() {
+        std::env::set_var("ERGATAI_ACP_SERVER_ENABLED", "false");
+        let config = AcpServerConfig::from_env();
+        assert!(!config.enabled);
+        std::env::remove_var("ERGATAI_ACP_SERVER_ENABLED");
+    }
+
+    #[test]
+    fn test_config_cors_origins_with_whitespace() {
+        std::env::set_var(
+            "ERGATAI_ACP_SERVER_CORS_ORIGINS",
+            " http://localhost:3000 , http://localhost:5173 ",
+        );
+        let config = AcpServerConfig::from_env();
+        assert_eq!(config.cors_origins.len(), 2);
+        assert_eq!(config.cors_origins[0], "http://localhost:3000");
+        assert_eq!(config.cors_origins[1], "http://localhost:5173");
+        std::env::remove_var("ERGATAI_ACP_SERVER_CORS_ORIGINS");
+    }
+
+    #[test]
+    fn test_config_cors_origins_single_origin() {
+        std::env::set_var("ERGATAI_ACP_SERVER_CORS_ORIGINS", "http://localhost:3000");
+        let config = AcpServerConfig::from_env();
+        assert_eq!(config.cors_origins.len(), 1);
+        assert_eq!(config.cors_origins[0], "http://localhost:3000");
+        std::env::remove_var("ERGATAI_ACP_SERVER_CORS_ORIGINS");
+    }
+
+    #[test]
+    fn test_acp_server_config_clone() {
+        let config = AcpServerConfig {
+            enabled: true,
+            cors_origins: vec!["http://localhost:3000".to_string()],
+        };
+        let cloned = config.clone();
+        assert_eq!(cloned.enabled, config.enabled);
+        assert_eq!(cloned.cors_origins, config.cors_origins);
+    }
+
+    #[test]
+    fn test_acp_server_config_debug() {
+        let config = AcpServerConfig {
+            enabled: true,
+            cors_origins: vec!["http://localhost:3000".to_string()],
+        };
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("enabled"));
+        assert!(debug_str.contains("cors_origins"));
+    }
 }

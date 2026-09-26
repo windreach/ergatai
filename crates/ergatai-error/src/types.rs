@@ -598,6 +598,35 @@ mod tests {
     fn test_error_code_display() {
         assert_eq!(ErrorCode::AgentTimeout.as_str(), "ERR_AGENT_TIMEOUT");
         assert_eq!(ErrorCode::Json.as_str(), "ERR_JSON");
+        assert_eq!(ErrorCode::Io.as_str(), "ERR_IO");
+        assert_eq!(ErrorCode::Network.as_str(), "ERR_NETWORK");
+        assert_eq!(ErrorCode::Nats.as_str(), "ERR_NATS");
+        assert_eq!(ErrorCode::Internal.as_str(), "ERR_INTERNAL");
+        assert_eq!(ErrorCode::Channel.as_str(), "ERR_CHANNEL");
+        assert_eq!(ErrorCode::NotFound.as_str(), "ERR_NOT_FOUND");
+        assert_eq!(ErrorCode::InvalidPath.as_str(), "ERR_INVALID_PATH");
+        assert_eq!(ErrorCode::LockConflict.as_str(), "ERR_LOCK_CONFLICT");
+        assert_eq!(ErrorCode::SessionExists.as_str(), "ERR_SESSION_EXISTS");
+        assert_eq!(
+            ErrorCode::DagBudgetExhausted.as_str(),
+            "ERR_DAG_BUDGET_EXHAUSTED"
+        );
+        assert_eq!(
+            ErrorCode::DagDeadlineExceeded.as_str(),
+            "ERR_DAG_DEADLINE_EXCEEDED"
+        );
+        assert_eq!(
+            ErrorCode::ResourceLimitExceeded.as_str(),
+            "ERR_RESOURCE_LIMIT_EXCEEDED"
+        );
+        assert_eq!(
+            ErrorCode::BackendOperationFailed.as_str(),
+            "ERR_BACKEND_OPERATION_FAILED"
+        );
+        assert_eq!(
+            ErrorCode::BackendUnsupported.as_str(),
+            "ERR_BACKEND_UNSUPPORTED"
+        );
     }
 
     #[test]

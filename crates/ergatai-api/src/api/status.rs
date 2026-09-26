@@ -127,4 +127,49 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["nats_port"], 65535);
     }
+
+    #[test]
+    fn test_backend_config_response_serialization() {
+        let resp = BackendConfigResponse {
+            auto_continue: true,
+            max_auto_continues: 5,
+            mcp_over_acp_enabled: true,
+            session_persistence_enabled: false,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["auto_continue"], true);
+        assert_eq!(json["max_auto_continues"], 5);
+        assert_eq!(json["mcp_over_acp_enabled"], true);
+        assert_eq!(json["session_persistence_enabled"], false);
+    }
+
+    #[test]
+    fn test_backend_config_response_defaults() {
+        let resp = BackendConfigResponse {
+            auto_continue: false,
+            max_auto_continues: 0,
+            mcp_over_acp_enabled: false,
+            session_persistence_enabled: false,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["auto_continue"], false);
+        assert_eq!(json["max_auto_continues"], 0);
+    }
+
+    #[test]
+    fn test_backend_config_response_json_shape() {
+        let resp = BackendConfigResponse {
+            auto_continue: true,
+            max_auto_continues: 10,
+            mcp_over_acp_enabled: true,
+            session_persistence_enabled: true,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        let obj = json.as_object().unwrap();
+        assert_eq!(obj.len(), 4);
+        assert!(obj.contains_key("auto_continue"));
+        assert!(obj.contains_key("max_auto_continues"));
+        assert!(obj.contains_key("mcp_over_acp_enabled"));
+        assert!(obj.contains_key("session_persistence_enabled"));
+    }
 }

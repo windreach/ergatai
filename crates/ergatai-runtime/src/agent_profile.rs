@@ -402,4 +402,122 @@ max_concurrency: 5
         );
         assert_eq!(profile.max_concurrency, 5);
     }
+
+    #[test]
+    fn test_get_profile_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let project_root = temp_dir.path();
+
+        let path = get_profile_path(project_root, "test-profile");
+        assert!(path.is_ok());
+        assert!(path
+            .unwrap()
+            .to_string_lossy()
+            .contains("test-profile.yaml"));
+    }
+
+    #[test]
+    fn test_discover_profiles_empty_directory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let project_root = temp_dir.path();
+
+        let profiles = discover_profiles(project_root);
+        assert!(profiles.is_ok());
+        assert!(profiles.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_profile_with_metadata() {
+        let mut profile = AgentProfile::new("test");
+        profile.metadata.insert(
+            "key1".to_string(),
+            serde_json::Value::String("value1".to_string()),
+        );
+        profile.metadata.insert(
+            "key2".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(42)),
+        );
+
+        assert_eq!(
+            profile.metadata.get("key1"),
+            Some(&serde_json::Value::String("value1".to_string()))
+        );
+        assert_eq!(
+            profile.metadata.get("key2"),
+            Some(&serde_json::Value::Number(serde_json::Number::from(42)))
+        );
+        assert_eq!(profile.metadata.get("key3"), None);
+    }
+
+    #[test]
+    fn test_get_profile_path_rejects_path_traversal() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let project_root = temp_dir.path();
+
+        // Test forward slash
+        let result = get_profile_path(project_root, "test/profile");
+        assert!(result.is_err());
+
+        // Test backslash
+        let result = get_profile_path(project_root, r"test\profile");
+        assert!(result.is_err());
+
+        // Test double dot
+        let result = get_profile_path(project_root, "..profile");
+        assert!(result.is_err());
+
+        // Test null byte
+        let result = get_profile_path(project_root, "test\0profile");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_discover_profiles_with_valid_yaml() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let project_root = temp_dir.path();
+        let profiles_dir = project_root.join(".ergatai").join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+
+        let yaml_content = r#"
+name: test-profile
+description: Test profile
+capabilities:
+  - testing
+max_concurrency: 3
+"#;
+        std::fs::write(profiles_dir.join("test.yaml"), yaml_content).unwrap();
+
+        let profiles = discover_profiles(project_root).unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].name, "test-profile");
+        assert_eq!(profiles[0].capabilities, vec!["testing"]);
+        assert_eq!(profiles[0].max_concurrency, 3);
+    }
+
+    #[test]
+    fn test_load_profile_existing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let project_root = temp_dir.path();
+        let profiles_dir = project_root.join(".ergatai").join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+
+        let yaml_content = r#"
+name: my-profile
+description: My profile
+"#;
+        std::fs::write(profiles_dir.join("my-profile.yaml"), yaml_content).unwrap();
+
+        let profile = load_profile(project_root, "my-profile").unwrap();
+        assert!(profile.is_some());
+        assert_eq!(profile.unwrap().name, "my-profile");
+    }
+
+    #[test]
+    fn test_load_profile_nonexistent() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let project_root = temp_dir.path();
+
+        let profile = load_profile(project_root, "nonexistent").unwrap();
+        assert!(profile.is_none());
+    }
 }

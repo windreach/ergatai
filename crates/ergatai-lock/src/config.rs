@@ -437,4 +437,110 @@ mod tests {
         assert!(manager.is_forbidden_path("dist/bundle.js"));
         assert!(!manager.is_forbidden_path("src/main.rs"));
     }
+
+    #[test]
+    fn test_config_with_empty_arrays() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join(".ergatai");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let config_content = r#"{
+            "sensitive_paths": [],
+            "forbidden_paths": []
+        }"#;
+
+        fs::write(config_dir.join("config.json"), config_content).unwrap();
+
+        let manager = ConfigManager::new(temp_dir.path(), None).unwrap();
+        let config = manager.get_config();
+
+        assert_eq!(config.sensitive_paths.len(), 0);
+        assert_eq!(config.forbidden_paths.len(), 0);
+    }
+
+    #[test]
+    fn test_config_with_custom_limits() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join(".ergatai");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let config_content = r#"{
+            "max_snapshot_size": 50000000,
+            "snapshot_retention_days": 30,
+            "audit_retention_months": 12,
+            "max_audit_rows": 500000,
+            "max_scope_size": 500
+        }"#;
+
+        fs::write(config_dir.join("config.json"), config_content).unwrap();
+
+        let manager = ConfigManager::new(temp_dir.path(), None).unwrap();
+        let config = manager.get_config();
+
+        assert_eq!(config.max_snapshot_size, 50_000_000);
+        assert_eq!(config.snapshot_retention_days, 30);
+        assert_eq!(config.audit_retention_months, 12);
+        assert_eq!(config.max_audit_rows, 500_000);
+        assert_eq!(config.max_scope_size, 500);
+    }
+
+    #[test]
+    fn test_reload_when_file_not_changed() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join(".ergatai");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let config_content = r#"{"sensitive_paths": ["test/**"]}"#;
+        fs::write(config_dir.join("config.json"), config_content).unwrap();
+
+        let manager = ConfigManager::new(temp_dir.path(), None).unwrap();
+
+        // First reload should succeed
+        let result = manager.reload_if_changed();
+        assert!(result.is_ok());
+
+        // Second reload without changes should return false
+        let changed = result.unwrap();
+        assert!(!changed);
+    }
+
+    #[test]
+    fn test_is_sensitive_path_with_multiple_patterns() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join(".ergatai");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let config_content = r#"{
+            "sensitive_paths": ["*.key", "*.pem", "secrets/**"]
+        }"#;
+
+        fs::write(config_dir.join("config.json"), config_content).unwrap();
+
+        let manager = ConfigManager::new(temp_dir.path(), None).unwrap();
+
+        assert!(manager.is_sensitive_path("server.key"));
+        assert!(manager.is_sensitive_path("cert.pem"));
+        assert!(manager.is_sensitive_path("secrets/api-token.txt"));
+        assert!(!manager.is_sensitive_path("src/main.rs"));
+    }
+
+    #[test]
+    fn test_is_forbidden_path_with_nested_patterns() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join(".ergatai");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let config_content = r#"{
+            "forbidden_paths": ["build/**", "*.tmp", "cache/*"]
+        }"#;
+
+        fs::write(config_dir.join("config.json"), config_content).unwrap();
+
+        let manager = ConfigManager::new(temp_dir.path(), None).unwrap();
+
+        assert!(manager.is_forbidden_path("build/output/file.txt"));
+        assert!(manager.is_forbidden_path("temp.tmp"));
+        assert!(manager.is_forbidden_path("cache/data.bin"));
+        assert!(!manager.is_forbidden_path("src/main.rs"));
+    }
 }

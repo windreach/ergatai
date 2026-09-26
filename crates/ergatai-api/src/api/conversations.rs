@@ -221,4 +221,93 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_conversation_message_serialization() {
+        let message = ConversationMessage {
+            from: "agent-1".to_string(),
+            to: "agent-2".to_string(),
+            content: "Hello, world!".to_string(),
+            message_type: "request".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_value(&message).unwrap();
+        assert_eq!(json["from"], "agent-1");
+        assert_eq!(json["to"], "agent-2");
+        assert_eq!(json["content"], "Hello, world!");
+        assert_eq!(json["message_type"], "request");
+        assert_eq!(json["timestamp"], "2026-01-01T00:00:00Z");
+        assert_eq!(json.as_object().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn test_conversation_detail_serialization() {
+        let detail = ConversationDetail {
+            id: "conv-1".to_string(),
+            agent_a: "agent-1".to_string(),
+            agent_b: "agent-2".to_string(),
+            state: "Active".to_string(),
+            message_count: 2,
+            completed_rounds: 1,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            last_activity: "2026-01-01T00:05:00Z".to_string(),
+            messages: vec![
+                ConversationMessage {
+                    from: "agent-1".to_string(),
+                    to: "agent-2".to_string(),
+                    content: "Request".to_string(),
+                    message_type: "request".to_string(),
+                    timestamp: "2026-01-01T00:00:00Z".to_string(),
+                },
+                ConversationMessage {
+                    from: "agent-2".to_string(),
+                    to: "agent-1".to_string(),
+                    content: "Response".to_string(),
+                    message_type: "response".to_string(),
+                    timestamp: "2026-01-01T00:01:00Z".to_string(),
+                },
+            ],
+        };
+        let json = serde_json::to_value(&detail).unwrap();
+        assert_eq!(json["id"], "conv-1");
+        assert_eq!(json["message_count"], 2);
+        assert_eq!(json["completed_rounds"], 1);
+        let messages = json["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["from"], "agent-1");
+        assert_eq!(messages[1]["from"], "agent-2");
+    }
+
+    #[test]
+    fn test_conversation_detail_empty_messages() {
+        let detail = ConversationDetail {
+            id: "conv-2".to_string(),
+            agent_a: "agent-1".to_string(),
+            agent_b: "agent-2".to_string(),
+            state: "Terminated".to_string(),
+            message_count: 0,
+            completed_rounds: 0,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            last_activity: "2026-01-01T00:00:00Z".to_string(),
+            messages: vec![],
+        };
+        let json = serde_json::to_value(&detail).unwrap();
+        assert_eq!(json["message_count"], 0);
+        let messages = json["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 0);
+    }
+
+    #[test]
+    fn test_message_type_stats_serialization() {
+        let stats = MessageTypeStats {
+            message_type: "request".to_string(),
+            count: 100,
+            percentage: 50.5,
+        };
+        let json = serde_json::to_value(&stats).unwrap();
+        assert_eq!(json["message_type"], "request");
+        assert_eq!(json["count"], 100);
+        assert_eq!(json["percentage"], 50.5);
+        assert_eq!(json.as_object().unwrap().len(), 3);
+    }
 }

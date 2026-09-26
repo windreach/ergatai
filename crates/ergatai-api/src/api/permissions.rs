@@ -339,4 +339,47 @@ mod tests {
         assert!(PermissionDecisionKind::parse("invalid").is_none());
         assert!(PermissionDecisionKind::parse("").is_none());
     }
+
+    #[test]
+    fn test_permission_decision_kind_parse_case_sensitive() {
+        // Parse is case-sensitive (lowercase only)
+        assert!(PermissionDecisionKind::parse("ALLOW_ONCE").is_none());
+        assert!(PermissionDecisionKind::parse("Allow_Once").is_none());
+        assert!(PermissionDecisionKind::parse("REJECT_ALWAYS").is_none());
+        // Only lowercase works
+        assert!(PermissionDecisionKind::parse("allow_once").is_some());
+    }
+
+    #[test]
+    fn test_permission_decision_kind_parse_whitespace() {
+        // Test with whitespace
+        assert!(PermissionDecisionKind::parse("  ").is_none());
+        assert!(PermissionDecisionKind::parse("\t").is_none());
+    }
+
+    #[test]
+    fn test_respond_permission_body_empty_form_data() {
+        let json = r#"{"decision": "allow_once", "form_data": {}}"#;
+        let body: RespondPermissionBody = serde_json::from_str(json).unwrap();
+        assert_eq!(body.decision, "allow_once");
+        assert!(body.form_data.is_some());
+        let form_data = body.form_data.unwrap();
+        assert!(form_data.is_object());
+        assert_eq!(form_data.as_object().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_respond_permission_body_missing_decision() {
+        let json = r#"{}"#;
+        let result: Result<RespondPermissionBody, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_mode_body_invalid_mode() {
+        // Any string is accepted for mode (validation happens elsewhere)
+        let json = r#"{"mode": "custom_mode"}"#;
+        let body: SetModeBody = serde_json::from_str(json).unwrap();
+        assert_eq!(body.mode, "custom_mode");
+    }
 }

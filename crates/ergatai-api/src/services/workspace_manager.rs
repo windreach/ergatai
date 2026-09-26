@@ -784,8 +784,51 @@ mod tests {
     }
 
     #[test]
+    fn test_canonical_path_with_trailing_slash() {
+        let result = canonical_path("/tmp/");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "/tmp");
+    }
+
+    #[test]
     fn test_now() {
         let timestamp = now();
         assert!(timestamp > 0);
+    }
+
+    #[test]
+    fn test_validate_json_settings_with_empty_env() {
+        let env = Some(HashMap::new());
+        let result = validate_json_settings(env, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_json_settings_with_multiple_env_vars() {
+        let env = Some(HashMap::from([
+            ("KEY1".to_string(), "value1".to_string()),
+            ("KEY2".to_string(), "value2".to_string()),
+            ("KEY3".to_string(), "value3".to_string()),
+        ]));
+        let result = validate_json_settings(env, None);
+        assert!(result.is_ok());
+        let (env_json, _) = result.unwrap();
+        assert!(env_json.contains("KEY1"));
+        assert!(env_json.contains("KEY2"));
+        assert!(env_json.contains("KEY3"));
+    }
+
+    #[test]
+    fn test_validate_resource_json_with_zero_values() {
+        let json = r#"{"max_cpu": 0.0, "max_memory_mb": 0}"#;
+        let result = validate_resource_json(json);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_resource_json_with_large_values() {
+        let json = r#"{"max_cpu": 128.0, "max_memory_mb": 65536}"#;
+        let result = validate_resource_json(json);
+        assert!(result.is_ok());
     }
 }

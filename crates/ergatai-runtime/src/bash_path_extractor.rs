@@ -528,4 +528,38 @@ mod tests {
         let paths = extract_bash_write_targets("ln -s target.txt link.txt");
         assert_eq!(paths, vec!["link.txt"]);
     }
+
+    #[test]
+    fn test_multiple_redirects_same_command() {
+        let paths = extract_bash_write_targets("cmd > out1.txt > out2.txt");
+        let mut paths = paths;
+        paths.sort();
+        assert_eq!(paths, vec!["out1.txt", "out2.txt"]);
+    }
+
+    #[test]
+    fn test_command_without_writes() {
+        let paths = extract_bash_write_targets("ls -la");
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_cat_without_redirect() {
+        let paths = extract_bash_write_targets("cat file.txt");
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_multiple_commands_with_semicolon() {
+        let paths = extract_bash_write_targets("echo a > file1.txt; echo b > file2.txt");
+        let mut paths = paths;
+        paths.sort();
+        assert_eq!(paths, vec!["file1.txt", "file2.txt"]);
+    }
+
+    #[test]
+    fn test_path_with_absolute_path() {
+        let paths = extract_bash_write_targets("echo hello > /tmp/output.txt");
+        assert_eq!(paths, vec!["/tmp/output.txt"]);
+    }
 }

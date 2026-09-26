@@ -856,19 +856,59 @@ pub async fn send_message(
             }
         };
 
-        // Get the actual chat_id from sub_chat_id or fallback to workspace_id
-        let chat_id = if let Some(sub_chat_id) = &req.sub_chat_id {
-            let sub_chat_id_for_get = sub_chat_id.clone();
-            match tokio::task::spawn_blocking(move || {
-                crate::user_data_db::sub_chats::get(&sub_chat_id_for_get)
+        // Resolve the owning chat from the collaboration conversation. Legacy
+        // sub-chat IDs are still accepted for old clients, but never fall back
+        // to the supervisor conversation.
+        let Some(requested_conversation_id) = req.sub_chat_id.clone() else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "status": "error",
+                    "message": "sub_chat_id is required for agent-to-agent routing",
+                })),
+            )
+                .into_response();
+        };
+
+        let chat_id = {
+            let requested_conversation_id = requested_conversation_id.clone();
+            match tokio::task::spawn_blocking(move || -> Result<String, String> {
+                if let Ok(Some(conversation)) =
+                    crate::user_data_db::conversations::get(&requested_conversation_id)
+                {
+                    return Ok(conversation.parent_id.unwrap_or(conversation.id));
+                }
+                if let Ok(Some(sub_chat)) =
+                    crate::user_data_db::sub_chats::get(&requested_conversation_id)
+                {
+                    return Ok(sub_chat.chat_id);
+                }
+                Err("Conversation not found for agent-to-agent routing".to_string())
             })
             .await
             {
-                Ok(Ok(Some(sub_chat))) => sub_chat.chat_id,
-                _ => sender_info.workspace_id.clone(), // Fallback to workspace_id if sub_chat not found
+                Ok(Ok(chat_id)) => chat_id,
+                Ok(Err(message)) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({
+                            "status": "error",
+                            "message": message,
+                        })),
+                    )
+                        .into_response();
+                }
+                Err(error) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "status": "error",
+                            "message": format!("Failed to resolve chat: {error}"),
+                        })),
+                    )
+                        .into_response();
+                }
             }
-        } else {
-            sender_info.workspace_id.clone()
         };
 
         // Check if we should force a new session
@@ -894,7 +934,8 @@ pub async fn send_message(
                             crate::services::agent_service::get_agent_info(&binding.agent_id).await
                         {
                             if target_info.lifecycle.is_alive() {
-                                // Route to this existing agent
+                                // Route to this existing agent's own conversation.
+                                let target_conversation_id = binding.conversation_id.clone();
                                 let send_req = SendRequest {
                                     from: req.from.unwrap_or_else(|| id.clone()),
                                     to: binding.agent_id.clone(),
@@ -903,7 +944,7 @@ pub async fn send_message(
                                         .message_type
                                         .unwrap_or_else(|| "request".to_string()),
                                     correlation_id: req.correlation_id,
-                                    sub_chat_id: req.sub_chat_id,
+                                    sub_chat_id: Some(target_conversation_id),
                                 };
 
                                 match sender.send(send_req).await {
@@ -1083,15 +1124,73 @@ pub async fn send_message(
                     "Spawned new agent for agent-to-agent routing"
                 );
 
-                // Bind the new agent to the chat
+                // Bind the new agent to its own conversation below the chat.
                 let now = chrono::Utc::now().timestamp();
+                let agent_conversation_id = format!("conversation_{}", uuid::Uuid::new_v4());
+                let chat_id_for_conversation = chat_id.clone();
+                let workspace_id_for_conversation = sender_info.workspace_id.clone();
+                let agent_command_for_name = target_command.clone();
+                let conversation_id_for_create = agent_conversation_id.clone();
+                let create_conversation =
+                    tokio::task::spawn_blocking(move || -> Result<String, rusqlite::Error> {
+                        let Some(root_conversation) =
+                            crate::user_data_db::conversations::get(&chat_id_for_conversation)?
+                        else {
+                            return Err(rusqlite::Error::InvalidParameterName(
+                                "chat conversation not found".to_string(),
+                            ));
+                        };
+
+                        crate::user_data_db::conversations::create(
+                            crate::user_data_db::Conversation {
+                                id: conversation_id_for_create.clone(),
+                                parent_id: Some(chat_id_for_conversation),
+                                project_id: root_conversation.project_id,
+                                workspace_id: root_conversation
+                                    .workspace_id
+                                    .or(Some(workspace_id_for_conversation)),
+                                name: Some(agent_command_for_name),
+                                mode: "agent".to_string(),
+                                created_at: now,
+                                updated_at: now,
+                                archived_at: None,
+                            },
+                        )?;
+                        Ok(conversation_id_for_create)
+                    })
+                    .await;
+
+                let agent_conversation_id = match create_conversation {
+                    Ok(Ok(conversation_id)) => conversation_id,
+                    Ok(Err(error)) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({
+                                "status": "error",
+                                "message": format!("Failed to create agent conversation: {error}"),
+                            })),
+                        )
+                            .into_response();
+                    }
+                    Err(error) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({
+                                "status": "error",
+                                "message": format!("Failed to create agent conversation: {error}"),
+                            })),
+                        )
+                            .into_response();
+                    }
+                };
+
                 let binding = crate::user_data_db::GroupAgentBinding {
                     workspace_id: sender_info.workspace_id.clone(),
                     chat_id: chat_id.clone(),
                     agent_id: new_agent_id.clone(),
                     agent_name: target_command.clone(),
                     agent_command: Some(target_command.clone()),
-                    conversation_id: req.sub_chat_id.clone().unwrap_or_else(|| chat_id.clone()),
+                    conversation_id: agent_conversation_id.clone(),
                     created_at: now,
                     updated_at: now,
                 };
@@ -1107,11 +1206,63 @@ pub async fn send_message(
                     );
                 }
 
-                // Get session ID
-                let _session_id =
+                // Bind the runtime agent session to the new conversation.
+                let session_id =
                     crate::services::agent_service::get_agent_session_id(&new_agent_id)
                         .await
                         .unwrap_or_default();
+                let conversation_id_for_agent_session = agent_conversation_id.clone();
+                if let Err(error) = tokio::task::spawn_blocking(move || {
+                    crate::user_data_db::agent_sessions::upsert(
+                        &conversation_id_for_agent_session,
+                        Some(&session_id),
+                        "agent",
+                        now,
+                    )
+                })
+                .await
+                {
+                    tracing::warn!(error = %error, "Failed to bind agent session to conversation");
+                }
+
+                // Register the conversation in the collaboration session.
+                let chat_id_for_participant = chat_id.clone();
+                let session_for_participant = tokio::task::spawn_blocking(move || {
+                    crate::services::collaboration_session::find_session_by_chat(
+                        &chat_id_for_participant,
+                    )
+                })
+                .await;
+                let new_agent_id_for_participant = new_agent_id.clone();
+                match session_for_participant {
+                    Ok(Ok(Some(session))) => {
+                        let participant_conversation_id = agent_conversation_id.clone();
+                        if let Err(error) = tokio::task::spawn_blocking(move || {
+                            crate::services::collaboration_session::upsert_participant(
+                                &session.id,
+                                crate::services::collaboration_session::ParticipantInput {
+                                    conversation_id: participant_conversation_id,
+                                    agent_id: new_agent_id_for_participant,
+                                    role: "peer".to_string(),
+                                    status: "ready".to_string(),
+                                },
+                            )
+                        })
+                        .await
+                        {
+                            tracing::warn!(error = %error, "Failed to register collaboration participant");
+                        }
+                    }
+                    Ok(Ok(None)) => {
+                        tracing::warn!(chat_id = %chat_id, "Collaboration session not found for spawned agent");
+                    }
+                    Ok(Err(error)) => {
+                        tracing::warn!(error = %error, "Failed to resolve collaboration session");
+                    }
+                    Err(error) => {
+                        tracing::warn!(error = %error, "Failed to resolve collaboration session");
+                    }
+                }
 
                 // Now send the message to the new agent
                 let send_req = SendRequest {
@@ -1120,7 +1271,7 @@ pub async fn send_message(
                     message: req.message,
                     message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
                     correlation_id: req.correlation_id,
-                    sub_chat_id: req.sub_chat_id,
+                    sub_chat_id: Some(agent_conversation_id),
                 };
 
                 return match sender.send(send_req).await {
@@ -3342,5 +3493,115 @@ mod tests {
         assert_eq!(json["error"], "something went wrong");
         // Only one field
         assert_eq!(json.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_spawn_agent_request_with_empty_workspace_id() {
+        let req: SpawnAgentRequest = serde_json::from_value(json!({
+            "workspace_id": "",
+            "command": "claude"
+        }))
+        .unwrap();
+        assert_eq!(req.workspace_id.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn test_spawn_agent_request_with_complex_env() {
+        let req: SpawnAgentRequest = serde_json::from_value(json!({
+            "workspace_id": "ws-1",
+            "command": "claude",
+            "env": {
+                "PATH": "/usr/bin",
+                "HOME": "/home/user",
+                "CUSTOM_VAR": "value with spaces"
+            }
+        }))
+        .unwrap();
+        let env = req.env.unwrap();
+        assert_eq!(env.len(), 3);
+        assert_eq!(env.get("CUSTOM_VAR").unwrap(), "value with spaces");
+    }
+
+    #[test]
+    fn test_agent_info_response_with_all_optional_fields() {
+        let resp = AgentInfoResponse {
+            agent_id: "a-1".to_string(),
+            stable_id: Some("stable-1".to_string()),
+            agent_uuid: "uuid-1".to_string(),
+            workspace_id: "ws-1".to_string(),
+            work_dir: "/workspace".to_string(),
+            state: "running".to_string(),
+            lifecycle_state: "running".to_string(),
+            task_id: Some("task-123".to_string()),
+            mcp_agent_id: Some("mcp-1".to_string()),
+            is_alive: true,
+            is_idle: true,
+            is_processing: true,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            last_heartbeat: "2026-01-01T00:00:00Z".to_string(),
+            session_title: Some("title".to_string()),
+            session_id: Some("session-1".to_string()),
+            stop_reason: Some("end_turn".to_string()),
+            continuation_count: 5,
+            config_options: Some(vec![]),
+            profile: Some("profile-1".to_string()),
+            capabilities: vec!["cap1".to_string(), "cap2".to_string()],
+            state_changed_at: "2026-01-01T00:00:00Z".to_string(),
+            state_history: vec![],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["task_id"], "task-123");
+        assert_eq!(json["mcp_agent_id"], "mcp-1");
+        assert_eq!(json["is_idle"], true);
+        assert_eq!(json["is_processing"], true);
+        assert_eq!(json["continuation_count"], 5);
+    }
+
+    #[test]
+    fn test_agent_info_response_with_null_optional_fields() {
+        let resp = AgentInfoResponse {
+            agent_id: "a-1".to_string(),
+            stable_id: None,
+            agent_uuid: "uuid-1".to_string(),
+            workspace_id: "ws-1".to_string(),
+            work_dir: "/workspace".to_string(),
+            state: "terminated".to_string(),
+            lifecycle_state: "terminated".to_string(),
+            task_id: None,
+            mcp_agent_id: None,
+            is_alive: false,
+            is_idle: false,
+            is_processing: false,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            last_heartbeat: "2026-01-01T00:00:00Z".to_string(),
+            session_title: None,
+            session_id: None,
+            stop_reason: None,
+            continuation_count: 0,
+            config_options: None,
+            profile: None,
+            capabilities: vec![],
+            state_changed_at: "2026-01-01T00:00:00Z".to_string(),
+            state_history: vec![],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["stable_id"].is_null());
+        assert!(json["task_id"].is_null());
+        assert!(json["session_title"].is_null());
+        assert_eq!(json["is_alive"], false);
+    }
+
+    #[test]
+    fn test_send_message_request_with_unicode() {
+        let req: SendMessageRequest =
+            serde_json::from_value(json!({"message": "Hello 世界 🌍"})).unwrap();
+        assert_eq!(req.message, "Hello 世界 🌍");
+    }
+
+    #[test]
+    fn test_send_message_request_with_multiline() {
+        let req: SendMessageRequest =
+            serde_json::from_value(json!({"message": "line1\nline2\nline3"})).unwrap();
+        assert_eq!(req.message, "line1\nline2\nline3");
     }
 }

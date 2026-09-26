@@ -241,4 +241,35 @@ mod tests {
         store.remove_session("agent-1").unwrap();
         assert!(store.load_session("agent-1").unwrap().is_none());
     }
+
+    #[test]
+    fn open_creates_parent_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("subdir").join("sessions.db");
+        let store = SessionStore::open(&db_path);
+        assert!(store.is_ok());
+        assert!(db_path.exists());
+    }
+
+    #[test]
+    fn remove_nonexistent_session_succeeds() {
+        let store = temp_store();
+        // Removing a non-existent session should not error
+        let result = store.remove_session("nonexistent");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn session_record_fields_accessible() {
+        let record = SessionRecord {
+            agent_uuid: "agent-1".to_string(),
+            session_id: "sess-1".to_string(),
+            command: "cmd".to_string(),
+            cwd: "/workspace".to_string(),
+        };
+        assert_eq!(record.agent_uuid, "agent-1");
+        assert_eq!(record.session_id, "sess-1");
+        assert_eq!(record.command, "cmd");
+        assert_eq!(record.cwd, "/workspace");
+    }
 }

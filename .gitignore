@@ -69,3 +69,5 @@ target/llvm-cov/
 adapters/claude-agent-acp/
 adapters/codex-acp/
 docs/acp/rust-sdk/
+coverage.lcov
+*.lcov

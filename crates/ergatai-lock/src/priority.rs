@@ -12,3 +12,39 @@ pub fn priority_to_number(priority: &Option<String>) -> Option<u8> {
         _ => 2, // Default to medium
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_priority_none_returns_none() {
+        assert_eq!(priority_to_number(&None), None);
+    }
+
+    #[test]
+    fn test_priority_high() {
+        assert_eq!(priority_to_number(&Some("high".to_string())), Some(3));
+        assert_eq!(priority_to_number(&Some("HIGH".to_string())), Some(3));
+        assert_eq!(priority_to_number(&Some("High".to_string())), Some(3));
+    }
+
+    #[test]
+    fn test_priority_medium() {
+        assert_eq!(priority_to_number(&Some("medium".to_string())), Some(2));
+        assert_eq!(priority_to_number(&Some("MEDIUM".to_string())), Some(2));
+    }
+
+    #[test]
+    fn test_priority_low() {
+        assert_eq!(priority_to_number(&Some("low".to_string())), Some(1));
+        assert_eq!(priority_to_number(&Some("LOW".to_string())), Some(1));
+    }
+
+    #[test]
+    fn test_priority_unknown_defaults_to_medium() {
+        assert_eq!(priority_to_number(&Some("unknown".to_string())), Some(2));
+        assert_eq!(priority_to_number(&Some("".to_string())), Some(2));
+        assert_eq!(priority_to_number(&Some("invalid".to_string())), Some(2));
+    }
+}
