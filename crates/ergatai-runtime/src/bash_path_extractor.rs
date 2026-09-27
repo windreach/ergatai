@@ -18,7 +18,6 @@
 //!
 //! - Cannot resolve shell variables (`$FILE`) or command substitution (`$(...)`)
 //! - Cannot handle complex pipelines with dynamic paths
-//! - Cannot parse quoted strings with spaces (simple whitespace tokenization)
 //! - Extraction failures return empty paths (caller decides to proceed or reject)
 //!
 //! # Design
@@ -57,8 +56,10 @@ use std::collections::HashSet;
 pub fn extract_bash_write_targets(cmd: &str) -> Vec<String> {
     let mut paths = HashSet::new();
 
-    // Split command into tokens (simple whitespace split, no shell parsing)
-    let tokens: Vec<&str> = cmd.split_whitespace().collect();
+    // Split command into tokens with shell-aware tokenization.
+    // Handles quoted strings (both single and double quotes) that may contain spaces.
+    // Uses a simple state machine to track quote state.
+    let tokens = shell_tokenize(cmd);
 
     if tokens.is_empty() {
         return Vec::new();
@@ -66,7 +67,7 @@ pub fn extract_bash_write_targets(cmd: &str) -> Vec<String> {
 
     // Pattern 1: Output redirection (> or >>)
     for (i, token) in tokens.iter().enumerate() {
-        if *token == ">" || *token == ">>" || *token == "1>" || *token == "2>" {
+        if token == ">" || token == ">>" || token == "1>" || token == "2>" {
             if let Some(target) = tokens.get(i + 1) {
                 let normalized = normalize_path(target);
                 if is_likely_file_path(&normalized) {
@@ -77,10 +78,10 @@ pub fn extract_bash_write_targets(cmd: &str) -> Vec<String> {
     }
 
     // Pattern 2: sed -i (in-place edit)
-    if tokens.contains(&"sed") && tokens.contains(&"-i") {
+    if tokens.contains(&"sed".to_string()) && tokens.contains(&"-i".to_string()) {
         // Find the file argument (last non-option token after sed)
         for token in tokens.iter().rev() {
-            if *token != "sed" && *token != "-i" && !token.starts_with('-') {
+            if token != "sed" && token != "-i" && !token.starts_with('-') {
                 let normalized = normalize_path(token);
                 if is_likely_file_path(&normalized) {
                     paths.insert(normalized);
@@ -91,9 +92,11 @@ pub fn extract_bash_write_targets(cmd: &str) -> Vec<String> {
     }
 
     // Pattern 3: perl -pi (in-place edit)
-    if tokens.contains(&"perl") && (tokens.contains(&"-pi") || tokens.contains(&"-p")) {
+    if tokens.contains(&"perl".to_string())
+        && (tokens.contains(&"-pi".to_string()) || tokens.contains(&"-p".to_string()))
+    {
         for token in tokens.iter().rev() {
-            if *token != "perl" && *token != "-pi" && *token != "-p" && !token.starts_with('-') {
+            if token != "perl" && token != "-pi" && token != "-p" && !token.starts_with('-') {
                 let normalized = normalize_path(token);
                 if is_likely_file_path(&normalized) {
                     paths.insert(normalized);
@@ -104,7 +107,7 @@ pub fn extract_bash_write_targets(cmd: &str) -> Vec<String> {
     }
 
     // Pattern 4: tee
-    if let Some(tee_idx) = tokens.iter().position(|t| *t == "tee") {
+    if let Some(tee_idx) = tokens.iter().position(|t| t == "tee") {
         for token in &tokens[tee_idx + 1..] {
             let normalized = normalize_path(token);
             if is_likely_file_path(&normalized) {
@@ -115,7 +118,7 @@ pub fn extract_bash_write_targets(cmd: &str) -> Vec<String> {
 
     // Pattern 5: mv / cp / ln (target is last argument)
     for cmd_name in ["mv", "cp", "ln"] {
-        if let Some(idx) = tokens.iter().position(|t| *t == cmd_name) {
+        if let Some(idx) = tokens.iter().position(|t| t == cmd_name) {
             // Find last non-option token
             for token in tokens[idx + 1..].iter().rev() {
                 if !token.starts_with('-') {
@@ -130,8 +133,8 @@ pub fn extract_bash_write_targets(cmd: &str) -> Vec<String> {
     }
 
     // Pattern 6: curl -o / wget -O (output file)
-    if tokens.contains(&"curl") {
-        if let Some(o_idx) = tokens.iter().position(|t| *t == "-o") {
+    if tokens.contains(&"curl".to_string()) {
+        if let Some(o_idx) = tokens.iter().position(|t| t == "-o") {
             if let Some(target) = tokens.get(o_idx + 1) {
                 let normalized = normalize_path(target);
                 if is_likely_file_path(&normalized) {
@@ -141,8 +144,8 @@ pub fn extract_bash_write_targets(cmd: &str) -> Vec<String> {
         }
     }
 
-    if tokens.contains(&"wget") {
-        if let Some(o_idx) = tokens.iter().position(|t| *t == "-O") {
+    if tokens.contains(&"wget".to_string()) {
+        if let Some(o_idx) = tokens.iter().position(|t| t == "-O") {
             if let Some(target) = tokens.get(o_idx + 1) {
                 let normalized = normalize_path(target);
                 if is_likely_file_path(&normalized) {
@@ -153,7 +156,7 @@ pub fn extract_bash_write_targets(cmd: &str) -> Vec<String> {
     }
 
     // Pattern 7: rm (delete)
-    if let Some(rm_idx) = tokens.iter().position(|t| *t == "rm") {
+    if let Some(rm_idx) = tokens.iter().position(|t| t == "rm") {
         for token in &tokens[rm_idx + 1..] {
             if !token.starts_with('-') {
                 let normalized = normalize_path(token);
@@ -165,7 +168,7 @@ pub fn extract_bash_write_targets(cmd: &str) -> Vec<String> {
     }
 
     // Pattern 8: mkdir (create)
-    if let Some(mkdir_idx) = tokens.iter().position(|t| *t == "mkdir") {
+    if let Some(mkdir_idx) = tokens.iter().position(|t| t == "mkdir") {
         for token in &tokens[mkdir_idx + 1..] {
             if !token.starts_with('-') {
                 let normalized = normalize_path(token);
@@ -177,6 +180,59 @@ pub fn extract_bash_write_targets(cmd: &str) -> Vec<String> {
     }
 
     paths.into_iter().collect()
+}
+
+/// Shell-aware tokenization that handles quoted strings.
+///
+/// Uses a simple state machine to track quote state:
+/// - Unquoted: split on whitespace
+/// - Single-quoted: preserve everything until closing single quote
+/// - Double-quoted: preserve everything until closing double quote
+///
+/// Returns owned Strings because quoted strings need quote stripping.
+fn shell_tokenize(cmd: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current_token = String::new();
+    let chars = cmd.chars().peekable();
+
+    #[derive(PartialEq)]
+    enum State {
+        Unquoted,
+        SingleQuoted,
+        DoubleQuoted,
+    }
+    let mut state = State::Unquoted;
+
+    for ch in chars {
+        match state {
+            State::Unquoted => match ch {
+                '\'' => state = State::SingleQuoted,
+                '"' => state = State::DoubleQuoted,
+                c if c.is_whitespace() => {
+                    if !current_token.is_empty() {
+                        tokens.push(current_token.clone());
+                        current_token.clear();
+                    }
+                }
+                c => current_token.push(c),
+            },
+            State::SingleQuoted => match ch {
+                '\'' => state = State::Unquoted,
+                c => current_token.push(c),
+            },
+            State::DoubleQuoted => match ch {
+                '"' => state = State::Unquoted,
+                c => current_token.push(c),
+            },
+        }
+    }
+
+    // Don't forget the last token
+    if !current_token.is_empty() {
+        tokens.push(current_token);
+    }
+
+    tokens
 }
 
 /// Check if a token looks like a file path (not a variable, URL, or option).
@@ -374,12 +430,10 @@ mod tests {
     }
 
     #[test]
-    fn test_quoted_path_limitation() {
-        // LIMITATION: Simple whitespace tokenization cannot handle quoted strings with spaces
-        // "output file.txt" is split into two tokens: "output and file.txt"
-        // Only the first part after quote stripping is extracted
+    fn test_quoted_path_with_spaces() {
+        // Shell-aware tokenization now handles quoted strings with spaces
         let paths = extract_bash_write_targets("echo hello > \"output file.txt\"");
-        assert_eq!(paths, vec!["output"]);
+        assert_eq!(paths, vec!["output file.txt"]);
     }
 
     #[test]
@@ -423,9 +477,8 @@ mod tests {
     #[test]
     fn test_redirect_with_quotes() {
         let paths = extract_bash_write_targets("echo hello > \"output file.txt\"");
-        // Simple whitespace split doesn't handle quoted strings correctly
-        // This is a known limitation - quotes are not parsed
-        assert_eq!(paths, vec!["output"]);
+        // Shell-aware tokenization handles quoted strings correctly
+        assert_eq!(paths, vec!["output file.txt"]);
     }
 
     #[test]

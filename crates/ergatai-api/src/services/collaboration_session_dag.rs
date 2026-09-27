@@ -889,6 +889,27 @@ pub async fn replace_session_plan_revision(
             session_id,
             "Failed to register replacement DAG scheduler after clearing old one"
         );
+        // Transition session to Failed state since we can't recover the old scheduler
+        // and can't register the new one. The session is now in an unrecoverable state.
+        let _ = transition_if_allowed(
+            session_id,
+            SessionState::Failed,
+            "Failed to register replacement plan revision due to concurrent modification",
+        )
+        .await;
+        let _ = append_context_event(
+            session_id,
+            "dag_failed",
+            "system",
+            None,
+            &serde_json::json!({
+                "dagId": dag_id,
+                "planRevisionId": revision.id,
+                "error": "Failed to register replacement plan revision due to concurrent modification",
+            }),
+            "system",
+            &[],
+        );
         return Err(CollaborationSessionDagError::Execution(
             "Failed to register replacement plan revision due to concurrent modification"
                 .to_string(),

@@ -32,6 +32,12 @@ use admission::{
     RateLimitGate, SelfMessageGate,
 };
 
+// Default timeout for agent requests: 5 minutes (300,000 ms).
+//
+// This was previously 30 seconds but was increased to 5 minutes to accommodate
+// longer-running operations (e.g., large code generation, complex refactoring tasks).
+// Agents performing multi-step work or waiting for user input may need more than 30s.
+// Can be overridden via ERGATAI_AGENT_REQUEST_TIMEOUT_MS environment variable.
 const DEFAULT_AGENT_REQUEST_TIMEOUT_MS: u64 = 300_000;
 
 /// Default working directory for auto-spawned agents when no work_dir is specified.

@@ -914,10 +914,11 @@ enum AcpCommand {
         images: Vec<crate::types::AgentImage>,
         response_tx: oneshot::Sender<ErgataiResult<()>>,
     },
-    /// Queue a prompt without waiting for the agent turn to complete.
+    /// Queue a prompt and wait for completion (so prompt failures can be observed).
     QueuePrompt {
         message: String,
         images: Vec<crate::types::AgentImage>,
+        response_tx: oneshot::Sender<ErgataiResult<()>>,
     },
     /// Cancel the current prompt turn (sends `session/cancel` notification).
     Cancel {
@@ -2335,7 +2336,7 @@ impl AcpBackendInterface for AcpBackend {
                                     source: crate::permission_service::PermissionSource::Elicitation,
                                     created_at_ms: crate::permission_service::now_ms(),
                                 },
-                            );
+                            ).await;
 
                             // Create a oneshot channel for the response.
                             let (response_tx, response_rx) = tokio::sync::oneshot::channel::<ElicitationResponse>();
@@ -2521,7 +2522,7 @@ impl AcpBackendInterface for AcpBackend {
                     // Step 3: Command loop — receive prompts from the channel and send to agent.
                     loop {
                         match command_rx.recv().await {
-                            Some(AcpCommand::QueuePrompt { message, images }) => {
+                            Some(AcpCommand::QueuePrompt { message, images, response_tx }) => {
                                 task_text_output_seen.store(false, Ordering::Relaxed);
                                 let prompt_started_at = Instant::now();
                                 info!(
@@ -2572,9 +2573,13 @@ impl AcpBackendInterface for AcpBackend {
                                         let _ = task_output_tx.send(AgentOutputEvent::Done {
                                             stop_reason: sr,
                                         });
+                                        let _ = response_tx.send(Ok(()));
                                     }
                                     Err(e) => {
                                         warn!(error = %e, "ACP queued prompt failed");
+                                        let _ = response_tx.send(Err(ErgataiError::internal(
+                                            format!("ACP queued prompt failed: {e}"),
+                                        )));
                                     }
                                 }
                             }
@@ -3048,17 +3053,23 @@ impl AcpBackendInterface for AcpBackend {
             }
         };
 
+        let (response_tx, response_rx) = oneshot::channel();
         command_tx
             .send(AcpCommand::QueuePrompt {
                 message: message.to_string(),
                 images: images.to_vec(),
+                response_tx,
             })
             .await
             .map_err(|_| ErgataiError::internal("ACP command channel closed"))?;
 
-        // The prompt is queued per agent. Return after the command channel accepts
-        // it so message delivery is not blocked by a long-running prior prompt.
-        Ok(())
+        // Wait for the prompt to complete so we can observe failures.
+        // NATS consumer acks immediately, so if the prompt fails and we don't
+        // observe it, the message is silently lost.
+        match response_rx.await {
+            Ok(result) => result,
+            Err(_) => Err(ErgataiError::internal("ACP response channel closed")),
+        }
     }
 
     async fn capture_output(&self, handle: &AgentHandle) -> ErgataiResult<Option<String>> {

@@ -86,6 +86,9 @@ impl AgentRegistry {
 
     /// Register a new agent.
     ///
+    /// Returns `true` if this was a replacement (agent already existed),
+    /// `false` if it was a new registration.
+    ///
     /// # Arguments
     /// * `agent_id` - Unique identifier for the agent
     /// * `mcp_connection_id` - The MCP connection ID (for tool calls from agent to Ergatai)
@@ -95,7 +98,7 @@ impl AgentRegistry {
         agent_id: String,
         mcp_connection_id: String,
         capabilities: Option<Vec<String>>,
-    ) {
+    ) -> bool {
         let now = Utc::now();
         let info = AgentInfo {
             agent_id: agent_id.clone(),
@@ -113,14 +116,16 @@ impl AgentRegistry {
         };
 
         let mut agents = self.agents.write().await;
+        let is_replacement = agents.contains_key(&agent_id);
         // Check for duplicate registration (log but allow overwrite for reconnection scenarios)
-        if agents.contains_key(&agent_id) {
+        if is_replacement {
             tracing::warn!(
                 agent_id = %agent_id,
                 "Agent re-registered (overwriting existing entry)"
             );
         }
         agents.insert(agent_id, record);
+        is_replacement
     }
 
     /// Update agent heartbeat

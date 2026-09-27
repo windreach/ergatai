@@ -227,7 +227,7 @@ async fn record_mcp_approvals(identifiers: &[String]) {
     }
 
     // Validate path to prevent path traversal attacks - now parent exists so canonicalize should work
-    let canonical_path = match tokio::fs::canonicalize(parent).await {
+    let canonical_parent = match tokio::fs::canonicalize(parent).await {
         Ok(path) => path,
         Err(e) => {
             tracing::warn!(error = %e, path = %settings_path.display(), "Failed to canonicalize settings path (security check failed)");
@@ -235,7 +235,7 @@ async fn record_mcp_approvals(identifiers: &[String]) {
         }
     };
 
-    // Ensure the canonical path is under HOME to prevent path traversal
+    // Ensure the canonical parent path is under HOME to prevent path traversal
     let canonical_home = match tokio::fs::canonicalize(&home).await {
         Ok(path) => path,
         Err(e) => {
@@ -243,18 +243,35 @@ async fn record_mcp_approvals(identifiers: &[String]) {
             return;
         }
     };
-    if !canonical_path.starts_with(&canonical_home) {
+    if !canonical_parent.starts_with(&canonical_home) {
         tracing::warn!(
-            path = %canonical_path.display(),
+            path = %canonical_parent.display(),
             home = %canonical_home.display(),
             "Settings file path is outside HOME directory, refusing to write (security check)"
         );
         return;
     }
 
-    let mut settings: serde_json::Value = match tokio::fs::read_to_string(&settings_path).await {
+    // SECURITY: Construct the canonical settings file path and check for symlinks.
+    // This prevents attacks where ~/.claude/settings.json is a symlink to /etc/passwd.
+    let canonical_settings_path = canonical_parent.join("settings.json");
+
+    // If the file exists, verify it's not a symlink
+    if canonical_settings_path.exists() {
+        if let Ok(metadata) = tokio::fs::symlink_metadata(&canonical_settings_path).await {
+            if metadata.file_type().is_symlink() {
+                tracing::error!(
+                    path = %canonical_settings_path.display(),
+                    "Settings file is a symlink - refusing to write (security risk)"
+                );
+                return;
+            }
+        }
+    }
+
+    let mut settings: serde_json::Value = match tokio::fs::read_to_string(&canonical_settings_path).await {
         Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, path = %settings_path.display(), "Failed to parse settings file, using empty object");
+            tracing::warn!(error = %e, path = %canonical_settings_path.display(), "Failed to parse settings file, using empty object");
             serde_json::json!({})
         }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -262,7 +279,7 @@ async fn record_mcp_approvals(identifiers: &[String]) {
             serde_json::json!({})
         }
         Err(e) => {
-            tracing::warn!(error = %e, path = %settings_path.display(), "Failed to read settings file");
+            tracing::warn!(error = %e, path = %canonical_settings_path.display(), "Failed to read settings file");
             return;
         }
     };
@@ -291,8 +308,9 @@ async fn record_mcp_approvals(identifiers: &[String]) {
 
     match serde_json::to_string_pretty(&settings) {
         Ok(content) => {
-            if let Err(e) = tokio::fs::write(&settings_path, content).await {
-                tracing::warn!(error = %e, path = %settings_path.display(), "Failed to write settings file");
+            // Write to the canonical (validated) path
+            if let Err(e) = tokio::fs::write(&canonical_settings_path, content).await {
+                tracing::warn!(error = %e, path = %canonical_settings_path.display(), "Failed to write settings file");
             }
         }
         Err(e) => {

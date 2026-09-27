@@ -1136,9 +1136,7 @@ pub async fn send_message(
                         let Some(root_conversation) =
                             crate::user_data_db::conversations::get(&chat_id_for_conversation)?
                         else {
-                            return Err(rusqlite::Error::InvalidParameterName(
-                                "chat conversation not found".to_string(),
-                            ));
+                            return Err(rusqlite::Error::QueryReturnedNoRows);
                         };
 
                         crate::user_data_db::conversations::create(

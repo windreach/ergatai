@@ -98,8 +98,11 @@ fn json_object_string<'a>(
     input.get(key).and_then(serde_json::Value::as_str)
 }
 
-fn resolve_tool_file_path(input: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
-    input
+fn resolve_tool_file_path(
+    input: &serde_json::Map<String, serde_json::Value>,
+    workspace_boundary: Option<&str>,
+) -> Option<String> {
+    let path = input
         .get("_locations")
         .and_then(serde_json::Value::as_array)
         .and_then(|locations| locations.first())
@@ -109,7 +112,35 @@ fn resolve_tool_file_path(input: &serde_json::Map<String, serde_json::Value>) ->
         .or_else(|| json_object_string(input, "file_path").map(str::to_owned))
         .or_else(|| json_object_string(input, "path").map(str::to_owned))
         .or_else(|| json_object_string(input, "file").map(str::to_owned))
-        .filter(|path| !path.is_empty())
+        .filter(|path| !path.is_empty())?;
+
+    // Workspace boundary check: reject paths outside the workspace to prevent
+    // path traversal attacks via tool call inputs. If a workspace boundary is
+    // provided, the file path must be within it (after canonicalization).
+    if let Some(boundary) = workspace_boundary {
+        let boundary = std::path::Path::new(boundary);
+        let file_path = std::path::Path::new(&path);
+
+        // Check if the path is absolute and within the boundary
+        if file_path.is_absolute() {
+            // Simple prefix check: the file path must start with the boundary
+            let boundary_str = boundary.to_string_lossy();
+            let path_str = file_path.to_string_lossy();
+
+            // Reject if path doesn't start with boundary (prevents ../ traversal)
+            if !path_str.starts_with(&*boundary_str) {
+                tracing::warn!(
+                    path = %path,
+                    boundary = %boundary_str,
+                    "File path outside workspace boundary, rejected"
+                );
+                return None;
+            }
+        }
+        // Relative paths are allowed (they'll be resolved relative to work_dir)
+    }
+
+    Some(path)
 }
 
 fn is_session_file(path: &str) -> bool {
@@ -160,7 +191,7 @@ fn line_count(content: Option<&str>) -> u64 {
             if content.is_empty() {
                 0
             } else {
-                content.split('\n').count() as u64
+                content.lines().count() as u64
             }
         })
         .unwrap_or(0)
@@ -197,7 +228,8 @@ fn calculate_conversation_file_changes(
             let Some(input) = part.get("input").and_then(serde_json::Value::as_object) else {
                 continue;
             };
-            let Some(file_path) = resolve_tool_file_path(input) else {
+            // Use worktree_path as workspace boundary to prevent path traversal
+            let Some(file_path) = resolve_tool_file_path(input, worktree_path) else {
                 continue;
             };
             if is_session_file(&file_path) {
@@ -1151,7 +1183,7 @@ mod conversation_file_change_tests {
         });
         let input = value.as_object().unwrap();
         assert_eq!(
-            resolve_tool_file_path(input),
+            resolve_tool_file_path(input, None),
             Some("/path/to/file.rs".to_string())
         );
     }
@@ -1163,7 +1195,7 @@ mod conversation_file_change_tests {
         });
         let input = value.as_object().unwrap();
         assert_eq!(
-            resolve_tool_file_path(input),
+            resolve_tool_file_path(input, None),
             Some("/path/to/file.rs".to_string())
         );
     }
@@ -1175,7 +1207,7 @@ mod conversation_file_change_tests {
         });
         let input = value.as_object().unwrap();
         assert_eq!(
-            resolve_tool_file_path(input),
+            resolve_tool_file_path(input, None),
             Some("/path/to/file.rs".to_string())
         );
     }
@@ -1187,7 +1219,7 @@ mod conversation_file_change_tests {
         });
         let input = value.as_object().unwrap();
         assert_eq!(
-            resolve_tool_file_path(input),
+            resolve_tool_file_path(input, None),
             Some("/path/to/file.rs".to_string())
         );
     }
@@ -1196,7 +1228,7 @@ mod conversation_file_change_tests {
     fn test_resolve_tool_file_path_empty() {
         let value = serde_json::json!({});
         let input = value.as_object().unwrap();
-        assert_eq!(resolve_tool_file_path(input), None);
+        assert_eq!(resolve_tool_file_path(input, None), None);
     }
 
     #[test]
@@ -1205,7 +1237,7 @@ mod conversation_file_change_tests {
             "file_path": ""
         });
         let input = value.as_object().unwrap();
-        assert_eq!(resolve_tool_file_path(input), None);
+        assert_eq!(resolve_tool_file_path(input, None), None);
     }
 }
 

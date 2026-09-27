@@ -737,12 +737,23 @@ impl FileLockManager {
         // will get a UNIQUE constraint violation, which we log and ignore (the
         // second agent's lock will be picked up by the normal acquire_lock path).
         let now = Utc::now();
-        let ttl_secs = 15u64; // 15 seconds initial TTL for auto-acquired locks
-                              // Reduced from 30 seconds since most write operations complete in seconds.
-                              // Combined with tool completion hooks, this covers:
-                              // - Normal case: locks released immediately after write completes
-                              // - Edge case (bash commands): locks expire in 15 seconds max
-                              // If agent crashes, locks will be reclaimed within 15 seconds.
+        // Auto-acquire WRITE lock with 15-second TTL.
+        //
+        // Why 15s is safe:
+        // - Most tool calls (Edit, Write, Bash) complete in <5 seconds
+        // - FileSystemWatcher triggers this path for post-facto detection
+        // - If the agent crashes or hangs, the lock expires quickly (15s max)
+        // - Heartbeat interval is 5s (well under TTL) to keep lock alive during active use
+        //
+        // When to increase: If agents frequently hit timeouts on legitimate long-running
+        // operations (e.g., large file writes, slow NFS mounts), consider raising to 30-60s.
+        // Monitor `lock_renewal_lapsed` metrics to detect premature expiration.
+        let ttl_secs = 15u64;
+        // Reduced from 30 seconds since most write operations complete in seconds.
+        // Combined with tool completion hooks, this covers:
+        // - Normal case: locks released immediately after write completes
+        // - Edge case (bash commands): locks expire in 15 seconds max
+        // If agent crashes, locks will be reclaimed within 15 seconds.
         let ttl_i64 = i64::try_from(ttl_secs).unwrap_or(i64::MAX);
         let expires_at = now + chrono::Duration::seconds(ttl_i64);
 
@@ -804,7 +815,11 @@ impl FileLockManager {
                     ErgataiError::internal(format!("Failed to log auto-acquire audit: {}", e))
                 })?;
 
-                // Update in-memory cache before commit
+                tx.commit().map_err(|e| {
+                    ErgataiError::internal(format!("Failed to commit auto-acquire: {}", e))
+                })?;
+
+                // Update in-memory cache AFTER successful commit to prevent stale cache on failure
                 {
                     let mut cache = self.active_write_locks_cache.write();
                     cache.insert(
@@ -815,10 +830,6 @@ impl FileLockManager {
                         },
                     );
                 }
-
-                tx.commit().map_err(|e| {
-                    ErgataiError::internal(format!("Failed to commit auto-acquire: {}", e))
-                })?;
 
                 info!(
                     file_path = %normalized_path,
@@ -1133,7 +1144,11 @@ impl FileLockManager {
                     ErgataiError::internal(format!("Failed to log preemptive-acquire audit: {}", e))
                 })?;
 
-                // Update in-memory cache before commit
+                tx.commit().map_err(|e| {
+                    ErgataiError::internal(format!("Failed to commit preemptive-acquire: {}", e))
+                })?;
+
+                // Update in-memory cache AFTER successful commit to prevent stale cache on failure
                 {
                     let mut cache = self.active_write_locks_cache.write();
                     cache.insert(
@@ -1144,10 +1159,6 @@ impl FileLockManager {
                         },
                     );
                 }
-
-                tx.commit().map_err(|e| {
-                    ErgataiError::internal(format!("Failed to commit preemptive-acquire: {}", e))
-                })?;
 
                 // Acquire flock(2) advisory lock as a second layer of protection.
                 // This blocks other cooperative processes (Edit/Delete/Move tools) from

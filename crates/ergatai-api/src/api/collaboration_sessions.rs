@@ -312,6 +312,25 @@ pub async fn stream_collaboration_session_events(
     Path(session_id): Path<String>,
     Query(query): Query<StreamEventQuery>,
 ) -> Response {
+    // Validate session exists before starting the stream to prevent DoS via
+    // unbounded polling on non-existent sessions.
+    let validate_session_id = session_id.clone();
+    match tokio::task::spawn_blocking(move || get_session(&validate_session_id)).await {
+        Ok(Ok(_)) => { /* session exists, proceed */ }
+        Ok(Err(error)) => {
+            return response_from_error(error, "validate collaboration session for stream")
+        }
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: format!("Task join error: {error}"),
+                }),
+            )
+                .into_response()
+        }
+    }
+
     let after_sequence = query.after_sequence.unwrap_or(0).max(0);
     let replay_session_id = session_id.clone();
     let replay = match tokio::task::spawn_blocking(move || {
@@ -332,9 +351,16 @@ pub async fn stream_collaboration_session_events(
         }
     };
 
-    let poll_interval_ms = query.poll_interval_ms.unwrap_or(250).clamp(50, 5_000);
+    // Minimum 500ms poll interval to prevent excessive database load.
+    // Lower values (e.g., 50ms) cause high CPU usage and DB contention under load.
+    let poll_interval_ms = query.poll_interval_ms.unwrap_or(250).clamp(500, 5_000);
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(256);
+    let stream_session_id = session_id.clone();
     tokio::spawn(async move {
+        // 30-minute maximum stream lifetime to prevent unbounded resource consumption.
+        // Clients should reconnect to continue receiving events.
+        let stream_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1800);
+
         let mut last_sequence = after_sequence;
         for event in replay {
             last_sequence = last_sequence.max(event.sequence);
@@ -358,8 +384,17 @@ pub async fn stream_collaboration_session_events(
             tokio::time::interval(std::time::Duration::from_millis(poll_interval_ms));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
+            // Check stream deadline before each poll
+            if tokio::time::Instant::now() >= stream_deadline {
+                tracing::debug!(
+                    session_id = %stream_session_id,
+                    "Collaboration SSE stream reached 30-minute timeout, closing"
+                );
+                return;
+            }
+
             interval.tick().await;
-            let session_id = session_id.clone();
+            let session_id = stream_session_id.clone();
             let events = match tokio::task::spawn_blocking(move || {
                 list_events(&session_id, Some(last_sequence), 500)
             })

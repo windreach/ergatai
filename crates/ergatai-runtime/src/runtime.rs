@@ -163,6 +163,34 @@ impl AgentRuntime {
         // Note: next_agent_id() increments the counter, so start_agent() must use this pre-computed ID.
         let agent_id = self.backend.next_agent_id(&workspace.id);
 
+        // Register workspace boundary BEFORE starting the agent to prevent TOCTOU race.
+        // Without this, an agent could modify files before its workspace is registered,
+        // bypassing file access control.
+        let workspace_dir = if let Ok(relative) = std::path::Path::new(&spec.work_dir)
+            .strip_prefix(std::env::current_dir().unwrap_or_default())
+        {
+            relative.to_string_lossy().to_string()
+        } else {
+            spec.work_dir.to_string_lossy().to_string()
+        };
+
+        if let Err(e) =
+            ergatai_lock::register_workspace_for_project("default", &agent_id, &workspace_dir).await
+        {
+            warn!(
+                agent_id = %agent_id,
+                workspace = %workspace_dir,
+                error = %e,
+                "Failed to pre-register workspace boundary (non-fatal, continuing)"
+            );
+        } else {
+            debug!(
+                agent_id = %agent_id,
+                workspace = %workspace_dir,
+                "Pre-registered workspace boundary before agent start"
+            );
+        }
+
         // Pass the pre-computed agent_id via workspace metadata
         let mut workspace_with_id = workspace.clone();
         workspace_with_id

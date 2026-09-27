@@ -144,36 +144,77 @@ async fn async_main(args: Args) -> Result<()> {
             let home = std::env::var("HOME")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
-            let token_path = home.join(".ergatai").join(".api-token");
+            let token_dir = home.join(".ergatai");
+            let token_path = token_dir.join(".api-token");
 
-            // Read existing token
-            if let Ok(existing) = std::fs::read_to_string(&token_path) {
-                let trimmed = existing.trim().to_string();
-                if !trimmed.is_empty() {
-                    tracing::info!("API token loaded from {}", token_path.display());
-                    Some(trimmed)
+            // SECURITY: Canonicalize parent directory to detect symlink attacks.
+            // If ~/.ergatai is a symlink to a sensitive location, this resolves it.
+            let canonical_token_dir = match token_dir.canonicalize() {
+                Ok(path) => path,
+                Err(_) => {
+                    // Directory doesn't exist yet, create it first
+                    if let Some(parent) = token_path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    // Now canonicalize
+                    token_dir
+                        .canonicalize()
+                        .unwrap_or_else(|_| token_dir.clone())
+                }
+            };
+            let canonical_token_path = canonical_token_dir.join(".api-token");
+
+            // SECURITY: Check if token file is a symlink before reading/writing.
+            // This prevents attacks where ~/.ergatai/.api-token is symlinked to
+            // /etc/shadow or similar sensitive files.
+            if canonical_token_path.exists() {
+                if let Ok(metadata) = std::fs::symlink_metadata(&canonical_token_path) {
+                    if metadata.file_type().is_symlink() {
+                        tracing::error!(
+                            token_path = %canonical_token_path.display(),
+                            "Token file is a symlink - refusing to read/write (security risk)"
+                        );
+                        // Return None to fall back to no authentication or other methods
+                        None
+                    } else {
+                        // File exists and is not a symlink, safe to read
+                        if let Ok(existing) = std::fs::read_to_string(&canonical_token_path) {
+                            let trimmed = existing.trim().to_string();
+                            if !trimmed.is_empty() {
+                                tracing::info!(
+                                    "API token loaded from {}",
+                                    canonical_token_path.display()
+                                );
+                                Some(trimmed)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
                 } else {
                     None
                 }
             } else {
-                // Generate and write new token
+                // File doesn't exist, generate and write new token
                 let token =
                     uuid::Uuid::new_v4().to_string() + &uuid::Uuid::new_v4().simple().to_string();
-                if let Some(parent) = token_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                match std::fs::write(&token_path, &token) {
+                match std::fs::write(&canonical_token_path, &token) {
                     Ok(_) => {
                         // Restrict permissions to owner only
                         #[cfg(unix)]
                         {
                             use std::os::unix::fs::PermissionsExt;
                             let _ = std::fs::set_permissions(
-                                &token_path,
+                                &canonical_token_path,
                                 std::fs::Permissions::from_mode(0o600),
                             );
                         }
-                        tracing::info!("API token auto-generated at {}", token_path.display());
+                        tracing::info!(
+                            "API token auto-generated at {}",
+                            canonical_token_path.display()
+                        );
                         Some(token)
                     }
                     Err(e) => {

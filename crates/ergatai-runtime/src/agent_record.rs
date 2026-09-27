@@ -186,10 +186,10 @@ impl AgentRecord {
             self.state_history.drain(..drain_count);
         }
 
-        // Update stable_id from handle metadata if it changed
-        if let Some(new_stable_id) = self.handle.metadata.get("ergatai_agent_id") {
-            self.stable_id = Some(new_stable_id.clone());
-        }
+        // Note: stable_id is set during AgentRecord::new() from handle.metadata["ergatai_agent_id"].
+        // It is NOT updated here because stable_id should remain stable across state transitions.
+        // If the handle's stable_id changes (e.g., agent restart with new metadata), create a new
+        // AgentRecord instead of transitioning the existing one.
 
         self.state = new_state;
         self.state_changed_at = Utc::now();

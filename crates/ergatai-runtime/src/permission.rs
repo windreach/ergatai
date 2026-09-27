@@ -456,18 +456,91 @@ async fn try_pre_lock_files(
         }
     };
 
-    // Attempt a pre-emptive acquire on each path. First failure short-
-    // circuits the loop — we don't want to hold locks on some files while
-    // rejecting the tool overall.
+    // SECURITY: Validate all paths are within workspace boundary before locking.
+    // This prevents agents from locking system files (e.g., /etc/passwd) by passing
+    // absolute paths outside the workspace.
+    let project_root = lock_mgr.project_root();
     for path in &paths_to_lock {
-        if let Err(e) = lock_mgr
+        let path_buf = std::path::Path::new(path);
+        // Canonicalize the path to resolve any .. or symlinks
+        let canonical_path = match path_buf.canonicalize() {
+            Ok(p) => p,
+            Err(_) => {
+                // If canonicalization fails (e.g., file doesn't exist yet), try to
+                // canonicalize the parent directory and append the filename
+                if let Some(parent) = path_buf.parent() {
+                    if let Ok(canonical_parent) = parent.canonicalize() {
+                        if let Some(filename) = path_buf.file_name() {
+                            canonical_parent.join(filename)
+                        } else {
+                            // Cannot determine canonical path, reject to be safe
+                            return Err(ergatai_error::ErgataiError::PermissionDenied(format!(
+                                "Path {} cannot be resolved and is rejected for safety",
+                                path
+                            )));
+                        }
+                    } else {
+                        // Parent directory doesn't exist or can't be canonicalized
+                        return Err(ergatai_error::ErgataiError::PermissionDenied(format!(
+                            "Path {} parent directory cannot be resolved",
+                            path
+                        )));
+                    }
+                } else {
+                    // No parent directory (e.g., root path)
+                    return Err(ergatai_error::ErgataiError::PermissionDenied(format!(
+                        "Path {} has no parent directory",
+                        path
+                    )));
+                }
+            }
+        };
+
+        // Check if the canonical path is within the project root
+        if !canonical_path.starts_with(project_root) {
+            tracing::warn!(
+                agent_id = %agent_id,
+                path = %path,
+                canonical_path = %canonical_path.display(),
+                project_root = %project_root.display(),
+                "try_pre_lock_files: path is outside workspace boundary, rejecting"
+            );
+            return Err(ergatai_error::ErgataiError::PermissionDenied(format!(
+                "Path {} is outside workspace boundary",
+                path
+            )));
+        }
+    }
+
+    // Attempt a pre-emptive acquire on each path. Track acquired locks so we can
+    // release them on failure to prevent lock leaks.
+    let mut acquired_locks = Vec::with_capacity(paths_to_lock.len());
+    for path in &paths_to_lock {
+        match lock_mgr
             .try_acquire_write_lock_preemptive(path, agent_id, session_id, workspace_id)
             .await
         {
-            return Err(ergatai_error::ErgataiError::LockConflict(format!(
-                "{}: {}",
-                path, e
-            )));
+            Ok(_token) => {
+                acquired_locks.push(path.clone());
+            }
+            Err(e) => {
+                // Release all previously acquired locks before returning error
+                for locked_path in acquired_locks {
+                    if let Err(release_err) =
+                        lock_mgr.release_lock_on_tool_complete(&locked_path, agent_id, session_id)
+                    {
+                        tracing::warn!(
+                            path = %locked_path,
+                            error = %release_err,
+                            "Failed to release lock during error cleanup"
+                        );
+                    }
+                }
+                return Err(ergatai_error::ErgataiError::LockConflict(format!(
+                    "{}: {}",
+                    path, e
+                )));
+            }
         }
     }
 

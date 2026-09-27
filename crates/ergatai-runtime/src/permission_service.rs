@@ -132,7 +132,7 @@ impl PermissionRequestService {
     }
 
     /// Register a pending request, notify subscribers, and return its ID.
-    pub fn register(&self, mut request: PendingPermissionRequest) -> String {
+    pub async fn register(&self, mut request: PendingPermissionRequest) -> String {
         let request_id = if request.request_id.is_empty() {
             format!("perm-{}", uuid::Uuid::new_v4())
         } else {
@@ -140,12 +140,12 @@ impl PermissionRequestService {
         };
         request.request_id = request_id.clone();
 
-        // Persistence of the pending map is synchronous enough for the
-        // writers here (they hold no other locks); use a blocking write via
-        // try_write to keep register callable from sync contexts.
-        if let Ok(mut pending) = self.pending.try_write() {
-            pending.insert(request_id.clone(), request.clone());
-        }
+        // Use async write to prevent orphaned waiters when the lock is contended.
+        // try_write() can fail silently under contention, leaving the request
+        // unregistered while the waiter is already inserted, causing a deadlock.
+        let mut pending = self.pending.write().await;
+        pending.insert(request_id.clone(), request.clone());
+        drop(pending);
         let _ = self
             .events
             .send(PermissionEvent::Request(Box::new(request)));
@@ -332,7 +332,7 @@ mod tests {
             created_at_ms: now_ms(),
         };
 
-        let request_id = service.register(request);
+        let request_id = service.register(request).await;
         assert!(request_id.starts_with("perm-"));
 
         let retrieved = service.get(&request_id).await;
@@ -359,7 +359,7 @@ mod tests {
                 source: PermissionSource::Acp,
                 created_at_ms: now_ms() + i,
             };
-            service.register(request);
+            service.register(request).await;
         }
 
         let pending = service.pending().await;
@@ -386,7 +386,7 @@ mod tests {
             created_at_ms: now_ms(),
         };
 
-        service.register(request);
+        service.register(request).await;
 
         let resolved = service
             .respond("test-req-1", PermissionDecisionKind::AllowOnce)
@@ -478,7 +478,7 @@ mod tests {
             created_at_ms: now_ms(),
         };
 
-        service.register(request);
+        service.register(request).await;
 
         // Should receive the registration event
         let event = receiver.recv().await.unwrap();

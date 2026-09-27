@@ -30,7 +30,7 @@ static USER_DATA_DB: Lazy<Arc<Mutex<Connection>>> = Lazy::new(|| {
     Arc::new(Mutex::new(conn))
 });
 
-/// Get the database file path
+/// Get the database file path with symlink protection
 fn get_db_path() -> PathBuf {
     let data_dir = std::env::var("ERGATAI_DATA_DIR")
         .map(PathBuf::from)
@@ -40,7 +40,41 @@ fn get_db_path() -> PathBuf {
         });
 
     std::fs::create_dir_all(&data_dir).ok();
-    data_dir.join("user_data.db")
+
+    // SECURITY: Canonicalize data_dir to detect and prevent symlink attacks.
+    // If data_dir is a symlink to a sensitive location (e.g., /etc), this will
+    // resolve it and we can validate it's safe.
+    let canonical_data_dir = match data_dir.canonicalize() {
+        Ok(path) => path,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                data_dir = %data_dir.display(),
+                "Failed to canonicalize data directory, using original path"
+            );
+            data_dir.clone()
+        }
+    };
+
+    let db_path = canonical_data_dir.join("user_data.db");
+
+    // SECURITY: If the db file already exists, verify it's not a symlink to a
+    // sensitive location. This prevents attacks where ~/.ergatai/user_data.db
+    // is symlinked to /etc/passwd or similar.
+    if db_path.exists() {
+        if let Ok(metadata) = std::fs::symlink_metadata(&db_path) {
+            if metadata.file_type().is_symlink() {
+                tracing::error!(
+                    db_path = %db_path.display(),
+                    "Database path is a symlink - refusing to open (security risk)"
+                );
+                // Return a safe fallback path to prevent corruption
+                return PathBuf::from("/tmp/ergatai_user_data.db");
+            }
+        }
+    }
+
+    db_path
 }
 
 /// Initialize all required tables
