@@ -343,6 +343,12 @@ pub struct ListPersistentWorkspacesQuery {
 pub async fn list_persistent_workspaces(
     axum::extract::Query(query): axum::extract::Query<ListPersistentWorkspacesQuery>,
 ) -> impl IntoResponse {
+    if let Some(project_id) = query.project_id.as_deref() {
+        if !crate::api::validation::is_valid_project_id(project_id) {
+            return crate::api::validation::invalid_project_id_response();
+        }
+    }
+
     match manager::list(
         query.project_id.as_deref(),
         query.collaboration_mode.as_deref(),
@@ -387,10 +393,9 @@ pub async fn create_persistent_workspace(
         );
     }
 
-    // Validate project_id is not empty/whitespace
-    if req.project_id.trim().is_empty() {
+    if !crate::api::validation::is_valid_project_id(&req.project_id) {
         return managed_error(
-            manager::WorkspaceManagerError::Validation("Project ID cannot be empty".to_string()),
+            manager::WorkspaceManagerError::Validation("Invalid project ID".to_string()),
             "create_persistent_workspace",
         );
     }
@@ -498,10 +503,9 @@ pub async fn update_persistent_workspace(
         );
     }
 
-    // Validate project_id is not empty/whitespace
-    if req.project_id.trim().is_empty() {
+    if !crate::api::validation::is_valid_project_id(&req.project_id) {
         return managed_error(
-            manager::WorkspaceManagerError::Validation("Project ID cannot be empty".to_string()),
+            manager::WorkspaceManagerError::Validation("Invalid project ID".to_string()),
             "update_persistent_workspace",
         );
     }
@@ -627,6 +631,12 @@ pub async fn list_managed_workspaces(
 pub async fn create_managed_workspace(
     Json(request): Json<manager::CreateManagedWorkspaceRequest>,
 ) -> impl IntoResponse {
+    if let Some(project_id) = request.project_id.as_deref() {
+        if !crate::api::validation::is_valid_project_id(project_id) {
+            return crate::api::validation::invalid_project_id_response();
+        }
+    }
+
     match manager::create(request).await {
         Ok(workspace) => (StatusCode::CREATED, Json(workspace)).into_response(),
         Err(error) => managed_error(error, "create_managed_workspace"),
@@ -668,6 +678,12 @@ pub async fn update_managed_workspace(
     Path(id): Path<String>,
     Json(request): Json<manager::UpdateManagedWorkspaceRequest>,
 ) -> impl IntoResponse {
+    if let Some(project_id) = request.default_project_id.as_deref() {
+        if !crate::api::validation::is_valid_project_id(project_id) {
+            return crate::api::validation::invalid_project_id_response();
+        }
+    }
+
     match manager::update(&id, request).await {
         Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
         Err(error) => managed_error(error, "update_managed_workspace"),
@@ -771,6 +787,12 @@ pub async fn register_managed_workspace_project(
     Path(id): Path<String>,
     Json(request): Json<manager::RegisterWorkspaceProjectRequest>,
 ) -> impl IntoResponse {
+    if let Some(project_id) = request.project_id.as_deref() {
+        if !crate::api::validation::is_valid_project_id(project_id) {
+            return crate::api::validation::invalid_project_id_response();
+        }
+    }
+
     match manager::register_project(&id, request).await {
         Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
         Err(error) => managed_error(error, "register_managed_workspace_project"),
@@ -795,6 +817,10 @@ pub async fn register_managed_workspace_project(
 pub async fn remove_managed_workspace_project(
     Path((id, project_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
+    if !crate::api::validation::is_valid_project_id(&project_id) {
+        return crate::api::validation::invalid_project_id_response();
+    }
+
     match manager::remove_project(&id, &project_id).await {
         Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
         Err(error) => managed_error(error, "remove_managed_workspace_project"),

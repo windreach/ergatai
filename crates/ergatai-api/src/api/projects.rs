@@ -206,6 +206,10 @@ pub async fn get_project(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if !crate::api::validation::is_valid_project_id(&id) {
+        return crate::api::validation::invalid_project_id_response();
+    }
+
     let id_for_get = id.clone();
     match tokio::task::spawn_blocking(move || user_data_db::projects::get(&id_for_get)).await {
         Ok(Ok(Some(project))) => {
@@ -248,6 +252,10 @@ pub async fn update_project(
     Path(id): Path<String>,
     Json(req): Json<UpdateProjectRequest>,
 ) -> impl IntoResponse {
+    if !crate::api::validation::is_valid_project_id(&id) {
+        return crate::api::validation::invalid_project_id_response();
+    }
+
     // First check if project exists
     let id_for_get = id.clone();
     let existing =
@@ -355,6 +363,10 @@ pub async fn delete_project(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if !crate::api::validation::is_valid_project_id(&id) {
+        return crate::api::validation::invalid_project_id_response();
+    }
+
     let id_for_delete = id.clone();
     match tokio::task::spawn_blocking(move || user_data_db::projects::delete(&id_for_delete)).await
     {

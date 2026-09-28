@@ -246,6 +246,12 @@ pub async fn list_chats(
     State(_state): State<AppState>,
     Query(params): Query<ListChatsParams>,
 ) -> impl IntoResponse {
+    if let Some(project_id) = params.project_id.as_deref() {
+        if !crate::api::validation::is_valid_project_id(project_id) {
+            return crate::api::validation::invalid_project_id_response();
+        }
+    }
+
     let project_id = params.project_id.clone();
     let workspace_id = params.workspace_id.clone();
     match tokio::task::spawn_blocking(move || {
@@ -285,15 +291,8 @@ pub async fn create_chat(
     State(_state): State<AppState>,
     Json(req): Json<CreateChatRequest>,
 ) -> impl IntoResponse {
-    // Validate required fields are non-empty
-    if req.project_id.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Project ID cannot be empty".to_string(),
-            }),
-        )
-            .into_response();
+    if !crate::api::validation::is_valid_project_id(&req.project_id) {
+        return crate::api::validation::invalid_project_id_response();
     }
 
     // Validate collaboration_mode if provided

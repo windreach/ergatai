@@ -101,6 +101,12 @@ fn response_from_error(error: CollaborationSessionError, operation: &'static str
 pub async fn create_collaboration_session(
     Json(request): Json<CreateCollaborationSessionRequest>,
 ) -> Response {
+    if let Some(project_id) = request.project_id.as_deref() {
+        if !crate::api::validation::is_valid_project_id(project_id) {
+            return crate::api::validation::invalid_project_id_response();
+        }
+    }
+
     match tokio::task::spawn_blocking(move || create_session(request)).await {
         Ok(Ok(detail)) => (StatusCode::CREATED, Json(detail)).into_response(),
         Ok(Err(error)) => response_from_error(error, "create collaboration session"),

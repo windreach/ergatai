@@ -13,6 +13,7 @@ pub mod permissions;
 pub mod projects;
 pub mod status;
 pub mod user_conversations;
+pub mod validation;
 pub mod workspaces;
 
 use serde::{Deserialize, Serialize};
