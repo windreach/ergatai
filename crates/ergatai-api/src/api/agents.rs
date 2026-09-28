@@ -53,9 +53,9 @@ pub struct SendMessageRequest {
     /// request's `_meta.correlation_id`. Ignored for request/broadcast.
     #[serde(default)]
     pub correlation_id: Option<String>,
-    /// Optional UI thread to append the external message to before delivery.
+    /// Optional conversation to append the external message to before delivery.
     #[serde(default)]
-    pub sub_chat_id: Option<String>,
+    pub conversation_id: Option<String>,
     /// Optional display name for UI rendering.
     #[serde(default)]
     pub sender_agent_name: Option<String>,
@@ -856,15 +856,13 @@ pub async fn send_message(
             }
         };
 
-        // Resolve the owning chat from the collaboration conversation. Legacy
-        // sub-chat IDs are still accepted for old clients, but never fall back
-        // to the supervisor conversation.
-        let Some(requested_conversation_id) = req.sub_chat_id.clone() else {
+        // Resolve the owning chat from the collaboration conversation.
+        let Some(requested_conversation_id) = req.conversation_id.clone() else {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
                     "status": "error",
-                    "message": "sub_chat_id is required for agent-to-agent routing",
+                    "message": "conversation_id is required for agent-to-agent routing",
                 })),
             )
                 .into_response();
@@ -877,11 +875,6 @@ pub async fn send_message(
                     crate::user_data_db::conversations::get(&requested_conversation_id)
                 {
                     return Ok(conversation.parent_id.unwrap_or(conversation.id));
-                }
-                if let Ok(Some(sub_chat)) =
-                    crate::user_data_db::sub_chats::get(&requested_conversation_id)
-                {
-                    return Ok(sub_chat.chat_id);
                 }
                 Err("Conversation not found for agent-to-agent routing".to_string())
             })
@@ -944,7 +937,7 @@ pub async fn send_message(
                                         .message_type
                                         .unwrap_or_else(|| "request".to_string()),
                                     correlation_id: req.correlation_id,
-                                    sub_chat_id: Some(target_conversation_id),
+                                    conversation_id: Some(target_conversation_id),
                                 };
 
                                 match sender.send(send_req).await {
@@ -1269,7 +1262,7 @@ pub async fn send_message(
                     message: req.message,
                     message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
                     correlation_id: req.correlation_id,
-                    sub_chat_id: Some(agent_conversation_id),
+                    conversation_id: Some(agent_conversation_id),
                 };
 
                 return match sender.send(send_req).await {
@@ -1327,7 +1320,7 @@ pub async fn send_message(
         message: req.message,
         message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
         correlation_id: req.correlation_id,
-        sub_chat_id: req.sub_chat_id,
+        conversation_id: req.conversation_id,
     };
 
     match sender.send(send_req).await {
@@ -2441,10 +2434,7 @@ pub async fn get_agent_pid(
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct PromptAgentRequest {
     pub message: String,
-    /// Optional sub-chat associated with this prompt.
-    #[serde(default)]
-    pub sub_chat_id: Option<String>,
-    /// Conversation associated with this prompt; preferred over sub_chat_id.
+    /// Conversation associated with this prompt.
     #[serde(default)]
     pub conversation_id: Option<String>,
     /// Optional sender identity for agent-to-agent UI rendering.
@@ -2658,7 +2648,7 @@ pub async fn prompt_agent(
                     agent_id: runtime_id.clone(),
                     message: body.message.clone(),
                     images: body.images.clone(),
-                    sub_chat_id: Some(conversation_id.to_string()),
+                    conversation_id: Some(conversation_id.to_string()),
                     agent_name: agent_name.clone(),
                     created_at: std::time::Instant::now(),
                 },
@@ -2750,172 +2740,8 @@ pub async fn prompt_agent(
             Json(serde_json::json!({ "status": "queued", "prompt_id": prompt_id })),
         )
             .into_response()
-    } else if let Some(sub_chat_id) = body.sub_chat_id.as_deref() {
-        let sub_chat_id_for_get = sub_chat_id.to_string();
-        let sub_chat = match tokio::task::spawn_blocking(move || {
-            crate::user_data_db::sub_chats::get(&sub_chat_id_for_get)
-        })
-        .await
-        {
-            Ok(Ok(Some(sub_chat))) => sub_chat,
-            Ok(Ok(None)) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(ErrorResponse {
-                        error: "Sub-chat not found".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-            Ok(Err(e)) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: crate::sanitize_error(&e, "sub_chat_load"),
-                    }),
-                )
-                    .into_response();
-            }
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: crate::sanitize_error(&e, "sub_chat_load_join"),
-                    }),
-                )
-                    .into_response();
-            }
-        };
-
-        let metadata = if body.sender_agent_id.is_some() {
-            serde_json::json!({
-                "source": "agent",
-                "senderAgentId": body.sender_agent_id,
-                "senderAgentName": body.sender_agent_name,
-            })
-        } else {
-            serde_json::json!({ "source": "user" })
-        };
-
-        let mut parts = vec![serde_json::json!({
-            "type": "text",
-            "text": body.message,
-        })];
-        for image in &body.images {
-            parts.push(serde_json::json!({
-                "type": "data-image",
-                "data": image,
-            }));
-        }
-
-        // Get the target agent's actual name (not the sender's name)
-        let agent_info = crate::services::agent_service::get_agent_info(&runtime_id).await;
-        let agent_profile = agent_info.as_ref().and_then(|info| info.profile.clone());
-        let agent_name = agent_info
-            .and_then(|info| info.stable_id.clone())
-            .or_else(|| sub_chat.name.clone())
-            .unwrap_or_else(|| runtime_id.clone());
-
-        let pending_prompt = crate::services::agent_service::PendingPrompt {
-            id: prompt_id.clone(),
-            agent_id: runtime_id.clone(),
-            message: body.message.clone(),
-            images: body.images.clone(),
-            sub_chat_id: Some(sub_chat_id.to_string()),
-            agent_name: agent_name.clone(),
-            created_at: std::time::Instant::now(),
-        };
-
-        // Execute prompt BEFORE DB writes to avoid orphaned data on failure.
-        // If enqueue/inject fails, no side effects are committed.
-        if body.wait_for_stream {
-            if let Err(e) =
-                crate::services::agent_service::enqueue_prompt(&runtime_id, pending_prompt)
-            {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: crate::sanitize_error(&e, "enqueue_prompt_subchat"),
-                    }),
-                )
-                    .into_response();
-            }
-        } else if let Err(e) = crate::services::agent_service::prompt_agent_with_persistence(
-            &runtime_id,
-            pending_prompt,
-            None,
-        )
-        .await
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: crate::sanitize_error(&e, "monitoring_handler"),
-                }),
-            )
-                .into_response();
-        }
-
-        // Prompt accepted — now persist side effects
-        let sub_chat_id_for_append = sub_chat_id.to_string();
-        let parts_for_append = parts.clone();
-        let metadata_for_append = metadata.clone();
-        if let Err(e) = tokio::task::spawn_blocking(move || {
-            crate::user_data_db::sub_chats::append_message_parts(
-                &sub_chat_id_for_append,
-                "user",
-                serde_json::Value::Array(parts_for_append),
-                metadata_for_append,
-            )
-        })
-        .await
-        {
-            tracing::warn!(
-                sub_chat_id = %sub_chat_id,
-                "Prompt enqueued but failed to persist message: {}", e
-            );
-        }
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-
-        // Get workspace_id from agent info
-        let workspace_id = crate::services::agent_service::get_agent_info(&runtime_id)
-            .await
-            .map(|info| info.workspace_id.clone())
-            .unwrap_or_else(|| sub_chat.chat_id.clone()); // Fallback to chat_id if agent not found
-
-        let binding = crate::user_data_db::GroupAgentBinding {
-            workspace_id,
-            chat_id: sub_chat.chat_id,
-            agent_id: runtime_id.clone(),
-            agent_name: agent_name.clone(),
-            agent_command: agent_profile,
-            conversation_id: sub_chat.id,
-            created_at: now,
-            updated_at: now,
-        };
-        if let Err(e) = tokio::task::spawn_blocking(move || {
-            crate::user_data_db::group_agent_bindings::upsert(binding)
-        })
-        .await
-        {
-            tracing::warn!(
-                sub_chat_id = %sub_chat_id,
-                runtime_id = %runtime_id,
-                "Prompt enqueued but failed to bind agent: {}", e
-            );
-        }
-
-        (
-            StatusCode::ACCEPTED,
-            Json(serde_json::json!({ "status": "queued", "prompt_id": prompt_id })),
-        )
-            .into_response()
     } else {
-        // No sub_chat_id — use direct inject (legacy path, no persistence).
+        // No conversation_id — use direct inject (legacy path, no persistence).
         match crate::services::agent_service::prompt_agent_with_images(
             &runtime_id,
             &body.message,
@@ -3023,7 +2849,7 @@ pub async fn stream_agent_output(
     // clients that do not know their prompt ID.
     // Extract conversation_id from claimed prompt for assistant response persistence
     let conversation_id_for_persist = match &claimed_prompt {
-        Some((prompt, _)) => prompt.sub_chat_id.clone(),
+        Some((prompt, _)) => prompt.conversation_id.clone(),
         None => None,
     };
 

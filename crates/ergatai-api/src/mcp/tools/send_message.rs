@@ -51,7 +51,7 @@ pub(crate) async fn handle(
         message: message.to_string(),
         message_type: message_type.to_string(),
         correlation_id,
-        sub_chat_id: None,
+        conversation_id: None,
     };
 
     match sender.send(send_req).await {

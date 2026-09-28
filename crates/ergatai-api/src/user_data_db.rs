@@ -1,4 +1,4 @@
-//! User data database management for projects, chats, and sub-chats.
+//! User data database management for projects, chats, and conversations.
 //!
 //! This module provides persistent storage for user-facing data that was
 //! previously stored in the frontend's local SQLite database. By centralizing
@@ -184,19 +184,6 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE SET NULL
         );
 
-        -- Sub-chats table (individual conversation threads within a chat)
-        CREATE TABLE IF NOT EXISTS sub_chats (
-            id TEXT PRIMARY KEY,
-            name TEXT,
-            chat_id TEXT NOT NULL,
-            session_id TEXT,
-            mode TEXT NOT NULL DEFAULT 'agent',
-            messages TEXT NOT NULL DEFAULT '[]',
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
-        );
-
         -- Unified conversation tree. A conversation is either a root scoped to a
         -- workspace or a child scoped to its parent. Both roots and children are
         -- the same entity; parent_id is the only hierarchy boundary.
@@ -271,12 +258,12 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             agent_id TEXT NOT NULL,
             agent_name TEXT NOT NULL,
             agent_command TEXT,
-            sub_chat_id TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             PRIMARY KEY (chat_id, agent_id),
             FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE,
-            FOREIGN KEY (sub_chat_id) REFERENCES sub_chats(id) ON DELETE CASCADE
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
         );
 
         -- Authoritative collaboration sessions for Supervisor and Group modes.
@@ -359,7 +346,6 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             ON workspace_projects(project_id);
         CREATE INDEX IF NOT EXISTS idx_chats_project_id ON chats(project_id);
         CREATE INDEX IF NOT EXISTS idx_chats_workspace_id ON chats(workspace_id);
-        CREATE INDEX IF NOT EXISTS idx_sub_chats_chat_id ON sub_chats(chat_id);
         CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_chat_id ON group_agent_bindings(chat_id);
         CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_agent_id ON group_agent_bindings(agent_id);
         CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_workspace_id ON group_agent_bindings(workspace_id);
@@ -468,18 +454,6 @@ pub struct Chat {
     pub base_branch: Option<String>,
     pub pr_url: Option<String>,
     pub pr_number: Option<i32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubChat {
-    pub id: String,
-    pub name: Option<String>,
-    pub chat_id: String,
-    pub session_id: Option<String>,
-    pub mode: String,
-    pub messages: String, // JSON array
-    pub created_at: i64,
-    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1823,442 +1797,6 @@ pub mod legacy_chats {
     }
 }
 
-pub mod sub_chats {
-    use super::*;
-
-    fn conversation_to_sub_chat(
-        conversation: Conversation,
-        session_id: Option<String>,
-        messages: String,
-    ) -> SubChat {
-        SubChat {
-            id: conversation.id,
-            name: conversation.name,
-            chat_id: conversation
-                .parent_id
-                .expect("child conversation must have a parent"),
-            session_id,
-            mode: conversation.mode,
-            messages,
-            created_at: conversation.created_at,
-            updated_at: conversation.updated_at,
-        }
-    }
-
-    pub fn create(sub_chat: SubChat) -> Result<SubChat> {
-        let parent = conversations::get(&sub_chat.chat_id)?
-            .filter(|conversation| conversation.parent_id.is_none())
-            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-        let conversation = conversations::create(Conversation {
-            id: sub_chat.id.clone(),
-            parent_id: Some(parent.id.clone()),
-            project_id: parent.project_id.clone(),
-            workspace_id: parent.workspace_id.clone(),
-            name: sub_chat.name.clone(),
-            mode: sub_chat.mode.clone(),
-            created_at: sub_chat.created_at,
-            updated_at: sub_chat.updated_at,
-            archived_at: None,
-        })?;
-        agent_sessions::upsert(
-            &sub_chat.id,
-            sub_chat.session_id.as_deref(),
-            &sub_chat.mode,
-            sub_chat.created_at,
-        )?;
-        messages::replace_legacy(&sub_chat.id, &sub_chat.messages, sub_chat.updated_at)?;
-        Ok(conversation_to_sub_chat(
-            conversation,
-            sub_chat.session_id,
-            sub_chat.messages,
-        ))
-    }
-
-    pub fn list(chat_id: &str) -> Result<Vec<SubChat>> {
-        conversations::list_children(chat_id)?
-            .into_iter()
-            .map(|conversation| {
-                let session_id = agent_sessions::get(&conversation.id)?;
-                let messages = messages::serialize_legacy(&conversation.id)?;
-                Ok(conversation_to_sub_chat(conversation, session_id, messages))
-            })
-            .collect()
-    }
-
-    pub fn get(id: &str) -> Result<Option<SubChat>> {
-        let Some(conversation) =
-            conversations::get(id)?.filter(|conversation| conversation.parent_id.is_some())
-        else {
-            return Ok(None);
-        };
-        let session_id = agent_sessions::get(id)?;
-        let messages = messages::serialize_legacy(id)?;
-        Ok(Some(conversation_to_sub_chat(
-            conversation,
-            session_id,
-            messages,
-        )))
-    }
-
-    pub fn update_messages(id: &str, messages: &str, updated_at: i64) -> Result<()> {
-        if conversations::get(id)?.is_none() {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
-        }
-        messages::replace_legacy(id, messages, updated_at)
-    }
-
-    pub fn append_message(
-        id: &str,
-        role: &str,
-        text: &str,
-        metadata: serde_json::Value,
-    ) -> Result<()> {
-        let parts = serde_json::json!([{ "type": "text", "text": text }]);
-        append_message_parts(id, role, parts, metadata)
-    }
-
-    pub fn append_message_parts(
-        id: &str,
-        role: &str,
-        parts: serde_json::Value,
-        metadata: serde_json::Value,
-    ) -> Result<()> {
-        messages::append(id, role, parts, metadata)?;
-        Ok(())
-    }
-
-    fn update_conversation_fields(
-        id: &str,
-        name: Option<&str>,
-        mode: Option<&str>,
-        updated_at: i64,
-    ) -> Result<()> {
-        let Some(existing) = conversations::get(id)? else {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
-        };
-        conversations::update(Conversation {
-            id: existing.id,
-            parent_id: existing.parent_id,
-            project_id: existing.project_id,
-            workspace_id: existing.workspace_id,
-            name: name.map(str::to_string).or(existing.name),
-            mode: mode
-                .map(str::to_string)
-                .unwrap_or_else(|| existing.mode.clone()),
-            created_at: existing.created_at,
-            updated_at,
-            archived_at: existing.archived_at,
-        })
-    }
-
-    pub fn update_name(id: &str, name: &str, updated_at: i64) -> Result<()> {
-        update_conversation_fields(id, Some(name), None, updated_at)
-    }
-
-    pub fn update_session(id: &str, session_id: &str, updated_at: i64) -> Result<()> {
-        let mode = conversations::get(id)?
-            .ok_or(rusqlite::Error::QueryReturnedNoRows)?
-            .mode;
-        agent_sessions::upsert(id, Some(session_id), &mode, updated_at)
-    }
-
-    pub fn update_mode(id: &str, mode: &str, updated_at: i64) -> Result<()> {
-        update_conversation_fields(id, None, Some(mode), updated_at)?;
-        agent_sessions::upsert(id, None, mode, updated_at)
-    }
-
-    pub fn update_full(
-        id: &str,
-        name: Option<&str>,
-        session_id: Option<&str>,
-        mode: Option<&str>,
-        messages: Option<&str>,
-        updated_at: i64,
-    ) -> Result<()> {
-        update_conversation_fields(id, name, mode, updated_at)?;
-        if let Some(session_id) = session_id {
-            update_session(id, session_id, updated_at)?;
-        }
-        if let Some(messages) = messages {
-            update_messages(id, messages, updated_at)?;
-        }
-        Ok(())
-    }
-
-    pub fn delete(id: &str) -> Result<()> {
-        conversations::delete(id)
-    }
-}
-
-pub mod legacy_sub_chats {
-    use super::*;
-
-    pub fn create(sub_chat: SubChat) -> Result<SubChat> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        conn.execute(
-            "INSERT INTO sub_chats (id, name, chat_id, session_id, mode, messages, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                sub_chat.id,
-                sub_chat.name,
-                sub_chat.chat_id,
-                sub_chat.session_id,
-                sub_chat.mode,
-                sub_chat.messages,
-                sub_chat.created_at,
-                sub_chat.updated_at,
-            ],
-        )?;
-
-        Ok(sub_chat)
-    }
-
-    pub fn list(chat_id: &str) -> Result<Vec<SubChat>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT id, name, chat_id, session_id, mode, messages, created_at, updated_at
-             FROM sub_chats WHERE chat_id = ?1 ORDER BY created_at ASC",
-        )?;
-
-        let sub_chats = stmt.query_map(params![chat_id], |row| {
-            Ok(SubChat {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                chat_id: row.get(2)?,
-                session_id: row.get(3)?,
-                mode: row.get(4)?,
-                messages: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
-            })
-        })?;
-
-        sub_chats.collect()
-    }
-
-    pub fn get(id: &str) -> Result<Option<SubChat>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT id, name, chat_id, session_id, mode, messages, created_at, updated_at
-             FROM sub_chats WHERE id = ?1",
-        )?;
-
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(SubChat {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                chat_id: row.get(2)?,
-                session_id: row.get(3)?,
-                mode: row.get(4)?,
-                messages: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
-            })
-        })?;
-
-        match rows.next() {
-            Some(Ok(sub_chat)) => Ok(Some(sub_chat)),
-            Some(Err(e)) => Err(e),
-            None => Ok(None),
-        }
-    }
-
-    pub fn update_messages(id: &str, messages: &str, updated_at: i64) -> Result<()> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        conn.execute(
-            "UPDATE sub_chats SET messages = ?1, updated_at = ?2 WHERE id = ?3",
-            params![messages, updated_at, id],
-        )?;
-
-        Ok(())
-    }
-
-    pub fn append_message(
-        id: &str,
-        role: &str,
-        text: &str,
-        metadata: serde_json::Value,
-    ) -> Result<()> {
-        let parts = serde_json::json!([{ "type": "text", "text": text }]);
-        sub_chats::append_message_parts(id, role, parts, metadata)
-    }
-
-    pub fn append_message_parts(
-        id: &str,
-        role: &str,
-        parts: serde_json::Value,
-        metadata: serde_json::Value,
-    ) -> Result<()> {
-        // Hold the mutex across the entire read-modify-write sequence to prevent race conditions
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        // Read current messages
-        let mut stmt = conn.prepare("SELECT messages FROM sub_chats WHERE id = ?1")?;
-        let messages_str: String = match stmt.query_row(params![id], |row| row.get(0)) {
-            Ok(s) => s,
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
-                return Err(rusqlite::Error::QueryReturnedNoRows)
-            }
-            Err(e) => return Err(e),
-        };
-
-        let mut messages: serde_json::Value =
-            serde_json::from_str(&messages_str).unwrap_or_else(|_| serde_json::json!([]));
-        if !messages.is_array() {
-            messages = serde_json::json!([]);
-        }
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        let message_id = format!("msg_{}", uuid::Uuid::new_v4());
-
-        messages
-            .as_array_mut()
-            .expect("messages must be an array")
-            .push(serde_json::json!({
-                "id": message_id,
-                "role": role,
-                "parts": parts,
-                "metadata": metadata,
-            }));
-
-        // Write updated messages while still holding the mutex
-        conn.execute(
-            "UPDATE sub_chats SET messages = ?1, updated_at = ?2 WHERE id = ?3",
-            params![messages.to_string(), now, id],
-        )?;
-
-        Ok(())
-    }
-
-    pub fn update_name(id: &str, name: &str, updated_at: i64) -> Result<()> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        conn.execute(
-            "UPDATE sub_chats SET name = ?1, updated_at = ?2 WHERE id = ?3",
-            params![name, updated_at, id],
-        )?;
-
-        Ok(())
-    }
-
-    pub fn update_session(id: &str, session_id: &str, updated_at: i64) -> Result<()> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        conn.execute(
-            "UPDATE sub_chats SET session_id = ?1, updated_at = ?2 WHERE id = ?3",
-            params![session_id, updated_at, id],
-        )?;
-
-        Ok(())
-    }
-
-    pub fn update_mode(id: &str, mode: &str, updated_at: i64) -> Result<()> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        conn.execute(
-            "UPDATE sub_chats SET mode = ?1, updated_at = ?2 WHERE id = ?3",
-            params![mode, updated_at, id],
-        )?;
-
-        Ok(())
-    }
-
-    pub fn update_full(
-        id: &str,
-        name: Option<&str>,
-        session_id: Option<&str>,
-        mode: Option<&str>,
-        messages: Option<&str>,
-        updated_at: i64,
-    ) -> Result<()> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        // Build dynamic update query
-        let mut updates = vec!["updated_at = ?1".to_string()];
-        // Count Some fields to determine param_idx (starts at 2 since updated_at is ?1)
-        let some_count = [
-            name.is_some(),
-            session_id.is_some(),
-            mode.is_some(),
-            messages.is_some(),
-        ]
-        .iter()
-        .filter(|&&b| b)
-        .count();
-
-        let mut param_idx = 2;
-        if name.is_some() {
-            updates.push(format!("name = ?{}", param_idx));
-            param_idx += 1;
-        }
-        if session_id.is_some() {
-            updates.push(format!("session_id = ?{}", param_idx));
-            param_idx += 1;
-        }
-        if mode.is_some() {
-            updates.push(format!("mode = ?{}", param_idx));
-            param_idx += 1;
-        }
-        if messages.is_some() {
-            updates.push(format!("messages = ?{}", param_idx));
-            // No need to increment param_idx after the last field
-        }
-
-        // Suppress unused variable warning for param_idx when all fields are None
-        let _ = param_idx;
-        let _ = some_count;
-
-        let query = format!("UPDATE sub_chats SET {} WHERE id = ?", updates.join(", "));
-
-        // Build params
-        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(updated_at)];
-        if let Some(n) = name {
-            params_vec.push(Box::new(n.to_string()));
-        }
-        if let Some(s) = session_id {
-            params_vec.push(Box::new(s.to_string()));
-        }
-        if let Some(m) = mode {
-            params_vec.push(Box::new(m.to_string()));
-        }
-        if let Some(msg) = messages {
-            params_vec.push(Box::new(msg.to_string()));
-        }
-        params_vec.push(Box::new(id.to_string()));
-
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            params_vec.iter().map(|p| p.as_ref()).collect();
-        conn.execute(&query, params_ref.as_slice())?;
-
-        Ok(())
-    }
-
-    pub fn delete(id: &str) -> Result<()> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        conn.execute("DELETE FROM sub_chats WHERE id = ?1", params![id])?;
-
-        Ok(())
-    }
-}
-
 pub mod group_agent_bindings {
     use super::*;
 
@@ -2642,10 +2180,13 @@ mod tests {
             legacy_chat.workspace_id.as_deref(),
             Some(workspace_id.as_str())
         );
-        let legacy_sub_chat = sub_chats::get(&child_id).unwrap().unwrap();
-        assert_eq!(legacy_sub_chat.chat_id, root_id);
+        let child_conversation = conversations::get(&child_id).unwrap().unwrap();
+        assert_eq!(
+            child_conversation.parent_id.as_deref(),
+            Some(root_id.as_str())
+        );
         let legacy_messages: serde_json::Value =
-            serde_json::from_str(&legacy_sub_chat.messages).unwrap();
+            serde_json::from_str(&messages::serialize_legacy(&child_id).unwrap()).unwrap();
         assert_eq!(legacy_messages[0]["role"], "assistant");
         assert_eq!(legacy_messages[0]["parts"][0]["text"], "child reply");
 

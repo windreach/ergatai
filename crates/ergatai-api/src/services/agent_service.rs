@@ -217,7 +217,7 @@ pub struct PendingPrompt {
     pub agent_id: String,
     pub message: String,
     pub images: Vec<ergatai_runtime::AgentImage>,
-    pub sub_chat_id: Option<String>,
+    pub conversation_id: Option<String>,
     pub agent_name: String,
     pub created_at: std::time::Instant,
 }

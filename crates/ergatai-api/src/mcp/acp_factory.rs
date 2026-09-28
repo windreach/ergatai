@@ -292,7 +292,7 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
             message: message.to_string(),
             message_type: message_type.to_string(),
             correlation_id,
-            sub_chat_id: None,
+            conversation_id: None,
         };
 
         match sender.send(send_req).await {

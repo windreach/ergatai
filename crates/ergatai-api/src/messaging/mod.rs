@@ -98,7 +98,7 @@ pub struct SendRequest {
     /// - For `"broadcast"` messages: ignored.
     pub correlation_id: Option<String>,
     /// Optional UI thread to persist/render this external message.
-    pub sub_chat_id: Option<String>,
+    pub conversation_id: Option<String>,
 }
 
 /// Context retained while waiting for an agent's response.
@@ -261,7 +261,7 @@ impl MessageSender {
             message: req.message.clone(),
             message_type: req.message_type.clone(),
             correlation_id: req.correlation_id.clone(),
-            sub_chat_id: req.sub_chat_id.clone(),
+            conversation_id: req.conversation_id.clone(),
         };
 
         // ── Step 2: Admission control (AFTER agent resolution) ──
@@ -309,21 +309,21 @@ impl MessageSender {
             None
         };
 
-        let mut target_sub_chat_id = req.sub_chat_id.clone().or_else(|| {
+        let mut target_conversation_id = req.conversation_id.clone().or_else(|| {
             pending_response
                 .as_ref()
                 .and_then(|p| p.conversation_id.clone())
         });
-        if target_sub_chat_id.is_none() {
+        if target_conversation_id.is_none() {
             let ensured_conversation_id = self
                 .ensure_target_conversation(&resolved_sender_id, &resolved_target_id, &req.to)
                 .await;
             if ensured_conversation_id.is_some() {
-                target_sub_chat_id = ensured_conversation_id;
+                target_conversation_id = ensured_conversation_id;
             }
         }
 
-        if target_sub_chat_id.is_none() {
+        if target_conversation_id.is_none() {
             for candidate in [
                 resolved_sender_id.as_str(),
                 from_stable.as_str(),
@@ -340,7 +340,7 @@ impl MessageSender {
                 .await
                 {
                     Ok(Ok(Some(conversation_id))) => {
-                        target_sub_chat_id = Some(conversation_id);
+                        target_conversation_id = Some(conversation_id);
                         break;
                     }
                     Ok(Ok(None)) => {}
@@ -414,7 +414,7 @@ impl MessageSender {
                 from_stable: Some(from_stable),
                 to_stable: Some(to_stable),
                 content: formatted_content.clone(),
-                thread_id: target_sub_chat_id.clone(),
+                thread_id: target_conversation_id.clone(),
                 timestamp,
                 metadata,
                 // Generate unique message ID for tracking
@@ -470,9 +470,9 @@ impl MessageSender {
                         )
                         .await;
 
-                    // Persist message AFTER successful delivery. The sub-chat helper
+                    // Persist message AFTER successful delivery. The conversation helper
                     // owns writes to the normalized `messages` table.
-                    if let Some(conversation_id) = target_sub_chat_id.clone() {
+                    if let Some(conversation_id) = target_conversation_id.clone() {
                         let message = req.message.clone();
                         let from = req.from.clone();
                         let sender_name = sender_display.clone();
@@ -483,13 +483,13 @@ impl MessageSender {
                                 "senderAgentId": from,
                                 "senderAgentName": sender_name,
                             });
-                            if let Err(e) = user_data_db::sub_chats::append_message(
+                            if let Err(e) = user_data_db::messages::append(
                                 &conversation_id,
                                 "assistant",
-                                &message,
+                                serde_json::json!([{ "type": "text", "text": message }]),
                                 metadata,
                             ) {
-                                warn!("Failed to persist A-to-A message to sub_chats table: {}", e);
+                                warn!("Failed to persist A-to-A message to messages table: {}", e);
                             }
                         })
                         .await
@@ -537,9 +537,9 @@ impl MessageSender {
                     )
                     .await;
 
-                // Persist message AFTER successful delivery. The sub-chat helper
+                // Persist message AFTER successful delivery. The conversation helper
                 // owns writes to the normalized `messages` table.
-                if let Some(conversation_id) = target_sub_chat_id.clone() {
+                if let Some(conversation_id) = target_conversation_id.clone() {
                     let message = req.message.clone();
                     let from = req.from.clone();
                     let sender_name = sender_display.clone();
@@ -550,13 +550,13 @@ impl MessageSender {
                             "senderAgentId": from,
                             "senderAgentName": sender_name,
                         });
-                        if let Err(e) = user_data_db::sub_chats::append_message(
+                        if let Err(e) = user_data_db::messages::append(
                             &conversation_id,
                             "user",
-                            &message,
+                            serde_json::json!([{ "type": "text", "text": message }]),
                             metadata,
                         ) {
-                            warn!("Failed to persist A-to-A message to sub_chats table: {}", e);
+                            warn!("Failed to persist A-to-A message to messages table: {}", e);
                         }
                     })
                     .await

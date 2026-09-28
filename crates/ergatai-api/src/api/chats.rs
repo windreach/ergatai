@@ -11,7 +11,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::user_data_db::{self, Chat, SubChat};
+use crate::user_data_db::{self, Chat};
 use crate::AppState;
 
 // ── Request/Response Types ───────────────────────────────────────────────────
@@ -41,38 +41,56 @@ pub struct UpdateChatRequest {
     pub pr_number: Option<Option<i32>>,
 }
 
+/// Request to create a new conversation (formerly sub-chat).
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct CreateSubChatRequest {
+pub struct CreateConversationRequest {
     pub name: Option<String>,
     pub session_id: Option<String>,
     pub mode: Option<String>,
 }
 
+/// Backward-compatible type alias for CreateConversationRequest.
+/// Deprecated: Use CreateConversationRequest instead.
+pub type CreateSubChatRequest = CreateConversationRequest;
+
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct UpdateSubChatRequest {
+pub struct UpdateConversationRequest {
     pub name: Option<String>,
     pub session_id: Option<String>,
     pub mode: Option<String>,
     pub messages: Option<String>,
 }
 
+/// Backward-compatible type alias for UpdateConversationRequest.
+/// Deprecated: Use UpdateConversationRequest instead.
+pub type UpdateSubChatRequest = UpdateConversationRequest;
+
+/// Request to bind an agent to a conversation.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct BindGroupAgentRequest {
     pub agent_id: String,
     pub agent_name: String,
     #[serde(default)]
     pub agent_command: Option<String>,
-    pub sub_chat_id: String,
+    /// The conversation ID to bind the agent to.
+    /// Accepts both `conv-` (new format) and `subchat_` (legacy format) prefixes for backward compatibility.
+    #[serde(alias = "sub_chat_id")]
+    pub conversation_id: String,
 }
 
+/// Request to append a message to a conversation.
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct AppendSubChatMessageRequest {
+pub struct AppendConversationMessageRequest {
     pub role: String,
     pub text: String,
     #[serde(default)]
     #[schema(value_type = Object, nullable = true)]
     pub metadata: Option<serde_json::Value>,
 }
+
+/// Backward-compatible type alias for AppendConversationMessageRequest.
+/// Deprecated: Use AppendConversationMessageRequest instead.
+pub type AppendSubChatMessageRequest = AppendConversationMessageRequest;
 
 #[derive(Debug, Deserialize)]
 pub struct WorktreeLookupParams {
@@ -102,8 +120,9 @@ pub struct ChatResponse {
     pub pr_number: Option<i32>,
 }
 
+/// Response representing a conversation (formerly sub-chat).
 #[derive(Debug, Serialize, ToSchema)]
-pub struct SubChatResponse {
+pub struct ConversationResponse {
     pub id: String,
     pub name: Option<String>,
     pub chat_id: String,
@@ -113,6 +132,10 @@ pub struct SubChatResponse {
     pub created_at: i64,
     pub updated_at: i64,
 }
+
+/// Backward-compatible type alias for ConversationResponse.
+/// Deprecated: Use ConversationResponse instead.
+pub type SubChatResponse = ConversationResponse;
 
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
@@ -156,25 +179,52 @@ fn chat_to_response(chat: Chat) -> ChatResponse {
     }
 }
 
-fn sub_chat_to_response(sub_chat: SubChat) -> SubChatResponse {
-    SubChatResponse {
-        id: sub_chat.id,
-        name: sub_chat.name,
-        chat_id: sub_chat.chat_id,
-        session_id: sub_chat.session_id,
-        mode: sub_chat.mode,
-        messages: sub_chat.messages,
-        created_at: sub_chat.created_at,
-        updated_at: sub_chat.updated_at,
+fn conversation_to_response(
+    conversation: user_data_db::Conversation,
+    session_id: Option<String>,
+    messages: String,
+) -> ConversationResponse {
+    ConversationResponse {
+        id: conversation.id,
+        name: conversation.name,
+        chat_id: conversation.parent_id.unwrap_or_default(),
+        session_id,
+        mode: conversation.mode,
+        messages,
+        created_at: conversation.created_at,
+        updated_at: conversation.updated_at,
     }
+}
+
+/// Builds a ConversationResponse by loading conversation + session + messages.
+fn build_conversation_response(id: &str) -> rusqlite::Result<Option<ConversationResponse>> {
+    let Some(conversation) = user_data_db::conversations::get(id)? else {
+        return Ok(None);
+    };
+    let session_id = user_data_db::agent_sessions::get(id)?;
+    let messages = user_data_db::messages::serialize_legacy(id)?;
+    Ok(Some(conversation_to_response(
+        conversation,
+        session_id,
+        messages,
+    )))
 }
 
 fn generate_id() -> String {
     format!("chat_{}", uuid::Uuid::new_v4().as_simple())
 }
 
-fn generate_sub_chat_id() -> String {
-    format!("subchat_{}", uuid::Uuid::new_v4().as_simple())
+fn generate_conversation_id() -> String {
+    format!("conv-{}", uuid::Uuid::new_v4().as_simple())
+}
+
+/// Normalizes a conversation ID for backward compatibility.
+/// Accepts both `conv-` (new format) and `subchat_` (legacy format) prefixes.
+/// Returns the ID as-is since both formats are valid for lookups.
+fn normalize_conversation_id(id: &str) -> &str {
+    // Both `conv-` and `subchat_` prefixes are valid.
+    // The DB layer handles lookup regardless of prefix.
+    id
 }
 
 // ── Chat API Handlers ────────────────────────────────────────────────────────
@@ -728,14 +778,19 @@ pub async fn list_sub_chats(
     Path(chat_id): Path<String>,
 ) -> impl IntoResponse {
     let chat_id_for_list = chat_id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::sub_chats::list(&chat_id_for_list))
-        .await
-    {
-        Ok(Ok(sub_chats)) => {
-            let response: Vec<SubChatResponse> =
-                sub_chats.into_iter().map(sub_chat_to_response).collect();
-            (StatusCode::OK, Json(response)).into_response()
+    match tokio::task::spawn_blocking(move || {
+        let children = user_data_db::conversations::list_children(&chat_id_for_list)?;
+        let mut responses = Vec::with_capacity(children.len());
+        for conversation in children {
+            let session_id = user_data_db::agent_sessions::get(&conversation.id)?;
+            let messages = user_data_db::messages::serialize_legacy(&conversation.id)?;
+            responses.push(conversation_to_response(conversation, session_id, messages));
         }
+        Ok::<_, rusqlite::Error>(responses)
+    })
+    .await
+    {
+        Ok(Ok(responses)) => (StatusCode::OK, Json(responses)).into_response(),
         Ok(Err(error)) => db_error("Failed to list sub-chats", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -799,22 +854,39 @@ pub async fn create_sub_chat(
         .unwrap()
         .as_secs() as i64;
 
-    let sub_chat = SubChat {
-        id: generate_sub_chat_id(),
-        name: req.name,
-        chat_id,
-        session_id: req.session_id,
-        mode: req.mode.unwrap_or_else(|| "agent".to_string()),
-        messages: "[]".to_string(),
-        created_at: now,
-        updated_at: now,
-    };
+    let conversation_id = generate_conversation_id();
+    let mode = req.mode.unwrap_or_else(|| "agent".to_string());
+    let name = req.name;
+    let session_id = req.session_id;
+    let chat_id_for_create = chat_id;
 
-    match tokio::task::spawn_blocking(move || user_data_db::sub_chats::create(sub_chat)).await {
-        Ok(Ok(created)) => {
-            let response = sub_chat_to_response(created);
-            (StatusCode::CREATED, Json(response)).into_response()
-        }
+    match tokio::task::spawn_blocking(move || {
+        // Get parent conversation (chat is a root conversation)
+        let parent = user_data_db::conversations::get(&chat_id_for_create)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+
+        // Create child conversation
+        let conversation = user_data_db::conversations::create(user_data_db::Conversation {
+            id: conversation_id.clone(),
+            parent_id: Some(parent.id.clone()),
+            project_id: parent.project_id.clone(),
+            workspace_id: parent.workspace_id.clone(),
+            name: name.clone(),
+            mode: mode.clone(),
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+        })?;
+
+        // Register agent session
+        user_data_db::agent_sessions::upsert(&conversation_id, session_id.as_deref(), &mode, now)?;
+
+        let messages = user_data_db::messages::serialize_legacy(&conversation_id)?;
+        Ok::<_, rusqlite::Error>(conversation_to_response(conversation, session_id, messages))
+    })
+    .await
+    {
+        Ok(Ok(response)) => (StatusCode::CREATED, Json(response)).into_response(),
         Ok(Err(error)) => db_error("Failed to create sub-chat", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -845,7 +917,7 @@ pub async fn delete_sub_chat(
 ) -> impl IntoResponse {
     let sub_chat_id_for_delete = sub_chat_id.clone();
     match tokio::task::spawn_blocking(move || {
-        user_data_db::sub_chats::delete(&sub_chat_id_for_delete)
+        user_data_db::conversations::delete(&sub_chat_id_for_delete)
     })
     .await
     {
@@ -880,13 +952,10 @@ pub async fn get_sub_chat(
     Path((_chat_id, sub_chat_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let sub_chat_id_for_get = sub_chat_id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::sub_chats::get(&sub_chat_id_for_get))
+    match tokio::task::spawn_blocking(move || build_conversation_response(&sub_chat_id_for_get))
         .await
     {
-        Ok(Ok(Some(sub_chat))) => {
-            let response = sub_chat_to_response(sub_chat);
-            (StatusCode::OK, Json(response)).into_response()
-        }
+        Ok(Ok(Some(response))) => (StatusCode::OK, Json(response)).into_response(),
         Ok(Ok(None)) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -924,13 +993,10 @@ pub async fn get_sub_chat_by_id(
     Path(sub_chat_id): Path<String>,
 ) -> impl IntoResponse {
     let sub_chat_id_for_get = sub_chat_id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::sub_chats::get(&sub_chat_id_for_get))
+    match tokio::task::spawn_blocking(move || build_conversation_response(&sub_chat_id_for_get))
         .await
     {
-        Ok(Ok(Some(sub_chat))) => {
-            let response = sub_chat_to_response(sub_chat);
-            (StatusCode::OK, Json(response)).into_response()
-        }
+        Ok(Ok(Some(response))) => (StatusCode::OK, Json(response)).into_response(),
         Ok(Ok(None)) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -980,14 +1046,36 @@ pub async fn update_sub_chat(
     let mode = req.mode.clone();
     let messages = req.messages.clone();
     match tokio::task::spawn_blocking(move || {
-        user_data_db::sub_chats::update_full(
-            &sub_chat_id_for_update,
-            name.as_deref(),
-            session_id.as_deref(),
-            mode.as_deref(),
-            messages.as_deref(),
-            now,
-        )
+        // Update conversation fields
+        let Some(existing) = user_data_db::conversations::get(&sub_chat_id_for_update)? else {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        };
+        user_data_db::conversations::update(user_data_db::Conversation {
+            id: existing.id,
+            parent_id: existing.parent_id,
+            project_id: existing.project_id,
+            workspace_id: existing.workspace_id,
+            name: name.or(existing.name),
+            mode: mode.clone().unwrap_or_else(|| existing.mode.clone()),
+            created_at: existing.created_at,
+            updated_at: now,
+            archived_at: existing.archived_at,
+        })?;
+        // Update session
+        if let Some(ref sid) = session_id {
+            let mode_for_session = mode.as_deref().unwrap_or(&existing.mode);
+            user_data_db::agent_sessions::upsert(
+                &sub_chat_id_for_update,
+                Some(sid),
+                mode_for_session,
+                now,
+            )?;
+        }
+        // Update messages
+        if let Some(ref msgs) = messages {
+            user_data_db::messages::replace_legacy(&sub_chat_id_for_update, msgs, now)?;
+        }
+        Ok::<_, rusqlite::Error>(())
     })
     .await
     {
@@ -1008,13 +1096,10 @@ pub async fn update_sub_chat(
 
     // Fetch and return the updated sub-chat
     let sub_chat_id_for_get = sub_chat_id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::sub_chats::get(&sub_chat_id_for_get))
+    match tokio::task::spawn_blocking(move || build_conversation_response(&sub_chat_id_for_get))
         .await
     {
-        Ok(Ok(Some(sub_chat))) => {
-            let response = sub_chat_to_response(sub_chat);
-            (StatusCode::OK, Json(response)).into_response()
-        }
+        Ok(Ok(Some(response))) => (StatusCode::OK, Json(response)).into_response(),
         Ok(Ok(None)) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -1061,14 +1146,33 @@ pub async fn update_sub_chat_by_id(
     let mode = req.mode.clone();
     let messages = req.messages.clone();
     match tokio::task::spawn_blocking(move || {
-        user_data_db::sub_chats::update_full(
-            &sub_chat_id_for_update,
-            name.as_deref(),
-            session_id.as_deref(),
-            mode.as_deref(),
-            messages.as_deref(),
-            now,
-        )
+        let Some(existing) = user_data_db::conversations::get(&sub_chat_id_for_update)? else {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        };
+        user_data_db::conversations::update(user_data_db::Conversation {
+            id: existing.id,
+            parent_id: existing.parent_id,
+            project_id: existing.project_id,
+            workspace_id: existing.workspace_id,
+            name: name.or(existing.name),
+            mode: mode.clone().unwrap_or_else(|| existing.mode.clone()),
+            created_at: existing.created_at,
+            updated_at: now,
+            archived_at: existing.archived_at,
+        })?;
+        if let Some(ref sid) = session_id {
+            let mode_for_session = mode.as_deref().unwrap_or(&existing.mode);
+            user_data_db::agent_sessions::upsert(
+                &sub_chat_id_for_update,
+                Some(sid),
+                mode_for_session,
+                now,
+            )?;
+        }
+        if let Some(ref msgs) = messages {
+            user_data_db::messages::replace_legacy(&sub_chat_id_for_update, msgs, now)?;
+        }
+        Ok::<_, rusqlite::Error>(())
     })
     .await
     {
@@ -1088,13 +1192,10 @@ pub async fn update_sub_chat_by_id(
     }
 
     let sub_chat_id_for_get = sub_chat_id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::sub_chats::get(&sub_chat_id_for_get))
+    match tokio::task::spawn_blocking(move || build_conversation_response(&sub_chat_id_for_get))
         .await
     {
-        Ok(Ok(Some(sub_chat))) => {
-            let response = sub_chat_to_response(sub_chat);
-            (StatusCode::OK, Json(response)).into_response()
-        }
+        Ok(Ok(Some(response))) => (StatusCode::OK, Json(response)).into_response(),
         Ok(Ok(None)) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -1191,25 +1292,27 @@ pub async fn bind_agent(
         }
     }
 
-    let sub_chat_id_for_get = req.sub_chat_id.clone();
+    // Normalize conversation ID for backward compatibility (accepts both conv- and subchat_ prefixes)
+    let conversation_id_for_get = normalize_conversation_id(&req.conversation_id).to_string();
     let chat_id_for_cmp = chat_id.clone();
-    let sub_chat = match tokio::task::spawn_blocking(move || {
-        user_data_db::sub_chats::get(&sub_chat_id_for_get)
+    let conversation = match tokio::task::spawn_blocking(move || {
+        user_data_db::conversations::get(&conversation_id_for_get)
     })
     .await
     {
-        Ok(Ok(Some(sub_chat))) if sub_chat.chat_id == chat_id_for_cmp => sub_chat,
+        Ok(Ok(Some(conv))) if conv.parent_id.as_deref() == Some(&chat_id_for_cmp) => conv,
+        Ok(Ok(Some(conv))) if conv.id == chat_id_for_cmp => conv,
         Ok(Ok(_)) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
-                    error: "Sub-chat does not belong to this chat".to_string(),
+                    error: "Conversation does not belong to this chat".to_string(),
                 }),
             )
                 .into_response();
         }
         Ok(Err(error)) => {
-            return db_error("Failed to get sub-chat", error);
+            return db_error("Failed to get conversation", error);
         }
         Err(e) => {
             return (
@@ -1236,7 +1339,7 @@ pub async fn bind_agent(
         agent_id: req.agent_id,
         agent_name: req.agent_name,
         agent_command: req.agent_command,
-        conversation_id: sub_chat.id,
+        conversation_id: conversation.id,
         created_at: now,
         updated_at: now,
     };
@@ -1415,10 +1518,12 @@ pub async fn append_sub_chat_message(
     // Verify the sub-chat belongs to the specified chat
     let sub_chat_id_for_check = sub_chat_id.clone();
     let chat_id_for_cmp = chat_id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::sub_chats::get(&sub_chat_id_for_check))
-        .await
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::conversations::get(&sub_chat_id_for_check)
+    })
+    .await
     {
-        Ok(Ok(Some(sc))) if sc.chat_id == chat_id_for_cmp => {}
+        Ok(Ok(Some(conv))) if conv.parent_id.as_deref() == Some(&chat_id_for_cmp) => {}
         Ok(Ok(Some(_))) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -1450,7 +1555,9 @@ pub async fn append_sub_chat_message(
     let text = req.text.clone();
     let metadata = req.metadata.unwrap_or(serde_json::Value::Null);
     match tokio::task::spawn_blocking(move || {
-        user_data_db::sub_chats::append_message(&sub_chat_id_for_append, &role, &text, metadata)
+        let parts = serde_json::json!([{ "type": "text", "text": text }]);
+        user_data_db::messages::append(&sub_chat_id_for_append, &role, parts, metadata)?;
+        Ok::<_, rusqlite::Error>(())
     })
     .await
     {
