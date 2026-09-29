@@ -15,6 +15,8 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use utoipa::ToSchema;
 
+use ergatai_core::id::{format as format_id, generate, IdType};
+
 use crate::messaging::{get_message_sender, SendMessageResult, SendRequest};
 use crate::AppState;
 
@@ -1119,7 +1121,7 @@ pub async fn send_message(
 
                 // Bind the new agent to its own conversation below the chat.
                 let now = chrono::Utc::now().timestamp();
-                let agent_conversation_id = format!("conversation_{}", uuid::Uuid::new_v4());
+                let agent_conversation_id = format_id(generate(), IdType::Conversation);
                 let chat_id_for_conversation = chat_id.clone();
                 let workspace_id_for_conversation = sender_info.workspace_id.clone();
                 let agent_command_for_name = target_command.clone();
@@ -2497,7 +2499,7 @@ pub async fn prompt_agent(
         }
     };
 
-    let prompt_id = uuid::Uuid::new_v4().to_string();
+    let prompt_id = format_id(generate(), IdType::Session);
 
     if let Some(conversation_id) = body.conversation_id.as_deref() {
         let conversation_id_for_get = conversation_id.to_string();
@@ -2918,7 +2920,7 @@ pub async fn stream_agent_output(
                                                 .as_secs()
                                                 as i64;
                                             let child_conv_id =
-                                                format!("subconv-{}", uuid::Uuid::new_v4());
+                                                format_id(generate(), IdType::Conversation);
 
                                             let child_conv = crate::user_data_db::Conversation {
                                                 id: child_conv_id.clone(),

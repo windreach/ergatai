@@ -15,6 +15,7 @@ use ergatai_api::services::collaboration_session::{
 use ergatai_api::services::collaboration_session_dag::{
     cancel_session_execution, recover_session_dag,
 };
+use ergatai_error::id::{format as format_id, generate, IdType};
 use http_body_util::BodyExt;
 use serde_json::json;
 
@@ -52,7 +53,7 @@ async fn lock_user_data_db_for_tests_async() -> tokio::sync::MutexGuard<'static,
 #[test]
 fn recovery_queries_track_active_sessions_plans_and_approvals() {
     let _database_guard = lock_user_data_db_for_tests();
-    let chat_id = format!("chat-{}", uuid::Uuid::new_v4());
+    let chat_id = format_id(generate(), IdType::Chat);
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id,
         workspace_id: Some("workspace-recovery".to_string()),
@@ -140,7 +141,7 @@ async fn concurrent_session_dag_registries_stay_isolated() {
 
     let make_active_session = |agent_id: &'static str| async move {
         let created = create_session(CreateCollaborationSessionRequest {
-            chat_id: format!("chat-{}", uuid::Uuid::new_v4()),
+            chat_id: format_id(generate(), IdType::Chat),
             workspace_id: Some("workspace-concurrent".to_string()),
             project_id: Some("project-concurrent".to_string()),
             mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
@@ -246,7 +247,7 @@ async fn concurrent_session_dag_registries_stay_isolated() {
 async fn inactive_session_plan_is_not_recovered() {
     let _database_guard = lock_user_data_db_for_tests_async().await;
     let created = create_session(CreateCollaborationSessionRequest {
-        chat_id: format!("chat-{}", uuid::Uuid::new_v4()),
+        chat_id: format_id(generate(), IdType::Chat),
         workspace_id: Some("workspace-recovery".to_string()),
         project_id: Some("project-recovery".to_string()),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
@@ -291,7 +292,7 @@ async fn executing_user_message_hot_swaps_active_revision() {
     let _database_guard = lock_user_data_db_for_tests_async().await;
     ergatai_api::app_state_with_token(None);
     let created = create_session(CreateCollaborationSessionRequest {
-        chat_id: format!("chat-{}", uuid::Uuid::new_v4()),
+        chat_id: format_id(generate(), IdType::Chat),
         workspace_id: Some("workspace-hot-swap".to_string()),
         project_id: Some("project-hot-swap".to_string()),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
@@ -418,7 +419,7 @@ async fn executing_user_message_hot_swaps_active_revision() {
 fn collaboration_interaction_routes_lightweight_and_plans() {
     let _database_guard = lock_user_data_db_for_tests();
     let created = create_session(CreateCollaborationSessionRequest {
-        chat_id: format!("chat-{}", uuid::Uuid::new_v4()),
+        chat_id: format_id(generate(), IdType::Chat),
         workspace_id: Some("workspace-interactions".to_string()),
         project_id: Some("project-interactions".to_string()),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
@@ -498,7 +499,7 @@ fn collaboration_interaction_routes_lightweight_and_plans() {
 async fn collaboration_session_stream_replays_requested_events() {
     let _database_guard = lock_user_data_db_for_tests_async().await;
     let created = create_session(CreateCollaborationSessionRequest {
-        chat_id: format!("chat-{}", uuid::Uuid::new_v4()),
+        chat_id: format_id(generate(), IdType::Chat),
         workspace_id: Some("workspace-stream".to_string()),
         project_id: Some("project-stream".to_string()),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
@@ -541,7 +542,7 @@ async fn collaboration_session_stream_replays_requested_events() {
 #[test]
 fn collaboration_session_persists_context_plans_and_approvals() {
     let _database_guard = lock_user_data_db_for_tests();
-    let chat_id = format!("chat-{}", uuid::Uuid::new_v4());
+    let chat_id = format_id(generate(), IdType::Chat);
 
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id: chat_id.clone(),
@@ -658,7 +659,7 @@ fn collaboration_session_persists_context_plans_and_approvals() {
 async fn approval_rejection_and_cancellation_cancel_pending_work() {
     let _database_guard = lock_user_data_db_for_tests_async().await;
     let created = create_session(CreateCollaborationSessionRequest {
-        chat_id: format!("chat-{}", uuid::Uuid::new_v4()),
+        chat_id: format_id(generate(), IdType::Chat),
         workspace_id: Some("workspace-lifecycle".to_string()),
         project_id: Some("project-lifecycle".to_string()),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
@@ -792,7 +793,7 @@ async fn approval_rejection_and_cancellation_cancel_pending_work() {
 fn plan_revision_preserves_completed_outputs() {
     let _database_guard = lock_user_data_db_for_tests();
     let created = create_session(CreateCollaborationSessionRequest {
-        chat_id: format!("chat-{}", uuid::Uuid::new_v4()),
+        chat_id: format_id(generate(), IdType::Chat),
         workspace_id: Some("workspace-preserve".to_string()),
         project_id: Some("project-preserve".to_string()),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,

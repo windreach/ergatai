@@ -8,6 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use ergatai_core::id::{format as format_id, generate, IdType};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
@@ -211,11 +212,11 @@ fn build_conversation_response(id: &str) -> rusqlite::Result<Option<Conversation
 }
 
 fn generate_id() -> String {
-    format!("chat_{}", uuid::Uuid::new_v4().as_simple())
+    format_id(generate(), IdType::Chat)
 }
 
 fn generate_conversation_id() -> String {
-    format!("conv-{}", uuid::Uuid::new_v4().as_simple())
+    format_id(generate(), IdType::Conversation)
 }
 
 /// Normalizes a conversation ID for backward compatibility.

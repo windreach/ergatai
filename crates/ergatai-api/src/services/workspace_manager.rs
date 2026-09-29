@@ -1,5 +1,6 @@
 //! Workspace-first management service.
 
+use ergatai_core::id::{format as format_id, generate, IdType};
 use ergatai_runtime::ResourceLimits;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
@@ -214,7 +215,7 @@ async fn find_or_create_project(
 
     let timestamp = now();
     let project = Project {
-        id: format!("proj-{}", uuid::Uuid::new_v4()),
+        id: format_id(generate(), IdType::Workspace),
         name: project_name
             .filter(|name| !name.trim().is_empty())
             .map(str::to_string)
@@ -341,7 +342,7 @@ pub async fn create(
     let id = request
         .id
         .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| format!("ws-{}", uuid::Uuid::new_v4().simple()));
+        .unwrap_or_else(|| format_id(generate(), IdType::Workspace));
     let id_check = id.clone();
     let exists = tokio::task::spawn_blocking(move || workspaces::get(&id_check))
         .await

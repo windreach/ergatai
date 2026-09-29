@@ -103,9 +103,9 @@ tasks:
     assert_eq!(ready.len(), 1);
     assert_eq!(ready[0].task, "Design");
 
-    // UUIDs are well-formed
+    // Snowflake IDs are well-formed
     for node in &graph.nodes {
-        assert!(uuid::Uuid::parse_str(&node.id).is_ok());
+        assert!(ergatai_error::id::parse(&node.id).is_some());
     }
 }
 
@@ -1942,13 +1942,13 @@ tasks:
 "#;
     let graph = parse_dag_yaml(yaml, None).unwrap();
     let ids: std::collections::HashSet<&str> = graph.nodes.iter().map(|n| n.id.as_str()).collect();
-    // All UUIDs should be unique
+    // All IDs should be unique
     assert_eq!(ids.len(), graph.nodes.len());
-    // All UUIDs should parse as valid UUIDs
+    // All IDs should parse as valid Snowflake IDs
     for node in &graph.nodes {
         assert!(
-            uuid::Uuid::parse_str(&node.id).is_ok(),
-            "invalid UUID: {}",
+            ergatai_error::id::parse(&node.id).is_some(),
+            "invalid Snowflake ID: {}",
             node.id
         );
     }

@@ -8,6 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use ergatai_core::id::{format as format_id, generate, IdType};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -74,7 +75,7 @@ fn project_to_response(project: Project) -> ProjectResponse {
 }
 
 fn generate_id() -> String {
-    format!("proj_{}", uuid::Uuid::new_v4().as_simple())
+    format_id(generate(), IdType::Workspace)
 }
 
 fn db_error(operation: &'static str, error: rusqlite::Error) -> Response {

@@ -21,3 +21,4 @@ tracing-subscriber = { workspace = true }
 percent-encoding.workspace = true
 futures-util.workspace = true
 crossterm = { workspace = true }
+ergatai-error = { path = "../ergatai-error" }

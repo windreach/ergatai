@@ -1111,6 +1111,7 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
+ "ergatai-error",
  "futures-util",
  "percent-encoding",
  "reqwest",
@@ -1145,7 +1146,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -1182,7 +1182,6 @@ dependencies = [
  "serde_yaml",
  "tokio",
  "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -1193,6 +1192,7 @@ dependencies = [
  "chrono",
  "rusqlite",
  "serde_json",
+ "snowdon",
  "thiserror 2.0.20",
  "tracing",
 ]
@@ -1220,7 +1220,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -1239,7 +1238,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -1273,7 +1271,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "uuid",
  "which",
 ]
 
@@ -1522,6 +1519,19 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "generator"
+version = "0.7.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5cc16584ff22b460a382b7feec54b23d2908d858152e5739a120b949293bd74e"
+dependencies = [
+ "cc",
+ "libc",
+ "log",
+ "rustversion",
+ "windows",
 ]
 
 [[package]]
@@ -2222,6 +2232,19 @@ name = "log"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+
+[[package]]
+name = "loom"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff50ecb28bb86013e935fb6683ab1f6d3a20016f123c76fd4c27470076ac30f5"
+dependencies = [
+ "cfg-if",
+ "generator",
+ "scoped-tls",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "lru-slab"
@@ -3189,6 +3212,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "scoped-tls"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3532,6 +3561,15 @@ name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+
+[[package]]
+name = "snowdon"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed11e67e4c9d7eca68eb26a1562431ebeb45398d46cdb0a1c4980db90ffdebc6"
+dependencies = [
+ "loom",
+]
 
 [[package]]
 name = "socket2"
@@ -4341,6 +4379,15 @@ name = "winapi-x86_64-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
+
+[[package]]
+name = "windows"
+version = "0.48.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e686886bc078bc1b0b600cac0147aadb815089b6e4da64016cbd754b6342700f"
+dependencies = [
+ "windows-targets 0.48.5",
+]
 
 [[package]]
 name = "windows-core"

@@ -15,6 +15,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use ergatai_error::id::{format as format_id, generate, IdType};
 use ergatai_error::{ErgataiError, ErgataiResult};
 
 use crate::agent_registry::AgentRegistry;
@@ -208,7 +209,7 @@ impl AgentRuntime {
             .await?;
 
         let agent_id = handle.agent_id.clone();
-        let agent_uuid = uuid::Uuid::new_v4().to_string();
+        let agent_uuid = format_id(generate(), IdType::Agent);
         let now = chrono::Utc::now();
 
         // Generate MCP agent ID for ACP agents to enable cross-protocol addressing.
@@ -352,7 +353,7 @@ impl AgentRuntime {
         agent_id: String,
         handle: AgentHandle,
     ) -> ErgataiResult<()> {
-        let agent_uuid = uuid::Uuid::new_v4().to_string();
+        let agent_uuid = format_id(generate(), IdType::Agent);
         let now = chrono::Utc::now();
         let stable_id = handle.metadata.get("ergatai_agent_id").cloned();
         let info = AgentInfo {
@@ -473,7 +474,7 @@ impl AgentRuntime {
             // entry().or_insert() ensures no TOCTOU gap between contains_key and insert.
             guard.entry(agent_id.clone()).or_insert_with(|| {
                 count += 1;
-                let agent_uuid = uuid::Uuid::new_v4().to_string();
+                let agent_uuid = format_id(generate(), IdType::Agent);
                 let now = chrono::Utc::now();
                 // If the previous entry had an MCP binding (process restart case),
                 // preserve it. Use MCP path name as ergatai_agent_id + stable_id

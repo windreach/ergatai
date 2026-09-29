@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info};
 
+use ergatai_core::id::{format as format_id, generate, IdType};
 use ergatai_nats::events::AgentMessagePayload;
 
 /// Activity event types
@@ -92,7 +93,7 @@ impl ActivityFeed {
     /// Record an event
     pub async fn record(&self, event: ActivityEvent) {
         let entry = ActivityEntry {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: format_id(generate(), IdType::Session),
             timestamp: Utc::now(),
             event,
         };

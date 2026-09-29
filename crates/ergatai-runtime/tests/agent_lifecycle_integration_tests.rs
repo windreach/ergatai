@@ -1257,11 +1257,11 @@ async fn runtime_launch_agent_sets_correct_agent_info_fields() {
     assert_eq!(info.agent_id, "agent-ws-fields");
     assert_eq!(info.workspace_id, "ws-fields");
 
-    // UUID is non-empty and well-formed (uuid v4 format)
+    // agent_uuid is non-empty and well-formed (Snowflake ID format)
     assert!(!info.agent_uuid.is_empty());
     assert!(
-        uuid::Uuid::parse_str(&info.agent_uuid).is_ok(),
-        "agent_uuid should be a valid UUID"
+        ergatai_error::id::parse(&info.agent_uuid).is_some(),
+        "agent_uuid should be a valid Snowflake ID"
     );
 
     // lifecycle is Running

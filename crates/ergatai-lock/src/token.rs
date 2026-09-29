@@ -20,8 +20,8 @@
 //! compatibility but should not be used in new code.
 
 use chrono::{DateTime, Utc};
+use ergatai_error::id::{format as id_format, generate, IdType};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 /// Unique identifier for a token.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -30,7 +30,7 @@ pub struct TokenId(String);
 impl TokenId {
     /// Generate a new random token ID.
     pub fn new() -> Self {
-        Self(Uuid::new_v4().to_string())
+        Self(id_format(generate(), IdType::Session))
     }
 
     /// Create from existing string.

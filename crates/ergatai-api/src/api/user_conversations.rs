@@ -8,6 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use ergatai_core::id::{format as format_id, generate, IdType};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -71,7 +72,7 @@ fn now_unix_seconds() -> i64 {
 }
 
 fn conversation_id() -> String {
-    format!("conversation_{}", uuid::Uuid::new_v4())
+    format_id(generate(), IdType::Conversation)
 }
 
 fn db_error(operation: &'static str, error: rusqlite::Error) -> Response {

@@ -32,6 +32,7 @@
 //! ```
 
 use chrono::Utc;
+use ergatai_error::id::{format as id_format, generate, IdType};
 use ergatai_error::ErgataiError;
 use git2::{Oid, Repository};
 use std::fs;
@@ -285,7 +286,7 @@ impl SnapshotManager {
         agent_id: &str,
     ) -> Result<(), ErgataiError> {
         let now = Utc::now().to_rfc3339();
-        let id = uuid::Uuid::new_v4().to_string();
+        let id = id_format(generate(), IdType::Snapshot);
 
         conn.execute(
             "INSERT INTO snapshots (id, file_path, git_hash, created_at, created_by)

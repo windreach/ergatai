@@ -21,6 +21,8 @@ use futures::{SinkExt, StreamExt};
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
+use ergatai_error::id::{format as format_id, generate, IdType};
+
 /// Context for an MCP server attached to one ACP agent connection.
 #[derive(Clone, Debug, Default)]
 pub struct McpServerContext {
@@ -50,7 +52,10 @@ pub struct AcpMcpBridge {
 impl AcpMcpBridge {
     pub fn new(factory: Arc<dyn McpServerFactory>, context: McpServerContext) -> Self {
         Self {
-            server_id: McpServerAcpId::new(format!("ergatai-mcp:{}", uuid::Uuid::new_v4())),
+            server_id: McpServerAcpId::new(format!(
+                "ergatai-mcp:{}",
+                format_id(generate(), IdType::Session)
+            )),
             factory,
             context,
             connections: HashMap::new(),
@@ -80,8 +85,10 @@ impl AcpMcpBridge {
             });
         }
 
-        let connection_id =
-            McpConnectionId::new(format!("mcp-over-acp-connection:{}", uuid::Uuid::new_v4()));
+        let connection_id = McpConnectionId::new(format!(
+            "mcp-over-acp-connection:{}",
+            format_id(generate(), IdType::Session)
+        ));
         let (mcp_server_tx, mut mcp_server_rx) = futures::channel::mpsc::channel::<Dispatch>(128);
         self.connections
             .insert(connection_id.clone(), mcp_server_tx);

@@ -33,6 +33,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
+use ergatai_error::id::{format as format_id, generate, IdType};
 use ergatai_error::{ErgataiError, ErgataiResult};
 
 use crate::{agent_installer, binary_detection};
@@ -59,10 +60,10 @@ pub struct AgentRegistration {
 
 impl AgentRegistration {
     /// Create a new agent registration with the current timestamp.
-    /// Generates a UUID for the id field.
+    /// Generates a unique ID for the id field.
     pub fn new(name: String, command: String, agent_type: String) -> Self {
         Self {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: format_id(generate(), IdType::Agent),
             name,
             command,
             agent_type,
@@ -80,7 +81,7 @@ impl AgentRegistration {
         package_name: Option<String>,
     ) -> Self {
         Self {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: format_id(generate(), IdType::Agent),
             name,
             command,
             agent_type,
@@ -99,7 +100,7 @@ impl AgentRegistration {
         avatar_url: Option<String>,
     ) -> Self {
         Self {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: format_id(generate(), IdType::Agent),
             name,
             command,
             agent_type,

@@ -7,6 +7,7 @@
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use ergatai_api::{build_rest_app, AppState};
+use ergatai_error::id::{format as format_id, generate, IdType};
 use serde_json::json;
 use tower::util::ServiceExt;
 
@@ -128,7 +129,7 @@ async fn create_workspace_malformed_json_returns_4xx() {
 #[tokio::test]
 async fn create_workspace_with_valid_id_returns_created_or_bad_request() {
     let app = build_rest_app(test_state());
-    let ws_id = format!("test-ws-{}", uuid::Uuid::new_v4());
+    let ws_id = format_id(generate(), IdType::Workspace);
     let guard = WorkspaceCleanupGuard {
         ws_id: ws_id.clone(),
     };
@@ -172,7 +173,7 @@ async fn create_workspace_with_valid_id_returns_created_or_bad_request() {
 #[tokio::test]
 async fn create_workspace_with_env() {
     let app = build_rest_app(test_state());
-    let ws_id = format!("test-ws-env-{}", uuid::Uuid::new_v4());
+    let ws_id = format_id(generate(), IdType::Workspace);
     let guard = WorkspaceCleanupGuard {
         ws_id: ws_id.clone(),
     };

@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use ergatai_core::id::{format as format_id, generate, IdType};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -548,7 +549,7 @@ fn insert_participant(
            status = excluded.status,
            updated_at = excluded.updated_at",
         params![
-            format!("part-{}", uuid::Uuid::new_v4().as_simple()),
+            format_id(generate(), IdType::Session),
             session_id,
             participant.conversation_id.trim(),
             participant.agent_id.trim(),
@@ -584,7 +585,7 @@ fn append_event_in_transaction(
     )?;
     let timestamp = now();
     let event = CollaborationContextEvent {
-        id: format!("evt-{}", uuid::Uuid::new_v4().as_simple()),
+        id: format_id(generate(), IdType::Session),
         session_id: session_id.to_string(),
         sequence,
         event_type: draft.event_type.to_string(),
@@ -659,7 +660,7 @@ pub fn create_session(
     }
 
     let timestamp = now();
-    let session_id = format!("collab-{}", uuid::Uuid::new_v4().as_simple());
+    let session_id = format_id(generate(), IdType::Session);
     {
         lock_db!(mut connection);
         let transaction = connection.transaction()?;
@@ -1044,7 +1045,7 @@ pub fn create_plan_revision(
         |row| row.get(0),
     )?;
     let timestamp = now();
-    let plan_id = format!("plan-{}", uuid::Uuid::new_v4().as_simple());
+    let plan_id = format_id(generate(), IdType::Dag);
     transaction.execute(
         &format!(
             "INSERT INTO collaboration_plan_revisions ({PLAN_REVISION_COLUMNS})
@@ -1184,7 +1185,7 @@ pub fn create_approval(
     }
 
     let timestamp = now();
-    let approval_id = format!("approval-{}", uuid::Uuid::new_v4().as_simple());
+    let approval_id = format_id(generate(), IdType::Permission);
     let transaction = connection.transaction()?;
     transaction.execute(
         &format!(

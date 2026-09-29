@@ -28,6 +28,8 @@ use parking_lot::RwLock;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
+use ergatai_error::id::{format as format_id, generate, IdType};
+
 use agent_client_protocol::schema::v1::{
     ContentBlock, CreateElicitationRequest, CreateElicitationResponse, DeleteSessionRequest,
     ElicitationAction, ImageContent, InitializeRequest, ListSessionsRequest, LoadSessionRequest,
@@ -2283,7 +2285,7 @@ impl AcpBackendInterface for AcpBackend {
                             let elicitation_id = format!(
                                 "elic-{}-{}",
                                 aid,
-                                uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("0000")
+                                format_id(generate(), IdType::Session)
                             );
                             let mode_str = match &request.mode {
                                 agent_client_protocol::schema::v1::ElicitationMode::Form(_) => {

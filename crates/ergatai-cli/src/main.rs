@@ -170,7 +170,19 @@ enum DagAction {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize the Snowflake ID generator BEFORE anything else.
+    // Reads ERGATAI_INSTANCE_ID (0-1023) from the environment; defaults to 0
+    // for single-instance deployments. Multi-instance deployments MUST set
+    // distinct values to avoid ID collisions across processes.
+    let instance_id: u16 = std::env::var("ERGATAI_INSTANCE_ID")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    ergatai_error::id::init(instance_id);
+
     tracing_subscriber::fmt::init();
+
+    tracing::info!(instance_id, "ID generator initialized");
 
     let cli = Cli::parse();
 

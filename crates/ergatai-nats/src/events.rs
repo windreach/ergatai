@@ -185,9 +185,12 @@ pub struct AgentMessagePayload {
     pub timeout_ms: Option<u64>,
 }
 
-/// Generate a default message ID (UUID v4)
+/// Generate a default message ID using the ID module
 fn generate_message_id() -> String {
-    uuid::Uuid::new_v4().to_string()
+    ergatai_error::id::format(
+        ergatai_error::id::generate(),
+        ergatai_error::id::IdType::Message,
+    )
 }
 
 /// Read receipt: confirmation that a message was delivered and read

@@ -357,19 +357,19 @@ fn parse_depends_on(s: &str) -> Vec<String> {
 
 impl TaskPlan {
     /// Convert TaskPlan to TaskGraph for DAG-based scheduling
-    /// Node IDs are auto-generated UUIDs
+    /// Node IDs are auto-generated using the ID module
     pub fn to_task_graph(&self) -> ergatai_dag::TaskGraph {
         use ergatai_dag::{TaskGraph, TaskNode};
+        use ergatai_error::id::{format as id_format, generate, IdType};
         use std::collections::HashMap;
-        use uuid::Uuid;
 
-        // First pass: create nodes and build agent_name -> UUID mapping
-        let mut name_to_uuid: HashMap<String, String> = HashMap::new();
+        // First pass: create nodes and build agent_name -> ID mapping
+        let mut name_to_id: HashMap<String, String> = HashMap::new();
         let mut nodes: Vec<TaskNode> = Vec::with_capacity(self.assignments.len());
 
         for assignment in &self.assignments {
-            let id = Uuid::new_v4().to_string();
-            name_to_uuid.insert(assignment.agent_name.clone(), id.clone());
+            let id = id_format(generate(), IdType::Task);
+            name_to_id.insert(assignment.agent_name.clone(), id.clone());
 
             let mut node = TaskNode::new(id, &assignment.agent_name, &assignment.objective);
             // Store depends_on temporarily with agent names (will be converted below)
@@ -398,13 +398,13 @@ impl TaskPlan {
             nodes.push(node);
         }
 
-        // Second pass: update depends_on references to use UUIDs
+        // Second pass: update depends_on references to use IDs
         for node in &mut nodes {
             node.depends_on = node
                 .depends_on
                 .iter()
                 .map(|name| {
-                    name_to_uuid
+                    name_to_id
                         .get(name)
                         .cloned()
                         .unwrap_or_else(|| name.clone())

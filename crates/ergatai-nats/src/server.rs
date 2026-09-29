@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+use ergatai_error::id::{format as id_format, generate, IdType};
 use tokio::time::{sleep, timeout};
 use tracing::{error, info, warn};
-use uuid::Uuid;
 
 use ergatai_error::{ErgataiError, ErgataiResult};
 
@@ -58,7 +58,7 @@ impl NatsServer {
         // and publish/subscribe to any subject, intercepting all agent messages
         // or injecting malicious events. The token is passed to nats-server via
         // `--auth` and must be presented by all connecting clients.
-        let auth_token = Uuid::new_v4().to_string();
+        let auth_token = id_format(generate(), IdType::Session);
 
         // Ensure store directory exists
         tokio::fs::create_dir_all(&store_dir).await.map_err(|e| {

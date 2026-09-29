@@ -30,9 +30,9 @@
 
 use std::collections::HashMap;
 
+use ergatai_error::id::{self, IdType};
 use ergatai_error::{ErgataiError, ErgataiResult};
 use serde::Deserialize;
-use uuid::Uuid;
 
 use crate::dag_topology::{TaskComplexity, TaskGraph, TaskNode, TaskStatus};
 
@@ -434,10 +434,10 @@ pub fn parse_dag_yaml(
         }
     }
 
-    // 构建 name → UUID 映射
-    let mut name_to_uuid: HashMap<String, String> = HashMap::with_capacity(yaml_dag.tasks.len());
+    // 构建 name → ID 映射
+    let mut name_to_id: HashMap<String, String> = HashMap::with_capacity(yaml_dag.tasks.len());
     for task in &yaml_dag.tasks {
-        name_to_uuid.insert(task.name.clone(), Uuid::new_v4().to_string());
+        name_to_id.insert(task.name.clone(), id::format(id::generate(), IdType::Task));
     }
 
     // DAG-level priority (for propagation to nodes)
@@ -448,14 +448,14 @@ pub fn parse_dag_yaml(
         .tasks
         .into_iter()
         .map(|task| {
-            // Lookup UUID from the name→UUID map. The map was populated above
+            // Lookup ID from the name→ID map. The map was populated above
             // from the same `yaml_dag.tasks` iterator, so a miss here indicates
             // an internal logic error — return an explicit error rather than
             // panicking, so that future refactors cannot introduce a silent
             // panic at this call site.
-            let uuid = name_to_uuid.get(&task.name).cloned().ok_or_else(|| {
+            let task_id = name_to_id.get(&task.name).cloned().ok_or_else(|| {
                 ErgataiError::internal(format!(
-                    "BUG: UUID not found for task '{}' — name_to_uuid map is out of sync",
+                    "BUG: ID not found for task '{}' — name_to_id map is out of sync",
                     task.name
                 ))
             })?;
@@ -468,11 +468,11 @@ pub fn parse_dag_yaml(
                 }
             }
 
-            // depends_on 名称 → UUID
+            // depends_on 名称 → ID
             let depends_on: Vec<String> = depends_on
                 .iter()
                 .map(|name| {
-                    name_to_uuid
+                    name_to_id
                         .get(name)
                         .cloned()
                         .unwrap_or_else(|| name.clone())
@@ -515,7 +515,7 @@ pub fn parse_dag_yaml(
             let priority = task.priority.or_else(|| dag_priority.clone());
 
             Ok(TaskNode {
-                id: uuid,
+                id: task_id,
                 agent: task.agent,
                 task: task.name,
                 status: TaskStatus::Pending,
@@ -737,9 +737,33 @@ tasks:
         let graph = parse_dag_yaml(yaml, None).unwrap();
         assert_eq!(graph.nodes.len(), 2);
 
-        // 验证 UUID 格式
+        // 验证 Task ID 格式 (task_{timestamp}_{instance}_{sequence})
         for node in &graph.nodes {
-            assert!(Uuid::parse_str(&node.id).is_ok());
+            assert!(
+                node.id.starts_with("task_"),
+                "Task ID should start with 'task_', got: {}",
+                node.id
+            );
+            // Verify format: task_{timestamp}_{instance}_{sequence}
+            let parts: Vec<&str> = node.id.split('_').collect();
+            assert_eq!(
+                parts.len(),
+                4,
+                "Task ID should have 4 parts separated by '_'"
+            );
+            assert_eq!(parts[0], "task");
+            assert!(
+                parts[1].parse::<u64>().is_ok(),
+                "Timestamp should be numeric"
+            );
+            assert!(
+                parts[2].parse::<u64>().is_ok(),
+                "Instance should be numeric"
+            );
+            assert!(
+                parts[3].parse::<u64>().is_ok(),
+                "Sequence should be numeric"
+            );
         }
 
         // 验证 depends_on 引用已解析为 UUID

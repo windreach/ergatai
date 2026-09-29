@@ -20,6 +20,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ergatai_core::agent_registry::{agent_registry, AgentRegistry};
+use ergatai_core::id::{format as format_id, generate, IdType};
 use ergatai_runtime::AgentRuntime;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -368,7 +369,7 @@ impl MessageSender {
             None
         };
         let correlation_id: Option<String> = match req.message_type.as_str() {
-            "request" => Some(uuid::Uuid::new_v4().to_string()),
+            "request" => Some(format_id(generate(), IdType::Message)),
             "response" => req
                 .correlation_id
                 .clone()
@@ -418,7 +419,7 @@ impl MessageSender {
                 timestamp,
                 metadata,
                 // Generate unique message ID for tracking
-                message_id: uuid::Uuid::new_v4().to_string(),
+                message_id: format_id(generate(), IdType::Message),
                 // Request messages require read receipts
                 requires_receipt: is_request,
                 // correlation_id: generated for requests, echoed from req for responses
@@ -645,7 +646,7 @@ impl MessageSender {
             return Some(conversation_id);
         }
 
-        let conversation_id = format!("conversation_{}", uuid::Uuid::new_v4());
+        let conversation_id = format_id(generate(), IdType::Conversation);
         let timestamp = chrono::Utc::now().timestamp();
         let conversation_id_for_db = conversation_id.clone();
         let chat_id_for_conversation = chat_id.clone();
@@ -976,7 +977,7 @@ impl MessageSender {
 
         // Use a default workspace for sender auto-spawn
         // The sender will be spawned in a default workspace with default work_dir
-        let workspace_id = format!("auto-{}", uuid::Uuid::new_v4());
+        let workspace_id = format_id(generate(), IdType::Workspace);
         let work_dir = default_work_dir();
 
         // Build WorkspaceSpec

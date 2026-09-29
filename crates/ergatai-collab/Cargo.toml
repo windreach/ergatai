@@ -19,7 +19,6 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 tracing.workspace = true
-uuid.workspace = true
 chrono.workspace = true
 percent-encoding.workspace = true
 async-nats.workspace = true

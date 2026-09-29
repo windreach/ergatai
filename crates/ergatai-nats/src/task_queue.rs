@@ -4,13 +4,13 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use ergatai_error::id::{format as id_format, generate, IdType};
 use futures_util::StreamExt;
 
 use async_nats::jetstream::consumer::{pull, AckPolicy, DeliverPolicy, PullConsumer};
 use async_nats::jetstream::stream::{Config, RetentionPolicy, StorageType};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
-use uuid::Uuid;
 
 use crate::connection::NatsConnection;
 use ergatai_error::{ErgataiError, ErgataiResult};
@@ -47,7 +47,7 @@ impl<T> TaskMessage<T> {
             .as_secs();
 
         Self {
-            message_id: Uuid::new_v4().to_string(),
+            message_id: id_format(generate(), IdType::Message),
             correlation_id,
             timestamp,
             retry_count: 0,

@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use tokio::sync::{broadcast, oneshot, RwLock};
 
+use ergatai_error::id::{format as format_id, generate, IdType};
+
 /// Category of a pending permission request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -134,7 +136,7 @@ impl PermissionRequestService {
     /// Register a pending request, notify subscribers, and return its ID.
     pub async fn register(&self, mut request: PendingPermissionRequest) -> String {
         let request_id = if request.request_id.is_empty() {
-            format!("perm-{}", uuid::Uuid::new_v4())
+            format_id(generate(), IdType::Permission)
         } else {
             request.request_id.clone()
         };
@@ -160,7 +162,7 @@ impl PermissionRequestService {
         waiter: oneshot::Sender<PermissionDecisionKind>,
     ) -> String {
         let request_id = if request.request_id.is_empty() {
-            format!("perm-{}", uuid::Uuid::new_v4())
+            format_id(generate(), IdType::Permission)
         } else {
             request.request_id.clone()
         };
@@ -333,7 +335,7 @@ mod tests {
         };
 
         let request_id = service.register(request).await;
-        assert!(request_id.starts_with("perm-"));
+        assert!(request_id.starts_with("perm_"));
 
         let retrieved = service.get(&request_id).await;
         assert!(retrieved.is_some());

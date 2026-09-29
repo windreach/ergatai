@@ -125,8 +125,21 @@ fn main() -> Result<()> {
 }
 
 async fn async_main(args: Args) -> Result<()> {
+    // Initialize the Snowflake ID generator BEFORE anything else.
+    // Reads ERGATAI_INSTANCE_ID (0-1023) from the environment; defaults to 0
+    // for single-instance deployments. Multi-instance deployments MUST set
+    // distinct values to avoid ID collisions across processes.
+    let instance_id: u16 = std::env::var("ERGATAI_INSTANCE_ID")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    ergatai_core::id::init(instance_id);
+
     ergatai_core::init_logging();
     ergatai_core::init_panic_hook();
+
+    // Log after logging init so the message is visible.
+    tracing::info!(instance_id, "ID generator initialized");
 
     ergatai_api::init_prometheus();
     tracing::info!("Prometheus metrics exporter initialized");
@@ -198,6 +211,7 @@ async fn async_main(args: Args) -> Result<()> {
                 }
             } else {
                 // File doesn't exist, generate and write new token
+                // Use UUID for security tokens (244 bits entropy vs Snowflake's 52 bits)
                 let token =
                     uuid::Uuid::new_v4().to_string() + &uuid::Uuid::new_v4().simple().to_string();
                 match std::fs::write(&canonical_token_path, &token) {
@@ -536,6 +550,7 @@ async fn async_main(args: Args) -> Result<()> {
                     program,
                     args: args.collab_runtime_args.clone(),
                     data_dir: args.collab_runtime_data_dir.clone(),
+                    // Use UUID for security tokens (244 bits entropy)
                     token: uuid::Uuid::new_v4().to_string(),
                     startup_timeout: std::time::Duration::from_secs(10),
                     request_timeout: std::time::Duration::from_secs(5),

@@ -3,6 +3,7 @@
 //! Handles the MCP `initialize` handshake (agent registration, peer binding,
 //! reconnection support) and server capability advertisement.
 
+use ergatai_core::id::{format as format_id, generate, IdType};
 use rmcp::{
     model::{InitializeRequestParams, InitializeResult, ServerCapabilities, ServerInfo},
     service::RequestContext,
@@ -49,7 +50,7 @@ impl ServerHandler for ErgataiMcpServer {
         // Use the MCP URL path component as the unique agent ID.
         // This is the dynamic name from the URL (e.g., /mcp/agent-1/ → "agent-1").
         // Falls back to client_info.name if no agent_identifier (default /mcp/ endpoint).
-        let connection_id = uuid::Uuid::new_v4().to_string();
+        let connection_id = format_id(generate(), IdType::Session);
         let unique_agent_id = self
             .agent_identifier()
             .clone()

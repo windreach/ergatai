@@ -29,6 +29,9 @@ pub mod agent_registry;
 pub mod signal;
 pub mod unified_registry;
 
+// ── Re-export ID generation from ergatai-error ──
+pub use ergatai_error::id;
+
 // ── Re-export lifecycle types from ergatai-runtime ──
 pub use ergatai_runtime::agent_lifecycle;
 pub use ergatai_runtime::agent_record;

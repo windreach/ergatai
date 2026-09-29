@@ -16,7 +16,6 @@ async-nats.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-uuid.workspace = true
 futures-util.workspace = true
 dirs.workspace = true
 md5.workspace = true

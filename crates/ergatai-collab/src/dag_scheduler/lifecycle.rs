@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 
+use ergatai_error::id::{format as id_format, generate, IdType};
+
 use super::CollaborationExecutionScope;
 use ergatai_dag::context::DagContext;
 use ergatai_dag::{TaskGraph, TaskStatus};
@@ -40,7 +42,7 @@ impl DagScheduler {
         let dag_id = graph
             .dag_id
             .clone()
-            .unwrap_or_else(|| format!("dag-{}", uuid::Uuid::new_v4()));
+            .unwrap_or_else(|| id_format(generate(), IdType::Dag));
 
         // Read max_agent_calls before moving graph into the Arc.
         let max_agent_calls = graph.max_agent_calls;
@@ -564,10 +566,10 @@ mod tests {
         let path = PathBuf::from("/tmp/project-x");
         let s1 = DagScheduler::new(path.clone(), graph.clone());
         let s2 = DagScheduler::new(path, TaskGraph::new(vec![]));
-        // Each scheduler gets a unique UUID-based dag_id
+        // Each scheduler gets a unique snowflake-based dag_id
         assert_ne!(s1.dag_id(), s2.dag_id());
-        assert!(s1.dag_id().starts_with("dag-"));
-        // UUID format: dag-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+        assert!(s1.dag_id().starts_with("dag_"));
+        // Snowflake format: dag_{timestamp}_{instance}_{sequence}
         assert!(s1.dag_id().len() > 10);
     }
 
@@ -727,7 +729,7 @@ impl StateCheckpoint {
         sequence: u64,
     ) -> Self {
         Self {
-            checkpoint_id: format!("ckpt-{}", uuid::Uuid::new_v4()),
+            checkpoint_id: id_format(generate(), IdType::Dag),
             dag_id: dag_id.to_string(),
             graph: graph.clone(),
             context: context.clone(),

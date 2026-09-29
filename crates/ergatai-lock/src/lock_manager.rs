@@ -4,6 +4,7 @@
 //! WAL mode enabled for concurrent read performance.
 
 use chrono::{DateTime, Utc};
+use ergatai_error::id::{format as id_format, generate, IdType};
 use ergatai_error::ErgataiError;
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -768,7 +769,7 @@ impl FileLockManager {
         let tx = TransactionGuard::begin(&conn)
             .map_err(|e| ErgataiError::internal(format!("Failed to begin transaction: {}", e)))?;
 
-        let lock_id = uuid::Uuid::new_v4().to_string();
+        let lock_id = id_format(generate(), IdType::Lock);
         let token_id = TokenId::new().to_string();
 
         // Compute initial hash of the file at lock creation time
@@ -1099,7 +1100,7 @@ impl FileLockManager {
         let active_count = Self::count_active_locks_by_agent_with_conn(&conn, agent_id)?;
         Self::check_agent_lock_limit_with_count(agent_id, active_count)?;
 
-        let lock_id = uuid::Uuid::new_v4().to_string();
+        let lock_id = id_format(generate(), IdType::Lock);
         let token_id = TokenId::new().to_string();
         let initial_hash = self.compute_file_hash(&normalized_path).ok();
 

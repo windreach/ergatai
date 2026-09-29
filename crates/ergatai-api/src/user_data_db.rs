@@ -8,6 +8,7 @@
 //! - Better data consistency
 //! - Centralized backup
 
+use ergatai_core::id::{format as format_id, generate, IdType};
 use once_cell::sync::Lazy;
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use serde::{Deserialize, Serialize};
@@ -768,7 +769,7 @@ pub mod messages {
             |row| row.get(0),
         )?;
         let message = Message {
-            id: format!("msg_{}", uuid::Uuid::new_v4()),
+            id: format_id(generate(), IdType::Message),
             conversation_id: conversation_id.to_string(),
             sequence,
             role: role.to_string(),
@@ -836,7 +837,7 @@ pub mod messages {
                 "INSERT INTO messages (id, conversation_id, sequence, role, parts, metadata, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
                 params![
-                    value.get("id").and_then(serde_json::Value::as_str).unwrap_or(&format!("msg_{}", uuid::Uuid::new_v4())),
+                    value.get("id").and_then(serde_json::Value::as_str).unwrap_or(&format_id(generate(), IdType::Message)),
                     conversation_id,
                     index as i64,
                     role,
@@ -2207,7 +2208,7 @@ mod tests {
     #[test]
     fn test_workspace_list_filters_by_collaboration_mode() {
         let _database_guard = lock_user_data_db_for_tests();
-        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let suffix = format_id(generate(), IdType::Workspace);
         let project_id = format!("ws-mode-{suffix}");
         let supervisor_workspace_id = format!("ws-mode-supervisor-{suffix}");
         let group_workspace_id = format!("ws-mode-group-{suffix}");

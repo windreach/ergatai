@@ -3,6 +3,7 @@
 
 mod classify;
 pub mod datetime;
+pub mod id;
 mod types;
 
 // Re-export public API
