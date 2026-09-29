@@ -104,6 +104,8 @@ pub enum IdType {
     Dag = 10,
     /// Task ID (DAG node)
     Task = 11,
+    /// State checkpoint ID (DAG recovery)
+    Checkpoint = 12,
 }
 
 impl IdType {
@@ -121,6 +123,7 @@ impl IdType {
             IdType::Workspace => "ws",
             IdType::Dag => "dag",
             IdType::Task => "task",
+            IdType::Checkpoint => "ckpt",
         }
     }
 
@@ -138,6 +141,7 @@ impl IdType {
             "ws" => Some(IdType::Workspace),
             "dag" => Some(IdType::Dag),
             "task" => Some(IdType::Task),
+            "ckpt" => Some(IdType::Checkpoint),
             _ => None,
         }
     }

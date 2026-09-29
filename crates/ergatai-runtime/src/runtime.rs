@@ -1152,12 +1152,12 @@ impl AgentRuntime {
         self.backend.wait_for_exit(&info.handle, timeout).await
     }
 
-    /// Get how long since the agent last produced output.
+    /// Get how long since the backend observed structured agent activity.
     /// Used by DAG watchdog to detect idle agents.
     /// Returns None if the agent is not found or the backend doesn't track output.
-    pub async fn agent_last_output_age(&self, agent_id: &str) -> Option<std::time::Duration> {
+    pub async fn agent_last_activity_age(&self, agent_id: &str) -> Option<std::time::Duration> {
         let info = self.registry.get(agent_id).await?;
-        self.backend.last_output_age(&info.handle)
+        self.backend.last_activity_age(&info.handle)
     }
 
     /// Shutdown the runtime — stop all agents and cleanup all workspaces.
@@ -1536,7 +1536,7 @@ mod tests {
         async fn shutdown(&self) -> ErgataiResult<()> {
             Ok(())
         }
-        fn last_output_age(&self, _handle: &AgentHandle) -> Option<Duration> {
+        fn last_activity_age(&self, _handle: &AgentHandle) -> Option<Duration> {
             None
         }
         // Observation operations
@@ -1582,7 +1582,10 @@ mod tests {
         async fn continuation_count(&self, _agent_id: &str) -> ErgataiResult<Option<usize>> {
             Ok(None)
         }
-        async fn agent_last_output_age(&self, _agent_id: &str) -> ErgataiResult<Option<Duration>> {
+        async fn agent_last_activity_age(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<Option<Duration>> {
             Ok(None)
         }
         async fn exit_code(&self, _agent_id: &str) -> ErgataiResult<Option<Option<i32>>> {

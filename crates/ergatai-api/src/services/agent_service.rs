@@ -91,11 +91,11 @@ pub async fn get_agent_output(agent_id: &str) -> anyhow::Result<Option<String>> 
     Ok(backend().output(agent_id).await?)
 }
 
-/// Get the time elapsed since the agent's last output.
-pub async fn get_agent_last_output_age(
+/// Get the time elapsed since the agent's last structured activity.
+pub async fn get_agent_last_activity_age(
     agent_id: &str,
 ) -> anyhow::Result<Option<std::time::Duration>> {
-    Ok(backend().agent_last_output_age(agent_id).await?)
+    Ok(backend().agent_last_activity_age(agent_id).await?)
 }
 
 /// Get the exit code from the agent's connection task.

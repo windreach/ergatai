@@ -12,6 +12,7 @@ pub mod openapi;
 pub mod permissions;
 pub mod projects;
 pub mod status;
+pub mod terminal_sessions;
 pub mod user_conversations;
 pub mod validation;
 pub mod workspaces;

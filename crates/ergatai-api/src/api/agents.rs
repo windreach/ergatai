@@ -2315,26 +2315,26 @@ pub async fn get_agent_output(
     }
 }
 
-/// Response for agent last output age endpoint.
+/// Response for agent last structured activity age endpoint.
 #[derive(Serialize)]
-pub struct AgentLastOutputResponse {
+pub struct AgentLastActivityResponse {
     pub agent_id: String,
-    /// Seconds since the agent's last output.
-    pub last_output_age_secs: f64,
+    /// Seconds since the agent's last structured activity event.
+    pub last_activity_age_secs: f64,
 }
 
-/// Get the time elapsed since the agent's last output.
-pub async fn get_agent_last_output(
+/// Get the time elapsed since the agent's last structured activity.
+pub async fn get_agent_last_activity(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let result = crate::services::agent_service::get_agent_last_output_age(&id).await;
+    let result = crate::services::agent_service::get_agent_last_activity_age(&id).await;
     match result {
         Ok(Some(duration)) => (
             StatusCode::OK,
-            Json(AgentLastOutputResponse {
+            Json(AgentLastActivityResponse {
                 agent_id: id,
-                last_output_age_secs: duration.as_secs_f64(),
+                last_activity_age_secs: duration.as_secs_f64(),
             }),
         )
             .into_response(),

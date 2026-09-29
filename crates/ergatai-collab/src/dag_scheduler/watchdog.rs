@@ -79,9 +79,9 @@ impl DagScheduler {
                     }
                 };
 
-                // Query the agent's PTY output age via the global runtime.
+                // Query the agent's structured activity age via the global runtime.
                 let runtime = ergatai_runtime::get_agent_runtime();
-                let age = match runtime.agent_last_output_age(&agent_id).await {
+                let age = match runtime.agent_last_activity_age(&agent_id).await {
                     Some(age) => age,
                     None => {
                         // Agent not registered yet (e.g., still starting up).
@@ -101,7 +101,7 @@ impl DagScheduler {
                         agent_id = %agent_id,
                         idle_secs = age.as_secs(),
                         timeout_secs = timeout_secs,
-                        "per-node idle watcher: agent produced no PTY output — marking node Failed"
+                        "per-node idle watcher: no structured agent activity — marking node Failed"
                     );
                     // Record the timeout reason in metadata but do NOT set
                     // node.status = Failed here. on_node_failed must handle the
@@ -115,7 +115,7 @@ impl DagScheduler {
                             node.metadata.insert(
                                 "timeout_error".to_string(),
                                 format!(
-                                    "agent idle timeout: no PTY output for {}s (limit {}s)",
+                                    "agent idle timeout: no structured activity for {}s (limit {}s)",
                                     age.as_secs(),
                                     timeout_secs
                                 ),
@@ -135,7 +135,7 @@ impl DagScheduler {
                         .on_node_failed(
                             &node_id_clone,
                             &format!(
-                                "Agent idle timeout: no PTY output for {}s (limit {}s)",
+                                "Agent idle timeout: no structured activity for {}s (limit {}s)",
                                 age.as_secs(),
                                 timeout_secs
                             ),

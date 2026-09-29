@@ -101,7 +101,7 @@ struct HttpAgentEntry {
     command_tx: mpsc::Sender<HttpAcpCommand>,
     abort_handle: tokio::task::AbortHandle,
     alive: Arc<std::sync::atomic::AtomicBool>,
-    last_output_at: Arc<RwLock<Instant>>,
+    last_activity_at: Arc<RwLock<Instant>>,
     workspace: String,
 }
 
@@ -157,7 +157,7 @@ impl AcpHttpBackend {
         // Shared state
         let output = Arc::new(OutputBuffer::new(OUTPUT_BUFFER_MAX_SIZE));
         let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let last_output_at = Arc::new(RwLock::new(Instant::now()));
+        let last_activity_at = Arc::new(RwLock::new(Instant::now()));
 
         // Command channel
         let (command_tx, mut command_rx) = mpsc::channel::<HttpAcpCommand>(32);
@@ -165,7 +165,7 @@ impl AcpHttpBackend {
         // Clone for connection task
         let task_output = output.clone();
         let task_alive = alive.clone();
-        let task_last_output = last_output_at.clone();
+        let task_last_activity = last_activity_at.clone();
         let task_agent_id = agent_id.clone();
 
         // Spawn connection task
@@ -176,7 +176,7 @@ impl AcpHttpBackend {
                 .on_receive_notification(
                     {
                         let out = task_output.clone();
-                        let last_out = task_last_output.clone();
+                        let last_activity = task_last_activity.clone();
                         async move |notification: SessionNotification, _cx| {
                             // Extract text from session notifications
                             match &notification.update {
@@ -195,7 +195,7 @@ impl AcpHttpBackend {
                                     debug!(update = ?notification.update, "HTTP session notification");
                                 }
                             }
-                            *last_out.write() = Instant::now();
+                            *last_activity.write() = Instant::now();
                             Ok(())
                         }
                     },
@@ -258,7 +258,7 @@ impl AcpHttpBackend {
             command_tx,
             abort_handle,
             alive,
-            last_output_at,
+            last_activity_at,
             workspace: workspace.id.clone(),
         };
 
@@ -505,8 +505,8 @@ impl AcpBackendInterface for AcpHttpBackend {
         Ok(())
     }
 
-    fn last_output_age(&self, _handle: &AgentHandle) -> Option<Duration> {
-        None // AcpHttpBackend does not track output age
+    fn last_activity_age(&self, _handle: &AgentHandle) -> Option<Duration> {
+        None // AcpHttpBackend does not track structured activity age
     }
 
     // Observation operations - not supported by AcpHttpBackend
@@ -563,9 +563,9 @@ impl AcpBackendInterface for AcpHttpBackend {
         ))
     }
 
-    async fn agent_last_output_age(&self, _agent_id: &str) -> ErgataiResult<Option<Duration>> {
+    async fn agent_last_activity_age(&self, _agent_id: &str) -> ErgataiResult<Option<Duration>> {
         Err(ErgataiError::BackendUnsupported(
-            "agent_last_output_age".into(),
+            "agent_last_activity_age".into(),
         ))
     }
 

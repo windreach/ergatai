@@ -19,7 +19,7 @@ async fn test_checkpoint_create_basic() {
     assert_eq!(checkpoint.sequence, 1);
     assert!(checkpoint.parent_checkpoint.is_none());
     assert!(!checkpoint.checkpoint_id.is_empty());
-    assert!(checkpoint.checkpoint_id.starts_with("ckpt-"));
+    assert!(checkpoint.checkpoint_id.starts_with("ckpt_"));
     // created_at should be valid RFC3339
     assert!(chrono::DateTime::parse_from_rfc3339(&checkpoint.created_at).is_ok());
 }
@@ -290,7 +290,7 @@ async fn test_checkpoint_create_with_dag_scheduler() {
     let checkpoint = scheduler.create_checkpoint(None, 1).await.unwrap();
 
     assert_eq!(checkpoint.sequence, 1);
-    assert!(checkpoint.checkpoint_id.starts_with("ckpt-"));
+    assert!(checkpoint.checkpoint_id.starts_with("ckpt_"));
 
     // Verify it was saved to disk
     let loaded = StateCheckpoint::load(&project_root, &checkpoint.checkpoint_id)

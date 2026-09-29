@@ -253,7 +253,7 @@ async fn handle_standard_session_notification(
     tool_calls: &Arc<ToolCallTracker>,
     usage: &Arc<UsageTracker>,
     capture_thoughts: bool,
-    _last_out: &parking_lot::RwLock<Instant>,
+    last_activity: &parking_lot::RwLock<Instant>,
     output_tx: &broadcast::Sender<AgentOutputEvent>,
     agent_id: &str,
     session_id: &parking_lot::RwLock<Option<String>>,
@@ -265,6 +265,7 @@ async fn handle_standard_session_notification(
     config_opts: &RwLock<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>,
     available_cmds: &RwLock<Vec<agent_client_protocol::schema::v1::AvailableCommand>>,
 ) {
+    *last_activity.write() = Instant::now();
     match &notification.update {
         SessionUpdate::AgentMessageChunk(chunk) => {
             if let Some(text) = extract_text_from_chunk(chunk) {
@@ -1108,17 +1109,19 @@ struct AcpAgentEntry {
     config_options: Arc<RwLock<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>>,
     /// Available slash commands reported by the agent (from `SessionUpdate::AvailableCommandsUpdate`).
     available_commands: Arc<RwLock<Vec<agent_client_protocol::schema::v1::AvailableCommand>>>,
-    /// Last time output was received (for watchdog).
-    last_output_at: Arc<RwLock<Instant>>,
+    /// Last time a structured ACP event was received (for watchdog).
+    last_activity_at: Arc<RwLock<Instant>>,
     /// Whether the agent process is still alive.
     alive: Arc<std::sync::atomic::AtomicBool>,
     /// The AgentHandle for this agent.
     handle: AgentHandle,
     /// Abort handle for the connection task (can be cloned and used to abort the task).
     abort_handle: tokio::task::AbortHandle,
-    /// Exit code from the connection task (None while running, Some after exit).
+    /// Exit code from process supervision (None while running, Some after exit).
     /// 0 = normal exit, non-zero = error/crash.
     exit_code: Arc<RwLock<Option<i32>>>,
+    /// Signal number when process supervision observed a fatal signal.
+    exit_signal: Arc<RwLock<Option<i32>>>,
 }
 
 /// Logical workspace (no physical resources, just metadata).
@@ -1499,16 +1502,16 @@ impl AcpBackend {
         })
     }
 
-    /// Get the time elapsed since the agent's last output.
+    /// Get the time elapsed since the agent's last structured ACP event.
     ///
     /// Returns `None` if the agent is not found. Useful for watchdog/health checks
     /// to detect stuck or idle agents.
-    pub fn get_agent_last_output_age(&self, agent_id: &str) -> Option<std::time::Duration> {
+    pub fn get_agent_last_activity_age(&self, agent_id: &str) -> Option<std::time::Duration> {
         self.reap_dead();
         let agents = self.agents.read();
         agents.get(agent_id).map(|entry| {
-            let last_output_at = entry.last_output_at.read();
-            last_output_at.elapsed()
+            let last_activity_at = entry.last_activity_at.read();
+            last_activity_at.elapsed()
         })
     }
 
@@ -2033,9 +2036,10 @@ impl AcpBackendInterface for AcpBackend {
             RwLock<Vec<agent_client_protocol::schema::v1::AvailableCommand>>,
         > = Arc::new(RwLock::new(Vec::new()));
         let usage = Arc::new(UsageTracker::new());
-        let last_output_at = Arc::new(RwLock::new(Instant::now()));
+        let last_activity_at = Arc::new(RwLock::new(Instant::now()));
         let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let exit_code = Arc::new(RwLock::new(None));
+        let exit_signal = Arc::new(RwLock::new(None));
 
         // Channel for sending commands (prompts, stop) to the connection task.
         let (command_tx, mut command_rx) = mpsc::channel::<AcpCommand>(32);
@@ -2067,9 +2071,10 @@ impl AcpBackendInterface for AcpBackend {
         let task_available_commands = available_commands.clone();
         let task_usage = usage.clone();
         let task_capture_thoughts = capture_thoughts;
-        let task_last_output_at = last_output_at.clone();
+        let task_last_activity_at = last_activity_at.clone();
         let task_alive = alive.clone();
         let task_exit_code = exit_code.clone();
+        let task_exit_signal = exit_signal.clone();
         let task_agent_id = agent_id.clone();
         let task_agent_id_label = agent_id.clone();
         let task_workspace_id = handle.id.clone();
@@ -2144,9 +2149,33 @@ impl AcpBackendInterface for AcpBackend {
         let cleanup_backend = self.pid_to_agent.clone();
         let cleanup_agent_pids = self.agent_pids.clone();
         let mut child_for_wait = child;
+        let child_exit_code = task_exit_code.clone();
+        let child_exit_signal = task_exit_signal.clone();
+        let child_alive = task_alive.clone();
+        let child_dead_agents = task_dead_agents.clone();
+        let child_agent_id = task_agent_id.clone();
         tokio::spawn(async move {
-            let _ = child_for_wait.status().await;
-            info!(pid = cleanup_pid, agent_id = %cleanup_agent_id, "ACP agent process exited");
+            use std::os::unix::process::ExitStatusExt;
+            let status = child_for_wait.status().await;
+            let code = status
+                .as_ref()
+                .ok()
+                .and_then(|status| status.code())
+                .unwrap_or(-1);
+            let signal = status.as_ref().ok().and_then(|status| status.signal());
+            *child_exit_code.write() = Some(code);
+            if let Some(signal) = signal {
+                *child_exit_signal.write() = Some(signal);
+            }
+            child_alive.store(false, std::sync::atomic::Ordering::SeqCst);
+            child_dead_agents.lock().push(child_agent_id.clone());
+            info!(
+                pid = cleanup_pid,
+                agent_id = %cleanup_agent_id,
+                exit_code = code,
+                exit_signal = ?signal,
+                "ACP agent process exited"
+            );
             // Clean up PID mapping
             cleanup_backend.write().remove(&cleanup_pid);
             cleanup_agent_pids.write().remove(&cleanup_agent_id);
@@ -2188,7 +2217,7 @@ impl AcpBackendInterface for AcpBackend {
                         let tool_calls = task_tool_calls.clone();
                         let usage = task_usage.clone();
                         let capture_thoughts = task_capture_thoughts;
-                        let last_out = task_last_output_at.clone();
+                        let last_activity = task_last_activity_at.clone();
                         let output_tx = task_output_tx.clone();
                         // Clone for use in this closure (will also be used in on_receive_request)
                         let notify_agent_id = task_agent_id.clone();
@@ -2206,7 +2235,7 @@ impl AcpBackendInterface for AcpBackend {
                                 ExtendedSessionNotification::Standard(std_notif) => {
                                     handle_standard_session_notification(
                                         *std_notif, &out, &thoughts, &tool_calls, &usage,
-                                        capture_thoughts, &last_out, &output_tx,
+                                        capture_thoughts, &last_activity, &output_tx,
                                         &notify_agent_id, &notify_session_id, &notify_workspace_id,
                                         &notify_plan, &notify_text_output_seen,
                                         &notify_session_title, &notify_title_no_change,
@@ -2245,7 +2274,7 @@ impl AcpBackendInterface for AcpBackend {
                                     // TODO: Update subagent conversation state in database
                                 }
                             }
-                            *last_out.write() = Instant::now();
+                            *last_activity.write() = Instant::now();
                             Ok(())
                         }
                     },
@@ -2881,12 +2910,15 @@ impl AcpBackendInterface for AcpBackend {
             task_alive.store(false, std::sync::atomic::Ordering::SeqCst);
             task_dead_agents.lock().push(task_agent_id.clone());
 
-            // Set exit code based on connection task result.
-            let code = if result.is_ok() { 0 } else { 1 };
-            *task_exit_code.write() = Some(code);
+            // The process supervisor owns the authoritative exit status.  Only use
+            // the transport task result if the child has not reported status yet.
+            if task_exit_code.read().is_none() {
+                let code = if result.is_ok() { 0 } else { 1 };
+                *task_exit_code.write() = Some(code);
 
-            if let Err(e) = result {
-                error!(error = %e, exit_code = code, "ACP connection task failed");
+                if let Err(e) = result {
+                    error!(error = %e, exit_code = code, "ACP connection task failed");
+                }
             }
         });
 
@@ -2963,27 +2995,25 @@ impl AcpBackendInterface for AcpBackend {
             continuation_count,
             config_options,
             available_commands,
-            last_output_at,
+            last_activity_at,
             alive: alive.clone(),
             handle: AgentHandle {
                 workspace: handle.clone(),
                 agent_id: agent_id.clone(),
-                // Note: process_id is None because ACP SDK's connect_with() doesn't expose
-                // the child process PID. This limits file lock attribution via fanotify.
-                // File lock enforcement relies on LD_PRELOAD injection instead.
-                // TODO: Request ACP SDK to expose PID, or use spawn_process() directly.
-                process_id: None,
+                process_id: Some(pid.to_string()),
                 metadata: {
                     let mut m = HashMap::new();
                     if let Some(sid) = &session_id {
                         m.insert("session_id".to_string(), sid.to_string());
                     }
                     m.insert("command".to_string(), command.to_string());
+                    m.insert("transport".to_string(), "stdio-pipes".to_string());
                     m
                 },
             },
             abort_handle: join_handle.abort_handle(),
             exit_code,
+            exit_signal,
         };
 
         self.agents.write().insert(agent_id.clone(), entry);
@@ -3225,15 +3255,19 @@ impl AcpBackendInterface for AcpBackend {
 
         loop {
             if !self.is_alive(handle).await? {
-                // Read the exit code from the agent entry.
-                let code = {
+                let (code, signal) = {
                     let agents = self.agents.read();
                     agents
                         .get(&handle.agent_id)
-                        .and_then(|entry| *entry.exit_code.read())
-                        .unwrap_or(0) // Default to 0 if entry is gone (already reaped)
+                        .map(|entry| (*entry.exit_code.read(), *entry.exit_signal.read()))
+                        .unwrap_or((Some(0), None))
                 };
-                return Ok(WaitResult::Exited { code });
+                if let Some(signal) = signal {
+                    return Ok(WaitResult::Signaled { signal });
+                }
+                return Ok(WaitResult::Exited {
+                    code: code.unwrap_or(-1),
+                });
             }
 
             if start.elapsed() > timeout_duration {
@@ -3302,11 +3336,11 @@ impl AcpBackendInterface for AcpBackend {
             .collect())
     }
 
-    fn last_output_age(&self, handle: &AgentHandle) -> Option<Duration> {
+    fn last_activity_age(&self, handle: &AgentHandle) -> Option<Duration> {
         let agents = self.agents.read();
         agents.get(&handle.agent_id).map(|entry| {
-            let last_output = entry.last_output_at.read();
-            last_output.elapsed()
+            let last_activity = entry.last_activity_at.read();
+            last_activity.elapsed()
         })
     }
 
@@ -3352,8 +3386,8 @@ impl AcpBackendInterface for AcpBackend {
         Ok(self.get_agent_continuation_count(agent_id))
     }
 
-    async fn agent_last_output_age(&self, agent_id: &str) -> ErgataiResult<Option<Duration>> {
-        Ok(self.get_agent_last_output_age(agent_id))
+    async fn agent_last_activity_age(&self, agent_id: &str) -> ErgataiResult<Option<Duration>> {
+        Ok(self.get_agent_last_activity_age(agent_id))
     }
 
     async fn exit_code(&self, agent_id: &str) -> ErgataiResult<Option<Option<i32>>> {
@@ -3510,7 +3544,7 @@ mod tests {
             continuation_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             config_options: Arc::new(RwLock::new(Vec::new())),
             available_commands: Arc::new(RwLock::new(Vec::new())),
-            last_output_at: Arc::new(RwLock::new(Instant::now())),
+            last_activity_at: Arc::new(RwLock::new(Instant::now())),
             alive: Arc::new(AtomicBool::new(true)),
             handle: AgentHandle {
                 workspace: WorkspaceHandle {
@@ -3524,6 +3558,7 @@ mod tests {
             },
             abort_handle: tokio::task::spawn(async {}).abort_handle(),
             exit_code: Arc::new(RwLock::new(None)),
+            exit_signal: Arc::new(RwLock::new(None)),
         };
         backend.agents.write().insert(agent_id.to_string(), entry);
     }

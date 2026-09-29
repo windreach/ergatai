@@ -729,7 +729,7 @@ impl StateCheckpoint {
         sequence: u64,
     ) -> Self {
         Self {
-            checkpoint_id: id_format(generate(), IdType::Dag),
+            checkpoint_id: id_format(generate(), IdType::Checkpoint),
             dag_id: dag_id.to_string(),
             graph: graph.clone(),
             context: context.clone(),

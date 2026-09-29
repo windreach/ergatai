@@ -227,6 +227,25 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
         );
 
+        -- Terminal session metadata is durable for recovery and audit correlation.
+        -- Raw terminal output remains in the bounded in-memory replay buffer.
+        CREATE TABLE IF NOT EXISTS terminal_sessions (
+            session_id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            profile TEXT NOT NULL,
+            transport TEXT NOT NULL,
+            status TEXT NOT NULL,
+            cwd TEXT NOT NULL,
+            pid INTEGER,
+            exit_code INTEGER,
+            agent_session_id TEXT,
+            last_sequence INTEGER NOT NULL DEFAULT 0,
+            recoverable INTEGER NOT NULL DEFAULT 0,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
         -- Git/PR execution context is separate from conversation identity.
         CREATE TABLE IF NOT EXISTS conversation_execution_contexts (
             conversation_id TEXT PRIMARY KEY,
@@ -914,6 +933,104 @@ pub mod agent_sessions {
             |row| row.get(0),
         )
         .optional()
+    }
+}
+
+pub mod terminal_sessions {
+    use super::*;
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct TerminalSessionRecord {
+        pub session_id: String,
+        pub workspace_id: String,
+        pub user_id: String,
+        pub profile: String,
+        pub transport: String,
+        pub status: String,
+        pub cwd: String,
+        pub pid: Option<i64>,
+        pub exit_code: Option<i32>,
+        pub agent_session_id: Option<String>,
+        pub last_sequence: i64,
+        pub recoverable: bool,
+        pub created_at_ms: i64,
+        pub updated_at_ms: i64,
+    }
+
+    pub fn upsert(record: &TerminalSessionRecord) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO terminal_sessions (
+                session_id, workspace_id, user_id, profile, transport, status,
+                cwd, pid, exit_code, agent_session_id, last_sequence,
+                recoverable, created_at_ms, updated_at_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            ON CONFLICT(session_id) DO UPDATE SET
+                workspace_id = excluded.workspace_id,
+                user_id = excluded.user_id,
+                profile = excluded.profile,
+                transport = excluded.transport,
+                status = excluded.status,
+                cwd = excluded.cwd,
+                pid = excluded.pid,
+                exit_code = excluded.exit_code,
+                agent_session_id = excluded.agent_session_id,
+                last_sequence = excluded.last_sequence,
+                recoverable = excluded.recoverable,
+                updated_at_ms = excluded.updated_at_ms",
+            params![
+                record.session_id,
+                record.workspace_id,
+                record.user_id,
+                record.profile,
+                record.transport,
+                record.status,
+                record.cwd,
+                record.pid,
+                record.exit_code,
+                record.agent_session_id,
+                record.last_sequence,
+                record.recoverable,
+                record.created_at_ms,
+                record.updated_at_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list(workspace_id: &str, user_id: &str) -> Result<Vec<TerminalSessionRecord>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let mut statement = conn.prepare(
+            "SELECT session_id, workspace_id, user_id, profile, transport, status,
+                    cwd, pid, exit_code, agent_session_id, last_sequence,
+                    recoverable, created_at_ms, updated_at_ms
+             FROM terminal_sessions
+             WHERE workspace_id = ?1 AND user_id = ?2
+             ORDER BY created_at_ms DESC",
+        )?;
+        let records = statement
+            .query_map(params![workspace_id, user_id], |row| {
+                Ok(TerminalSessionRecord {
+                    session_id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    user_id: row.get(2)?,
+                    profile: row.get(3)?,
+                    transport: row.get(4)?,
+                    status: row.get(5)?,
+                    cwd: row.get(6)?,
+                    pid: row.get(7)?,
+                    exit_code: row.get(8)?,
+                    agent_session_id: row.get(9)?,
+                    last_sequence: row.get(10)?,
+                    recoverable: row.get::<_, i64>(11)? != 0,
+                    created_at_ms: row.get(12)?,
+                    updated_at_ms: row.get(13)?,
+                })
+            })?
+            .collect::<Result<Vec<_>>>()?;
+        Ok(records)
     }
 }
 

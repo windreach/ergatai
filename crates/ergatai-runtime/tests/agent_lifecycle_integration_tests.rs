@@ -131,7 +131,7 @@ impl AcpBackendInterface for MockBackend {
         Ok(())
     }
 
-    fn last_output_age(&self, _handle: &AgentHandle) -> Option<Duration> {
+    fn last_activity_age(&self, _handle: &AgentHandle) -> Option<Duration> {
         None
     }
 
@@ -185,7 +185,7 @@ impl AcpBackendInterface for MockBackend {
         Ok(None)
     }
 
-    async fn agent_last_output_age(&self, _agent_id: &str) -> ErgataiResult<Option<Duration>> {
+    async fn agent_last_activity_age(&self, _agent_id: &str) -> ErgataiResult<Option<Duration>> {
         Ok(None)
     }
 

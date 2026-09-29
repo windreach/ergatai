@@ -11,4 +11,5 @@ pub mod collaboration_session_dag;
 pub mod dag_service;
 pub mod lock_service;
 pub mod profile_service;
+pub mod terminal_sessions;
 pub mod workspace_manager;

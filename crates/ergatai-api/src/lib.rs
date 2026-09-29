@@ -127,6 +127,39 @@ pub fn build_rest_app(state: AppState) -> Router {
             post(api::workspaces::create_workspace),
         )
         .route(
+            "/api/v1/terminal-sessions",
+            get(api::terminal_sessions::list_sessions)
+                .post(api::terminal_sessions::create_session),
+        )
+        .route(
+            "/api/v1/terminal-sessions/{id}",
+            get(api::terminal_sessions::get_session),
+        )
+        .route(
+            "/api/v1/terminal-sessions/{id}/input",
+            post(api::terminal_sessions::write_input),
+        )
+        .route(
+            "/api/v1/terminal-sessions/{id}/resize",
+            post(api::terminal_sessions::resize_session),
+        )
+        .route(
+            "/api/v1/terminal-sessions/{id}/signal",
+            post(api::terminal_sessions::signal_session),
+        )
+        .route(
+            "/api/v1/terminal-sessions/{id}/terminate",
+            post(api::terminal_sessions::terminate_session),
+        )
+        .route(
+            "/api/v1/terminal-sessions/{id}/stream",
+            get(api::terminal_sessions::stream_session),
+        )
+        .route(
+            "/api/v1/terminal-sessions/{id}/audit",
+            get(api::terminal_sessions::list_audit),
+        )
+        .route(
             "/api/v1/workspaces/{id}",
             delete(api::workspaces::delete_workspace),
         )
@@ -271,8 +304,8 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::agents::get_agent_output),
         )
         .route(
-            "/api/v1/agents/{id}/last-output",
-            get(api::agents::get_agent_last_output),
+            "/api/v1/agents/{id}/last-activity",
+            get(api::agents::get_agent_last_activity),
         )
         .route(
             "/api/v1/agents/{id}/exit-code",

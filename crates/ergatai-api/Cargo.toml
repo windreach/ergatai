@@ -45,6 +45,8 @@ utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
 
 # Error handling
 anyhow.workspace = true
+nix.workspace = true
+libc.workspace = true
 
 # Database (for agent binding persistence)
 rusqlite.workspace = true

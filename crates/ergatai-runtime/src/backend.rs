@@ -118,8 +118,8 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
         Ok(Vec::new())
     }
 
-    /// Returns how long since the agent last produced output.
-    fn last_output_age(&self, handle: &AgentHandle) -> Option<Duration>;
+    /// Returns how long since the backend observed structured agent activity.
+    fn last_activity_age(&self, handle: &AgentHandle) -> Option<Duration>;
 
     // ===== Observation Operations (NEW) =====
 
@@ -162,8 +162,8 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
     /// Get the number of auto-continuations.
     async fn continuation_count(&self, agent_id: &str) -> ErgataiResult<Option<usize>>;
 
-    /// Get the agent's last output age.
-    async fn agent_last_output_age(&self, agent_id: &str) -> ErgataiResult<Option<Duration>>;
+    /// Get the agent's last structured activity age.
+    async fn agent_last_activity_age(&self, agent_id: &str) -> ErgataiResult<Option<Duration>>;
 
     /// Get the agent's exit code (if exited).
     async fn exit_code(&self, agent_id: &str) -> ErgataiResult<Option<Option<i32>>>;
@@ -376,7 +376,7 @@ mod tests {
             Ok(())
         }
 
-        fn last_output_age(&self, _handle: &AgentHandle) -> Option<Duration> {
+        fn last_activity_age(&self, _handle: &AgentHandle) -> Option<Duration> {
             None
         }
 
@@ -433,7 +433,10 @@ mod tests {
             Ok(None)
         }
 
-        async fn agent_last_output_age(&self, _agent_id: &str) -> ErgataiResult<Option<Duration>> {
+        async fn agent_last_activity_age(
+            &self,
+            _agent_id: &str,
+        ) -> ErgataiResult<Option<Duration>> {
             Ok(None)
         }
 
