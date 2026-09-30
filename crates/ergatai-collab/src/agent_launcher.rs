@@ -142,7 +142,8 @@ fn result_file_monitor(project_root: &Path) -> crate::result_monitor::ResultFile
     let monitors = MONITORS.get_or_init(|| Mutex::new(HashMap::new()));
 
     let results_dir = project_root.join(".ergatai").join(".plan").join("results");
-    let mut map = monitors.lock().unwrap();
+    // Use unwrap_or_else to handle poisoned mutex gracefully
+    let mut map = monitors.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(monitor) = map.get(&results_dir) {
         return monitor.clone();
     }

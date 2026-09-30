@@ -327,47 +327,55 @@ impl ResultFileMonitor {
     }
 }
 
-/// Parse a result filename into its node_id component.
+/// Parse a result filename into its task_id component.
 ///
-/// Expected format: `{node_id}-{anything}.md` where `node_id` is a UUID.
-/// Result file naming convention: `{node_id}-{agent_name}.md`.
-/// We rely on the UUID being exactly 36 chars (8-4-4-4-12 hex + dashes).
+/// Expected format: `{task_id}-{anything}.md` where `task_id` is a Snowflake ID.
+/// Result file naming convention: `{task_id}-{agent_name}.md`.
+/// Task ID format: `task_{timestamp}_{instance}_{sequence}` (Snowflake ID).
+/// Example: `task_1727568000000_001_0001-agent-1.md`
 pub fn parse_result_filename(path: &Path) -> Option<String> {
     if path.extension()?.to_str()? != "md" {
         return None;
     }
     let stem = path.file_stem()?.to_str()?;
-    // UUID-xxx: stem starts with 36-char UUID, then '-', then agent name.
-    if stem.len() < 38 {
-        return None; // at least 36 + '-' + 1-char agent
-    }
-    let (uuid_part, rest) = stem.split_at(36);
-    if !rest.starts_with('-') || rest.len() < 2 {
+    // Task ID format: task_{timestamp}_{instance}_{sequence}
+    // Followed by '-' and agent name
+    if !stem.starts_with("task_") {
         return None;
     }
-    // Sanity-check UUID format: 8-4-4-4-12 hex digits with dashes.
-    if !is_uuid_shape(uuid_part) {
+
+    // Find the first hyphen after the task_id
+    let hyphen_pos = stem.find('-')?;
+    let task_id = &stem[..hyphen_pos];
+
+    // Verify task_id format: task_{num}_{num}_{num}
+    if !is_task_id_shape(task_id) {
         return None;
     }
-    Some(uuid_part.to_string())
+
+    // Ensure there's an agent name after the hyphen
+    let agent_part = &stem[hyphen_pos + 1..];
+    if agent_part.is_empty() {
+        return None;
+    }
+
+    Some(task_id.to_string())
 }
 
-fn is_uuid_shape(s: &str) -> bool {
-    if s.len() != 36 {
+fn is_task_id_shape(s: &str) -> bool {
+    // Format: task_{timestamp}_{instance}_{sequence}
+    // All parts after "task_" should be numeric
+    if !s.starts_with("task_") {
         return false;
     }
-    let bytes = s.as_bytes();
-    for (i, &b) in bytes.iter().enumerate() {
-        let expected_dash = matches!(i, 8 | 13 | 18 | 23);
-        if expected_dash {
-            if b != b'-' {
-                return false;
-            }
-        } else if !b.is_ascii_hexdigit() {
-            return false;
-        }
+    let rest = &s[5..]; // Skip "task_"
+    let parts: Vec<&str> = rest.split('_').collect();
+    if parts.len() != 3 {
+        return false;
     }
-    true
+    parts
+        .iter()
+        .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
 }
 
 #[cfg(test)]
@@ -381,16 +389,16 @@ mod tests {
 
     #[test]
     fn parse_result_filename_valid() {
-        let p = Path::new("/tmp/results/abcd1234-abcd-1234-abcd-123456789abc-agent-1.md");
+        let p = Path::new("/tmp/results/task_1727568000000_001_0001-agent-1.md");
         assert_eq!(
             parse_result_filename(p),
-            Some("abcd1234-abcd-1234-abcd-123456789abc".to_string())
+            Some("task_1727568000000_001_0001".to_string())
         );
     }
 
     #[test]
     fn parse_result_filename_rejects_non_md() {
-        let p = Path::new("/tmp/results/abcd1234-abcd-1234-abcd-123456789abc-agent-1.txt");
+        let p = Path::new("/tmp/results/task_1727568000000_001_0001-agent-1.txt");
         assert_eq!(parse_result_filename(p), None);
     }
 
@@ -401,8 +409,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_result_filename_rejects_bad_uuid() {
-        let p = Path::new("/tmp/results/ZZZZZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZZZZZZZZZ-agent.md");
+    fn parse_result_filename_rejects_bad_format() {
+        let p = Path::new("/tmp/results/not-a-task-id-agent.md");
         assert_eq!(parse_result_filename(p), None);
     }
 
@@ -417,7 +425,7 @@ mod tests {
             return;
         }
 
-        let node_id = "abcd1234-abcd-1234-abcd-123456789abc";
+        let node_id = "task_1727568000000_001_0001";
         let rx = monitor.register(node_id).await;
         assert_eq!(monitor.watcher_count(), 1);
 
@@ -468,7 +476,7 @@ mod tests {
 
         // Write a file for a node we never registered — should not panic,
         // should not leave stray state.
-        let rogue = results.join("abcd1234-abcd-1234-abcd-123456789abc-rogue.md");
+        let rogue = results.join("task_1727568000000_001_9999-rogue.md");
         fs::write(&rogue, b"x").unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(monitor.watcher_count(), 0);
@@ -490,17 +498,14 @@ mod tests {
 
     #[test]
     fn test_parse_result_filename_valid() {
-        let path = Path::new("abcd1234-abcd-1234-abcd-123456789abc-agent1.md");
+        let path = Path::new("task_1727568000000_001_0001-agent1.md");
         let result = parse_result_filename(path);
-        assert_eq!(
-            result,
-            Some("abcd1234-abcd-1234-abcd-123456789abc".to_string())
-        );
+        assert_eq!(result, Some("task_1727568000000_001_0001".to_string()));
     }
 
     #[test]
     fn test_parse_result_filename_invalid_extension() {
-        let path = Path::new("abcd1234-abcd-1234-abcd-123456789abc-agent1.txt");
+        let path = Path::new("task_1727568000000_001_0001-agent1.txt");
         let result = parse_result_filename(path);
         assert_eq!(result, None);
     }
@@ -513,34 +518,34 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_result_filename_invalid_uuid_format() {
-        let path = Path::new("not-a-uuid-format-at-all-xxxxxxxxxxxxxxxxxxxx-agent1.md");
+    fn test_parse_result_filename_invalid_format() {
+        let path = Path::new("not-a-task-id-format-at-all-xxxxxxxxxxxxxxxxxxxx-agent1.md");
         let result = parse_result_filename(path);
         assert_eq!(result, None);
     }
 
     #[test]
-    fn test_is_uuid_shape_valid() {
-        assert!(is_uuid_shape("abcd1234-abcd-1234-abcd-123456789abc"));
-        assert!(is_uuid_shape("00000000-0000-0000-0000-000000000000"));
-        assert!(is_uuid_shape("ffffffff-ffff-ffff-ffff-ffffffffffff"));
+    fn test_is_task_id_shape_valid() {
+        assert!(is_task_id_shape("task_1727568000000_001_0001"));
+        assert!(is_task_id_shape("task_0_0_0"));
+        assert!(is_task_id_shape("task_9999999999999_999_999"));
     }
 
     #[test]
-    fn test_is_uuid_shape_invalid_length() {
-        assert!(!is_uuid_shape("abcd1234-abcd-1234-abcd-123456789ab")); // 35 chars
-        assert!(!is_uuid_shape("abcd1234-abcd-1234-abcd-123456789abcd")); // 37 chars
+    fn test_is_task_id_shape_invalid_prefix() {
+        assert!(!is_task_id_shape("uuid_1727568000000_001_0001"));
+        assert!(!is_task_id_shape("1727568000000_001_0001"));
     }
 
     #[test]
-    fn test_is_uuid_shape_invalid_dash_positions() {
-        assert!(!is_uuid_shape("abcd12340abcd-1234-abcd-123456789abc")); // dash at wrong pos
-        assert!(!is_uuid_shape("abcd1234-abcd01234-abcd-123456789abc")); // dash at wrong pos
+    fn test_is_task_id_shape_invalid_parts() {
+        assert!(!is_task_id_shape("task_1727568000000_001")); // only 2 parts
+        assert!(!is_task_id_shape("task_1727568000000_001_0001_extra")); // 4 parts
     }
 
     #[test]
-    fn test_is_uuid_shape_invalid_hex() {
-        assert!(!is_uuid_shape("abcd123g-abcd-1234-abcd-123456789abc")); // 'g' not hex
-        assert!(!is_uuid_shape("abcd1234-abcd-1234-abcd-123456789abz")); // 'z' not hex
+    fn test_is_task_id_shape_invalid_non_numeric() {
+        assert!(!is_task_id_shape("task_abc_001_0001")); // non-numeric
+        assert!(!is_task_id_shape("task_1727568000000_00x_0001")); // non-numeric
     }
 }

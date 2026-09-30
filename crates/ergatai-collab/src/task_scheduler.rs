@@ -1001,7 +1001,6 @@ impl TaskScheduler {
                         };
 
                         tracing::warn!(
-                            agent_uuid = %payload.agent_uuid,
                             agent_id = %payload.agent_id,
                             task_id = %task_id,
                             from_state = %payload.from_state,
