@@ -88,6 +88,30 @@ impl NatsServer {
             .stderr(Stdio::piped())
             .stdout(Stdio::null());
 
+            // PR_SET_PDEATHSIG DISABLED: This mechanism conflicts with cargo test's
+            // parallel execution. When test processes fork, child processes may inherit
+            // the nats-server, and when they exit, PR_SET_PDEATHSIG triggers incorrectly,
+            // killing the shared test server.
+            //
+            // Instead, we rely on:
+            // 1. atexit handler (register_cleanup_handler) for normal exits
+            // 2. cleanup_stale_test_servers() for orphaned processes
+            // 3. Manual cleanup via cleanup_leaked_nats_servers() or pkill
+            //
+            // For production, the atexit handler + Drop implementation ensure cleanup.
+            // #[cfg(target_os = "linux")]
+            // {
+            //     use std::os::unix::process::CommandExt;
+            //     unsafe {
+            //         cmd.pre_exec(|| {
+            //             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0) != 0 {
+            //                 return Err(std::io::Error::last_os_error());
+            //             }
+            //             Ok(())
+            //         });
+            //     }
+            // }
+
             match cmd.spawn() {
                 Ok(mut child) => {
                     sleep(Duration::from_millis(STARTUP_WAIT_MS)).await;
@@ -307,6 +331,76 @@ pub fn cleanup_test_servers() {
     let _ = Command::new("pkill").args(["-9", "nats-server"]).output();
 }
 
+/// Forcefully cleanup ALL leaked nats-server processes (orphaned or not).
+///
+/// This is a manual cleanup function for recovering from port exhaustion.
+/// It kills all nats-server processes whose parent is systemd/init (orphaned).
+///
+/// # Safety
+///
+/// This function kills processes aggressively. Only use when you're sure
+/// the nats-server processes are leaked and not from a running application.
+///
+/// # Limitations
+///
+/// This function has a TOCTOU race condition: it reads /proc/{pid}/stat to get
+/// the parent PID, then reads /proc/{ppid}/cmdline to check if the parent is
+/// systemd. Between these reads, the parent could exit and the PID could be
+/// reused. However, this is acceptable for a manual cleanup function because:
+/// 1. It's only called in test/debug scenarios, not production
+/// 2. The cmdline check (contains "systemd" or pp == 1) provides protection
+/// 3. If the parent exits, cmdline read returns empty string → not orphaned → safe
+pub fn cleanup_leaked_nats_servers() -> usize {
+    use std::process::Command as StdCommand;
+
+    let output = match StdCommand::new("pgrep")
+        .args(["-f", "nats-server"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return 0,
+    };
+
+    let pids: Vec<u32> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect();
+
+    let mut killed_count = 0;
+
+    for pid in pids {
+        // Check if parent is systemd or init (orphaned)
+        let stat_path = format!("/proc/{}/stat", pid);
+        let ppid = match std::fs::read_to_string(&stat_path) {
+            Ok(stat) => stat
+                .rfind(')')
+                .and_then(|close_idx| stat.get(close_idx + 1..))
+                .and_then(|after_comm| after_comm.split_whitespace().nth(1))
+                .and_then(|s| s.parse::<u32>().ok()),
+            Err(_) => continue,
+        };
+
+        let is_orphaned = match ppid {
+            Some(pp) => {
+                let parent_cmd =
+                    std::fs::read_to_string(format!("/proc/{}/cmdline", pp)).unwrap_or_default();
+                parent_cmd.contains("systemd") || pp == 1
+            }
+            None => false,
+        };
+
+        if is_orphaned {
+            tracing::info!(pid = pid, "Killing leaked nats-server process");
+            let _ = StdCommand::new("kill")
+                .args(["-9", &pid.to_string()])
+                .output();
+            killed_count += 1;
+        }
+    }
+
+    killed_count
+}
+
 /// Get a shared nats-server for testing.
 ///
 /// Starts the server on first call with a fresh temp store directory
@@ -432,7 +526,7 @@ fn cleanup_stale_test_servers() {
             continue;
         }
 
-        // Only kill if parent PID is dead (orphaned).
+        // Kill if parent PID is dead (orphaned) OR if reparented to systemd/init
         // Read /proc/{pid}/stat to get ppid. Format: "pid (comm) state ppid ..."
         // The comm field is in parens and may contain spaces, so find the
         // closing ')' first and parse fields after it.
@@ -449,11 +543,23 @@ fn cleanup_stale_test_servers() {
             }
         };
 
-        let parent_alive = ppid
-            .map(|pp| std::path::Path::new(&format!("/proc/{}", pp)).exists())
-            .unwrap_or(false);
+        let should_kill = match ppid {
+            Some(pp) => {
+                // Check if parent is alive
+                let parent_alive = std::path::Path::new(&format!("/proc/{}", pp)).exists();
+                // Also check if reparented to systemd (PID 1) or user systemd
+                // User systemd typically has a low PID, check if it's systemd
+                let parent_cmd =
+                    std::fs::read_to_string(format!("/proc/{}/cmdline", pp)).unwrap_or_default();
+                let is_systemd = parent_cmd.contains("systemd");
 
-        if !parent_alive {
+                !parent_alive || is_systemd
+            }
+            None => true, // Can't read ppid, assume orphaned
+        };
+
+        if should_kill {
+            tracing::info!(pid = pid, "Killing orphaned nats-server process");
             let _ = StdCommand::new("kill")
                 .args(["-9", &pid.to_string()])
                 .output();

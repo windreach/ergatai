@@ -32,10 +32,11 @@ use ergatai_error::id::{format as format_id, generate, IdType};
 
 use agent_client_protocol::schema::v1::{
     ContentBlock, CreateElicitationRequest, CreateElicitationResponse, DeleteSessionRequest,
-    ElicitationAction, ImageContent, InitializeRequest, ListSessionsRequest, LoadSessionRequest,
-    McpServer, McpServerHttp, NewSessionRequest, Plan, PromptRequest, RequestPermissionRequest,
-    RequestPermissionResponse, SessionNotification, SessionUpdate, TextContent,
-    ToolCall as AcpToolCall, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
+    ElicitationAction, HttpHeader, ImageContent, InitializeRequest, ListSessionsRequest,
+    LoadSessionRequest, McpServer, McpServerHttp, NewSessionRequest, Plan, PromptRequest,
+    RequestPermissionRequest, RequestPermissionResponse, SessionNotification, SessionUpdate,
+    TextContent, ToolCall as AcpToolCall, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
+    ToolKind,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{
@@ -2002,6 +2003,14 @@ impl AcpBackendInterface for AcpBackend {
             })?
             .into_config()
             .envs(env_with_preload.iter());
+
+        debug!(
+            agent_id = %agent_id,
+            command = %command,
+            program = ?config.command(),
+            "ACP backend: parsed command"
+        );
+
         let acp_agent = AcpAgent::new(config).with_debug(|line, direction| {
             debug!(?direction, line = %line, "ACP wire debug");
         });
@@ -2456,9 +2465,24 @@ impl AcpBackendInterface for AcpBackend {
                         Some(factory) => {
                             if mcp_http_supported {
                                 if let Some(url) = &task_http_mcp_url {
-                                    let declaration = McpServer::Http(
-                                        McpServerHttp::new(factory.server_name(), url.as_str()),
+                                    // Build HTTP MCP declaration with optional auth header
+                                    let mut http_server = McpServerHttp::new(
+                                        factory.server_name(),
+                                        url.as_str(),
                                     );
+
+                                    // Add Authorization header if API token is configured
+                                    if let Some(token) = crate::runtime::read_api_token() {
+                                        http_server = http_server.headers(vec![
+                                            HttpHeader::new("Authorization", format!("Bearer {}", token))
+                                        ]);
+                                        debug!(
+                                            mcp_server_name = %factory.server_name(),
+                                            "Authorization header added to HTTP MCP declaration"
+                                        );
+                                    }
+
+                                    let declaration = McpServer::Http(http_server);
                                     info!(
                                         mcp_server_name = %factory.server_name(),
                                         mcp_url = %url,

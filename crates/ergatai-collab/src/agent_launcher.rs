@@ -1014,45 +1014,16 @@ identifiers, configuration values, etc.).
             )));
         }
 
-        // 3b. Generate MCP config so the agent can connect to ergatai's MCP server.
-        //     This gives the agent access to tools like `submit_orchestration`, `check_dag_status`, etc.
-        let api_port = std::env::var("ERGATAI_API_PORT").unwrap_or_else(|_| "3000".to_string());
-        let encoded_agent_id =
-            percent_encoding::utf8_percent_encode(agent_id, percent_encoding::NON_ALPHANUMERIC);
-        let mcp_url = format!("http://127.0.0.1:{}/mcp/{}", api_port, encoded_agent_id);
-        let mcp_config = serde_json::json!({
-            "mcpServers": {
-                "ergatai": {
-                    "type": "url",
-                    "url": mcp_url
-                }
-            }
-        });
-        let mcp_config_path =
-            worktree_path.join(format!(".ergatai-mcp-{}.json", agent_id.replace('|', "-")));
-        if let Err(e) = tokio::fs::write(&mcp_config_path, mcp_config.to_string()).await {
-            tracing::warn!(
-                agent = %agent_id,
-                error = %e,
-                "Failed to write MCP config file — agent will not have ergatai tools"
-            );
-        }
-
-        // Append --mcp-config and --yes (auto-approve) to the agent command.
-        // DAG-dispatched agents must run fully autonomously — no interactive permission prompts.
+        // 3b. MCP config is injected automatically by `AgentRuntime::launch_agent_scoped`
+        //     (in ergatai-runtime). It writes a per-agent `.ergatai-mcp-*.json` to the
+        //     work_dir and appends `--mcp-config <path>` to the command, with the
+        //     Authorization header matching the server's configured token. No need
+        //     to do anything here — just pass `base_command` through.
         //
-        // SECURITY: The `worktree_path` (and therefore `mcp_config_path`) may contain spaces
-        // or other shell metacharacters — it is derived from the user's project root, which
-        // we do not control. `agent_command` is passed to `runtime.launch_agent()`, which
-        // spawns via `sh -c`, so unquoted paths break on spaces and are exploitable via
-        // metacharacters ($, `, ;, |, etc.). Wrap the path in single quotes and escape any
-        // embedded single quotes via the standard '\'' trick (close the quote, insert a
-        // literal escaped quote, reopen the quote).
-        let mcp_config_path_escaped = mcp_config_path.display().to_string().replace('\'', "'\\''");
-        let agent_command = format!(
-            "{} --yes --mcp-config '{}'",
-            base_command, mcp_config_path_escaped
-        );
+        //     DAG-dispatched agents must run fully autonomously — no interactive
+        //     permission prompts. Append `--yes` (auto-approve) so the agent can
+        //     use tools without prompting.
+        let agent_command = format!("{} --yes", base_command);
 
         // 4. Launch agent via runtime (creates workspace + starts process)
         let runtime_agent_id = runtime

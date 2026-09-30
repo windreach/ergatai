@@ -124,15 +124,12 @@ fn resolve_tool_file_path(
 
         // Check if the path is absolute and within the boundary
         if file_path.is_absolute() {
-            // Simple prefix check: the file path must start with the boundary
-            let boundary_str = boundary.to_string_lossy();
-            let path_str = file_path.to_string_lossy();
-
-            // Reject if path doesn't start with boundary (prevents ../ traversal)
-            if !path_str.starts_with(&*boundary_str) {
+            // Use Path::starts_with() for component-wise comparison,
+            // which prevents prefix attacks like /workspace-evil matching /workspace
+            if !file_path.starts_with(boundary) {
                 tracing::warn!(
                     path = %path,
-                    boundary = %boundary_str,
+                    boundary = %boundary.display(),
                     "File path outside workspace boundary, rejected"
                 );
                 return None;

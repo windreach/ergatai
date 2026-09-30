@@ -20,7 +20,6 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 tracing.workspace = true
 chrono.workspace = true
-percent-encoding.workspace = true
 async-nats.workspace = true
 tokio-util.workspace = true
 futures.workspace = true

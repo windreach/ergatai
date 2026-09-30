@@ -182,18 +182,18 @@ pub fn extract_bash_write_targets(cmd: &str) -> Vec<String> {
     paths.into_iter().collect()
 }
 
-/// Shell-aware tokenization that handles quoted strings.
+/// Shell-aware tokenization that handles quoted strings and escape sequences.
 ///
 /// Uses a simple state machine to track quote state:
-/// - Unquoted: split on whitespace
+/// - Unquoted: split on whitespace, handle backslash escapes
 /// - Single-quoted: preserve everything until closing single quote
-/// - Double-quoted: preserve everything until closing double quote
+/// - Double-quoted: preserve everything until closing double quote, handle backslash escapes
 ///
 /// Returns owned Strings because quoted strings need quote stripping.
 fn shell_tokenize(cmd: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current_token = String::new();
-    let chars = cmd.chars().peekable();
+    let mut chars = cmd.chars().peekable();
 
     #[derive(PartialEq)]
     enum State {
@@ -203,9 +203,15 @@ fn shell_tokenize(cmd: &str) -> Vec<String> {
     }
     let mut state = State::Unquoted;
 
-    for ch in chars {
+    while let Some(ch) = chars.next() {
         match state {
             State::Unquoted => match ch {
+                '\\' => {
+                    // Backslash escape: next character is literal
+                    if let Some(next) = chars.next() {
+                        current_token.push(next);
+                    }
+                }
                 '\'' => state = State::SingleQuoted,
                 '"' => state = State::DoubleQuoted,
                 c if c.is_whitespace() => {
@@ -221,6 +227,19 @@ fn shell_tokenize(cmd: &str) -> Vec<String> {
                 c => current_token.push(c),
             },
             State::DoubleQuoted => match ch {
+                '\\' => {
+                    // Inside double quotes, backslash escapes: " $ ` \ newline
+                    // For other characters, the backslash is preserved
+                    if let Some(next) = chars.next() {
+                        match next {
+                            '"' | '\\' | '$' | '`' | '\n' => current_token.push(next),
+                            _ => {
+                                current_token.push('\\');
+                                current_token.push(next);
+                            }
+                        }
+                    }
+                }
                 '"' => state = State::Unquoted,
                 c => current_token.push(c),
             },

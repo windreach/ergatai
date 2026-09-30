@@ -663,12 +663,19 @@ fn spawn_terminal(
                 )?))
                 .stderr(std::process::Stdio::from(slave));
 
-            let child = command
+            let mut child = command
                 .spawn()
                 .map_err(|error| TerminalSessionError::ProcessFailed(error.to_string()))?;
-            let master_reader = master
-                .try_clone()
-                .map_err(|error| TerminalSessionError::ProcessFailed(error.to_string()))?;
+            let master_reader = match master.try_clone() {
+                Ok(reader) => reader,
+                Err(error) => {
+                    // Kill the child to prevent orphan process leak.
+                    // start_kill() sends SIGKILL synchronously; the background
+                    // supervisor task will reap the zombie.
+                    let _ = child.start_kill();
+                    return Err(TerminalSessionError::ProcessFailed(error.to_string()));
+                }
+            };
             let master_writer = master;
 
             Ok(SpawnedTerminal {
@@ -925,6 +932,8 @@ async fn finish_session(session_id: &str, code: i32) {
         };
         process.metadata.exit_code = Some(code);
         process.metadata.recoverable = false;
+        // Clear PID to prevent signaling a reused PID after the process exits
+        process.metadata.pid = None;
         process.metadata.updated_at_ms = unix_timestamp_ms();
         publish(
             process,
@@ -950,6 +959,16 @@ async fn finish_session(session_id: &str, code: i32) {
         event.exit_code = Some(code);
         record_audit(event).await;
     }
+
+    // Remove the session from the in-memory map after a delay to prevent memory leak.
+    // The metadata is persisted to the database, so clients can still query it via list_sessions.
+    // The 5-minute delay allows clients to read the final output and exit status.
+    let sid = session_id.to_string();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+        let mut processes = sessions().lock().await;
+        processes.remove(&sid);
+    });
 }
 
 pub async fn get_session(session_id: &str) -> Result<TerminalSession, TerminalSessionError> {
@@ -1182,7 +1201,36 @@ pub async fn terminate_session(session_id: &str) -> Result<TerminalSession, Term
             return Ok(metadata);
         }
         if tokio::time::Instant::now() >= deadline {
-            return Ok(metadata);
+            // Process didn't exit after SIGTERM — escalate to SIGKILL
+            tracing::warn!(
+                session_id = %session_id,
+                "Process did not exit after SIGTERM, sending SIGKILL"
+            );
+            let _ = send_signal(
+                session_id,
+                TerminalSignalRequest {
+                    signal: "KILL".into(),
+                },
+            )
+            .await;
+
+            // Wait briefly for SIGKILL to take effect
+            let kill_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                let metadata = get_session(session_id).await?;
+                if matches!(
+                    metadata.status,
+                    TerminalSessionStatus::Exited
+                        | TerminalSessionStatus::Failed
+                        | TerminalSessionStatus::Terminated
+                ) {
+                    return Ok(metadata);
+                }
+                if tokio::time::Instant::now() >= kill_deadline {
+                    return Ok(metadata);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
@@ -1456,27 +1504,38 @@ mod tests {
         let mut spawned = spawn_terminal(command, TerminalTransport::Pty).unwrap();
 
         spawned.executor.resize(101, 31).await.unwrap();
+
+        // Drop the executor (and its master writer FD) so the master reader
+        // can observe EOF/EIO after the child exits.
+        drop(spawned.executor);
+
         let mut output = spawned.output.take().unwrap();
         let output_task = tokio::spawn(async move {
             let mut output_text = String::new();
             let mut buffer = [0_u8; 4096];
             loop {
-                match output.read(&mut buffer).await {
-                    Ok(0) => break,
-                    Ok(size) => {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    output.read(&mut buffer),
+                )
+                .await
+                {
+                    Ok(Ok(0)) => break, // EOF
+                    Ok(Ok(size)) => {
                         output_text.push_str(&String::from_utf8_lossy(&buffer[..size]));
                     }
-                    Err(error) if error.raw_os_error() == Some(libc::EIO) => {
-                        break;
+                    Ok(Err(error)) if error.raw_os_error() == Some(libc::EIO) => {
+                        break; // PTY slave closed
                     }
-                    Err(error) => return Err(error),
+                    Ok(Err(error)) => return Err(error),
+                    Err(_) => break, // read timeout — child exited, no more output
                 }
             }
             Ok::<String, std::io::Error>(output_text)
         });
 
         let status = spawned.child.wait().await.unwrap();
-        let output_text = tokio::time::timeout(std::time::Duration::from_secs(5), output_task)
+        let output_text = tokio::time::timeout(std::time::Duration::from_secs(10), output_task)
             .await
             .unwrap()
             .unwrap()

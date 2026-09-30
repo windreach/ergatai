@@ -22,6 +22,173 @@ use crate::agent_registry::AgentRegistry;
 use crate::backend::AcpBackendInterface;
 use crate::types::{AgentHandle, AgentInfo, WaitResult, WorkspaceSpec};
 
+// ── MCP config injection ──
+//
+// When spawning an agent process (any path: CLI `ergatai start`, REST
+// `POST /agents`, DAG dispatch, ...), we transparently inject a per-agent
+// MCP config so the child Claude Code connects to ergatai's own MCP server
+// and sees the built-in tools (`list_agents`, `send_message`,
+// `submit_orchestration`, ...).
+//
+// Without this, ergatai's default authentication causes the child to get
+// 401 on every MCP call → tool list is empty → "agents can't see ergatai
+// MCP tools" (the original symptom this was added to fix).
+
+/// Read the API token used to authenticate against ergatai's own HTTP/MCP API.
+///
+/// Resolution order (first match wins):
+/// 1. `ERGATAI_API_TOKEN` environment variable
+/// 2. `~/.ergatai/.api-token` file (same file `ergatai-api/src/main.rs` writes)
+///
+/// Returns `None` when auth is disabled (no token configured) or the file is
+/// unreadable — callers should then omit the `Authorization` header from the
+/// generated MCP config.
+///
+/// # Security
+/// Mirrors the token-loading logic in `ergatai-api/src/main.rs`: refuses to
+/// read through a symlinked `~/.ergatai/.api-token`. This keeps the MCP
+/// header in sync with what the server expects.
+pub fn read_api_token() -> Option<String> {
+    if let Ok(token) = std::env::var("ERGATAI_API_TOKEN") {
+        let trimmed = token.trim().to_string();
+        if !trimmed.is_empty() {
+            return Some(trimmed);
+        }
+    }
+
+    let home = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
+    let token_dir = home.join(".ergatai");
+
+    let canonical_token_dir = match token_dir.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return None,
+    };
+    let canonical_token_path = canonical_token_dir.join(".api-token");
+
+    if !canonical_token_path.exists() {
+        return None;
+    }
+
+    if let Ok(meta) = std::fs::symlink_metadata(&canonical_token_path) {
+        if meta.file_type().is_symlink() {
+            tracing::warn!(
+                path = %canonical_token_path.display(),
+                "Refusing to read API token: file is a symlink (security risk)"
+            );
+            return None;
+        }
+    }
+
+    match std::fs::read_to_string(&canonical_token_path) {
+        Ok(content) => {
+            let trimmed = content.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %canonical_token_path.display(),
+                error = %e,
+                "Failed to read API token file — MCP config will lack auth header"
+            );
+            None
+        }
+    }
+}
+
+/// Inject a per-agent MCP config file into a launch command.
+///
+/// Writes `{work_dir}/.ergatai-mcp-{agent_id}.json` containing a
+/// `mcpServers.ergatai` entry pointing at `http://127.0.0.1:{port}/mcp/{id}`,
+/// with an `Authorization` header when a token is configured.
+///
+/// Returns the original command with `--mcp-config <path>` appended, so the
+/// spawned Claude Code loads the config on startup. If the config file
+/// cannot be written, the original command is returned unchanged (the agent
+/// still runs, it just won't have ergatai's MCP tools).
+///
+/// # Command formats
+/// `AcpAgent::from_str` accepts both a plain command (`"claude"`) and a JSON
+/// form (`{"command":"claude","args":["--foo"]}`). JSON form is returned
+/// untouched — we don't know its arg schema. Plain form is the common case
+/// for ergatai profiles.
+fn inject_mcp_config(command: &str, work_dir: &std::path::Path, agent_id: &str) -> String {
+    let api_port = std::env::var("ERGATAI_API_PORT").unwrap_or_else(|_| "3000".to_string());
+    let encoded_agent_id =
+        percent_encoding::utf8_percent_encode(agent_id, percent_encoding::NON_ALPHANUMERIC);
+    let mcp_url = format!("http://127.0.0.1:{}/mcp/{}", api_port, encoded_agent_id);
+
+    let mcp_server_entry = if let Some(token) = read_api_token() {
+        debug!(agent = %agent_id, "Injecting Authorization header into agent MCP config");
+        serde_json::json!({
+            "mcpServers": {
+                "ergatai": {
+                    "type": "url",
+                    "url": mcp_url,
+                    "headers": {
+                        "Authorization": format!("Bearer {}", token)
+                    }
+                }
+            }
+        })
+    } else {
+        debug!(
+            agent = %agent_id,
+            "No API token configured — MCP config has no auth header (ok if --insecure-no-auth)"
+        );
+        serde_json::json!({
+            "mcpServers": {
+                "ergatai": {
+                    "type": "url",
+                    "url": mcp_url
+                }
+            }
+        })
+    };
+
+    let config_filename = format!(
+        ".ergatai-mcp-{}.json",
+        agent_id.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-")
+    );
+    let config_path = work_dir.join(&config_filename);
+
+    if let Err(e) = std::fs::write(&config_path, mcp_server_entry.to_string()) {
+        warn!(
+            agent = %agent_id,
+            path = %config_path.display(),
+            error = %e,
+            "Failed to write MCP config — agent will not have ergatai tools"
+        );
+        return command.to_string();
+    }
+
+    debug!(
+        agent = %agent_id,
+        path = %config_path.display(),
+        "Wrote MCP config for agent"
+    );
+
+    // Shell-escape the path (single-quote + '\'' trick) for safe interpolation
+    // into `sh -c` when the backend launches the process.
+    let path_escaped = config_path.display().to_string().replace('\'', "'\\''");
+
+    // Avoid duplicate `--mcp-config` if caller already injected one.
+    if command.contains("--mcp-config") {
+        debug!(
+            agent = %agent_id,
+            "Command already has --mcp-config; leaving untouched"
+        );
+        return command.to_string();
+    }
+
+    format!("{} --mcp-config '{}'", command, path_escaped)
+}
+
 // ── Global singleton ──
 
 static AGENT_RUNTIME: OnceLock<Arc<AgentRuntime>> = OnceLock::new();
@@ -203,9 +370,34 @@ impl AgentRuntime {
                 .insert("ergatai_chat_id".to_string(), chat_id.to_string());
         }
 
+        // Inject per-agent MCP config so the spawned Claude Code connects to
+        // ergatai's own MCP server and sees the built-in tools
+        // (list_agents / send_message / submit_orchestration / ...).
+        //
+        // CRITICAL: This is the ONLY place where MCP config is injected. It
+        // covers every agent-launch path: `ergatai start`, REST POST /agents,
+        // DAG dispatch (via agent_launcher), and manual `ergatai agent spawn`.
+        // Without this, agents get 401 from the MCP server (auth is on by
+        // default) and see zero tools — the original "agents can't see
+        // ergatai MCP" bug.
+        let effective_command;
+        let final_command = if std::env::var("ERGATAI_SKIP_MCP_INJECT").is_ok() {
+            command
+        } else {
+            effective_command = inject_mcp_config(command, &spec.work_dir, &agent_id);
+            &effective_command
+        };
+
+        debug!(
+            agent_id = %agent_id,
+            original_command = %command,
+            final_command = %final_command,
+            "MCP injection: command transformation"
+        );
+
         let handle = self
             .backend
-            .start_agent(&workspace_with_id, command, instruction)
+            .start_agent(&workspace_with_id, final_command, instruction)
             .await?;
 
         let agent_id = handle.agent_id.clone();

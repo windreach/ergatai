@@ -193,14 +193,39 @@ async fn async_main(args: Args) -> Result<()> {
                         // File exists and is not a symlink, safe to read
                         if let Ok(existing) = std::fs::read_to_string(&canonical_token_path) {
                             let trimmed = existing.trim().to_string();
-                            if !trimmed.is_empty() {
+                            let parsed_token = uuid::Uuid::parse_str(&trimmed)
+                                .ok()
+                                .filter(|token| token.get_version_num() == 4);
+
+                            if let Some(token) = parsed_token {
                                 tracing::info!(
                                     "API token loaded from {}",
                                     canonical_token_path.display()
                                 );
-                                Some(trimmed)
+                                Some(token.to_string())
                             } else {
-                                None
+                                let token = uuid::Uuid::new_v4().to_string();
+                                match std::fs::write(&canonical_token_path, &token) {
+                                    Ok(_) => {
+                                        #[cfg(unix)]
+                                        {
+                                            use std::os::unix::fs::PermissionsExt;
+                                            let _ = std::fs::set_permissions(
+                                                &canonical_token_path,
+                                                std::fs::Permissions::from_mode(0o600),
+                                            );
+                                        }
+                                        tracing::warn!(
+                                            "Detected invalid or legacy API token in {}; auto-rotated to a new UUIDv4",
+                                            canonical_token_path.display()
+                                        );
+                                        Some(token)
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Failed to rotate API token file: {}", e);
+                                        None
+                                    }
+                                }
                             }
                         } else {
                             None
@@ -210,10 +235,7 @@ async fn async_main(args: Args) -> Result<()> {
                     None
                 }
             } else {
-                // File doesn't exist, generate and write new token
-                // Use UUID for security tokens (244 bits entropy vs Snowflake's 52 bits)
-                let token =
-                    uuid::Uuid::new_v4().to_string() + &uuid::Uuid::new_v4().simple().to_string();
+                let token = uuid::Uuid::new_v4().to_string();
                 match std::fs::write(&canonical_token_path, &token) {
                     Ok(_) => {
                         // Restrict permissions to owner only

@@ -27,6 +27,8 @@ static USER_DATA_DB: Lazy<Arc<Mutex<Connection>>> = Lazy::new(|| {
 
     // Initialize tables
     initialize_tables(&conn).expect("Failed to initialize user data tables");
+    cleanup_duplicate_root_conversations(&conn)
+        .expect("Failed to cleanup duplicate root conversations");
 
     Arc::new(Mutex::new(conn))
 });
@@ -69,8 +71,10 @@ fn get_db_path() -> PathBuf {
                     db_path = %db_path.display(),
                     "Database path is a symlink - refusing to open (security risk)"
                 );
-                // Return a safe fallback path to prevent corruption
-                return PathBuf::from("/tmp/ergatai_user_data.db");
+                // Return a safe fallback path within the data directory.
+                // Using a numbered suffix avoids the world-writable /tmp directory.
+                let fallback = canonical_data_dir.join("user_data_safe.db");
+                return fallback;
             }
         }
     }
@@ -408,6 +412,39 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
           AND workspace_id IS NULL;
         "#,
     )?;
+
+    Ok(())
+}
+
+fn cleanup_duplicate_root_conversations(conn: &Connection) -> Result<()> {
+    let removed = conn.execute(
+        "DELETE FROM conversations
+         WHERE id LIKE 'conv\\_%' ESCAPE '\\'
+           AND parent_id IS NULL
+           AND NOT EXISTS (
+               SELECT 1 FROM conversations child WHERE child.parent_id = conversations.id
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM messages WHERE messages.conversation_id = conversations.id
+           )
+           AND EXISTS (
+               SELECT 1 FROM conversations chat
+               WHERE chat.id LIKE 'chat\\_%' ESCAPE '\\'
+                 AND chat.parent_id IS NULL
+                 AND chat.project_id = conversations.project_id
+                 AND chat.workspace_id IS conversations.workspace_id
+                 AND chat.name IS conversations.name
+                 AND chat.created_at = conversations.created_at
+           )",
+        [],
+    )?;
+
+    if removed > 0 {
+        tracing::warn!(
+            removed,
+            "Removed duplicate root conversations created outside chat containers"
+        );
+    }
 
     Ok(())
 }
@@ -1631,6 +1668,7 @@ pub mod chats {
     pub fn list(project_id: Option<&str>, workspace_id: Option<&str>) -> Result<Vec<Chat>> {
         conversations::list_roots(project_id, workspace_id)?
             .into_iter()
+            .filter(|conversation| conversation.id.starts_with("chat_"))
             .map(|conversation| {
                 let context = context_for(&conversation.id)?;
                 Ok(conversation_to_chat(conversation, context))
@@ -2094,7 +2132,7 @@ mod tests {
     #[test]
     fn test_chat_list_all_filter_combinations() {
         let _database_guard = lock_user_data_db_for_tests();
-        let prefix = format!("cl-{}", std::process::id());
+        let prefix = format!("chat_cl-{}", std::process::id());
         let pid1 = format!("{prefix}-p1");
         let pid2 = format!("{prefix}-p2");
         let wid1 = format!("{prefix}-w1");

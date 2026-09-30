@@ -866,18 +866,32 @@ impl MessageSender {
         target: &str,
         sender_runtime_id: &str,
     ) -> Option<String> {
+        tracing::info!(target = target, sender = %sender_runtime_id, "Attempting to auto-spawn agent from profile");
+
         // Check if target is a profile name
         let profile = match crate::services::profile_service::get_profile_by_name(target).await {
-            Ok(Some(p)) => p,
-            Ok(None) => return None, // Not a profile, let it fail normally
+            Ok(Some(p)) => {
+                tracing::info!(target = target, profile_name = %p.name, "Found profile for auto-spawn");
+                p
+            }
+            Ok(None) => {
+                tracing::debug!(target = target, "Target is not a profile name");
+                return None; // Not a profile, let it fail normally
+            }
             Err(e) => {
-                warn!(error = %e, target = target, "Failed to look up profile for auto-spawn");
+                tracing::warn!(error = %e, target = target, "Failed to look up profile for auto-spawn");
                 return None;
             }
         };
 
         // Get sender's workspace to spawn in the same workspace
-        let sender_info = runtime.get_agent(sender_runtime_id).await?;
+        let sender_info = match runtime.get_agent(sender_runtime_id).await {
+            Some(info) => info,
+            None => {
+                tracing::warn!(sender = %sender_runtime_id, "Sender not found in runtime registry");
+                return None;
+            }
+        };
         let workspace_id = sender_info.workspace_id.clone();
         let work_dir = sender_info
             .handle
@@ -897,10 +911,12 @@ impl MessageSender {
         };
 
         // Launch the agent
-        info!(
+        tracing::info!(
             target = target,
             profile_name = %profile.name,
             workspace = %workspace_id,
+            command = %profile.command,
+            work_dir = %work_dir,
             "Auto-spawning agent from profile (message-driven)"
         );
 
@@ -914,7 +930,7 @@ impl MessageSender {
             .await
         {
             Ok(agent_id) => {
-                info!(
+                tracing::info!(
                     agent_id = %agent_id,
                     profile = %profile.name,
                     "Agent auto-spawned successfully"
@@ -922,9 +938,11 @@ impl MessageSender {
                 Some(agent_id)
             }
             Err(e) => {
-                warn!(
+                tracing::error!(
                     error = %e,
                     target = target,
+                    profile = %profile.name,
+                    command = %profile.command,
                     "Failed to auto-spawn agent from profile"
                 );
                 None

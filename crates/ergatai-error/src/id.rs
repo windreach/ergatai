@@ -28,8 +28,8 @@
 //!
 //! # Example
 //!
-//! ```rust
-//! use ergatai_core::id::{IdType, init, generate, format};
+//! ```rust,no_run
+//! use ergatai_error::id::{IdType, init, generate, format, parse};
 //!
 //! // Initialize with instance ID (call once at startup)
 //! init(1);
@@ -39,7 +39,7 @@
 //!
 //! // Format ID (for logs/API responses)
 //! let formatted = format(id, IdType::Message);
-//! // Output: "msg_1727568000000_001_0001"
+//! // Output: "msg_{timestamp}_{instance}_{sequence}"
 //!
 //! // Extract information from ID
 //! let (id_type, timestamp, instance, sequence) = parse(&formatted).unwrap();
@@ -59,12 +59,17 @@ impl Epoch for ErgataiSnowflakeParams {
     }
 }
 
-/// Machine ID: dynamically set via `init()`
-static MACHINE_ID: AtomicU16 = AtomicU16::new(0);
+/// Machine ID: set once via `init()`. Subsequent calls to `init()` are no-ops.
+static MACHINE_ID: AtomicU16 = AtomicU16::new(u16::MAX);
 
 impl MachineId for ErgataiSnowflakeParams {
     fn machine_id() -> u64 {
-        MACHINE_ID.load(Ordering::Relaxed) as u64
+        let raw = MACHINE_ID.load(Ordering::Relaxed);
+        if raw == u16::MAX {
+            0
+        } else {
+            raw as u64
+        }
     }
 }
 
@@ -100,6 +105,8 @@ pub enum IdType {
     Agent = 8,
     /// Workspace ID
     Workspace = 9,
+    /// Project ID (code repository)
+    Project = 13,
     /// DAG orchestration ID
     Dag = 10,
     /// Task ID (DAG node)
@@ -121,6 +128,7 @@ impl IdType {
             IdType::Session => "sess",
             IdType::Agent => "agent",
             IdType::Workspace => "ws",
+            IdType::Project => "proj",
             IdType::Dag => "dag",
             IdType::Task => "task",
             IdType::Checkpoint => "ckpt",
@@ -139,6 +147,7 @@ impl IdType {
             "sess" => Some(IdType::Session),
             "agent" => Some(IdType::Agent),
             "ws" => Some(IdType::Workspace),
+            "proj" => Some(IdType::Project),
             "dag" => Some(IdType::Dag),
             "task" => Some(IdType::Task),
             "ckpt" => Some(IdType::Checkpoint),
@@ -158,48 +167,98 @@ impl IdType {
 /// # Example
 ///
 /// ```rust
-/// use ergatai_core::id::init;
+/// use ergatai_error::id::init;
 ///
 /// // Initialize with instance ID 1
 /// init(1);
 /// ```
 pub fn init(instance_id: u16) {
-    MACHINE_ID.store(instance_id & 0x3FF, Ordering::Relaxed);
+    // Set-once: compare_exchange succeeds only on the first call (when value is still u16::MAX).
+    // Subsequent calls are no-ops, preventing post-init mutation.
+    let _ = MACHINE_ID.compare_exchange(
+        u16::MAX,
+        instance_id & 0x3FF,
+        Ordering::SeqCst,
+        Ordering::Relaxed,
+    );
     GENERATOR.get_or_init(ErgataiGenerator::default);
 }
 
 /// Get or initialize the global generator.
 ///
-/// # Panics
-///
 /// This function does NOT panic. If called before `init()`, it initializes with
 /// default instance_id=0. Call `init(instance_id)` at startup to set a specific value.
 fn generator() -> &'static ErgataiGenerator {
-    GENERATOR.get_or_init(|| {
-        // Only set MACHINE_ID if not already initialized
-        // This allows init() to be called before or after first generate()
-        let _ = MACHINE_ID.compare_exchange(0, 0, Ordering::Relaxed, Ordering::Relaxed);
-        ErgataiGenerator::default()
-    })
+    GENERATOR.get_or_init(ErgataiGenerator::default)
 }
+
+/// Maximum retry attempts for transient ID generation failures.
+const MAX_GENERATE_RETRIES: u32 = 100;
 
 /// Generate a new ID using the global generator.
 ///
 /// Returns a 64-bit integer that can be stored directly in the database.
 ///
+/// # Retry behavior
+///
+/// Transient failures (clock rollback, sequence exhaustion) are handled with
+/// non-blocking retries using `std::thread::yield_now()`. The function retries
+/// up to `MAX_GENERATE_RETRIES` times before panicking. In practice, transient
+/// failures resolve within 1-2 retries.
+///
+/// # Panics
+///
+/// This function will panic if ID generation fails `MAX_GENERATE_RETRIES` (100)
+/// times in succession. This indicates a severe system issue such as:
+/// - Persistent clock rollback (NTP sync problems)
+/// - Extreme contention (millions of IDs per millisecond)
+/// - Generator corruption
+///
+/// **Why panic instead of returning Result?** This function is called throughout
+/// the codebase (50+ call sites) for critical operations like message IDs,
+/// conversation IDs, and session IDs. Changing the return type to `Result` would
+/// be a breaking change requiring updates to all call sites. The panic is a
+/// last-resort safety net for catastrophic failures that should never occur in
+/// normal operation.
+///
+/// # Async safety
+///
+/// This function is safe to call from async contexts. It uses non-blocking
+/// `yield_now()` instead of `sleep()` to avoid blocking the executor thread.
+///
 /// # Example
 ///
 /// ```rust
-/// use ergatai_core::id::generate;
+/// use ergatai_error::id::generate;
 ///
 /// let message_id = generate();
 /// let conversation_id = generate();
 /// ```
 pub fn generate() -> i64 {
-    generator()
-        .generate()
-        .expect("Failed to generate snowflake ID")
-        .into_i64()
+    for attempt in 0..MAX_GENERATE_RETRIES {
+        match generator().generate() {
+            Ok(snowflake) => return snowflake.into_i64(),
+            Err(err) => {
+                // Transient errors: clock rollback or sequence exhaustion.
+                // Use non-blocking yield instead of sleep to avoid blocking async executors.
+                // This allows other tasks to run while we wait for the next millisecond.
+                if attempt < MAX_GENERATE_RETRIES - 1 {
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_retries = MAX_GENERATE_RETRIES,
+                        error = %err,
+                        "Snowflake ID generation failed, retrying"
+                    );
+                    // Yield to allow other tasks to run (non-blocking)
+                    std::thread::yield_now();
+                }
+            }
+        }
+    }
+    panic!(
+        "Failed to generate snowflake ID after {} retries",
+        MAX_GENERATE_RETRIES
+    )
 }
 
 /// Format an ID with type prefix for display/logging.
@@ -216,7 +275,7 @@ pub fn generate() -> i64 {
 /// # Example
 ///
 /// ```rust
-/// use ergatai_core::id::{generate, format, IdType};
+/// use ergatai_error::id::{generate, format, IdType};
 ///
 /// let id = generate();
 /// let formatted = format(id, IdType::Message);
@@ -229,7 +288,7 @@ pub fn format(id: i64, id_type: IdType) -> String {
     let sequence = snowflake.sequence_number();
 
     format!(
-        "{}_{}_{}_{:04}",
+        "{}_{}_{:03}_{:04}",
         id_type.prefix(),
         timestamp,
         instance,
@@ -250,7 +309,7 @@ pub fn format(id: i64, id_type: IdType) -> String {
 /// # Example
 ///
 /// ```rust
-/// use ergatai_core::id::{generate, format, parse, IdType};
+/// use ergatai_error::id::{generate, format, parse, IdType};
 ///
 /// let id = generate();
 /// let formatted = format(id, IdType::Message);
@@ -370,7 +429,8 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        init(42);
+        // init() is set-once; the first test to call it wins.
+        // Verify roundtrip consistency rather than a specific instance value.
         let id = generate();
         let formatted = format(id, IdType::Conversation);
 
@@ -379,19 +439,20 @@ mod tests {
 
         let (id_type, _timestamp, instance, _sequence) = parsed.unwrap();
         assert_eq!(id_type, IdType::Conversation);
-        assert_eq!(instance, 42);
+        // Instance should match the extract_instance() output (roundtrip consistency)
+        assert_eq!(instance, extract_instance(id));
     }
 
     #[test]
     fn test_extract_components() {
-        init(100);
         let id = generate();
 
         let timestamp = extract_timestamp(id);
         let instance = extract_instance(id);
         let _sequence = extract_sequence(id);
 
-        assert_eq!(instance, 100);
+        // Instance should be in valid range (0-1023)
+        assert!(instance <= 1023);
         assert!(timestamp > 0);
     }
 

@@ -75,7 +75,7 @@ fn project_to_response(project: Project) -> ProjectResponse {
 }
 
 fn generate_id() -> String {
-    format_id(generate(), IdType::Workspace)
+    format_id(generate(), IdType::Project)
 }
 
 fn db_error(operation: &'static str, error: rusqlite::Error) -> Response {
