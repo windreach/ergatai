@@ -314,6 +314,14 @@ fn redirect_to_snapshot_fallback(content: &[u8]) -> c_int {
 /// Note: `open()` is variadic in C (mode is only used when O_CREAT is set).
 /// We use a fixed 3-arg signature because on x86_64 Linux the third arg is
 /// always passed in rdx — we simply ignore it when O_CREAT is not set.
+///
+/// The `invalid_runtime_symbol_definitions` lint flags this mismatch
+/// (expected `fn(..., ...)`, found `fn(..., mode: c_int)`). It is safe here
+/// because: (a) we never open with O_CREAT on the intercepted path (we only
+/// redirect read-only opens to snapshots), so `mode` is unused; (b) the
+/// real libc `open` is called with the same rdx the caller passed, so the
+/// third arg is preserved end-to-end.
+#[allow(unknown_lints, invalid_runtime_symbol_definitions)]
 #[no_mangle]
 pub unsafe extern "C" fn open(path: *const c_char, flags: c_int, mode: c_int) -> c_int {
     // Only intercept read-only opens. Writes are handled by fanotify auto-lock.
@@ -345,6 +353,11 @@ pub unsafe extern "C" fn open(path: *const c_char, flags: c_int, mode: c_int) ->
 /// This is a C ABI function. `path` must be a valid C string pointer.
 ///
 /// Note: same variadic → fixed-signature trick as `open()` above.
+/// `openat()` is variadic in C; we use a fixed 4-arg signature. On x86_64
+/// Linux this is ABI-compatible with the real libc symbol because mode is
+/// always passed in rcx, and we forward it unchanged to the real openat.
+/// See `open()` for the full rationale on why this is safe.
+#[allow(unknown_lints, invalid_runtime_symbol_definitions)]
 #[no_mangle]
 pub unsafe extern "C" fn openat(
     dirfd: c_int,
