@@ -688,4 +688,133 @@ mod tests {
         drop(temp_a);
         drop(temp_b);
     }
+
+    // ─── Workspace registration tests ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_register_workspace_unknown_project() {
+        let id = unique_project_id("unknown-ws");
+        let result = register_workspace_for_project(&id, "agent-1", "/tmp/workspace").await;
+        assert!(result.is_err());
+        assert!(matches!(result, Err(ErgataiError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_unregister_workspace_unknown_project() {
+        let id = unique_project_id("unknown-unreg");
+        let result = unregister_workspace_for_project(&id, "agent-1").await;
+        assert!(result.is_err());
+        assert!(matches!(result, Err(ErgataiError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_register_and_unregister_workspace() {
+        let (temp, project_root) = setup_git_repo();
+        let id = unique_project_id("ws-reg");
+
+        init_file_access(&id, &project_root).await.unwrap();
+
+        // Register workspace (should succeed even without enforcer)
+        let result = register_workspace_for_project(&id, "agent-1", "/tmp/test-ws").await;
+        assert!(result.is_ok());
+
+        // Unregister workspace
+        let result = unregister_workspace_for_project(&id, "agent-1").await;
+        assert!(result.is_ok());
+
+        shutdown_file_access(&id).await.unwrap();
+        drop(temp);
+    }
+
+    #[tokio::test]
+    async fn test_get_enforcer_unknown_project() {
+        let id = unique_project_id("unknown-enforcer");
+        let result = get_enforcer(&id).await;
+        // Unknown project returns Ok(None), not an error
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_enforcer_returns_none_without_enforcer() {
+        let (temp, project_root) = setup_git_repo();
+        let id = unique_project_id("no-enforcer");
+
+        // Init without enforcer
+        init_file_access(&id, &project_root).await.unwrap();
+
+        // Enforcer should be None
+        let enforcer = get_enforcer(&id).await.unwrap();
+        assert!(enforcer.is_none());
+
+        shutdown_file_access(&id).await.unwrap();
+        drop(temp);
+    }
+
+    #[tokio::test]
+    async fn test_init_file_access_creates_ergatai_directory() {
+        let (temp, project_root) = setup_git_repo();
+        let id = unique_project_id("ergatai-dir");
+
+        let ergatai_dir = project_root.join(".ergatai");
+        assert!(!ergatai_dir.exists());
+
+        init_file_access(&id, &project_root).await.unwrap();
+
+        assert!(ergatai_dir.exists());
+        assert!(ergatai_dir.is_dir());
+        assert!(ergatai_dir.join("locks.db").exists());
+
+        shutdown_file_access(&id).await.unwrap();
+        drop(temp);
+    }
+
+    #[tokio::test]
+    async fn test_double_init_is_idempotent() {
+        let (temp, project_root) = setup_git_repo();
+        let id = unique_project_id("double-init");
+
+        init_file_access(&id, &project_root).await.unwrap();
+        // Second init should not error
+        init_file_access(&id, &project_root).await.unwrap();
+
+        // Should still work
+        assert!(get_lock_manager(&id).await.is_ok());
+
+        shutdown_file_access(&id).await.unwrap();
+        drop(temp);
+    }
+
+    #[tokio::test]
+    async fn test_register_multiple_workspaces() {
+        let (temp, project_root) = setup_git_repo();
+        let id = unique_project_id("multi-ws");
+
+        init_file_access(&id, &project_root).await.unwrap();
+
+        // Register multiple workspaces for different agents
+        register_workspace_for_project(&id, "agent-1", "/tmp/ws-1")
+            .await
+            .unwrap();
+        register_workspace_for_project(&id, "agent-2", "/tmp/ws-2")
+            .await
+            .unwrap();
+        register_workspace_for_project(&id, "agent-3", "/tmp/ws-3")
+            .await
+            .unwrap();
+
+        // Unregister them
+        unregister_workspace_for_project(&id, "agent-1")
+            .await
+            .unwrap();
+        unregister_workspace_for_project(&id, "agent-2")
+            .await
+            .unwrap();
+        unregister_workspace_for_project(&id, "agent-3")
+            .await
+            .unwrap();
+
+        shutdown_file_access(&id).await.unwrap();
+        drop(temp);
+    }
 }

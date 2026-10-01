@@ -592,6 +592,37 @@ JetStream Streams:
 
 ---
 
+## 消息 Role 约定
+
+消息表 (`messages`) 中的 `role` 字段用于标识消息来源和前端渲染：
+
+| Role | 用途 | 示例 |
+|------|------|------|
+| `"user"` | 人类用户输入或 agent 发起的 prompt | 用户在 `/prompt` 端点发送的消息 |
+| `"assistant"` | Agent 的输出和 agent-to-agent 消息 | Agent 响应、agent 间通信 |
+| `"system"` | 系统事件 | Subagent 状态变更、系统通知 |
+
+**关键规则：**
+
+1. **Agent-to-agent 消息必须使用 `role="assistant"`**
+   - 前端基于 role 分组渲染：`user` 开启新对话组，`assistant` 追加到当前组
+   - 文件变更追踪依赖 `role="assistant"` 过滤（`user_conversations.rs:206`）
+   - 语义上 agent 发送的消息是 agent 输出，不是用户输入
+
+2. **代码位置参考**
+   - NATS 成功路径：`messaging/mod.rs:~490` → `"assistant"` ✅
+   - 回退路径：`messaging/mod.rs:~561` → `"assistant"` ✅
+   - Prompt 端点：`api/agents.rs:2629` → `"user"`（用于用户/agent 发起的 prompt）
+   - Agent 响应：`api/agents.rs:3124` → `"assistant"`
+
+3. **Metadata 约定**
+   - Agent-to-agent 消息必须包含 `metadata.source = "agent"`
+   - 包含 `senderAgentId` 和 `senderAgentName` 用于发送者身份显示
+
+**历史问题：** 曾存在 NATS 路径使用 `"assistant"` 而回退路径使用 `"user"` 的不一致（已修复）。历史数据中的不一致消息可直接删除或保留（UI 可正确渲染两种 role）。
+
+---
+
 ## 技术栈
 
 | 层 | 技术 |

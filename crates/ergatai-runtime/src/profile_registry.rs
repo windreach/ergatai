@@ -1155,4 +1155,146 @@ mod tests {
         assert_eq!(reg.id, "custom-id");
         assert!(reg.package_name.is_none());
     }
+
+    #[tokio::test]
+    async fn test_get_by_name() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let registry = ProfileRegistry::new(temp_file.path()).unwrap();
+
+        let registration = AgentRegistration::new(
+            "test-agent".to_string(),
+            "python3 test.py".to_string(),
+            "acp".to_string(),
+        );
+
+        registry.register(registration.clone()).await.unwrap();
+
+        // Test get_by_name with existing name
+        let loaded = registry.get_by_name("test-agent").await.unwrap().unwrap();
+        assert_eq!(loaded.id, registration.id);
+        assert_eq!(loaded.name, "test-agent");
+        assert_eq!(loaded.command, "python3 test.py");
+
+        // Test get_by_name with non-existent name
+        let not_found = registry.get_by_name("non-existent").await.unwrap();
+        assert!(not_found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_by_name_empty_string() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let registry = ProfileRegistry::new(temp_file.path()).unwrap();
+
+        let not_found = registry.get_by_name("").await.unwrap();
+        assert!(not_found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_register_with_package_name() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let registry = ProfileRegistry::new(temp_file.path()).unwrap();
+
+        let registration = AgentRegistration::with_package_name(
+            "test-agent".to_string(),
+            "python3 test.py".to_string(),
+            "acp".to_string(),
+            Some("my-package".to_string()),
+        );
+
+        registry.register(registration.clone()).await.unwrap();
+
+        let loaded = registry.get(&registration.id).await.unwrap().unwrap();
+        assert_eq!(loaded.package_name, Some("my-package".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_register_with_avatar_url() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let registry = ProfileRegistry::new(temp_file.path()).unwrap();
+
+        let registration = AgentRegistration::with_avatar_url(
+            "test-agent".to_string(),
+            "python3 test.py".to_string(),
+            "acp".to_string(),
+            Some("my-package".to_string()),
+            Some("https://example.com/avatar.png".to_string()),
+        );
+
+        registry.register(registration.clone()).await.unwrap();
+
+        let loaded = registry.get(&registration.id).await.unwrap().unwrap();
+        assert_eq!(
+            loaded.avatar_url,
+            Some("https://example.com/avatar.png".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_non_existent() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let registry = ProfileRegistry::new(temp_file.path()).unwrap();
+
+        let result = registry.delete("non-existent-id").await.unwrap();
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_list_empty_registry() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let registry = ProfileRegistry::new(temp_file.path()).unwrap();
+
+        let profiles = registry.list().await.unwrap();
+        // ProfileRegistry::new() registers default built-in profiles
+        assert!(!profiles.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_update_existing_registration() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let registry = ProfileRegistry::new(temp_file.path()).unwrap();
+
+        let registration = AgentRegistration::new(
+            "test-agent".to_string(),
+            "python3 test.py".to_string(),
+            "acp".to_string(),
+        );
+
+        registry.register(registration.clone()).await.unwrap();
+
+        // Try to register with same ID but different name
+        let mut updated = registration.clone();
+        updated.name = "updated-name".to_string();
+        updated.command = "python3 updated.py".to_string();
+
+        let result = registry.register(updated).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn test_validate_special_characters_in_name() {
+        let reg = AgentRegistration::new(
+            "test-agent_123".to_string(),
+            "cmd".to_string(),
+            "acp".to_string(),
+        );
+        assert!(reg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_unicode_in_name() {
+        let reg = AgentRegistration::new(
+            "测试agent".to_string(),
+            "cmd".to_string(),
+            "acp".to_string(),
+        );
+        assert!(reg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_long_command() {
+        let long_cmd = "python3 ".to_string() + &"a".repeat(1000);
+        let reg = AgentRegistration::new("test".to_string(), long_cmd, "acp".to_string());
+        assert!(reg.validate().is_ok());
+    }
 }

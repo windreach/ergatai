@@ -2280,4 +2280,37 @@ mod tests {
         // No ergatai_agent_id in metadata, so returns the runtime ID itself
         assert_eq!(result, "agent-ws-nostable");
     }
+
+    // ─── read_api_token tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_read_api_token_from_env() {
+        // Save original value
+        let original = std::env::var("ERGATAI_API_TOKEN").ok();
+
+        // Set test value
+        std::env::set_var("ERGATAI_API_TOKEN", "test-token-from-env");
+        let result = read_api_token();
+        assert_eq!(result, Some("test-token-from-env".to_string()));
+
+        // Restore original value
+        match original {
+            Some(val) => std::env::set_var("ERGATAI_API_TOKEN", val),
+            None => std::env::remove_var("ERGATAI_API_TOKEN"),
+        }
+    }
+
+    #[test]
+    fn test_read_api_token_from_env_trimmed() {
+        let original = std::env::var("ERGATAI_API_TOKEN").ok();
+
+        std::env::set_var("ERGATAI_API_TOKEN", "  test-token  ");
+        let result = read_api_token();
+        assert_eq!(result, Some("test-token".to_string()));
+
+        match original {
+            Some(val) => std::env::set_var("ERGATAI_API_TOKEN", val),
+            None => std::env::remove_var("ERGATAI_API_TOKEN"),
+        }
+    }
 }

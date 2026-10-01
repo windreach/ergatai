@@ -82,6 +82,71 @@ fn get_db_path() -> PathBuf {
     db_path
 }
 
+/// Migration: Remove UNIQUE constraint from collaboration_sessions.chat_id
+///
+/// SQLite does not support removing constraints directly, so we rebuild the table.
+/// This is a no-op if the constraint has already been removed.
+fn migrate_collaboration_sessions_remove_unique(conn: &Connection) -> Result<()> {
+    // Check if the UNIQUE constraint exists by examining the table SQL
+    let table_sql: String = conn
+        .prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='collaboration_sessions'",
+        )?
+        .query_row([], |row| row.get(0))
+        .unwrap_or_default();
+
+    // Check if chat_id column definition contains UNIQUE
+    // Match pattern: "chat_id TEXT NOT NULL UNIQUE" or similar
+    let has_unique = table_sql.lines().any(|line| {
+        let trimmed = line.trim();
+        // Check if this is the chat_id column definition and it contains UNIQUE
+        trimmed.starts_with("chat_id") && trimmed.contains("UNIQUE")
+    });
+
+    if !has_unique {
+        return Ok(());
+    }
+
+    tracing::info!("Migrating collaboration_sessions: removing UNIQUE constraint from chat_id");
+
+    conn.execute_batch(
+        r#"
+        -- 1. Create new table without UNIQUE constraint
+        CREATE TABLE collaboration_sessions_new (
+            id TEXT PRIMARY KEY,
+            chat_id TEXT NOT NULL,
+            workspace_id TEXT,
+            project_id TEXT,
+            mode TEXT NOT NULL CHECK (mode IN ('supervisor', 'group')),
+            state TEXT NOT NULL CHECK (state IN (
+                'idle', 'planning', 'executing', 'waiting_input',
+                'waiting_approval', 'synthesizing', 'completed',
+                'failed', 'cancelled'
+            )),
+            goal TEXT,
+            active_plan_revision TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        -- 2. Copy data
+        INSERT INTO collaboration_sessions_new SELECT * FROM collaboration_sessions;
+
+        -- 3. Drop old table
+        DROP TABLE collaboration_sessions;
+
+        -- 4. Rename new table
+        ALTER TABLE collaboration_sessions_new RENAME TO collaboration_sessions;
+
+        -- 5. Create index for performance
+        CREATE INDEX idx_collaboration_sessions_chat_id ON collaboration_sessions(chat_id);
+        "#,
+    )?;
+
+    tracing::info!("Migration completed: collaboration_sessions.chat_id UNIQUE constraint removed");
+    Ok(())
+}
+
 /// Initialize all required tables
 fn initialize_tables(conn: &Connection) -> Result<()> {
     // Incremental migrations for existing databases MUST run BEFORE the backfill queries.
@@ -121,6 +186,8 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             tracing::warn!(error = %e, "Failed to add collaboration_session_participants.conversation_id column");
         }
     }
+    // ✅ Migration: Remove UNIQUE constraint from collaboration_sessions.chat_id
+    migrate_collaboration_sessions_remove_unique(conn)?;
 
     conn.execute_batch(
         r#"
@@ -293,7 +360,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         -- Authoritative collaboration sessions for Supervisor and Group modes.
         CREATE TABLE IF NOT EXISTS collaboration_sessions (
             id TEXT PRIMARY KEY,
-            chat_id TEXT NOT NULL UNIQUE,
+            chat_id TEXT NOT NULL,
             workspace_id TEXT,
             project_id TEXT,
             mode TEXT NOT NULL CHECK (mode IN ('supervisor', 'group')),
@@ -307,6 +374,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         );
+        CREATE INDEX IF NOT EXISTS idx_collaboration_sessions_chat_id ON collaboration_sessions(chat_id);
 
         CREATE TABLE IF NOT EXISTS collaboration_session_participants (
             id TEXT PRIMARY KEY,

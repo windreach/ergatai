@@ -484,6 +484,7 @@ impl MessageSender {
                                 "senderAgentId": from,
                                 "senderAgentName": sender_name,
                             });
+                            // Agent-to-agent messages use role="assistant" (same as line 556)
                             if let Err(e) = user_data_db::messages::append(
                                 &conversation_id,
                                 "assistant",
@@ -551,9 +552,13 @@ impl MessageSender {
                             "senderAgentId": from,
                             "senderAgentName": sender_name,
                         });
+                        // Agent-to-agent messages use role="assistant" because:
+                        // 1. They are agent output, not user input
+                        // 2. Frontend groups messages by role (user starts new group, assistant appends)
+                        // 3. File change tracking filters by role="assistant"
                         if let Err(e) = user_data_db::messages::append(
                             &conversation_id,
-                            "user",
+                            "assistant",
                             serde_json::json!([{ "type": "text", "text": message }]),
                             metadata,
                         ) {
@@ -1333,4 +1338,9 @@ mod pending_response_tests {
             .await
             .is_none());
     }
+
+    // NOTE: The role consistency contract (both NATS and fallback paths use role="assistant")
+    // is documented in the code at lines ~490 and ~561. Integration tests should verify this
+    // behavior end-to-end by sending agent-to-agent messages and checking the database.
+    // A unit test cannot verify this without mocking the entire message delivery pipeline.
 }

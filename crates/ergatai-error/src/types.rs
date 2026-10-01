@@ -801,4 +801,178 @@ mod tests {
             "agent timeout should not be a permanent DAG failure"
         );
     }
+
+    #[test]
+    fn test_internal_error_constructors() {
+        let err = ErgataiError::internal("test message");
+        assert_eq!(err.error_code(), ErrorCode::Internal);
+        assert!(err.to_string().contains("test message"));
+
+        let io_err = std::io::Error::other("io error");
+        let err = ErgataiError::internal_with_source("context", io_err);
+        assert_eq!(err.error_code(), ErrorCode::Internal);
+        assert!(err.to_string().contains("context"));
+    }
+
+    #[test]
+    fn test_network_error_constructors() {
+        let err = ErgataiError::network("connection failed");
+        assert_eq!(err.error_code(), ErrorCode::Network);
+        assert!(err.to_string().contains("connection failed"));
+
+        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
+        let err = ErgataiError::network_with_source("failed to connect", io_err);
+        assert_eq!(err.error_code(), ErrorCode::Network);
+        assert!(err.to_string().contains("failed to connect"));
+    }
+
+    #[test]
+    fn test_agent_timeout_constructors() {
+        let err = ErgataiError::agent_timeout("operation timed out");
+        assert_eq!(err.error_code(), ErrorCode::AgentTimeout);
+        assert!(err.to_string().contains("operation timed out"));
+
+        let io_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout");
+        let err = ErgataiError::agent_timeout_with_source("agent call", io_err);
+        assert_eq!(err.error_code(), ErrorCode::AgentTimeout);
+        assert!(err.to_string().contains("agent call"));
+    }
+
+    #[test]
+    fn test_agent_init_failed_constructors() {
+        let err = ErgataiError::agent_init_failed("initialization error");
+        assert_eq!(err.error_code(), ErrorCode::AgentInitFailed);
+        assert!(err.to_string().contains("initialization error"));
+
+        let io_err = std::io::Error::other("init failed");
+        let err = ErgataiError::agent_init_failed_with_source("setup", io_err);
+        assert_eq!(err.error_code(), ErrorCode::AgentInitFailed);
+        assert!(err.to_string().contains("setup"));
+    }
+
+    #[test]
+    fn test_json_error_constructors() {
+        let err = ErgataiError::json("parse error");
+        assert_eq!(err.error_code(), ErrorCode::Json);
+        assert!(err.to_string().contains("parse error"));
+
+        let json_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+        let err = ErgataiError::json_with_source("deserialization", json_err);
+        assert_eq!(err.error_code(), ErrorCode::Json);
+        assert!(err.to_string().contains("deserialization"));
+    }
+
+    #[test]
+    fn test_backend_error_constructors() {
+        let err = ErgataiError::backend_operation("spawn", "failed to start");
+        assert_eq!(err.error_code(), ErrorCode::BackendOperationFailed);
+        assert!(err.to_string().contains("spawn"));
+        assert!(err.to_string().contains("failed to start"));
+
+        let io_err = std::io::Error::other("backend error");
+        let err =
+            ErgataiError::backend_operation_with_source("execute", "operation failed", io_err);
+        assert_eq!(err.error_code(), ErrorCode::BackendOperationFailed);
+        assert!(err.to_string().contains("execute"));
+        assert!(err.to_string().contains("operation failed"));
+    }
+
+    #[test]
+    fn test_error_code_coverage() {
+        // Test all error codes that weren't covered in previous tests
+        assert_eq!(ErrorCode::InvalidArg.as_str(), "ERR_INVALID_ARG");
+        assert_eq!(ErrorCode::AgentNotFound.as_str(), "ERR_AGENT_NOT_FOUND");
+        assert_eq!(ErrorCode::SessionNotFound.as_str(), "ERR_SESSION_NOT_FOUND");
+        assert_eq!(
+            ErrorCode::PermissionDenied.as_str(),
+            "ERR_PERMISSION_DENIED"
+        );
+        assert_eq!(
+            ErrorCode::AgentSpawnFailed.as_str(),
+            "ERR_AGENT_SPAWN_FAILED"
+        );
+        assert_eq!(ErrorCode::AgentInitFailed.as_str(), "ERR_AGENT_INIT_FAILED");
+        assert_eq!(ErrorCode::AgentTimeout.as_str(), "ERR_AGENT_TIMEOUT");
+        assert_eq!(ErrorCode::AgentProtocol.as_str(), "ERR_AGENT_PROTOCOL");
+        assert_eq!(
+            ErrorCode::AgentProcessDied.as_str(),
+            "ERR_AGENT_PROCESS_DIED"
+        );
+        assert_eq!(ErrorCode::Io.as_str(), "ERR_IO");
+        assert_eq!(
+            ErrorCode::ConfigDirNotFound.as_str(),
+            "ERR_CONFIG_DIR_NOT_FOUND"
+        );
+        assert_eq!(
+            ErrorCode::ConfigFileNotFound.as_str(),
+            "ERR_CONFIG_FILE_NOT_FOUND"
+        );
+        assert_eq!(
+            ErrorCode::ConfigReadFailed.as_str(),
+            "ERR_CONFIG_READ_FAILED"
+        );
+        assert_eq!(
+            ErrorCode::ConfigParseFailed.as_str(),
+            "ERR_CONFIG_PARSE_FAILED"
+        );
+        assert_eq!(
+            ErrorCode::ConfigValidationFailed.as_str(),
+            "ERR_CONFIG_VALIDATION_FAILED"
+        );
+        assert_eq!(
+            ErrorCode::ConfigInvalidValue.as_str(),
+            "ERR_CONFIG_INVALID_VALUE"
+        );
+        assert_eq!(ErrorCode::Database.as_str(), "ERR_DATABASE");
+        assert_eq!(ErrorCode::Network.as_str(), "ERR_NETWORK");
+        assert_eq!(ErrorCode::Nats.as_str(), "ERR_NATS");
+        assert_eq!(ErrorCode::SessionExists.as_str(), "ERR_SESSION_EXISTS");
+        assert_eq!(
+            ErrorCode::InvalidSessionState.as_str(),
+            "ERR_INVALID_SESSION_STATE"
+        );
+        assert_eq!(ErrorCode::LockConflict.as_str(), "ERR_LOCK_CONFLICT");
+        assert_eq!(ErrorCode::InvalidPath.as_str(), "ERR_INVALID_PATH");
+        assert_eq!(ErrorCode::NotFound.as_str(), "ERR_NOT_FOUND");
+        assert_eq!(ErrorCode::Json.as_str(), "ERR_JSON");
+        assert_eq!(ErrorCode::Channel.as_str(), "ERR_CHANNEL");
+    }
+
+    #[test]
+    fn test_emit_log_does_not_panic() {
+        // Ensure emit_log() doesn't panic for various error types
+        let errors = vec![
+            ErgataiError::internal("test"),
+            ErgataiError::network("test"),
+            ErgataiError::agent_timeout("test"),
+            ErgataiError::InvalidArgument("test".into()),
+            ErgataiError::NotFound("test".into()),
+        ];
+
+        for err in errors {
+            err.emit_log(); // Should not panic
+        }
+    }
+
+    #[test]
+    fn test_error_display_and_debug() {
+        let err = ErgataiError::internal("test message");
+        let display = format!("{}", err);
+        let debug = format!("{:?}", err);
+
+        assert!(display.contains("test message"));
+        assert!(debug.contains("Internal"));
+    }
+
+    #[test]
+    fn test_error_source_chain() {
+        use std::error::Error;
+
+        let io_err = std::io::Error::other("root cause");
+        let err = ErgataiError::internal_with_source("context", io_err);
+
+        let source = err.source();
+        assert!(source.is_some());
+        assert!(source.unwrap().to_string().contains("root cause"));
+    }
 }

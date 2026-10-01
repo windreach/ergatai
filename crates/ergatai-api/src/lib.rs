@@ -583,6 +583,10 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/collaboration/sessions",
             post(api::collaboration_sessions::create_collaboration_session),
         )
+        .route(
+            "/api/v1/collaboration-sessions/by-chat/{chat_id}",
+            get(api::collaboration_sessions::list_collaboration_sessions_by_chat),
+        )
         .route("/api/v1/dag", post(submit_dag))
         .route("/api/v1/dag/validate", post(validate_dag))
         .route("/api/v1/dag/status", get(dag_status))
@@ -945,6 +949,9 @@ async fn submit_dag(body: String) -> impl IntoResponse {
         parameters,
         context: None,
         submitter_agent_id: None,
+        chat_id: None,
+        workspace_id: None,
+        project_id: None,
     };
 
     match services::dag_service::submit_dag(req).await {

@@ -32,6 +32,9 @@ pub(crate) async fn handle_submit(
         parameters,
         context: context_value.clone(),
         submitter_agent_id: submitter_id,
+        chat_id: params.0.chat_id.clone(),
+        workspace_id: params.0.workspace_id.clone(),
+        project_id: params.0.project_id.clone(),
     };
 
     match crate::services::dag_service::submit_dag(req).await {
@@ -41,6 +44,7 @@ pub(crate) async fn handle_submit(
                 "submitted_nodes": resp.submitted_nodes,
                 "progress": resp.progress,
                 "graph_status": resp.graph_status,
+                "session_id": resp.session_id,
             });
             Ok(CallToolResult::success(vec![ContentBlock::text(
                 serde_json::to_string_pretty(&result).unwrap_or_default(),

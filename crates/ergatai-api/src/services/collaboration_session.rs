@@ -651,13 +651,7 @@ pub fn create_session(
         ));
     }
     let chat_id = request.chat_id.trim().to_string();
-    if let Some(existing) = find_session_by_chat(&chat_id)? {
-        lock_db!(connection);
-        return Ok(CollaborationSessionDetail {
-            participants: load_participants(&connection, &existing.id)?,
-            session: existing,
-        });
-    }
+    // ✅ Removed idempotency check: allow multiple sessions per chat
 
     let timestamp = now();
     let session_id = format_id(generate(), IdType::Session);
@@ -718,12 +712,26 @@ pub fn find_session_by_chat(
 ) -> Result<Option<CollaborationSession>, CollaborationSessionError> {
     lock_db!(connection);
     let mut statement = connection.prepare(&format!(
-        "SELECT {SESSION_COLUMNS} FROM collaboration_sessions WHERE chat_id = ?1"
+        "SELECT {SESSION_COLUMNS} FROM collaboration_sessions WHERE chat_id = ?1 ORDER BY created_at DESC LIMIT 1"
     ))?;
     let session = statement
         .query_row(params![chat_id], session_from_row)
         .optional()?;
     Ok(session)
+}
+
+/// List all collaboration sessions for a given chat, ordered by creation time (newest first)
+pub fn list_sessions_by_chat(
+    chat_id: &str,
+) -> Result<Vec<CollaborationSession>, CollaborationSessionError> {
+    lock_db!(connection);
+    let mut statement = connection.prepare(&format!(
+        "SELECT {SESSION_COLUMNS} FROM collaboration_sessions WHERE chat_id = ?1 ORDER BY created_at DESC"
+    ))?;
+    let sessions = statement
+        .query_map(params![chat_id], session_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(sessions)
 }
 
 pub fn upsert_participant(
@@ -1380,6 +1388,34 @@ pub fn cancel_session(
     transaction.execute(
         "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE id = ?3",
         params![SessionState::Cancelled.as_str(), now(), session_id],
+    )?;
+    transaction.commit()?;
+    drop(connection);
+    get_session(session_id)
+}
+
+/// Mark a session as failed (used for cleanup when DAG submission fails).
+pub fn fail_session(
+    session_id: &str,
+    reason: &str,
+) -> Result<CollaborationSessionDetail, CollaborationSessionError> {
+    lock_db!(mut connection);
+    let transaction = connection.transaction()?;
+    append_event_in_transaction(
+        &transaction,
+        session_id,
+        NewContextEvent {
+            event_type: "session_failed",
+            actor_type: "system",
+            actor_id: None,
+            payload: &serde_json::json!({ "reason": reason }),
+            visibility: "system",
+            artifact_refs: &[],
+        },
+    )?;
+    transaction.execute(
+        "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE id = ?3",
+        params![SessionState::Failed.as_str(), now(), session_id],
     )?;
     transaction.commit()?;
     drop(connection);

@@ -13,9 +13,13 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::services::collaboration_session::{
+    create_session, CollaborationMode, CreateCollaborationSessionRequest,
+};
+use ergatai_core::cross_agent::CollaborationExecutionScope;
 use ergatai_core::cross_agent::{
     get_dag_scheduler, get_dag_scheduler_by_id, list_dag_schedulers, set_dag_scheduler,
-    DagScheduler,
+    try_set_session_dag_scheduler, DagScheduler,
 };
 use ergatai_core::orchestration::{parse_dag_auto, DagContext, TaskGraph, TaskStatus};
 
@@ -31,6 +35,12 @@ pub struct DagSubmitRequest {
     pub context: Option<Value>,
     /// MCP-only: 提交者 agent_id（用于 submitter-is-worker 安全检查）。
     pub submitter_agent_id: Option<String>,
+    /// 关联的 chat_id（可选，提供时创建临时 CollaborationSession）。
+    pub chat_id: Option<String>,
+    /// 关联的 workspace_id（可选）。
+    pub workspace_id: Option<String>,
+    /// 关联的 project_id（可选）。
+    pub project_id: Option<String>,
 }
 
 /// DAG 提交响应。
@@ -39,6 +49,8 @@ pub struct DagSubmitResponse {
     pub submitted_nodes: usize,
     pub progress: f64,
     pub graph_status: String,
+    /// 创建的 CollaborationSession ID（如果提供了 chat_id）。
+    pub session_id: Option<String>,
 }
 
 /// DAG 状态信息（统一 REST + MCP 查询结果）。
@@ -176,10 +188,11 @@ pub struct DagListEntry {
 /// 1. 检查是否有运行中的 DAG（若未完成则拒绝）。
 /// 2. `parse_dag_auto()` 解析 YAML。
 /// 3. submitter-is-worker 安全检查（仅当 `submitter_agent_id` 提供时）。
-/// 4. 构建 `DagContext`（若提供 `context`）。
-/// 5. `DagScheduler::with_context()` 创建调度器。
-/// 6. `set_dag_scheduler()` + `start_event_listener()`。
-/// 7. `submit_graph()`。
+/// 4. 创建临时 CollaborationSession（如果提供了 `chat_id`）。
+/// 5. 构建 `DagContext`（若提供 `context`）。
+/// 6. `DagScheduler::with_context()` 创建调度器。
+/// 7. 注册到会话或全局注册表 + `start_event_listener()`。
+/// 8. `submit_graph()`。
 pub async fn submit_dag(req: DagSubmitRequest) -> Result<DagSubmitResponse> {
     // 1. 检查是否有运行中的 DAG
     if let Some(existing) = get_dag_scheduler() {
@@ -208,7 +221,44 @@ pub async fn submit_dag(req: DagSubmitRequest) -> Result<DagSubmitResponse> {
         }
     }
 
-    // 4. 构建 DagContext
+    // 4. 创建临时 CollaborationSession（如果提供了 chat_id）
+    let session_id = if let Some(chat_id) = &req.chat_id {
+        // 从 graph.nodes 提取唯一的 agents 作为 participants
+        let unique_agents: Vec<String> = {
+            let mut agents: Vec<String> = graph.nodes.iter().map(|n| n.agent.clone()).collect();
+            agents.sort();
+            agents.dedup();
+            agents
+        };
+
+        let session_request = CreateCollaborationSessionRequest {
+            chat_id: chat_id.clone(),
+            workspace_id: req.workspace_id.clone(),
+            project_id: req.project_id.clone(),
+            mode: CollaborationMode::Group,
+            goal: Some(format!(
+                "DAG orchestration: {}",
+                graph.description.as_deref().unwrap_or("Unnamed DAG")
+            )),
+            participants: unique_agents
+                .into_iter()
+                .map(
+                    |agent_id| crate::services::collaboration_session::ParticipantInput {
+                        conversation_id: String::new(), // Will be set later if needed
+                        agent_id,
+                        role: "peer".to_string(),
+                        status: "ready".to_string(),
+                    },
+                )
+                .collect(),
+        };
+        let session = create_session(session_request)?;
+        Some(session.session.id)
+    } else {
+        None
+    };
+
+    // 5. 构建 DagContext
     let mut dag_context = DagContext::empty();
     if let Some(ctx_val) = &req.context {
         if let Some(vars) = ctx_val.as_object() {
@@ -218,19 +268,55 @@ pub async fn submit_dag(req: DagSubmitRequest) -> Result<DagSubmitResponse> {
         }
     }
 
-    // 5. 创建调度器
+    // 6. 创建调度器
     let project_root = PathBuf::from(crate::get_app_state().default_cwd.clone());
-    let scheduler = DagScheduler::with_context(project_root, graph, dag_context);
+    let scheduler = if let Some(ref session_id) = session_id {
+        // 设置 collaboration scope
+        let scope = CollaborationExecutionScope::new(
+            session_id.clone(),
+            req.chat_id.clone(),
+            String::new(), // plan_revision_id (not used for temporary sessions)
+        );
+        DagScheduler::with_context(project_root, graph, dag_context).with_collaboration_scope(scope)
+    } else {
+        DagScheduler::with_context(project_root, graph, dag_context)
+    };
 
-    // 6. 全局注册 + 启动事件监听
-    set_dag_scheduler(scheduler.clone());
+    // 7. 注册到会话或全局注册表 + 启动事件监听
+    if let Some(ref session_id) = session_id {
+        // Use atomic registration to prevent TOCTOU races
+        if let Err(_existing_scheduler) = try_set_session_dag_scheduler(scheduler.clone()) {
+            // Another DAG was registered for this session while we were setting up
+            anyhow::bail!(
+                "A DAG is already running for session {}. Wait for completion or check status.",
+                session_id
+            );
+        }
+    } else {
+        set_dag_scheduler(scheduler.clone());
+    }
     scheduler.clone().start_event_listener();
 
-    // 7. 提交图
-    let submitted = scheduler
-        .submit_graph()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to submit DAG: {}", e))?;
+    // 8. 提交图
+    let submitted = match scheduler.submit_graph().await {
+        Ok(s) => s,
+        Err(e) => {
+            // Clean up the session if DAG submission fails
+            if let Some(ref sid) = session_id {
+                if let Err(cleanup_err) = crate::services::collaboration_session::fail_session(
+                    sid,
+                    &format!("DAG submission failed: {}", e),
+                ) {
+                    tracing::warn!(
+                        session_id = sid,
+                        error = %cleanup_err,
+                        "Failed to clean up session after DAG submission failure"
+                    );
+                }
+            }
+            return Err(anyhow::anyhow!("Failed to submit DAG: {}", e));
+        }
+    };
 
     let progress = scheduler.progress().await as f64;
     let graph_status = scheduler.status_prompt().await;
@@ -239,6 +325,7 @@ pub async fn submit_dag(req: DagSubmitRequest) -> Result<DagSubmitResponse> {
         submitted_nodes: submitted.len(),
         progress,
         graph_status,
+        session_id,
     })
 }
 

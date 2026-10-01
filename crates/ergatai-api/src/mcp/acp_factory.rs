@@ -349,6 +349,9 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
             parameters: params.parameters,
             context: params.context,
             submitter_agent_id: None,
+            chat_id: None,
+            workspace_id: None,
+            project_id: None,
         };
 
         match crate::services::dag_service::submit_dag(req).await {

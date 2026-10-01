@@ -90,6 +90,16 @@ pub(crate) struct SubmitOrchestrationParams {
     /// `parameters` schema declared in the YAML, if any.
     #[serde(default)]
     pub parameters: Option<HashMap<String, serde_json::Value>>,
+    /// Optional chat_id to create a temporary CollaborationSession for this DAG.
+    /// If provided, the DAG will be registered in the session-scoped registry.
+    #[serde(default)]
+    pub chat_id: Option<String>,
+    /// Optional workspace_id for the CollaborationSession.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    /// Optional project_id for the CollaborationSession.
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

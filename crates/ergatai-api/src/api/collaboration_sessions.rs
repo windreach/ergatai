@@ -152,6 +152,32 @@ pub async fn get_collaboration_session_by_chat(Path(chat_id): Path<String>) -> R
     }
 }
 
+/// GET /api/v1/collaboration-sessions/by-chat/:chat_id
+#[utoipa::path(
+    get,
+    path = "/api/v1/collaboration-sessions/by-chat/{chat_id}",
+    tag = "Collaboration Sessions",
+    params(("chat_id" = String, Path, description = "Chat identifier")),
+    responses(
+        (status = 200, description = "List of collaboration sessions", body = Vec<crate::services::collaboration_session::CollaborationSession>),
+        (status = 500, description = "Internal error", body = crate::api::ApiError),
+    )
+)]
+pub async fn list_collaboration_sessions_by_chat(Path(chat_id): Path<String>) -> Response {
+    use crate::services::collaboration_session::list_sessions_by_chat;
+    match tokio::task::spawn_blocking(move || list_sessions_by_chat(&chat_id)).await {
+        Ok(Ok(sessions)) => (StatusCode::OK, Json(sessions)).into_response(),
+        Ok(Err(error)) => response_from_error(error, "list collaboration sessions by chat"),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: format!("Task join error: {error}"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 /// GET /api/v1/collaboration/sessions/:id
 #[utoipa::path(
     get,
