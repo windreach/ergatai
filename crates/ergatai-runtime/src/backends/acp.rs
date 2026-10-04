@@ -2520,10 +2520,15 @@ impl AcpBackendInterface for AcpBackend {
                             .block_task()
                             .await
                         {
-                            Ok(_load_resp) => {
+                            Ok(load_resp) => {
                                 info!(session_id = %saved_sid, "Loaded existing ACP session");
                                 // LoadSessionResponse carries modes/config_options but no session_id;
                                 // the session_id we passed in is the authoritative one.
+                                // Extract config_options from response (includes model selector if supported)
+                                if let Some(config_opts) = load_resp.config_options {
+                                    debug!(count = config_opts.len(), "Captured config_options from session/load response");
+                                    *task_config_options.write() = config_opts;
+                                }
                                 agent_client_protocol::schema::v1::SessionId::from(saved_sid)
                             }
                             Err(e) => {
@@ -2540,6 +2545,11 @@ impl AcpBackendInterface for AcpBackend {
                                     .send_request(new_request)
                                     .block_task()
                                     .await?;
+                                // Extract config_options from response (includes model selector if supported)
+                                if let Some(config_opts) = new_resp.config_options {
+                                    debug!(count = config_opts.len(), "Captured config_options from session/new response");
+                                    *task_config_options.write() = config_opts;
+                                }
                                 new_resp.session_id
                             }
                         }
@@ -2552,6 +2562,11 @@ impl AcpBackendInterface for AcpBackend {
                             .send_request(new_request)
                             .block_task()
                             .await?;
+                        // Extract config_options from response (includes model selector if supported)
+                        if let Some(config_opts) = new_resp.config_options {
+                            debug!(count = config_opts.len(), "Captured config_options from session/new response");
+                            *task_config_options.write() = config_opts;
+                        }
                         new_resp.session_id
                     };
                     info!(session_id = %session_id, "ACP session ready");
@@ -2832,6 +2847,11 @@ impl AcpBackendInterface for AcpBackend {
                                     Ok(response) => {
                                         let session_id = response.session_id.to_string();
                                         info!(session_id = %session_id, "Created new ACP session");
+                                        // Extract config_options from response (includes model selector if supported)
+                                        if let Some(config_opts) = response.config_options {
+                                            debug!(count = config_opts.len(), "Captured config_options from create_session response");
+                                            *task_config_options.write() = config_opts;
+                                        }
                                         let session_info = SessionInfo {
                                             session_id: session_id.clone(),
                                             title: None,
@@ -2873,11 +2893,16 @@ impl AcpBackendInterface for AcpBackend {
                                     .block_task()
                                     .await;
                                 match result {
-                                    Ok(_) => {
+                                    Ok(load_resp) => {
                                         info!(
                                             session_id = %target_session_id,
                                             "Loaded ACP session"
                                         );
+                                        // Extract config_options from response (includes model selector if supported)
+                                        if let Some(config_opts) = load_resp.config_options {
+                                            debug!(count = config_opts.len(), "Captured config_options from load_session response");
+                                            *task_config_options.write() = config_opts;
+                                        }
                                         // Update the current session_id for subsequent prompts
                                         session_id = agent_client_protocol::schema::v1::SessionId::from(target_session_id);
                                         let _ = response_tx.send(Ok(()));

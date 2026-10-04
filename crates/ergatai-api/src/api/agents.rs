@@ -11,14 +11,250 @@ use ergatai_runtime::{ResourceLimits, WorkspaceSpec};
 use futures::stream::{self, Stream};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
+use std::sync::OnceLock;
+use tokio::sync::Mutex;
 use utoipa::ToSchema;
 
 use ergatai_core::id::{format as format_id, generate, IdType};
 
 use crate::messaging::{get_message_sender, SendMessageResult, SendRequest};
 use crate::AppState;
+
+/// Cache for adapter version checks (per-process, one-time check per adapter).
+/// Each adapter is checked only once per process lifetime.
+static ADAPTER_CHECK_CACHE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+/// Check if an adapter needs version update (cached per-process).
+/// Returns immediately, spawns background task if update needed.
+async fn check_and_update_adapter_if_needed(
+    profile_name: &str,
+    package_name: Option<&str>,
+    is_managed: bool,
+) {
+    // Only check managed adapters with a package name
+    if !is_managed {
+        return;
+    }
+
+    let npm_package = match package_name {
+        Some(pkg) => pkg,
+        None => {
+            tracing::debug!(profile = %profile_name, "Managed adapter has no package_name, skipping version check");
+            return;
+        }
+    };
+
+    let cache = ADAPTER_CHECK_CACHE.get_or_init(|| Mutex::new(HashSet::new()));
+
+    // Check if already checked (lock released before spawning)
+    {
+        let checked = cache.lock().await;
+        if checked.contains(profile_name) {
+            tracing::debug!(profile = %profile_name, "Adapter already checked in this process, skipping");
+            return;
+        }
+    } // Lock released here
+
+    // Check version in background (don't block spawn)
+    // Mark as checked only after background task completes
+    let profile_name_owned = profile_name.to_string();
+    let npm_package_owned = npm_package.to_string();
+    tokio::spawn(async move {
+        match check_adapter_version_async(&profile_name_owned, &npm_package_owned).await {
+            Ok(_) => {
+                // Mark as checked only on success
+                let mut checked = cache.lock().await;
+                checked.insert(profile_name_owned.clone());
+                tracing::debug!(profile = %profile_name_owned, "Adapter version check completed");
+            }
+            Err(e) => {
+                // Don't mark as checked on failure, so it can be retried
+                tracing::warn!(
+                    profile = %profile_name_owned,
+                    error = %e,
+                    "Adapter version check failed (will retry on next spawn)"
+                );
+            }
+        }
+    });
+}
+
+/// Check adapter version against npm registry and update if needed.
+async fn check_adapter_version_async(profile_name: &str, npm_package: &str) -> Result<(), String> {
+    use tokio::process::Command;
+
+    // Get local version (from package.json in node_modules)
+    let local_version = get_local_adapter_version(npm_package).await?;
+
+    // Get latest version from npm registry
+    let output = Command::new("npm")
+        .args(["view", npm_package, "version"])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run npm view: {}", e))?;
+
+    if !output.status.success() {
+        return Err("npm view failed".to_string());
+    }
+
+    let latest_version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    tracing::info!(
+        profile = %profile_name,
+        package = %npm_package,
+        local = %local_version,
+        latest = %latest_version,
+        "Checking adapter version"
+    );
+
+    // Compare versions
+    if local_version == latest_version {
+        tracing::debug!(
+            profile = %profile_name,
+            "Adapter is up-to-date"
+        );
+        return Ok(());
+    }
+
+    // Version mismatch - trigger background update
+    tracing::info!(
+        profile = %profile_name,
+        local_version = %local_version,
+        latest_version = %latest_version,
+        "Adapter update available, triggering background update"
+    );
+
+    // Spawn adapter manager to download and activate new version
+    spawn_adapter_update_async(npm_package).await;
+
+    Ok(())
+}
+
+/// Spawn background task to download and activate adapter update.
+async fn spawn_adapter_update_async(npm_package: &str) {
+    let npm_package_owned = npm_package.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = download_and_activate_adapter_async(&npm_package_owned).await {
+            tracing::warn!(
+                package = %npm_package_owned,
+                error = %e,
+                "Failed to download and activate adapter update"
+            );
+        }
+    });
+}
+
+/// Download and activate adapter update (async).
+async fn download_and_activate_adapter_async(npm_package: &str) -> Result<(), String> {
+    use tokio::fs;
+    use tokio::process::Command;
+
+    let adapters_base =
+        ergatai_runtime::profile_registry::ProfileRegistry::resolve_adapters_base_public();
+    let managed_base = adapters_base.join("managed");
+
+    // Create staging directory
+    let staging = managed_base.join("staging");
+    if staging.exists() {
+        fs::remove_dir_all(&staging)
+            .await
+            .map_err(|e| format!("Failed to remove stale staging: {}", e))?;
+    }
+    fs::create_dir_all(&staging)
+        .await
+        .map_err(|e| format!("Failed to create staging dir: {}", e))?;
+
+    // Install adapter package
+    tracing::info!(package = %npm_package, "Downloading adapter update...");
+    let output = Command::new("npm")
+        .args([
+            "install",
+            "--no-audit",
+            "--no-fund",
+            "--loglevel=error",
+            npm_package,
+        ])
+        .current_dir(&staging)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run npm install: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("npm install failed: {}", stderr));
+    }
+
+    // Create release directory
+    let release_id = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let releases_dir = managed_base.join("releases");
+    fs::create_dir_all(&releases_dir)
+        .await
+        .map_err(|e| format!("Failed to create releases dir: {}", e))?;
+    let release_dir = releases_dir.join(&release_id);
+    fs::rename(&staging, &release_dir)
+        .await
+        .map_err(|e| format!("Failed to promote staging to release: {}", e))?;
+
+    // Update current pointer
+    let current_pointer = managed_base.join("current");
+    fs::write(&current_pointer, &release_id)
+        .await
+        .map_err(|e| format!("Failed to write current pointer: {}", e))?;
+
+    // Update profile database
+    let db_path = crate::services::profile_service::PROFILE_REGISTRY_DB_PATH;
+    if let Err(e) = ergatai_runtime::adapter_manager::refresh_profile_rows(
+        &std::path::PathBuf::from(&db_path),
+        &release_dir,
+    ) {
+        tracing::warn!(error = %e, "Failed to update profile rows");
+    }
+
+    tracing::info!(
+        package = %npm_package,
+        release = %release_id,
+        "Adapter update downloaded and activated"
+    );
+
+    Ok(())
+}
+
+/// Get local adapter version from package.json.
+async fn get_local_adapter_version(npm_package: &str) -> Result<String, String> {
+    use tokio::fs;
+
+    let adapters_base =
+        ergatai_runtime::profile_registry::ProfileRegistry::resolve_adapters_base_public();
+    let managed_base = adapters_base.join("managed");
+
+    // Read current pointer
+    let current_pointer = managed_base.join("current");
+    let release_id = fs::read_to_string(&current_pointer)
+        .await
+        .map_err(|e| format!("Failed to read current pointer: {}", e))?
+        .trim()
+        .to_string();
+
+    let release_dir = managed_base.join("releases").join(&release_id);
+    let package_json = release_dir
+        .join("node_modules")
+        .join(npm_package)
+        .join("package.json");
+
+    let content = fs::read_to_string(&package_json)
+        .await
+        .map_err(|e| format!("Failed to read package.json: {}", e))?;
+
+    let json: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse package.json: {}", e))?;
+
+    json.get("version")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Version not found in package.json".to_string())
+}
 
 /// Request body for spawning a new agent.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -214,6 +450,7 @@ fn is_strict_mode() -> bool {
 /// Whitelist for strict mode (only used when ERGATAI_STRICT_MODE=1).
 const STRICT_MODE_ALLOWED_COMMANDS: &[&str] = &[
     "claude",
+    "claude-code", // 添加 claude-code
     "cursor",
     "codex",
     "opencode",
@@ -391,23 +628,58 @@ pub async fn spawn_agent(
     //
     // Backward compatibility: If no matching profile is found, treat req.command
     // as a raw command (legacy behavior for direct command specification).
-    let (resolved_command, profile_name) = match tokio::task::spawn_blocking(move || {
-        crate::services::profile_service::get_profile_registry()
-    })
-    .await
-    {
-        Ok(Ok(registry)) => {
-            if let Ok(profiles) = registry.list_with_status() {
-                match profiles.into_iter().find(|p| p.name == req.command) {
-                    Some(profile) => (profile.command, Some(profile.name)),
-                    None => (req.command.clone(), None),
+    let (resolved_command, profile_name, transport_type) =
+        match tokio::task::spawn_blocking(move || {
+            crate::services::profile_service::get_profile_registry()
+        })
+        .await
+        {
+            Ok(Ok(registry)) => {
+                if let Ok(profiles) = registry.list_with_status() {
+                    // Debug: log all available profiles
+                    tracing::debug!(
+                        request_command = %req.command,
+                        available_profiles = ?profiles.iter().map(|p| &p.name).collect::<Vec<_>>(),
+                        "Looking up profile for command"
+                    );
+
+                    match profiles.into_iter().find(|p| p.name == req.command) {
+                        Some(profile) => {
+                            tracing::info!(
+                                profile_name = %profile.name,
+                                profile_command = %profile.command,
+                                transport = ?profile.transport,
+                                "Found matching profile"
+                            );
+
+                            // Check adapter version (cached per-process, one-time check)
+                            check_and_update_adapter_if_needed(
+                                &profile.name,
+                                profile.package_name.as_deref(),
+                                profile.is_managed,
+                            )
+                            .await;
+
+                            (
+                                profile.command,
+                                Some(profile.name),
+                                profile.transport.clone(),
+                            )
+                        }
+                        None => {
+                            tracing::warn!(
+                                request_command = %req.command,
+                                "No matching profile found, using command as-is"
+                            );
+                            (req.command.clone(), None, None)
+                        }
+                    }
+                } else {
+                    (req.command.clone(), None, None)
                 }
-            } else {
-                (req.command.clone(), None)
             }
-        }
-        _ => (req.command.clone(), None),
-    };
+            _ => (req.command.clone(), None, None),
+        };
 
     if req.workspace_id.is_none() && req.conversation_id.is_none() {
         return (
@@ -660,6 +932,9 @@ pub async fn spawn_agent(
         capture_thoughts,
     };
 
+    // Use provided transport type from profile (already set during registration)
+    let effective_transport = transport_type.as_deref();
+
     match runtime
         .launch_agent_scoped(
             spec,
@@ -667,6 +942,7 @@ pub async fn spawn_agent(
             req.instruction.as_deref(),
             spawn_chat_id.as_deref(),
             profile_name.as_deref(),
+            effective_transport,
         )
         .await
     {
@@ -1027,23 +1303,28 @@ pub async fn send_message(
 
         // No existing agent found or force_new_session is true - spawn a new one
         // Resolve profile name to actual command. Keep the original profile name for AgentInfo.profile.
-        let (resolved_command, profile_name) = match tokio::task::spawn_blocking(move || {
-            crate::services::profile_service::get_profile_registry()
-        })
-        .await
-        {
-            Ok(Ok(registry)) => {
-                if let Ok(profiles) = registry.list_with_status() {
-                    match profiles.into_iter().find(|p| p.name == *target_command) {
-                        Some(profile) => (profile.command, Some(profile.name)),
-                        None => (target_command.clone(), None),
+        let (resolved_command, profile_name, transport_type) =
+            match tokio::task::spawn_blocking(move || {
+                crate::services::profile_service::get_profile_registry()
+            })
+            .await
+            {
+                Ok(Ok(registry)) => {
+                    if let Ok(profiles) = registry.list_with_status() {
+                        match profiles.into_iter().find(|p| p.name == *target_command) {
+                            Some(profile) => (
+                                profile.command,
+                                Some(profile.name),
+                                profile.transport.clone(),
+                            ),
+                            None => (target_command.clone(), None, None),
+                        }
+                    } else {
+                        (target_command.clone(), None, None)
                     }
-                } else {
-                    (target_command.clone(), None)
                 }
-            }
-            _ => (target_command.clone(), None),
-        };
+                _ => (target_command.clone(), None, None),
+            };
 
         // Security: validate command
         if let Err(e) = validate_command(&resolved_command).await {
@@ -1107,6 +1388,7 @@ pub async fn send_message(
                 instruction.as_deref(),
                 Some(&chat_id),
                 profile_name.as_deref(),
+                transport_type.as_deref(),
             )
             .await
         {
@@ -1406,23 +1688,28 @@ pub async fn spawn_session(
     };
 
     // Resolve profile name to actual command. Keep the original profile name for AgentInfo.profile.
-    let (resolved_command, profile_name) = match tokio::task::spawn_blocking(move || {
-        crate::services::profile_service::get_profile_registry()
-    })
-    .await
-    {
-        Ok(Ok(registry)) => {
-            if let Ok(profiles) = registry.list_with_status() {
-                match profiles.into_iter().find(|p| p.name == req.target_command) {
-                    Some(profile) => (profile.command, Some(profile.name)),
-                    None => (req.target_command.clone(), None),
+    let (resolved_command, profile_name, transport_type) =
+        match tokio::task::spawn_blocking(move || {
+            crate::services::profile_service::get_profile_registry()
+        })
+        .await
+        {
+            Ok(Ok(registry)) => {
+                if let Ok(profiles) = registry.list_with_status() {
+                    match profiles.into_iter().find(|p| p.name == req.target_command) {
+                        Some(profile) => (
+                            profile.command,
+                            Some(profile.name),
+                            profile.transport.clone(),
+                        ),
+                        None => (req.target_command.clone(), None, None),
+                    }
+                } else {
+                    (req.target_command.clone(), None, None)
                 }
-            } else {
-                (req.target_command.clone(), None)
             }
-        }
-        _ => (req.target_command.clone(), None),
-    };
+            _ => (req.target_command.clone(), None, None),
+        };
 
     // Security: validate command
     if let Err(e) = validate_command(&resolved_command).await {
@@ -1522,6 +1809,7 @@ pub async fn spawn_session(
             instruction.as_deref(),
             spawn_chat_id.as_deref(),
             profile_name.as_deref(),
+            transport_type.as_deref(),
         )
         .await
     {
@@ -2597,6 +2885,7 @@ pub async fn prompt_agent(
                 "source": "agent",
                 "senderAgentId": body.sender_agent_id,
                 "senderAgentName": body.sender_agent_name,
+                "messageType": "request",
             })
         } else {
             serde_json::json!({ "source": "user" })

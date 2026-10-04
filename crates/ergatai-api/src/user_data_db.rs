@@ -939,6 +939,11 @@ pub mod messages {
             ));
         };
 
+        // Snapshot existing rows first (before the delete below) so that
+        // backend-written agent messages the UI mirror has never seen can be
+        // rescued instead of being silently destroyed by the full replace.
+        let existing = list(conversation_id)?;
+
         let db = get_user_data_db();
         let mut conn = db.lock().unwrap();
         let transaction = conn.transaction()?;
@@ -947,27 +952,113 @@ pub mod messages {
             params![conversation_id],
         )?;
 
-        for (index, value) in items.iter().enumerate() {
+        // Merged row: (id, role, parts, metadata, created_at). Payload rows
+        // keep the legacy behavior of stamping every row with `updated_at`.
+        let mut merged: Vec<(String, String, String, Option<String>, i64)> =
+            Vec::with_capacity(items.len());
+        let mut payload_ids = std::collections::HashSet::with_capacity(items.len());
+        for value in items.iter() {
+            let id = value
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| format_id(generate(), IdType::Message));
+            payload_ids.insert(id.clone());
             let role = value
                 .get("role")
                 .and_then(serde_json::Value::as_str)
-                .unwrap_or("user");
+                .unwrap_or("user")
+                .to_string();
             let parts = value.get("parts").cloned().unwrap_or_else(|| value.clone());
             let metadata = value
                 .get("metadata")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            merged.push((
+                id,
+                role,
+                parts.to_string(),
+                if metadata.is_null() {
+                    None
+                } else {
+                    Some(metadata.to_string())
+                },
+                updated_at,
+            ));
+        }
+
+        // Agent-sourced rows (A-to-A messages persisted by the messaging
+        // layer) are authoritative backend records. The UI never receives
+        // them over SSE, so they never appear in a replace payload; deleting
+        // them here would silently erase cross-agent turns every time a
+        // conversation syncs from the UI. Keep the ones the payload does not
+        // already contain (round-tripped rows are reinserted from the
+        // payload, keeping UI ordering authoritative for known rows).
+        let mut preserved: Vec<&Message> = existing
+            .iter()
+            .filter(|message| {
+                !payload_ids.contains(message.id.as_str())
+                    && message_metadata_source_is_agent(message)
+            })
+            .collect();
+        preserved.sort_by_key(|message| message.sequence);
+
+        // Ordering heuristic: rescued rows were written before this sync
+        // completed, so when the payload ends with a streamed assistant
+        // response, insert them right before that final message — this puts
+        // an inbound request directly above the response it triggered.
+        // Otherwise append at the end.
+        //
+        // Note: This heuristic works well for single-turn conversations.
+        // For multi-turn conversations with multiple preserved messages,
+        // all preserved messages are inserted at the same position, which
+        // may not preserve the exact chronological order. However, this is
+        // acceptable because:
+        // 1. Multi-turn agent-to-agent conversations are rare
+        // 2. The exact order of preserved messages is less important than
+        //    ensuring they are not lost
+        // 3. A timestamp-based merge would require accurate created_at values
+        //    for payload messages, which is not always available
+        let preserved_at = match merged.last() {
+            Some((_, role, ..)) if role == "assistant" => merged.len() - 1,
+            _ => merged.len(),
+        };
+
+        // Build final merged list in a single allocation to avoid O(n²) copies
+        let preserved_rows: Vec<(String, String, String, Option<String>, i64)> = preserved
+            .iter()
+            .map(|message| {
+                (
+                    message.id.clone(),
+                    message.role.clone(),
+                    message.parts.clone(),
+                    message.metadata.clone(),
+                    message.created_at,
+                )
+            })
+            .collect();
+
+        let mut final_merged = Vec::with_capacity(merged.len() + preserved_rows.len());
+        // Take rows before insertion point
+        final_merged.extend(merged.iter().take(preserved_at).cloned());
+        // Add preserved rows
+        final_merged.extend(preserved_rows);
+        // Add remaining rows from insertion point onwards
+        final_merged.extend(merged.iter().skip(preserved_at).cloned());
+        merged = final_merged;
+
+        for (index, (id, role, parts, metadata, created_at)) in merged.iter().enumerate() {
             transaction.execute(
                 "INSERT INTO messages (id, conversation_id, sequence, role, parts, metadata, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
                 params![
-                    value.get("id").and_then(serde_json::Value::as_str).unwrap_or(&format_id(generate(), IdType::Message)),
+                    id,
                     conversation_id,
                     index as i64,
                     role,
-                    parts.to_string(),
-                    if metadata.is_null() { None } else { Some(metadata.to_string()) },
-                    updated_at,
+                    parts,
+                    metadata,
+                    created_at,
                 ],
             )?;
         }
@@ -978,6 +1069,23 @@ pub mod messages {
         )?;
         transaction.commit()?;
         Ok(())
+    }
+
+    /// True when a message row is marked as agent-sourced in its metadata
+    /// JSON (`{"source": "agent", ...}`).
+    fn message_metadata_source_is_agent(message: &Message) -> bool {
+        message
+            .metadata
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .and_then(|metadata| {
+                metadata
+                    .get("source")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .map(|source| source == "agent")
+            .unwrap_or(false)
     }
 
     pub fn serialize_legacy(conversation_id: &str) -> Result<String> {
@@ -2495,5 +2603,222 @@ mod tests {
         projects::delete(&project_id).unwrap();
         assert!(workspaces::get(&supervisor_workspace_id).unwrap().is_none());
         assert!(workspaces::get(&group_workspace_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_replace_legacy_preserves_agent_sourced_backend_rows() {
+        let _database_guard = lock_user_data_db_for_tests();
+        let prefix = format!("replace-preserve-{}", std::process::id());
+        let project_id = format!("{prefix}-project");
+        let workspace_id = format!("{prefix}-workspace");
+        let conversation_id = format!("{prefix}-conversation");
+
+        projects::create(Project {
+            id: project_id.clone(),
+            name: "Replace preserve test".to_string(),
+            path: format!("/tmp/{project_id}"),
+            git_remote_url: None,
+            git_provider: None,
+            git_owner: None,
+            git_repo: None,
+            icon_path: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+        workspaces::create(Workspace {
+            id: workspace_id.clone(),
+            project_id: project_id.clone(),
+            name: None,
+            work_dir: format!("/tmp/{workspace_id}"),
+            env: "{}".to_string(),
+            resources: "{}".to_string(),
+            capture_thoughts: false,
+            collaboration_mode: "supervisor".to_string(),
+            status: "active".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+        conversations::create(Conversation {
+            id: conversation_id.clone(),
+            parent_id: None,
+            project_id: project_id.clone(),
+            workspace_id: Some(workspace_id.clone()),
+            name: Some("Replace preserve".to_string()),
+            mode: "agent".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+            archived_at: None,
+        })
+        .unwrap();
+
+        messages::append(
+            &conversation_id,
+            "user",
+            serde_json::json!([{ "type": "text", "text": "user prompt" }]),
+            serde_json::json!({ "source": "user" }),
+        )
+        .unwrap();
+        messages::append(
+            &conversation_id,
+            "assistant",
+            serde_json::json!([{ "type": "text", "text": "first reply" }]),
+            serde_json::json!({}),
+        )
+        .unwrap();
+        // A-to-A request persisted by the messaging layer AFTER delivery —
+        // the UI mirror never sees this row (no SSE user-turn event).
+        let agent_row = messages::append(
+            &conversation_id,
+            "user",
+            serde_json::json!([{ "type": "text", "text": "agent-a request" }]),
+            serde_json::json!({
+                "source": "agent",
+                "senderAgentId": "agent-a",
+                "senderAgentName": "Agent A",
+                "messageType": "request",
+            }),
+        )
+        .unwrap();
+        // A non-agent row that is equally absent from the payload must still
+        // be wiped (legacy replace semantics for UI-owned rows).
+        messages::append(
+            &conversation_id,
+            "assistant",
+            serde_json::json!([{ "type": "text", "text": "stale scratch" }]),
+            serde_json::json!({ "source": "user" }),
+        )
+        .unwrap();
+
+        // UI full-replace payload: the conversation as the UI store knows it.
+        // The streamed response to agent-a's request is present; the request
+        // itself is not.
+        let payload = serde_json::json!([
+            {
+                "id": "ui-user-1",
+                "role": "user",
+                "parts": [{ "type": "text", "text": "user prompt" }],
+                "metadata": { "source": "user" },
+            },
+            {
+                "id": "ui-assistant-1",
+                "role": "assistant",
+                "parts": [{ "type": "text", "text": "first reply" }],
+                "metadata": {},
+            },
+            {
+                "id": "ui-assistant-2",
+                "role": "assistant",
+                "parts": [{ "type": "text", "text": "reply to agent-a" }],
+                "metadata": {},
+            },
+        ]);
+        messages::replace_legacy(&conversation_id, &payload.to_string(), 2000).unwrap();
+
+        let rows = messages::list(&conversation_id).unwrap();
+        let texts: Vec<String> = rows
+            .iter()
+            .map(|row| {
+                let parts: serde_json::Value = serde_json::from_str(&row.parts).unwrap();
+                parts[0]["text"].as_str().unwrap().to_string()
+            })
+            .collect();
+        // The rescued request lands directly before the trailing streamed
+        // response it triggered; the stale non-agent row is gone.
+        assert_eq!(
+            texts,
+            vec![
+                "user prompt".to_string(),
+                "first reply".to_string(),
+                "agent-a request".to_string(),
+                "reply to agent-a".to_string(),
+            ]
+        );
+        let rescued = rows.iter().find(|row| row.id == agent_row.id).unwrap();
+        assert_eq!(rescued.role, "user");
+        assert_eq!(rescued.sequence, 2);
+        let rescued_metadata: serde_json::Value =
+            serde_json::from_str(rescued.metadata.as_deref().unwrap()).unwrap();
+        assert_eq!(rescued_metadata["source"], "agent");
+        assert_eq!(rescued_metadata["messageType"], "request");
+
+        // Round-trip case: a payload that already contains the agent row
+        // (sidebar-hydrated shared Chat) must not duplicate it.
+        let payload_with_agent = serde_json::json!([
+            {
+                "id": "ui-user-1",
+                "role": "user",
+                "parts": [{ "type": "text", "text": "user prompt" }],
+                "metadata": { "source": "user" },
+            },
+            {
+                "id": agent_row.id,
+                "role": "user",
+                "parts": [{ "type": "text", "text": "agent-a request" }],
+                "metadata": {
+                    "source": "agent",
+                    "senderAgentId": "agent-a",
+                    "senderAgentName": "Agent A",
+                    "messageType": "request",
+                },
+            },
+            {
+                "id": "ui-assistant-2",
+                "role": "assistant",
+                "parts": [{ "type": "text", "text": "reply to agent-a" }],
+                "metadata": {},
+            },
+        ]);
+        messages::replace_legacy(&conversation_id, &payload_with_agent.to_string(), 3000).unwrap();
+        let rows = messages::list(&conversation_id).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.iter().filter(|row| row.id == agent_row.id).count(), 1);
+
+        // Payload ending with a user-role message: rescued rows append at
+        // the end instead of splitting the final user turn.
+        messages::append(
+            &conversation_id,
+            "user",
+            serde_json::json!([{ "type": "text", "text": "late agent note" }]),
+            serde_json::json!({ "source": "agent", "messageType": "broadcast" }),
+        )
+        .unwrap();
+        let payload_user_last = serde_json::json!([
+            {
+                "id": "ui-user-1",
+                "role": "user",
+                "parts": [{ "type": "text", "text": "user prompt" }],
+                "metadata": { "source": "user" },
+            },
+            {
+                "id": "ui-user-2",
+                "role": "user",
+                "parts": [{ "type": "text", "text": "follow-up" }],
+                "metadata": { "source": "user" },
+            },
+        ]);
+        messages::replace_legacy(&conversation_id, &payload_user_last.to_string(), 4000).unwrap();
+        let rows = messages::list(&conversation_id).unwrap();
+        let texts: Vec<String> = rows
+            .iter()
+            .map(|row| {
+                let parts: serde_json::Value = serde_json::from_str(&row.parts).unwrap();
+                parts[0]["text"].as_str().unwrap().to_string()
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                "user prompt".to_string(),
+                "follow-up".to_string(),
+                "agent-a request".to_string(),
+                "late agent note".to_string(),
+            ]
+        );
+
+        conversations::delete(&conversation_id).unwrap();
+        projects::delete(&project_id).unwrap();
+        assert!(workspaces::get(&workspace_id).unwrap().is_none());
     }
 }

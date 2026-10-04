@@ -26,7 +26,9 @@
 //! ```
 
 use std::path::Path;
+use std::sync::Arc;
 use tokio::process::Command;
+use tokio::sync::Mutex;
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -37,6 +39,11 @@ use ergatai_error::id::{format as format_id, generate, IdType};
 use ergatai_error::{ErgataiError, ErgataiResult};
 
 use crate::{agent_installer, binary_detection};
+
+/// Global lock to prevent concurrent adapter downloads.
+/// Multiple concurrent downloads cause TOCTOU races on the staging directory.
+static ADAPTER_DOWNLOAD_LOCK: std::sync::LazyLock<Arc<Mutex<()>>> =
+    std::sync::LazyLock::new(|| Arc::new(Mutex::new(())));
 
 /// User-registered agent template.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +56,10 @@ pub struct AgentRegistration {
     pub command: String,
     /// Agent type: "acp" or "mcp" (future).
     pub agent_type: String,
+    /// Transport type: "stdio" (default), "http" (for agents like opencode), or "adapter".
+    pub transport: Option<String>,
+    /// Whether this is a managed adapter (version-checked and auto-updated).
+    pub is_managed: bool,
     /// NPM package name for install/uninstall (e.g., "@anthropic-ai/claude-code").
     /// None for agents that are not installed via npm.
     pub package_name: Option<String>,
@@ -68,6 +79,8 @@ impl AgentRegistration {
             command,
             agent_type,
             package_name: None,
+            transport: None,
+            is_managed: false,
             avatar_url: None,
             created_at: Utc::now(),
         }
@@ -86,6 +99,8 @@ impl AgentRegistration {
             command,
             agent_type,
             package_name,
+            transport: None,
+            is_managed: false,
             avatar_url: None,
             created_at: Utc::now(),
         }
@@ -105,6 +120,8 @@ impl AgentRegistration {
             command,
             agent_type,
             package_name,
+            transport: None,
+            is_managed: false,
             avatar_url,
             created_at: Utc::now(),
         }
@@ -124,6 +141,51 @@ impl AgentRegistration {
             command,
             agent_type,
             package_name,
+            transport: None,
+            is_managed: false,
+            avatar_url: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    /// Create a new agent registration with a specific ID and transport type.
+    pub fn with_id_and_transport(
+        id: String,
+        name: String,
+        command: String,
+        agent_type: String,
+        package_name: Option<String>,
+        transport: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            command,
+            agent_type,
+            package_name,
+            transport,
+            is_managed: false,
+            avatar_url: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    /// Create a new managed adapter registration.
+    pub fn with_managed(
+        id: String,
+        name: String,
+        command: String,
+        agent_type: String,
+        package_name: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            command,
+            agent_type,
+            package_name,
+            transport: None,
+            is_managed: true,
             avatar_url: None,
             created_at: Utc::now(),
         }
@@ -169,6 +231,10 @@ pub struct ProfileWithStatus {
     pub command: String,
     /// Agent type: "acp" or "mcp".
     pub agent_type: String,
+    /// Transport type: "stdio", "http", or "adapter".
+    pub transport: Option<String>,
+    /// Whether this adapter is managed by the adapter manager.
+    pub is_managed: bool,
     /// NPM package name (if installable via npm).
     pub package_name: Option<String>,
     /// Avatar URL for UI display.
@@ -186,9 +252,15 @@ pub struct ProfileRegistry {
 
 impl ProfileRegistry {
     /// Create a new profile registry at the given path.
+    /// Registers default built-in profiles on first call.
     pub fn new<P: AsRef<Path>>(db_path: P) -> ErgataiResult<Self> {
         let db_path = db_path.as_ref().to_string_lossy().to_string();
+        Self::new_inner(db_path, true)
+    }
 
+    /// Internal constructor.
+    /// `register_defaults`: whether to register default profiles (false for background tasks).
+    fn new_inner(db_path: String, register_defaults: bool) -> ErgataiResult<Self> {
         // Ensure parent directory exists
         if let Some(parent) = Path::new(&db_path).parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
@@ -200,12 +272,13 @@ impl ProfileRegistry {
         }
 
         let registry = Self { db_path };
-        registry.init_db()?;
+        registry.init_db(register_defaults)?;
         Ok(registry)
     }
 
     /// Initialize the database schema.
-    fn init_db(&self) -> ErgataiResult<()> {
+    /// `register_defaults`: whether to register default profiles (false for background tasks).
+    fn init_db(&self, register_defaults: bool) -> ErgataiResult<()> {
         let conn = Connection::open(&self.db_path).map_err(|e| {
             ErgataiError::internal(format!("Failed to open profile registry database: {}", e))
         })?;
@@ -240,6 +313,8 @@ impl ProfileRegistry {
                 name TEXT NOT NULL,
                 command TEXT NOT NULL,
                 agent_type TEXT NOT NULL,
+                transport TEXT,
+                is_managed INTEGER NOT NULL DEFAULT 0,
                 package_name TEXT,
                 avatar_url TEXT,
                 created_at TEXT NOT NULL
@@ -280,14 +355,16 @@ impl ProfileRegistry {
                     name TEXT NOT NULL,
                     command TEXT NOT NULL,
                     agent_type TEXT NOT NULL,
+                    transport TEXT,
+                    is_managed INTEGER NOT NULL DEFAULT 0,
                     package_name TEXT,
                     avatar_url TEXT,
                     created_at TEXT NOT NULL
                 );
 
                 -- Migrate data: use name as id for backward compatibility
-                INSERT INTO agent_registrations (id, name, command, agent_type, package_name, avatar_url, created_at)
-                SELECT name, name, command, agent_type, NULL, NULL, created_at
+                INSERT INTO agent_registrations (id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at)
+                SELECT name, name, command, agent_type, NULL, NULL, NULL, created_at
                 FROM agent_registrations_backup;
 
                 -- Clean up temporary table
@@ -323,7 +400,10 @@ impl ProfileRegistry {
         );
 
         // Register default built-in profiles FIRST (use current version)
-        self.register_default_profiles()?;
+        // Only on initial construction, not for background tasks (to avoid recursive spawn).
+        if register_defaults {
+            self.register_default_profiles()?;
+        }
 
         // SECURITY: Background adapter auto-update is OPT-IN.
         //
@@ -344,8 +424,9 @@ impl ProfileRegistry {
             let adapters_base = Self::resolve_adapters_base();
             let db_path = self.db_path.clone();
             tokio::spawn(async move {
-                // Create a temporary registry instance for background update
-                if let Ok(registry) = ProfileRegistry::new(&db_path) {
+                // Create a temporary registry instance for background update.
+                // Use new_inner(..., false) to skip default registration (avoid recursive spawn).
+                if let Ok(registry) = Self::new_inner(db_path, false) {
                     if let Err(e) = registry
                         .check_and_update_adapters_background(&adapters_base)
                         .await
@@ -369,117 +450,73 @@ impl ProfileRegistry {
     /// - Goose: https://goose-docs.ai/docs/guides/acp-clients/
     /// - ACP Registry: https://agentclientprotocol.com/get-started/agents
     fn register_default_profiles(&self) -> ErgataiResult<()> {
-        // Resolve adapter paths via the shared helper (same path used by
-        // check_and_update_adapters_background so auto-update inspects the
-        // same adapters we registered here).
+        // Check if managed adapter releases exist. If so, point profiles at the
+        // current managed release. Otherwise, skip managed adapters (they will be
+        // registered by adapter_manager after first install completes).
         let adapters_base = Self::resolve_adapters_base();
+        let managed_base = adapters_base.join("managed");
+        let current_release_dir = Self::find_current_managed_release(&managed_base);
 
-        let codex_cmd = format!(
-            "node {}",
-            adapters_base.join("codex-acp/dist/index.js").display()
-        );
-        let claude_cmd = format!(
-            "node {}",
-            adapters_base
-                .join("claude-agent-acp/dist/acp-agent.js")
-                .display()
-        );
+        if let Some(release_dir) = &current_release_dir {
+            // Point to managed release
+            let claude_cmd = format!(
+                "node {}",
+                release_dir
+                    .join("node_modules/@zed-industries/claude-code-acp/dist/index.js")
+                    .display()
+            );
+            let codex_cmd = format!(
+                "node {}",
+                release_dir
+                    .join("node_modules/@agentclientprotocol/codex-acp/dist/index.js")
+                    .display()
+            );
+            info!(
+                release = %release_dir.display(),
+                "Registering managed adapter profiles"
+            );
 
-        let defaults = vec![
-            // OpenAI Codex CLI adapter (已验证 - adapters/codex-acp)
-            AgentRegistration::with_id(
-                "codex".to_string(),
-                "codex".to_string(),
-                codex_cmd,
-                "acp".to_string(),
-                Some("@openai/codex".to_string()),
-            ),
-            // Anthropic Claude Agent adapter (已验证 - adapters/claude-agent-acp)
-            AgentRegistration::with_id(
-                "claude".to_string(),
-                "claude".to_string(),
-                claude_cmd,
-                "acp".to_string(),
-                Some("@anthropic-ai/claude-code".to_string()),
-            ),
-            // OpenCode (已验证 - https://opencode.ai/docs/acp/)
-            AgentRegistration::with_id(
-                "opencode".to_string(),
-                "opencode".to_string(),
-                "opencode acp".to_string(),
-                "acp".to_string(),
-                Some("opencode-ai".to_string()),
-            ),
-            // Gemini CLI (已验证 - https://geminicli.com/docs/cli/acp-mode/)
-            AgentRegistration::with_id(
-                "gemini".to_string(),
-                "gemini".to_string(),
-                "gemini --acp".to_string(),
-                "acp".to_string(),
-                Some("@anthropic-ai/claude-code".to_string()),
-            ),
-            // Goose (已验证 - https://goose-docs.ai/docs/guides/acp-clients/)
-            AgentRegistration::with_id(
-                "goose".to_string(),
-                "goose".to_string(),
-                "goose run --acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
-            // Cline (已验证 - ACP registry)
-            AgentRegistration::with_id(
-                "cline".to_string(),
-                "cline".to_string(),
-                "cline --acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
-            // Kiro CLI (已验证 - ACP registry)
-            AgentRegistration::with_id(
-                "kiro".to_string(),
-                "kiro".to_string(),
-                "kiro-cli acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
-            // Auggie CLI (已验证 - ACP registry)
-            AgentRegistration::with_id(
-                "auggie".to_string(),
-                "auggie".to_string(),
-                "auggie --acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
-            // OpenClaw (已验证 - ACP registry)
-            AgentRegistration::with_id(
-                "openclaw".to_string(),
-                "openclaw".to_string(),
-                "openclaw acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
-            // Hermes Agent (已验证 - ACP registry)
-            AgentRegistration::with_id(
-                "hermes".to_string(),
-                "hermes".to_string(),
-                "hermes acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
-        ];
-
-        for profile in defaults {
-            // Try to register, ignore if already exists
-            if let Err(e) = self.register_sync(profile.clone()) {
-                if !e.to_string().contains("already exists") {
-                    debug!(id = %profile.id, name = %profile.name, error = %e, "Failed to register default profile");
+            self.register_all_default_profiles(&claude_cmd, &codex_cmd)
+        } else {
+            // No managed release yet - spawn async download task
+            info!("No managed adapter release found; spawning async download task...");
+            let db_path = self.db_path.clone();
+            tokio::spawn(async move {
+                // Use new_inner(..., false) to skip default registration (avoid recursive spawn).
+                let registry = Self::new_inner(db_path, false).expect("Failed to open registry");
+                match registry
+                    .download_and_install_adapters_async(managed_base)
+                    .await
+                {
+                    Ok(release_dir) => {
+                        let claude_cmd = format!(
+                            "node {}",
+                            release_dir
+                                .join("node_modules/@zed-industries/claude-code-acp/dist/index.js")
+                                .display()
+                        );
+                        let codex_cmd = format!(
+                            "node {}",
+                            release_dir
+                                .join("node_modules/@agentclientprotocol/codex-acp/dist/index.js")
+                                .display()
+                        );
+                        if let Err(e) =
+                            registry.register_all_default_profiles(&claude_cmd, &codex_cmd)
+                        {
+                            warn!(error = %e, "Failed to register managed adapter profiles");
+                        } else {
+                            info!("Managed adapter profiles registered after download");
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to download adapters asynchronously");
+                    }
                 }
-            } else {
-                info!(id = %profile.id, name = %profile.name, "Registered default agent profile");
-            }
+            });
+            // Register non-managed profiles immediately
+            self.register_non_managed_default_profiles()
         }
-
-        Ok(())
     }
 
     /// Synchronous version of register for use during initialization.
@@ -491,27 +528,22 @@ impl ProfileRegistry {
         })?;
 
         conn.execute(
-            "INSERT INTO agent_registrations (id, name, command, agent_type, package_name, avatar_url, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT OR IGNORE INTO agent_registrations (id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 registration.id,
                 registration.name,
                 registration.command,
                 registration.agent_type,
+                registration.transport,
+                registration.is_managed as i32,
                 registration.package_name,
                 registration.avatar_url,
                 registration.created_at.to_rfc3339()
             ],
         )
         .map_err(|e| {
-            if e.to_string().contains("UNIQUE constraint failed") {
-                ErgataiError::InvalidArgument(format!(
-                    "Agent profile '{}' already exists",
-                    registration.id
-                ))
-            } else {
-                ErgataiError::internal(format!("Failed to register agent profile: {}", e))
-            }
+            ErgataiError::internal(format!("Failed to register agent profile: {}", e))
         })?;
 
         Ok(())
@@ -526,13 +558,15 @@ impl ProfileRegistry {
         })?;
 
         conn.execute(
-            "INSERT INTO agent_registrations (id, name, command, agent_type, package_name, avatar_url, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO agent_registrations (id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 registration.id,
                 registration.name,
                 registration.command,
                 registration.agent_type,
+                registration.transport,
+                registration.is_managed as i32,
                 registration.package_name,
                 registration.avatar_url,
                 registration.created_at.to_rfc3339()
@@ -561,7 +595,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, command, agent_type, package_name, avatar_url, created_at
+                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at
                  FROM agent_registrations WHERE id = ?1",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -582,7 +616,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, command, agent_type, package_name, avatar_url, created_at
+                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at
                  FROM agent_registrations WHERE name = ?1",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -603,7 +637,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, command, agent_type, package_name, avatar_url, created_at
+                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at
                  FROM agent_registrations ORDER BY created_at DESC",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -714,6 +748,11 @@ impl ProfileRegistry {
     /// adapters directory — fixing a prior inconsistency where one used
     /// `current_exe` and the other used `current_dir`.
     fn resolve_adapters_base() -> std::path::PathBuf {
+        Self::resolve_adapters_base_public()
+    }
+
+    /// Public wrapper for `resolve_adapters_base` so other modules can access it.
+    pub fn resolve_adapters_base_public() -> std::path::PathBuf {
         std::env::var("ERGATAI_ADAPTERS_DIR")
             .ok()
             .map(std::path::PathBuf::from)
@@ -724,6 +763,328 @@ impl ProfileRegistry {
                     .map(|d| d.join("../adapters"))
             })
             .unwrap_or_else(|| std::path::PathBuf::from("adapters"))
+    }
+
+    /// Register default profiles that are NOT managed adapters.
+    /// Called when no managed release exists yet (first startup).
+    fn register_non_managed_default_profiles(&self) -> ErgataiResult<()> {
+        let defaults = vec![
+            // OpenCode (已验证 - https://opencode.ai/docs/acp/)
+            AgentRegistration::with_id_and_transport(
+                "opencode".to_string(),
+                "opencode".to_string(),
+                "opencode acp".to_string(),
+                "acp".to_string(),
+                Some("opencode-ai".to_string()),
+                Some("http".to_string()), // OpenCode uses HTTP server mode
+            ),
+            // Gemini CLI (已验证 - https://geminicli.com/docs/cli/acp-mode/)
+            AgentRegistration::with_id(
+                "gemini".to_string(),
+                "gemini".to_string(),
+                "gemini --acp".to_string(),
+                "acp".to_string(),
+                Some("@anthropic-ai/claude-code".to_string()),
+            ),
+            // Goose (已验证 - https://goose-docs.ai/docs/guides/acp-clients/)
+            AgentRegistration::with_id(
+                "goose".to_string(),
+                "goose".to_string(),
+                "goose run --acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
+            // Cline (已验证 - ACP registry)
+            AgentRegistration::with_id(
+                "cline".to_string(),
+                "cline".to_string(),
+                "cline --acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
+            // Kiro CLI (已验证 - ACP registry)
+            AgentRegistration::with_id(
+                "kiro".to_string(),
+                "kiro".to_string(),
+                "kiro-cli acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
+            // Auggie CLI (已验证 - ACP registry)
+            AgentRegistration::with_id(
+                "auggie".to_string(),
+                "auggie".to_string(),
+                "auggie --acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
+            // OpenClaw (已验证 - ACP registry)
+            AgentRegistration::with_id(
+                "openclaw".to_string(),
+                "openclaw".to_string(),
+                "openclaw acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
+            // Hermes Agent (已验证 - ACP registry)
+            AgentRegistration::with_id(
+                "hermes".to_string(),
+                "hermes".to_string(),
+                "hermes acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
+        ];
+
+        info!(
+            count = defaults.len(),
+            "Registering non-managed default agent profiles"
+        );
+        for profile in defaults {
+            self.register_sync(profile)?;
+        }
+        Ok(())
+    }
+
+    /// Register all default profiles including managed adapters.
+    fn register_all_default_profiles(
+        &self,
+        claude_cmd: &str,
+        codex_cmd: &str,
+    ) -> ErgataiResult<()> {
+        let defaults = vec![
+            // OpenAI Codex CLI adapter (managed)
+            AgentRegistration::with_managed(
+                "codex".to_string(),
+                "codex".to_string(),
+                codex_cmd.to_string(),
+                "acp".to_string(),
+                Some("@agentclientprotocol/codex-acp".to_string()),
+            ),
+            // Anthropic Claude Agent adapter (managed)
+            AgentRegistration::with_managed(
+                "claude-code".to_string(),
+                "claude-code".to_string(),
+                claude_cmd.to_string(),
+                "acp".to_string(),
+                Some("@zed-industries/claude-code-acp".to_string()),
+            ),
+            // OpenCode (已验证 - https://opencode.ai/docs/acp/)
+            AgentRegistration::with_id_and_transport(
+                "opencode".to_string(),
+                "opencode".to_string(),
+                "opencode acp".to_string(),
+                "acp".to_string(),
+                Some("opencode-ai".to_string()),
+                Some("http".to_string()),
+            ),
+            // Gemini CLI (已验证 - https://geminicli.com/docs/cli/acp-mode/)
+            AgentRegistration::with_id(
+                "gemini".to_string(),
+                "gemini".to_string(),
+                "gemini --acp".to_string(),
+                "acp".to_string(),
+                Some("@anthropic-ai/claude-code".to_string()),
+            ),
+            // Goose (已验证 - https://goose-docs.ai/docs/guides/acp-clients/)
+            AgentRegistration::with_id(
+                "goose".to_string(),
+                "goose".to_string(),
+                "goose run --acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
+            // Cline (已验证 - ACP registry)
+            AgentRegistration::with_id(
+                "cline".to_string(),
+                "cline".to_string(),
+                "cline --acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
+            // Kiro CLI (已验证 - ACP registry)
+            AgentRegistration::with_id(
+                "kiro".to_string(),
+                "kiro".to_string(),
+                "kiro-cli acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
+            // Auggie CLI (已验证 - ACP registry)
+            AgentRegistration::with_id(
+                "auggie".to_string(),
+                "auggie".to_string(),
+                "auggie --acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
+            // OpenClaw (已验证 - ACP registry)
+            AgentRegistration::with_id(
+                "openclaw".to_string(),
+                "openclaw".to_string(),
+                "openclaw acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
+            // Hermes Agent (已验证 - ACP registry)
+            AgentRegistration::with_id(
+                "hermes".to_string(),
+                "hermes".to_string(),
+                "hermes acp".to_string(),
+                "acp".to_string(),
+                None,
+            ),
+        ];
+
+        info!(count = defaults.len(), "Registering default agent profiles");
+        for profile in defaults {
+            if let Err(e) = self.register_sync(profile.clone()) {
+                if !e.to_string().contains("already exists") {
+                    debug!(id = %profile.id, name = %profile.name, error = %e, "Failed to register default profile");
+                }
+            } else {
+                info!(id = %profile.id, name = %profile.name, command = %profile.command, "Registered default agent profile");
+            }
+        }
+        Ok(())
+    }
+
+    /// Asynchronously download and install adapters.
+    /// Returns the release directory on success.
+    async fn download_and_install_adapters_async(
+        &self,
+        managed_base: std::path::PathBuf,
+    ) -> ErgataiResult<std::path::PathBuf> {
+        use tokio::process::Command;
+
+        // Acquire global lock to prevent concurrent downloads.
+        // Multiple concurrent downloads cause TOCTOU races on the staging directory.
+        let _guard = ADAPTER_DOWNLOAD_LOCK.lock().await;
+
+        info!("Starting async adapter download...");
+
+        // Create staging directory
+        let staging = managed_base.join("staging");
+        // Ignore "not found" error - staging may not exist.
+        let _ = tokio::fs::remove_dir_all(&staging).await;
+        tokio::fs::create_dir_all(&staging)
+            .await
+            .map_err(|e| ErgataiError::internal(format!("Failed to create staging dir: {}", e)))?;
+
+        // Initialize package.json so npm install works correctly.
+        // Without this, npm may report "up to date" without actually installing.
+        let init_output = Command::new("npm")
+            .args(["init", "-y"])
+            .current_dir(&staging)
+            .output()
+            .await
+            .map_err(|e| ErgataiError::internal(format!("Failed to run npm init: {}", e)))?;
+        if !init_output.status.success() {
+            let stderr = String::from_utf8_lossy(&init_output.stderr);
+            return Err(ErgataiError::internal(format!(
+                "npm init failed: {}",
+                stderr
+            )));
+        }
+
+        // Install adapters
+        let adapters = vec![
+            "@zed-industries/claude-code-acp",
+            "@agentclientprotocol/codex-acp",
+        ];
+
+        for package in &adapters {
+            info!(package = %package, "Installing adapter package...");
+            let output = Command::new("npm")
+                .args([
+                    "install",
+                    "--no-audit",
+                    "--no-fund",
+                    "--loglevel=error",
+                    package,
+                ])
+                .current_dir(&staging)
+                .output()
+                .await
+                .map_err(|e| ErgataiError::internal(format!("Failed to run npm install: {}", e)))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                return Err(ErgataiError::internal(format!(
+                    "npm install {} failed (exit {:?}): stderr={}, stdout={}",
+                    package,
+                    output.status.code(),
+                    stderr.trim(),
+                    stdout.trim()
+                )));
+            }
+            debug!(
+                package = %package,
+                stdout = %String::from_utf8_lossy(&output.stdout).trim(),
+                "npm install succeeded"
+            );
+        }
+
+        // Verify installation
+        let claude_dist =
+            staging.join("node_modules/@zed-industries/claude-code-acp/dist/index.js");
+        let codex_dist = staging.join("node_modules/@agentclientprotocol/codex-acp/dist/index.js");
+
+        if !claude_dist.exists() {
+            return Err(ErgataiError::internal(format!(
+                "Claude adapter dist not found: {}",
+                claude_dist.display()
+            )));
+        }
+        if !codex_dist.exists() {
+            return Err(ErgataiError::internal(format!(
+                "Codex adapter dist not found: {}",
+                codex_dist.display()
+            )));
+        }
+
+        // Create release directory
+        let release_id = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+        let releases_dir = managed_base.join("releases");
+        tokio::fs::create_dir_all(&releases_dir)
+            .await
+            .map_err(|e| ErgataiError::internal(format!("Failed to create releases dir: {}", e)))?;
+        let release_dir = releases_dir.join(&release_id);
+        tokio::fs::rename(&staging, &release_dir)
+            .await
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to promote staging to release: {}", e))
+            })?;
+
+        // Update current pointer
+        let current_pointer = managed_base.join("current");
+        tokio::fs::write(&current_pointer, &release_id)
+            .await
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to write current pointer: {}", e))
+            })?;
+
+        info!(
+            release = %release_id,
+            "Adapters downloaded and installed successfully"
+        );
+
+        Ok(release_dir)
+    }
+
+    /// Find the current managed adapter release directory.
+    fn find_current_managed_release(managed_base: &std::path::Path) -> Option<std::path::PathBuf> {
+        let current_pointer = managed_base.join("current");
+        let release_id = std::fs::read_to_string(&current_pointer)
+            .ok()?
+            .trim()
+            .to_string();
+        if release_id.is_empty() {
+            return None;
+        }
+        let release_dir = managed_base.join("releases").join(&release_id);
+        release_dir.is_dir().then_some(release_dir)
     }
 
     /// Check if an adapter needs updating and perform the update.
@@ -847,21 +1208,23 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, command, agent_type, package_name, avatar_url, created_at
+                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at
                  FROM agent_registrations ORDER BY created_at DESC",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
 
         let profiles = stmt
             .query_map([], |row| {
-                let created_at_str: String = row.get(6)?;
+                let created_at_str: String = row.get(8)?;
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, i32>(5)? != 0,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
                     created_at_str,
                 ))
             })
@@ -874,13 +1237,25 @@ impl ProfileRegistry {
         let result = profiles
             .into_iter()
             .map(
-                |(id, name, command, agent_type, package_name, avatar_url, created_at)| {
+                |(
+                    id,
+                    name,
+                    command,
+                    agent_type,
+                    transport,
+                    is_managed,
+                    package_name,
+                    avatar_url,
+                    created_at,
+                )| {
                     let installed = binary_detection::is_installed(&command);
                     ProfileWithStatus {
                         id,
                         name,
                         command,
                         agent_type,
+                        transport,
+                        is_managed,
                         package_name,
                         avatar_url,
                         installed,
@@ -942,7 +1317,7 @@ impl ProfileRegistry {
 /// Parse a database row into an AgentRegistration struct.
 /// Used by both `get` and `list` methods.
 fn parse_agent_registration_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRegistration> {
-    let created_at_str: String = row.get(6)?;
+    let created_at_str: String = row.get(8)?;
     let created_at = DateTime::parse_from_rfc3339(&created_at_str)
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now());
@@ -952,8 +1327,10 @@ fn parse_agent_registration_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRe
         name: row.get(1)?,
         command: row.get(2)?,
         agent_type: row.get(3)?,
-        package_name: row.get(4)?,
-        avatar_url: row.get(5)?,
+        transport: row.get(4)?,
+        is_managed: row.get::<_, i32>(5)? != 0,
+        package_name: row.get(6)?,
+        avatar_url: row.get(7)?,
         created_at,
     })
 }

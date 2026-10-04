@@ -118,6 +118,18 @@ pub fn read_api_token() -> Option<String> {
 /// untouched — we don't know its arg schema. Plain form is the common case
 /// for ergatai profiles.
 fn inject_mcp_config(command: &str, work_dir: &std::path::Path, agent_id: &str) -> String {
+    // Skip injection for JSON-format commands (e.g., {"command":"opencode","args":["acp"]})
+    // These agents typically don't support --mcp-config CLI flag.
+    // MCP will be injected via ACP protocol instead (session/new request).
+    let trimmed = command.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        debug!(
+            agent = %agent_id,
+            "Command is JSON format; skipping --mcp-config injection (will use ACP MCP injection)"
+        );
+        return command.to_string();
+    }
+
     let api_port = std::env::var("ERGATAI_API_PORT").unwrap_or_else(|_| "3000".to_string());
     let encoded_agent_id =
         percent_encoding::utf8_percent_encode(agent_id, percent_encoding::NON_ALPHANUMERIC);
@@ -195,25 +207,29 @@ static AGENT_RUNTIME: OnceLock<Arc<AgentRuntime>> = OnceLock::new();
 
 /// Get the global AgentRuntime singleton.
 ///
-/// Initializes with `AcpBackend` (ACP protocol, structured communication).
+/// Initializes with `AcpBackend` (stdio transport) and `AcpHttpBackend` (HTTP transport).
 /// Call `init_agent_runtime()` instead if you need a custom backend.
 pub fn get_agent_runtime() -> Arc<AgentRuntime> {
     AGENT_RUNTIME
         .get_or_init(|| {
             let backend = Arc::new(crate::backends::acp::AcpBackend::new());
-            Arc::new(AgentRuntime::new(backend))
+            let http_backend = Arc::new(crate::backends::acp_http::AcpHttpBackend::new());
+            Arc::new(AgentRuntime::with_http_backend(backend, http_backend))
         })
         .clone()
 }
 
 /// Initialize the global AgentRuntime with a custom backend.
 ///
+/// Automatically initializes HTTP backend for HTTP transport agents (e.g., opencode acp).
 /// Returns `Err` if already initialized. Call this from `main()` before
 /// any other component accesses the runtime.
 pub fn init_agent_runtime(
     backend: Arc<dyn AcpBackendInterface>,
 ) -> ErgataiResult<Arc<AgentRuntime>> {
-    let runtime = Arc::new(AgentRuntime::new(backend));
+    // Automatically create HTTP backend for HTTP transport agents
+    let http_backend = Arc::new(crate::backends::acp_http::AcpHttpBackend::new());
+    let runtime = Arc::new(AgentRuntime::with_http_backend(backend, http_backend));
     AGENT_RUNTIME
         .set(runtime.clone())
         .map_err(|_| ErgataiError::internal("AgentRuntime already initialized".to_string()))?;
@@ -227,6 +243,8 @@ pub fn init_agent_runtime(
 /// Wraps a backend + agent registry.
 pub struct AgentRuntime {
     backend: Arc<dyn AcpBackendInterface>,
+    /// HTTP backend for agents that use HTTP transport (e.g., opencode).
+    http_backend: Option<Arc<crate::backends::acp_http::AcpHttpBackend>>,
     /// 统一 agent 注册表 — 封装所有 5 个索引（primary, uuid, mcp, stable_id, streaks）。
     /// 所有 insert/remove 操作原子性地更新所有反向索引。
     registry: AgentRegistry,
@@ -256,6 +274,23 @@ impl AgentRuntime {
     pub fn new(backend: Arc<dyn AcpBackendInterface>) -> Self {
         Self {
             backend,
+            http_backend: None, // HTTP backend initialized separately if needed
+            registry: AgentRegistry::new(),
+            pending_mcp: Arc::new(RwLock::new(Vec::new())),
+            binding_mutex: Arc::new(Mutex::new(())),
+            shutdown_token: CancellationToken::new(),
+            monitor_handles: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Create a new runtime with both stdio and HTTP backends.
+    pub fn with_http_backend(
+        backend: Arc<dyn AcpBackendInterface>,
+        http_backend: Arc<crate::backends::acp_http::AcpHttpBackend>,
+    ) -> Self {
+        Self {
+            backend,
+            http_backend: Some(http_backend),
             registry: AgentRegistry::new(),
             pending_mcp: Arc::new(RwLock::new(Vec::new())),
             binding_mutex: Arc::new(Mutex::new(())),
@@ -284,19 +319,26 @@ impl AgentRuntime {
     ///
     /// Creates a workspace, starts the agent process, registers it, and
     /// spawns a background monitor.
+    ///
+    /// # Arguments
+    /// * `transport` - Transport type: "stdio" (default) or "http"
     pub async fn launch_agent(
         &self,
         spec: WorkspaceSpec,
         command: &str,
         instruction: Option<&str>,
         profile_name: Option<&str>,
+        transport: Option<&str>,
     ) -> ErgataiResult<String> {
-        self.launch_agent_scoped(spec, command, instruction, None, profile_name)
+        self.launch_agent_scoped(spec, command, instruction, None, profile_name, transport)
             .await
     }
 
     /// Launch an agent bound to a chat scope. `chat_id` is runtime registry
     /// isolation metadata and is independent of the global launch-profile pool.
+    ///
+    /// # Arguments
+    /// * `transport` - Transport type: "stdio" (default) or "http"
     pub async fn launch_agent_scoped(
         &self,
         spec: WorkspaceSpec,
@@ -304,6 +346,7 @@ impl AgentRuntime {
         instruction: Option<&str>,
         chat_id: Option<&str>,
         profile_name: Option<&str>,
+        transport: Option<&str>,
     ) -> ErgataiResult<String> {
         // Check if workspace already exists (e.g., created by CLI POST /api/v1/workspaces).
         // Avoid calling create_workspace again to prevent duplicate workspace entries.
@@ -395,10 +438,36 @@ impl AgentRuntime {
             "MCP injection: command transformation"
         );
 
-        let handle = self
-            .backend
-            .start_agent(&workspace_with_id, final_command, instruction)
-            .await?;
+        // Choose backend based on transport parameter (from profile.transport field)
+        // Default to "stdio" if not specified
+        let transport_type = transport.unwrap_or("stdio");
+        let is_http_transport = transport_type == "http";
+
+        let handle = if is_http_transport {
+            // Use HTTP backend for HTTP transport agents
+            if let Some(ref http_backend) = self.http_backend {
+                info!(
+                    agent_id = %agent_id,
+                    command = %final_command,
+                    transport = %transport_type,
+                    "Using HTTP transport for agent"
+                );
+                // Spawn the HTTP agent process and connect via HTTP
+                http_backend
+                    .spawn_http_agent(&workspace_with_id, final_command, instruction)
+                    .await?
+            } else {
+                return Err(ErgataiError::internal(format!(
+                    "HTTP backend not initialized. Cannot spawn agent with transport '{}'.",
+                    transport_type
+                )));
+            }
+        } else {
+            // Use stdio backend (default)
+            self.backend
+                .start_agent(&workspace_with_id, final_command, instruction)
+                .await?
+        };
 
         let agent_id = handle.agent_id.clone();
         let agent_uuid = format_id(generate(), IdType::Agent);
@@ -1904,7 +1973,10 @@ mod tests {
     async fn test_launch_agent() {
         let runtime = make_runtime();
         let spec = make_spec("ws-1");
-        let agent_id = runtime.launch_agent(spec, "cmd", None, None).await.unwrap();
+        let agent_id = runtime
+            .launch_agent(spec, "cmd", None, None, None)
+            .await
+            .unwrap();
         assert_eq!(agent_id, "agent-ws-1");
     }
 
@@ -1912,7 +1984,7 @@ mod tests {
     async fn test_launch_agent_registers() {
         let runtime = make_runtime();
         runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None, None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None, None)
             .await
             .unwrap();
         let info = runtime.get_agent("agent-ws-1").await;
@@ -1930,11 +2002,11 @@ mod tests {
     async fn test_launch_multiple_agents() {
         let runtime = make_runtime();
         runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None, None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None, None)
             .await
             .unwrap();
         runtime
-            .launch_agent(make_spec("ws-2"), "cmd", None, None)
+            .launch_agent(make_spec("ws-2"), "cmd", None, None, None)
             .await
             .unwrap();
         let agents = runtime.list_agents().await;
@@ -1959,7 +2031,7 @@ mod tests {
     async fn test_stop_agent() {
         let runtime = make_runtime();
         let agent_id = runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None, None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None, None)
             .await
             .unwrap();
         runtime.stop_agent(&agent_id).await.unwrap();
@@ -1978,7 +2050,7 @@ mod tests {
     async fn test_inject_message_success() {
         let runtime = make_runtime();
         let agent_id = runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None, None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None, None)
             .await
             .unwrap();
         runtime.inject_message(&agent_id, "hello").await.unwrap();
@@ -1998,7 +2070,7 @@ mod tests {
         let backend = Arc::new(MockBackend::with_inject_fail());
         let runtime = AgentRuntime::new(backend);
         let agent_id = runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None, None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None, None)
             .await
             .unwrap();
         // No MCP integration set → error
@@ -2010,7 +2082,7 @@ mod tests {
     async fn test_set_task_id() {
         let runtime = make_runtime();
         let agent_id = runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None, None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None, None)
             .await
             .unwrap();
         runtime
@@ -2034,7 +2106,7 @@ mod tests {
     async fn test_set_agent_lifecycle() {
         let runtime = make_runtime();
         let agent_id = runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None, None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None, None)
             .await
             .unwrap();
         let now = chrono::Utc::now();
@@ -2076,7 +2148,7 @@ mod tests {
     async fn test_capture_output() {
         let runtime = make_runtime();
         let agent_id = runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None, None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None, None)
             .await
             .unwrap();
         let output = runtime.capture_output(&agent_id).await.unwrap();
@@ -2094,7 +2166,7 @@ mod tests {
     async fn test_wait_for_exit() {
         let runtime = make_runtime();
         let agent_id = runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None, None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None, None)
             .await
             .unwrap();
         let result = runtime.wait_for_exit(&agent_id, None).await.unwrap();
@@ -2115,11 +2187,11 @@ mod tests {
     async fn test_shutdown_stops_all() {
         let runtime = make_runtime();
         runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None, None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None, None)
             .await
             .unwrap();
         runtime
-            .launch_agent(make_spec("ws-2"), "cmd", None, None)
+            .launch_agent(make_spec("ws-2"), "cmd", None, None, None)
             .await
             .unwrap();
         runtime.shutdown().await.unwrap();
@@ -2133,7 +2205,7 @@ mod tests {
         let backend = Arc::new(MockBackend::with_inject_fail());
         let runtime = AgentRuntime::new(backend);
         let agent_id = runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None, None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None, None)
             .await
             .unwrap();
 
@@ -2147,7 +2219,7 @@ mod tests {
         // (health check not yet implemented).
         let runtime = make_runtime();
         runtime
-            .launch_agent(make_spec("ws-1"), "cmd", None, None)
+            .launch_agent(make_spec("ws-1"), "cmd", None, None, None)
             .await
             .unwrap();
         // Should not panic; agent remains in registry since health check is unsupported.
@@ -2270,7 +2342,7 @@ mod tests {
         let runtime = make_runtime();
         // Launch agent without ergatai_agent_id in metadata
         runtime
-            .launch_agent(make_spec("ws-nostable"), "cmd", None, None)
+            .launch_agent(make_spec("ws-nostable"), "cmd", None, None, None)
             .await
             .unwrap();
 

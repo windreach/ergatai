@@ -91,9 +91,15 @@ pub fn init_logging() {
             )
         };
 
+        // Detect if stderr is a terminal to decide whether to enable ANSI colors.
+        // When output is redirected to a file, ANSI escape codes make logs unreadable.
+        use std::io::IsTerminal;
+        let use_ansi = std::io::stderr().is_terminal();
+
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_writer(std::io::stderr)
+            .with_ansi(use_ansi)
             .init();
         tracing::info!("Ergatai logging initialized");
     });

@@ -1027,7 +1027,13 @@ identifiers, configuration values, etc.).
 
         // 4. Launch agent via runtime (creates workspace + starts process)
         let runtime_agent_id = runtime
-            .launch_agent(spec, &agent_command, Some(instruction), Some(agent_name))
+            .launch_agent(
+                spec,
+                &agent_command,
+                Some(instruction),
+                Some(agent_name),
+                None,
+            )
             .await
             .map_err(|e| {
                 ergatai_error::ErgataiError::AgentSpawnFailed(format!(

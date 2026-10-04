@@ -476,6 +476,14 @@ async fn async_main(args: Args) -> Result<()> {
         tracing::info!("✅ Profile registry initialized");
     }
 
+    // Spawn the A/B adapter manager to automatically build and manage adapters.
+    // This will git clone + npm build managed adapters in the background on first startup,
+    // then update profile registry to point to the managed releases.
+    let adapters_base =
+        ergatai_runtime::profile_registry::ProfileRegistry::resolve_adapters_base_public();
+    let profile_db_path = ".ergatai/profile_registry.db".to_string();
+    ergatai_runtime::adapter_manager::spawn_adapter_manager(profile_db_path, adapters_base);
+
     // Initialize persistent binding store for MCP reconnection support
     // Store bindings in .ergatai directory alongside other ergatai data
     let binding_db_path = ".ergatai/agent_bindings.db";

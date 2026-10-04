@@ -28,6 +28,7 @@ parking_lot.workspace = true
 libc.workspace = true
 futures.workspace = true
 which = "6.0"
+reqwest.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

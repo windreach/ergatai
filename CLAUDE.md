@@ -594,32 +594,50 @@ JetStream Streams:
 
 ## 消息 Role 约定
 
-消息表 (`messages`) 中的 `role` 字段用于标识消息来源和前端渲染：
+消息表 (`messages`) 中的 `role` 字段用于前端对话分组和渲染，采用四层语义模型：
 
-| Role | 用途 | 示例 |
-|------|------|------|
-| `"user"` | 人类用户输入或 agent 发起的 prompt | 用户在 `/prompt` 端点发送的消息 |
-| `"assistant"` | Agent 的输出和 agent-to-agent 消息 | Agent 响应、agent 间通信 |
-| `"system"` | 系统事件 | Subagent 状态变更、系统通知 |
+| Role | 用途 | 示例 | 对话分组 |
+|------|------|------|----------|
+| `"user"` | 人类用户输入 | 用户在 `/prompt` 端点发送的消息 | 开启新组 |
+| `"agent"` | Agent 发起的消息 | agent-to-agent 的 request 消息 | 开启新组 |
+| `"assistant"` | Agent 响应和输出 | Agent 响应、agent-to-agent 的 response/broadcast 消息 | 追加到当前组 |
+| `"system"` | 系统事件 | Subagent 状态变更、系统通知 | 追加到当前组 |
 
-**关键规则：**
+**设计原则：**
 
-1. **Agent-to-agent 消息必须使用 `role="assistant"`**
-   - 前端基于 role 分组渲染：`user` 开启新对话组，`assistant` 追加到当前组
-   - 文件变更追踪依赖 `role="assistant"` 过滤（`user_conversations.rs:206`）
-   - 语义上 agent 发送的消息是 agent 输出，不是用户输入
+1. **语义清晰**：每个 role 都有明确的语义，不混淆来源和用途
+   - `user` = 人类用户输入
+   - `agent` = agent 发起的消息（请求其他 agent）
+   - `assistant` = agent 的响应和输出
+   - `system` = 系统事件
 
-2. **代码位置参考**
-   - NATS 成功路径：`messaging/mod.rs:~490` → `"assistant"` ✅
-   - 回退路径：`messaging/mod.rs:~561` → `"assistant"` ✅
+2. **对话分组策略**
+   - `user` 和 `agent` 开启新对话组（因为它们代表新的"发言"）
+   - `assistant` 和 `system` 追加到当前对话组（因为它们是对上一轮的响应）
+
+3. **消息来源通过 metadata 补充**
+   - Agent-to-agent 消息必须包含 `metadata.source = "agent"`
+   - 包含 `senderAgentId` 和 `senderAgentName` 用于发送者身份显示
+   - 包含 `messageType` 用于前端样式选择（request/response/broadcast）
+
+4. **前端渲染逻辑**
+   - 主聊天面板：基于 `role` 创建对话组（user/agent 开启新组，assistant/system 追加）
+   - 消息样式：根据 `role` 和 `metadata.messageType` 应用不同的视觉样式
+   - 侧边面板：显示完整的消息历史，包括所有 role 类型
+
+5. **代码位置参考**
+   - Role 映射函数：`messaging/mod.rs:1180` → `agent_message_role()`
+   - NATS 成功路径：`messaging/mod.rs:~490` → 根据 messageType 选择 role
+   - 回退路径：`messaging/mod.rs:~553` → 根据 messageType 选择 role
    - Prompt 端点：`api/agents.rs:2629` → `"user"`（用于用户/agent 发起的 prompt）
    - Agent 响应：`api/agents.rs:3124` → `"assistant"`
 
-3. **Metadata 约定**
-   - Agent-to-agent 消息必须包含 `metadata.source = "agent"`
-   - 包含 `senderAgentId` 和 `senderAgentName` 用于发送者身份显示
+**历史演进：**
+- v1: 所有 agent-to-agent 消息使用 `role="assistant"`（语义混淆）
+- v2: request 使用 `role="user"` 以开启新对话组（语义混淆，但是实用）
+- v3: 引入 `role="agent"` 明确表示 agent 发起的消息（当前版本，语义清晰）
 
-**历史问题：** 曾存在 NATS 路径使用 `"assistant"` 而回退路径使用 `"user"` 的不一致（已修复）。历史数据中的不一致消息可直接删除或保留（UI 可正确渲染两种 role）。
+**历史数据兼容：** 早期数据中的 `role="user"` agent 消息可以通过 `metadata.source="agent"` 识别，前端应正确处理。
 
 ---
 

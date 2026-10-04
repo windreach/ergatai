@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use agent_client_protocol::schema::v1::{ContentBlock, SessionNotification, SessionUpdate};
 use agent_client_protocol::Client;
@@ -97,12 +97,15 @@ enum HttpAcpCommand {
 #[allow(dead_code)]
 struct HttpAgentEntry {
     agent_id: String,
+    endpoint: String, // HTTP endpoint (e.g., "http://127.0.0.1:12345")
     output: Arc<OutputBuffer>,
     command_tx: mpsc::Sender<HttpAcpCommand>,
     abort_handle: tokio::task::AbortHandle,
     alive: Arc<std::sync::atomic::AtomicBool>,
     last_activity_at: Arc<RwLock<Instant>>,
     workspace: String,
+    /// Child process handle for cleanup (HTTP agents spawned locally)
+    child_process: Option<tokio::process::Child>,
 }
 
 /// Workspace entry for HTTP backend.
@@ -254,12 +257,14 @@ impl AcpHttpBackend {
         // Create agent entry
         let entry = HttpAgentEntry {
             agent_id: agent_id.clone(),
+            endpoint: endpoint.to_string(),
             output,
             command_tx,
             abort_handle,
             alive,
             last_activity_at,
             workspace: workspace.id.clone(),
+            child_process: None, // Remote agents don't have a local child process
         };
 
         // Register agent
@@ -268,7 +273,7 @@ impl AcpHttpBackend {
             ws.agent_ids.push(agent_id.clone());
         }
 
-        info!(agent_id = %agent_id, "Connected to remote HTTP ACP agent");
+        info!(agent_id = %agent_id, endpoint = %endpoint, "Connected to remote HTTP ACP agent");
 
         Ok(AgentHandle {
             workspace,
@@ -276,6 +281,201 @@ impl AcpHttpBackend {
             process_id: None,
             metadata: HashMap::new(),
         })
+    }
+
+    /// Spawn a local HTTP-based ACP agent (e.g., opencode acp).
+    ///
+    /// This starts the agent process, waits for it to be ready, then connects via HTTP.
+    pub async fn spawn_http_agent(
+        &self,
+        workspace: &WorkspaceHandle,
+        command: &str,
+        _instruction: Option<&str>,
+    ) -> ErgataiResult<AgentHandle> {
+        // Parse command to extract binary and args
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        if parts.is_empty() {
+            return Err(ErgataiError::internal("Empty command".to_string()));
+        }
+
+        let binary = parts[0];
+        let args = &parts[1..];
+
+        // Generate a unique port for this agent (avoid conflicts)
+        // Use port 0 to let the OS assign an available port, then read it from stdout
+        let port = 0; // Let OS choose
+        let hostname = "127.0.0.1";
+
+        info!(
+            command = %command,
+            hostname = %hostname,
+            "Spawning HTTP ACP agent (OS will assign port)"
+        );
+
+        // Spawn the agent process with HTTP server mode
+        let mut cmd = tokio::process::Command::new(binary);
+        cmd.args(args)
+            .arg("--port")
+            .arg(port.to_string())
+            .arg("--hostname")
+            .arg(hostname)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        // Set working directory from workspace metadata
+        if let Some(work_dir) = workspace.metadata.get("work_dir") {
+            cmd.current_dir(work_dir);
+        }
+
+        let mut child = cmd.spawn().map_err(|e| {
+            ErgataiError::internal(format!("Failed to spawn HTTP agent process: {}", e))
+        })?;
+
+        let pid = child.id();
+        info!(pid = ?pid, "HTTP agent process spawned, waiting for port assignment");
+
+        // Read stdout to find the actual port assigned by the OS
+        // opencode acp typically outputs something like "Listening on http://127.0.0.1:PORT"
+        let stdout = child.stdout.take().ok_or_else(|| {
+            let _ = child.start_kill();
+            ErgataiError::internal("Failed to capture stdout from HTTP agent process".to_string())
+        })?;
+
+        // Drain stderr in background to prevent pipe buffer deadlock.
+        // A verbose agent can fill the OS pipe buffer (~64KB) and block itself
+        // if we don't consume stderr concurrently.
+        let stderr = child.stderr.take();
+        let stderr_drain = stderr.map(|stderr| {
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let mut reader = tokio::io::BufReader::new(stderr);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) => break,
+                        Ok(_) => tracing::debug!(target: "acp_http_stderr", "{}", line.trim_end()),
+                        Err(_) => break,
+                    }
+                }
+            })
+        });
+
+        // Wait for the server to output its listening address
+        let max_wait = std::time::Duration::from_secs(30);
+        let start = std::time::Instant::now();
+
+        let mut endpoint = None;
+        let mut stdout_reader = tokio::io::BufReader::new(stdout);
+        let mut line = String::new();
+
+        while start.elapsed() < max_wait {
+            use tokio::io::AsyncBufReadExt;
+            line.clear();
+
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                stdout_reader.read_line(&mut line),
+            )
+            .await
+            {
+                Ok(Ok(0)) => break, // EOF
+                Ok(Ok(_)) => {
+                    // Look for patterns like "Listening on http://127.0.0.1:PORT" or "http://127.0.0.1:PORT"
+                    if let Some(pos) = line.find("http://127.0.0.1:") {
+                        let addr_start = pos + 7; // Skip "http://"
+                        let addr_end = line[addr_start..]
+                            .find(|c: char| !c.is_ascii_digit() && c != '.')
+                            .map(|p| addr_start + p)
+                            .unwrap_or(line.len());
+                        endpoint = Some(line[addr_start..addr_end].trim().to_string());
+                        break;
+                    }
+                    // Also check for "Listening on PORT" or "port: PORT" patterns
+                    if line.to_lowercase().contains("listening")
+                        || line.to_lowercase().contains("started")
+                    {
+                        // Try to extract port number from the line by finding sequences of digits
+                        let mut i = 0;
+                        while i < line.len() {
+                            if let Some(start_pos) = line[i..].find(|c: char| c.is_ascii_digit()) {
+                                let num_start = i + start_pos;
+                                let num_end = line[num_start..]
+                                    .find(|c: char| !c.is_ascii_digit())
+                                    .map(|p| num_start + p)
+                                    .unwrap_or(line.len());
+                                let num_str = &line[num_start..num_end];
+                                if let Ok(port_num) = num_str.parse::<u16>() {
+                                    // Check if it's a reasonable port number (1024-65535)
+                                    if port_num >= 1024 {
+                                        endpoint = Some(format!("127.0.0.1:{}", port_num));
+                                        break;
+                                    }
+                                }
+                                i = num_end;
+                            } else {
+                                break;
+                            }
+                        }
+                        if endpoint.is_some() {
+                            break;
+                        }
+                    }
+                }
+                Ok(Err(_)) => break, // Read error
+                Err(_) => continue,  // Timeout, keep reading
+            }
+        }
+
+        let endpoint = match endpoint {
+            Some(ep) => ep,
+            None => {
+                // Clean up the child process on failure to prevent orphan processes
+                warn!(pid = ?pid, "Failed to determine HTTP agent endpoint, killing process");
+                let _ = child.start_kill();
+                return Err(ErgataiError::internal(format!(
+                    "Failed to determine HTTP agent endpoint within {:?}",
+                    max_wait
+                )));
+            }
+        };
+
+        // Cancel stderr drain task (process is still running, but we're done reading)
+        if let Some(handle) = stderr_drain {
+            handle.abort();
+        }
+
+        info!(endpoint = %endpoint, "HTTP agent is ready");
+
+        // Now connect to the agent via HTTP ACP
+        let full_endpoint = if endpoint.starts_with("http://") {
+            endpoint
+        } else {
+            format!("http://{}", endpoint)
+        };
+
+        let mut handle = match self
+            .connect_remote_agent(&workspace.id, &full_endpoint, None)
+            .await
+        {
+            Ok(h) => h,
+            Err(e) => {
+                warn!(
+                    endpoint = %full_endpoint,
+                    "Failed to connect to HTTP agent after successful spawn, killing process"
+                );
+                let _ = child.start_kill();
+                return Err(e);
+            }
+        };
+
+        // Store the child process in the agent entry for cleanup
+        handle.process_id = pid.map(|p| p.to_string());
+        if let Some(entry) = self.agents.write().get_mut(&handle.agent_id) {
+            entry.child_process = Some(child);
+        }
+
+        Ok(handle)
     }
 
     /// Disconnect a remote HTTP agent.
@@ -286,6 +486,10 @@ impl AcpHttpBackend {
             entry
                 .alive
                 .store(false, std::sync::atomic::Ordering::SeqCst);
+            // Kill child process if this was a locally spawned agent
+            if let Some(mut child) = entry.child_process {
+                let _ = child.start_kill();
+            }
             info!(agent_id = %agent_id, "Disconnected remote HTTP ACP agent");
             Ok(())
         } else {
@@ -296,6 +500,28 @@ impl AcpHttpBackend {
     /// List all HTTP-connected agents.
     pub async fn list_http_agents(&self) -> Vec<String> {
         self.agents.read().keys().cloned().collect()
+    }
+
+    /// Get the HTTP endpoint for a specific agent.
+    ///
+    /// Returns the endpoint URL (e.g., "http://127.0.0.1:12345") if the agent
+    /// is connected, or None if the agent is not found.
+    pub fn get_agent_endpoint(&self, agent_id: &str) -> Option<String> {
+        self.agents
+            .read()
+            .get(agent_id)
+            .map(|entry| entry.endpoint.clone())
+    }
+
+    /// List all agents with their endpoints.
+    ///
+    /// Returns a vector of (agent_id, endpoint) tuples for all connected agents.
+    pub fn list_agents_with_endpoints(&self) -> Vec<(String, String)> {
+        self.agents
+            .read()
+            .iter()
+            .map(|(id, entry)| (id.clone(), entry.endpoint.clone()))
+            .collect()
     }
 
     async fn get_or_create_workspace(&self, workspace_id: &str) -> ErgataiResult<WorkspaceHandle> {

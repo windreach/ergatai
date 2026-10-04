@@ -19,7 +19,7 @@ use ergatai_runtime::profile_registry::{AgentRegistration, ProfileRegistry, Prof
 static PROFILE_REGISTRY: OnceLock<ProfileRegistry> = OnceLock::new();
 
 /// Profile 注册表数据库路径（与原始 handler 保持一致）。
-const PROFILE_REGISTRY_DB_PATH: &str = ".ergatai/profile_registry.db";
+pub const PROFILE_REGISTRY_DB_PATH: &str = ".ergatai/profile_registry.db";
 
 /// 初始化 ProfileRegistry 全局单例（启动时调用）。
 ///

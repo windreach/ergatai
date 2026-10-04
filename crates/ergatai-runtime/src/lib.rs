@@ -27,13 +27,14 @@
 //! };
 //!
 //! let agent_id = runtime
-//!     .launch_agent(spec, "claude", Some("Read CLAUDE.md"), None)
+//!     .launch_agent(spec, "claude", Some("Read CLAUDE.md"), None, None)
 //!     .await?;
 //! # Ok(())
 //! # }
 //! ```
 
 // Core types
+pub mod adapter_manager;
 pub mod agent_installer;
 pub mod agent_lifecycle;
 pub mod agent_profile;

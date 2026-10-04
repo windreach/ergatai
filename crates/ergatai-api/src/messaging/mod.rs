@@ -477,17 +477,19 @@ impl MessageSender {
                         let message = req.message.clone();
                         let from = req.from.clone();
                         let sender_name = sender_display.clone();
+                        let message_type = req.message_type.clone();
                         // Wrap synchronous DB call in spawn_blocking
                         if let Err(e) = tokio::task::spawn_blocking(move || {
+                            let role = agent_message_role(&message_type);
                             let metadata = serde_json::json!({
                                 "source": "agent",
                                 "senderAgentId": from,
                                 "senderAgentName": sender_name,
+                                "messageType": message_type,
                             });
-                            // Agent-to-agent messages use role="assistant" (same as line 556)
                             if let Err(e) = user_data_db::messages::append(
                                 &conversation_id,
-                                "assistant",
+                                role,
                                 serde_json::json!([{ "type": "text", "text": message }]),
                                 metadata,
                             ) {
@@ -545,20 +547,19 @@ impl MessageSender {
                     let message = req.message.clone();
                     let from = req.from.clone();
                     let sender_name = sender_display.clone();
+                    let message_type = req.message_type.clone();
                     // Wrap synchronous DB call in spawn_blocking
                     if let Err(e) = tokio::task::spawn_blocking(move || {
-                    let metadata = serde_json::json!({
+                        let role = agent_message_role(&message_type);
+                        let metadata = serde_json::json!({
                             "source": "agent",
                             "senderAgentId": from,
                             "senderAgentName": sender_name,
+                            "messageType": message_type,
                         });
-                        // Agent-to-agent messages use role="assistant" because:
-                        // 1. They are agent output, not user input
-                        // 2. Frontend groups messages by role (user starts new group, assistant appends)
-                        // 3. File change tracking filters by role="assistant"
                         if let Err(e) = user_data_db::messages::append(
                             &conversation_id,
-                            "assistant",
+                            role,
                             serde_json::json!([{ "type": "text", "text": message }]),
                             metadata,
                         ) {
@@ -931,6 +932,7 @@ impl MessageSender {
                 &profile.command,
                 None, // No initial instruction — the message itself is the instruction
                 Some(&profile.name),
+                profile.transport.as_deref(),
             )
             .await
         {
@@ -1026,6 +1028,7 @@ impl MessageSender {
                 &profile.command,
                 None, // No initial instruction
                 Some(&profile.name),
+                profile.transport.as_deref(),
             )
             .await
         {
@@ -1162,6 +1165,30 @@ impl MessageSender {
     }
 }
 
+/// Decide the DB `role` for an A-to-A message based on its `message_type`.
+///
+/// This is a rendering-strategy decision that preserves semantic clarity:
+/// - `agent`: agent-initiated messages (requests) that should open a new
+///   conversation group in the UI, clearly distinguished from user input
+/// - `assistant`: agent responses and FYI messages (response/broadcast) that
+///   append to the current conversation group
+///
+/// The three-tier role system provides clear semantics:
+/// - `user`: human user input
+/// - `agent`: agent-initiated messages (requests to other agents)
+/// - `assistant`: agent responses and outputs
+/// - `system`: system events
+///
+/// Origin metadata (`metadata.source`, `senderAgentId`) is preserved separately
+/// for detailed tracking and display purposes.
+fn agent_message_role(message_type: &str) -> &'static str {
+    match message_type {
+        "request" => "agent", // Agent-initiated, opens new conversation group
+        "response" | "broadcast" => "assistant", // Append to current group
+        _ => "agent", // Unknown types default to agent (future message types that expect agent action)
+    }
+}
+
 // ── Global accessor ──────────────────────────────────────────────────
 
 static MESSAGE_SENDER: OnceLock<MessageSender> = OnceLock::new();
@@ -1290,6 +1317,17 @@ mod tests {
         assert_eq!(parsed["message_type"], "unknown_type");
         // Unknown types are treated like request
         assert!(parsed["_reply"].as_str().unwrap().contains("agent-2"));
+    }
+
+    #[test]
+    fn agent_message_role_maps_message_type_to_render_group() {
+        // request opens a new conversation group with "agent" role
+        assert_eq!(agent_message_role("request"), "agent");
+        // response / broadcast append to current group as "assistant"
+        assert_eq!(agent_message_role("response"), "assistant");
+        assert_eq!(agent_message_role("broadcast"), "assistant");
+        // unknown future types default to "agent" (open new group)
+        assert_eq!(agent_message_role("some-future-type"), "agent");
     }
 }
 
