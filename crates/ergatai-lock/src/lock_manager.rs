@@ -2614,6 +2614,9 @@ impl FileLockManager {
     /// Updates the active session count.
     pub fn unregister_session(&self) {
         // Use fetch_update for atomic saturating subtract (prevents lost-update race with fetch_add)
+        // Note: fetch_update is deprecated in Rust 1.95+ (renamed to try_update), but we need
+        // to support MSRV 1.82.0 where try_update is not yet stable
+        #[allow(deprecated)]
         let prev = self
             .active_session_count
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |val| {
