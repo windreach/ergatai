@@ -286,7 +286,7 @@ mod tests {
         AgentInfoResponse {
             agent_id: agent_id.to_string(),
             stable_id: Some(format!("agent-{}", agent_id)),
-            agent_uuid: format!("uuid-{}", agent_id),
+            agent_instance_id: format!("uuid-{}", agent_id),
             workspace_id: workspace_id.to_string(),
             work_dir: format!("/workspace/{}", workspace_id),
             state: state.to_string(),
@@ -391,7 +391,7 @@ mod tests {
         let agent = AgentInfoResponse {
             agent_id: "test-agent".to_string(),
             stable_id: Some("agent-test".to_string()),
-            agent_uuid: "uuid-test".to_string(),
+            agent_instance_id: "uuid-test".to_string(),
             workspace_id: "test-ws".to_string(),
             work_dir: "/workspace/test-ws".to_string(),
             state: "running".to_string(),

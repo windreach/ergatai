@@ -24,8 +24,8 @@
 //! | `FileReadyPayload`           | `ergatai.file.ready.{file_hash}`           | FileLockMgr     | Waiters       |
 //! | `FileErrorPayload`           | `ergatai.file.error.{file_hash}`           | FileLockMgr     | Waiters       |
 //! | `SystemTokenPayload`         | `ergatai.system.token.{agent_id}`          | System          | Agent         |
-//! | `AgentLifecycleEventPayload` | `ergatai.agent.lifecycle.{agent_uuid}`     | UnifiedRegistry | TaskScheduler |
-//! | `ApiEventPayload`            | `ergatai.agent.api.{agent_uuid}`           | LlmProxy        | StateInference|
+//! | `AgentLifecycleEventPayload` | `ergatai.agent.lifecycle.{agent_instance_id}`     | UnifiedRegistry | TaskScheduler |
+//! | `ApiEventPayload`            | `ergatai.agent.api.{agent_instance_id}`           | LlmProxy        | StateInference|
 
 use std::collections::HashMap;
 
@@ -155,9 +155,9 @@ pub struct AgentMessagePayload {
     pub from_agent: String,
     /// Target agent ID (receiver) — runtime agent ID
     pub to_agent: String,
-    /// Source agent UUID (stable identifier, for routing)
+    /// Source agent instance ID (within-lifecycle identifier, for routing)
     pub from_uuid: Option<String>,
-    /// Target agent UUID (stable identifier, for routing)
+    /// Target agent instance ID (within-lifecycle identifier, for routing)
     pub to_uuid: Option<String>,
     /// Source agent stable ID (e.g., "agent-1") — for batch/conversation tracking
     pub from_stable: Option<String>,
@@ -183,6 +183,14 @@ pub struct AgentMessagePayload {
     /// Request timeout in milliseconds (for reqwatch)
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// Message type: "request", "response", or "broadcast"
+    #[serde(default = "default_message_type")]
+    pub message_type: String,
+}
+
+/// Default message type for backward compatibility
+fn default_message_type() -> String {
+    "request".to_string()
 }
 
 /// Generate a default message ID using the ID module
@@ -515,11 +523,11 @@ pub struct FileEnforcementPayload {
 /// agent state changes — for example, re-scheduling a task when an
 /// agent fails or times out.
 ///
-/// Subject: `ergatai.agent.lifecycle.{agent_uuid}`
+/// Subject: `ergatai.agent.lifecycle.{agent_instance_id}`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentLifecycleEventPayload {
-    /// Stable agent UUID (persistent across agent restarts)
-    pub agent_uuid: String,
+    /// Agent instance ID (NOT persistent across restarts)
+    pub agent_instance_id: String,
     /// Dynamic agent ID (e.g., "ws1-agent-1")
     pub agent_id: String,
     /// State name before transition (lowercase, e.g., "running")
@@ -575,14 +583,14 @@ pub enum DagEvent {
 /// LLM API traffic event published by the MITM proxy.
 ///
 /// Published on core NATS (low-latency) for semantic state inference.
-/// Subject: `ergatai.agent.api.{agent_uuid}`
+/// Subject: `ergatai.agent.api.{agent_instance_id}`
 ///
 /// Each variant corresponds to a phase of the LLM request/response lifecycle:
 /// `request_started` → `first_token` → `content_delta*` → `stream_end`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiEventPayload {
-    /// Stable agent UUID for correlation.
-    pub agent_uuid: String,
+    /// Agent instance ID for correlation.
+    pub agent_instance_id: String,
     /// Event type: "request_started" | "first_token" | "content_delta" | "stream_end" | "error"
     pub event_type: String,
     /// Protocol identifier: "openai" | "anthropic"
@@ -834,6 +842,7 @@ mod tests {
                 requires_receipt: false,
                 correlation_id: None,
                 timeout_ms: None,
+                message_type: "request".to_string(),
             }),
         ];
 
@@ -865,6 +874,7 @@ mod tests {
             requires_receipt: true,
             correlation_id: Some("corr-123".to_string()),
             timeout_ms: Some(30_000),
+            message_type: "request".to_string(),
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -895,6 +905,7 @@ mod tests {
             requires_receipt: false,
             correlation_id: None,
             timeout_ms: None,
+            message_type: "request".to_string(),
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -1013,6 +1024,7 @@ mod tests {
             requires_receipt: false,
             correlation_id: None,
             timeout_ms: None,
+            message_type: "request".to_string(),
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -1038,6 +1050,7 @@ mod tests {
             requires_receipt: false,
             correlation_id: None,
             timeout_ms: None,
+            message_type: "request".to_string(),
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -1063,6 +1076,7 @@ mod tests {
             requires_receipt: false,
             correlation_id: None,
             timeout_ms: None,
+            message_type: "request".to_string(),
         };
 
         let json = serde_json::to_string(&payload).unwrap();

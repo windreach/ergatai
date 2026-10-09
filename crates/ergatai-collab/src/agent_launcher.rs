@@ -460,7 +460,7 @@ impl AgentLauncher {
 
             // Inject the instruction as a message to the existing agent
             if let Err(e) = runtime
-                .inject_message(&runtime_agent_id, &instruction)
+                .inject_message(&runtime_agent_id, &instruction, None)
                 .await
             {
                 tracing::error!(

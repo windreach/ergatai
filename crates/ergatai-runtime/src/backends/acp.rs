@@ -44,6 +44,10 @@ use agent_client_protocol::{
     UntypedMessage,
 };
 
+/// Maximum size (in bytes) of recent thinking to retain per agent.
+/// Prevents unbounded memory growth from long-running thinking blocks.
+const RECENT_THINKING_MAX_BYTES: usize = 16 * 1024; // 16 KB
+
 /// Extended session notification that supports both standard v1 events and extension events
 /// (such as subagent_spawned and subagent_state_update from Claude/Codex adapters).
 #[derive(Debug, Clone)]
@@ -251,6 +255,7 @@ async fn handle_standard_session_notification(
     notification: SessionNotification,
     out: &OutputBuffer,
     thoughts: &OutputBuffer,
+    recent_thinking: &Arc<parking_lot::Mutex<String>>,
     tool_calls: &Arc<ToolCallTracker>,
     usage: &Arc<UsageTracker>,
     capture_thoughts: bool,
@@ -288,6 +293,16 @@ async fn handle_standard_session_notification(
                 debug!(text_len = text.len(), "ACP agent thought chunk");
                 if capture_thoughts {
                     thoughts.append(format!("[thinking] {}\n", text).as_bytes());
+                }
+                // Accumulate for agent-to-agent response persistence. The
+                // buffer is drained when the agent's response message is
+                // persisted and reset when a new prompt turn starts, so it
+                // always reflects the current turn only.
+                {
+                    let mut thinking = recent_thinking.lock();
+                    if thinking.len() < RECENT_THINKING_MAX_BYTES {
+                        thinking.push_str(&text);
+                    }
                 }
                 let _ = output_tx.send(AgentOutputEvent::Thinking { delta: text });
             }
@@ -712,6 +727,11 @@ pub enum AgentOutputEvent {
     Done { stop_reason: String },
     /// An error occurred during prompt execution.
     Error { message: String },
+    /// Conversation ID for persistence (emitted at prompt start so SSE stream
+    /// can associate output with the correct conversation thread).
+    /// This event is NOT forwarded to SSE clients — it is consumed internally
+    /// by the SSE persistence layer.
+    ConversationId { id: Option<String> },
 }
 
 /// Helper function to evict oldest entries when a tracker reaches capacity.
@@ -922,6 +942,8 @@ enum AcpCommand {
     QueuePrompt {
         message: String,
         images: Vec<crate::types::AgentImage>,
+        /// Conversation ID for SSE persistence (from agent-to-agent message thread_id).
+        conversation_id: Option<String>,
         response_tx: oneshot::Sender<ErgataiResult<()>>,
     },
     /// Cancel the current prompt turn (sends `session/cancel` notification).
@@ -1090,6 +1112,11 @@ struct AcpAgentEntry {
     output: Arc<OutputBuffer>,
     /// Thought buffer for captured agent thoughts (if capture_thoughts enabled).
     thoughts: Arc<OutputBuffer>,
+    /// Thinking accumulated during the current prompt turn. Attached to
+    /// persisted agent-to-agent response messages as reasoning, so chat UIs
+    /// can render the responder's thinking. Cleared when a prompt turn
+    /// starts and drained when a response message is persisted.
+    recent_thinking: Arc<parking_lot::Mutex<String>>,
     /// Tool call tracker for monitoring agent tool usage.
     tool_calls: Arc<ToolCallTracker>,
     /// Usage tracker for monitoring token consumption.
@@ -1205,6 +1232,43 @@ impl AcpBackend {
             pid_to_agent: Arc::new(RwLock::new(HashMap::new())),
             agent_pids: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Build Claude Code MCP config for meta field.
+    ///
+    /// This is a workaround for a bug in @anthropic-ai/claude-agent-sdk v0.2.44
+    /// where HTTP MCP servers passed via standard ACP mcpServers field are not connected.
+    /// The Claude Code adapter supports injecting MCP servers via meta.claudeCode.options.mcpServers.
+    fn build_claude_code_mcp_meta(
+        http_server: &McpServerHttp,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let mut headers_map = serde_json::Map::new();
+        for header in &http_server.headers {
+            headers_map.insert(
+                header.name.clone(),
+                serde_json::Value::String(header.value.clone()),
+            );
+        }
+
+        let mcp_server_config = serde_json::json!({
+            "type": "http",
+            "url": http_server.url,
+            "headers": headers_map
+        });
+
+        let mcp_servers = serde_json::json!({
+            http_server.name.clone(): mcp_server_config
+        });
+
+        let claude_code = serde_json::json!({
+            "options": {
+                "mcpServers": mcp_servers
+            }
+        });
+
+        let mut meta = serde_json::Map::new();
+        meta.insert("claudeCode".to_string(), claude_code);
+        Some(meta)
     }
 
     /// Enable automatic prompt continuation when `stop_reason` is `max_tokens`
@@ -1374,6 +1438,21 @@ impl AcpBackend {
                 String::from_utf8(thoughts_data.clone()).ok()
             }
         })
+    }
+
+    /// Take (drain) the thinking accumulated during the agent's current
+    /// prompt turn. Used by the messaging layer to attach reasoning to
+    /// persisted agent-to-agent response messages.
+    pub fn take_agent_recent_thinking(&self, agent_id: &str) -> Option<String> {
+        self.reap_dead();
+        let agents = self.agents.read();
+        let entry = agents.get(agent_id)?;
+        let mut thinking = entry.recent_thinking.lock();
+        if thinking.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut *thinking))
+        }
     }
 
     /// Get captured output for an agent (non-destructive read of the output buffer).
@@ -1994,6 +2073,38 @@ impl AcpBackendInterface for AcpBackend {
         // Supports: "python agent.py", "npx -y @agentclientprotocol/claude-agent-acp@latest",
         // or JSON: {"command":"python","args":["agent.py"]}
         // Then inject workspace env vars into the agent config.
+        // SECURITY: Use whitelist approach to avoid leaking sensitive parent env vars
+        // (AWS credentials, database URLs, tokens, etc.) to agents.
+        // Only pass explicitly allowed system env vars + workspace vars.
+        let mut full_env = HashMap::new();
+
+        // Whitelist of safe system env vars to inherit from parent.
+        // NOTE: API keys (ANTHROPIC_API_KEY, CLAUDE_API_KEY) are passed to ALL agents.
+        // This is acceptable because:
+        // 1. Most agents need some LLM API access
+        // 2. Agents run in isolated workspaces with file access controls
+        // 3. The alternative (per-agent API key config) adds complexity without clear security benefit
+        // If stricter isolation is needed, move API keys to profile-specific env_overrides.
+        let allowed_parent_vars = [
+            "PATH",
+            "HOME",
+            "USER",
+            "LANG",
+            "LC_ALL",
+            "TERM",
+            "ANTHROPIC_API_KEY",
+            "CLAUDE_API_KEY",
+        ];
+
+        for var in allowed_parent_vars {
+            if let Ok(val) = std::env::var(var) {
+                full_env.insert(var.to_string(), val);
+            }
+        }
+
+        // Overlay workspace-specific vars (these take precedence)
+        full_env.extend(env_with_preload.iter().map(|(k, v)| (k.clone(), v.clone())));
+
         let config = AcpAgent::from_str(command)
             .map_err(|e| {
                 ErgataiError::internal(format!(
@@ -2002,7 +2113,7 @@ impl AcpBackendInterface for AcpBackend {
                 ))
             })?
             .into_config()
-            .envs(env_with_preload.iter());
+            .envs(full_env.iter());
 
         debug!(
             agent_id = %agent_id,
@@ -2032,6 +2143,7 @@ impl AcpBackendInterface for AcpBackend {
         let (output_tx, _) = broadcast::channel::<AgentOutputEvent>(256);
         let output = Arc::new(OutputBuffer::new(OUTPUT_BUFFER_MAX_SIZE));
         let thoughts = Arc::new(OutputBuffer::new(OUTPUT_BUFFER_MAX_SIZE));
+        let recent_thinking = Arc::new(parking_lot::Mutex::new(String::new()));
         let tool_calls = Arc::new(ToolCallTracker::new(MAX_TRACKED_TOOL_CALLS));
         let plan: Arc<RwLock<Option<TrackedPlan>>> = Arc::new(RwLock::new(None));
         let elicitations = Arc::new(ElicitationTracker::new(MAX_TRACKED_ELICITATIONS));
@@ -2066,6 +2178,7 @@ impl AcpBackendInterface for AcpBackend {
         let task_output_tx = output_tx.clone();
         let task_output = output.clone();
         let task_thoughts = thoughts.clone();
+        let task_recent_thinking = recent_thinking.clone();
         let task_tool_calls = tool_calls.clone();
         let task_plan = plan.clone();
         let task_elicitations = elicitations.clone();
@@ -2211,18 +2324,24 @@ impl AcpBackendInterface for AcpBackend {
         });
 
         // Spawn the ACP connection task.
-        let join_handle = tokio::spawn(async move {
-            // Create ByteStreams transport from the spawned process stdin/stdout.
-            let transport = ByteStreams::new(child_stdin, child_stdout);
+        //
+        // The task gets its own clone of `recent_thinking`; the original Arc
+        // stays here for the agent entry built after the spawn.
+        let join_handle = tokio::spawn({
+            let recent_thinking = recent_thinking.clone();
+            async move {
+                // Create ByteStreams transport from the spawned process stdin/stdout.
+                let transport = ByteStreams::new(child_stdin, child_stdout);
 
-            // Build the ACP client with notification and permission handlers.
-            let result = Client
+                // Build the ACP client with notification and permission handlers.
+                let result = Client
                 .builder()
                 .name(format!("ergatai-acp-{}", task_agent_id_label))
                 .on_receive_notification(
                     {
                         let out = task_output.clone();
                         let thoughts = task_thoughts.clone();
+                        let notify_recent_thinking = recent_thinking.clone();
                         let tool_calls = task_tool_calls.clone();
                         let usage = task_usage.clone();
                         let capture_thoughts = task_capture_thoughts;
@@ -2243,7 +2362,7 @@ impl AcpBackendInterface for AcpBackend {
                             match notification {
                                 ExtendedSessionNotification::Standard(std_notif) => {
                                     handle_standard_session_notification(
-                                        *std_notif, &out, &thoughts, &tool_calls, &usage,
+                                        *std_notif, &out, &thoughts, &notify_recent_thinking, &tool_calls, &usage,
                                         capture_thoughts, &last_activity, &output_tx,
                                         &notify_agent_id, &notify_session_id, &notify_workspace_id,
                                         &notify_plan, &notify_text_output_seen,
@@ -2507,6 +2626,13 @@ impl AcpBackendInterface for AcpBackend {
                         None => (None, None),
                     };
 
+                    // Build Claude Code MCP config for _meta field (workaround for SDK HTTP MCP bug)
+                    let claude_code_mcp_meta = if let Some(McpServer::Http(http_server)) = &mcp_declaration {
+                        Self::build_claude_code_mcp_meta(http_server)
+                    } else {
+                        None
+                    };
+
                     // Step 2: Create or load an ACP session.
                     let mut session_id = if let Some(saved_sid) = saved_session_id {
                         info!(session_id = %saved_sid, "Attempting session/load");
@@ -2514,6 +2640,10 @@ impl AcpBackendInterface for AcpBackend {
                             LoadSessionRequest::new(saved_sid.clone(), &cwd);
                         if let Some(declaration) = &mcp_declaration {
                             load_request.mcp_servers.push(declaration.clone());
+                        }
+                        // Add Claude Code MCP config via _meta field (workaround)
+                        if let Some(meta) = claude_code_mcp_meta.as_ref() {
+                            load_request.meta = Some(meta.clone());
                         }
                         match connection
                             .send_request(load_request)
@@ -2541,6 +2671,10 @@ impl AcpBackendInterface for AcpBackend {
                                 if let Some(declaration) = &mcp_declaration {
                                     new_request.mcp_servers.push(declaration.clone());
                                 }
+                                // Add Claude Code MCP config via _meta field (workaround)
+                                if let Some(meta) = claude_code_mcp_meta.as_ref() {
+                                    new_request.meta = Some(meta.clone());
+                                }
                                 let new_resp = connection
                                     .send_request(new_request)
                                     .block_task()
@@ -2557,6 +2691,10 @@ impl AcpBackendInterface for AcpBackend {
                         let mut new_request = NewSessionRequest::new(&cwd);
                         if let Some(declaration) = &mcp_declaration {
                             new_request.mcp_servers.push(declaration.clone());
+                        }
+                        // Add Claude Code MCP config via _meta field (workaround)
+                        if let Some(meta) = claude_code_mcp_meta {
+                            new_request.meta = Some(meta);
                         }
                         let new_resp = connection
                             .send_request(new_request)
@@ -2592,8 +2730,15 @@ impl AcpBackendInterface for AcpBackend {
                     // Step 3: Command loop — receive prompts from the channel and send to agent.
                     loop {
                         match command_rx.recv().await {
-                            Some(AcpCommand::QueuePrompt { message, images, response_tx }) => {
+                            Some(AcpCommand::QueuePrompt { message, images, conversation_id, response_tx }) => {
+                                // Emit conversation_id for SSE persistence layer.
+                                // This allows agent-to-agent messages (injected via inject_message)
+                                // to have their responses persisted to the correct conversation.
+                                let _ = task_output_tx.send(AgentOutputEvent::ConversationId { id: conversation_id });
                                 task_text_output_seen.store(false, Ordering::Relaxed);
+                                // New prompt turn — reset the thinking
+                                // accumulator so it only covers this turn.
+                                task_recent_thinking.lock().clear();
                                 let prompt_started_at = Instant::now();
                                 info!(
                                     agent_id = %connection_agent_id,
@@ -2659,6 +2804,9 @@ impl AcpBackendInterface for AcpBackend {
                                 response_tx,
                             }) => {
                                 task_text_output_seen.store(false, Ordering::Relaxed);
+                                // New prompt turn — reset the thinking
+                                // accumulator so it only covers this turn.
+                                task_recent_thinking.lock().clear();
                                 let prompt_started_at = Instant::now();
                                 info!(
                                     agent_id = %connection_agent_id,
@@ -2955,18 +3103,19 @@ impl AcpBackendInterface for AcpBackend {
                 })
                 .await;
 
-            // Mark agent as not alive and report death for lazy reaping.
-            task_alive.store(false, std::sync::atomic::Ordering::SeqCst);
-            task_dead_agents.lock().push(task_agent_id.clone());
+                // Mark agent as not alive and report death for lazy reaping.
+                task_alive.store(false, std::sync::atomic::Ordering::SeqCst);
+                task_dead_agents.lock().push(task_agent_id.clone());
 
-            // The process supervisor owns the authoritative exit status.  Only use
-            // the transport task result if the child has not reported status yet.
-            if task_exit_code.read().is_none() {
-                let code = if result.is_ok() { 0 } else { 1 };
-                *task_exit_code.write() = Some(code);
+                // The process supervisor owns the authoritative exit status.  Only use
+                // the transport task result if the child has not reported status yet.
+                if task_exit_code.read().is_none() {
+                    let code = if result.is_ok() { 0 } else { 1 };
+                    *task_exit_code.write() = Some(code);
 
-                if let Err(e) = result {
-                    error!(error = %e, exit_code = code, "ACP connection task failed");
+                    if let Err(e) = result {
+                        error!(error = %e, exit_code = code, "ACP connection task failed");
+                    }
                 }
             }
         });
@@ -3034,6 +3183,7 @@ impl AcpBackendInterface for AcpBackend {
             output_tx,
             output,
             thoughts,
+            recent_thinking,
             tool_calls,
             usage,
             plan,
@@ -3091,7 +3241,7 @@ impl AcpBackendInterface for AcpBackend {
                 agents.get(&agent_id).map(|e| e.handle.clone())
             };
             if let Some(h) = agent_handle {
-                if let Err(e) = self.inject_message(&h, instr).await {
+                if let Err(e) = self.inject_message(&h, instr, None).await {
                     warn!(
                         agent_id = %agent_id,
                         error = %e,
@@ -3110,8 +3260,14 @@ impl AcpBackendInterface for AcpBackend {
         }
     }
 
-    async fn inject_message(&self, handle: &AgentHandle, message: &str) -> ErgataiResult<()> {
-        self.inject_message_with_images(handle, message, &[]).await
+    async fn inject_message(
+        &self,
+        handle: &AgentHandle,
+        message: &str,
+        conversation_id: Option<&str>,
+    ) -> ErgataiResult<()> {
+        self.inject_message_with_images(handle, message, &[], conversation_id)
+            .await
     }
 
     async fn inject_message_with_images(
@@ -3119,6 +3275,7 @@ impl AcpBackendInterface for AcpBackend {
         handle: &AgentHandle,
         message: &str,
         images: &[crate::types::AgentImage],
+        conversation_id: Option<&str>,
     ) -> ErgataiResult<()> {
         self.reap_dead();
         let command_tx = {
@@ -3139,6 +3296,7 @@ impl AcpBackendInterface for AcpBackend {
             .send(AcpCommand::QueuePrompt {
                 message: message.to_string(),
                 images: images.to_vec(),
+                conversation_id: conversation_id.map(String::from),
                 response_tx,
             })
             .await
@@ -3399,6 +3557,23 @@ impl AcpBackendInterface for AcpBackend {
         Ok(self.get_agent_thoughts(agent_id))
     }
 
+    async fn take_recent_thinking(&self, agent_id: &str) -> ErgataiResult<Option<String>> {
+        let agents = self.agents.read();
+        let Some(entry) = agents.get(agent_id) else {
+            return Err(ErgataiError::AgentNotFound(agent_id.to_string()));
+        };
+
+        // Atomically extract and clear in a single lock to avoid losing
+        // thinking accumulated between a clone and a separate clear.
+        let thinking = std::mem::take(&mut *entry.recent_thinking.lock());
+
+        if thinking.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(thinking))
+        }
+    }
+
     async fn output(&self, agent_id: &str) -> ErgataiResult<Option<String>> {
         Ok(self.get_agent_output(agent_id))
     }
@@ -3594,6 +3769,7 @@ mod tests {
             config_options: Arc::new(RwLock::new(Vec::new())),
             available_commands: Arc::new(RwLock::new(Vec::new())),
             last_activity_at: Arc::new(RwLock::new(Instant::now())),
+            recent_thinking: Arc::new(parking_lot::Mutex::new(String::new())),
             alive: Arc::new(AtomicBool::new(true)),
             handle: AgentHandle {
                 workspace: WorkspaceHandle {

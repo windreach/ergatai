@@ -783,6 +783,11 @@ pub async fn auth_middleware(
         .unwrap_or(false);
 
     if !is_valid {
+        tracing::warn!(
+            path = %path,
+            has_auth_header = auth_header.is_some(),
+            "Request rejected (401): invalid or missing API token"
+        );
         return (
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {

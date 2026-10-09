@@ -609,7 +609,12 @@ impl AcpBackendInterface for AcpHttpBackend {
         self.connect_remote_agent(&handle.id, command, None).await
     }
 
-    async fn inject_message(&self, handle: &AgentHandle, message: &str) -> ErgataiResult<()> {
+    async fn inject_message(
+        &self,
+        handle: &AgentHandle,
+        message: &str,
+        _conversation_id: Option<&str>,
+    ) -> ErgataiResult<()> {
         let command_tx = {
             let agents = self.agents.read();
             if let Some(entry) = agents.get(&handle.agent_id) {
@@ -738,6 +743,12 @@ impl AcpBackendInterface for AcpHttpBackend {
     // Observation operations - not supported by AcpHttpBackend
     async fn thoughts(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
         Err(ErgataiError::BackendUnsupported("thoughts".into()))
+    }
+
+    async fn take_recent_thinking(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+        Err(ErgataiError::BackendUnsupported(
+            "take_recent_thinking".into(),
+        ))
     }
 
     async fn output(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {

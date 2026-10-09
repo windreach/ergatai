@@ -1093,7 +1093,7 @@ tasks:
     assert_eq!(graph.ready_tasks().len(), 1);
     assert_eq!(graph.ready_tasks()[0].task, "Solo");
     // Default agent assigned
-    assert_eq!(graph.nodes[0].agent, "agent");
+    assert_eq!(graph.nodes[0].agent, "unassigned-agent");
 }
 
 // ── 3. Very long task names ─────────────────────────────────────────────────

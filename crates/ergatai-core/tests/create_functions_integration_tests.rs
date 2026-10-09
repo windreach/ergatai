@@ -314,6 +314,7 @@ fn agent_message_payload_roundtrip() {
         requires_receipt: false,
         correlation_id: None,
         timeout_ms: None,
+        message_type: "request".to_string(),
     };
 
     let json = serde_json::to_string(&payload).unwrap();

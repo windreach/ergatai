@@ -35,12 +35,10 @@ static USER_DATA_DB: Lazy<Arc<Mutex<Connection>>> = Lazy::new(|| {
 
 /// Get the database file path with symlink protection
 fn get_db_path() -> PathBuf {
+    // Use unified user data directory
     let data_dir = std::env::var("ERGATAI_DATA_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-            PathBuf::from(home).join(".ergatai")
-        });
+        .unwrap_or_else(|_| ergatai_runtime::dirs::user_data_dir());
 
     std::fs::create_dir_all(&data_dir).ok();
 
@@ -62,7 +60,7 @@ fn get_db_path() -> PathBuf {
     let db_path = canonical_data_dir.join("user_data.db");
 
     // SECURITY: If the db file already exists, verify it's not a symlink to a
-    // sensitive location. This prevents attacks where ~/.ergatai/user_data.db
+    // sensitive location. This prevents attacks where user_data.db
     // is symlinked to /etc/passwd or similar.
     if db_path.exists() {
         if let Ok(metadata) = std::fs::symlink_metadata(&db_path) {
@@ -851,6 +849,30 @@ pub mod conversations {
 pub mod messages {
     use super::*;
 
+    /// Concatenate the `text` parts of a persisted `parts` JSON payload.
+    ///
+    /// Used to compare message content across rows regardless of extra part
+    /// types (reasoning, tool calls) that only some writers attach.
+    fn parts_text(parts: &str) -> String {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(parts) else {
+            return String::new();
+        };
+        let Some(items) = value.as_array() else {
+            return String::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| {
+                let obj = item.as_object()?;
+                if obj.get("type")?.as_str()? != "text" {
+                    return None;
+                }
+                Some(obj.get("text")?.as_str()?.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     pub fn list(conversation_id: &str) -> Result<Vec<Message>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
@@ -994,11 +1016,34 @@ pub mod messages {
         // conversation syncs from the UI. Keep the ones the payload does not
         // already contain (round-tripped rows are reinserted from the
         // payload, keeping UI ordering authoritative for known rows).
+        //
+        // Content-based exception: when the payload already carries a message
+        // with the same role and text (e.g. the SDK's full assistant reply
+        // supersedes the text-only snapshot the SSE handler wrote at stream
+        // end), keeping the backend row too would render the reply twice.
+        let payload_text_index: std::collections::HashSet<(String, String)> = merged
+            .iter()
+            .filter_map(|(_, role, parts, ..)| {
+                let text = parts_text(parts);
+                if text.is_empty() {
+                    None
+                } else {
+                    Some((role.clone(), text.trim().to_string()))
+                }
+            })
+            .collect();
         let mut preserved: Vec<&Message> = existing
             .iter()
             .filter(|message| {
-                !payload_ids.contains(message.id.as_str())
-                    && message_metadata_source_is_agent(message)
+                if payload_ids.contains(message.id.as_str())
+                    || !message_metadata_source_is_agent(message)
+                {
+                    return false;
+                }
+                let text = parts_text(&message.parts);
+                text.is_empty()
+                    || !payload_text_index
+                        .contains(&(message.role.clone(), text.trim().to_string()))
             })
             .collect();
         preserved.sort_by_key(|message| message.sequence);
@@ -2816,6 +2861,106 @@ mod tests {
                 "late agent note".to_string(),
             ]
         );
+
+        conversations::delete(&conversation_id).unwrap();
+        projects::delete(&project_id).unwrap();
+        assert!(workspaces::get(&workspace_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_replace_legacy_dedupes_agent_snapshot_already_in_payload() {
+        let _database_guard = lock_user_data_db_for_tests();
+        let prefix = format!("replace-dedupe-{}", std::process::id());
+        let project_id = format!("{prefix}-project");
+        let workspace_id = format!("{prefix}-workspace");
+        let conversation_id = format!("{prefix}-conversation");
+
+        projects::create(Project {
+            id: project_id.clone(),
+            name: "Replace dedupe test".to_string(),
+            path: format!("/tmp/{project_id}"),
+            git_remote_url: None,
+            git_provider: None,
+            git_owner: None,
+            git_repo: None,
+            icon_path: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+        workspaces::create(Workspace {
+            id: workspace_id.clone(),
+            project_id: project_id.clone(),
+            name: None,
+            work_dir: format!("/tmp/{workspace_id}"),
+            env: "{}".to_string(),
+            resources: "{}".to_string(),
+            capture_thoughts: false,
+            collaboration_mode: "supervisor".to_string(),
+            status: "active".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+        conversations::create(Conversation {
+            id: conversation_id.clone(),
+            parent_id: None,
+            project_id: project_id.clone(),
+            workspace_id: Some(workspace_id.clone()),
+            name: Some("Replace dedupe".to_string()),
+            mode: "agent".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+            archived_at: None,
+        })
+        .unwrap();
+
+        messages::append(
+            &conversation_id,
+            "user",
+            serde_json::json!([{ "type": "text", "text": "你好" }]),
+            serde_json::json!({ "source": "user" }),
+        )
+        .unwrap();
+        // Text-only assistant snapshot written by the SSE handler at stream
+        // end (source: agent). The UI's replace payload later carries the
+        // same reply with full parts (reasoning + text) under a different id.
+        let snapshot = messages::append(
+            &conversation_id,
+            "assistant",
+            serde_json::json!([{ "type": "text", "text": "你好！有什么我可以帮你的吗？" }]),
+            serde_json::json!({ "source": "agent" }),
+        )
+        .unwrap();
+
+        let payload = serde_json::json!([
+            {
+                "id": "ui-user-1",
+                "role": "user",
+                "parts": [{ "type": "text", "text": "你好" }],
+                "metadata": { "source": "user" },
+            },
+            {
+                "id": "ui-assistant-1",
+                "role": "assistant",
+                "parts": [
+                    { "type": "reasoning", "text": "用户打招呼，礼貌回复。" },
+                    { "type": "text", "text": "你好！有什么我可以帮你的吗？" },
+                ],
+                "metadata": {},
+            },
+        ]);
+        messages::replace_legacy(&conversation_id, &payload.to_string(), 2000).unwrap();
+
+        let rows = messages::list(&conversation_id).unwrap();
+        // The text-only snapshot must not be rescued: the payload already
+        // contains the same assistant turn (same role + text) with richer
+        // parts. Rendering both would duplicate the reply.
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.id != snapshot.id));
+        let assistant = rows.iter().find(|row| row.role == "assistant").unwrap();
+        let parts: serde_json::Value = serde_json::from_str(&assistant.parts).unwrap();
+        assert_eq!(parts[0]["type"], "reasoning");
 
         conversations::delete(&conversation_id).unwrap();
         projects::delete(&project_id).unwrap();

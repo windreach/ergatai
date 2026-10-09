@@ -91,8 +91,17 @@ impl AcpBackendInterface for MockBackend {
         })
     }
 
-    async fn inject_message(&self, _handle: &AgentHandle, _message: &str) -> ErgataiResult<()> {
+    async fn inject_message(
+        &self,
+        _handle: &AgentHandle,
+        _message: &str,
+        _conversation_id: Option<&str>,
+    ) -> ErgataiResult<()> {
         Ok(())
+    }
+
+    async fn take_recent_thinking(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+        Ok(None)
     }
 
     async fn capture_output(&self, _handle: &AgentHandle) -> ErgataiResult<Option<String>> {
@@ -729,7 +738,7 @@ fn agent_record_new_fields_are_consistent() {
         handle.clone(),
     );
 
-    assert_eq!(rec.agent_uuid, "uuid-x");
+    assert_eq!(rec.agent_instance_id, "uuid-x");
     assert_eq!(rec.agent_id, "agent-x");
     assert_eq!(rec.workspace_id, "ws-x");
     assert_eq!(rec.handle, handle);
@@ -841,7 +850,7 @@ fn agent_record_serialization_roundtrip() {
     let json = serde_json::to_string(&rec).unwrap();
     let decoded: AgentRecord = serde_json::from_str(&json).unwrap();
 
-    assert_eq!(rec.agent_uuid, decoded.agent_uuid);
+    assert_eq!(rec.agent_instance_id, decoded.agent_instance_id);
     assert_eq!(rec.agent_id, decoded.agent_id);
     assert_eq!(rec.workspace_id, decoded.workspace_id);
     assert_eq!(rec.state.state_name(), decoded.state.state_name());
@@ -896,7 +905,7 @@ async fn runtime_register_discovered_agent() {
     let info = info.unwrap();
     assert_eq!(info.agent_id, "%99");
     assert_eq!(info.workspace_id, "ws-disc");
-    assert!(!info.agent_uuid.is_empty());
+    assert!(!info.agent_instance_id.is_empty());
 
     // cleanup
     runtime.stop_agent("%99").await.unwrap();
@@ -940,7 +949,7 @@ async fn runtime_register_five_agents_and_list() {
 
     // Each agent has a non-empty UUID and is in Running state
     for agent in &agents {
-        assert!(!agent.agent_uuid.is_empty());
+        assert!(!agent.agent_instance_id.is_empty());
         assert!(matches!(
             agent.lifecycle,
             AgentLifecycleState::Running { .. }
@@ -971,9 +980,9 @@ async fn runtime_each_agent_gets_unique_uuid() {
             .unwrap();
         let info = runtime.get_agent(&agent_id).await.unwrap();
         assert!(
-            uuids.insert(info.agent_uuid.clone()),
+            uuids.insert(info.agent_instance_id.clone()),
             "UUID {} was duplicated!",
-            info.agent_uuid
+            info.agent_instance_id
         );
         agent_ids.push(agent_id);
     }
@@ -993,15 +1002,15 @@ async fn runtime_uuid_resolution_works() {
         .await
         .unwrap();
     let info = runtime.get_agent(&agent_id).await.unwrap();
-    let uuid = info.agent_uuid.clone();
+    let uuid = info.agent_instance_id.clone();
 
     // Resolve UUID → current runtime ID
-    let resolved = runtime.resolve_agent_uuid(&uuid).await;
+    let resolved = runtime.resolve_agent_instance_id(&uuid).await;
     assert_eq!(resolved, Some(agent_id.clone()));
 
     // After stopping, UUID should be gone from the index
     runtime.stop_agent(&agent_id).await.unwrap();
-    let resolved_after = runtime.resolve_agent_uuid(&uuid).await;
+    let resolved_after = runtime.resolve_agent_instance_id(&uuid).await;
     assert!(resolved_after.is_none());
 }
 
@@ -1132,7 +1141,7 @@ async fn runtime_concurrent_registration_from_multiple_tasks() {
     assert_eq!(agents.len(), 20);
 
     // All UUIDs unique
-    let uuids: HashSet<String> = agents.iter().map(|a| a.agent_uuid.clone()).collect();
+    let uuids: HashSet<String> = agents.iter().map(|a| a.agent_instance_id.clone()).collect();
     assert_eq!(
         uuids.len(),
         20,
@@ -1257,11 +1266,11 @@ async fn runtime_launch_agent_sets_correct_agent_info_fields() {
     assert_eq!(info.agent_id, "agent-ws-fields");
     assert_eq!(info.workspace_id, "ws-fields");
 
-    // agent_uuid is non-empty and well-formed (Snowflake ID format)
-    assert!(!info.agent_uuid.is_empty());
+    // agent_instance_id is non-empty and well-formed (Snowflake ID format)
+    assert!(!info.agent_instance_id.is_empty());
     assert!(
-        ergatai_error::id::parse(&info.agent_uuid).is_some(),
-        "agent_uuid should be a valid Snowflake ID"
+        ergatai_error::id::parse(&info.agent_instance_id).is_some(),
+        "agent_instance_id should be a valid Snowflake ID"
     );
 
     // lifecycle is Running
@@ -1339,7 +1348,7 @@ async fn runtime_try_bind_mcp_agent_to_unbound_runtime_agent() {
 
     // Inject message via auto-generated MCP ID resolves correctly
     runtime
-        .inject_message("acp-ws-mcp-mcp", "hello")
+        .inject_message("acp-ws-mcp-mcp", "hello", None)
         .await
         .unwrap();
 

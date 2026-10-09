@@ -753,16 +753,7 @@ impl ProfileRegistry {
 
     /// Public wrapper for `resolve_adapters_base` so other modules can access it.
     pub fn resolve_adapters_base_public() -> std::path::PathBuf {
-        std::env::var("ERGATAI_ADAPTERS_DIR")
-            .ok()
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-                    .map(|d| d.join("../adapters"))
-            })
-            .unwrap_or_else(|| std::path::PathBuf::from("adapters"))
+        crate::dirs::adapters_base_dir()
     }
 
     /// Register default profiles that are NOT managed adapters.

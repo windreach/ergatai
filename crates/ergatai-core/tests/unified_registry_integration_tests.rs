@@ -45,9 +45,9 @@ async fn register_lookup_by_all_three_keys() {
     let by_agent = reg.get_by_agent_id("%10").await.unwrap();
     let by_mcp = reg.get_by_mcp_id("opencode@xyz").await.unwrap();
 
-    assert_eq!(by_uuid.agent_uuid, "u1");
-    assert_eq!(by_agent.agent_uuid, "u1");
-    assert_eq!(by_mcp.agent_uuid, "u1");
+    assert_eq!(by_uuid.agent_instance_id, "u1");
+    assert_eq!(by_agent.agent_instance_id, "u1");
+    assert_eq!(by_mcp.agent_instance_id, "u1");
 }
 
 // ── Unregister cleans up all indices ─────────────────────────────────
@@ -205,7 +205,7 @@ async fn list_filters_by_state_category() {
 
     assert_eq!(reg.list_alive().await.len(), 2);
     assert_eq!(reg.list_idle().await.len(), 1);
-    assert_eq!(reg.list_idle().await[0].agent_uuid, "b");
+    assert_eq!(reg.list_idle().await[0].agent_instance_id, "b");
     assert_eq!(reg.list_processing().await.len(), 0);
 }
 
@@ -259,7 +259,7 @@ async fn get_summary_returns_correct_fields() {
     reg.register(rec).await;
 
     let summary = reg.get_summary("s1").await.unwrap();
-    assert_eq!(summary.agent_uuid, "s1");
+    assert_eq!(summary.agent_instance_id, "s1");
     assert_eq!(summary.agent_id, "%s1");
     assert_eq!(summary.workspace_id, "ws-test");
     assert!(summary.is_alive);

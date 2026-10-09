@@ -43,6 +43,7 @@ pub mod agent_registry;
 pub mod bash_path_extractor;
 pub mod binary_detection;
 pub mod cgroups;
+pub mod dirs;
 pub mod mcp_over_acp;
 pub mod permission;
 pub mod permission_service;

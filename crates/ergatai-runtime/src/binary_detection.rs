@@ -3,12 +3,52 @@
 //! Uses the `which` crate to locate executables on `PATH`.
 //! The detection extracts the first whitespace-delimited token of a command
 //! string (the binary name) and checks whether it resolves on the system PATH.
+//!
+//! # Caching
+//!
+//! Detection results are cached on first scan to avoid repeated filesystem lookups.
+//! The cache persists for the lifetime of the process and is automatically cleared
+//! when the process exits. On next startup, a fresh scan is performed.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use tracing::debug;
 
+/// Global cache for binary detection results.
+/// Key: command string, Value: detected path (None if not found)
+///
+/// # Lifecycle
+/// - Initialized on first call to `detect_binary`
+/// - Persists for the lifetime of the process
+/// - Automatically cleared when process exits (memory reclaimed by OS)
+/// - Next startup triggers a fresh scan
+static BINARY_CACHE: OnceLock<std::sync::Mutex<HashMap<String, Option<PathBuf>>>> = OnceLock::new();
+
+fn get_cache() -> &'static std::sync::Mutex<HashMap<String, Option<PathBuf>>> {
+    BINARY_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// Clear the binary detection cache.
+/// Typically not needed (cache auto-clears on process exit), but provided for:
+/// - Manual refresh after installing new agents
+/// - Testing
+/// - Explicit cache invalidation
+pub fn clear_cache() {
+    if let Some(cache) = BINARY_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            let count = guard.len();
+            guard.clear();
+            debug!(cleared_entries = count, "Binary detection cache cleared");
+        }
+    }
+}
+
 /// Detect whether an agent command's binary is installed on the system.
+///
+/// Results are cached on first scan to avoid repeated filesystem lookups.
+/// The cache persists for the process lifetime and auto-clears on exit.
 ///
 /// # Arguments
 /// * `command` - Full agent command string (e.g. `"opencode acp"`, `"goose run --acp"`).
@@ -20,7 +60,29 @@ use tracing::debug;
 /// - Only the first whitespace-delimited token is treated as the binary name.
 /// - Absolute paths are checked directly via `Path::exists`.
 /// - This does NOT validate arguments — only that the binary is resolvable.
+/// - Results are cached for the process lifetime; restart to re-scan.
 pub fn detect_binary(command: &str) -> Option<PathBuf> {
+    // Check cache first
+    let cache = get_cache();
+    if let Ok(guard) = cache.lock() {
+        if let Some(cached) = guard.get(command) {
+            return cached.clone();
+        }
+    }
+
+    // Cache miss - perform detection
+    let result = detect_binary_uncached(command);
+
+    // Store in cache
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(command.to_string(), result.clone());
+    }
+
+    result
+}
+
+/// Internal detection without caching.
+fn detect_binary_uncached(command: &str) -> Option<PathBuf> {
     let binary = command.split_whitespace().next()?.trim();
     if binary.is_empty() {
         return None;

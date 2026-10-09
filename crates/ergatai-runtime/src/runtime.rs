@@ -38,7 +38,9 @@ use crate::types::{AgentHandle, AgentInfo, WaitResult, WorkspaceSpec};
 ///
 /// Resolution order (first match wins):
 /// 1. `ERGATAI_API_TOKEN` environment variable
-/// 2. `~/.ergatai/.api-token` file (same file `ergatai-api/src/main.rs` writes)
+/// 2. The shared token file at `dirs::api_token_path()`
+///    (`~/.local/share/ergatai/.api-token`, the same file
+///    `ergatai-api/src/main.rs` reads and auto-generates)
 ///
 /// Returns `None` when auth is disabled (no token configured) or the file is
 /// unreadable — callers should then omit the `Authorization` header from the
@@ -46,8 +48,8 @@ use crate::types::{AgentHandle, AgentInfo, WaitResult, WorkspaceSpec};
 ///
 /// # Security
 /// Mirrors the token-loading logic in `ergatai-api/src/main.rs`: refuses to
-/// read through a symlinked `~/.ergatai/.api-token`. This keeps the MCP
-/// header in sync with what the server expects.
+/// read through a symlinked token file. This keeps the MCP header in sync
+/// with what the server expects.
 pub fn read_api_token() -> Option<String> {
     if let Ok(token) = std::env::var("ERGATAI_API_TOKEN") {
         let trimmed = token.trim().to_string();
@@ -56,10 +58,15 @@ pub fn read_api_token() -> Option<String> {
         }
     }
 
-    let home = std::env::var("HOME")
+    // Resolve the same canonical path the API server uses
+    // (ergatai-api/src/main.rs). Both sides MUST read the same file,
+    // otherwise every injected Authorization header is rejected with 401
+    // and agents silently lose the ergatai MCP tools.
+    let token_path = crate::dirs::api_token_path();
+    let token_dir = token_path
+        .parent()
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
-    let token_dir = home.join(".ergatai");
+        .unwrap_or_else(crate::dirs::user_data_dir);
 
     let canonical_token_dir = match token_dir.canonicalize() {
         Ok(p) => p,
@@ -99,106 +106,6 @@ pub fn read_api_token() -> Option<String> {
             None
         }
     }
-}
-
-/// Inject a per-agent MCP config file into a launch command.
-///
-/// Writes `{work_dir}/.ergatai-mcp-{agent_id}.json` containing a
-/// `mcpServers.ergatai` entry pointing at `http://127.0.0.1:{port}/mcp/{id}`,
-/// with an `Authorization` header when a token is configured.
-///
-/// Returns the original command with `--mcp-config <path>` appended, so the
-/// spawned Claude Code loads the config on startup. If the config file
-/// cannot be written, the original command is returned unchanged (the agent
-/// still runs, it just won't have ergatai's MCP tools).
-///
-/// # Command formats
-/// `AcpAgent::from_str` accepts both a plain command (`"claude"`) and a JSON
-/// form (`{"command":"claude","args":["--foo"]}`). JSON form is returned
-/// untouched — we don't know its arg schema. Plain form is the common case
-/// for ergatai profiles.
-fn inject_mcp_config(command: &str, work_dir: &std::path::Path, agent_id: &str) -> String {
-    // Skip injection for JSON-format commands (e.g., {"command":"opencode","args":["acp"]})
-    // These agents typically don't support --mcp-config CLI flag.
-    // MCP will be injected via ACP protocol instead (session/new request).
-    let trimmed = command.trim();
-    if trimmed.starts_with('{') && trimmed.ends_with('}') {
-        debug!(
-            agent = %agent_id,
-            "Command is JSON format; skipping --mcp-config injection (will use ACP MCP injection)"
-        );
-        return command.to_string();
-    }
-
-    let api_port = std::env::var("ERGATAI_API_PORT").unwrap_or_else(|_| "3000".to_string());
-    let encoded_agent_id =
-        percent_encoding::utf8_percent_encode(agent_id, percent_encoding::NON_ALPHANUMERIC);
-    let mcp_url = format!("http://127.0.0.1:{}/mcp/{}", api_port, encoded_agent_id);
-
-    let mcp_server_entry = if let Some(token) = read_api_token() {
-        debug!(agent = %agent_id, "Injecting Authorization header into agent MCP config");
-        serde_json::json!({
-            "mcpServers": {
-                "ergatai": {
-                    "type": "url",
-                    "url": mcp_url,
-                    "headers": {
-                        "Authorization": format!("Bearer {}", token)
-                    }
-                }
-            }
-        })
-    } else {
-        debug!(
-            agent = %agent_id,
-            "No API token configured — MCP config has no auth header (ok if --insecure-no-auth)"
-        );
-        serde_json::json!({
-            "mcpServers": {
-                "ergatai": {
-                    "type": "url",
-                    "url": mcp_url
-                }
-            }
-        })
-    };
-
-    let config_filename = format!(
-        ".ergatai-mcp-{}.json",
-        agent_id.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-")
-    );
-    let config_path = work_dir.join(&config_filename);
-
-    if let Err(e) = std::fs::write(&config_path, mcp_server_entry.to_string()) {
-        warn!(
-            agent = %agent_id,
-            path = %config_path.display(),
-            error = %e,
-            "Failed to write MCP config — agent will not have ergatai tools"
-        );
-        return command.to_string();
-    }
-
-    debug!(
-        agent = %agent_id,
-        path = %config_path.display(),
-        "Wrote MCP config for agent"
-    );
-
-    // Shell-escape the path (single-quote + '\'' trick) for safe interpolation
-    // into `sh -c` when the backend launches the process.
-    let path_escaped = config_path.display().to_string().replace('\'', "'\\''");
-
-    // Avoid duplicate `--mcp-config` if caller already injected one.
-    if command.contains("--mcp-config") {
-        debug!(
-            agent = %agent_id,
-            "Command already has --mcp-config; leaving untouched"
-        );
-        return command.to_string();
-    }
-
-    format!("{} --mcp-config '{}'", command, path_escaped)
 }
 
 // ── Global singleton ──
@@ -245,7 +152,7 @@ pub struct AgentRuntime {
     backend: Arc<dyn AcpBackendInterface>,
     /// HTTP backend for agents that use HTTP transport (e.g., opencode).
     http_backend: Option<Arc<crate::backends::acp_http::AcpHttpBackend>>,
-    /// 统一 agent 注册表 — 封装所有 5 个索引（primary, uuid, mcp, stable_id, streaks）。
+    /// 统一 agent 注册表 — 封装所有 5 个索引（primary, instance_id, mcp, stable_id, streaks）。
     /// 所有 insert/remove 操作原子性地更新所有反向索引。
     registry: AgentRegistry,
     /// Queue of MCP agent IDs waiting to be bound to a runtime agent.
@@ -417,25 +324,32 @@ impl AgentRuntime {
         // ergatai's own MCP server and sees the built-in tools
         // (list_agents / send_message / submit_orchestration / ...).
         //
+        debug!(
+            agent_id = %agent_id,
+            command = %command,
+            "Launching agent"
+        );
+
+        // Inject per-agent MCP config so the spawned Claude Code connects to
+        // ergatai's own MCP server and sees the built-in tools
+        // (list_agents / send_message / submit_orchestration / ...).
+        //
         // CRITICAL: This is the ONLY place where MCP config is injected. It
         // covers every agent-launch path: `ergatai start`, REST POST /agents,
         // DAG dispatch (via agent_launcher), and manual `ergatai agent spawn`.
         // Without this, agents get 401 from the MCP server (auth is on by
         // default) and see zero tools — the original "agents can't see
         // ergatai MCP" bug.
-        let effective_command;
-        let final_command = if std::env::var("ERGATAI_SKIP_MCP_INJECT").is_ok() {
-            command
-        } else {
-            effective_command = inject_mcp_config(command, &spec.work_dir, &agent_id);
-            &effective_command
-        };
+
+        // CLI injection (--mcp-config) has been replaced by ACP protocol injection.
+        // MCP config is now passed via session/new request's meta field (see build_claude_code_mcp_meta).
+        // This is a permanent architectural change to support adapters that don't support --mcp-config flag.
+        let final_command = command;
 
         debug!(
             agent_id = %agent_id,
-            original_command = %command,
-            final_command = %final_command,
-            "MCP injection: command transformation"
+            command = %final_command,
+            "Using ACP protocol MCP injection (CLI injection replaced)"
         );
 
         // Choose backend based on transport parameter (from profile.transport field)
@@ -470,7 +384,7 @@ impl AgentRuntime {
         };
 
         let agent_id = handle.agent_id.clone();
-        let agent_uuid = format_id(generate(), IdType::Agent);
+        let agent_instance_id = format_id(generate(), IdType::Agent);
         let now = chrono::Utc::now();
 
         // Generate MCP agent ID for ACP agents to enable cross-protocol addressing.
@@ -482,7 +396,7 @@ impl AgentRuntime {
         };
 
         let info = AgentInfo {
-            agent_uuid: agent_uuid.clone(),
+            agent_instance_id: agent_instance_id.clone(),
             agent_id: agent_id.clone(),
             stable_id: handle.metadata.get("ergatai_agent_id").cloned(),
             workspace_id: spec.id,
@@ -515,7 +429,16 @@ impl AgentRuntime {
     /// Uses the backend to inject text directly into the agent's input.
     /// Supports both runtime IDs (e.g., "%198") and MCP IDs (e.g., "opencode@abcd1234")
     /// — MCP IDs are resolved to runtime IDs via the `mcp_index` mapping.
-    pub async fn inject_message(&self, agent_id: &str, message: &str) -> ErgataiResult<()> {
+    ///
+    /// `conversation_id` is an optional conversation thread identifier used by
+    /// the SSE persistence layer to associate the agent's response with the
+    /// correct conversation. Pass `None` when unknown.
+    pub async fn inject_message(
+        &self,
+        agent_id: &str,
+        message: &str,
+        conversation_id: Option<&str>,
+    ) -> ErgataiResult<()> {
         // Resolve MCP ID to runtime ID if needed
         let runtime_id = self
             .resolve_agent_id(agent_id)
@@ -529,7 +452,9 @@ impl AgentRuntime {
             .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", runtime_id)))?;
 
         // Deliver via backend injection
-        self.backend.inject_message(&info.handle, message).await
+        self.backend
+            .inject_message(&info.handle, message, conversation_id)
+            .await
     }
 
     /// Inject a message and optional image attachments into a running agent.
@@ -538,6 +463,7 @@ impl AgentRuntime {
         agent_id: &str,
         message: &str,
         images: Vec<crate::types::AgentImage>,
+        conversation_id: Option<&str>,
     ) -> ErgataiResult<()> {
         let runtime_id = self
             .resolve_agent_id(agent_id)
@@ -551,13 +477,13 @@ impl AgentRuntime {
             .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", runtime_id)))?;
 
         self.backend
-            .inject_message_with_images(&info.handle, message, &images)
+            .inject_message_with_images(&info.handle, message, &images, conversation_id)
             .await
     }
 
     /// Stop an agent.
     pub async fn stop_agent(&self, agent_id: &str) -> ErgataiResult<()> {
-        // 原子移除 — 自动清理所有反向索引（uuid, mcp, stable_id, streaks）
+        // 原子移除 — 自动清理所有反向索引（instance_id, mcp, stable_id, streaks）
         let info = self
             .registry
             .remove(agent_id)
@@ -614,11 +540,11 @@ impl AgentRuntime {
         agent_id: String,
         handle: AgentHandle,
     ) -> ErgataiResult<()> {
-        let agent_uuid = format_id(generate(), IdType::Agent);
+        let agent_instance_id = format_id(generate(), IdType::Agent);
         let now = chrono::Utc::now();
         let stable_id = handle.metadata.get("ergatai_agent_id").cloned();
         let info = AgentInfo {
-            agent_uuid: agent_uuid.clone(),
+            agent_instance_id: agent_instance_id.clone(),
             agent_id: agent_id.clone(),
             stable_id,
             workspace_id: handle.workspace.id.clone(),
@@ -735,7 +661,7 @@ impl AgentRuntime {
             // entry().or_insert() ensures no TOCTOU gap between contains_key and insert.
             guard.entry(agent_id.clone()).or_insert_with(|| {
                 count += 1;
-                let agent_uuid = format_id(generate(), IdType::Agent);
+                let agent_instance_id = format_id(generate(), IdType::Agent);
                 let now = chrono::Utc::now();
                 // If the previous entry had an MCP binding (process restart case),
                 // preserve it. Use MCP path name as ergatai_agent_id + stable_id
@@ -760,9 +686,13 @@ impl AgentRuntime {
                         .metadata
                         .insert("ergatai_agent_id".to_string(), eid.clone());
                 }
-                new_agents.push((agent_id.clone(), agent_uuid.clone(), new_handle.clone()));
+                new_agents.push((
+                    agent_id.clone(),
+                    agent_instance_id.clone(),
+                    new_handle.clone(),
+                ));
                 AgentInfo {
-                    agent_uuid: agent_uuid.clone(),
+                    agent_instance_id: agent_instance_id.clone(),
                     agent_id: agent_id.clone(),
                     stable_id,
                     workspace_id: new_handle.workspace.id.clone(),
@@ -1350,24 +1280,29 @@ impl AgentRuntime {
         self.registry.get_mcp_agent_id(runtime_id).await
     }
 
-    /// Resolve agent UUID to current runtime ID.
+    /// Resolve agent instance ID to current runtime ID.
     ///
-    /// This enables stable message routing: messages are addressed by UUID,
-    /// which survives agent restarts. The UUID maps to the current runtime agent ID.
+    /// This enables message routing within an agent's lifecycle: messages are addressed
+    /// by instance ID (NOT stable across restarts). The instance ID maps to the current runtime agent ID.
+    /// For cross-restart identification, use `profile.name` or `mcp_agent_id`.
     ///
     /// Uses O(1) hash map lookup via uuid_index for efficient resolution.
-    pub async fn resolve_agent_uuid(&self, agent_uuid: &str) -> Option<String> {
-        self.registry.resolve_uuid(agent_uuid).await
+    pub async fn resolve_agent_instance_id(&self, agent_instance_id: &str) -> Option<String> {
+        self.registry.resolve_uuid(agent_instance_id).await
     }
 
     /// Set agent UUID (for testing purposes only).
     #[cfg(test)]
-    pub async fn set_agent_uuid_for_test(&self, agent_id: &str, uuid: &str) -> ErgataiResult<()> {
+    pub async fn set_agent_instance_id_for_test(
+        &self,
+        agent_id: &str,
+        uuid: &str,
+    ) -> ErgataiResult<()> {
         let mut guard = self.registry.write().await;
         let info = guard
             .get_mut(agent_id)
             .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", agent_id)))?;
-        info.agent_uuid = uuid.to_string();
+        info.agent_instance_id = uuid.to_string();
         Ok(())
     }
 
@@ -1396,6 +1331,21 @@ impl AgentRuntime {
             .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", agent_id)))?;
 
         self.backend.capture_output(&info.handle).await
+    }
+
+    /// Take (drain) the thinking accumulated during the agent's current
+    /// prompt turn. Used to attach reasoning to persisted agent-to-agent
+    /// response messages so chat UIs can render the responder's thinking.
+    pub async fn take_recent_thinking(&self, agent_id: &str) -> ErgataiResult<Option<String>> {
+        let info = self
+            .registry
+            .get(agent_id)
+            .await
+            .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", agent_id)))?;
+
+        self.backend
+            .take_recent_thinking(&info.handle.agent_id)
+            .await
     }
 
     /// Wait for agent to exit.
@@ -1459,6 +1409,7 @@ impl AgentRuntime {
         }
 
         self.backend.shutdown().await?;
+
         info!("Agent runtime shutdown complete");
         Ok(())
     }
@@ -1596,7 +1547,7 @@ impl AgentRuntime {
             };
 
             // Extract agent UUID before mutating registry (for consistency check)
-            let agent_uuid = {
+            let agent_instance_id = {
                 let mut guard = registry.write().await;
                 if let Some(info) = guard.get_mut(&agent_id) {
                     // Fill in the real duration for Terminated states
@@ -1620,7 +1571,7 @@ impl AgentRuntime {
                     };
                     info.lifecycle = final_state;
                     info.last_heartbeat = now;
-                    info.agent_uuid.clone()
+                    info.agent_instance_id.clone()
                 } else {
                     // Agent was already removed (e.g., by stop_agent)
                     return;
@@ -1647,11 +1598,11 @@ impl AgentRuntime {
             {
                 let guard = registry.read().await;
                 if let Some(current) = guard.get(&agent_id) {
-                    if current.agent_uuid != agent_uuid {
+                    if current.agent_instance_id != agent_instance_id {
                         info!(
                             agent_id = agent_id,
-                            old_uuid = agent_uuid,
-                            new_uuid = current.agent_uuid,
+                            old_uuid = agent_instance_id,
+                            new_uuid = current.agent_instance_id,
                             "agent_id re-bound to new UUID during grace period — skipping cleanup"
                         );
                         return;
@@ -1659,7 +1610,7 @@ impl AgentRuntime {
                 }
             }
 
-            // 原子移除所有索引 — AgentRegistry 自动清理 uuid, mcp, stable_id, streaks
+            // 原子移除所有索引 — AgentRegistry 自动清理 instance_id, mcp, stable_id, streaks
             registry.remove(&agent_id).await;
 
             // NOTE: Do NOT cleanup workspace here. The workspace may be shared
@@ -1762,7 +1713,12 @@ mod tests {
                 metadata: HashMap::new(),
             })
         }
-        async fn inject_message(&self, _handle: &AgentHandle, _message: &str) -> ErgataiResult<()> {
+        async fn inject_message(
+            &self,
+            _handle: &AgentHandle,
+            _message: &str,
+            _conversation_id: Option<&str>,
+        ) -> ErgataiResult<()> {
             if self.inject_fail {
                 Err(ErgataiError::internal("inject failed".to_string()))
             } else {
@@ -1802,6 +1758,9 @@ mod tests {
         }
         // Observation operations
         async fn thoughts(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+            Ok(None)
+        }
+        async fn take_recent_thinking(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
             Ok(None)
         }
         async fn output(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
@@ -2053,13 +2012,16 @@ mod tests {
             .launch_agent(make_spec("ws-1"), "cmd", None, None, None)
             .await
             .unwrap();
-        runtime.inject_message(&agent_id, "hello").await.unwrap();
+        runtime
+            .inject_message(&agent_id, "hello", None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     async fn test_inject_message_unknown_agent() {
         let runtime = make_runtime();
-        let result = runtime.inject_message("nonexistent", "hello").await;
+        let result = runtime.inject_message("nonexistent", "hello", None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -2074,7 +2036,7 @@ mod tests {
             .await
             .unwrap();
         // No MCP integration set → error
-        let result = runtime.inject_message(&agent_id, "hello").await;
+        let result = runtime.inject_message(&agent_id, "hello", None).await;
         assert!(result.is_err());
     }
 
@@ -2209,7 +2171,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = runtime.inject_message(&agent_id, "hello").await;
+        let result = runtime.inject_message(&agent_id, "hello", None).await;
         assert!(result.is_err(), "backend failure should propagate as error");
     }
 
@@ -2240,7 +2202,7 @@ mod tests {
         let mut metadata = HashMap::new();
         metadata.insert("ergatai_agent_id".to_string(), stable_id.to_string());
         let info = AgentInfo {
-            agent_uuid: format!("uuid-{}", runtime_id),
+            agent_instance_id: format!("uuid-{}", runtime_id),
             agent_id: runtime_id.to_string(),
             stable_id: Some(stable_id.to_string()),
             workspace_id: "ws-test".to_string(),

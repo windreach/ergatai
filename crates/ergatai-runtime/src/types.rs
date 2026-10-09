@@ -178,8 +178,8 @@ pub struct SessionInfo {
 /// Agent information tracked by the runtime facade.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
-    /// Stable agent UUID (persistent across agent restarts, used for message routing)
-    pub agent_uuid: String,
+    /// Agent instance ID (NOT persistent across restarts, used for within-lifecycle routing)
+    pub agent_instance_id: String,
 
     /// Runtime agent ID (e.g., "ws1-agent-1", used for message delivery)
     /// Changes when the process dies and a new one is created.
@@ -465,7 +465,7 @@ mod tests {
     fn test_agent_info_construction() {
         let now = chrono::Utc::now();
         let info = AgentInfo {
-            agent_uuid: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            agent_instance_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             agent_id: "agent-1".to_string(),
             stable_id: None,
             workspace_id: "ws-1".to_string(),
@@ -494,7 +494,10 @@ mod tests {
             state_history: Vec::new(),
         };
         assert_eq!(info.agent_id, "agent-1");
-        assert_eq!(info.agent_uuid, "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(
+            info.agent_instance_id,
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
         assert_eq!(info.workspace_id, "ws-1");
         assert!(info.task_id.is_none());
     }
@@ -503,7 +506,7 @@ mod tests {
     fn test_agent_info_with_task() {
         let now = chrono::Utc::now();
         let info = AgentInfo {
-            agent_uuid: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+            agent_instance_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
             agent_id: "agent-1".to_string(),
             stable_id: None,
             workspace_id: "ws-1".to_string(),

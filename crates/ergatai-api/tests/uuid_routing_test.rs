@@ -41,10 +41,10 @@ mod uuid_routing_tests {
 
         // Get the auto-generated UUID
         let agent_info = runtime.get_agent(agent_id).await.unwrap();
-        let agent_uuid = agent_info.agent_uuid.clone();
+        let agent_instance_id = agent_info.agent_instance_id.clone();
 
         // Resolve UUID → should find the agent_id
-        let resolved = runtime.resolve_agent_uuid(&agent_uuid).await;
+        let resolved = runtime.resolve_agent_instance_id(&agent_instance_id).await;
         assert_eq!(resolved, Some(agent_id.to_string()));
     }
 
@@ -55,7 +55,7 @@ mod uuid_routing_tests {
         let runtime = AgentRuntime::new(backend);
 
         // Try to resolve a UUID that doesn't exist
-        let resolved = runtime.resolve_agent_uuid("non-existent-uuid").await;
+        let resolved = runtime.resolve_agent_instance_id("non-existent-uuid").await;
         assert_eq!(resolved, None);
     }
 
@@ -78,12 +78,12 @@ mod uuid_routing_tests {
 
             // Get the auto-generated UUID
             let agent_info = runtime.get_agent(id).await.unwrap();
-            uuid_to_id.insert(agent_info.agent_uuid.clone(), id.to_string());
+            uuid_to_id.insert(agent_info.agent_instance_id.clone(), id.to_string());
         }
 
         // Verify each UUID resolves to the correct agent_id
         for (uuid, expected_id) in &uuid_to_id {
-            let resolved = runtime.resolve_agent_uuid(uuid).await;
+            let resolved = runtime.resolve_agent_instance_id(uuid).await;
             assert_eq!(
                 resolved,
                 Some(expected_id.clone()),
@@ -110,7 +110,7 @@ mod uuid_routing_tests {
         let info = runtime.get_agent(agent_id).await.unwrap();
 
         // UUID should be non-empty and auto-generated
-        assert!(!info.agent_uuid.is_empty());
+        assert!(!info.agent_instance_id.is_empty());
         assert_eq!(info.agent_id, agent_id);
     }
 
@@ -132,7 +132,7 @@ mod uuid_routing_tests {
                 .unwrap();
 
             let agent_info = runtime.get_agent(id).await.unwrap();
-            uuids.push(agent_info.agent_uuid.clone());
+            uuids.push(agent_info.agent_instance_id.clone());
         }
 
         // All UUIDs should be unique

@@ -67,7 +67,17 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
     fn next_agent_id(&self, workspace_id: &str) -> String;
 
     /// Inject a message into a running agent.
-    async fn inject_message(&self, handle: &AgentHandle, message: &str) -> ErgataiResult<()>;
+    ///
+    /// `conversation_id` is an optional thread/conversation identifier used by
+    /// the SSE persistence layer to associate the agent's response with the
+    /// correct conversation. Pass `None` when the conversation context is
+    /// unknown (e.g. initial instruction, auto-continue).
+    async fn inject_message(
+        &self,
+        handle: &AgentHandle,
+        message: &str,
+        conversation_id: Option<&str>,
+    ) -> ErgataiResult<()>;
 
     /// Inject a message and optional image attachments into a running agent.
     async fn inject_message_with_images(
@@ -75,9 +85,10 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
         handle: &AgentHandle,
         message: &str,
         images: &[crate::types::AgentImage],
+        conversation_id: Option<&str>,
     ) -> ErgataiResult<()> {
         if images.is_empty() {
-            self.inject_message(handle, message).await
+            self.inject_message(handle, message, conversation_id).await
         } else {
             Err(ErgataiError::internal(
                 "Image attachments are not supported by this backend",
@@ -125,6 +136,11 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
 
     /// Get the agent's current thoughts (if any).
     async fn thoughts(&self, agent_id: &str) -> ErgataiResult<Option<String>>;
+
+    /// Take (drain) the thinking accumulated during the agent's current
+    /// prompt turn. Returns `Ok(None)` when the backend does not track
+    /// per-turn thinking.
+    async fn take_recent_thinking(&self, agent_id: &str) -> ErgataiResult<Option<String>>;
 
     /// Get the agent's output (non-destructive read).
     async fn output(&self, agent_id: &str) -> ErgataiResult<Option<String>>;
@@ -321,7 +337,12 @@ mod tests {
             })
         }
 
-        async fn inject_message(&self, _handle: &AgentHandle, _message: &str) -> ErgataiResult<()> {
+        async fn inject_message(
+            &self,
+            _handle: &AgentHandle,
+            _message: &str,
+            _conversation_id: Option<&str>,
+        ) -> ErgataiResult<()> {
             Ok(())
         }
 
@@ -330,6 +351,7 @@ mod tests {
             _handle: &AgentHandle,
             _message: &str,
             images: &[crate::types::AgentImage],
+            _conversation_id: Option<&str>,
         ) -> ErgataiResult<()> {
             if images.is_empty() {
                 Ok(())
@@ -382,6 +404,10 @@ mod tests {
 
         // Observation operations
         async fn thoughts(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
+            Ok(None)
+        }
+
+        async fn take_recent_thinking(&self, _agent_id: &str) -> ErgataiResult<Option<String>> {
             Ok(None)
         }
 
@@ -611,7 +637,7 @@ mod tests {
             process_id: None,
             metadata: HashMap::new(),
         };
-        assert!(backend.inject_message(&agent, "hello").await.is_ok());
+        assert!(backend.inject_message(&agent, "hello", None).await.is_ok());
     }
 
     #[tokio::test]

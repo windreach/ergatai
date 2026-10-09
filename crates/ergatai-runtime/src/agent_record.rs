@@ -29,8 +29,10 @@ pub struct StateTransition {
 /// (runtime, collab, core) into a single source of truth.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRecord {
-    /// Unique agent identifier (stable across restarts, used for message routing)
-    pub agent_uuid: String,
+    /// Snowflake ID generated at agent start (NOT stable across restarts).
+    /// Used for within-lifecycle message tracking and deduplication.
+    /// For cross-restart identification, use `profile.name` or `mcp_agent_id`.
+    pub agent_instance_id: String,
 
     /// Dynamic runtime agent ID (e.g., "ws1-agent-1", changes on restart)
     pub agent_id: String,
@@ -120,7 +122,7 @@ pub struct WorkspaceHandle {
 impl AgentRecord {
     /// Create a new agent record in the Created state
     pub fn new(
-        agent_uuid: String,
+        agent_instance_id: String,
         agent_id: String,
         workspace_id: String,
         handle: AgentHandle,
@@ -128,7 +130,7 @@ impl AgentRecord {
         let now = Utc::now();
         let stable_id = handle.metadata.get("ergatai_agent_id").cloned();
         Self {
-            agent_uuid,
+            agent_instance_id,
             agent_id,
             stable_id,
             state: AgentLifecycleState::Created,
@@ -271,7 +273,7 @@ mod tests {
             create_test_handle(),
         );
 
-        assert_eq!(record.agent_uuid, "uuid-123");
+        assert_eq!(record.agent_instance_id, "uuid-123");
         assert_eq!(record.agent_id, "agent-1");
         assert_eq!(record.workspace_id, "ws-1");
         assert_eq!(record.state.state_name(), "created");
@@ -445,7 +447,7 @@ mod tests {
         let json = serde_json::to_string(&record).unwrap();
         let decoded: AgentRecord = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(record.agent_uuid, decoded.agent_uuid);
+        assert_eq!(record.agent_instance_id, decoded.agent_instance_id);
         assert_eq!(record.agent_id, decoded.agent_id);
         assert_eq!(record.state.state_name(), decoded.state.state_name());
     }

@@ -1,7 +1,7 @@
 //! AgentRegistry — 封装所有 agent 索引的一致性管理。
 //!
 //! 将 5 个独立的 HashMap 索引封装在单一 RwLock 下，确保 insert/remove
-//! 操作原子性地更新所有反向索引（uuid, mcp, stable_id, unhealthy_streaks）。
+//! 操作原子性地更新所有反向索引（instance_id, mcp, stable_id, unhealthy_streaks）。
 //!
 //! 这消除了"忘记清理某个索引"的 bug 类别——之前 `stop_agent()` 和
 //! `prune_unhealthy_agents()` 曾只清理主 registry 而泄漏其他索引。
@@ -19,7 +19,7 @@ use crate::types::AgentInfo;
 struct RegistryInner {
     /// agent_id → AgentInfo
     primary: HashMap<String, AgentInfo>,
-    /// agent_uuid → agent_id
+    /// agent_instance_id → agent_id
     uuid_index: HashMap<String, String>,
     /// mcp_agent_id → agent_id
     mcp_index: HashMap<String, String>,
@@ -42,7 +42,7 @@ impl RegistryInner {
 
     /// 从所有反向索引中移除给定 agent 的条目（不触碰 primary）。
     fn clean_reverse_indices(&mut self, info: &AgentInfo) {
-        self.uuid_index.remove(&info.agent_uuid);
+        self.uuid_index.remove(&info.agent_instance_id);
         if let Some(ref mcp_id) = info.mcp_agent_id {
             self.mcp_index.remove(mcp_id);
         }
@@ -55,7 +55,7 @@ impl RegistryInner {
     /// 为给定 agent 添加反向索引条目。
     fn add_reverse_indices(&mut self, info: &AgentInfo) {
         self.uuid_index
-            .insert(info.agent_uuid.clone(), info.agent_id.clone());
+            .insert(info.agent_instance_id.clone(), info.agent_id.clone());
         if let Some(ref mcp_id) = info.mcp_agent_id {
             self.mcp_index.insert(mcp_id.clone(), info.agent_id.clone());
         }
@@ -69,7 +69,7 @@ impl RegistryInner {
         self.uuid_index = self
             .primary
             .iter()
-            .map(|(agent_id, info)| (info.agent_uuid.clone(), agent_id.clone()))
+            .map(|(agent_id, info)| (info.agent_instance_id.clone(), agent_id.clone()))
             .collect();
         self.mcp_index = self
             .primary
@@ -454,7 +454,7 @@ mod tests {
     fn make_agent_info(id: &str, uuid: &str) -> AgentInfo {
         let now = chrono::Utc::now();
         AgentInfo {
-            agent_uuid: uuid.to_string(),
+            agent_instance_id: uuid.to_string(),
             agent_id: id.to_string(),
             stable_id: Some(format!("stable-{id}")),
             workspace_id: "ws-test".to_string(),
@@ -492,7 +492,7 @@ mod tests {
 
         let got = registry.get("agent-1").await.unwrap();
         assert_eq!(got.agent_id, "agent-1");
-        assert_eq!(got.agent_uuid, "uuid-1");
+        assert_eq!(got.agent_instance_id, "uuid-1");
     }
 
     #[tokio::test]

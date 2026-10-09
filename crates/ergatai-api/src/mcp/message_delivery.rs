@@ -26,8 +26,10 @@
 //! (ergatai.agent.request_timeout.*) are filtered out at the consumer level
 //! and handled separately by their own monitoring systems.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use async_nats::jetstream::message::AckKind;
 use futures::StreamExt;
@@ -43,6 +45,99 @@ static MSG_COUNT_REQUEST: AtomicU64 = AtomicU64::new(0);
 static MSG_COUNT_RESPONSE: AtomicU64 = AtomicU64::new(0);
 static MSG_COUNT_BROADCAST: AtomicU64 = AtomicU64::new(0);
 static MSG_COUNT_NOTIFICATION: AtomicU64 = AtomicU64::new(0);
+
+/// Deduplication cache for processed messages (prevents duplicate delivery on ack failures)
+/// Maps message_id → processing timestamp
+/// Uses Mutex<HashMap> with periodic cleanup of stale entries
+static PROCESSED_MESSAGES: once_cell::sync::OnceCell<Mutex<HashMap<String, Instant>>> =
+    once_cell::sync::OnceCell::new();
+
+/// TTL for processed message cache (5 minutes)
+/// Messages older than this are automatically cleaned up
+const DEDUP_TTL: Duration = Duration::from_secs(300);
+
+/// Maximum cache size before forced cleanup
+const MAX_CACHE_SIZE: usize = 10000;
+
+/// Initialize or get the processed messages cache
+fn get_processed_messages() -> &'static Mutex<HashMap<String, Instant>> {
+    PROCESSED_MESSAGES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Check if a message has already been processed (idempotency check)
+/// Returns true if this is a duplicate delivery
+fn is_duplicate_message(message_id: &str) -> bool {
+    let cache = get_processed_messages();
+    let Ok(guard) = cache.lock() else {
+        tracing::error!("Dedup cache lock poisoned; dedup disabled for this check");
+        return false;
+    };
+    guard.contains_key(message_id)
+}
+
+/// Mark a message as processed
+fn mark_message_processed(message_id: &str) {
+    let cache = get_processed_messages();
+    let Ok(mut guard) = cache.lock() else {
+        tracing::error!("Dedup cache lock poisoned; cannot mark message as processed");
+        return;
+    };
+
+    // Insert the message
+    guard.insert(message_id.to_string(), Instant::now());
+
+    // Periodic cleanup: if cache is too large or has old entries
+    if guard.len() > MAX_CACHE_SIZE {
+        cleanup_stale_entries(&mut guard);
+    }
+}
+
+/// Remove a message from the processed cache (used when delivery fails transiently,
+/// so that NATS retry can proceed without being blocked by dedup).
+fn unmark_message_processed(message_id: &str) {
+    let cache = get_processed_messages();
+    let Ok(mut guard) = cache.lock() else {
+        return;
+    };
+    guard.remove(message_id);
+}
+
+/// Remove entries older than DEDUP_TTL
+fn cleanup_stale_entries(cache: &mut HashMap<String, Instant>) {
+    let now = Instant::now();
+    cache.retain(|_, timestamp| now.duration_since(*timestamp) < DEDUP_TTL);
+}
+
+/// Background task to periodically clean up stale entries
+/// Spawned once when the consumer starts
+fn spawn_dedup_cleanup_task(cancel: tokio_util::sync::CancellationToken) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60)); // Clean up every minute
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    debug!("Dedup cleanup task cancelled");
+                    break;
+                }
+                _ = interval.tick() => {
+                    let cache = get_processed_messages();
+                    if let Ok(mut guard) = cache.lock() {
+                        let before = guard.len();
+                        cleanup_stale_entries(&mut guard);
+                        let after = guard.len();
+                        if before > 0 && after < before {
+                            debug!(
+                                cleaned = before - after,
+                                remaining = after,
+                                "Cleaned up stale dedup entries"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
 
 /// Get message type statistics
 pub fn get_message_type_stats() -> Vec<(String, u64)> {
@@ -93,6 +188,9 @@ pub fn start_message_delivery_consumer(
     connection: NatsConnection,
     cancel: tokio_util::sync::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
+    // Spawn background cleanup task for dedup cache
+    spawn_dedup_cleanup_task(cancel.clone());
+
     tokio::spawn(async move {
         info!("Message delivery consumer starting");
 
@@ -252,37 +350,60 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
     let from = &payload.from_agent;
     let to = &payload.to_agent;
 
-    // Increment message type counter for statistics
-    // Detect message type from payload characteristics
-    let msg_type = if payload.to_agent == "*"
-        || payload.to_agent == "all"
-        || payload.to_agent == "broadcast"
-    {
-        "broadcast"
-    } else if payload.correlation_id.is_some() {
-        "request"
-    } else if payload.content.contains("receipt") || payload.content.contains("timeout") {
-        "notification"
+    // Use the message_type from the payload (now available after adding the field)
+    // Fall back to inference for backward compatibility with old messages
+    let msg_type = if payload.message_type.is_empty() {
+        // Backward compatibility: infer from payload characteristics
+        if payload.to_agent == "*" || payload.to_agent == "all" || payload.to_agent == "broadcast" {
+            "broadcast"
+        } else if payload.correlation_id.is_some() {
+            "request"
+        } else if payload.content.contains("receipt") || payload.content.contains("timeout") {
+            "notification"
+        } else {
+            "response"
+        }
     } else {
-        "response"
+        payload.message_type.as_str()
     };
     increment_message_count(msg_type);
 
-    // Warn on redeliveries — indicates a prior delivery attempt may have succeeded
-    // but the ack failed, or the consumer restarted mid-delivery.
+    // ── Idempotency check: skip duplicate deliveries ──
+    // If this message was already processed (e.g., ack failed but delivery succeeded),
+    // skip re-delivery to prevent duplicate messages reaching the agent.
+    if is_duplicate_message(&payload.message_id) {
+        warn!(
+            from = from,
+            to = to,
+            message_id = %payload.message_id,
+            "Duplicate message detected — skipping re-delivery (already processed)"
+        );
+        // Ack to remove from stream (we already delivered it successfully before)
+        if let Err(ack_err) = msg.ack().await {
+            error!(
+                message_id = %payload.message_id,
+                error = %ack_err,
+                "Failed to ack duplicate message"
+            );
+        }
+        return;
+    }
+
+    // Warn on redeliveries (for visibility, but we handle them via dedup)
     if let Ok(info) = msg.info() {
         if info.delivered > 1 {
             warn!(
                 from = from,
                 to = to,
                 delivery_count = info.delivered,
-                "Message redelivered — possible duplicate. Prior ack may have failed."
+                message_id = %payload.message_id,
+                "Message redelivered — will check dedup cache"
             );
         }
     }
 
     // ── Resolve sender and recipient runtime IDs for delivery ──
-    // Priority: UUID (stable) > runtime agent ID (dynamic, may be stale)
+    // Priority: instance ID (within lifecycle) > runtime agent ID (dynamic)
     let runtime = match crate::context::try_get_app_context() {
         Some(ctx) => ctx.agent_runtime.clone(),
         None => {
@@ -300,8 +421,8 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
     let formatted_message = payload.content.as_str();
 
     let to_runtime_id = if let Some(ref to_uuid) = payload.to_uuid {
-        // Try UUID first (stable across agent restarts)
-        match runtime.resolve_agent_uuid(to_uuid).await {
+        // Try instance ID first (within current lifecycle only)
+        match runtime.resolve_agent_instance_id(to_uuid).await {
             Some(id) => {
                 debug!(
                     to_uuid = %to_uuid,
@@ -341,14 +462,50 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
         "Delivering message: MCP target → runtime resolution"
     );
 
+    // Record pending response BEFORE inject_message to avoid race condition.
+    // inject_message blocks until the agent finishes processing, but the agent
+    // may send a response before inject_message returns. If we record pending
+    // response after inject_message, the response lookup will fail.
+    //
+    // Cleanup strategy:
+    // - If delivery succeeds: pending response remains (cleaned up when actual response arrives)
+    // - If delivery fails: we explicitly call remove_pending_response() below
+    if payload.requires_receipt {
+        if let Some(corr_id) = &payload.correlation_id {
+            crate::messaging::record_pending_response(to, corr_id, payload.thread_id.as_deref())
+                .await;
+            debug!(
+                message_id = %payload.message_id,
+                to = %to,
+                correlation_id = %corr_id,
+                "Recorded pending response BEFORE delivery (NATS consumer)"
+            );
+        }
+    }
+
+    // Mark as processed BEFORE inject_message to prevent duplicate delivery if NATS
+    // redelivers during the (potentially long) inject_message call. The TOCTOU race
+    // between is_duplicate_message() and mark_message_processed() could otherwise allow
+    // two concurrent inject_message() calls for the same message.
+    //
+    // If inject_message fails transiently (nak path), we remove the mark below so the
+    // retry can proceed. On permanent failure (agent not found, ack path), we keep the
+    // mark since the message is discarded anyway.
+    mark_message_processed(&payload.message_id);
+
     match runtime
-        .inject_message(&to_runtime_id, formatted_message)
+        .inject_message(
+            &to_runtime_id,
+            formatted_message,
+            payload.thread_id.as_deref(),
+        )
         .await
     {
         Ok(()) => {
             info!(
                 from = from,
                 to = to,
+                message_id = %payload.message_id,
                 "Message delivered via AgentRuntime injection"
             );
 
@@ -364,7 +521,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                     error!(
                         message_id = %payload.message_id,
                         error = %e,
-                        "Failed to ack message delivery - NATS will redeliver"
+                        "Failed to ack message delivery - NATS will redeliver but dedup will prevent duplicate"
                     );
                 }
             }
@@ -415,34 +572,50 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                 }
             }
 
-            // Record pending response for implicit correlation_id tracking
-            // (so when the recipient sends a response, system auto-fills correlation_id)
+            // Note: pending response was already recorded BEFORE inject_message
+            // to avoid race condition where agent responds before inject_message returns.
+        }
+        Err(e) => {
+            // Clean up pending response if delivery failed (to avoid leak)
             if payload.requires_receipt {
                 if let Some(corr_id) = &payload.correlation_id {
-                    crate::messaging::record_pending_response(
-                        to,
-                        corr_id,
-                        payload.thread_id.as_deref(),
-                    )
-                    .await;
+                    crate::messaging::remove_pending_response(to, corr_id).await;
                     debug!(
                         message_id = %payload.message_id,
                         to = %to,
                         correlation_id = %corr_id,
-                        "Recorded pending response for implicit tracking"
+                        "Removed pending response due to delivery failure"
                     );
                 }
             }
-        }
-        Err(e) => {
-            warn!(
-                from = from,
-                to = to,
-                error = %e,
-                "AgentRuntime injection failed — naking for retry"
-            );
-            if let Err(nak_err) = msg.ack_with(AckKind::Nak(None)).await {
-                error!("Failed to nak message: {}", nak_err);
+
+            // Check if this is a permanent "agent not found" error vs transient error
+            let is_agent_not_found = matches!(e, ergatai_error::ErgataiError::AgentNotFound(_));
+
+            if is_agent_not_found {
+                // Agent permanently gone — ack to discard, no point retrying
+                warn!(
+                    from = from,
+                    to = to,
+                    error = %e,
+                    "Target agent no longer exists — acking to discard (no retry)"
+                );
+                if let Err(ack_err) = msg.ack().await {
+                    error!("Failed to ack undeliverable message: {}", ack_err);
+                }
+            } else {
+                // Transient error — nak for retry
+                // Remove from processed cache so the retry is not blocked by dedup.
+                unmark_message_processed(&payload.message_id);
+                warn!(
+                    from = from,
+                    to = to,
+                    error = %e,
+                    "AgentRuntime injection failed — naking for retry"
+                );
+                if let Err(nak_err) = msg.ack_with(AckKind::Nak(None)).await {
+                    error!("Failed to nak message: {}", nak_err);
+                }
             }
         }
     }
@@ -526,5 +699,68 @@ mod tests {
         assert_eq!(max_attempts, 10);
         // Total worst-case wait: 500+1000+2000+4000+8000+16000+30000*4 = 151.5s
         // This bounds the startup delay when the stream isn't ready.
+    }
+
+    #[test]
+    fn test_dedup_ttl_is_five_minutes() {
+        assert_eq!(DEDUP_TTL.as_secs(), 300);
+    }
+
+    #[test]
+    fn test_max_cache_size_is_ten_thousand() {
+        assert_eq!(MAX_CACHE_SIZE, 10000);
+    }
+
+    #[test]
+    fn test_dedup_cache_initialization() {
+        // Test that cache can be initialized and accessed
+        let cache = get_processed_messages();
+        assert!(cache.lock().is_ok());
+    }
+
+    #[test]
+    fn test_mark_and_check_duplicate() {
+        // Use a unique message_id for this test
+        let test_msg_id = format!(
+            "test-dedup-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        // First check should return false (not a duplicate)
+        assert!(!is_duplicate_message(&test_msg_id));
+
+        // Mark as processed
+        mark_message_processed(&test_msg_id);
+
+        // Second check should return true (is a duplicate)
+        assert!(is_duplicate_message(&test_msg_id));
+    }
+
+    #[test]
+    fn test_cleanup_stale_entries() {
+        let mut cache = HashMap::new();
+        let now = Instant::now();
+
+        // Add some old entries (beyond TTL)
+        cache.insert("old-msg-1".to_string(), now - Duration::from_secs(400));
+        cache.insert("old-msg-2".to_string(), now - Duration::from_secs(500));
+
+        // Add some recent entries (within TTL)
+        cache.insert("new-msg-1".to_string(), now - Duration::from_secs(60));
+        cache.insert("new-msg-2".to_string(), now);
+
+        assert_eq!(cache.len(), 4);
+
+        // Cleanup should remove old entries
+        cleanup_stale_entries(&mut cache);
+
+        assert_eq!(cache.len(), 2);
+        assert!(cache.contains_key("new-msg-1"));
+        assert!(cache.contains_key("new-msg-2"));
+        assert!(!cache.contains_key("old-msg-1"));
+        assert!(!cache.contains_key("old-msg-2"));
     }
 }

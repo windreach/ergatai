@@ -280,13 +280,13 @@ the system automatically spawns it and delivers your message.
 QUICK REFERENCE (use the `ergatai_agent_id` from `list_agents` as `target_agent_id`):
 ```
 # Send request (default)
-send_message(target_agent_id="agent-2", message="Please review")
+send_message(target_agent_id="<target-agent>", message="Please review")
 
 # Reply (use the `from` field of the received message)
-send_message(target_agent_id="agent-1", message="Done", message_type="response")
+send_message(target_agent_id="<sender-agent>", message="Done", message_type="response")
 
 # Broadcast
-send_message(target_agent_id="agent-2", message="FYI", message_type="broadcast")
+send_message(target_agent_id="<target-agent>", message="FYI", message_type="broadcast")
 ```
 
 ### 1.3 DAG orchestration
@@ -320,15 +320,15 @@ MUST distinguish user messages (free-form) from agent messages (JSON).
 ### Agent message format
 ```json
 {
-  "from": "agent-1",
+  "from": "<sender-agent-id>",
   "message": "Please review",
   "message_type": "request",
-  "_reply": "MUST call send_message(target_agent_id=\"agent-1\")",
+  "_reply": "MUST call send_message(target_agent_id=\"<sender-agent-id>\")",
   "_rules": ["DO NOT write reply as terminal text", "After send_message, output END"]
 }
 
 Fields:
-- `from`: Sender's MCP agent ID (e.g., "agent-1"). This is the unified ID format — use it as `target_agent_id` when replying. `from` and `_reply` always contain the same ID.
+- `from`: Sender's MCP agent ID (e.g., "ws1-agent-1", "agent-42"). This is the unified ID format — use it as `target_agent_id` when replying. `from` and `_reply` always contain the same ID.
 - `message`: Content
 - `message_type`: "request" | "response" | "broadcast"
 - `_reply`: (request only) Exact `send_message` call — MUST follow. **Absent (null) for response/broadcast** — do NOT call send_message unless there is new work or a specific task.
@@ -363,7 +363,7 @@ communication: "open"
 
 tasks:
   - name: "analyze"           # Unique task name (REQUIRED)
-    agent: "agent-1"          # Executing agent (REQUIRED)
+    agent: "<agent-id>"       # Executing agent (REQUIRED)
     task: "Analyze structure" # Task description (REQUIRED)
     depends_on: []            # Dependencies (empty = runs first)
     priority: "high"

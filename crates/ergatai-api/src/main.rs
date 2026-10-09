@@ -154,14 +154,14 @@ async fn async_main(args: Args) -> Result<()> {
     let resolved_token = match args.api_token {
         Some(t) => Some(t),
         None if !args.insecure_no_auth => {
-            let home = std::env::var("HOME")
+            let token_path = ergatai_runtime::dirs::api_token_path();
+            let token_dir = token_path
+                .parent()
                 .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
-            let token_dir = home.join(".ergatai");
-            let token_path = token_dir.join(".api-token");
+                .unwrap_or_else(ergatai_runtime::dirs::user_data_dir);
 
             // SECURITY: Canonicalize parent directory to detect symlink attacks.
-            // If ~/.ergatai is a symlink to a sensitive location, this resolves it.
+            // If user data dir is a symlink to a sensitive location, this resolves it.
             let canonical_token_dir = match token_dir.canonicalize() {
                 Ok(path) => path,
                 Err(_) => {
@@ -178,7 +178,7 @@ async fn async_main(args: Args) -> Result<()> {
             let canonical_token_path = canonical_token_dir.join(".api-token");
 
             // SECURITY: Check if token file is a symlink before reading/writing.
-            // This prevents attacks where ~/.ergatai/.api-token is symlinked to
+            // This prevents attacks where API token file is symlinked to
             // /etc/shadow or similar sensitive files.
             if canonical_token_path.exists() {
                 if let Ok(metadata) = std::fs::symlink_metadata(&canonical_token_path) {
@@ -481,45 +481,20 @@ async fn async_main(args: Args) -> Result<()> {
     // then update profile registry to point to the managed releases.
     let adapters_base =
         ergatai_runtime::profile_registry::ProfileRegistry::resolve_adapters_base_public();
-    let profile_db_path = ".ergatai/profile_registry.db".to_string();
+    let profile_db_path = ergatai_runtime::dirs::profile_registry_db_path()
+        .to_string_lossy()
+        .to_string();
     ergatai_runtime::adapter_manager::spawn_adapter_manager(profile_db_path, adapters_base);
 
     // Initialize persistent binding store for MCP reconnection support
-    // Store bindings in .ergatai directory alongside other ergatai data
-    let binding_db_path = ".ergatai/agent_bindings.db";
-    match ergatai_api::mcp::init_binding_store(binding_db_path) {
-        Ok(_) => tracing::info!("Agent binding store initialized at {}", binding_db_path),
+    // Store bindings in project data directory alongside other project-level data
+    let binding_db_path = ergatai_runtime::dirs::project_data_dir().join("agent_bindings.db");
+    let binding_db_path_str = binding_db_path.to_string_lossy().to_string();
+    match ergatai_api::mcp::init_binding_store(&binding_db_path_str) {
+        Ok(_) => tracing::info!("Agent binding store initialized at {}", binding_db_path_str),
         Err(e) => tracing::warn!("Failed to initialize binding store: {}", e),
     }
 
-    let mcp_service_1 = create_mcp_service(
-        mcp_registry.clone(),
-        peer_registry.clone(),
-        mcp_cancellation_token.clone(),
-        args.sse_keep_alive,
-        Some("agent-1".to_string()),
-    );
-    let mcp_service_2 = create_mcp_service(
-        mcp_registry.clone(),
-        peer_registry.clone(),
-        mcp_cancellation_token.clone(),
-        args.sse_keep_alive,
-        Some("agent-2".to_string()),
-    );
-    let mcp_service_3 = create_mcp_service(
-        mcp_registry.clone(),
-        peer_registry.clone(),
-        mcp_cancellation_token.clone(),
-        args.sse_keep_alive,
-        Some("agent-3".to_string()),
-    );
-    let mcp_service_default = create_mcp_service(
-        mcp_registry.clone(),
-        peer_registry.clone(),
-        mcp_cancellation_token.clone(),
-        args.sse_keep_alive,
-        None,
-    );
     tracing::info!(
         "MCP server initialized (protocol 2025-06-18, Streamable HTTP, SSE keep-alive: {}s)",
         args.sse_keep_alive
@@ -754,11 +729,20 @@ async fn async_main(args: Args) -> Result<()> {
     // API routes
     let api_app = build_rest_app(state.clone());
 
+    // Create a single MCP service that handles all agent IDs dynamically
+    // The agent_identifier is extracted from the URL path by the MCP server
+    let mcp_service = create_mcp_service(
+        mcp_registry.clone(),
+        peer_registry.clone(),
+        mcp_cancellation_token.clone(),
+        args.sse_keep_alive,
+        None, // Agent ID will be determined from URL path
+    );
+
     let app = api_app
-        .nest_service("/mcp/agent-1", mcp_service_1)
-        .nest_service("/mcp/agent-2", mcp_service_2)
-        .nest_service("/mcp/agent-3", mcp_service_3)
-        .nest_service("/mcp", mcp_service_default)
+        // MCP routes: dynamic agent ID support via wildcard routing
+        // /mcp/{*rest} matches all paths: /mcp, /mcp/agent-1, /mcp/ws_123-agent-0, etc.
+        .route_service("/mcp/{*rest}", mcp_service)
         // SECURITY: Apply auth middleware AFTER nesting MCP services.
         // Previously, MCP endpoints were mounted outside the auth layer,
         // allowing any client to impersonate any agent by connecting to

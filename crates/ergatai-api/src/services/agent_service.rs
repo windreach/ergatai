@@ -28,6 +28,38 @@ struct PromptQueueState {
 
 static PROMPT_QUEUE_STATE: OnceLock<PromptQueueState> = OnceLock::new();
 
+/// Conversation currently being prompted, per runtime agent. Set at every
+/// prompt dispatch point so SSE stream consumers can attribute output events
+/// to the conversation that produced them — an agent is just a launch
+/// configuration; the conversation is the unit of execution.
+static CURRENT_PROMPT_CONVERSATION: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+fn current_prompt_conversation_state() -> &'static Mutex<HashMap<String, String>> {
+    CURRENT_PROMPT_CONVERSATION.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn set_current_prompt_conversation(agent_id: &str, conversation_id: Option<String>) {
+    let Ok(mut map) = current_prompt_conversation_state().lock() else {
+        return;
+    };
+    match conversation_id {
+        Some(id) => {
+            map.insert(agent_id.to_string(), id);
+        }
+        None => {
+            map.remove(agent_id);
+        }
+    }
+}
+
+pub fn get_current_prompt_conversation(agent_id: &str) -> Option<String> {
+    current_prompt_conversation_state()
+        .lock()
+        .ok()?
+        .get(agent_id)
+        .cloned()
+}
+
 fn prompt_queue_state() -> &'static PromptQueueState {
     PROMPT_QUEUE_STATE.get_or_init(PromptQueueState::default)
 }
@@ -345,7 +377,13 @@ pub async fn run_pending_prompt(agent_id: &str, prompt_id: Option<&str>) -> anyh
     }
     state.notify.notify_one();
 
-    prompt_agent_with_images(&prompt.agent_id, &prompt.message, prompt.images).await
+    prompt_agent_with_images(
+        &prompt.agent_id,
+        &prompt.message,
+        prompt.images,
+        prompt.conversation_id,
+    )
+    .await
 }
 
 /// Flush pending prompts for an agent.
@@ -375,10 +413,12 @@ pub async fn prompt_agent_with_images(
     agent_id: &str,
     message: &str,
     images: Vec<ergatai_runtime::AgentImage>,
+    conversation_id: Option<String>,
 ) -> anyhow::Result<()> {
+    set_current_prompt_conversation(agent_id, conversation_id.clone());
     crate::context::get_app_context()
         .agent_runtime
-        .inject_message_with_images(agent_id, message, images)
+        .inject_message_with_images(agent_id, message, images, conversation_id.as_deref())
         .await?;
     Ok(())
 }
@@ -389,7 +429,13 @@ pub async fn prompt_agent_with_persistence(
     prompt: PendingPrompt,
     _session_id: Option<&str>,
 ) -> anyhow::Result<()> {
-    prompt_agent_with_images(agent_id, &prompt.message, prompt.images).await
+    prompt_agent_with_images(
+        agent_id,
+        &prompt.message,
+        prompt.images,
+        prompt.conversation_id,
+    )
+    .await
 }
 
 /// Cancel the current prompt turn for an agent (sends ACP `session/cancel`).
@@ -510,7 +556,7 @@ pub struct AgentListFilter {
 pub struct AgentListItem {
     pub agent_id: String,
     pub stable_id: Option<String>,
-    pub agent_uuid: String,
+    pub agent_instance_id: String,
     pub workspace_id: String,
     /// Lowercase lifecycle state name (e.g., "running", "idle").
     pub state: String,
@@ -650,7 +696,7 @@ pub async fn list_agents_filtered(filter: AgentListFilter) -> Vec<AgentListItem>
             AgentListItem {
                 agent_id: a.agent_id,
                 stable_id: a.stable_id,
-                agent_uuid: a.agent_uuid,
+                agent_instance_id: a.agent_instance_id,
                 workspace_id: a.workspace_id,
                 state,
                 task_id: a.task_id,
@@ -718,7 +764,7 @@ pub async fn prompt_agent(
 
     let runtime = crate::context::get_app_context().agent_runtime.clone();
     runtime
-        .inject_message_with_images(&runtime_id, message, images)
+        .inject_message_with_images(&runtime_id, message, images, None)
         .await?;
     Ok(())
 }

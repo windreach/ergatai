@@ -29,14 +29,15 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
-/// A managed adapter: npm package name and the built entrypoint (verified before activation).
+/// A managed adapter: npm package name and the binary name in node_modules/.bin/.
 pub struct ManagedAdapter {
     /// `agent_registrations.id` switched to this adapter on activation.
     pub profile_id: &'static str,
     /// NPM package name (e.g., "@anthropic-ai/claude-code").
     pub npm_package: &'static str,
-    /// Entry point relative to `node_modules/<package>` (e.g., "dist/acp-agent.js").
-    pub dist_relative: &'static str,
+    /// Binary name in `node_modules/.bin/` (npm creates this from package.json's "bin" field).
+    /// This is the standard npm way to reference executable files.
+    pub bin_name: &'static str,
 }
 
 /// Adapters under A/B management, with their npm packages.
@@ -44,12 +45,12 @@ pub const MANAGED_ADAPTERS: &[ManagedAdapter] = &[
     ManagedAdapter {
         profile_id: "claude-code",
         npm_package: "@zed-industries/claude-code-acp",
-        dist_relative: "dist/acp-agent.js",
+        bin_name: "claude-code-acp", // .bin/claude-code-acp → dist/index.js
     },
     ManagedAdapter {
         profile_id: "codex",
         npm_package: "@agentclientprotocol/codex-acp",
-        dist_relative: "dist/index.js",
+        bin_name: "codex-acp", // .bin/codex-acp → dist/index.js
     },
 ];
 
@@ -154,8 +155,36 @@ async fn build_and_activate(db_path: &Path, managed: &Path, staging: &Path) -> R
         upstream.insert(adapter.npm_package.to_string(), version);
     }
 
-    if current.is_some() && current_manifest.adapters == upstream {
-        debug!("Managed adapters are up-to-date");
+    // Check if current release is valid (node --check verifies file existence + dependencies)
+    let current_valid = if let Some(ref current_dir) = current {
+        // Verify all adapters with node --check
+        let mut all_valid = true;
+        let mut failed_adapters = Vec::new();
+        for adapter in MANAGED_ADAPTERS {
+            if let Err(error) = verify_adapter(current_dir, adapter).await {
+                warn!(
+                    adapter = adapter.profile_id,
+                    error = %error,
+                    "Current managed adapter verification failed"
+                );
+                failed_adapters.push(adapter.profile_id);
+                all_valid = false;
+            }
+        }
+        if !all_valid {
+            warn!(
+                failed_count = failed_adapters.len(),
+                failed_adapters = ?failed_adapters,
+                "Managed adapter verification failed; will reinstall"
+            );
+        }
+        all_valid
+    } else {
+        false
+    };
+
+    if current_valid && current_manifest.adapters == upstream {
+        debug!("Managed adapters are up-to-date and verified");
         return Ok(());
     }
     info!("Managed adapter update available; installing new release in staging");
@@ -203,19 +232,21 @@ pub fn refresh_profile_rows(db_path: &Path, release_dir: &Path) -> Result<(), St
         .map_err(|error| format!("Failed to open profile registry database: {}", error))?;
 
     for adapter in MANAGED_ADAPTERS {
-        let dist = release_dir
+        // Use npm's standard .bin/ directory (automatically created from package.json's "bin" field)
+        let bin_path = release_dir
             .join("node_modules")
-            .join(adapter.npm_package)
-            .join(adapter.dist_relative);
-        if !dist.is_file() {
+            .join(".bin")
+            .join(adapter.bin_name);
+        if !bin_path.is_file() {
             debug!(
                 profile = adapter.profile_id,
-                path = %dist.display(),
-                "Managed adapter dist missing in release; skipping profile refresh"
+                path = %bin_path.display(),
+                "Managed adapter binary missing in .bin/; skipping profile refresh"
             );
             continue;
         }
-        let command = format!("node {}", dist.display());
+        // Execute the binary directly (npm .bin/ files are executable)
+        let command = bin_path.display().to_string();
         let existing: Option<String> = conn
             .query_row(
                 "SELECT command FROM agent_registrations WHERE id = ?1",
@@ -357,16 +388,38 @@ fn retire_old_releases(managed: &Path) -> Result<(), String> {
 }
 
 fn acquire_staging(staging: &Path) -> Result<(), String> {
-    match std::fs::create_dir(staging) {
-        Ok(()) => Ok(()),
+    // Create staging directory. If it already exists and is not stale, another process
+    // is building adapters concurrently — skip this cycle to avoid conflicts.
+    // The `created` flag tracks whether we need to initialize package.json.
+    let created = match std::fs::create_dir(staging) {
+        Ok(()) => true,
         Err(_) if staging_is_stale(staging) => {
             warn!("Reclaiming stale adapter staging directory");
             let _ = std::fs::remove_dir_all(staging);
             std::fs::create_dir(staging)
-                .map_err(|error| format!("Failed to reclaim staging: {}", error))
+                .map_err(|error| format!("Failed to reclaim staging: {}", error))?;
+            true
         }
-        Err(_) => Err("another process is building adapters; skipping this cycle".to_string()),
+        Err(_) => {
+            return Err("another process is building adapters; skipping this cycle".to_string())
+        }
+    };
+
+    // Create package.json to prevent npm from using parent directory's node_modules.
+    // Without this, npm may find releases/<id>/node_modules and think packages are already installed.
+    // Only create if we freshly created the directory (not when reclaiming stale directory,
+    // which may already have a valid package.json from the previous build).
+    if created {
+        let package_json = staging.join("package.json");
+        std::fs::write(
+            &package_json,
+            r#"{"name":"ergatai-adapter-staging","version":"1.0.0","private":true}"#,
+        )
+        .map_err(|error| format!("Failed to create staging package.json: {}", error))?;
+        debug!("Created staging package.json to isolate npm install");
     }
+
+    Ok(())
 }
 
 fn staging_is_stale(staging: &Path) -> bool {
@@ -379,60 +432,96 @@ fn staging_is_stale(staging: &Path) -> bool {
 
 // ── verification ─────────────────────────────────────────────────────
 
-/// Gate a staging install before it can go live: the dist artifact must
-/// exist, be non-empty, and pass `node --check` (a broken install must never
-/// replace a working release).
+/// Gate a staging install before it can go live: the binary must exist, be non-empty,
+/// and pass `node --check` (a broken install must never replace a working release).
 async fn verify_adapter(release_dir: &Path, adapter: &ManagedAdapter) -> Result<(), String> {
-    let dist = release_dir
+    // Check the .bin/ executable (npm standard)
+    let bin_path = release_dir
         .join("node_modules")
-        .join(adapter.npm_package)
-        .join(adapter.dist_relative);
-    let metadata = std::fs::metadata(&dist).map_err(|error| {
+        .join(".bin")
+        .join(adapter.bin_name);
+    let metadata = std::fs::metadata(&bin_path).map_err(|error| {
         format!(
-            "Built artifact missing for {} ({}): {}",
-            adapter.npm_package,
-            dist.display(),
+            "Binary missing for {} ({}): {}",
+            adapter.bin_name,
+            bin_path.display(),
             error
         )
     })?;
     if metadata.len() == 0 {
+        return Err(format!("Binary is empty for {}", adapter.bin_name));
+    }
+
+    // The .bin/ file is a symlink to the actual JS file, so we need to resolve it for node --check.
+    // This is safe: the symlink is created by npm during installation, and we verify the target exists
+    // via the metadata check above.
+    let real_path = std::fs::read_link(&bin_path)
+        .map_err(|error| format!("Failed to read symlink {}: {}", bin_path.display(), error))?;
+    let dist_path = if real_path.is_absolute() {
+        real_path.to_string_lossy().to_string()
+    } else {
+        // Relative symlink, resolve relative to .bin/ directory
+        let bin_dir = bin_path.parent().ok_or_else(|| {
+            format!(
+                "Binary path has no parent directory: {}",
+                bin_path.display()
+            )
+        })?;
+        bin_dir.join(&real_path).to_string_lossy().to_string()
+    };
+
+    // Validate that the resolved symlink target stays within the release directory.
+    // A malicious npm package could create a symlink pointing outside (e.g. to /etc/passwd).
+    let canonical_dist = std::fs::canonicalize(&dist_path).map_err(|error| {
+        format!(
+            "Failed to canonicalize symlink target {}: {}",
+            dist_path, error
+        )
+    })?;
+    let canonical_release = std::fs::canonicalize(release_dir).map_err(|error| {
+        format!(
+            "Failed to canonicalize release directory {}: {}",
+            release_dir.display(),
+            error
+        )
+    })?;
+    if !canonical_dist.starts_with(&canonical_release) {
         return Err(format!(
-            "Built artifact is empty for {}",
-            adapter.npm_package
+            "Symlink target {} escapes release directory {}",
+            dist_path,
+            release_dir.display()
         ));
     }
 
-    // Wrap synchronous node --check in spawn_blocking to avoid blocking the async runtime
-    let dist_path = dist.to_string_lossy().to_string();
-    let package_name = adapter.npm_package.to_string();
-    let success = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("node")
-            .args(["--check", &dist_path])
-            .output()
-            .map(|output| {
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    let tail: String = stderr
-                        .chars()
-                        .skip(stderr.len().saturating_sub(300))
-                        .collect();
-                    tracing::warn!(
-                        package = %package_name,
-                        stderr = %tail,
-                        "node --check failed for installed adapter artifact"
-                    );
-                    false
-                } else {
-                    true
-                }
-            })
-            .unwrap_or_else(|error| {
-                tracing::warn!(error = %error, "Failed to run node --check");
+    // Use tokio::process::Command instead of spawn_blocking + std::process::Command.
+    // tokio::process::Command is async-aware and doesn't block the runtime, so we don't need
+    // spawn_blocking. This is more efficient and idiomatic for async Rust.
+    let package_name = adapter.bin_name.to_string();
+    let success = tokio::process::Command::new("node")
+        .args(["--check", &dist_path])
+        .output()
+        .await
+        .map(|output| {
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let tail: String = stderr
+                    .chars()
+                    .skip(stderr.len().saturating_sub(300))
+                    .collect();
+                tracing::warn!(
+                    package = %package_name,
+                    stderr = %tail,
+                    "node --check failed for installed adapter artifact"
+                );
                 false
-            })
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking failed: {}", e))?;
+            } else {
+                true
+            }
+        })
+        .unwrap_or_else(|error| {
+            tracing::warn!(error = %error, "Failed to run node --check");
+            false
+        });
 
     if !success {
         return Err(format!("node --check failed for {}", adapter.npm_package));
@@ -453,6 +542,7 @@ async fn npm_install_package(dest: &Path, package: &str) -> Result<(), String> {
     let mut cmd = Command::new("npm");
     cmd.args([
         "install",
+        "--prefer-offline", // Use cached packages when available
         "--no-audit",
         "--no-fund",
         "--loglevel=error",
@@ -496,15 +586,18 @@ mod tests {
                 .find(|a| a.profile_id == *adapter_name);
 
             if let Some(adapter) = adapter {
-                // Create the file at the path that refresh_profile_rows expects
-                let dist_path = release_dir
-                    .join("node_modules")
-                    .join(adapter.npm_package)
-                    .join(adapter.dist_relative);
-                if let Some(parent) = dist_path.parent() {
-                    std::fs::create_dir_all(parent).unwrap();
+                // Create .bin/ directory and executable
+                let bin_dir = release_dir.join("node_modules").join(".bin");
+                std::fs::create_dir_all(&bin_dir).unwrap();
+                let bin_path = bin_dir.join(adapter.bin_name);
+                std::fs::write(&bin_path, "#!/usr/bin/env node\nmodule.exports = 1;\n").unwrap();
+                // Make executable on Unix
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))
+                        .unwrap();
                 }
-                std::fs::write(dist_path, "module.exports = 1;\n").unwrap();
             }
         }
         release_dir
@@ -591,24 +684,31 @@ mod tests {
         let adapter = ManagedAdapter {
             profile_id: "test",
             npm_package: "test-package",
-            dist_relative: "dist/index.js",
+            bin_name: "test-bin",
         };
         let release_dir = temp.path();
+
+        // Create .bin/ directory
+        let bin_dir = release_dir.join("node_modules").join(".bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let bin_path = bin_dir.join(adapter.bin_name);
+
+        // Missing binary.
+        assert!(verify_adapter(release_dir, &adapter).await.is_err());
+
+        // Valid binary (symlink to a valid JS file).
         let dist_dir = release_dir
             .join("node_modules")
             .join(adapter.npm_package)
             .join("dist");
         std::fs::create_dir_all(&dist_dir).unwrap();
-
-        // Missing artifact.
-        assert!(verify_adapter(release_dir, &adapter).await.is_err());
-
-        // Valid artifact.
-        std::fs::write(dist_dir.join("index.js"), "module.exports = 1;\n").unwrap();
+        let js_file = dist_dir.join("index.js");
+        std::fs::write(&js_file, "module.exports = 1;\n").unwrap();
+        std::os::unix::fs::symlink(&js_file, &bin_path).unwrap();
         assert!(verify_adapter(release_dir, &adapter).await.is_ok());
 
         // Syntax-broken artifact.
-        std::fs::write(dist_dir.join("index.js"), "this is {{{ not js").unwrap();
+        std::fs::write(&js_file, "this is {{{ not js").unwrap();
         assert!(verify_adapter(release_dir, &adapter).await.is_err());
     }
 
@@ -659,13 +759,15 @@ mod tests {
             )
             .unwrap();
         assert!(
-            claude_command.starts_with("node "),
+            claude_command.contains("node_modules/.bin/claude-code-acp"),
             "switched: {}",
             claude_command
         );
-        assert!(claude_command.contains(
-            "managed/releases/r1/node_modules/@zed-industries/claude-code-acp/dist/acp-agent.js"
-        ));
+        // Should NOT start with "node " anymore - we execute the binary directly
+        assert!(
+            !claude_command.starts_with("node "),
+            "should not use node prefix"
+        );
 
         let codex_command: String = conn
             .query_row(
@@ -712,7 +814,7 @@ mod tests {
         refresh_profile_rows(&db_path, &release_dir).unwrap();
 
         let conn = Connection::open(&db_path).unwrap();
-        for profile_id in ["claude-code", "codex"] {
+        for (profile_id, bin_name) in [("claude-code", "claude-code-acp"), ("codex", "codex-acp")] {
             let command: String = conn
                 .query_row(
                     "SELECT command FROM agent_registrations WHERE id = ?1",
@@ -720,7 +822,18 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert!(command.starts_with("node "), "{}: {}", profile_id, command);
+            assert!(
+                command.contains(&format!("node_modules/.bin/{}", bin_name)),
+                "{}: {}",
+                profile_id,
+                command
+            );
+            // Should NOT start with "node " anymore - we execute the binary directly
+            assert!(
+                !command.starts_with("node "),
+                "{}: should not use node prefix",
+                profile_id
+            );
         }
     }
 }

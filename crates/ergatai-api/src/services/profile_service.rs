@@ -19,7 +19,13 @@ use ergatai_runtime::profile_registry::{AgentRegistration, ProfileRegistry, Prof
 static PROFILE_REGISTRY: OnceLock<ProfileRegistry> = OnceLock::new();
 
 /// Profile 注册表数据库路径（与原始 handler 保持一致）。
-pub const PROFILE_REGISTRY_DB_PATH: &str = ".ergatai/profile_registry.db";
+///
+/// 使用函数而非常量，因为路径现在从用户数据目录动态解析。
+pub fn profile_registry_db_path() -> String {
+    ergatai_runtime::dirs::profile_registry_db_path()
+        .to_string_lossy()
+        .to_string()
+}
 
 /// 初始化 ProfileRegistry 全局单例（启动时调用）。
 ///
@@ -27,7 +33,7 @@ pub const PROFILE_REGISTRY_DB_PATH: &str = ".ergatai/profile_registry.db";
 /// 多次调用不会重新初始化（OnceLock 保证）。
 pub fn init_profile_registry() -> Result<&'static ProfileRegistry> {
     let registry = PROFILE_REGISTRY.get_or_init(|| {
-        ProfileRegistry::new(PROFILE_REGISTRY_DB_PATH)
+        ProfileRegistry::new(profile_registry_db_path())
             .expect("Failed to open profile registry database")
     });
     Ok(registry)

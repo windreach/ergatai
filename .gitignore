@@ -64,6 +64,10 @@ build_output.txt
 # Coverage reports
 lcov.info
 target/llvm-cov/
+coverage/
+index.html
+style.css
+control.js
 
 # Embedded adapter repos (separate git repos)
 adapters/claude-agent-acp/

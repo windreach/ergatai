@@ -175,9 +175,9 @@ impl EventBus {
     /// Publish an LLM API traffic event (agent semantic state).
     ///
     /// Published on core NATS (low-latency, not persisted to JetStream).
-    /// Subject: `ergatai.agent.api.{agent_uuid}`
+    /// Subject: `ergatai.agent.api.{agent_instance_id}`
     pub async fn publish_api_event(&self, payload: &ApiEventPayload) -> ErgataiResult<()> {
-        let subject = format!("ergatai.agent.api.{}", payload.agent_uuid);
+        let subject = format!("ergatai.agent.api.{}", payload.agent_instance_id);
         self.publish(&subject, payload).await
     }
 
@@ -522,7 +522,7 @@ impl EventBus {
 
     /// Publish an agent lifecycle state change event.
     ///
-    /// Subject: `ergatai.agent.lifecycle.{agent_uuid}`
+    /// Subject: `ergatai.agent.lifecycle.{agent_instance_id}`
     /// Uses core NATS (not JetStream) for low-latency fan-out to subscribers.
     /// TaskScheduler and other observers subscribe to react to agent state changes.
     pub async fn publish_agent_lifecycle(
@@ -531,7 +531,7 @@ impl EventBus {
     ) -> ErgataiResult<()> {
         let subject = format!(
             "ergatai.agent.lifecycle.{}",
-            sanitize_agent_name(&payload.agent_uuid)
+            sanitize_agent_name(&payload.agent_instance_id)
         );
         self.publish(&subject, payload).await
     }
@@ -539,11 +539,11 @@ impl EventBus {
     /// Subscribe to agent lifecycle events for a specific agent.
     pub async fn subscribe_agent_lifecycle(
         &self,
-        agent_uuid: &str,
+        agent_instance_id: &str,
     ) -> ErgataiResult<async_nats::Subscriber> {
         let subject = format!(
             "ergatai.agent.lifecycle.{}",
-            sanitize_agent_name(agent_uuid)
+            sanitize_agent_name(agent_instance_id)
         );
         self.connection.subscribe(&subject).await
     }
@@ -1076,6 +1076,7 @@ mod tests {
             requires_receipt: false,
             correlation_id: None,
             timeout_ms: None,
+            message_type: "request".to_string(),
         };
 
         bus.publish_agent_message(&payload).await.unwrap();

@@ -144,7 +144,7 @@ struct YamlTask {
 }
 
 fn default_agent() -> String {
-    "agent".to_string()
+    "unassigned-agent".to_string()
 }
 
 /// 验证 `communication` 字段的格式和语义。
@@ -795,7 +795,7 @@ tasks:
         let graph = parse_dag_yaml(yaml, None).unwrap();
         let node = &graph.nodes[0];
         assert_eq!(node.task, "Minimal");
-        assert_eq!(node.agent, "agent"); // default
+        assert_eq!(node.agent, "unassigned-agent"); // default
         assert!(node.depends_on.is_empty());
     }
 

@@ -16,8 +16,8 @@ use ergatai_error::{ErgataiError, ErgataiResult};
 /// A persisted ACP session record.
 #[derive(Clone, Debug)]
 pub struct SessionRecord {
-    /// Stable agent identifier (typically the `agent_id` from the workspace).
-    pub agent_uuid: String,
+    /// Conversation ID (the persistent key for session lookup).
+    pub conversation_id: String,
     /// ACP session ID returned by `session/new` or `session/load`.
     pub session_id: String,
     /// The command used to start the agent (for compatibility checks on load).
@@ -28,8 +28,8 @@ pub struct SessionRecord {
 
 /// SQLite-backed session store.
 ///
-/// One row per active agent session. Rows are inserted/updated when a session
-/// is created or loaded, and removed when the agent is explicitly stopped.
+/// One row per conversation session. Rows are inserted/updated when a session
+/// is created or loaded, and removed when the conversation is explicitly stopped.
 pub struct SessionStore {
     db_path: String,
 }
@@ -71,7 +71,7 @@ impl SessionStore {
         let conn = self.conn()?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS agent_sessions (
-                agent_uuid  TEXT PRIMARY KEY NOT NULL,
+                conversation_id  TEXT PRIMARY KEY NOT NULL,
                 session_id  TEXT NOT NULL,
                 command     TEXT NOT NULL,
                 cwd         TEXT NOT NULL,
@@ -83,50 +83,50 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Save or update a session record for the given agent.
+    /// Save or update a session record for the given conversation.
     ///
     /// Uses `INSERT ... ON CONFLICT DO UPDATE` so repeated calls for the same
-    /// `agent_uuid` update the existing row.
+    /// `conversation_id` update the existing row.
     pub fn save_session(
         &self,
-        agent_uuid: &str,
+        conversation_id: &str,
         session_id: &str,
         command: &str,
         cwd: &str,
     ) -> ErgataiResult<()> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO agent_sessions (agent_uuid, session_id, command, cwd, updated_at)
+            "INSERT INTO agent_sessions (conversation_id, session_id, command, cwd, updated_at)
              VALUES (?1, ?2, ?3, ?4, strftime('%s', 'now'))
-             ON CONFLICT(agent_uuid) DO UPDATE SET
+             ON CONFLICT(conversation_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 command = excluded.command,
                 cwd = excluded.cwd,
                 updated_at = strftime('%s', 'now')",
-            params![agent_uuid, session_id, command, cwd],
+            params![conversation_id, session_id, command, cwd],
         )
         .map_err(|e| {
             ErgataiError::internal(format!(
-                "Failed to save session for agent '{}' (session_id='{}', command='{}', cwd='{}'): {}",
-                agent_uuid, session_id, command, cwd, e
+                "Failed to save session for conversation '{}' (session_id='{}', command='{}', cwd='{}'): {}",
+                conversation_id, session_id, command, cwd, e
             ))
         })?;
         debug!(
-            agent_uuid = %agent_uuid,
+            conversation_id = %conversation_id,
             session_id = %session_id,
             "Saved ACP session"
         );
         Ok(())
     }
 
-    /// Load a previously saved session for the given agent.
+    /// Load a previously saved session for the given conversation.
     ///
-    /// Returns `None` if no session is stored for this agent.
-    pub fn load_session(&self, agent_uuid: &str) -> ErgataiResult<Option<SessionRecord>> {
+    /// Returns `None` if no session is stored for this conversation.
+    pub fn load_session(&self, conversation_id: &str) -> ErgataiResult<Option<SessionRecord>> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT agent_uuid, session_id, command, cwd FROM agent_sessions WHERE agent_uuid = ?1",
+                "SELECT conversation_id, session_id, command, cwd FROM agent_sessions WHERE conversation_id = ?1",
             )
             .map_err(|e| {
                 ErgataiError::internal(format!(
@@ -136,9 +136,9 @@ impl SessionStore {
             })?;
 
         let mut rows = stmt
-            .query_map(params![agent_uuid], |row| {
+            .query_map(params![conversation_id], |row| {
                 Ok(SessionRecord {
-                    agent_uuid: row.get(0)?,
+                    conversation_id: row.get(0)?,
                     session_id: row.get(1)?,
                     command: row.get(2)?,
                     cwd: row.get(3)?,
@@ -149,7 +149,7 @@ impl SessionStore {
         match rows.next() {
             Some(Ok(record)) => {
                 debug!(
-                    agent_uuid = %agent_uuid,
+                    conversation_id = %conversation_id,
                     session_id = %record.session_id,
                     "Loaded ACP session record"
                 );
@@ -163,23 +163,22 @@ impl SessionStore {
         }
     }
 
-    /// Remove the saved session for the given agent.
+    /// Remove the saved session for the given conversation.
     ///
     /// Called when an agent is explicitly stopped (so we don't try to resume
     /// a deliberately terminated session on next start).
-    pub fn remove_session(&self, agent_uuid: &str) -> ErgataiResult<()> {
+    pub fn remove_session(&self, conversation_id: &str) -> ErgataiResult<()> {
         let conn = self.conn()?;
         conn.execute(
-            "DELETE FROM agent_sessions WHERE agent_uuid = ?1",
-            params![agent_uuid],
+            "DELETE FROM agent_sessions WHERE conversation_id = ?1",
+            params![conversation_id],
         )
         .map_err(|e| {
             ErgataiError::internal(format!(
-                "Failed to remove session for agent '{}': {}",
-                agent_uuid, e
+                "Failed to remove session for conversation '{}': {}",
+                conversation_id, e
             ))
         })?;
-        debug!(agent_uuid = %agent_uuid, "Removed ACP session record");
         Ok(())
     }
 }
@@ -201,11 +200,11 @@ mod tests {
     fn save_and_load_session() {
         let store = temp_store();
         store
-            .save_session("agent-1", "sess-abc", "python agent.py", "/workspace")
+            .save_session("conv-1", "sess-abc", "python agent.py", "/workspace")
             .unwrap();
 
-        let record = store.load_session("agent-1").unwrap().unwrap();
-        assert_eq!(record.agent_uuid, "agent-1");
+        let record = store.load_session("conv-1").unwrap().unwrap();
+        assert_eq!(record.conversation_id, "conv-1");
         assert_eq!(record.session_id, "sess-abc");
         assert_eq!(record.command, "python agent.py");
         assert_eq!(record.cwd, "/workspace");
@@ -220,14 +219,10 @@ mod tests {
     #[test]
     fn save_overwrites_existing() {
         let store = temp_store();
-        store
-            .save_session("agent-1", "sess-1", "cmd", "/a")
-            .unwrap();
-        store
-            .save_session("agent-1", "sess-2", "cmd", "/b")
-            .unwrap();
+        store.save_session("conv-1", "sess-1", "cmd", "/a").unwrap();
+        store.save_session("conv-1", "sess-2", "cmd", "/b").unwrap();
 
-        let record = store.load_session("agent-1").unwrap().unwrap();
+        let record = store.load_session("conv-1").unwrap().unwrap();
         assert_eq!(record.session_id, "sess-2");
         assert_eq!(record.cwd, "/b");
     }
@@ -235,11 +230,9 @@ mod tests {
     #[test]
     fn remove_session() {
         let store = temp_store();
-        store
-            .save_session("agent-1", "sess-1", "cmd", "/a")
-            .unwrap();
-        store.remove_session("agent-1").unwrap();
-        assert!(store.load_session("agent-1").unwrap().is_none());
+        store.save_session("conv-1", "sess-1", "cmd", "/a").unwrap();
+        store.remove_session("conv-1").unwrap();
+        assert!(store.load_session("conv-1").unwrap().is_none());
     }
 
     #[test]
@@ -262,12 +255,12 @@ mod tests {
     #[test]
     fn session_record_fields_accessible() {
         let record = SessionRecord {
-            agent_uuid: "agent-1".to_string(),
+            conversation_id: "conv-1".to_string(),
             session_id: "sess-1".to_string(),
             command: "cmd".to_string(),
             cwd: "/workspace".to_string(),
         };
-        assert_eq!(record.agent_uuid, "agent-1");
+        assert_eq!(record.conversation_id, "conv-1");
         assert_eq!(record.session_id, "sess-1");
         assert_eq!(record.command, "cmd");
         assert_eq!(record.cwd, "/workspace");

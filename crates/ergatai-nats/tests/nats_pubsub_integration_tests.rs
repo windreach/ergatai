@@ -212,6 +212,7 @@ async fn test_event_bus_agent_message_roundtrip() {
         requires_receipt: false,
         correlation_id: None,
         timeout_ms: None,
+        message_type: "request".to_string(),
     };
 
     bus.publish_agent_message(&payload).await.unwrap();

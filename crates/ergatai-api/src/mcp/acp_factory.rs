@@ -203,7 +203,7 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
             .map(|info| {
                 serde_json::json!({
                     "agent_id": info.agent_id,
-                    "agent_uuid": info.agent_uuid,
+                    "agent_instance_id": info.agent_instance_id,
                     "mcp_agent_id": info.mcp_agent_id,
                     "workspace_id": info.workspace_id,
                     "state": info.state,

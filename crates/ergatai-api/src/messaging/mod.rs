@@ -401,11 +401,11 @@ impl MessageSender {
             let from_uuid = runtime
                 .get_agent(&from_runtime_id_for_payload)
                 .await
-                .map(|info| info.agent_uuid);
+                .map(|info| info.agent_instance_id);
             let to_uuid = runtime
                 .get_agent(&resolved_target_id)
                 .await
-                .map(|info| info.agent_uuid);
+                .map(|info| info.agent_instance_id);
 
             let payload = ergatai_nats::AgentMessagePayload {
                 from_agent: resolved_sender_id.clone(),
@@ -426,6 +426,8 @@ impl MessageSender {
                 correlation_id: correlation_id.clone(),
                 // Default timeout for requests: 5 minutes (configurable)
                 timeout_ms,
+                // Message type for proper classification on the receiving end
+                message_type: req.message_type.clone(),
             };
 
             // Track request for reqwatch monitoring
@@ -520,7 +522,7 @@ impl MessageSender {
 
         // ── Fallback: direct delivery via ACP protocol ──
         match runtime
-            .inject_message(&resolved_target_id, &formatted_content)
+            .inject_message(&resolved_target_id, &formatted_content, None)
             .await
         {
             Ok(_) => {
@@ -832,7 +834,7 @@ impl MessageSender {
             .find(|a| {
                 let matches = a.agent_id == target
                     || a.agent_id.starts_with(&format!("{}@", target))
-                    || a.agent_uuid == target
+                    || a.agent_instance_id == target
                     || a.task_id.as_deref() == Some(target)
                     || a.stable_id.as_deref() == Some(target)
                     || a.handle
@@ -844,7 +846,7 @@ impl MessageSender {
                     tracing::debug!(
                         target = target,
                         matched_agent_id = %a.agent_id,
-                        matched_agent_uuid = %a.agent_uuid,
+                        matched_agent_uuid = %a.agent_instance_id,
                         "Found matching agent in runtime registry"
                     );
                 }
@@ -1252,6 +1254,20 @@ pub async fn clear_pending_response(from_agent: &str) {
     if let Some(sender) = get_message_sender() {
         let mut pending = sender.pending_responses.lock().await;
         pending.remove(from_agent);
+    }
+}
+
+/// Remove a specific pending response by correlation_id.
+/// Called when message delivery fails after recording the pending response.
+pub async fn remove_pending_response(responder_agent: &str, correlation_id: &str) {
+    if let Some(sender) = get_message_sender() {
+        let mut pending = sender.pending_responses.lock().await;
+        if let Some(contexts) = pending.get_mut(responder_agent) {
+            contexts.retain(|ctx| ctx.correlation_id != correlation_id);
+            if contexts.is_empty() {
+                pending.remove(responder_agent);
+            }
+        }
     }
 }
 
