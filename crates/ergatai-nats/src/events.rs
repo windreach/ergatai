@@ -188,6 +188,35 @@ pub struct AgentMessagePayload {
     pub message_type: String,
 }
 
+/// Conversation message: published to conversation subject for SSE streaming
+///
+/// Fire-and-forget via core NATS (no JetStream persistence).
+/// SQLite is the source of truth; this payload enables real-time streaming
+/// to SSE clients without requiring them to poll the database.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationMessagePayload {
+    /// Conversation ID this message belongs to
+    pub conversation_id: String,
+    /// Unique message ID
+    pub message_id: String,
+    /// Message role: "user" | "assistant" | "system" | "agent"
+    pub role: String,
+    /// Message content (text representation)
+    pub content: String,
+    /// Structured parts (JSON array of content blocks)
+    pub parts: Option<serde_json::Value>,
+    /// Additional metadata (JSON object)
+    pub metadata: Option<serde_json::Value>,
+    /// Timestamp (Unix epoch seconds)
+    pub timestamp: u64,
+    /// Sequence number within the conversation (monotonically increasing)
+    pub sequence: i64,
+    /// Agent ID that sent this message (if agent-sourced)
+    pub sender_agent_id: Option<String>,
+    /// Agent display name (if agent-sourced)
+    pub sender_agent_name: Option<String>,
+}
+
 /// Default message type for backward compatibility
 fn default_message_type() -> String {
     "request".to_string()
@@ -1141,5 +1170,85 @@ mod tests {
         assert_eq!(restored.reason, None);
         assert_eq!(restored.node_id, None);
         assert_eq!(restored.expected_duration_secs, None);
+    }
+
+    #[test]
+    fn test_conversation_message_payload_serialization() {
+        let payload = ConversationMessagePayload {
+            conversation_id: "conv_abc123".to_string(),
+            message_id: "msg_xyz789".to_string(),
+            role: "user".to_string(),
+            content: "Hello, world!".to_string(),
+            parts: Some(serde_json::json!([
+                {"type": "text", "text": "Hello, world!"}
+            ])),
+            metadata: Some(serde_json::json!({
+                "source": "web_client",
+                "ip": "192.168.1.1"
+            })),
+            timestamp: 1234567890,
+            sequence: 42,
+            sender_agent_id: None,
+            sender_agent_name: None,
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let restored: ConversationMessagePayload = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.conversation_id, "conv_abc123");
+        assert_eq!(restored.message_id, "msg_xyz789");
+        assert_eq!(restored.role, "user");
+        assert_eq!(restored.content, "Hello, world!");
+        assert_eq!(restored.sequence, 42);
+        assert_eq!(restored.timestamp, 1234567890);
+        assert!(restored.parts.is_some());
+        assert!(restored.metadata.is_some());
+        assert!(restored.sender_agent_id.is_none());
+        assert!(restored.sender_agent_name.is_none());
+    }
+
+    #[test]
+    fn test_conversation_message_payload_with_agent() {
+        let payload = ConversationMessagePayload {
+            conversation_id: "conv_test".to_string(),
+            message_id: "msg_agent".to_string(),
+            role: "agent".to_string(),
+            content: "Agent response".to_string(),
+            parts: None,
+            metadata: None,
+            timestamp: 9876543210,
+            sequence: 100,
+            sender_agent_id: Some("agent-1".to_string()),
+            sender_agent_name: Some("Coder Agent".to_string()),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let restored: ConversationMessagePayload = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.role, "agent");
+        assert_eq!(restored.sender_agent_id, Some("agent-1".to_string()));
+        assert_eq!(restored.sender_agent_name, Some("Coder Agent".to_string()));
+    }
+
+    #[test]
+    fn test_conversation_message_payload_negative_sequence() {
+        // Test that i64 sequence can handle negative values (edge case)
+        let payload = ConversationMessagePayload {
+            conversation_id: "conv_neg".to_string(),
+            message_id: "msg_neg".to_string(),
+            role: "user".to_string(),
+            content: "Test".to_string(),
+            parts: None,
+            metadata: None,
+            timestamp: 0,
+            sequence: -1,
+            sender_agent_id: None,
+            sender_agent_name: None,
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let restored: ConversationMessagePayload = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.sequence, -1);
     }
 }

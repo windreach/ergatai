@@ -480,8 +480,9 @@ impl MessageSender {
                         let from = req.from.clone();
                         let sender_name = sender_display.clone();
                         let message_type = req.message_type.clone();
+                        let conversation_id_for_persist = conversation_id.clone();
                         // Wrap synchronous DB call in spawn_blocking
-                        if let Err(e) = tokio::task::spawn_blocking(move || {
+                        let append_result = tokio::task::spawn_blocking(move || {
                             let role = agent_message_role(&message_type);
                             let metadata = serde_json::json!({
                                 "source": "agent",
@@ -489,18 +490,35 @@ impl MessageSender {
                                 "senderAgentName": sender_name,
                                 "messageType": message_type,
                             });
-                            if let Err(e) = user_data_db::messages::append(
-                                &conversation_id,
+                            user_data_db::messages::append(
+                                &conversation_id_for_persist,
                                 role,
                                 serde_json::json!([{ "type": "text", "text": message }]),
                                 metadata,
-                            ) {
+                            )
+                        })
+                        .await;
+
+                        // Publish to conversation subject for SSE streaming
+                        // Use the Message returned by append() to avoid race condition
+                        match append_result {
+                            Ok(Ok(persisted_msg)) => {
+                                publish_to_conversation_subject_with_message(
+                                    persisted_msg,
+                                    Some(req.from.clone()),
+                                    Some(sender_display.clone()),
+                                )
+                                .await;
+                            }
+                            Ok(Err(e)) => {
                                 warn!("Failed to persist A-to-A message to messages table: {}", e);
                             }
-                        })
-                        .await
-                        {
-                            warn!("Failed to persist delivered message: {}", e);
+                            Err(e) => {
+                                warn!(
+                                    "Failed to persist delivered message (task join error): {}",
+                                    e
+                                );
+                            }
                         }
                     }
 
@@ -550,8 +568,9 @@ impl MessageSender {
                     let from = req.from.clone();
                     let sender_name = sender_display.clone();
                     let message_type = req.message_type.clone();
+                    let conversation_id_for_persist = conversation_id.clone();
                     // Wrap synchronous DB call in spawn_blocking
-                    if let Err(e) = tokio::task::spawn_blocking(move || {
+                    let append_result = tokio::task::spawn_blocking(move || {
                         let role = agent_message_role(&message_type);
                         let metadata = serde_json::json!({
                             "source": "agent",
@@ -559,18 +578,32 @@ impl MessageSender {
                             "senderAgentName": sender_name,
                             "messageType": message_type,
                         });
-                        if let Err(e) = user_data_db::messages::append(
-                            &conversation_id,
+                        user_data_db::messages::append(
+                            &conversation_id_for_persist,
                             role,
                             serde_json::json!([{ "type": "text", "text": message }]),
                             metadata,
-                        ) {
+                        )
+                    })
+                    .await;
+
+                    // Publish to conversation subject for SSE streaming
+                    // Use the Message returned by append() to avoid race condition
+                    match append_result {
+                        Ok(Ok(persisted_msg)) => {
+                            publish_to_conversation_subject_with_message(
+                                persisted_msg,
+                                Some(req.from.clone()),
+                                Some(sender_display.clone()),
+                            )
+                            .await;
+                        }
+                        Ok(Err(e)) => {
                             warn!("Failed to persist A-to-A message to messages table: {}", e);
                         }
-                    })
-                    .await
-                    {
-                        warn!("Failed to persist delivered message: {}", e);
+                        Err(e) => {
+                            warn!("Failed to persist delivered message (task join error): {}", e);
+                        }
                     }
                 }
 
@@ -1245,6 +1278,96 @@ pub async fn record_pending_response(
             )
             .await;
     }
+}
+
+/// Helper: Publish a message to the conversation subject for SSE streaming
+///
+/// This is called after persisting a message to SQLite. It uses the persisted Message
+/// object directly to avoid race conditions, then publishes to the conversation subject.
+/// Failures are logged but don't affect the overall send operation.
+///
+/// # Arguments
+/// * `persisted_msg` - The Message object returned by `user_data_db::messages::append()`
+/// * `sender_agent_id` - The sender's agent ID (if agent-sourced)
+/// * `sender_agent_name` - The sender's display name (if agent-sourced)
+pub async fn publish_to_conversation_subject_with_message(
+    persisted_msg: crate::user_data_db::Message,
+    sender_agent_id: Option<String>,
+    sender_agent_name: Option<String>,
+) {
+    let Some(conn) =
+        crate::context::try_get_app_context().and_then(|ctx| ctx.nats_connection.clone())
+    else {
+        return;
+    };
+
+    let conv_id_for_log = persisted_msg.conversation_id.clone();
+    let msg_id_for_log = persisted_msg.id.clone();
+
+    // Extract text content from parts to ensure consistency
+    let content = extract_text_from_parts(&persisted_msg.parts);
+
+    // Fire-and-forget: spawn task but don't await, so send_message is not blocked
+    tokio::spawn(async move {
+        let bus = ergatai_nats::EventBus::new(conn);
+        let payload = ergatai_nats::ConversationMessagePayload {
+            conversation_id: persisted_msg.conversation_id,
+            message_id: persisted_msg.id,
+            role: persisted_msg.role,
+            content,
+            parts: Some(
+                serde_json::from_str(&persisted_msg.parts).unwrap_or_else(|e| {
+                    warn!(
+                        message_id = %msg_id_for_log,
+                        error = %e,
+                        "Failed to parse message parts, using empty array"
+                    );
+                    serde_json::json!([])
+                }),
+            ),
+            metadata: persisted_msg
+                .metadata
+                .as_ref()
+                .and_then(|m| serde_json::from_str(m).ok()),
+            timestamp: persisted_msg.created_at as u64,
+            sequence: persisted_msg.sequence,
+            sender_agent_id,
+            sender_agent_name,
+        };
+
+        if let Err(e) = bus.publish_conversation_message(&payload).await {
+            warn!(
+                conversation_id = %conv_id_for_log,
+                message_id = %payload.message_id,
+                error = %e,
+                "Failed to publish to conversation subject (non-fatal)"
+            );
+        }
+    });
+}
+
+/// Extract text content from a JSON parts array
+///
+/// Parses the parts JSON and extracts all text content, joining with newlines.
+/// Returns empty string if parsing fails or no text parts exist.
+pub(crate) fn extract_text_from_parts(parts_str: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(parts_str)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| {
+                    let obj = p.as_object()?;
+                    if obj.get("type")?.as_str()? == "text" {
+                        obj.get("text")?.as_str().map(String::from)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
 }
 
 /// Clear all pending responses for an agent.

@@ -354,6 +354,41 @@ pub mod subjects {
     pub fn all_dag_events() -> &'static str {
         "ergatai.dag.>"
     }
+
+    /// Conversation message subject
+    ///
+    /// Used for conversation-level message streaming (SSE).
+    /// Example: `ergatai.conversation.message.conv_abc123`
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `conversation_id` contains NATS subject separators (`.`, `*`, `>`)
+    /// or is empty, which would break subject routing or enable subject injection attacks.
+    pub fn conversation_message(
+        conversation_id: &str,
+    ) -> Result<String, ergatai_error::ErgataiError> {
+        // Validate conversation_id to prevent NATS subject injection
+        if conversation_id.is_empty() {
+            return Err(ergatai_error::ErgataiError::InvalidArgument(
+                "conversation_id cannot be empty".to_string(),
+            ));
+        }
+        if conversation_id.contains('.')
+            || conversation_id.contains('*')
+            || conversation_id.contains('>')
+        {
+            return Err(ergatai_error::ErgataiError::InvalidArgument(format!(
+                "conversation_id cannot contain NATS separators (., *, >): {}",
+                conversation_id
+            )));
+        }
+        Ok(format!("ergatai.conversation.message.{}", conversation_id))
+    }
+
+    /// Wildcard subject for all conversation messages
+    pub fn all_conversation_messages() -> &'static str {
+        "ergatai.conversation.message.*"
+    }
 }
 
 #[cfg(test)]
@@ -489,6 +524,43 @@ mod tests {
         assert!(subjects::agent_spawned("a1").starts_with("ergatai."));
         assert!(subjects::agent_stopped("a1").starts_with("ergatai."));
         assert!(subjects::agent_message("a1").starts_with("ergatai."));
+        assert!(subjects::conversation_message("c1")
+            .unwrap()
+            .starts_with("ergatai."));
+    }
+
+    #[test]
+    fn test_subject_naming_conversation_message() {
+        assert_eq!(
+            subjects::conversation_message("conv_abc123").unwrap(),
+            "ergatai.conversation.message.conv_abc123"
+        );
+        assert_eq!(
+            subjects::conversation_message("chat_xyz789").unwrap(),
+            "ergatai.conversation.message.chat_xyz789"
+        );
+    }
+
+    #[test]
+    fn test_subject_naming_conversation_message_validation() {
+        // Test empty conversation_id
+        assert!(subjects::conversation_message("").is_err());
+
+        // Test conversation_id with NATS separators
+        assert!(subjects::conversation_message("conv.abc").is_err());
+        assert!(subjects::conversation_message("conv*abc").is_err());
+        assert!(subjects::conversation_message("conv>abc").is_err());
+
+        // Test valid conversation_id
+        assert!(subjects::conversation_message("conv_abc123").is_ok());
+    }
+
+    #[test]
+    fn test_subject_naming_all_conversation_messages() {
+        assert_eq!(
+            subjects::all_conversation_messages(),
+            "ergatai.conversation.message.*"
+        );
     }
 
     /// Test connection is_connected and is_ready states

@@ -2916,7 +2916,7 @@ pub async fn prompt_agent(
         let conversation_id_for_append = conversation_id.to_string();
         let parts_for_append = parts.clone();
         let metadata_for_append = metadata.clone();
-        if let Err(e) = tokio::task::spawn_blocking(move || {
+        let append_result = tokio::task::spawn_blocking(move || {
             crate::user_data_db::messages::append(
                 &conversation_id_for_append,
                 "user",
@@ -2924,15 +2924,37 @@ pub async fn prompt_agent(
                 metadata_for_append,
             )
         })
-        .await
-        {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: crate::sanitize_error(&e, "persist_prompt"),
-                }),
-            )
-                .into_response();
+        .await;
+
+        // Publish to conversation subject for SSE streaming
+        // Use the Message returned by append() to avoid race condition
+        match append_result {
+            Ok(Ok(persisted_msg)) => {
+                crate::messaging::publish_to_conversation_subject_with_message(
+                    persisted_msg,
+                    body.sender_agent_id.clone(),
+                    body.sender_agent_name.clone(),
+                )
+                .await;
+            }
+            Ok(Err(e)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: crate::sanitize_error(&e, "persist_prompt"),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: crate::sanitize_error(&e, "spawn_blocking persist_prompt"),
+                    }),
+                )
+                    .into_response();
+            }
         }
 
         if body.wait_for_stream {

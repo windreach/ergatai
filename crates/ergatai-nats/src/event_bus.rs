@@ -181,6 +181,24 @@ impl EventBus {
         self.publish(&subject, payload).await
     }
 
+    /// Publish a conversation message (core NATS, fire-and-forget)
+    ///
+    /// Routes to `ergatai.conversation.message.{conversation_id}`.
+    /// SSE clients subscribe to this subject for real-time streaming.
+    /// No JetStream persistence — SQLite is the source of truth.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` only if NATS is unreachable. Callers should log the error
+    /// but NOT fail the overall send operation (SQLite persistence is authoritative).
+    pub async fn publish_conversation_message(
+        &self,
+        payload: &ConversationMessagePayload,
+    ) -> ErgataiResult<()> {
+        let subject = crate::connection::subjects::conversation_message(&payload.conversation_id)?;
+        self.publish(&subject, payload).await
+    }
+
     /// Check whether the AGENT_MESSAGES stream is under the backpressure threshold.
     /// Returns Ok(()) if under threshold, or Err if the stream is overloaded.
     /// Caches the last check result for 5s to avoid per-message NATS round-trips.
@@ -385,6 +403,29 @@ impl EventBus {
     /// Useful for a central router that forwards messages to the appropriate ACP session.
     pub async fn subscribe_all_agent_messages(&self) -> ErgataiResult<async_nats::Subscriber> {
         self.connection.subscribe("ergatai.agent.message.*").await
+    }
+
+    /// Subscribe to messages for a specific conversation
+    ///
+    /// Example: `subscribe_conversation_message("conv_123")` subscribes to
+    /// `ergatai.conversation.message.conv_123`
+    pub async fn subscribe_conversation_message(
+        &self,
+        conversation_id: &str,
+    ) -> ErgataiResult<async_nats::Subscriber> {
+        let subject = crate::connection::subjects::conversation_message(conversation_id)?;
+        self.connection.subscribe(&subject).await
+    }
+
+    /// Subscribe to ALL conversation messages (wildcard)
+    ///
+    /// Useful for monitoring or analytics dashboards.
+    pub async fn subscribe_all_conversation_messages(
+        &self,
+    ) -> ErgataiResult<async_nats::Subscriber> {
+        self.connection
+            .subscribe(crate::connection::subjects::all_conversation_messages())
+            .await
     }
 
     // ── File Access Control publish helpers ──
