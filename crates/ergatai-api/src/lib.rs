@@ -231,6 +231,10 @@ pub fn build_rest_app(state: AppState) -> Router {
         )
         .route("/api/v1/agents", get(api::agents::list_agents))
         .route("/api/v1/agents", post(api::agents::spawn_agent))
+        .route(
+            "/api/v1/agents/suspended",
+            get(api::agents::list_suspended_agents),
+        )
         .route("/api/v1/agents/{id}", delete(api::agents::kill_agent))
         .route(
             "/api/v1/agents/{id}/message",
@@ -243,6 +247,14 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/agents/{id}/cancel",
             post(api::agents::cancel_prompt),
+        )
+        .route(
+            "/api/v1/agents/{id}/suspend",
+            post(api::agents::suspend_agent),
+        )
+        .route(
+            "/api/v1/agents/{id}/resume",
+            post(api::agents::resume_agent),
         )
         .route("/api/v1/agents/{id}/prompt", post(api::agents::prompt_agent))
         .route(

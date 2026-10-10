@@ -127,9 +127,10 @@ async fn wait_for_first_signal() {
 /// Orchestrate graceful shutdown of all subsystems.
 ///
 /// Order matters: dependents are shut down before the services they rely on.
-/// 1. Agent runtime (stop all agents, cleanup workspaces)
-/// 2. File access control (release locks, stop watchdogs)
-/// 3. NATS (last — other shutdowns may publish completion events)
+/// 1. Auto-suspend all running agents (5-second budget)
+/// 2. Agent runtime (stop all agents, cleanup workspaces)
+/// 3. File access control (release locks, stop watchdogs)
+/// 4. NATS (last — other shutdowns may publish completion events)
 ///
 /// Each step is wrapped in its own timeout so a single stuck subsystem
 /// cannot block the rest.
@@ -137,11 +138,56 @@ async fn wait_for_first_signal() {
 /// CRITICAL BUG FIX: Previously, graceful_shutdown() did NOT clean up
 /// sessions, leaving orphaned sessions after server restart.
 async fn graceful_shutdown() -> ErgataiResult<()> {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     const STEP_TIMEOUT: Duration = Duration::from_secs(5);
+    const SUSPEND_BUDGET: Duration = Duration::from_secs(5);
 
-    // 1. Agent runtime (stop all agents + cleanup workspaces)
-    tracing::info!("Step 1/3: shutting down agent runtime...");
+    // 1. Auto-suspend all running agents (before shutting down runtime)
+    tracing::info!("Step 1/4: auto-suspending running agents...");
+    match tokio::time::timeout(SUSPEND_BUDGET, async {
+        use ergatai_runtime::agent_lifecycle::AgentLifecycleState;
+        use ergatai_runtime::suspend_store::SuspendReason;
+
+        let runtime = crate::runtime::get_agent_runtime();
+        let agents = runtime.list_agents().await;
+        let suspend_start = Instant::now();
+
+        for agent in agents {
+            // Only suspend agents in Running state
+            if !matches!(agent.lifecycle, AgentLifecycleState::Running { .. }) {
+                continue;
+            }
+
+            // Check if we've exceeded the budget
+            if suspend_start.elapsed() >= SUSPEND_BUDGET {
+                tracing::warn!(
+                    "Suspend budget exceeded (5s), stopping auto-suspend"
+                );
+                break;
+            }
+
+            tracing::info!(
+                agent_id = %agent.agent_id,
+                "Auto-suspending agent for shutdown"
+            );
+
+            if let Err(e) = runtime.suspend_agent(&agent.agent_id, SuspendReason::Shutdown).await {
+                tracing::warn!(
+                    agent_id = %agent.agent_id,
+                    error = %e,
+                    "Failed to suspend agent during shutdown, continuing with others"
+                );
+            }
+        }
+    })
+    .await
+    {
+        Ok(()) => {}
+        Err(_) => tracing::warn!("Agent auto-suspend timed out after {:?}", SUSPEND_BUDGET),
+    }
+
+    // 2. Agent runtime (stop all agents + cleanup workspaces)
+    tracing::info!("Step 2/4: shutting down agent runtime...");
     match tokio::time::timeout(STEP_TIMEOUT, async {
         let runtime = crate::runtime::get_agent_runtime();
         if let Err(e) = runtime.shutdown().await {
@@ -154,8 +200,8 @@ async fn graceful_shutdown() -> ErgataiResult<()> {
         Err(_) => tracing::warn!("Agent runtime shutdown timed out after {:?}", STEP_TIMEOUT),
     }
 
-    // 2. File access control
-    tracing::info!("Step 2/3: shutting down file access control...");
+    // 3. File access control
+    tracing::info!("Step 3/4: shutting down file access control...");
     match tokio::time::timeout(STEP_TIMEOUT, async {
         crate::file_access::manager::shutdown_all_file_access().await;
     })
@@ -165,8 +211,8 @@ async fn graceful_shutdown() -> ErgataiResult<()> {
         Err(_) => tracing::warn!("File access shutdown timed out after {:?}", STEP_TIMEOUT),
     }
 
-    // 3. NATS (last — other steps may publish completion events)
-    tracing::info!("Step 3/3: shutting down NATS...");
+    // 4. NATS (last — other steps may publish completion events)
+    tracing::info!("Step 4/4: shutting down NATS...");
     match tokio::time::timeout(STEP_TIMEOUT, async {
         crate::nats::shutdown_nats().await;
     })

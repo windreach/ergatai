@@ -18,8 +18,10 @@ use tracing::{debug, error, info, warn};
 use ergatai_error::id::{format as format_id, generate, IdType};
 use ergatai_error::{ErgataiError, ErgataiResult};
 
+use crate::agent_lifecycle::AgentLifecycleState;
 use crate::agent_registry::AgentRegistry;
 use crate::backend::AcpBackendInterface;
+use crate::suspend_store::{SuspendReason, SuspendStore, SuspendedAgentRecord};
 use crate::types::{AgentHandle, AgentInfo, WaitResult, WorkspaceSpec};
 
 // ── MCP config injection ──
@@ -173,12 +175,22 @@ pub struct AgentRuntime {
     /// shutdown() returns, racing with process exit or subsequent runtime reuse.
     /// Uses std::sync::Mutex because `spawn_monitor()` is a sync fn called from
     /// async contexts — tokio::sync::Mutex::blocking_lock would panic there.
-    monitor_handles: std::sync::Arc<std::sync::Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    pub monitor_handles: std::sync::Arc<std::sync::Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    /// Persistence store for suspended agent state.
+    /// Used to save/restore agent metadata across suspend/resume cycles.
+    pub suspend_store: Arc<SuspendStore>,
+    /// Per-agent locks to prevent concurrent resume operations on the same suspended agent.
+    /// Maps suspended_id -> Mutex to serialize resume attempts.
+    resume_locks: std::sync::Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl AgentRuntime {
     /// Create a new runtime with the given backend.
     pub fn new(backend: Arc<dyn AcpBackendInterface>) -> Self {
+        let suspend_store = Arc::new(
+            SuspendStore::open(crate::dirs::suspend_store_db_path())
+                .expect("Failed to open suspend store"),
+        );
         Self {
             backend,
             http_backend: None, // HTTP backend initialized separately if needed
@@ -187,6 +199,8 @@ impl AgentRuntime {
             binding_mutex: Arc::new(Mutex::new(())),
             shutdown_token: CancellationToken::new(),
             monitor_handles: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+            suspend_store,
+            resume_locks: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -195,6 +209,10 @@ impl AgentRuntime {
         backend: Arc<dyn AcpBackendInterface>,
         http_backend: Arc<crate::backends::acp_http::AcpHttpBackend>,
     ) -> Self {
+        let suspend_store = Arc::new(
+            SuspendStore::open(crate::dirs::suspend_store_db_path())
+                .expect("Failed to open suspend store"),
+        );
         Self {
             backend,
             http_backend: Some(http_backend),
@@ -203,6 +221,8 @@ impl AgentRuntime {
             binding_mutex: Arc::new(Mutex::new(())),
             shutdown_token: CancellationToken::new(),
             monitor_handles: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+            suspend_store,
+            resume_locks: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -504,6 +524,227 @@ impl AgentRuntime {
 
         info!(agent_id = agent_id, "Agent stopped");
         Ok(())
+    }
+
+    /// Suspend an agent — kill the process and save state for later resume.
+    ///
+    /// The agent's metadata (workspace, conversation, profile, environment) is
+    /// persisted to the suspend store, and the agent process is terminated.
+    /// The agent can later be resumed by re-launching with the saved metadata.
+    ///
+    /// # Arguments
+    /// * `agent_id` - Runtime agent ID (e.g., "ws1-agent-1")
+    /// * `reason` - Why the agent is being suspended (Manual, Idle, or Shutdown)
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - Agent not found in registry
+    /// - Agent state does not allow suspension (must be Running or Processing)
+    /// - Agent has no conversation_id in metadata
+    /// - Backend kill fails
+    pub async fn suspend_agent(
+        &self,
+        agent_id: &str,
+        reason: SuspendReason,
+    ) -> ErgataiResult<()> {
+        // 1. Get agent info from registry
+        let agent = self.registry.get(agent_id).await.ok_or_else(|| {
+            ErgataiError::NotFound(format!("Agent '{}' not found", agent_id))
+        })?;
+
+        // 2. Check if state transition to Suspended is valid
+        let target_state = AgentLifecycleState::Suspended {
+            suspended_at: chrono::Utc::now(),
+        };
+        if !agent.lifecycle.can_transition_to(target_state.clone()) {
+            return Err(ErgataiError::InvalidArgument(format!(
+                "Cannot suspend agent in state {:?}",
+                agent.lifecycle
+            )));
+        }
+
+        // 3. Extract conversation_id from metadata
+        let conversation_id = agent
+            .handle
+            .metadata
+            .get("conversation_id")
+            .cloned()
+            .ok_or_else(|| {
+                ErgataiError::InvalidArgument(
+                    "Agent has no conversation_id in metadata, cannot suspend".to_string(),
+                )
+            })?;
+
+        // 4. Extract profile name (default to "unknown" if not set)
+        let profile_name = agent
+            .profile
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // 5. Create suspended agent record
+        let record = SuspendedAgentRecord {
+            id: agent_id.to_string(),
+            workspace_id: agent.workspace_id.clone(),
+            conversation_id,
+            profile_name,
+            work_dir: agent
+                .handle
+                .metadata
+                .get("work_dir")
+                .cloned()
+                .unwrap_or_else(|| "/tmp".to_string()),
+            environment: serde_json::to_string(&agent.handle.metadata)
+                .unwrap_or_else(|_| "{}".to_string()),
+            suspended_at: chrono::Utc::now(),
+            last_activity: agent.last_heartbeat,
+            reason,
+            metadata: None,
+        };
+
+        // 6. Save to suspend store
+        self.suspend_store.save_suspended(&record)?;
+
+        // 7. Kill the agent process
+        self.backend.kill_agent(&agent.handle).await?;
+
+        // 8. Update lifecycle state to Suspended
+        self.set_agent_lifecycle(agent_id, target_state).await?;
+
+        // 9. Remove from registry (process no longer exists)
+        self.registry.remove(agent_id).await;
+
+        // 10. Abort the monitor task if it exists
+        if let Some(handle) = self.monitor_handles.lock().unwrap().remove(agent_id) {
+            handle.abort();
+        }
+
+        info!(
+            agent_id = %agent_id,
+            conversation_id = %record.conversation_id,
+            reason = ?reason,
+            "Agent suspended successfully"
+        );
+
+        Ok(())
+    }
+
+    /// Resume a suspended agent — re-launch with saved metadata.
+    ///
+    /// Loads the suspended agent's state from the database, constructs a new
+    /// workspace specification, and launches a new agent process. The conversation
+    /// is automatically restored by the ACP protocol using the saved conversation_id.
+    ///
+    /// # Arguments
+    /// * `suspended_id` - The ID of the suspended agent to resume
+    ///
+    /// # Returns
+    /// The new agent ID (different from the suspended ID, as it's a new process)
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - Suspended record not found in database
+    /// - Failed to parse environment variables
+    /// - Failed to launch new agent
+    /// - Agent does not become ready within 5 seconds
+    pub async fn resume_agent(&self, suspended_id: &str) -> ErgataiResult<String> {
+        // ISSUE 3 FIX: Acquire per-agent lock to prevent concurrent resume operations
+        let lock = {
+            let mut locks = self.resume_locks.lock().unwrap();
+            locks
+                .entry(suspended_id.to_string())
+                .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _guard = lock.lock().await;
+
+        // 1. Load suspended record from database
+        let suspended = self.suspend_store.load_suspended(suspended_id)?.ok_or_else(|| {
+            ErgataiError::NotFound(format!("Suspended agent '{}' not found", suspended_id))
+        })?;
+
+        // 2. Parse environment variables from JSON
+        let environment: std::collections::HashMap<String, String> =
+            serde_json::from_str(&suspended.environment).unwrap_or_default();
+
+        // 3. Construct WorkspaceSpec with saved metadata
+        let workspace_spec = crate::types::WorkspaceSpec {
+            id: suspended.workspace_id.clone(),
+            work_dir: std::path::PathBuf::from(&suspended.work_dir),
+            env: environment,
+            resources: crate::types::ResourceLimits::default(),
+            capture_thoughts: false,
+        };
+
+        // 4. Use profile_name as the command (simplified approach)
+        // In production, this should query ProfileRegistry for the actual command
+        let command = &suspended.profile_name;
+
+        // 5. Launch new agent process
+        let new_agent_id = self
+            .launch_agent(
+                workspace_spec,
+                command,
+                None, // instruction
+                Some(&suspended.profile_name),
+                None, // transport (default stdio)
+            )
+            .await?;
+
+        // 6. Wait for agent to become ready (up to 5 seconds)
+        let timeout = std::time::Duration::from_secs(5);
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(agent) = self.registry.get(&new_agent_id).await {
+                if matches!(agent.lifecycle, AgentLifecycleState::Running { .. }) {
+                    break;
+                }
+            }
+
+            if start.elapsed() > timeout {
+                // ISSUE 1 FIX: Kill the agent we just launched to prevent resource leaks
+                if let Err(e) = self.stop_agent(&new_agent_id).await {
+                    warn!(
+                        agent_id = %new_agent_id,
+                        error = %e,
+                        "Failed to kill timed-out agent during resume"
+                    );
+                }
+                return Err(ErgataiError::AgentTimeout {
+                    message: format!(
+                        "Agent '{}' did not become ready within 5 seconds",
+                        new_agent_id
+                    ),
+                    source: None,
+                });
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        // ISSUE 2 FIX: Update metadata with conversation_id from suspended record
+        // This is critical for message routing — try_auto_resume_suspended_agent() in messaging
+        // relies on finding agents by conversation_id in their metadata.
+        {
+            let mut guard = self.registry.write().await;
+            if let Some(agent_info) = guard.get_mut(&new_agent_id) {
+                agent_info.handle.metadata.insert(
+                    "conversation_id".to_string(),
+                    suspended.conversation_id.clone(),
+                );
+            }
+        }
+
+        // 7. Remove suspended record from database
+        self.suspend_store.remove_suspended(suspended_id)?;
+
+        info!(
+            old_id = %suspended_id,
+            new_agent_id = %new_agent_id,
+            conversation_id = %suspended.conversation_id,
+            "Agent resumed successfully"
+        );
+
+        Ok(new_agent_id)
     }
 
     /// List all registered agents.
@@ -2346,5 +2587,23 @@ mod tests {
             Some(val) => std::env::set_var("ERGATAI_API_TOKEN", val),
             None => std::env::remove_var("ERGATAI_API_TOKEN"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_suspend_agent_not_found() {
+        let runtime = make_runtime();
+        let result = runtime
+            .suspend_agent("nonexistent", SuspendReason::Manual)
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_resume_agent_not_found() {
+        let runtime = make_runtime();
+        let result = runtime.resume_agent("nonexistent-id").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
     }
 }

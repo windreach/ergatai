@@ -143,6 +143,20 @@ pub fn api_token_path() -> PathBuf {
     user_data_dir().join(".api-token")
 }
 
+/// Returns the path to the suspended agents database.
+///
+/// This database stores metadata for suspended agents that can be resumed later.
+///
+/// # Example
+/// ```rust
+/// use ergatai_runtime::dirs::suspend_store_db_path;
+/// let db_path = suspend_store_db_path();
+/// // => .ergatai/suspended.db
+/// ```
+pub fn suspend_store_db_path() -> PathBuf {
+    project_data_dir().join("suspended.db")
+}
+
 /// Ensure the user data directory exists.
 ///
 /// # Returns

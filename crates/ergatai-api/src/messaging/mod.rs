@@ -126,6 +126,35 @@ pub struct MessageSender {
     conversation_manager: Arc<ConversationManager>,
 }
 
+/// Find a running agent by conversation_id.
+///
+/// Iterates through all running agents and checks if any has the specified
+/// conversation_id in its metadata. Returns the agent_id of the first match.
+///
+/// This is useful for routing messages to agents when only the conversation_id
+/// is known (e.g., when resuming a suspended agent's conversation).
+async fn find_agent_by_conversation(
+    runtime: &AgentRuntime,
+    conversation_id: &str,
+) -> Option<String> {
+    let agents = runtime.list_agents().await;
+    for agent in agents {
+        if agent.lifecycle.is_alive() {
+            if let Some(agent_conv_id) = agent.handle.metadata.get("conversation_id") {
+                if agent_conv_id == conversation_id {
+                    tracing::debug!(
+                        conversation_id = %conversation_id,
+                        agent_id = %agent.agent_id,
+                        "Found running agent with matching conversation_id"
+                    );
+                    return Some(agent.agent_id.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
 impl MessageSender {
     /// Create a new MessageSender with the given conversation manager and peer registry.
     pub fn new(
@@ -229,27 +258,42 @@ impl MessageSender {
         let resolved_target_id = match self.resolve_target_agent(&runtime, &req.to).await {
             Some(id) => id,
             None => {
-                // Target not found — try to spawn from profile
-                match self
-                    .try_auto_spawn_agent(&runtime, &req.to, &resolved_sender_id)
+                // Target not found in running agents — check if it's a suspended agent
+                // before falling back to auto-spawn from profile
+                if let Some(auto_resumed_id) = self
+                    .try_auto_resume_suspended_agent(&runtime, &req.to, req.conversation_id.as_deref())
                     .await
                 {
-                    Some(agent_id) => {
-                        info!(
-                            target = %req.to,
-                            agent_id = %agent_id,
-                            "Spawned target agent from profile (message-driven)"
-                        );
-                        agent_id
-                    }
-                    None => {
-                        return SendMessageResult::Rejected {
-                            reason: format!(
-                                "Agent {} not found. Agent must connect via MCP or be running as an ACP agent. \
-                                 or be a valid profile name.",
-                                req.to
-                            ),
-                        };
+                    info!(
+                        target = %req.to,
+                        conversation_id = ?req.conversation_id,
+                        resumed_agent_id = %auto_resumed_id,
+                        "Auto-resumed suspended target agent"
+                    );
+                    auto_resumed_id
+                } else {
+                    // Not a suspended agent — try to spawn from profile
+                    match self
+                        .try_auto_spawn_agent(&runtime, &req.to, &resolved_sender_id)
+                        .await
+                    {
+                        Some(agent_id) => {
+                            info!(
+                                target = %req.to,
+                                agent_id = %agent_id,
+                                "Spawned target agent from profile (message-driven)"
+                            );
+                            agent_id
+                        }
+                        None => {
+                            return SendMessageResult::Rejected {
+                                reason: format!(
+                                    "Agent {} not found. Agent must connect via MCP or be running as an ACP agent. \
+                                     or be a valid profile name.",
+                                    req.to
+                                ),
+                            };
+                        }
                     }
                 }
             }
@@ -990,6 +1034,100 @@ impl MessageSender {
                 None
             }
         }
+    }
+
+    /// Try to auto-resume a suspended agent when the target is not found in running agents.
+    ///
+    /// This enables "message-driven agent resumption": when a message is sent to a suspended
+    /// agent (identified by agent ID or conversation_id), the system automatically resumes
+    /// that agent and delivers the message.
+    ///
+    /// Returns Some(new_agent_id) if successfully resumed, None otherwise.
+    async fn try_auto_resume_suspended_agent(
+        &self,
+        runtime: &AgentRuntime,
+        target: &str,
+        conversation_id: Option<&str>,
+    ) -> Option<String> {
+        // Step 1: Check if target matches a suspended agent ID
+        if let Ok(Some(suspended)) = runtime.suspend_store.load_suspended(target) {
+            tracing::info!(
+                target = target,
+                suspended_id = %suspended.id,
+                conversation_id = %suspended.conversation_id,
+                "Found suspended agent by ID, attempting resume"
+            );
+
+            match runtime.resume_agent(&suspended.id).await {
+                Ok(new_agent_id) => {
+                    tracing::info!(
+                        suspended_id = %suspended.id,
+                        new_agent_id = %new_agent_id,
+                        "Successfully resumed suspended agent by ID"
+                    );
+                    // Small delay to ensure agent is fully ready
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    return Some(new_agent_id);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        suspended_id = %suspended.id,
+                        "Failed to resume suspended agent by ID"
+                    );
+                    return None;
+                }
+            }
+        }
+
+        // Step 2: Check if conversation_id matches a suspended agent
+        if let Some(conv_id) = conversation_id {
+            if let Ok(Some(suspended)) = runtime.suspend_store.find_by_conversation(conv_id) {
+                tracing::info!(
+                    conversation_id = %conv_id,
+                    suspended_id = %suspended.id,
+                    "Found suspended agent by conversation_id, attempting resume"
+                );
+
+                match runtime.resume_agent(&suspended.id).await {
+                    Ok(new_agent_id) => {
+                        tracing::info!(
+                            suspended_id = %suspended.id,
+                            new_agent_id = %new_agent_id,
+                            conversation_id = %conv_id,
+                            "Successfully resumed suspended agent by conversation_id"
+                        );
+                        // Small delay to ensure agent is fully ready
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        return Some(new_agent_id);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            suspended_id = %suspended.id,
+                            conversation_id = %conv_id,
+                            "Failed to resume suspended agent by conversation_id"
+                        );
+                        return None;
+                    }
+                }
+            }
+        }
+
+        // Step 3: Check if any running agent has this conversation_id in metadata
+        // (This handles the case where the agent is running but not found by ID)
+        if let Some(conv_id) = conversation_id {
+            if let Some(agent_id) = find_agent_by_conversation(runtime, conv_id).await {
+                tracing::debug!(
+                    conversation_id = %conv_id,
+                    agent_id = %agent_id,
+                    "Found running agent with matching conversation_id"
+                );
+                return Some(agent_id);
+            }
+        }
+
+        None
     }
 
     /// Try to auto-spawn an agent from a profile when the SENDER is not found.

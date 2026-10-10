@@ -156,6 +156,15 @@ pub enum AgentLifecycleState {
         last_heartbeat: DateTime<Utc>,
     },
 
+    /// Agent suspended (process killed, state saved)
+    ///
+    /// Agent has been suspended — its process has been terminated but its
+    /// state has been saved so it can be resumed later.
+    Suspended {
+        /// When the agent was suspended
+        suspended_at: DateTime<Utc>,
+    },
+
     /// Processing a specific message or task
     ///
     /// Agent is actively processing a task or message. This is a more specific
@@ -243,10 +252,35 @@ impl AgentLifecycleState {
             AgentLifecycleState::Idle { .. } => "idle",
             AgentLifecycleState::Starting { .. } => "starting",
             AgentLifecycleState::Running { .. } => "running",
+            AgentLifecycleState::Suspended { .. } => "suspended",
             AgentLifecycleState::Processing { .. } => "processing",
             AgentLifecycleState::Stopping { .. } => "stopping",
             AgentLifecycleState::Terminated { .. } => "terminated",
         }
+    }
+
+    /// Check if transition to target state is valid
+    pub fn can_transition_to(&self, target: AgentLifecycleState) -> bool {
+        use AgentLifecycleState::*;
+        matches!(
+            (self, &target),
+            // Normal lifecycle transitions
+            (Created, Initializing { .. })
+                | (Initializing { .. }, Idle { .. })
+                | (Initializing { .. }, Starting { .. })
+                | (Idle { .. }, Starting { .. })
+                | (Starting { .. }, Running { .. })
+                | (Running { .. }, Processing { .. })
+                | (Processing { .. }, Running { .. })
+                | (Running { .. }, Stopping { .. })
+                | (Processing { .. }, Stopping { .. })
+                | (Stopping { .. }, Terminated { .. })
+                // Suspend/resume transitions
+                | (Running { .. }, Suspended { .. })
+                | (Processing { .. }, Suspended { .. })
+                | (Suspended { .. }, Running { .. })
+                | (Suspended { .. }, Terminated { .. })
+        )
     }
 }
 
@@ -583,5 +617,56 @@ mod tests {
         let j1 = serde_json::to_string(&retryable).unwrap();
         let j2 = serde_json::to_string(&non_retryable).unwrap();
         assert_ne!(j1, j2);
+    }
+
+    #[test]
+    fn test_suspended_state_exists() {
+        let now = Utc::now();
+        let state = AgentLifecycleState::Suspended { suspended_at: now };
+        // Verify it matches the Suspended variant
+        assert!(matches!(state, AgentLifecycleState::Suspended { .. }));
+        assert_eq!(state.state_name(), "suspended");
+        // Suspended is not a terminal state (agent can be resumed)
+        assert!(!state.is_terminal());
+        assert!(state.is_alive());
+    }
+
+    #[test]
+    fn test_running_to_suspended_transition() {
+        let from = AgentLifecycleState::Running {
+            task_id: None,
+            started_at: Utc::now(),
+            last_heartbeat: Utc::now(),
+        };
+        let to = AgentLifecycleState::Suspended {
+            suspended_at: Utc::now(),
+        };
+        assert!(from.can_transition_to(to));
+    }
+
+    #[test]
+    fn test_suspended_to_running_transition() {
+        let from = AgentLifecycleState::Suspended {
+            suspended_at: Utc::now(),
+        };
+        let to = AgentLifecycleState::Running {
+            task_id: None,
+            started_at: Utc::now(),
+            last_heartbeat: Utc::now(),
+        };
+        assert!(from.can_transition_to(to));
+    }
+
+    #[test]
+    fn test_invalid_suspended_transition() {
+        let from = AgentLifecycleState::Suspended {
+            suspended_at: Utc::now(),
+        };
+        let to = AgentLifecycleState::Starting {
+            workspace_id: "ws-1".to_string(),
+            command: "opencode".to_string(),
+            started_at: Utc::now(),
+        };
+        assert!(!from.can_transition_to(to));
     }
 }

@@ -8,6 +8,7 @@ use axum::{
     Json,
 };
 use ergatai_runtime::{ResourceLimits, WorkspaceSpec};
+use ergatai_runtime::suspend_store::SuspendReason;
 use futures::stream::{self, Stream};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -3533,6 +3534,111 @@ pub async fn stream_agent_output(
             axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)),
         )
         .into_response()
+}
+
+// ── Suspend/Resume API ──
+
+#[derive(Debug, Deserialize)]
+pub struct SuspendRequest {
+    #[serde(default = "default_suspend_reason")]
+    pub reason: String,
+}
+
+fn default_suspend_reason() -> String {
+    "manual".to_string()
+}
+
+/// POST /api/v1/agents/{id}/suspend
+///
+/// Suspend an agent, saving its state and stopping the process.
+pub async fn suspend_agent(
+    State(_state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(req): Json<SuspendRequest>,
+) -> impl IntoResponse {
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+
+    let reason = match req.reason.as_str() {
+        "manual" => SuspendReason::Manual,
+        "idle" => SuspendReason::Idle,
+        "shutdown" => SuspendReason::Shutdown,
+        _ => SuspendReason::Manual,
+    };
+
+    match runtime.suspend_agent(&agent_id, reason).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "suspended",
+                "agent_id": agent_id,
+                "reason": req.reason,
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(crate::api::ApiError {
+                error: crate::sanitize_error(&e, "suspend_agent"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/v1/agents/{id}/resume
+///
+/// Resume a suspended agent, restoring it with a new agent ID.
+pub async fn resume_agent(
+    State(_state): State<AppState>,
+    Path(suspended_id): Path<String>,
+) -> impl IntoResponse {
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+
+    match runtime.resume_agent(&suspended_id).await {
+        Ok(new_agent_id) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "resumed",
+                "old_id": suspended_id,
+                "new_agent_id": new_agent_id,
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(crate::api::ApiError {
+                error: crate::sanitize_error(&e, "resume_agent"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/v1/agents/suspended
+///
+/// List all suspended agents.
+pub async fn list_suspended_agents(
+    State(_state): State<AppState>,
+) -> impl IntoResponse {
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+
+    match runtime.suspend_store.list_suspended() {
+        Ok(suspended) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "agents": suspended,
+                "count": suspended.len(),
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(crate::api::ApiError {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 // ── Tests ──
