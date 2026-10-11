@@ -5,11 +5,11 @@
 //! - SuspendReason serialization
 //! - AgentLifecycleState transitions for suspend/resume
 
+use chrono::Utc;
 use ergatai_runtime::{
     agent_lifecycle::AgentLifecycleState,
     suspend_store::{SuspendReason, SuspendStore, SuspendedAgentRecord},
 };
-use chrono::Utc;
 use tempfile::NamedTempFile;
 
 /// Create a temporary SuspendStore for testing.
@@ -116,19 +116,19 @@ fn test_lifecycle_state_transitions() {
     let running = Running {
         task_id: None,
         started_at: now,
-        last_heartbeat: now
+        last_heartbeat: now,
     };
     let suspended = Suspended { suspended_at: now };
-    assert!(running.can_transition_to(suspended.clone()));
+    assert!(running.can_transition_to(&suspended));
 
     // Suspended -> Running (valid - resume)
     let suspended = Suspended { suspended_at: now };
     let running = Running {
         task_id: None,
         started_at: now,
-        last_heartbeat: now
+        last_heartbeat: now,
     };
-    assert!(suspended.can_transition_to(running));
+    assert!(suspended.can_transition_to(&running));
 
     // Suspended -> Starting (invalid)
     let suspended = Suspended { suspended_at: now };
@@ -137,7 +137,7 @@ fn test_lifecycle_state_transitions() {
         command: "test".to_string(),
         started_at: now,
     };
-    assert!(!suspended.can_transition_to(starting));
+    assert!(!suspended.can_transition_to(&starting));
 }
 
 #[test]

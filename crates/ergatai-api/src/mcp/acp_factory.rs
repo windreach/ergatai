@@ -203,7 +203,6 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
             .map(|info| {
                 serde_json::json!({
                     "agent_id": info.agent_id,
-                    "agent_instance_id": info.agent_instance_id,
                     "mcp_agent_id": info.mcp_agent_id,
                     "workspace_id": info.workspace_id,
                     "state": info.state,
@@ -259,13 +258,15 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
         &self,
         params: SendMessageParams,
     ) -> Result<CallToolResult, ErrorData> {
-        let target_agent_id = &params.target_agent_id;
+        // Use shared helper to resolve target (prefers cov_id, falls back to agent_id)
+        let (target_id, target_cov_id) = params.resolve_target()?;
+
         let message = &params.message;
         let message_type = params.message_type.as_deref().unwrap_or("request");
         let correlation_id = params.correlation_id;
 
         info!(
-            target_agent = %target_agent_id,
+            target_agent = %target_id,
             message_len = message.len(),
             message_type = %message_type,
             "Sending message via ACP MCP"
@@ -288,7 +289,8 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
 
         let send_req = crate::messaging::SendRequest {
             from: from_agent,
-            to: target_agent_id.to_string(),
+            to: target_id.to_string(),
+            target_cov_id,
             message: message.to_string(),
             message_type: message_type.to_string(),
             correlation_id,

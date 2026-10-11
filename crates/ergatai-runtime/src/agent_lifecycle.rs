@@ -260,10 +260,10 @@ impl AgentLifecycleState {
     }
 
     /// Check if transition to target state is valid
-    pub fn can_transition_to(&self, target: AgentLifecycleState) -> bool {
+    pub fn can_transition_to(&self, target: &AgentLifecycleState) -> bool {
         use AgentLifecycleState::*;
         matches!(
-            (self, &target),
+            (self, target),
             // Normal lifecycle transitions
             (Created, Initializing { .. })
                 | (Initializing { .. }, Idle { .. })
@@ -641,7 +641,7 @@ mod tests {
         let to = AgentLifecycleState::Suspended {
             suspended_at: Utc::now(),
         };
-        assert!(from.can_transition_to(to));
+        assert!(from.can_transition_to(&to));
     }
 
     #[test]
@@ -654,7 +654,7 @@ mod tests {
             started_at: Utc::now(),
             last_heartbeat: Utc::now(),
         };
-        assert!(from.can_transition_to(to));
+        assert!(from.can_transition_to(&to));
     }
 
     #[test]
@@ -667,6 +667,6 @@ mod tests {
             command: "opencode".to_string(),
             started_at: Utc::now(),
         };
-        assert!(!from.can_transition_to(to));
+        assert!(!from.can_transition_to(&to));
     }
 }

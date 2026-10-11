@@ -20,6 +20,8 @@ use agent_client_protocol::schema::v1::{
 use async_trait::async_trait;
 use tracing::debug;
 
+use crate::runtime::get_agent_runtime;
+
 /// Decision returned by a [`PermissionHandler`].
 ///
 /// `option_id` is the ID of the permission option to select. `None` means
@@ -430,20 +432,25 @@ async fn try_pre_lock_files(
         return Ok(());
     }
 
-    // Derive workspace_id from agent_id using the project-wide convention
-    // `{workspace_id}-agent-{counter}` (see acp.rs:1741, acp.rs:1816).
-    let Some(workspace_id) = agent_id.rfind("-agent-").map(|pos| &agent_id[..pos]) else {
-        tracing::warn!(
-            agent_id = %agent_id,
-            "try_pre_lock_files: cannot derive workspace_id from agent_id, degrading to no-op"
-        );
-        return Ok(());
+    // Derive workspace_id from agent_id by querying the AgentRegistry.
+    // The legacy `-agent-` substring parsing no longer works because agent_id
+    // now uses snowflake format `agent_{snowflake}` (see acp.rs).
+    let runtime = get_agent_runtime();
+    let workspace_id = match runtime.get_agent(agent_id).await {
+        Some(info) => info.workspace_id,
+        None => {
+            tracing::warn!(
+                agent_id = %agent_id,
+                "try_pre_lock_files: agent not found in registry, degrading to no-op"
+            );
+            return Ok(());
+        }
     };
 
     // Resolve the lock manager for this workspace. Failure means the lock
     // subsystem is not initialized for this project — degrade gracefully
     // rather than blocking all edits.
-    let lock_mgr = match ergatai_lock::get_lock_manager(workspace_id).await {
+    let lock_mgr = match ergatai_lock::get_lock_manager(&workspace_id).await {
         Ok(mgr) => mgr,
         Err(e) => {
             tracing::info!(
@@ -517,7 +524,7 @@ async fn try_pre_lock_files(
     let mut acquired_locks = Vec::with_capacity(paths_to_lock.len());
     for path in &paths_to_lock {
         match lock_mgr
-            .try_acquire_write_lock_preemptive(path, agent_id, session_id, workspace_id)
+            .try_acquire_write_lock_preemptive(path, agent_id, session_id, &workspace_id)
             .await
         {
             Ok(_token) => {

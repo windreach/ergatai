@@ -21,10 +21,11 @@ use ergatai_error::{ErgataiError, ErgataiResult};
 ///
 /// Stored as a snake_case string (`manual`, `idle`, `shutdown`) so it is easy
 /// to inspect directly in the database.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SuspendReason {
-    /// User explicitly suspended the agent.
+    /// User explicitly suspended the agent (default).
+    #[default]
     Manual,
     /// Agent produced no output for the idle threshold (10 minutes).
     Idle,
@@ -88,19 +89,23 @@ pub struct SuspendedAgentRecord {
 ///
 /// One row per suspended agent. Rows are inserted/updated when an agent is
 /// suspended, and removed when the agent is resumed or permanently stopped.
+///
+/// The SQLite connection is cached and reused across operations to avoid the
+/// overhead of opening/closing connections. Access is serialized via `Mutex`
+/// since suspend/resume are low-frequency operations.
 pub struct SuspendStore {
-    db_path: String,
+    conn: std::sync::Mutex<Connection>,
 }
 
 impl SuspendStore {
     /// Open (or create) the suspend store at the given path.
     ///
     /// Parent directories are created if they don't exist. The SQLite
-    /// schema is initialized on every open.
+    /// schema is initialized on open, and the connection is cached for reuse.
     pub fn open<P: AsRef<Path>>(db_path: P) -> ErgataiResult<Self> {
-        let db_path = db_path.as_ref().to_string_lossy().to_string();
+        let db_path_str = db_path.as_ref().to_string_lossy().to_string();
 
-        if let Some(parent) = Path::new(&db_path).parent() {
+        if let Some(parent) = Path::new(&db_path_str).parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent).map_err(|e| {
                     ErgataiError::internal(format!(
@@ -112,24 +117,36 @@ impl SuspendStore {
             }
         }
 
-        let store = Self { db_path };
+        let conn = Connection::open(&db_path_str).map_err(|e| {
+            ErgataiError::internal(format!(
+                "Failed to open suspend store '{}': {}",
+                db_path_str, e
+            ))
+        })?;
+
+        // Enable WAL mode for better concurrent read performance
+        conn.execute_batch("PRAGMA journal_mode=WAL;")
+            .map_err(|e| ErgataiError::internal(format!("Failed to set WAL mode: {}", e)))?;
+
+        let store = Self {
+            conn: std::sync::Mutex::new(conn),
+        };
         store.init_schema()?;
         Ok(store)
     }
 
-    fn conn(&self) -> ErgataiResult<Connection> {
-        Connection::open(&self.db_path).map_err(|e| {
-            ErgataiError::internal(format!(
-                "Failed to open suspend store '{}': {}",
-                self.db_path, e
-            ))
+    /// Acquire the cached SQLite connection with error handling.
+    ///
+    /// This helper centralizes the lock acquisition pattern to avoid repeating
+    /// the error mapping in every method.
+    fn conn(&self) -> ErgataiResult<std::sync::MutexGuard<'_, Connection>> {
+        self.conn.lock().map_err(|e| {
+            ErgataiError::internal(format!("Failed to acquire connection lock: {}", e))
         })
     }
 
     fn init_schema(&self) -> ErgataiResult<()> {
         let conn = self.conn()?;
-        conn.execute_batch("PRAGMA journal_mode=WAL;")
-            .map_err(|e| ErgataiError::internal(format!("Failed to set WAL mode: {}", e)))?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS suspended_agents (
                 id                TEXT PRIMARY KEY NOT NULL,
@@ -241,7 +258,9 @@ impl SuspendStore {
                     metadata: row.get(9)?,
                 })
             })
-            .map_err(|e| ErgataiError::internal(format!("Failed to query suspended agent: {}", e)))?;
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to query suspended agent: {}", e))
+            })?;
 
         match rows.next() {
             Some(Ok(row)) => {
@@ -325,16 +344,10 @@ impl SuspendStore {
     /// Removing a non-existent record is not an error.
     pub fn remove_suspended(&self, id: &str) -> ErgataiResult<()> {
         let conn = self.conn()?;
-        conn.execute(
-            "DELETE FROM suspended_agents WHERE id = ?1",
-            params![id],
-        )
-        .map_err(|e| {
-            ErgataiError::internal(format!(
-                "Failed to remove suspended agent '{}': {}",
-                id, e
-            ))
-        })?;
+        conn.execute("DELETE FROM suspended_agents WHERE id = ?1", params![id])
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to remove suspended agent '{}': {}", id, e))
+            })?;
         debug!(agent_id = %id, "Removed suspended agent record");
         Ok(())
     }
@@ -395,18 +408,19 @@ impl SuspendStore {
 
     /// Convert a raw SQLite row into a typed `SuspendedAgentRecord`.
     fn row_to_record(row: RowData) -> ErgataiResult<SuspendedAgentRecord> {
-        let suspended_at = DateTime::<Utc>::from_timestamp(row.suspended_at, 0).ok_or_else(|| {
-            ErgataiError::internal(format!(
-                "Invalid suspended_at timestamp {} for agent '{}'",
-                row.suspended_at, row.id
-            ))
-        })?;
+        let suspended_at =
+            DateTime::<Utc>::from_timestamp(row.suspended_at, 0).ok_or_else(|| {
+                ErgataiError::internal(format!(
+                    "Invalid suspended_at timestamp {} for agent '{}'",
+                    row.suspended_at, row.id
+                ))
+            })?;
         let last_activity =
             DateTime::<Utc>::from_timestamp(row.last_activity, 0).ok_or_else(|| {
                 ErgataiError::internal(format!(
-                "Invalid last_activity timestamp {} for agent '{}'",
-                row.last_activity, row.id
-            ))
+                    "Invalid last_activity timestamp {} for agent '{}'",
+                    row.last_activity, row.id
+                ))
             })?;
         let reason = SuspendReason::parse(&row.reason)?;
 
@@ -499,7 +513,10 @@ mod tests {
         assert_eq!(found.conversation_id, "conv-42");
 
         // Non-existent conversation returns None.
-        assert!(store.find_by_conversation("no-such-conv").unwrap().is_none());
+        assert!(store
+            .find_by_conversation("no-such-conv")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

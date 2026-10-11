@@ -10,7 +10,7 @@
 //!   locks succeed → approve; if any lock fails → reject.
 //! - **Execute**: auto-approve (process execution is not file-lock controlled).
 //!
-//! The handler extracts the workspace_id from the agent_id (format: `{workspace_id}-agent-{counter}`)
+//! The handler queries the agent runtime registry to get the workspace_id from the agent_id
 //! and uses the workspace's work_dir as the project root for lock management.
 //! This ensures each workspace has its own isolated lock manager.
 
@@ -42,6 +42,10 @@ pub struct LockPermissionHandler {
     workspaces: Arc<RwLock<HashMap<String, WorkspaceInfo>>>,
     /// Per-workspace initialization locks to prevent race conditions during lock manager setup
     initialization_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// Cache of agent_id → workspace_id mappings to avoid repeated registry lookups.
+    /// Agent IDs are Snowflake IDs that cannot be parsed for workspace_id, so we cache
+    /// the mapping after the first lookup to reduce async registry queries.
+    agent_workspace_cache: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl Default for LockPermissionHandler {
@@ -55,6 +59,7 @@ impl LockPermissionHandler {
         Self {
             workspaces: Arc::new(RwLock::new(HashMap::new())),
             initialization_locks: Arc::new(Mutex::new(HashMap::new())),
+            agent_workspace_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -77,13 +82,71 @@ impl LockPermissionHandler {
         // Also clean up the initialization lock to prevent memory leak
         let mut init_locks = self.initialization_locks.lock().await;
         init_locks.remove(workspace_id);
+        // Clean up agent workspace cache entries for this workspace
+        let mut cache = self.agent_workspace_cache.write().await;
+        let keys_to_remove: Vec<String> = cache
+            .iter()
+            .filter(|(_, ws_id)| ws_id.as_str() == workspace_id)
+            .map(|(agent_id, _)| agent_id.clone())
+            .collect();
+        let removed_count = keys_to_remove.len();
+        for key in keys_to_remove {
+            cache.remove(&key);
+        }
+        if removed_count > 0 {
+            debug!(
+                workspace_id = workspace_id,
+                entries_removed = removed_count,
+                "Cleaned up agent workspace cache entries"
+            );
+        }
     }
 
-    /// Extract workspace_id from agent_id (format: `{workspace_id}-agent-{counter}`)
-    fn extract_workspace_id(agent_id: &str) -> Option<&str> {
-        // agent_id format: {workspace_id}-agent-{counter}
-        // Find the last occurrence of "-agent-" to split
-        agent_id.rfind("-agent-").map(|pos| &agent_id[..pos])
+    /// Extract workspace_id from agent_id by looking up the agent in the runtime registry.
+    ///
+    /// Since agent_id is now a Snowflake ID (e.g., `agent_502816809136_000_0000`),
+    /// we cannot extract workspace_id from the string format. Instead, we query
+    /// the agent runtime registry to get the agent's workspace_id.
+    ///
+    /// Uses a cache to avoid repeated registry lookups for the same agent_id.
+    async fn extract_workspace_id(&self, agent_id: &str) -> Option<String> {
+        // Check cache first
+        {
+            let cache = self.agent_workspace_cache.read().await;
+            if let Some(workspace_id) = cache.get(agent_id) {
+                debug!(
+                    agent_id = %agent_id,
+                    workspace_id = %workspace_id,
+                    "Cache hit for agent workspace lookup"
+                );
+                return Some(workspace_id.clone());
+            }
+        }
+
+        // Cache miss - query runtime registry
+        let runtime = ergatai_runtime::get_agent_runtime();
+
+        // Look up the agent in the registry
+        let result = if let Some(agent_info) = runtime.get_agent(agent_id).await {
+            let workspace_id = agent_info.workspace_id.clone();
+            // Populate cache
+            let mut cache = self.agent_workspace_cache.write().await;
+            cache.insert(agent_id.to_string(), workspace_id.clone());
+            debug!(
+                agent_id = %agent_id,
+                workspace_id = %workspace_id,
+                "Populated cache for agent workspace lookup"
+            );
+            Some(workspace_id)
+        } else {
+            debug!(
+                agent_id = %agent_id,
+                "Agent not found in runtime registry, cannot extract workspace_id"
+            );
+            None
+        };
+
+        result
     }
 
     /// Get or initialize the lock manager for a workspace
@@ -182,8 +245,8 @@ impl PermissionHandler for LockPermissionHandler {
                     return select_allow_option(request);
                 }
 
-                // Extract workspace_id from agent_id
-                let workspace_id = match Self::extract_workspace_id(agent_id) {
+                // Extract workspace_id from agent_id by querying runtime registry (with cache)
+                let workspace_id = match self.extract_workspace_id(agent_id).await {
                     Some(id) => id,
                     None => {
                         warn!(
@@ -195,7 +258,7 @@ impl PermissionHandler for LockPermissionHandler {
                 };
 
                 // Get lock manager for this workspace
-                let lock_mgr = match self.get_lock_manager_for_workspace(workspace_id).await {
+                let lock_mgr = match self.get_lock_manager_for_workspace(&workspace_id).await {
                     Some(mgr) => mgr,
                     None => {
                         warn!(
@@ -209,7 +272,7 @@ impl PermissionHandler for LockPermissionHandler {
 
                 for path in &locations {
                     match lock_mgr
-                        .auto_acquire_write_lock(path, agent_id, session_id, workspace_id)
+                        .auto_acquire_write_lock(path, agent_id, session_id, &workspace_id)
                         .await
                     {
                         Ok(()) => {
@@ -280,41 +343,19 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    #[test]
-    fn test_extract_workspace_id_valid() {
-        // 标准格式: {workspace_id}-agent-{counter}
-        assert_eq!(
-            LockPermissionHandler::extract_workspace_id("ws1-agent-1"),
-            Some("ws1")
-        );
-        assert_eq!(
-            LockPermissionHandler::extract_workspace_id("my-workspace-agent-42"),
-            Some("my-workspace")
-        );
-        assert_eq!(
-            LockPermissionHandler::extract_workspace_id("test.workspace-agent-100"),
-            Some("test.workspace")
-        );
-    }
+    #[tokio::test]
+    async fn test_extract_workspace_id_from_registry() {
+        // Since agent_id is now a Snowflake ID, we cannot extract workspace_id
+        // from the string format. Instead, we query the runtime registry.
+        // This test verifies that the function returns None for non-existent agents.
+        let handler = LockPermissionHandler::new();
+        let result = handler
+            .extract_workspace_id("agent_502816809136_000_0000")
+            .await;
+        assert_eq!(result, None, "Non-existent agent should return None");
 
-    #[test]
-    fn test_extract_workspace_id_invalid() {
-        // 不包含 "-agent-"
-        assert_eq!(LockPermissionHandler::extract_workspace_id("ws1"), None);
-        assert_eq!(LockPermissionHandler::extract_workspace_id(""), None);
-        assert_eq!(
-            LockPermissionHandler::extract_workspace_id("no_agent_here"),
-            None
-        );
-    }
-
-    #[test]
-    fn test_extract_workspace_id_edge_cases() {
-        // workspace_id 本身包含 "-agent-"（应该取最后一个）
-        assert_eq!(
-            LockPermissionHandler::extract_workspace_id("ws-agent-test-agent-1"),
-            Some("ws-agent-test")
-        );
+        let result = handler.extract_workspace_id("").await;
+        assert_eq!(result, None, "Empty agent_id should return None");
     }
 
     #[tokio::test]

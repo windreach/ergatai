@@ -1,7 +1,7 @@
 //! AgentRegistry — 封装所有 agent 索引的一致性管理。
 //!
-//! 将 5 个独立的 HashMap 索引封装在单一 RwLock 下，确保 insert/remove
-//! 操作原子性地更新所有反向索引（instance_id, mcp, stable_id, unhealthy_streaks）。
+//! 将 3 个独立的 HashMap 索引封装在单一 RwLock 下，确保 insert/remove
+//! 操作原子性地更新所有反向索引（mcp, unhealthy_streaks）。
 //!
 //! 这消除了"忘记清理某个索引"的 bug 类别——之前 `stop_agent()` 和
 //! `prune_unhealthy_agents()` 曾只清理主 registry 而泄漏其他索引。
@@ -19,12 +19,10 @@ use crate::types::AgentInfo;
 struct RegistryInner {
     /// agent_id → AgentInfo
     primary: HashMap<String, AgentInfo>,
-    /// agent_instance_id → agent_id
-    uuid_index: HashMap<String, String>,
     /// mcp_agent_id → agent_id
     mcp_index: HashMap<String, String>,
-    /// stable_id → agent_id
-    stable_id_index: HashMap<String, String>,
+    /// cov_id → agent_id (for O(1) Cov-centric lookups)
+    cov_index: HashMap<String, String>,
     /// agent_id → consecutive unhealthy count
     unhealthy_streaks: HashMap<String, u32>,
 }
@@ -33,44 +31,34 @@ impl RegistryInner {
     fn new() -> Self {
         Self {
             primary: HashMap::new(),
-            uuid_index: HashMap::new(),
             mcp_index: HashMap::new(),
-            stable_id_index: HashMap::new(),
+            cov_index: HashMap::new(),
             unhealthy_streaks: HashMap::new(),
         }
     }
 
     /// 从所有反向索引中移除给定 agent 的条目（不触碰 primary）。
     fn clean_reverse_indices(&mut self, info: &AgentInfo) {
-        self.uuid_index.remove(&info.agent_instance_id);
         if let Some(ref mcp_id) = info.mcp_agent_id {
             self.mcp_index.remove(mcp_id);
         }
-        if let Some(ref stable_id) = info.stable_id {
-            self.stable_id_index.remove(stable_id);
+        if let Some(ref cov_id) = info.cov_id {
+            self.cov_index.remove(cov_id);
         }
         self.unhealthy_streaks.remove(&info.agent_id);
     }
 
     /// 为给定 agent 添加反向索引条目。
     fn add_reverse_indices(&mut self, info: &AgentInfo) {
-        self.uuid_index
-            .insert(info.agent_instance_id.clone(), info.agent_id.clone());
         if let Some(ref mcp_id) = info.mcp_agent_id {
             self.mcp_index.insert(mcp_id.clone(), info.agent_id.clone());
         }
-        if let Some(ref stable_id) = info.stable_id {
-            self.stable_id_index
-                .insert(stable_id.clone(), info.agent_id.clone());
+        if let Some(ref cov_id) = info.cov_id {
+            self.cov_index.insert(cov_id.clone(), info.agent_id.clone());
         }
     }
 
     fn reconcile_indices(&mut self) {
-        self.uuid_index = self
-            .primary
-            .iter()
-            .map(|(agent_id, info)| (info.agent_instance_id.clone(), agent_id.clone()))
-            .collect();
         self.mcp_index = self
             .primary
             .iter()
@@ -80,13 +68,14 @@ impl RegistryInner {
                     .map(|mcp_id| (mcp_id.clone(), agent_id.clone()))
             })
             .collect();
-        self.stable_id_index = self
+
+        self.cov_index = self
             .primary
             .iter()
             .filter_map(|(agent_id, info)| {
-                info.stable_id
+                info.cov_id
                     .as_ref()
-                    .map(|stable_id| (stable_id.clone(), agent_id.clone()))
+                    .map(|cov_id| (cov_id.clone(), agent_id.clone()))
             })
             .collect();
 
@@ -178,22 +167,30 @@ impl AgentRegistry {
         inner.primary.is_empty()
     }
 
-    /// UUID → agent_id 解析。
-    pub async fn resolve_uuid(&self, uuid: &str) -> Option<String> {
-        let inner = self.inner.read().await;
-        inner.uuid_index.get(uuid).cloned()
-    }
-
     /// MCP ID → agent_id 解析。
     pub async fn resolve_mcp_id(&self, mcp_id: &str) -> Option<String> {
         let inner = self.inner.read().await;
         inner.mcp_index.get(mcp_id).cloned()
     }
 
-    /// stable_id → agent_id 解析。
-    pub async fn resolve_stable_id(&self, stable_id: &str) -> Option<String> {
+    /// cov_id → AgentInfo 直接解析（O(1) 索引查找）。
+    ///
+    /// 这是 Cov-centric 消息路由的核心方法：直接从 cov_id 找到目标 AgentInfo，
+    /// 无需先解析到 agent_id 再查找。
+    ///
+    /// # Arguments
+    /// * `cov_id` - Cov ID（conversation_id）
+    ///
+    /// # Returns
+    /// * `Some(AgentInfo)` - 找到匹配的 agent
+    /// * `None` - 没有找到匹配的 cov_id
+    pub async fn resolve_cov_id(&self, cov_id: &str) -> Option<AgentInfo> {
         let inner = self.inner.read().await;
-        inner.stable_id_index.get(stable_id).cloned()
+        inner
+            .cov_index
+            .get(cov_id)
+            .and_then(|agent_id| inner.primary.get(agent_id))
+            .cloned()
     }
 
     /// 获取 agent 关联的 MCP ID。
@@ -329,7 +326,7 @@ impl<'a> AgentRegistryWriteGuard<'a> {
     /// Entry API — 原子性的检查-并-插入。
     ///
     /// **Warning**: Entries inserted via this API do NOT automatically update
-    /// reverse indices (uuid_index, mcp_index, stable_id_index). You MUST call
+    /// reverse indices (mcp_index). You MUST call
     /// [`reconcile_indices()`](Self::reconcile_indices) after completing all
     /// entry operations to restore index consistency.
     pub fn entry(
@@ -356,22 +353,9 @@ impl<'a> AgentRegistryWriteGuard<'a> {
         self.inner.reconcile_indices();
     }
 
-    /// UUID → agent_id 解析（返回引用）。
-    pub fn resolve_uuid(&self, uuid: &str) -> Option<&str> {
-        self.inner.uuid_index.get(uuid).map(|s| s.as_str())
-    }
-
     /// MCP ID → agent_id 解析（返回引用）。
     pub fn resolve_mcp_id(&self, mcp_id: &str) -> Option<&str> {
         self.inner.mcp_index.get(mcp_id).map(|s| s.as_str())
-    }
-
-    /// stable_id → agent_id 解析（返回引用）。
-    pub fn resolve_stable_id(&self, stable_id: &str) -> Option<&str> {
-        self.inner
-            .stable_id_index
-            .get(stable_id)
-            .map(|s| s.as_str())
     }
 
     /// Remove a stale MCP binding in O(1) time.
@@ -413,22 +397,9 @@ impl<'a> AgentRegistryReadGuard<'a> {
         self.inner.primary.values()
     }
 
-    /// UUID → agent_id 解析（返回引用）。
-    pub fn resolve_uuid(&self, uuid: &str) -> Option<&str> {
-        self.inner.uuid_index.get(uuid).map(|s| s.as_str())
-    }
-
     /// MCP ID → agent_id 解析（返回引用）。
     pub fn resolve_mcp_id(&self, mcp_id: &str) -> Option<&str> {
         self.inner.mcp_index.get(mcp_id).map(|s| s.as_str())
-    }
-
-    /// stable_id → agent_id 解析（返回引用）。
-    pub fn resolve_stable_id(&self, stable_id: &str) -> Option<&str> {
-        self.inner
-            .stable_id_index
-            .get(stable_id)
-            .map(|s| s.as_str())
     }
 
     /// agent 数量。
@@ -449,14 +420,14 @@ mod tests {
     use super::*;
     use crate::agent_lifecycle::AgentLifecycleState;
     use crate::types::{AgentHandle, WorkspaceHandle};
+    use ergatai_error::id::{format as format_id, generate, IdType};
     use std::collections::HashMap as StdHashMap;
 
-    fn make_agent_info(id: &str, uuid: &str) -> AgentInfo {
+    fn make_agent_info(id: &str) -> AgentInfo {
         let now = chrono::Utc::now();
         AgentInfo {
-            agent_instance_id: uuid.to_string(),
             agent_id: id.to_string(),
-            stable_id: Some(format!("stable-{id}")),
+            cov_id: Some(format_id(generate(), IdType::Conversation)),
             workspace_id: "ws-test".to_string(),
             handle: AgentHandle {
                 workspace: WorkspaceHandle {
@@ -475,7 +446,7 @@ mod tests {
             },
             task_id: None,
             created_at: now,
-            mcp_agent_id: Some(format!("mcp-{id}")),
+            mcp_agent_id: Some(format!("mcp_{}", id)),
             last_heartbeat: now,
             profile: None,
             capabilities: Vec::new(),
@@ -487,35 +458,31 @@ mod tests {
     #[tokio::test]
     async fn test_insert_and_get() {
         let registry = AgentRegistry::new();
-        let info = make_agent_info("agent-1", "uuid-1");
+        let info = make_agent_info("agent-1");
         registry.insert(info.clone()).await;
 
         let got = registry.get("agent-1").await.unwrap();
         assert_eq!(got.agent_id, "agent-1");
-        assert_eq!(got.agent_instance_id, "uuid-1");
+        // cov_id now uses snowflake format (conv_*), verify format prefix
+        assert!(
+            got.cov_id
+                .as_ref()
+                .is_some_and(|id| id.starts_with("conv_")),
+            "cov_id should have conv_ prefix, got: {:?}",
+            got.cov_id
+        );
     }
 
     #[tokio::test]
     async fn test_remove_cleans_all_indices() {
         let registry = AgentRegistry::new();
-        let info = make_agent_info("agent-1", "uuid-1");
+        let info = make_agent_info("agent-1");
         registry.insert(info).await;
 
         // 验证所有索引存在
         assert!(registry.contains("agent-1").await);
         assert_eq!(
-            registry.resolve_uuid("uuid-1").await.as_deref(),
-            Some("agent-1")
-        );
-        assert_eq!(
-            registry.resolve_mcp_id("mcp-agent-1").await.as_deref(),
-            Some("agent-1")
-        );
-        assert_eq!(
-            registry
-                .resolve_stable_id("stable-agent-1")
-                .await
-                .as_deref(),
+            registry.resolve_mcp_id("mcp_agent-1").await.as_deref(),
             Some("agent-1")
         );
 
@@ -525,9 +492,7 @@ mod tests {
 
         // 验证所有索引已清理
         assert!(!registry.contains("agent-1").await);
-        assert!(registry.resolve_uuid("uuid-1").await.is_none());
-        assert!(registry.resolve_mcp_id("mcp-agent-1").await.is_none());
-        assert!(registry.resolve_stable_id("stable-agent-1").await.is_none());
+        assert!(registry.resolve_mcp_id("mcp_agent-1").await.is_none());
     }
 
     #[tokio::test]
@@ -535,22 +500,23 @@ mod tests {
         let registry = AgentRegistry::new();
 
         // 插入第一个版本
-        let info1 = make_agent_info("agent-1", "uuid-old");
+        let info1 = make_agent_info("agent-1");
         registry.insert(info1).await;
         assert_eq!(
-            registry.resolve_uuid("uuid-old").await.as_deref(),
+            registry.resolve_mcp_id("mcp_agent-1").await.as_deref(),
             Some("agent-1")
         );
 
-        // 用新 UUID 重新插入同一 agent_id
-        let info2 = make_agent_info("agent-1", "uuid-new");
+        // 用新 MCP ID 重新插入同一 agent_id
+        let mut info2 = make_agent_info("agent-1");
+        info2.mcp_agent_id = Some("mcp_agent-1-new".to_string());
         registry.insert(info2).await;
 
-        // 旧 UUID 应该被清理
-        assert!(registry.resolve_uuid("uuid-old").await.is_none());
-        // 新 UUID 应该存在
+        // 旧 MCP ID 应该被清理
+        assert!(registry.resolve_mcp_id("mcp_agent-1").await.is_none());
+        // 新 MCP ID 应该存在
         assert_eq!(
-            registry.resolve_uuid("uuid-new").await.as_deref(),
+            registry.resolve_mcp_id("mcp_agent-1-new").await.as_deref(),
             Some("agent-1")
         );
     }
@@ -579,7 +545,7 @@ mod tests {
 
         {
             let mut guard = registry.write().await;
-            let info = make_agent_info("agent-1", "uuid-1");
+            let info = make_agent_info("agent-1");
             guard.insert(info);
             assert!(guard.contains_key("agent-1"));
         }
@@ -603,7 +569,7 @@ mod tests {
             let mut guard = registry.write().await;
             guard
                 .entry("agent-1".to_string())
-                .or_insert_with(|| make_agent_info("agent-1", "uuid-1"));
+                .or_insert_with(|| make_agent_info("agent-1"));
         }
 
         assert!(registry.contains("agent-1").await);
@@ -614,15 +580,15 @@ mod tests {
         let registry = AgentRegistry::new();
 
         // 插入两个 agent
-        registry.insert(make_agent_info("agent-1", "uuid-1")).await;
-        registry.insert(make_agent_info("agent-2", "uuid-2")).await;
+        registry.insert(make_agent_info("agent-1")).await;
+        registry.insert(make_agent_info("agent-2")).await;
 
         // 直接从 primary 中移除一个（模拟手动操作）
         {
             let mut guard = registry.write().await;
             guard.inner.primary.remove("agent-1");
             // 此时反向索引还残留 agent-1 的条目
-            assert!(guard.inner.uuid_index.contains_key("uuid-1"));
+            assert!(guard.inner.mcp_index.contains_key("mcp_agent-1"));
         }
 
         // reconcile 应该清理残留
@@ -632,27 +598,25 @@ mod tests {
         }
 
         // 验证残留已清理
-        assert!(registry.resolve_uuid("uuid-1").await.is_none());
-        assert!(registry.resolve_uuid("uuid-2").await.is_some());
+        assert!(registry.resolve_mcp_id("mcp_agent-1").await.is_none());
+        assert!(registry.resolve_mcp_id("mcp_agent-2").await.is_some());
     }
 
     #[tokio::test]
     async fn test_read_guard_consistent_snapshot() {
         let registry = AgentRegistry::new();
-        registry.insert(make_agent_info("agent-1", "uuid-1")).await;
+        registry.insert(make_agent_info("agent-1")).await;
 
         let guard = registry.read().await;
         assert!(guard.contains_key("agent-1"));
-        assert_eq!(guard.resolve_uuid("uuid-1"), Some("agent-1"));
-        assert_eq!(guard.resolve_mcp_id("mcp-agent-1"), Some("agent-1"));
-        assert_eq!(guard.resolve_stable_id("stable-agent-1"), Some("agent-1"));
+        assert_eq!(guard.resolve_mcp_id("mcp_agent-1"), Some("agent-1"));
     }
 
     #[tokio::test]
     async fn test_with_streaks_batch_operation() {
         let registry = AgentRegistry::new();
-        registry.insert(make_agent_info("agent-1", "uuid-1")).await;
-        registry.insert(make_agent_info("agent-2", "uuid-2")).await;
+        registry.insert(make_agent_info("agent-1")).await;
+        registry.insert(make_agent_info("agent-2")).await;
 
         // 批量操作
         let dead_now = vec!["agent-1".to_string(), "agent-2".to_string()];
@@ -678,7 +642,7 @@ mod tests {
         let registry1 = AgentRegistry::new();
         let registry2 = registry1.clone();
 
-        registry1.insert(make_agent_info("agent-1", "uuid-1")).await;
+        registry1.insert(make_agent_info("agent-1")).await;
 
         // clone 应该看到相同的底层数据
         assert!(registry2.contains("agent-1").await);
@@ -690,8 +654,8 @@ mod tests {
         assert!(registry.is_empty().await);
         assert_eq!(registry.len().await, 0);
 
-        registry.insert(make_agent_info("agent-1", "uuid-1")).await;
-        registry.insert(make_agent_info("agent-2", "uuid-2")).await;
+        registry.insert(make_agent_info("agent-1")).await;
+        registry.insert(make_agent_info("agent-2")).await;
 
         assert_eq!(registry.len().await, 2);
         assert!(!registry.is_empty().await);

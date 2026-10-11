@@ -160,9 +160,7 @@ async fn graceful_shutdown() -> ErgataiResult<()> {
 
             // Check if we've exceeded the budget
             if suspend_start.elapsed() >= SUSPEND_BUDGET {
-                tracing::warn!(
-                    "Suspend budget exceeded (5s), stopping auto-suspend"
-                );
+                tracing::warn!("Suspend budget exceeded (5s), stopping auto-suspend");
                 break;
             }
 
@@ -171,7 +169,10 @@ async fn graceful_shutdown() -> ErgataiResult<()> {
                 "Auto-suspending agent for shutdown"
             );
 
-            if let Err(e) = runtime.suspend_agent(&agent.agent_id, SuspendReason::Shutdown).await {
+            if let Err(e) = runtime
+                .suspend_agent(&agent.agent_id, SuspendReason::Shutdown)
+                .await
+            {
                 tracing::warn!(
                     agent_id = %agent.agent_id,
                     error = %e,

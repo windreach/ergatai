@@ -73,8 +73,10 @@ impl AcpBackendInterface for MockBackend {
         })
     }
 
-    fn next_agent_id(&self, workspace_id: &str) -> String {
-        format!("{}-agent-0", workspace_id)
+    fn next_agent_id(&self, _workspace_id: &str) -> String {
+        // Use Snowflake ID format like the real ACP backend
+        let id = ergatai_error::id::generate();
+        ergatai_error::id::format(id, ergatai_error::id::IdType::Agent)
     }
 
     async fn start_agent(
@@ -83,9 +85,19 @@ impl AcpBackendInterface for MockBackend {
         _command: &str,
         _instruction: Option<&str>,
     ) -> ErgataiResult<AgentHandle> {
+        // Use precomputed agent_id from metadata if available (like real ACP backend)
+        let agent_id = handle
+            .metadata
+            .get("precomputed_agent_id")
+            .cloned()
+            .unwrap_or_else(|| {
+                let id = ergatai_error::id::generate();
+                ergatai_error::id::format(id, ergatai_error::id::IdType::Agent)
+            });
+
         Ok(AgentHandle {
             workspace: handle.clone(),
-            agent_id: format!("agent-{}", handle.id),
+            agent_id,
             process_id: Some("99999".to_string()),
             metadata: HashMap::new(),
         })
@@ -342,7 +354,6 @@ fn now() -> chrono::DateTime<Utc> {
 #[test]
 fn lifecycle_valid_transition_created_to_initializing() {
     let mut rec = AgentRecord::new(
-        "uuid-1".into(),
         "a-1".into(),
         "ws-1".into(),
         make_record_handle("a-1", "ws-1"),
@@ -365,7 +376,6 @@ fn lifecycle_valid_transition_created_to_initializing() {
 #[test]
 fn lifecycle_valid_transition_chain_created_to_terminated() {
     let mut rec = AgentRecord::new(
-        "uuid-chain".into(),
         "a-chain".into(),
         "ws-1".into(),
         make_record_handle("a-chain", "ws-1"),
@@ -462,7 +472,6 @@ fn lifecycle_valid_transition_chain_created_to_terminated() {
 #[test]
 fn lifecycle_running_to_failed_via_error_outcome() {
     let mut rec = AgentRecord::new(
-        "uuid-fail".into(),
         "a-fail".into(),
         "ws-1".into(),
         make_record_handle("a-fail", "ws-1"),
@@ -506,7 +515,6 @@ fn lifecycle_running_to_failed_via_error_outcome() {
 #[test]
 fn lifecycle_running_to_terminated_via_signal() {
     let mut rec = AgentRecord::new(
-        "uuid-sig".into(),
         "a-sig".into(),
         "ws-1".into(),
         make_record_handle("a-sig", "ws-1"),
@@ -535,7 +543,6 @@ fn lifecycle_running_to_terminated_via_signal() {
 #[test]
 fn lifecycle_running_to_terminated_via_timeout() {
     let mut rec = AgentRecord::new(
-        "uuid-to".into(),
         "a-to".into(),
         "ws-1".into(),
         make_record_handle("a-to", "ws-1"),
@@ -567,7 +574,6 @@ fn lifecycle_running_to_terminated_via_timeout() {
 #[test]
 fn lifecycle_state_history_records_all_transitions() {
     let mut rec = AgentRecord::new(
-        "uuid-hist".into(),
         "a-hist".into(),
         "ws-1".into(),
         make_record_handle("a-hist", "ws-1"),
@@ -613,7 +619,6 @@ fn lifecycle_state_history_records_all_transitions() {
 #[test]
 fn lifecycle_state_history_capped_at_100() {
     let mut rec = AgentRecord::new(
-        "uuid-cap".into(),
         "a-cap".into(),
         "ws-1".into(),
         make_record_handle("a-cap", "ws-1"),
@@ -636,7 +641,6 @@ fn lifecycle_state_history_capped_at_100() {
 #[test]
 fn lifecycle_created_is_not_terminal_not_idle() {
     let rec = AgentRecord::new(
-        "uuid-init".into(),
         "a-init".into(),
         "ws-1".into(),
         make_record_handle("a-init", "ws-1"),
@@ -731,14 +735,8 @@ fn lifecycle_non_terminal_states_are_alive() {
 #[test]
 fn agent_record_new_fields_are_consistent() {
     let handle = make_record_handle("agent-x", "ws-x");
-    let rec = AgentRecord::new(
-        "uuid-x".into(),
-        "agent-x".into(),
-        "ws-x".into(),
-        handle.clone(),
-    );
+    let rec = AgentRecord::new("agent-x".into(), "ws-x".into(), handle.clone());
 
-    assert_eq!(rec.agent_instance_id, "uuid-x");
     assert_eq!(rec.agent_id, "agent-x");
     assert_eq!(rec.workspace_id, "ws-x");
     assert_eq!(rec.handle, handle);
@@ -755,7 +753,6 @@ fn agent_record_new_fields_are_consistent() {
 #[test]
 fn agent_record_transition_updates_state_changed_at() {
     let mut rec = AgentRecord::new(
-        "uuid-sc".into(),
         "a-sc".into(),
         "ws-1".into(),
         make_record_handle("a-sc", "ws-1"),
@@ -779,7 +776,6 @@ fn agent_record_transition_updates_state_changed_at() {
 #[test]
 fn agent_record_heartbeat_update_from_running_state() {
     let mut rec = AgentRecord::new(
-        "uuid-hb".into(),
         "a-hb".into(),
         "ws-1".into(),
         make_record_handle("a-hb", "ws-1"),
@@ -805,7 +801,6 @@ fn agent_record_heartbeat_update_from_running_state() {
 #[test]
 fn agent_record_update_heartbeat_method() {
     let mut rec = AgentRecord::new(
-        "uuid-uhb".into(),
         "a-uhb".into(),
         "ws-1".into(),
         make_record_handle("a-uhb", "ws-1"),
@@ -819,7 +814,6 @@ fn agent_record_update_heartbeat_method() {
 #[test]
 fn agent_record_state_summary_contains_state_name() {
     let rec = AgentRecord::new(
-        "uuid-ss".into(),
         "a-ss".into(),
         "ws-1".into(),
         make_record_handle("a-ss", "ws-1"),
@@ -832,7 +826,6 @@ fn agent_record_state_summary_contains_state_name() {
 #[test]
 fn agent_record_serialization_roundtrip() {
     let mut rec = AgentRecord::new(
-        "uuid-ser".into(),
         "a-ser".into(),
         "ws-ser".into(),
         make_record_handle("a-ser", "ws-ser"),
@@ -850,7 +843,7 @@ fn agent_record_serialization_roundtrip() {
     let json = serde_json::to_string(&rec).unwrap();
     let decoded: AgentRecord = serde_json::from_str(&json).unwrap();
 
-    assert_eq!(rec.agent_instance_id, decoded.agent_instance_id);
+    assert_eq!(rec.agent_id, decoded.agent_id);
     assert_eq!(rec.agent_id, decoded.agent_id);
     assert_eq!(rec.workspace_id, decoded.workspace_id);
     assert_eq!(rec.state.state_name(), decoded.state.state_name());
@@ -905,7 +898,7 @@ async fn runtime_register_discovered_agent() {
     let info = info.unwrap();
     assert_eq!(info.agent_id, "%99");
     assert_eq!(info.workspace_id, "ws-disc");
-    assert!(!info.agent_instance_id.is_empty());
+    assert!(!info.agent_id.is_empty());
 
     // cleanup
     runtime.stop_agent("%99").await.unwrap();
@@ -949,7 +942,7 @@ async fn runtime_register_five_agents_and_list() {
 
     // Each agent has a non-empty UUID and is in Running state
     for agent in &agents {
-        assert!(!agent.agent_instance_id.is_empty());
+        assert!(!agent.agent_id.is_empty());
         assert!(matches!(
             agent.lifecycle,
             AgentLifecycleState::Running { .. }
@@ -980,9 +973,9 @@ async fn runtime_each_agent_gets_unique_uuid() {
             .unwrap();
         let info = runtime.get_agent(&agent_id).await.unwrap();
         assert!(
-            uuids.insert(info.agent_instance_id.clone()),
+            uuids.insert(info.agent_id.clone()),
             "UUID {} was duplicated!",
-            info.agent_instance_id
+            info.agent_id
         );
         agent_ids.push(agent_id);
     }
@@ -1002,15 +995,15 @@ async fn runtime_uuid_resolution_works() {
         .await
         .unwrap();
     let info = runtime.get_agent(&agent_id).await.unwrap();
-    let uuid = info.agent_instance_id.clone();
+    let uuid = info.agent_id.clone();
 
     // Resolve UUID → current runtime ID
-    let resolved = runtime.resolve_agent_instance_id(&uuid).await;
+    let resolved = runtime.resolve_agent_id(&uuid).await;
     assert_eq!(resolved, Some(agent_id.clone()));
 
     // After stopping, UUID should be gone from the index
     runtime.stop_agent(&agent_id).await.unwrap();
-    let resolved_after = runtime.resolve_agent_instance_id(&uuid).await;
+    let resolved_after = runtime.resolve_agent_id(&uuid).await;
     assert!(resolved_after.is_none());
 }
 
@@ -1141,7 +1134,7 @@ async fn runtime_concurrent_registration_from_multiple_tasks() {
     assert_eq!(agents.len(), 20);
 
     // All UUIDs unique
-    let uuids: HashSet<String> = agents.iter().map(|a| a.agent_instance_id.clone()).collect();
+    let uuids: HashSet<String> = agents.iter().map(|a| a.agent_id.clone()).collect();
     assert_eq!(
         uuids.len(),
         20,
@@ -1262,15 +1255,19 @@ async fn runtime_launch_agent_sets_correct_agent_info_fields() {
 
     let info = runtime.get_agent(&agent_id).await.unwrap();
 
-    // agent_id matches backend-generated id
-    assert_eq!(info.agent_id, "agent-ws-fields");
+    // agent_id matches the returned agent_id from launch_agent
+    assert_eq!(info.agent_id, agent_id);
     assert_eq!(info.workspace_id, "ws-fields");
 
-    // agent_instance_id is non-empty and well-formed (Snowflake ID format)
-    assert!(!info.agent_instance_id.is_empty());
+    // agent_id is non-empty and well-formed (Snowflake ID format: agent_{timestamp}_{instance}_{sequence})
+    assert!(!info.agent_id.is_empty());
     assert!(
-        ergatai_error::id::parse(&info.agent_instance_id).is_some(),
-        "agent_instance_id should be a valid Snowflake ID"
+        info.agent_id.starts_with("agent_"),
+        "agent_id should be a Snowflake ID with 'agent_' prefix"
+    );
+    assert!(
+        ergatai_error::id::parse(&info.agent_id).is_some(),
+        "agent_id should be a valid Snowflake ID format"
     );
 
     // lifecycle is Running
@@ -1282,7 +1279,14 @@ async fn runtime_launch_agent_sets_correct_agent_info_fields() {
     // task_id initially None, mcp_agent_id auto-generated
     assert!(info.task_id.is_none());
     assert!(info.mcp_agent_id.is_some());
-    assert_eq!(info.mcp_agent_id.as_deref(), Some("acp-ws-fields-fields"));
+    // mcp_agent_id format: "acp-{workspace_id}-{agent_id}"
+    assert!(
+        info.mcp_agent_id
+            .as_ref()
+            .unwrap()
+            .starts_with("acp-ws-fields-agent_"),
+        "mcp_agent_id should be auto-generated with workspace_id and agent_id"
+    );
 
     // state_history is empty for freshly launched agent
     assert!(info.state_history.is_empty());
@@ -1334,7 +1338,12 @@ async fn runtime_try_bind_mcp_agent_to_unbound_runtime_agent() {
     // ACP agents now have auto-generated MCP bindings
     let mcp_id = runtime.get_mcp_agent_id(&agent_id).await;
     assert!(mcp_id.is_some());
-    assert_eq!(mcp_id.as_deref(), Some("acp-ws-mcp-mcp"));
+    // mcp_agent_id format: "acp-{workspace_id}-{agent_id}"
+    let mcp_id_str = mcp_id.as_ref().unwrap();
+    assert!(
+        mcp_id_str.starts_with("acp-ws-mcp-agent_"),
+        "mcp_agent_id should be auto-generated with workspace_id and agent_id"
+    );
 
     // Manual binding with a different MCP ID should work (for MCP agents connecting via HTTP)
     let _bound = runtime.try_bind_mcp_agent("opencode@abcd1234").await;
@@ -1343,12 +1352,12 @@ async fn runtime_try_bind_mcp_agent_to_unbound_runtime_agent() {
     // For this test, we just verify the auto-binding worked above
 
     // resolve_agent_id via auto-generated MCP ID works
-    let resolved = runtime.resolve_agent_id("acp-ws-mcp-mcp").await;
+    let resolved = runtime.resolve_agent_id(mcp_id_str).await;
     assert_eq!(resolved, Some(agent_id.clone()));
 
     // Inject message via auto-generated MCP ID resolves correctly
     runtime
-        .inject_message("acp-ws-mcp-mcp", "hello", None)
+        .inject_message(mcp_id_str, "hello", None)
         .await
         .unwrap();
 

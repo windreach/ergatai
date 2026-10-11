@@ -20,7 +20,7 @@ fn parse_timestamp(s: &str, field_name: &str) -> chrono::DateTime<chrono::Utc> {
 pub struct AgentBinding {
     /// MCP agent ID (e.g., "opencode@1a2b3c4d")
     pub mcp_agent_id: String,
-    /// Runtime agent ID (e.g., "{workspace_id}-agent-{counter}")
+    /// Runtime agent ID (Snowflake ID, e.g., "agent_502816809136_000_0000")
     pub agent_id: String,
     /// Agent identifier from URL path (e.g., "{agent_name}" or "agent-1")
     pub agent_identifier: Option<String>,

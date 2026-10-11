@@ -226,7 +226,7 @@ pub async fn agent_snapshot_batch(agent_ids: &[&str]) -> HashMap<String, AgentSn
         .collect()
 }
 
-/// Resolve an agent ID (profile name, stable ID, or runtime ID) to a runtime ID.
+/// Resolve an agent ID (profile name, ergatai_agent_id, or runtime ID) to a runtime ID.
 /// Returns `None` if the agent is not found or not running.
 pub async fn resolve_to_runtime_id(agent_id: &str) -> Option<String> {
     // Delegate to the more complete resolve_agent_id which handles:
@@ -555,8 +555,6 @@ pub struct AgentListFilter {
 /// `ergatai_agent_id` and `status`, REST adds `session_title`).
 pub struct AgentListItem {
     pub agent_id: String,
-    pub stable_id: Option<String>,
-    pub agent_instance_id: String,
     pub workspace_id: String,
     /// Lowercase lifecycle state name (e.g., "running", "idle").
     pub state: String,
@@ -695,8 +693,6 @@ pub async fn list_agents_filtered(filter: AgentListFilter) -> Vec<AgentListItem>
                 .unwrap_or_default();
             AgentListItem {
                 agent_id: a.agent_id,
-                stable_id: a.stable_id,
-                agent_instance_id: a.agent_instance_id,
                 workspace_id: a.workspace_id,
                 state,
                 task_id: a.task_id,

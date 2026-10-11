@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
+use ergatai_error::id::{format as format_id, generate, IdType};
 use ergatai_error::{ErgataiError, ErgataiResult};
 use ergatai_lock::{FileMode, FileToken, SystemToken};
 use ergatai_runtime::{get_agent_runtime, WorkspaceSpec};
@@ -531,24 +532,24 @@ impl AgentLauncher {
 
     /// Check if an agent with the given name is already registered in the runtime.
     ///
-    /// Searches by: agent_id, stable_id, and mcp_agent_id.
+    /// Searches by: agent_id, cov_id, and mcp_agent_id.
     /// Returns the runtime agent_id if found and alive.
     async fn find_registered_agent(
         &self,
         runtime: &ergatai_runtime::AgentRuntime,
         agent_name: &str,
     ) -> Option<String> {
-        // List all agents and match by agent_id, stable_id, or mcp_agent_id
+        // List all agents and match by agent_id or mcp_agent_id
         let agents = runtime.list_agents().await;
         for info in &agents {
             let matches = info.agent_id == agent_name
-                || info.stable_id.as_deref() == Some(agent_name)
-                || info.mcp_agent_id.as_deref() == Some(agent_name);
+                || info.mcp_agent_id.as_deref() == Some(agent_name)
+                || info.cov_id.as_deref() == Some(agent_name);
             if matches && info.lifecycle.is_alive() {
                 tracing::info!(
                     agent_name = %agent_name,
                     runtime_id = %info.agent_id,
-                    stable_id = ?info.stable_id,
+                    cov_id = ?info.cov_id,
                     "Found existing registered agent — will reuse instead of launching new process"
                 );
                 return Some(info.agent_id.clone());
@@ -975,7 +976,7 @@ identifiers, configuration values, etc.).
         let runtime = get_agent_runtime();
 
         // 2. Create workspace spec
-        let workspace_id = format!("dag-{}", agent_id.replace('|', "-"));
+        let workspace_id = format_id(generate(), IdType::Workspace);
         let spec = WorkspaceSpec {
             id: workspace_id.clone(),
             work_dir: worktree_path.to_path_buf(),

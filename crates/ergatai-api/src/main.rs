@@ -419,7 +419,7 @@ async fn async_main(args: Args) -> Result<()> {
                 args.session_prefix
             );
 
-            match runtime.discover_and_register_agents().await {
+            match runtime.discover_and_register_covs().await {
                 Ok(count) if count > 0 => {
                     tracing::info!("Discovered {} running agent(s)", count);
                 }
@@ -441,7 +441,7 @@ async fn async_main(args: Args) -> Result<()> {
                             break;
                         }
                         _ = interval.tick() => {
-                            match periodic_runtime.discover_and_register_agents().await {
+                            match periodic_runtime.discover_and_register_covs().await {
                                 Ok(count) if count > 0 => {
                                     tracing::info!("Periodic discovery: found {} new agent(s)", count);
                                 }
@@ -462,10 +462,9 @@ async fn async_main(args: Args) -> Result<()> {
             // Spawn activity monitor for auto-suspending idle agents
             let monitor_runtime = runtime.clone();
             let monitor_shutdown = runtime.shutdown_token();
-            let monitor_handle = activity_monitor::spawn_activity_monitor(monitor_runtime, monitor_shutdown);
-            if let Ok(mut handles) = runtime.monitor_handles.lock() {
-                handles.insert("activity_monitor".to_string(), monitor_handle);
-            }
+            let monitor_handle =
+                activity_monitor::spawn_activity_monitor(monitor_runtime, monitor_shutdown);
+            runtime.register_monitor_handle("activity_monitor".to_string(), monitor_handle);
             tracing::info!("✅ Activity monitor spawned (auto-suspend idle agents after 10min)");
         }
         Err(e) => {

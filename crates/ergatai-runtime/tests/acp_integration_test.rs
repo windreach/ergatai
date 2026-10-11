@@ -44,7 +44,13 @@ async fn test_acp_start_agent_and_inject_message() {
         .await
         .expect("start_agent should succeed");
 
-    assert_eq!(handle.agent_id, "ws-test-acp-1-agent-0");
+    // agent_id is now a Snowflake ID with "agent_" prefix
+    assert!(
+        handle.agent_id.starts_with("agent_"),
+        "agent_id should be a Snowflake ID with 'agent_' prefix, got: {}",
+        handle.agent_id
+    );
+    assert!(!handle.agent_id.is_empty());
 
     // Give the agent a moment to fully initialize.
     tokio::time::sleep(Duration::from_millis(500)).await;

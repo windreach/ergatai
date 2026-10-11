@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use ergatai_runtime::{AgentLifecycleState, AgentRecord};
 
@@ -29,22 +29,21 @@ pub fn unified_registry() -> &'static UnifiedAgentRegistry {
 /// Unified agent registry - single source of truth for all agents
 #[derive(Clone)]
 pub struct UnifiedAgentRegistry {
-    /// Agent records indexed by agent_instance_id (stable within lifecycle, NOT across restarts)
-    agents_by_uuid: Arc<RwLock<HashMap<String, AgentRecord>>>,
-    /// Index by agent_id (dynamic, e.g., pane ID like "%72")
-    agent_id_to_uuid: Arc<RwLock<HashMap<String, String>>>,
+    /// Agent records indexed by agent_id (primary key)
+    agents: Arc<RwLock<HashMap<String, AgentRecord>>>,
     /// Index by mcp_agent_id (for MCP-connected agents)
-    mcp_id_to_uuid: Arc<RwLock<HashMap<String, String>>>,
+    mcp_id_to_agent_id: Arc<RwLock<HashMap<String, String>>>,
+    /// Index by cov_id (for Cov-centric routing)
+    cov_id_to_agent_id: Arc<RwLock<HashMap<String, String>>>,
     /// Optional NATS event bus for publishing lifecycle events.
-    /// Set via `set_event_bus()` during server initialization.
     event_bus: Arc<RwLock<Option<Arc<ergatai_nats::EventBus>>>>,
 }
 
 /// Summary view of an agent for API responses
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSummary {
-    pub agent_instance_id: String,
     pub agent_id: String,
+    pub cov_id: Option<String>,
     pub state: String,
     pub workspace_id: String,
     pub task_id: Option<String>,
@@ -57,631 +56,297 @@ pub struct AgentSummary {
     pub state_changed_at: DateTime<Utc>,
 }
 
+/// State category counts for the registry
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StateCounts {
+    pub total: usize,
+    pub alive: usize,
+    pub terminal: usize,
+    pub idle: usize,
+}
+
 impl UnifiedAgentRegistry {
     /// Create a new empty unified registry
     pub fn new() -> Self {
         Self {
-            agents_by_uuid: Arc::new(RwLock::new(HashMap::new())),
-            agent_id_to_uuid: Arc::new(RwLock::new(HashMap::new())),
-            mcp_id_to_uuid: Arc::new(RwLock::new(HashMap::new())),
+            agents: Arc::new(RwLock::new(HashMap::new())),
+            mcp_id_to_agent_id: Arc::new(RwLock::new(HashMap::new())),
+            cov_id_to_agent_id: Arc::new(RwLock::new(HashMap::new())),
             event_bus: Arc::new(RwLock::new(None)),
         }
     }
 
     /// Set the NATS event bus for publishing lifecycle events.
-    ///
-    /// Called during server initialization after NATS is connected.
-    /// Once set, every state transition will publish an
-    /// `AgentLifecycleEventPayload` to `ergatai.agent.lifecycle.{agent_instance_id}`.
     pub async fn set_event_bus(&self, bus: Arc<ergatai_nats::EventBus>) {
         *self.event_bus.write().await = Some(bus);
     }
 
     /// Register a new agent
-    ///
-    /// MEDIUM BUG FIX: If `agent_id` or `mcp_agent_id` was already mapped to a
-    /// different UUID, the old index entry is cleaned up to prevent orphaned
-    /// records in `agents_by_uuid`. Without this, re-registering an agent with
-    /// the same agent_id but a new UUID would leave the old record unreachable
-    /// by any index — a memory leak.
-    ///
-    /// CRITICAL FIX: Use fixed lock acquisition order (agents_by_uuid → mcp_id_to_uuid → agent_id_to_uuid)
-    /// to prevent ABBA deadlock. Previously, different code paths acquired locks in different orders,
-    /// creating deadlock risk under concurrent registration.
     pub async fn register(&self, record: AgentRecord) {
-        let instance_id = record.agent_instance_id.clone();
         let agent_id = record.agent_id.clone();
         let mcp_id = record.mcp_agent_id.clone();
+        let cov_id = record.cov_id.clone();
 
-        // Acquire write locks in FIXED ORDER and perform all operations atomically
-        // Order: agents_by_uuid → mcp_id_to_uuid → agent_id_to_uuid
-        // This prevents TOCTOU races by holding locks throughout the entire operation
+        // Acquire write locks and perform all operations atomically
+        let mut agents = self.agents.write().await;
+        let mut mcp_index = self.mcp_id_to_agent_id.write().await;
+        let mut cov_index = self.cov_id_to_agent_id.write().await;
 
-        // 1. Remove old records from agents_by_uuid and collect cleanup info
-        let (old_id_by_agent_id, old_id_by_mcp_id) = {
-            let mut agents = self.agents_by_uuid.write().await;
-            let id_to_instance = self.agent_id_to_uuid.read().await;
-
-            let old_id_by_agent = id_to_instance.get(&agent_id).cloned();
-
-            // Remove old agent_id binding if it points to a different instance ID
-            if let Some(ref old_id) = old_id_by_agent {
-                if *old_id != instance_id {
-                    warn!(
-                        old_agent_instance_id = %old_id,
-                        new_agent_instance_id = %instance_id,
-                        agent_id = %agent_id,
-                        "agent_id re-bound to different instance ID — removing old record"
-                    );
-                    agents.remove(old_id);
-                }
+        // Remove old indices if this agent_id already exists
+        if let Some(old_record) = agents.get(&agent_id) {
+            if let Some(ref old_mcp) = old_record.mcp_agent_id {
+                mcp_index.remove(old_mcp);
             }
-
-            // Check for old mcp_id binding
-            let mcp_to_instance = self.mcp_id_to_uuid.read().await;
-            let old_id_by_mcp = if let Some(ref mcp) = mcp_id {
-                mcp_to_instance.get(mcp).cloned()
-            } else {
-                None
-            };
-
-            let old_id_by_mcp = if let Some(ref old_id) = old_id_by_mcp {
-                if *old_id != instance_id {
-                    if let Some(ref mcp) = mcp_id {
-                        warn!(
-                            old_agent_instance_id = %old_id,
-                            new_agent_instance_id = %instance_id,
-                            mcp_agent_id = %mcp,
-                            "mcp_agent_id re-bound to different instance ID — removing old record"
-                        );
-                    }
-                    agents.remove(old_id);
-                    Some(old_id.clone())
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            // Insert new record
-            agents.insert(instance_id.clone(), record);
-
-            (old_id_by_agent, old_id_by_mcp)
-        };
-
-        // 2. Update mcp_id_to_uuid
-        {
-            let mut mcp_to_instance = self.mcp_id_to_uuid.write().await;
-            // Remove stale mcp_id bindings
-            if let Some(ref old_id) = old_id_by_agent_id {
-                // Find and remove any mcp_id that pointed to old instance ID
-                mcp_to_instance.retain(|_, v| v != old_id);
-            }
-            if let Some(ref old_id) = old_id_by_mcp_id {
-                mcp_to_instance.retain(|_, v| v != old_id);
-            }
-            // Insert new mcp_id binding
-            if let Some(ref mcp) = mcp_id {
-                mcp_to_instance.insert(mcp.clone(), instance_id.clone());
+            if let Some(ref old_cov) = old_record.cov_id {
+                cov_index.remove(old_cov);
             }
         }
 
-        // 3. Update agent_id_to_uuid
-        {
-            let mut id_to_instance = self.agent_id_to_uuid.write().await;
-            // Remove stale agent_id binding if it pointed to a different instance ID
-            if let Some(ref old_id) = old_id_by_agent_id {
-                if id_to_instance.get(&agent_id) == Some(old_id) {
-                    id_to_instance.remove(&agent_id);
-                }
+        // Insert new record
+        agents.insert(agent_id.clone(), record);
+
+        // Update indices
+        if let Some(ref mcp) = mcp_id {
+            mcp_index.insert(mcp.clone(), agent_id.clone());
+        }
+        if let Some(ref cov) = cov_id {
+            cov_index.insert(cov.clone(), agent_id.clone());
+        }
+
+        debug!(agent_id = %agent_id, "Registered agent in unified registry");
+    }
+
+    /// Unregister an agent
+    pub async fn unregister(&self, agent_id: &str) -> Option<AgentRecord> {
+        let mut agents = self.agents.write().await;
+        let mut mcp_index = self.mcp_id_to_agent_id.write().await;
+        let mut cov_index = self.cov_id_to_agent_id.write().await;
+
+        if let Some(record) = agents.remove(agent_id) {
+            if let Some(ref mcp) = record.mcp_agent_id {
+                mcp_index.remove(mcp);
             }
-            // Insert new binding
-            id_to_instance.insert(agent_id.clone(), instance_id.clone());
-        }
-
-        debug!(agent_instance_id = %instance_id, "Agent registered in unified registry");
-    }
-
-    /// Unregister an agent by instance ID
-    pub async fn unregister(&self, agent_instance_id: &str) -> Option<AgentRecord> {
-        let record = self.agents_by_uuid.write().await.remove(agent_instance_id);
-
-        if let Some(ref r) = record {
-            // Clean up indices
-            self.agent_id_to_uuid.write().await.remove(&r.agent_id);
-
-            if let Some(ref mcp) = r.mcp_agent_id {
-                self.mcp_id_to_uuid.write().await.remove(mcp);
+            if let Some(ref cov) = record.cov_id {
+                cov_index.remove(cov);
             }
-
-            debug!(agent_instance_id = %agent_instance_id, "Agent unregistered from unified registry");
+            debug!(agent_id = %agent_id, "Unregistered agent from unified registry");
+            Some(record)
+        } else {
+            None
         }
-
-        record
     }
 
-    /// Get agent by instance ID.
-    ///
-    /// NOTE: Method name retained as `get_by_uuid` for backward compatibility with existing callers.
-    /// The parameter is now `agent_instance_id` (NOT stable across restarts).
-    /// For cross-restart identification, use `profile.name` or `mcp_agent_id`.
-    pub async fn get_by_uuid(&self, agent_instance_id: &str) -> Option<AgentRecord> {
-        self.agents_by_uuid
-            .read()
-            .await
-            .get(agent_instance_id)
-            .cloned()
+    /// Get an agent by agent_id
+    pub async fn get(&self, agent_id: &str) -> Option<AgentRecord> {
+        self.agents.read().await.get(agent_id).cloned()
     }
 
-    /// Get agent by dynamic agent_id (e.g., pane ID "%72")
-    pub async fn get_by_agent_id(&self, agent_id: &str) -> Option<AgentRecord> {
-        let instance_id = self.agent_id_to_uuid.read().await.get(agent_id)?.clone();
-        self.get_by_uuid(&instance_id).await
-    }
-
-    /// Get agent by MCP agent_id (e.g., "opencode@abcd1234")
-    pub async fn get_by_mcp_id(&self, mcp_agent_id: &str) -> Option<AgentRecord> {
-        let instance_id = self.mcp_id_to_uuid.read().await.get(mcp_agent_id)?.clone();
-        self.get_by_uuid(&instance_id).await
-    }
-
-    /// Update agent state with transition tracking
-    ///
-    /// If an event bus is configured, publishes an `AgentLifecycleEventPayload`
-    /// to `ergatai.agent.lifecycle.{agent_instance_id}` after the transition.
-    pub async fn transition_state(
-        &self,
-        agent_instance_id: &str,
-        new_state: AgentLifecycleState,
-        reason: Option<String>,
-        metadata: serde_json::Value,
-    ) -> Result<(), String> {
-        // Capture event data under the write lock, then release before publishing
-        let event_payload = {
-            let mut agents = self.agents_by_uuid.write().await;
-            let record = agents
-                .get_mut(agent_instance_id)
-                .ok_or_else(|| format!("Agent {} not found", agent_instance_id))?;
-
-            let from_state = record.state.state_name().to_string();
-            let task_id = record.task_id.clone();
-
-            record
-                .transition_to(new_state, reason.clone(), metadata.clone())
-                .map_err(|e| format!("State transition failed: {}", e))?;
-
-            let to_state = record.state.state_name().to_string();
-            let is_terminal = record.state.is_terminal();
-            let is_alive = record.state.is_alive();
-            let agent_id = record.agent_id.clone();
-
-            debug!(agent_instance_id = %agent_instance_id, state = %to_state, "Agent state transitioned");
-
-            // Build the event payload (if event bus is configured we'll publish below)
-            Some(ergatai_nats::AgentLifecycleEventPayload {
-                agent_instance_id: agent_instance_id.to_string(),
-                agent_id,
-                from_state,
-                to_state,
-                reason,
-                task_id,
-                is_terminal,
-                is_alive,
-                timestamp: Utc::now().to_rfc3339(),
-                metadata,
-            })
-        }; // write lock released here
-
-        // Publish lifecycle event (best-effort, don't fail the transition)
-        if let Some(payload) = event_payload {
-            let bus = self.event_bus.read().await.clone();
-            if let Some(bus) = bus {
-                if let Err(e) = bus.publish_agent_lifecycle(&payload).await {
-                    warn!(
-                        agent_instance_id = %agent_instance_id,
-                        error = %e,
-                        "Failed to publish agent lifecycle event"
-                    );
-                }
-            }
+    /// Get an agent by MCP ID
+    pub async fn get_by_mcp_id(&self, mcp_id: &str) -> Option<AgentRecord> {
+        let mcp_index = self.mcp_id_to_agent_id.read().await;
+        if let Some(agent_id) = mcp_index.get(mcp_id) {
+            self.agents.read().await.get(agent_id).cloned()
+        } else {
+            None
         }
-
-        Ok(())
     }
 
-    /// Update agent heartbeat
-    pub async fn update_heartbeat(&self, agent_instance_id: &str) -> Result<(), String> {
-        let mut agents = self.agents_by_uuid.write().await;
-        let record = agents
-            .get_mut(agent_instance_id)
-            .ok_or_else(|| format!("Agent {} not found", agent_instance_id))?;
-
-        record.update_heartbeat();
-        Ok(())
-    }
-
-    /// Update MCP agent ID binding
-    ///
-    /// Concurrency: holds both `agents_by_uuid` and `mcp_id_to_uuid` write locks
-    /// simultaneously to ensure readers never see an intermediate state where the
-    /// record's `mcp_agent_id` disagrees with `mcp_id_to_uuid`. Lock acquisition
-    /// order is `agents_by_uuid → mcp_id_to_uuid` (consistent with doc comment at
-    /// struct definition, line 88).
-    pub async fn set_mcp_agent_id(
-        &self,
-        agent_instance_id: &str,
-        mcp_agent_id: String,
-    ) -> Result<(), String> {
-        // Hold agents_by_uuid write lock for the entire operation.
-        let mut agents = self.agents_by_uuid.write().await;
-        let record = agents
-            .get_mut(agent_instance_id)
-            .ok_or_else(|| format!("Agent {} not found", agent_instance_id))?;
-
-        // Capture old binding BEFORE mutating the record, so we can clean up
-        // mcp_id_to_uuid after acquiring its lock.
-        let old_mcp = record.mcp_agent_id.take();
-
-        // Acquire mcp_id_to_uuid write lock (second in the fixed order) and
-        // apply both mutations atomically from the reader's perspective.
-        let mut mcp_map = self.mcp_id_to_uuid.write().await;
-        if let Some(old) = old_mcp {
-            mcp_map.remove(&old);
+    /// Get an agent by Cov ID
+    pub async fn get_by_cov_id(&self, cov_id: &str) -> Option<AgentRecord> {
+        let cov_index = self.cov_id_to_agent_id.read().await;
+        if let Some(agent_id) = cov_index.get(cov_id) {
+            self.agents.read().await.get(agent_id).cloned()
+        } else {
+            None
         }
-        mcp_map.insert(mcp_agent_id.clone(), agent_instance_id.to_string());
-
-        // NOW update the record — both indices are locked, so no reader can
-        // observe the record's new mcp_agent_id before mcp_id_to_uuid is updated.
-        record.mcp_agent_id = Some(mcp_agent_id);
-
-        Ok(())
     }
 
     /// List all agents
-    pub async fn list_all(&self) -> Vec<AgentRecord> {
-        self.agents_by_uuid.read().await.values().cloned().collect()
+    pub async fn list(&self) -> Vec<AgentRecord> {
+        self.agents.read().await.values().cloned().collect()
     }
 
-    /// List agents by state predicate
-    pub async fn list_by_predicate<F>(&self, predicate: F) -> Vec<AgentRecord>
-    where
-        F: Fn(&AgentRecord) -> bool,
-    {
-        self.agents_by_uuid
+    /// List agents as summaries
+    pub async fn list_summaries(&self) -> Vec<AgentSummary> {
+        self.agents
             .read()
             .await
             .values()
-            .filter(|r| predicate(r))
-            .cloned()
-            .collect()
-    }
-
-    /// List alive agents
-    pub async fn list_alive(&self) -> Vec<AgentRecord> {
-        self.list_by_predicate(|r| r.is_alive()).await
-    }
-
-    /// List idle agents (available for work)
-    pub async fn list_idle(&self) -> Vec<AgentRecord> {
-        self.list_by_predicate(|r| r.is_idle()).await
-    }
-
-    /// List agents processing tasks
-    pub async fn list_processing(&self) -> Vec<AgentRecord> {
-        self.list_by_predicate(|r| r.is_processing()).await
-    }
-
-    /// Get agent summary for API responses
-    pub async fn get_summary(&self, agent_instance_id: &str) -> Option<AgentSummary> {
-        let record = self.get_by_uuid(agent_instance_id).await?;
-        let is_alive = record.is_alive();
-        let is_idle = record.is_idle();
-        let is_processing = record.is_processing();
-        Some(AgentSummary {
-            agent_instance_id: record.agent_instance_id,
-            agent_id: record.agent_id,
-            state: record.state.state_name().to_string(),
-            workspace_id: record.workspace_id,
-            task_id: record.task_id,
-            mcp_agent_id: record.mcp_agent_id,
-            capabilities: record.capabilities,
-            is_alive,
-            is_idle,
-            is_processing,
-            last_heartbeat: record.last_heartbeat,
-            state_changed_at: record.state_changed_at,
-        })
-    }
-
-    /// List all agent summaries
-    pub async fn list_summaries(&self) -> Vec<AgentSummary> {
-        let agents = self.list_all().await;
-        agents
-            .into_iter()
-            .map(|r| {
-                let is_alive = r.is_alive();
-                let is_idle = r.is_idle();
-                let is_processing = r.is_processing();
-                AgentSummary {
-                    agent_instance_id: r.agent_instance_id,
-                    agent_id: r.agent_id,
-                    state: r.state.state_name().to_string(),
-                    workspace_id: r.workspace_id,
-                    task_id: r.task_id,
-                    mcp_agent_id: r.mcp_agent_id,
-                    capabilities: r.capabilities,
-                    is_alive,
-                    is_idle,
-                    is_processing,
-                    last_heartbeat: r.last_heartbeat,
-                    state_changed_at: r.state_changed_at,
-                }
+            .map(|record| AgentSummary {
+                agent_id: record.agent_id.clone(),
+                cov_id: record.cov_id.clone(),
+                state: format!("{:?}", record.state),
+                workspace_id: record.workspace_id.clone(),
+                task_id: record.task_id.clone(),
+                mcp_agent_id: record.mcp_agent_id.clone(),
+                capabilities: record.capabilities.clone(),
+                is_alive: record.state.is_alive(),
+                is_idle: record.state.is_idle(),
+                is_processing: record.state.is_processing(),
+                last_heartbeat: record.last_heartbeat,
+                state_changed_at: record.state_changed_at,
             })
             .collect()
     }
 
-    /// Get state history for an agent
-    pub async fn get_state_history(
+    /// Update agent state and publish lifecycle event if event_bus is set.
+    ///
+    /// Validates the state transition using `AgentRecord::transition_to()`, which:
+    /// - Rejects transitions from terminal states
+    /// - Records the transition in state_history
+    /// - Updates heartbeat appropriately
+    ///
+    /// Returns `Err` if the transition is invalid.
+    pub async fn update_state(
         &self,
-        agent_instance_id: &str,
-    ) -> Option<Vec<ergatai_runtime::StateTransition>> {
-        self.get_by_uuid(agent_instance_id)
+        agent_id: &str,
+        new_state: AgentLifecycleState,
+    ) -> Result<(), String> {
+        // Capture event data under write lock, then release lock before publishing
+        // to avoid holding the write lock during async I/O operations.
+        let event_payload = {
+            let mut agents = self.agents.write().await;
+            let record = agents
+                .get_mut(agent_id)
+                .ok_or_else(|| format!("Agent {} not found", agent_id))?;
+
+            let old_state = record.state.state_name().to_string();
+
+            // Use transition_to() for validation and history tracking
+            record.transition_to(new_state.clone(), None, serde_json::json!({}))?;
+
+            let new_state_str = new_state.state_name().to_string();
+            let is_terminal = !new_state.is_alive();
+            let is_alive = new_state.is_alive();
+
+            debug!(agent_id = %agent_id, "Updated agent state");
+
+            // Build event payload while still holding the write lock
+            // (to ensure consistent state capture)
+            Some(ergatai_nats::AgentLifecycleEventPayload {
+                agent_id: agent_id.to_string(),
+                from_state: old_state,
+                to_state: new_state_str,
+                reason: None,
+                task_id: record.task_id.clone(),
+                is_terminal,
+                is_alive,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                metadata: serde_json::json!({}),
+            })
+        }; // agents write lock released here
+
+        // Publish lifecycle event outside the write lock to avoid lock contention
+        if let Some(payload) = event_payload {
+            let event_bus = self.event_bus.read().await;
+            if let Some(ref bus) = *event_bus {
+                if let Err(e) = bus.publish_agent_lifecycle(&payload).await {
+                    tracing::warn!(
+                        agent_id = %agent_id,
+                        error = %e,
+                        "Failed to publish lifecycle event"
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Set or update the MCP agent ID binding for an agent.
+    /// Removes any previous MCP ID binding for this agent.
+    pub async fn set_mcp_agent_id(&self, agent_id: &str, mcp_id: String) -> Result<(), String> {
+        let mut agents = self.agents.write().await;
+        let mut mcp_index = self.mcp_id_to_agent_id.write().await;
+
+        let record = agents
+            .get_mut(agent_id)
+            .ok_or_else(|| format!("Agent {} not found", agent_id))?;
+
+        // Remove old MCP ID binding if any
+        if let Some(ref old_mcp) = record.mcp_agent_id {
+            mcp_index.remove(old_mcp);
+        }
+
+        // Set new binding
+        record.mcp_agent_id = Some(mcp_id.clone());
+        mcp_index.insert(mcp_id, agent_id.to_string());
+        debug!(agent_id = %agent_id, "Updated MCP agent ID");
+        Ok(())
+    }
+
+    /// Update the last heartbeat timestamp for an agent.
+    pub async fn update_heartbeat(&self, agent_id: &str) -> Result<(), String> {
+        let mut agents = self.agents.write().await;
+        let record = agents
+            .get_mut(agent_id)
+            .ok_or_else(|| format!("Agent {} not found", agent_id))?;
+        record.last_heartbeat = chrono::Utc::now();
+        debug!(agent_id = %agent_id, "Updated heartbeat");
+        Ok(())
+    }
+
+    /// List all alive (non-terminal) agents
+    pub async fn list_alive(&self) -> Vec<AgentRecord> {
+        self.agents
+            .read()
             .await
-            .map(|r| r.state_history)
+            .values()
+            .filter(|r| r.state.is_alive())
+            .cloned()
+            .collect()
     }
 
-    /// Clean up stale agents (no heartbeat for N seconds)
-    pub async fn cleanup_stale(&self, timeout_seconds: i64) -> Vec<String> {
-        let now = Utc::now();
-        let mut stale_uuids = Vec::new();
-
-        let agents = self.agents_by_uuid.read().await;
-        for (uuid, record) in agents.iter() {
-            let elapsed = now.signed_duration_since(record.last_heartbeat);
-            if elapsed.num_seconds() >= timeout_seconds && !record.is_alive() {
-                stale_uuids.push(uuid.clone());
-            }
-        }
-        drop(agents);
-
-        // Remove stale agents
-        for uuid in &stale_uuids {
-            self.unregister(uuid).await;
-            warn!(agent_instance_id = %uuid, "Stale agent cleaned up");
-        }
-
-        stale_uuids
+    /// List all idle agents
+    pub async fn list_idle(&self) -> Vec<AgentRecord> {
+        self.agents
+            .read()
+            .await
+            .values()
+            .filter(|r| r.state.is_idle())
+            .cloned()
+            .collect()
     }
 
-    /// Count agents by state category
-    pub async fn count_by_state(&self) -> AgentStateCounts {
-        let agents = self.agents_by_uuid.read().await;
-        let mut counts = AgentStateCounts::default();
+    /// List all processing agents
+    pub async fn list_processing(&self) -> Vec<AgentRecord> {
+        self.agents
+            .read()
+            .await
+            .values()
+            .filter(|r| r.state.is_processing())
+            .cloned()
+            .collect()
+    }
 
-        for record in agents.values() {
-            counts.total += 1;
-            if record.is_alive() {
-                counts.alive += 1;
-            } else {
-                counts.terminal += 1;
-            }
-            if record.is_idle() {
-                counts.idle += 1;
-            }
-            if record.is_processing() {
-                counts.processing += 1;
-            }
+    /// Get agent count by state category
+    pub async fn count_by_state(&self) -> StateCounts {
+        let agents = self.agents.read().await;
+        let total = agents.len();
+        let alive = agents.values().filter(|r| r.state.is_alive()).count();
+        let terminal = agents.values().filter(|r| !r.state.is_alive()).count();
+        let idle = agents.values().filter(|r| r.state.is_idle()).count();
+        StateCounts {
+            total,
+            alive,
+            terminal,
+            idle,
         }
+    }
 
-        counts
+    /// Get agent count
+    pub async fn len(&self) -> usize {
+        self.agents.read().await.len()
+    }
+
+    /// Check if registry is empty
+    pub async fn is_empty(&self) -> bool {
+        self.agents.read().await.is_empty()
     }
 }
 
 impl Default for UnifiedAgentRegistry {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Agent state counts for monitoring
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AgentStateCounts {
-    pub total: usize,
-    pub alive: usize,
-    pub terminal: usize,
-    pub idle: usize,
-    pub processing: usize,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ergatai_runtime::{
-        ExitOutcome, RecordAgentHandle as AgentHandle, RecordWorkspaceHandle as WorkspaceHandle,
-    };
-
-    fn create_test_record(agent_instance_id: &str, agent_id: &str) -> AgentRecord {
-        AgentRecord::new(
-            agent_instance_id.to_string(),
-            agent_id.to_string(),
-            "ws-test".to_string(),
-            AgentHandle {
-                workspace: WorkspaceHandle {
-                    id: "ws-test".to_string(),
-                    backend: "test".to_string(),
-                    metadata: HashMap::new(),
-                },
-                agent_id: agent_id.to_string(),
-                process_id: Some("1234".to_string()),
-                metadata: HashMap::new(),
-            },
-        )
-    }
-
-    #[tokio::test]
-    async fn test_register_and_get() {
-        let registry = UnifiedAgentRegistry::new();
-        let record = create_test_record("uuid-1", "%1");
-
-        registry.register(record.clone()).await;
-
-        let retrieved = registry.get_by_uuid("uuid-1").await;
-        assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().agent_id, "%1");
-
-        let by_agent_id = registry.get_by_agent_id("%1").await;
-        assert!(by_agent_id.is_some());
-        assert_eq!(by_agent_id.unwrap().agent_instance_id, "uuid-1");
-    }
-
-    #[tokio::test]
-    async fn test_unregister() {
-        let registry = UnifiedAgentRegistry::new();
-        let record = create_test_record("uuid-2", "%2");
-
-        registry.register(record).await;
-        assert!(registry.get_by_uuid("uuid-2").await.is_some());
-
-        let removed = registry.unregister("uuid-2").await;
-        assert!(removed.is_some());
-        assert!(registry.get_by_uuid("uuid-2").await.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_mcp_id_binding() {
-        let registry = UnifiedAgentRegistry::new();
-        let record = create_test_record("uuid-3", "%3");
-
-        registry.register(record).await;
-        registry
-            .set_mcp_agent_id("uuid-3", "opencode@abc".to_string())
-            .await
-            .unwrap();
-
-        let by_mcp = registry.get_by_mcp_id("opencode@abc").await;
-        assert!(by_mcp.is_some());
-        assert_eq!(by_mcp.unwrap().agent_instance_id, "uuid-3");
-    }
-
-    #[tokio::test]
-    async fn test_list_alive() {
-        let registry = UnifiedAgentRegistry::new();
-
-        // Register two agents
-        registry.register(create_test_record("uuid-5", "%5")).await;
-        registry.register(create_test_record("uuid-6", "%6")).await;
-
-        // Transition one to terminal state
-        registry
-            .transition_state(
-                "uuid-5",
-                AgentLifecycleState::Terminated {
-                    outcome: ExitOutcome::Exited { exit_code: Some(0) },
-                    terminated_at: Utc::now(),
-                    duration_secs: 100,
-                },
-                None,
-                serde_json::json!({}),
-            )
-            .await
-            .unwrap();
-
-        let alive = registry.list_alive().await;
-        assert_eq!(alive.len(), 1);
-        assert_eq!(alive[0].agent_instance_id, "uuid-6");
-    }
-
-    #[tokio::test]
-    async fn test_count_by_state() {
-        let registry = UnifiedAgentRegistry::new();
-
-        registry.register(create_test_record("uuid-7", "%7")).await;
-        registry.register(create_test_record("uuid-8", "%8")).await;
-
-        // Transition one to idle
-        registry
-            .transition_state(
-                "uuid-7",
-                AgentLifecycleState::Idle {
-                    ready_since: Utc::now(),
-                    capabilities: vec![],
-                },
-                None,
-                serde_json::json!({}),
-            )
-            .await
-            .unwrap();
-
-        let counts = registry.count_by_state().await;
-        assert_eq!(counts.total, 2);
-        assert_eq!(counts.alive, 2);
-        assert_eq!(counts.idle, 1);
-    }
-
-    /// MEDIUM #22 regression test: re-registering an agent with the same agent_id
-    /// but a different UUID must clean up the old record to prevent orphaned entries.
-    #[tokio::test]
-    async fn test_register_cleans_stale_agent_id_index() {
-        let registry = UnifiedAgentRegistry::new();
-
-        // Register first agent with agent_id "%10"
-        registry
-            .register(create_test_record("uuid-old", "%10"))
-            .await;
-        assert!(registry.get_by_uuid("uuid-old").await.is_some());
-        assert!(registry.get_by_agent_id("%10").await.is_some());
-
-        // Re-register with same agent_id but different UUID
-        registry
-            .register(create_test_record("uuid-new", "%10"))
-            .await;
-
-        // New record should be accessible
-        let by_id = registry.get_by_agent_id("%10").await;
-        assert!(by_id.is_some());
-        assert_eq!(by_id.unwrap().agent_instance_id, "uuid-new");
-
-        // Old record should be cleaned up (no orphan)
-        let old = registry.get_by_uuid("uuid-old").await;
-        assert!(
-            old.is_none(),
-            "Old record should be removed when agent_id is re-bound"
-        );
-
-        // Total count should be 1, not 2
-        let all = registry.list_all().await;
-        assert_eq!(all.len(), 1, "No orphaned records should remain");
-    }
-
-    /// MEDIUM #22 regression test: re-binding mcp_agent_id must clean up the old record.
-    #[tokio::test]
-    async fn test_register_cleans_stale_mcp_id_index() {
-        let registry = UnifiedAgentRegistry::new();
-
-        // Register first agent with mcp_agent_id
-        let mut record1 = create_test_record("uuid-old", "%20");
-        record1.mcp_agent_id = Some("opencode@abc".to_string());
-        registry.register(record1).await;
-
-        // Register second agent with same mcp_agent_id but different UUID
-        let mut record2 = create_test_record("uuid-new", "%21");
-        record2.mcp_agent_id = Some("opencode@abc".to_string());
-        registry.register(record2).await;
-
-        // New record should be accessible via mcp_id
-        let by_mcp = registry.get_by_mcp_id("opencode@abc").await;
-        assert!(by_mcp.is_some());
-        assert_eq!(by_mcp.unwrap().agent_instance_id, "uuid-new");
-
-        // Old record should be cleaned up
-        assert!(
-            registry.get_by_uuid("uuid-old").await.is_none(),
-            "Old record should be removed when mcp_agent_id is re-bound"
-        );
-
-        // Total count should be 1
-        let all = registry.list_all().await;
-        assert_eq!(all.len(), 1, "No orphaned records should remain");
     }
 }

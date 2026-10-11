@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use ergatai_error::id::{format as format_id, generate, IdType};
 use parking_lot::RwLock;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -112,7 +113,6 @@ struct HttpAgentEntry {
 struct HttpWorkspaceEntry {
     id: String,
     agent_ids: Vec<String>,
-    agent_counter: std::sync::atomic::AtomicUsize,
 }
 
 /// HTTP-based ACP backend for remote agent connections.
@@ -532,7 +532,6 @@ impl AcpHttpBackend {
                 HttpWorkspaceEntry {
                     id: workspace_id.to_string(),
                     agent_ids: Vec::new(),
-                    agent_counter: std::sync::atomic::AtomicUsize::new(0),
                 },
             );
         }
@@ -543,16 +542,9 @@ impl AcpHttpBackend {
         })
     }
 
-    fn next_agent_id(&self, workspace_id: &str) -> String {
-        let workspaces = self.workspaces.read();
-        let count = workspaces
-            .get(workspace_id)
-            .map(|ws| {
-                ws.agent_counter
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            })
-            .unwrap_or(0);
-        format!("{}-agent-{}", workspace_id, count)
+    fn next_agent_id(&self, _workspace_id: &str) -> String {
+        let id = generate();
+        format_id(id, IdType::Agent)
     }
 }
 
@@ -588,15 +580,10 @@ impl AcpBackendInterface for AcpHttpBackend {
         self.get_or_create_workspace(&spec.id).await
     }
 
-    fn next_agent_id(&self, workspace_id: &str) -> String {
-        // HTTP backend uses a simple counter-based approach
-        // Note: This is called before start_agent for workspace pre-registration
-        let agents = self.agents.read();
-        let count = agents
-            .values()
-            .filter(|a| a.workspace == workspace_id)
-            .count();
-        format!("{}-agent-{}", workspace_id, count)
+    fn next_agent_id(&self, _workspace_id: &str) -> String {
+        // Use snowflake ID for deterministic, globally unique agent IDs
+        let id = generate();
+        format_id(id, IdType::Agent)
     }
 
     async fn start_agent(

@@ -1155,8 +1155,6 @@ struct AcpAgentEntry {
 /// Logical workspace (no physical resources, just metadata).
 struct WorkspaceEntry {
     id: String,
-    /// Per-workspace counter for deterministic agent IDs.
-    agent_counter: AtomicUsize,
     agent_ids: Vec<String>,
     /// Environment variables to pass to agents in this workspace.
     env: HashMap<String, String>,
@@ -1330,14 +1328,10 @@ impl AcpBackend {
         self
     }
 
-    /// Generate a workspace-scoped agent ID: `{workspace_id}-agent-{counter}`.
-    fn next_agent_id(&self, workspace_id: &str) -> String {
-        let workspaces = self.workspaces.read();
-        let count = workspaces
-            .get(workspace_id)
-            .map(|ws| ws.agent_counter.fetch_add(1, Ordering::SeqCst))
-            .unwrap_or(0);
-        format!("{}-agent-{}", workspace_id, count)
+    /// Generate a Snowflake-based agent ID: `agent_{timestamp}_{instance}_{sequence}`.
+    fn next_agent_id(&self, _workspace_id: &str) -> String {
+        let id = generate();
+        format_id(id, IdType::Agent)
     }
 
     /// Register a PID to agent_id mapping.
@@ -1979,10 +1973,9 @@ impl AcpBackendInterface for AcpBackend {
     async fn create_workspace(&self, spec: WorkspaceSpec) -> ErgataiResult<WorkspaceHandle> {
         let workspace_id = spec.id.clone();
 
-        // Create workspace entry with per-workspace agent counter, env vars, and thought capture config.
+        // Create workspace entry with env vars and thought capture config.
         let entry = WorkspaceEntry {
             id: spec.id.clone(),
-            agent_counter: AtomicUsize::new(0),
             agent_ids: Vec::new(),
             env: spec.env.clone(),
             capture_thoughts: spec.capture_thoughts,

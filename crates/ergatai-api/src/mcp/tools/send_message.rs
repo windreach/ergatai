@@ -14,14 +14,16 @@ pub(crate) async fn handle(
     server: &ErgataiMcpServer,
     params: Parameters<SendMessageParams>,
 ) -> Result<CallToolResult, ErrorData> {
-    let target_agent_id = &params.0.target_agent_id;
+    // Use shared helper to resolve target (prefers cov_id, falls back to agent_id)
+    let (target_id, target_cov_id) = params.0.resolve_target()?;
+
     let message = &params.0.message;
     let message_type = params.0.message_type.as_deref().unwrap_or("request");
     let correlation_id = params.0.correlation_id.clone();
 
     info!(
-        "Sending message to agent {} (type: {}, bytes: {}, correlation_id: {:?})",
-        target_agent_id,
+        "Sending message to {} (type: {}, bytes: {}, correlation_id: {:?})",
+        target_id,
         message_type,
         message.len(),
         correlation_id
@@ -47,7 +49,8 @@ pub(crate) async fn handle(
     };
     let send_req = crate::messaging::SendRequest {
         from: from_agent.clone(),
-        to: target_agent_id.to_string(),
+        to: target_id.to_string(),
+        target_cov_id,
         message: message.to_string(),
         message_type: message_type.to_string(),
         correlation_id,

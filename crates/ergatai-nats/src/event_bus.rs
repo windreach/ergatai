@@ -175,9 +175,9 @@ impl EventBus {
     /// Publish an LLM API traffic event (agent semantic state).
     ///
     /// Published on core NATS (low-latency, not persisted to JetStream).
-    /// Subject: `ergatai.agent.api.{agent_instance_id}`
+    /// Subject: `ergatai.agent.api.{agent_id}`
     pub async fn publish_api_event(&self, payload: &ApiEventPayload) -> ErgataiResult<()> {
-        let subject = format!("ergatai.agent.api.{}", payload.agent_instance_id);
+        let subject = format!("ergatai.agent.api.{}", payload.agent_id);
         self.publish(&subject, payload).await
     }
 
@@ -277,6 +277,36 @@ impl EventBus {
         let subject = format!(
             "ergatai.agent.message.{}",
             sanitize_agent_name(&payload.to_agent)
+        );
+        let json = serde_json::to_vec(payload)?;
+        self.connection.publish_jetstream(&subject, json).await
+    }
+
+    /// Publish a message to a Cov (Conversation) via JetStream (reliable, persisted).
+    ///
+    /// This is the Cov-centric routing, publishing to `ergatai.conversation.message.{cov_id}`
+    /// on the `COV_MESSAGES` stream. Each Cov has a 1:1 binding to an Agent, so the
+    /// underlying delivery is the same, but the routing is Cov-centric.
+    ///
+    /// # Arguments
+    ///
+    /// * `cov_id` - The target Cov ID (conversation_id)
+    /// * `payload` - The message payload (same as agent messages)
+    ///
+    /// # Returns
+    ///
+    /// `PublishAck` with the stream sequence number on success.
+    pub async fn publish_cov_message_reliable(
+        &self,
+        cov_id: &str,
+        payload: &AgentMessagePayload,
+    ) -> ErgataiResult<async_nats::jetstream::publish::PublishAck> {
+        // Backpressure check: refuse publish if stream is overloaded.
+        self.check_backpressure().await?;
+
+        let subject = format!(
+            "ergatai.conversation.message.{}",
+            sanitize_agent_name(cov_id)
         );
         let json = serde_json::to_vec(payload)?;
         self.connection.publish_jetstream(&subject, json).await
@@ -563,7 +593,7 @@ impl EventBus {
 
     /// Publish an agent lifecycle state change event.
     ///
-    /// Subject: `ergatai.agent.lifecycle.{agent_instance_id}`
+    /// Subject: `ergatai.agent.lifecycle.{agent_id}`
     /// Uses core NATS (not JetStream) for low-latency fan-out to subscribers.
     /// TaskScheduler and other observers subscribe to react to agent state changes.
     pub async fn publish_agent_lifecycle(
@@ -572,7 +602,7 @@ impl EventBus {
     ) -> ErgataiResult<()> {
         let subject = format!(
             "ergatai.agent.lifecycle.{}",
-            sanitize_agent_name(&payload.agent_instance_id)
+            sanitize_agent_name(&payload.agent_id)
         );
         self.publish(&subject, payload).await
     }
@@ -580,12 +610,9 @@ impl EventBus {
     /// Subscribe to agent lifecycle events for a specific agent.
     pub async fn subscribe_agent_lifecycle(
         &self,
-        agent_instance_id: &str,
+        agent_id: &str,
     ) -> ErgataiResult<async_nats::Subscriber> {
-        let subject = format!(
-            "ergatai.agent.lifecycle.{}",
-            sanitize_agent_name(agent_instance_id)
-        );
+        let subject = format!("ergatai.agent.lifecycle.{}", sanitize_agent_name(agent_id));
         self.connection.subscribe(&subject).await
     }
 
@@ -1105,10 +1132,7 @@ mod tests {
         let payload = AgentMessagePayload {
             from_agent: "claude-code".to_string(),
             to_agent: "codex".to_string(),
-            from_uuid: None,
-            to_uuid: None,
-            from_stable: None,
-            to_stable: None,
+            target_cov_id: None,
             content: "@codex review this".to_string(),
             thread_id: Some("thread-1".to_string()),
             timestamp: 1234567890,

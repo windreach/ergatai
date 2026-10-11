@@ -191,7 +191,7 @@ Agent bindings 用于将 MCP 连接或 ACP workspace 映射到 conversation ID�
 ### 关键函数
 
 - `insert_mcp_binding`: 绑定 MCP peer → conversation
-- `insert_agent_with_stable_id`: 绑定 ACP agent → conversation
+- `register_agent`: 绑定 ACP agent → conversation (via AgentRecord with cov_id)
 
 ### 需要验证的点
 

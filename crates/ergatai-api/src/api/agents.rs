@@ -7,8 +7,8 @@ use axum::{
     },
     Json,
 };
-use ergatai_runtime::{ResourceLimits, WorkspaceSpec};
 use ergatai_runtime::suspend_store::SuspendReason;
+use ergatai_runtime::{ResourceLimits, WorkspaceSpec};
 use futures::stream::{self, Stream};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -315,9 +315,7 @@ pub struct SpawnAgentResponse {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AgentInfoResponse {
     pub agent_id: String,
-    /// Human-readable stable identifier (e.g., "agent-1"). User-facing display name.
-    pub stable_id: Option<String>,
-    pub agent_instance_id: String,
+    /// Human-readable identifier (e.g., "agent-1"). User-facing display name.
     pub workspace_id: String,
     /// Working directory of the agent
     pub work_dir: String,
@@ -408,8 +406,6 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
 
             AgentInfoResponse {
                 agent_id: a.agent_id,
-                stable_id: a.stable_id,
-                agent_instance_id: a.agent_instance_id,
                 workspace_id: a.workspace_id,
                 work_dir: a.work_dir,
                 state: a.state.clone(),
@@ -1215,6 +1211,7 @@ pub async fn send_message(
                                 let send_req = SendRequest {
                                     from: req.from.unwrap_or_else(|| id.clone()),
                                     to: binding.agent_id.clone(),
+                                    target_cov_id: None, // REST API uses agent-centric routing
                                     message: req.message,
                                     message_type: req
                                         .message_type
@@ -1548,6 +1545,7 @@ pub async fn send_message(
                 let send_req = SendRequest {
                     from: req.from.unwrap_or_else(|| id.clone()),
                     to: new_agent_id.clone(),
+                    target_cov_id: None, // REST API uses agent-centric routing
                     message: req.message,
                     message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
                     correlation_id: req.correlation_id,
@@ -1606,6 +1604,7 @@ pub async fn send_message(
     let send_req = SendRequest {
         from: req.from.unwrap_or_else(|| "api".to_string()),
         to: id.clone(),
+        target_cov_id: None, // REST API uses agent-centric routing
         message: req.message,
         message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
         correlation_id: req.correlation_id,
@@ -2778,7 +2777,7 @@ pub async fn prompt_agent(
     Path(id): Path<String>,
     Json(body): Json<PromptAgentRequest>,
 ) -> impl IntoResponse {
-    // Resolve the agent ID to a runtime ID (handles profile names, stable IDs, etc.)
+    // Resolve the agent ID to a runtime ID (handles profile names, ergatai_agent_id, etc.)
     let runtime_id = match crate::services::agent_service::resolve_to_runtime_id(&id).await {
         Some(rid) => rid,
         None => {
@@ -2908,7 +2907,8 @@ pub async fn prompt_agent(
         }
 
         let agent_name = agent_info
-            .and_then(|info| info.stable_id)
+            .as_ref()
+            .map(|info| info.agent_id.clone())
             .or_else(|| conversation.name.clone())
             .unwrap_or_else(|| runtime_id.clone());
 
@@ -3538,14 +3538,10 @@ pub async fn stream_agent_output(
 
 // ── Suspend/Resume API ──
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct SuspendRequest {
-    #[serde(default = "default_suspend_reason")]
-    pub reason: String,
-}
-
-fn default_suspend_reason() -> String {
-    "manual".to_string()
+    #[serde(default)]
+    pub reason: SuspendReason,
 }
 
 /// POST /api/v1/agents/{id}/suspend
@@ -3557,13 +3553,7 @@ pub async fn suspend_agent(
     Json(req): Json<SuspendRequest>,
 ) -> impl IntoResponse {
     let runtime = crate::context::get_app_context().agent_runtime.clone();
-
-    let reason = match req.reason.as_str() {
-        "manual" => SuspendReason::Manual,
-        "idle" => SuspendReason::Idle,
-        "shutdown" => SuspendReason::Shutdown,
-        _ => SuspendReason::Manual,
-    };
+    let reason = req.reason;
 
     match runtime.suspend_agent(&agent_id, reason).await {
         Ok(()) => (
@@ -3571,7 +3561,7 @@ pub async fn suspend_agent(
             Json(serde_json::json!({
                 "status": "suspended",
                 "agent_id": agent_id,
-                "reason": req.reason,
+                "reason": reason,
             })),
         )
             .into_response(),
@@ -3617,12 +3607,10 @@ pub async fn resume_agent(
 /// GET /api/v1/agents/suspended
 ///
 /// List all suspended agents.
-pub async fn list_suspended_agents(
-    State(_state): State<AppState>,
-) -> impl IntoResponse {
+pub async fn list_suspended_agents(State(_state): State<AppState>) -> impl IntoResponse {
     let runtime = crate::context::get_app_context().agent_runtime.clone();
 
-    match runtime.suspend_store.list_suspended() {
+    match runtime.suspend_store().list_suspended() {
         Ok(suspended) => (
             StatusCode::OK,
             Json(serde_json::json!({
@@ -3634,7 +3622,7 @@ pub async fn list_suspended_agents(
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(crate::api::ApiError {
-                error: e.to_string(),
+                error: crate::sanitize_error(&e, "list_suspended_agents"),
             }),
         )
             .into_response(),
@@ -3746,8 +3734,6 @@ mod tests {
     fn test_agent_info_response_serialization() {
         let resp = AgentInfoResponse {
             agent_id: "a-1".to_string(),
-            stable_id: Some("agent-1".to_string()),
-            agent_instance_id: "uuid-1".to_string(),
             workspace_id: "ws-1".to_string(),
             work_dir: "/workspace/ws-1".to_string(),
             state: "running".to_string(),
@@ -3771,7 +3757,6 @@ mod tests {
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["agent_id"], "a-1");
-        assert_eq!(json["agent_instance_id"], "uuid-1");
         assert_eq!(json["workspace_id"], "ws-1");
         // Fixed: state is now lowercase
         assert_eq!(json["state"], "running");
@@ -3825,8 +3810,6 @@ mod tests {
     fn test_agent_info_response_with_all_optional_fields() {
         let resp = AgentInfoResponse {
             agent_id: "a-1".to_string(),
-            stable_id: Some("stable-1".to_string()),
-            agent_instance_id: "uuid-1".to_string(),
             workspace_id: "ws-1".to_string(),
             work_dir: "/workspace".to_string(),
             state: "running".to_string(),
@@ -3860,8 +3843,6 @@ mod tests {
     fn test_agent_info_response_with_null_optional_fields() {
         let resp = AgentInfoResponse {
             agent_id: "a-1".to_string(),
-            stable_id: None,
-            agent_instance_id: "uuid-1".to_string(),
             workspace_id: "ws-1".to_string(),
             work_dir: "/workspace".to_string(),
             state: "terminated".to_string(),
@@ -3884,7 +3865,6 @@ mod tests {
             state_history: vec![],
         };
         let json = serde_json::to_value(&resp).unwrap();
-        assert!(json["stable_id"].is_null());
         assert!(json["task_id"].is_null());
         assert!(json["session_title"].is_null());
         assert_eq!(json["is_alive"], false);

@@ -6,7 +6,7 @@
 //!    - Rate limit check (per-agent, 60 msg/min)
 //!    - Conversation loop prevention (AutoGen-style)
 //!    - MeshPolicy ACL check (DAG communication policy)
-//! 3. Stable ID resolution (for NATS payload enrichment)
+//! 3. Agent ID resolution (for NATS payload enrichment)
 //! 4. Sender display name resolution + message formatting (hint injection)
 //! 5. NATS publish / direct inject
 //!
@@ -83,8 +83,12 @@ pub enum SendMessageResult {
 pub struct SendRequest {
     /// Sender identifier (MCP session ID, "api", or agent ID).
     pub from: String,
-    /// Target agent ID (supports runtime ID, stable ID, UUID, or name prefix).
+    /// Target agent ID (supports runtime ID, cov_id, or name prefix).
     pub to: String,
+    /// When present, the system uses `ergatai.conversation.message.{cov_id}` subject
+    /// instead of `ergatai.agent.message.{agent_id}`.
+    /// This is the new preferred routing; `to` is kept for backward compatibility.
+    pub target_cov_id: Option<String>,
     /// Message content.
     pub message: String,
     /// Message type: "request", "response", or "broadcast".
@@ -128,8 +132,8 @@ pub struct MessageSender {
 
 /// Find a running agent by conversation_id.
 ///
-/// Iterates through all running agents and checks if any has the specified
-/// conversation_id in its metadata. Returns the agent_id of the first match.
+/// Uses the cov_id index for O(1) lookup since cov_id == conversation_id
+/// (populated from `handle.metadata.get("conversation_id")`).
 ///
 /// This is useful for routing messages to agents when only the conversation_id
 /// is known (e.g., when resuming a suspended agent's conversation).
@@ -137,22 +141,18 @@ async fn find_agent_by_conversation(
     runtime: &AgentRuntime,
     conversation_id: &str,
 ) -> Option<String> {
-    let agents = runtime.list_agents().await;
-    for agent in agents {
-        if agent.lifecycle.is_alive() {
-            if let Some(agent_conv_id) = agent.handle.metadata.get("conversation_id") {
-                if agent_conv_id == conversation_id {
-                    tracing::debug!(
-                        conversation_id = %conversation_id,
-                        agent_id = %agent.agent_id,
-                        "Found running agent with matching conversation_id"
-                    );
-                    return Some(agent.agent_id.clone());
-                }
-            }
-        }
+    // Use cov_id index for O(1) lookup (cov_id == conversation_id)
+    let info = runtime.registry().resolve_cov_id(conversation_id).await?;
+    if info.lifecycle.is_alive() {
+        tracing::debug!(
+            conversation_id = %conversation_id,
+            agent_id = %info.agent_id,
+            "Found running agent with matching conversation_id (O(1) cov_id index)"
+        );
+        Some(info.agent_id)
+    } else {
+        None
     }
-    None
 }
 
 impl MessageSender {
@@ -261,7 +261,11 @@ impl MessageSender {
                 // Target not found in running agents — check if it's a suspended agent
                 // before falling back to auto-spawn from profile
                 if let Some(auto_resumed_id) = self
-                    .try_auto_resume_suspended_agent(&runtime, &req.to, req.conversation_id.as_deref())
+                    .try_auto_resume_suspended_agent(
+                        &runtime,
+                        &req.to,
+                        req.conversation_id.as_deref(),
+                    )
                     .await
                 {
                     info!(
@@ -303,6 +307,7 @@ impl MessageSender {
         let resolved_req = SendRequest {
             from: resolved_sender_id.clone(),
             to: resolved_target_id.clone(),
+            target_cov_id: req.target_cov_id.clone(), // Pass through Cov ID
             message: req.message.clone(),
             message_type: req.message_type.clone(),
             correlation_id: req.correlation_id.clone(),
@@ -319,14 +324,6 @@ impl MessageSender {
 
         // ── Step 3: Continue with resolved IDs ──
         // from_runtime_id is now the resolved_sender_id
-
-        // ── 3. Resolve stable IDs (used for NATS payload enrichment + formatting) ──
-        let from_stable = runtime
-            .resolve_to_stable_id(&resolved_sender_id, None)
-            .await;
-        let to_stable = runtime
-            .resolve_to_stable_id(&resolved_target_id, None)
-            .await;
 
         // ── 4. Resolve sender display name ──
         // Use the resolved sender ID for display
@@ -371,10 +368,8 @@ impl MessageSender {
         if target_conversation_id.is_none() {
             for candidate in [
                 resolved_sender_id.as_str(),
-                from_stable.as_str(),
                 req.from.as_str(),
                 resolved_target_id.as_str(),
-                to_stable.as_str(),
                 req.to.as_str(),
             ] {
                 // Wrap synchronous DB call in spawn_blocking to avoid blocking async runtime
@@ -402,7 +397,7 @@ impl MessageSender {
         // NOTE: Message persistence to sub_chat moved to AFTER successful delivery (see below)
         // to prevent orphaned messages when delivery fails.
 
-        // reply target = sender's stable ID (so recipient knows who to reply to)
+        // reply target = sender's ergatai_agent_id (so recipient knows who to reply to)
         //
         // Compute correlation_id + timeout BEFORE format_agent_message so they can be
         // injected into the NATS payload (but NOT into the message content — agents don't see them).
@@ -423,8 +418,8 @@ impl MessageSender {
 
         let formatted_content = Self::format_agent_message(
             &sender_display,
+            &self.get_sender_cov_id(&resolved_sender_id).await,
             &req.message,
-            &resolved_sender_id, // Use resolved sender ID as the reply target
             &req.message_type,
             correlation_id.as_deref(),
             timeout_ms,
@@ -442,22 +437,9 @@ impl MessageSender {
             let bus = ergatai_nats::EventBus::new(conn);
             let metadata = std::collections::HashMap::new();
 
-            let from_uuid = runtime
-                .get_agent(&from_runtime_id_for_payload)
-                .await
-                .map(|info| info.agent_instance_id);
-            let to_uuid = runtime
-                .get_agent(&resolved_target_id)
-                .await
-                .map(|info| info.agent_instance_id);
-
             let payload = ergatai_nats::AgentMessagePayload {
                 from_agent: resolved_sender_id.clone(),
                 to_agent: resolved_target_id.clone(),
-                from_uuid,
-                to_uuid,
-                from_stable: Some(from_stable),
-                to_stable: Some(to_stable),
                 content: formatted_content.clone(),
                 thread_id: target_conversation_id.clone(),
                 timestamp,
@@ -472,6 +454,8 @@ impl MessageSender {
                 timeout_ms,
                 // Message type for proper classification on the receiving end
                 message_type: req.message_type.clone(),
+                // Cov ID for direct delivery (bypasses agent_id intermediary)
+                target_cov_id: resolved_req.target_cov_id.clone(),
             };
 
             // Track request for reqwatch monitoring
@@ -498,8 +482,15 @@ impl MessageSender {
                 }
             }
 
-            match bus.publish_agent_message_reliable(&payload).await {
-                Ok(ack) => {
+            // Unified agent-centric routing: publish to ergatai.agent.message.{agent_id}
+            // The target_cov_id is included in the payload for direct Cov delivery on the consumer side.
+            let publish_result = bus
+                .publish_agent_message_reliable(&payload)
+                .await
+                .map(|ack| (ack.stream, ack.sequence));
+
+            match publish_result {
+                Ok((stream, sequence)) => {
                     self.mark_response_delivered(
                         &req.message_type,
                         correlation_id.as_deref(),
@@ -568,8 +559,8 @@ impl MessageSender {
 
                     return SendMessageResult::Queued {
                         target_agent: resolved_target_id,
-                        stream: ack.stream,
-                        sequence: ack.sequence,
+                        stream,
+                        sequence,
                     };
                 }
                 Err(e) => {
@@ -911,9 +902,7 @@ impl MessageSender {
             .find(|a| {
                 let matches = a.agent_id == target
                     || a.agent_id.starts_with(&format!("{}@", target))
-                    || a.agent_instance_id == target
                     || a.task_id.as_deref() == Some(target)
-                    || a.stable_id.as_deref() == Some(target)
                     || a.handle
                         .metadata
                         .get("ergatai_agent_id")
@@ -923,7 +912,6 @@ impl MessageSender {
                     tracing::debug!(
                         target = target,
                         matched_agent_id = %a.agent_id,
-                        matched_agent_uuid = %a.agent_instance_id,
                         "Found matching agent in runtime registry"
                     );
                 }
@@ -1050,7 +1038,7 @@ impl MessageSender {
         conversation_id: Option<&str>,
     ) -> Option<String> {
         // Step 1: Check if target matches a suspended agent ID
-        if let Ok(Some(suspended)) = runtime.suspend_store.load_suspended(target) {
+        if let Ok(Some(suspended)) = runtime.suspend_store().load_suspended(target) {
             tracing::info!(
                 target = target,
                 suspended_id = %suspended.id,
@@ -1065,8 +1053,7 @@ impl MessageSender {
                         new_agent_id = %new_agent_id,
                         "Successfully resumed suspended agent by ID"
                     );
-                    // Small delay to ensure agent is fully ready
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    // Agent is fully ready: resume_agent() waits for ACP connection + session setup
                     return Some(new_agent_id);
                 }
                 Err(e) => {
@@ -1082,7 +1069,7 @@ impl MessageSender {
 
         // Step 2: Check if conversation_id matches a suspended agent
         if let Some(conv_id) = conversation_id {
-            if let Ok(Some(suspended)) = runtime.suspend_store.find_by_conversation(conv_id) {
+            if let Ok(Some(suspended)) = runtime.suspend_store().find_by_conversation(conv_id) {
                 tracing::info!(
                     conversation_id = %conv_id,
                     suspended_id = %suspended.id,
@@ -1097,8 +1084,7 @@ impl MessageSender {
                             conversation_id = %conv_id,
                             "Successfully resumed suspended agent by conversation_id"
                         );
-                        // Small delay to ensure agent is fully ready
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        // Agent is fully ready: resume_agent() waits for ACP connection + session setup
                         return Some(new_agent_id);
                     }
                     Err(e) => {
@@ -1234,6 +1220,17 @@ impl MessageSender {
         Some(from.to_string())
     }
 
+    /// Look up the sender's cov_id from the runtime registry.
+    /// Falls back to the sender's agent_id if cov_id is not set.
+    async fn get_sender_cov_id(&self, from: &str) -> String {
+        let runtime = crate::context::get_app_context().agent_runtime.clone();
+        if let Some(info) = runtime.get_agent(from).await {
+            info.cov_id.unwrap_or_else(|| info.agent_id.clone())
+        } else {
+            from.to_string()
+        }
+    }
+
     /// Format agent message as structured JSON.
     ///
     /// Field order is intentional (requires `serde_json/preserve_order`):
@@ -1275,8 +1272,8 @@ impl MessageSender {
     /// agents to message themselves or waste tokens on unnecessary replies.
     pub fn format_agent_message(
         sender_display: &str,
+        sender_cov_id: &str,
         message: &str,
-        reply_target_stable_id: &str,
         message_type: &str,
         correlation_id: Option<&str>,
         timeout_ms: Option<u64>,
@@ -1292,8 +1289,8 @@ impl MessageSender {
         let (reply_value, rules): (serde_json::Value, Vec<&str>) = match message_type {
             "request" => (
                 serde_json::json!(format!(
-                    "MUST call send_message(target_agent_id='{}')",
-                    reply_target_stable_id
+                    "MUST call send_message(target_cov_id='{}')",
+                    sender_cov_id,
                 )),
                 vec![
                     "DO NOT write reply as terminal text, MUST use send_message tool",
@@ -1317,8 +1314,8 @@ impl MessageSender {
             // Fallback: treat unknown types like request
             _ => (
                 serde_json::json!(format!(
-                    "MUST call send_message(target_agent_id='{}')",
-                    reply_target_stable_id
+                    "MUST call send_message(target_cov_id='{}')",
+                    sender_cov_id,
                 )),
                 vec![
                     "DO NOT write reply as terminal text, MUST use send_message tool",
@@ -1538,14 +1535,13 @@ mod tests {
 
     #[test]
     fn test_format_agent_message_request_type() {
-        let result = MessageSender::format_agent_message(
-            "agent-1", "Hello", "agent-2", "request", None, None,
-        );
+        let result =
+            MessageSender::format_agent_message("agent-1", "cov-1", "Hello", "request", None, None);
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["from"], "agent-1");
         assert_eq!(parsed["message"], "Hello");
         assert_eq!(parsed["message_type"], "request");
-        assert!(parsed["_reply"].as_str().unwrap().contains("agent-2"));
+        assert!(parsed["_reply"].as_str().unwrap().contains("cov-1"));
         assert!(parsed["_rules"].as_array().unwrap().len() >= 2);
     }
 
@@ -1553,8 +1549,8 @@ mod tests {
     fn test_format_agent_message_response_type() {
         let result = MessageSender::format_agent_message(
             "agent-1",
+            "cov-1",
             "Response",
-            "agent-2",
             "response",
             Some("corr-123"),
             None,
@@ -1569,8 +1565,8 @@ mod tests {
     fn test_format_agent_message_broadcast_type() {
         let result = MessageSender::format_agent_message(
             "agent-1",
+            "cov-1",
             "Broadcast message",
-            "agent-2",
             "broadcast",
             None,
             Some(60000),
@@ -1584,8 +1580,8 @@ mod tests {
     fn test_format_agent_message_unknown_type() {
         let result = MessageSender::format_agent_message(
             "agent-1",
+            "cov-1",
             "Unknown",
-            "agent-2",
             "unknown_type",
             None,
             None,
@@ -1593,7 +1589,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["message_type"], "unknown_type");
         // Unknown types are treated like request
-        assert!(parsed["_reply"].as_str().unwrap().contains("agent-2"));
+        assert!(parsed["_reply"].as_str().unwrap().contains("cov-1"));
     }
 
     #[test]

@@ -56,7 +56,7 @@ pub fn spawn_activity_monitor(
 /// Check all running agents and suspend idle ones.
 ///
 /// Iterates through all agents in the runtime, checks if they are in the
-/// `Running` state, and calculates how long they have been idle based on
+/// `Idle` state, and calculates how long they have been idle based on
 /// their `last_heartbeat` timestamp. If the idle time exceeds `IDLE_TIMEOUT_SECS`,
 /// the agent is suspended with reason `SuspendReason::Idle`.
 async fn check_and_suspend_idle_agents(runtime: &AgentRuntime) {
@@ -64,17 +64,18 @@ async fn check_and_suspend_idle_agents(runtime: &AgentRuntime) {
     let now = chrono::Utc::now();
 
     for agent in agents {
-        // Only check agents in Running state
+        // Only check agents in Idle state (not busy processing tasks)
         if !matches!(
             agent.lifecycle,
-            crate::agent_lifecycle::AgentLifecycleState::Running { .. }
+            crate::agent_lifecycle::AgentLifecycleState::Idle { .. }
         ) {
             continue;
         }
 
         // Calculate idle duration from last_heartbeat
         let idle_duration = now.signed_duration_since(agent.last_heartbeat);
-        let idle_secs = idle_duration.num_seconds() as u64;
+        // Guard against negative durations (clock skew, NTP step) — clamp to 0
+        let idle_secs = idle_duration.num_seconds().max(0) as u64;
 
         // If idle for more than 10 minutes, auto-suspend
         if idle_secs > IDLE_TIMEOUT_SECS {
@@ -84,7 +85,10 @@ async fn check_and_suspend_idle_agents(runtime: &AgentRuntime) {
                 "Auto-suspending idle agent"
             );
 
-            if let Err(e) = runtime.suspend_agent(&agent.agent_id, SuspendReason::Idle).await {
+            if let Err(e) = runtime
+                .suspend_agent(&agent.agent_id, SuspendReason::Idle)
+                .await
+            {
                 warn!(
                     agent_id = %agent.agent_id,
                     error = %e,
