@@ -89,7 +89,7 @@ impl ServerHandler for ErgataiMcpServer {
         // Trigger immediate discovery to ensure runtime agents are available.
         // This handles the race condition where MCP connects before the periodic
         // discovery (30s interval) has run.
-        if let Err(e) = runtime.discover_and_register_agents().await {
+        if let Err(e) = runtime.discover_and_register_covs().await {
             warn!(error = %e, "Immediate discovery on MCP connect failed");
         }
 

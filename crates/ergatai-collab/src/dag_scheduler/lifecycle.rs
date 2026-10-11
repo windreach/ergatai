@@ -404,7 +404,7 @@ impl DagScheduler {
             if runtime.get_agent(agent_id).await.is_some() {
                 alive_agents.insert(agent_id.clone());
             } else {
-                // Also try resolve_agent_id for stable IDs or named agents
+                // Also try resolve_agent_id for ergatai_agent_id or named agents
                 if runtime.resolve_agent_id(agent_id).await.is_some() {
                     alive_agents.insert(agent_id.clone());
                 }
@@ -439,7 +439,7 @@ impl DagScheduler {
             );
 
             // Trigger a fresh discovery scan
-            if let Err(e) = runtime.discover_and_register_agents().await {
+            if let Err(e) = runtime.discover_and_register_covs().await {
                 tracing::warn!(
                     dag_id = %self.dag_id,
                     error = %e,

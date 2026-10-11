@@ -56,11 +56,11 @@ pub fn format_agents_table(agents: &[AgentInfoResponse]) {
             a.last_heartbeat.clone()
         };
 
-        // Display friendly ID: mcp_agent_id > stable_id > agent_id
+        // Display friendly ID: mcp_agent_id > cov_id > agent_id
         let display_id = a
             .mcp_agent_id
             .as_deref()
-            .or(a.stable_id.as_deref())
+            .or(a.cov_id.as_deref())
             .unwrap_or(&a.agent_id);
 
         // Truncate long values to fit column width
@@ -271,6 +271,7 @@ pub fn format_dag_status(status: &DagStatusResponse) {
 mod tests {
     use super::*;
     use crate::client::http::{AgentInfoResponse, StatusResponse, WorkspaceResponse};
+    use ergatai_error::id::{format as format_id, generate, IdType};
     use std::collections::HashMap;
 
     fn make_workspace(id: &str, backend: &str) -> WorkspaceResponse {
@@ -285,8 +286,7 @@ mod tests {
     fn make_agent(agent_id: &str, workspace_id: &str, state: &str) -> AgentInfoResponse {
         AgentInfoResponse {
             agent_id: agent_id.to_string(),
-            stable_id: Some(format!("agent-{}", agent_id)),
-            agent_instance_id: format!("uuid-{}", agent_id),
+            cov_id: Some(format_id(generate(), IdType::Conversation)),
             workspace_id: workspace_id.to_string(),
             work_dir: format!("/workspace/{}", workspace_id),
             state: state.to_string(),
@@ -390,8 +390,7 @@ mod tests {
     fn test_agent_created_at_displayed() {
         let agent = AgentInfoResponse {
             agent_id: "test-agent".to_string(),
-            stable_id: Some("agent-test".to_string()),
-            agent_instance_id: "uuid-test".to_string(),
+            cov_id: Some("cov-test".to_string()),
             workspace_id: "test-ws".to_string(),
             work_dir: "/workspace/test-ws".to_string(),
             state: "running".to_string(),

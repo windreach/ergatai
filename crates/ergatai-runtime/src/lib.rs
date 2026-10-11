@@ -34,6 +34,7 @@
 //! ```
 
 // Core types
+pub mod activity_monitor;
 pub mod adapter_manager;
 pub mod agent_installer;
 pub mod agent_lifecycle;
@@ -49,6 +50,7 @@ pub mod permission;
 pub mod permission_service;
 pub mod profile_registry;
 pub mod session_store;
+pub mod suspend_store;
 pub mod types;
 
 // Backend trait
@@ -84,6 +86,7 @@ pub use permission_service::{
 };
 pub use runtime::{get_agent_runtime, init_agent_runtime, AgentRuntime};
 pub use session_store::{SessionRecord, SessionStore};
+pub use suspend_store::{SuspendReason, SuspendStore, SuspendedAgentRecord};
 pub use types::{
     AgentHandle, AgentImage, AgentInfo, BackendCapabilities, ResourceLimits, SessionInfo,
     WaitResult, WorkspaceHandle, WorkspaceSpec,

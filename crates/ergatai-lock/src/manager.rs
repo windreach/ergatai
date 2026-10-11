@@ -8,12 +8,6 @@
 //! The primary enforcement mechanism is **pre-emptive locking** during ACP permission
 //! approval: `try_acquire_write_lock_preemptive()` binds a snapshot lock + flock(2) to
 //! the tool lifecycle.
-//!
-//! # ⚠️ DEPRECATED: fanotify Enforcer
-//!
-//! The optional [`Enforcer`] (Linux fanotify) is **deprecated and no longer used**.
-//! Code is preserved for reference. Use `init_file_access()` — the `init_file_access_with_enforcer`
-//! function exists but the enforcer should not be enabled in new deployments.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -25,33 +19,14 @@ use ergatai_error::ErgataiError;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::enforcer::{Enforcer, EnforcerConfig};
-use crate::ipc_server::{start_ipc_server, IpcServerHandle};
-use crate::pid_resolver::PidResolver;
-use crate::watcher::FileSystemWatcher;
 use crate::{FileLockManager, SnapshotManager, Watchdog, WatchdogConfig};
 use ergatai_error::ErgataiResult;
-use ergatai_nats::get_nats_connection;
 
 /// Per-project file access control state
 struct ProjectFileAccess {
     lock_manager: Arc<FileLockManager>,
     snapshot_manager: Arc<SnapshotManager>,
     watchdog: Arc<RwLock<Watchdog>>,
-    /// ⚠️ DEPRECATED: fanotify enforcer — preserved for reference, not used.
-    #[allow(dead_code)]
-    enforcer: Option<Arc<Enforcer>>,
-    /// IPC server handle for LD_PRELOAD snapshot queries. Cleaned up on drop.
-    /// `None` if IPC server failed to start (non-fatal — agents still work).
-    #[allow(dead_code)] // Used for Drop semantics — socket cleanup on shutdown.
-    ipc_handle: Option<IpcServerHandle>,
-    /// Cross-platform file system watcher — post-facto fallback for detecting
-    /// file modifications when pre-emptive locking (via ACP permission) doesn't apply
-    /// (e.g., dynamic bash paths that couldn't be statically extracted).
-    ///
-    /// Note: watcher uses agent_id="system" for all auto-acquired locks —
-    /// no per-agent attribution is possible without PID information.
-    watcher: Option<FileSystemWatcher>,
 }
 
 /// Global file access state
@@ -124,9 +99,6 @@ pub async fn init_file_access(project_id: &str, project_root: &Path) -> ErgataiR
             lock_manager,
             snapshot_manager,
             watchdog,
-            enforcer: None, // Advisory-only mode; use init_file_access_with_enforcer for enforcement.
-            ipc_handle: None, // IPC server only needed with enforcement.
-            watcher: None,  // No watcher in basic advisory mode.
         },
     );
 
@@ -134,205 +106,6 @@ pub async fn init_file_access(project_id: &str, project_root: &Path) -> ErgataiR
         project_id = project_id,
         project_root = %project_root.display(),
         "File access control system initialized (advisory mode — no kernel enforcement)"
-    );
-
-    Ok(())
-}
-
-/// Initialize file access control with kernel-level enforcement (Phase 9).
-///
-/// # ⚠️ DEPRECATED
-///
-/// This function is **deprecated and should not be used in new deployments**.
-/// The fanotify-based enforcer has been superseded by ACP permission-integrated
-/// pre-emptive locking (`try_acquire_write_lock_preemptive`). Use [`init_file_access`]
-/// instead.
-///
-/// This function is preserved for backward compatibility and reference.
-///
-/// ---
-///
-/// ## Original Documentation
-///
-/// Like [`init_file_access`], but also creates a fanotify-based [`Enforcer`]
-/// that intercepts `open()` calls and denies access to locked files. The
-/// `pid_resolver` maps kernel-reported PIDs to ergatai agent identities.
-///
-/// If fanotify initialization fails (non-Linux, no `CAP_SYS_ADMIN`, container),
-/// the enforcer logs a warning and disables itself. Other components continue
-/// to function normally.
-///
-/// Idempotent — calling multiple times is safe.
-#[deprecated(
-    since = "0.2.0",
-    note = "fanotify enforcer is deprecated; use init_file_access() with ACP pre-emptive locking"
-)]
-pub async fn init_file_access_with_enforcer(
-    project_id: &str,
-    project_root: &Path,
-    pid_resolver: Arc<dyn PidResolver>,
-) -> ErgataiResult<()> {
-    // Fetch NATS connection BEFORE acquiring the write lock (M11 fix).
-    let nats_client = if let Some(conn) = get_nats_connection().await {
-        info!(
-            project_id = project_id,
-            "NATS available, enabling multi-agent approval flow + enforcement events"
-        );
-        Some(Arc::new(conn.client().clone()))
-    } else {
-        warn!(
-            project_id = project_id,
-            "NATS not available, running in degraded mode (no approval or enforcement events)"
-        );
-        None
-    };
-
-    let manager = file_access_manager();
-    let mut manager = manager.write().await;
-
-    if manager.projects.contains_key(project_id) {
-        info!(
-            project_id = project_id,
-            "File access control already initialized"
-        );
-        return Ok(());
-    }
-
-    let lock_db_path = project_root.join(".ergatai").join("locks.db");
-
-    let lock_db_parent = lock_db_path.parent().ok_or_else(|| {
-        ErgataiError::InvalidArgument(format!(
-            "Invalid lock_db_path has no parent: {:?}",
-            lock_db_path
-        ))
-    })?;
-    tokio::fs::create_dir_all(lock_db_parent).await?;
-
-    let lock_manager = FileLockManager::new(&lock_db_path, project_root.to_path_buf())?;
-
-    let lock_manager = Arc::new(lock_manager);
-
-    let snapshot_manager = SnapshotManager::new(project_root)?;
-    let snapshot_manager = Arc::new(snapshot_manager);
-
-    let watchdog_config = WatchdogConfig::default();
-    let mut watchdog = Watchdog::new(lock_manager.clone(), watchdog_config);
-    watchdog.start()?;
-    let watchdog = Arc::new(RwLock::new(watchdog));
-
-    // Create the fanotify enforcer. Fails open: if init fails, enforcer stays None.
-    // Note: The enforcer manages its own internal workspace_dirs for PID-based
-    // agent attribution. We don't need to share ours with it.
-    let enforcer = match Enforcer::start(
-        project_root.to_path_buf(),
-        project_id.to_string(),
-        lock_manager.clone(),
-        pid_resolver,
-        nats_client,
-        EnforcerConfig::default(),
-    ) {
-        Ok(e) => {
-            let active = e.is_active();
-            info!(
-                project_id = project_id,
-                active = active,
-                "fanotify enforcer created (active = {})",
-                active
-            );
-            Some(Arc::new(e))
-        }
-        Err(e) => {
-            warn!(
-                project_id = project_id,
-                error = %e,
-                "Enforcer init failed (continuing in advisory mode)"
-            );
-            None
-        }
-    };
-
-    // Cross-platform fallback: if the enforcer is not active (non-Linux, no
-    // CAP_SYS_ADMIN, container), start a FileSystemWatcher to auto-acquire
-    // WRITE locks on detected modifications.
-    //
-    // Note: The watcher uses agent_id="system" for all auto-acquired locks —
-    // no per-agent attribution is possible without PID information.
-    let enforcer_active = enforcer.as_ref().is_some_and(|e| e.is_active());
-    let watcher = if !enforcer_active {
-        match FileSystemWatcher::new(
-            lock_manager.clone(),
-            project_root.to_path_buf(),
-            project_id.to_string(),
-        ) {
-            Ok(mut w) => {
-                if let Err(e) = w.start() {
-                    warn!(
-                        project_id = project_id,
-                        error = %e,
-                        "FileSystemWatcher start failed (cross-platform auto-locking disabled)"
-                    );
-                    None
-                } else {
-                    info!(
-                        project_id = project_id,
-                        "FileSystemWatcher started (cross-platform auto-locking active)"
-                    );
-                    Some(w)
-                }
-            }
-            Err(e) => {
-                warn!(
-                    project_id = project_id,
-                    error = %e,
-                    "FileSystemWatcher init failed (cross-platform auto-locking disabled)"
-                );
-                None
-            }
-        }
-    } else {
-        info!(
-            project_id = project_id,
-            "fanotify enforcer is active — skipping FileSystemWatcher"
-        );
-        None
-    };
-
-    // Start the IPC server for LD_PRELOAD snapshot queries.
-    // Fail-open: if binding fails, log a warning but continue.
-    let ipc_handle = match start_ipc_server(lock_manager.clone(), snapshot_manager.clone(), None) {
-        Ok(handle) => {
-            info!(
-                project_id = project_id,
-                "IPC server started for LD_PRELOAD snapshot reads"
-            );
-            Some(handle)
-        }
-        Err(e) => {
-            warn!(
-                project_id = project_id,
-                error = %e,
-                "IPC server failed to start (LD_PRELOAD snapshot reads disabled)"
-            );
-            None
-        }
-    };
-
-    manager.projects.insert(
-        project_id.to_string(),
-        ProjectFileAccess {
-            lock_manager,
-            snapshot_manager,
-            watchdog,
-            enforcer,
-            ipc_handle,
-            watcher,
-        },
-    );
-
-    info!(
-        project_id = project_id,
-        project_root = %project_root.display(),
-        "File access control system initialized (with kernel enforcement)"
     );
 
     Ok(())
@@ -389,31 +162,11 @@ pub async fn get_watchdog(project_id: &str) -> ErgataiResult<Arc<RwLock<Watchdog
         })
 }
 
-/// Get the fanotify Enforcer for a project, if enforcement is enabled.
-///
-/// Returns `Ok(None)` if the project was initialized in advisory-only mode
-/// (via [`init_file_access`]) or if the enforcer failed to initialize.
-pub async fn get_enforcer(project_id: &str) -> ErgataiResult<Option<Arc<Enforcer>>> {
-    let manager = file_access_manager();
-    let manager = manager.read().await;
-
-    Ok(manager
-        .projects
-        .get(project_id)
-        .and_then(|p| p.enforcer.clone()))
-}
-
 /// Register a workspace directory for an agent within a project.
 ///
-/// Routes to the active enforcer (fanotify PID-based attribution).
-///
-/// When a file inside the workspace is modified, the modification is attributed
-/// to the agent for automatic WRITE lock acquisition.
-///
-/// Note: On non-Linux platforms without fanotify, the FileSystemWatcher is used
-/// instead, but it does not support per-agent attribution (all locks are attributed
-/// to "system"). This function still succeeds for API compatibility — the enforcer
-/// registration is a no-op when the enforcer is not active.
+/// This function is retained for API compatibility but is now a no-op since
+/// the deprecated enforcer has been removed. Workspace registration is no
+/// longer needed with ACP pre-emptive locking.
 pub async fn register_workspace_for_project(
     project_id: &str,
     agent_id: &str,
@@ -422,24 +175,18 @@ pub async fn register_workspace_for_project(
     let manager = file_access_manager();
     let guard = manager.read().await;
 
-    let project = guard.projects.get(project_id).ok_or_else(|| {
+    let _project = guard.projects.get(project_id).ok_or_else(|| {
         ErgataiError::NotFound(format!(
             "File access control not initialized for project: {}",
             project_id
         ))
     })?;
 
-    // Register with enforcer (if active) for PID-based attribution.
-    // If enforcer is not active, this is a no-op (advisory mode).
-    if let Some(enforcer) = project.enforcer.as_ref() {
-        enforcer.register_workspace(agent_id, workspace_dir);
-    }
-
     info!(
         project_id = project_id,
         agent_id = agent_id,
         workspace_dir = workspace_dir,
-        "Registered workspace for auto-lock attribution"
+        "Registered workspace (no-op — enforcer removed)"
     );
 
     Ok(())
@@ -447,7 +194,8 @@ pub async fn register_workspace_for_project(
 
 /// Unregister a workspace directory for an agent within a project.
 ///
-/// Reverses the effect of [`register_workspace_for_project`].
+/// This function is retained for API compatibility but is now a no-op since
+/// the deprecated enforcer has been removed.
 pub async fn unregister_workspace_for_project(
     project_id: &str,
     agent_id: &str,
@@ -455,21 +203,17 @@ pub async fn unregister_workspace_for_project(
     let manager = file_access_manager();
     let guard = manager.read().await;
 
-    let project = guard.projects.get(project_id).ok_or_else(|| {
+    let _project = guard.projects.get(project_id).ok_or_else(|| {
         ErgataiError::NotFound(format!(
             "File access control not initialized for project: {}",
             project_id
         ))
     })?;
 
-    if let Some(enforcer) = project.enforcer.as_ref() {
-        enforcer.unregister_workspace(agent_id);
-    }
-
     info!(
         project_id = project_id,
         agent_id = agent_id,
-        "Unregistered workspace for auto-lock attribution"
+        "Unregistered workspace (no-op — enforcer removed)"
     );
 
     Ok(())
@@ -481,22 +225,6 @@ pub async fn shutdown_file_access(project_id: &str) -> ErgataiResult<()> {
     let mut manager = manager.write().await;
 
     if let Some(project) = manager.projects.remove(project_id) {
-        // Stop watcher first (if running) — it's a background task.
-        if let Some(mut watcher) = project.watcher {
-            if let Err(e) = watcher.stop() {
-                warn!(
-                    project_id = project_id,
-                    error = %e,
-                    "Failed to stop FileSystemWatcher"
-                );
-            }
-        }
-
-        // Stop enforcer — it's the outermost layer (kernel interception).
-        if let Some(enforcer) = project.enforcer.as_ref() {
-            enforcer.stop().await;
-        }
-
         // Stop watchdog.
         let mut watchdog = project.watchdog.write().await;
         watchdog.stop()?;
@@ -721,31 +449,6 @@ mod tests {
         // Unregister workspace
         let result = unregister_workspace_for_project(&id, "agent-1").await;
         assert!(result.is_ok());
-
-        shutdown_file_access(&id).await.unwrap();
-        drop(temp);
-    }
-
-    #[tokio::test]
-    async fn test_get_enforcer_unknown_project() {
-        let id = unique_project_id("unknown-enforcer");
-        let result = get_enforcer(&id).await;
-        // Unknown project returns Ok(None), not an error
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn test_get_enforcer_returns_none_without_enforcer() {
-        let (temp, project_root) = setup_git_repo();
-        let id = unique_project_id("no-enforcer");
-
-        // Init without enforcer
-        init_file_access(&id, &project_root).await.unwrap();
-
-        // Enforcer should be None
-        let enforcer = get_enforcer(&id).await.unwrap();
-        assert!(enforcer.is_none());
 
         shutdown_file_access(&id).await.unwrap();
         drop(temp);

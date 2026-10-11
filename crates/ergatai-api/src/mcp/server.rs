@@ -521,7 +521,7 @@ mod tests {
             "message": "hello"
         }))
         .unwrap();
-        assert_eq!(params.target_agent_id, "agent-1");
+        assert_eq!(params.target_agent_id.as_deref(), Some("agent-1"));
         assert_eq!(params.message, "hello");
         assert_eq!(params.message_type, None);
     }
@@ -538,13 +538,19 @@ mod tests {
     }
 
     #[test]
-    fn test_send_message_params_missing_target_fails() {
+    fn test_send_message_params_missing_target_succeeds_but_validated_at_runtime() {
+        // Both target_cov_id and target_agent_id are optional (Option<String>).
+        // Deserialization succeeds, but runtime validation in send_message tool
+        // requires at least one to be provided.
         let result: Result<SendMessageParams, _> =
             serde_json::from_value(json!({"message": "hello"}));
         assert!(
-            result.is_err(),
-            "missing target_agent_id should fail deserialization"
+            result.is_ok(),
+            "deserialization should succeed (fields are optional)"
         );
+        let params = result.unwrap();
+        assert!(params.target_cov_id.is_none());
+        assert!(params.target_agent_id.is_none());
     }
 
     #[test]

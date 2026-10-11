@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use rmcp::ErrorData;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -41,8 +42,17 @@ pub struct AgentFilter {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct SendMessageParams {
-    /// ID of the target agent
-    pub target_agent_id: String,
+    /// ID of the target Cov (new, preferred).
+    /// Cov and Agent have 1:1 binding relationship.
+    /// If provided, the system will automatically resolve it to the bound agent_id.
+    #[serde(default)]
+    pub target_cov_id: Option<String>,
+
+    /// ID of the target agent (legacy, for backward compatibility).
+    /// Deprecated: use target_cov_id instead.
+    #[serde(default)]
+    pub target_agent_id: Option<String>,
+
     /// Message content
     pub message: String,
     /// Message type. Controls tracking and timeout behavior:
@@ -65,6 +75,42 @@ pub(crate) struct SendMessageParams {
     /// Ignored for `"request"` and `"broadcast"` messages.
     #[serde(default)]
     pub correlation_id: Option<String>,
+}
+
+impl SendMessageParams {
+    /// Resolve the target agent ID and optional cov_id from the params.
+    ///
+    /// Prefers `target_cov_id` (new, preferred) over `target_agent_id` (legacy).
+    /// Returns `(target_id, target_cov_id)` where:
+    /// - `target_id` is the ID to use for routing (either cov_id or agent_id)
+    /// - `target_cov_id` is `Some` if using Cov-centric routing, `None` if legacy
+    ///
+    /// Returns an error if neither `target_cov_id` nor `target_agent_id` is provided.
+    pub fn resolve_target(&self) -> Result<(String, Option<String>), ErrorData> {
+        if let Some(cov_id) = &self.target_cov_id {
+            // Cov-centric path: pass cov_id through to MessageSender.
+            // MessageSender will resolve it (including auto-resume for suspended agents).
+            tracing::debug!(
+                "Using target_cov_id={} (MessageSender will resolve including auto-resume)",
+                cov_id
+            );
+            Ok((cov_id.clone(), Some(cov_id.clone())))
+        } else if let Some(agent_id) = &self.target_agent_id {
+            // Legacy path: use agent_id directly (backward compatibility)
+            tracing::debug!(
+                "Using deprecated target_agent_id='{}'. \
+                 Prefer target_cov_id for Cov-centric messaging.",
+                agent_id
+            );
+            Ok((agent_id.clone(), None))
+        } else {
+            Err(ErrorData::invalid_params(
+                "Either target_cov_id or target_agent_id must be provided. \
+                 target_cov_id is preferred (Cov-centric), target_agent_id is deprecated.",
+                None,
+            ))
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

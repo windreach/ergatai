@@ -420,37 +420,10 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
     // with instruction + JSON payload. Just deliver it as-is.
     let formatted_message = payload.content.as_str();
 
-    let to_runtime_id = if let Some(ref to_uuid) = payload.to_uuid {
-        // Try instance ID first (within current lifecycle only)
-        match runtime.resolve_agent_instance_id(to_uuid).await {
-            Some(id) => {
-                debug!(
-                    to_uuid = %to_uuid,
-                    resolved_id = %id,
-                    "Resolved target via UUID"
-                );
-                id
-            }
-            None => {
-                // UUID not found, fall back to runtime agent ID
-                warn!(
-                    to_uuid = %to_uuid,
-                    to_agent = %payload.to_agent,
-                    "UUID not found, falling back to runtime agent ID"
-                );
-                runtime
-                    .resolve_agent_id(&payload.to_agent)
-                    .await
-                    .unwrap_or_else(|| payload.to_agent.clone())
-            }
-        }
-    } else {
-        // No UUID, use runtime agent ID (legacy message)
-        runtime
-            .resolve_agent_id(&payload.to_agent)
-            .await
-            .unwrap_or_else(|| payload.to_agent.clone())
-    };
+    let to_runtime_id = runtime
+        .resolve_agent_id(&payload.to_agent)
+        .await
+        .unwrap_or_else(|| payload.to_agent.clone());
 
     // ── Deliver via AgentRuntime injection (ACP protocol) ──
     // Sends the message to the target agent via ACP protocol.
@@ -493,14 +466,31 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
     // mark since the message is discarded anyway.
     mark_message_processed(&payload.message_id);
 
-    match runtime
-        .inject_message(
-            &to_runtime_id,
-            formatted_message,
-            payload.thread_id.as_deref(),
-        )
-        .await
-    {
+    // Simplified Cov-centric delivery: use inject_message_to_cov when target_cov_id is present.
+    // This bypasses the agent_id intermediary lookup (cov_id → AgentInfo → backend.inject_message).
+    // Falls back to agent-centric inject_message for legacy messages without target_cov_id.
+    let delivery_result = if let Some(ref cov_id) = payload.target_cov_id {
+        info!(
+            from = from,
+            to = to,
+            cov_id = %cov_id,
+            "Using Cov-centric delivery (direct cov_id → AgentInfo lookup)"
+        );
+        runtime
+            .inject_message_to_cov(cov_id, formatted_message, payload.thread_id.as_deref())
+            .await
+    } else {
+        // Legacy agent-centric delivery
+        runtime
+            .inject_message(
+                &to_runtime_id,
+                formatted_message,
+                payload.thread_id.as_deref(),
+            )
+            .await
+    };
+
+    match delivery_result {
         Ok(()) => {
             info!(
                 from = from,

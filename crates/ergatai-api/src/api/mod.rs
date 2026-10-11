@@ -6,6 +6,7 @@ pub mod agents;
 pub mod chats;
 pub mod collab_runtime;
 pub mod collaboration_sessions;
+pub mod conversation_sse;
 pub mod conversations;
 pub mod locks;
 pub mod openapi;

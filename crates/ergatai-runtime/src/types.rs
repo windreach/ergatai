@@ -81,20 +81,20 @@ pub struct WorkspaceHandle {
 ///
 /// ## ID System
 ///
-/// - `agent_id`: **Runtime ID** — deterministic ID assigned by ACP backend
-///   (`{workspace_id}-agent-{counter}`). Not stable across process restarts.
-///   Use `metadata["ergatai_agent_id"]` (stable ID) for cross-restart
+/// - `agent_id`: **Runtime ID** — Snowflake ID assigned by ACP backend
+///   (Snowflake ID `agent_{timestamp}_{instance}_{sequence}`). Not stable across process restarts.
+///   Use `metadata["ergatai_agent_id"]` (cross-restart identifier) for cross-restart
 ///   identification when available.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentHandle {
     /// The workspace this agent runs in
     pub workspace: WorkspaceHandle,
 
-    /// **Runtime ID** — deterministic identifier from the backend.
+    /// **Runtime ID** — Snowflake ID from the backend.
     ///
-    /// For ACP backend: `{workspace_id}-agent-{counter}` (e.g., `ws1-agent-1`).
+    /// For ACP backend: Snowflake ID `agent_{timestamp}_{instance}_{sequence}` (e.g., `agent_502816809136_000_0000`).
     ///
-    /// This ID changes when the process is recreated. For a stable identifier
+    /// This ID changes when the process is recreated. For a cross-restart identifier
     /// that survives restarts, use `metadata["ergatai_agent_id"]` (set via
     /// `ERGATAI_AGENT_ID` env var by ergatai agent_launcher).
     pub agent_id: String,
@@ -105,7 +105,7 @@ pub struct AgentHandle {
     /// Backend-specific metadata.
     ///
     /// Key entries:
-    /// - `ergatai_agent_id`: **Stable ID** — survives agent restarts (e.g., `agent-1`)
+    /// - `ergatai_agent_id`: **Cross-restart identifier** — survives agent restarts (e.g., `agent-1`)
     /// - `work_dir`: agent working directory
     pub metadata: HashMap<String, String>,
 }
@@ -176,20 +176,22 @@ pub struct SessionInfo {
 }
 
 /// Agent information tracked by the runtime facade.
+///
+/// ## ID System (Simplified)
+///
+/// - `agent_id`: Runtime ID for NATS routing (e.g., "ws1-agent-1")
+/// - `cov_id`: Application ID for Cov-centric routing (1:1 with agent)
+/// - `mcp_agent_id`: MCP connection ID (e.g., "opencode@abcd1234")
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
-    /// Agent instance ID (NOT persistent across restarts, used for within-lifecycle routing)
-    pub agent_instance_id: String,
-
     /// Runtime agent ID (e.g., "ws1-agent-1", used for message delivery)
     /// Changes when the process dies and a new one is created.
     pub agent_id: String,
 
-    /// Human-readable stable identifier (e.g., "agent-1").
-    /// Populated from `handle.metadata["ergatai_agent_id"]` during discovery.
-    /// Used for user-facing display, conversation tracking, and batch aggregation.
-    /// Unlike `agent_id` (runtime ID), this survives agent restarts.
-    pub stable_id: Option<String>,
+    /// Cov ID (Conversation ID) — the primary identifier for the Cov execution unit.
+    /// Used for Cov-centric message routing and direct delivery.
+    /// Each Cov has a 1:1 binding to an Agent.
+    pub cov_id: Option<String>,
 
     /// Workspace ID this agent belongs to
     pub workspace_id: String,
@@ -465,9 +467,8 @@ mod tests {
     fn test_agent_info_construction() {
         let now = chrono::Utc::now();
         let info = AgentInfo {
-            agent_instance_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             agent_id: "agent-1".to_string(),
-            stable_id: None,
+            cov_id: None,
             workspace_id: "ws-1".to_string(),
             handle: AgentHandle {
                 workspace: WorkspaceHandle {
@@ -494,10 +495,6 @@ mod tests {
             state_history: Vec::new(),
         };
         assert_eq!(info.agent_id, "agent-1");
-        assert_eq!(
-            info.agent_instance_id,
-            "550e8400-e29b-41d4-a716-446655440000"
-        );
         assert_eq!(info.workspace_id, "ws-1");
         assert!(info.task_id.is_none());
     }
@@ -506,9 +503,8 @@ mod tests {
     fn test_agent_info_with_task() {
         let now = chrono::Utc::now();
         let info = AgentInfo {
-            agent_instance_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
             agent_id: "agent-1".to_string(),
-            stable_id: None,
+            cov_id: None,
             workspace_id: "ws-1".to_string(),
             handle: AgentHandle {
                 workspace: WorkspaceHandle {

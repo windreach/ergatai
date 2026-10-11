@@ -24,8 +24,8 @@
 //! | `FileReadyPayload`           | `ergatai.file.ready.{file_hash}`           | FileLockMgr     | Waiters       |
 //! | `FileErrorPayload`           | `ergatai.file.error.{file_hash}`           | FileLockMgr     | Waiters       |
 //! | `SystemTokenPayload`         | `ergatai.system.token.{agent_id}`          | System          | Agent         |
-//! | `AgentLifecycleEventPayload` | `ergatai.agent.lifecycle.{agent_instance_id}`     | UnifiedRegistry | TaskScheduler |
-//! | `ApiEventPayload`            | `ergatai.agent.api.{agent_instance_id}`           | LlmProxy        | StateInference|
+//! | `AgentLifecycleEventPayload` | `ergatai.agent.lifecycle.{agent_id}`              | UnifiedRegistry | TaskScheduler |
+//! | `ApiEventPayload`            | `ergatai.agent.api.{agent_id}`                    | LlmProxy        | StateInference|
 
 use std::collections::HashMap;
 
@@ -155,14 +155,6 @@ pub struct AgentMessagePayload {
     pub from_agent: String,
     /// Target agent ID (receiver) — runtime agent ID
     pub to_agent: String,
-    /// Source agent instance ID (within-lifecycle identifier, for routing)
-    pub from_uuid: Option<String>,
-    /// Target agent instance ID (within-lifecycle identifier, for routing)
-    pub to_uuid: Option<String>,
-    /// Source agent stable ID (e.g., "agent-1") — for batch/conversation tracking
-    pub from_stable: Option<String>,
-    /// Target agent stable ID (e.g., "agent-2") — for batch/conversation tracking
-    pub to_stable: Option<String>,
     /// Message content (the text mentioning @target_agent)
     pub content: String,
     /// Optional: conversation thread ID (for multi-turn dialogs)
@@ -186,6 +178,40 @@ pub struct AgentMessagePayload {
     /// Message type: "request", "response", or "broadcast"
     #[serde(default = "default_message_type")]
     pub message_type: String,
+    /// Target Cov ID (conversation_id) for Cov-centric delivery.
+    /// When present, the consumer uses `inject_message_to_cov()` for direct delivery,
+    /// bypassing the agent_id intermediary lookup.
+    #[serde(default)]
+    pub target_cov_id: Option<String>,
+}
+
+/// Conversation message: published to conversation subject for SSE streaming
+///
+/// Fire-and-forget via core NATS (no JetStream persistence).
+/// SQLite is the source of truth; this payload enables real-time streaming
+/// to SSE clients without requiring them to poll the database.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationMessagePayload {
+    /// Conversation ID this message belongs to
+    pub conversation_id: String,
+    /// Unique message ID
+    pub message_id: String,
+    /// Message role: "user" | "assistant" | "system" | "agent"
+    pub role: String,
+    /// Message content (text representation)
+    pub content: String,
+    /// Structured parts (JSON array of content blocks)
+    pub parts: Option<serde_json::Value>,
+    /// Additional metadata (JSON object)
+    pub metadata: Option<serde_json::Value>,
+    /// Timestamp (Unix epoch seconds)
+    pub timestamp: u64,
+    /// Sequence number within the conversation (monotonically increasing)
+    pub sequence: i64,
+    /// Agent ID that sent this message (if agent-sourced)
+    pub sender_agent_id: Option<String>,
+    /// Agent display name (if agent-sourced)
+    pub sender_agent_name: Option<String>,
 }
 
 /// Default message type for backward compatibility
@@ -523,11 +549,9 @@ pub struct FileEnforcementPayload {
 /// agent state changes — for example, re-scheduling a task when an
 /// agent fails or times out.
 ///
-/// Subject: `ergatai.agent.lifecycle.{agent_instance_id}`
+/// Subject: `ergatai.agent.lifecycle.{agent_id}`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentLifecycleEventPayload {
-    /// Agent instance ID (NOT persistent across restarts)
-    pub agent_instance_id: String,
     /// Dynamic agent ID (e.g., "ws1-agent-1")
     pub agent_id: String,
     /// State name before transition (lowercase, e.g., "running")
@@ -583,14 +607,14 @@ pub enum DagEvent {
 /// LLM API traffic event published by the MITM proxy.
 ///
 /// Published on core NATS (low-latency) for semantic state inference.
-/// Subject: `ergatai.agent.api.{agent_instance_id}`
+/// Subject: `ergatai.agent.api.{agent_id}`
 ///
 /// Each variant corresponds to a phase of the LLM request/response lifecycle:
 /// `request_started` → `first_token` → `content_delta*` → `stream_end`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiEventPayload {
-    /// Agent instance ID for correlation.
-    pub agent_instance_id: String,
+    /// Agent ID for correlation.
+    pub agent_id: String,
     /// Event type: "request_started" | "first_token" | "content_delta" | "stream_end" | "error"
     pub event_type: String,
     /// Protocol identifier: "openai" | "anthropic"
@@ -830,10 +854,6 @@ mod tests {
             DagEvent::AgentMessage(AgentMessagePayload {
                 from_agent: "claude-code".to_string(),
                 to_agent: "codex".to_string(),
-                from_uuid: None,
-                to_uuid: None,
-                from_stable: None,
-                to_stable: None,
                 content: "@codex please review this code".to_string(),
                 thread_id: Some("thread-123".to_string()),
                 timestamp: 1234567890,
@@ -843,6 +863,7 @@ mod tests {
                 correlation_id: None,
                 timeout_ms: None,
                 message_type: "request".to_string(),
+                target_cov_id: None,
             }),
         ];
 
@@ -862,10 +883,6 @@ mod tests {
         let payload = AgentMessagePayload {
             from_agent: "claude-code".to_string(),
             to_agent: "codex".to_string(),
-            from_uuid: Some("uuid-claude-123".to_string()),
-            to_uuid: Some("uuid-codex-456".to_string()),
-            from_stable: None,
-            to_stable: None,
             content: "@codex please review this code".to_string(),
             thread_id: Some("thread-123".to_string()),
             timestamp: 1234567890,
@@ -875,6 +892,7 @@ mod tests {
             correlation_id: Some("corr-123".to_string()),
             timeout_ms: Some(30_000),
             message_type: "request".to_string(),
+            target_cov_id: None,
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -893,10 +911,6 @@ mod tests {
         let payload = AgentMessagePayload {
             from_agent: "agent-a".to_string(),
             to_agent: "agent-b".to_string(),
-            from_uuid: None,
-            to_uuid: None,
-            from_stable: None,
-            to_stable: None,
             content: "hello".to_string(),
             thread_id: None,
             timestamp: 0,
@@ -906,6 +920,7 @@ mod tests {
             correlation_id: None,
             timeout_ms: None,
             message_type: "request".to_string(),
+            target_cov_id: None,
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -1012,10 +1027,6 @@ mod tests {
         let payload = AgentMessagePayload {
             from_agent: "a".to_string(),
             to_agent: "b".to_string(),
-            from_uuid: None,
-            to_uuid: None,
-            from_stable: None,
-            to_stable: None,
             content: "".to_string(),
             thread_id: None,
             timestamp: 0,
@@ -1025,6 +1036,7 @@ mod tests {
             correlation_id: None,
             timeout_ms: None,
             message_type: "request".to_string(),
+            target_cov_id: None,
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -1038,10 +1050,6 @@ mod tests {
         let payload = AgentMessagePayload {
             from_agent: "a".to_string(),
             to_agent: "b".to_string(),
-            from_uuid: None,
-            to_uuid: None,
-            from_stable: None,
-            to_stable: None,
             content: long_content.clone(),
             thread_id: None,
             timestamp: 0,
@@ -1051,6 +1059,7 @@ mod tests {
             correlation_id: None,
             timeout_ms: None,
             message_type: "request".to_string(),
+            target_cov_id: None,
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -1064,10 +1073,6 @@ mod tests {
         let payload = AgentMessagePayload {
             from_agent: "agent-1".to_string(),
             to_agent: "agent-2".to_string(),
-            from_uuid: None,
-            to_uuid: None,
-            from_stable: None,
-            to_stable: None,
             content: "Hello\nWorld\t\"quotes\" and \\slashes\\".to_string(),
             thread_id: None,
             timestamp: 0,
@@ -1077,6 +1082,7 @@ mod tests {
             correlation_id: None,
             timeout_ms: None,
             message_type: "request".to_string(),
+            target_cov_id: None,
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -1141,5 +1147,85 @@ mod tests {
         assert_eq!(restored.reason, None);
         assert_eq!(restored.node_id, None);
         assert_eq!(restored.expected_duration_secs, None);
+    }
+
+    #[test]
+    fn test_conversation_message_payload_serialization() {
+        let payload = ConversationMessagePayload {
+            conversation_id: "conv_abc123".to_string(),
+            message_id: "msg_xyz789".to_string(),
+            role: "user".to_string(),
+            content: "Hello, world!".to_string(),
+            parts: Some(serde_json::json!([
+                {"type": "text", "text": "Hello, world!"}
+            ])),
+            metadata: Some(serde_json::json!({
+                "source": "web_client",
+                "ip": "192.168.1.1"
+            })),
+            timestamp: 1234567890,
+            sequence: 42,
+            sender_agent_id: None,
+            sender_agent_name: None,
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let restored: ConversationMessagePayload = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.conversation_id, "conv_abc123");
+        assert_eq!(restored.message_id, "msg_xyz789");
+        assert_eq!(restored.role, "user");
+        assert_eq!(restored.content, "Hello, world!");
+        assert_eq!(restored.sequence, 42);
+        assert_eq!(restored.timestamp, 1234567890);
+        assert!(restored.parts.is_some());
+        assert!(restored.metadata.is_some());
+        assert!(restored.sender_agent_id.is_none());
+        assert!(restored.sender_agent_name.is_none());
+    }
+
+    #[test]
+    fn test_conversation_message_payload_with_agent() {
+        let payload = ConversationMessagePayload {
+            conversation_id: "conv_test".to_string(),
+            message_id: "msg_agent".to_string(),
+            role: "agent".to_string(),
+            content: "Agent response".to_string(),
+            parts: None,
+            metadata: None,
+            timestamp: 9876543210,
+            sequence: 100,
+            sender_agent_id: Some("agent-1".to_string()),
+            sender_agent_name: Some("Coder Agent".to_string()),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let restored: ConversationMessagePayload = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.role, "agent");
+        assert_eq!(restored.sender_agent_id, Some("agent-1".to_string()));
+        assert_eq!(restored.sender_agent_name, Some("Coder Agent".to_string()));
+    }
+
+    #[test]
+    fn test_conversation_message_payload_negative_sequence() {
+        // Test that i64 sequence can handle negative values (edge case)
+        let payload = ConversationMessagePayload {
+            conversation_id: "conv_neg".to_string(),
+            message_id: "msg_neg".to_string(),
+            role: "user".to_string(),
+            content: "Test".to_string(),
+            parts: None,
+            metadata: None,
+            timestamp: 0,
+            sequence: -1,
+            sender_agent_id: None,
+            sender_agent_name: None,
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let restored: ConversationMessagePayload = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.sequence, -1);
     }
 }

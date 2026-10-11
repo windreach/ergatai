@@ -444,6 +444,8 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_conversations_project_id ON conversations(project_id);
         CREATE INDEX IF NOT EXISTS idx_conversations_workspace_id ON conversations(workspace_id);
         CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation_sequence
+            ON messages(conversation_id, sequence);
         CREATE INDEX IF NOT EXISTS idx_conversation_agent_bindings_agent_id
             ON conversation_agent_bindings(agent_id);
         CREATE INDEX IF NOT EXISTS idx_collaboration_sessions_workspace_id
@@ -894,6 +896,66 @@ pub mod messages {
             })
         })?;
         messages.collect()
+    }
+
+    pub fn list_after_sequence(conversation_id: &str, after_sequence: i64) -> Result<Vec<Message>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, sequence, role, parts, metadata, created_at, updated_at
+             FROM messages
+             WHERE conversation_id = ?1 AND sequence > ?2
+             ORDER BY sequence ASC",
+        )?;
+        let messages = stmt.query_map(params![conversation_id, after_sequence], |row| {
+            Ok(Message {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                sequence: row.get(2)?,
+                role: row.get(3)?,
+                parts: row.get(4)?,
+                metadata: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?;
+        messages.collect()
+    }
+
+    /// Get the last message in a conversation (by sequence number)
+    ///
+    /// Returns None if the conversation has no messages.
+    /// More efficient than `list().last()` as it uses LIMIT 1.
+    pub fn get_last(conversation_id: &str) -> Result<Option<Message>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, sequence, role, parts, metadata, created_at, updated_at
+             FROM messages
+             WHERE conversation_id = ?1
+             ORDER BY sequence DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![conversation_id], |row| {
+            Ok(Message {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                sequence: row.get(2)?,
+                role: row.get(3)?,
+                parts: row.get(4)?,
+                metadata: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(msg)) => Ok(Some(msg)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
     }
 
     pub fn append(
@@ -2965,5 +3027,237 @@ mod tests {
         conversations::delete(&conversation_id).unwrap();
         projects::delete(&project_id).unwrap();
         assert!(workspaces::get(&workspace_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_messages_list_after_sequence() {
+        let _database_guard = lock_user_data_db_for_tests();
+        let prefix = format!("list-after-seq-{}", std::process::id());
+        let project_id = format!("{prefix}-project");
+        let workspace_id = format!("{prefix}-workspace");
+        let conversation_id = format!("{prefix}-conversation");
+
+        projects::create(Project {
+            id: project_id.clone(),
+            name: "List after sequence test".to_string(),
+            path: format!("/tmp/{project_id}"),
+            git_remote_url: None,
+            git_provider: None,
+            git_owner: None,
+            git_repo: None,
+            icon_path: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+        workspaces::create(Workspace {
+            id: workspace_id.clone(),
+            project_id: project_id.clone(),
+            name: None,
+            work_dir: format!("/tmp/{workspace_id}"),
+            env: "{}".to_string(),
+            resources: "{}".to_string(),
+            capture_thoughts: false,
+            collaboration_mode: "supervisor".to_string(),
+            status: "active".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+        conversations::create(Conversation {
+            id: conversation_id.clone(),
+            parent_id: None,
+            project_id: project_id.clone(),
+            workspace_id: Some(workspace_id.clone()),
+            name: Some("List after sequence".to_string()),
+            mode: "agent".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+            archived_at: None,
+        })
+        .unwrap();
+
+        // Append 5 messages
+        let mut appended_messages = Vec::new();
+        for i in 0..5 {
+            let msg = messages::append(
+                &conversation_id,
+                "user",
+                serde_json::json!([{ "type": "text", "text": format!("Message {}", i) }]),
+                serde_json::json!({ "index": i }),
+            )
+            .unwrap();
+            appended_messages.push(msg);
+        }
+
+        // Get the max sequence from appended messages
+        let max_sequence = appended_messages
+            .iter()
+            .map(|m| m.sequence)
+            .max()
+            .unwrap_or(0);
+        let min_sequence = appended_messages
+            .iter()
+            .map(|m| m.sequence)
+            .min()
+            .unwrap_or(0);
+
+        // Test: list_after_sequence with value less than min should return all
+        let all = messages::list_after_sequence(&conversation_id, min_sequence - 1).unwrap();
+        assert_eq!(all.len(), 5);
+
+        // Test: list_after_sequence with middle value should return subset
+        let mid_sequence = min_sequence + 1;
+        let after_mid = messages::list_after_sequence(&conversation_id, mid_sequence).unwrap();
+        assert_eq!(after_mid.len(), (max_sequence - mid_sequence) as usize);
+        assert!(after_mid.iter().all(|m| m.sequence > mid_sequence));
+
+        // Test: list_after_sequence with max_sequence should return empty
+        let after_max = messages::list_after_sequence(&conversation_id, max_sequence).unwrap();
+        assert_eq!(after_max.len(), 0);
+
+        // Test: list_after_sequence beyond max should return empty
+        let after_beyond =
+            messages::list_after_sequence(&conversation_id, max_sequence + 10).unwrap();
+        assert_eq!(after_beyond.len(), 0);
+
+        // Cleanup
+        conversations::delete(&conversation_id).unwrap();
+        projects::delete(&project_id).unwrap();
+    }
+
+    #[test]
+    fn test_messages_list_after_sequence_empty_conversation() {
+        let _database_guard = lock_user_data_db_for_tests();
+        let prefix = format!("list-after-seq-empty-{}", std::process::id());
+        let project_id = format!("{prefix}-project");
+        let workspace_id = format!("{prefix}-workspace");
+        let conversation_id = format!("{prefix}-conversation");
+
+        projects::create(Project {
+            id: project_id.clone(),
+            name: "Empty conversation test".to_string(),
+            path: format!("/tmp/{project_id}"),
+            git_remote_url: None,
+            git_provider: None,
+            git_owner: None,
+            git_repo: None,
+            icon_path: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+        workspaces::create(Workspace {
+            id: workspace_id.clone(),
+            project_id: project_id.clone(),
+            name: None,
+            work_dir: format!("/tmp/{workspace_id}"),
+            env: "{}".to_string(),
+            resources: "{}".to_string(),
+            capture_thoughts: false,
+            collaboration_mode: "supervisor".to_string(),
+            status: "active".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+        conversations::create(Conversation {
+            id: conversation_id.clone(),
+            parent_id: None,
+            project_id: project_id.clone(),
+            workspace_id: Some(workspace_id.clone()),
+            name: Some("Empty conversation".to_string()),
+            mode: "agent".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+            archived_at: None,
+        })
+        .unwrap();
+
+        // Test: list_after_sequence on empty conversation should return empty
+        let messages = messages::list_after_sequence(&conversation_id, 0).unwrap();
+        assert_eq!(messages.len(), 0);
+
+        // Cleanup
+        conversations::delete(&conversation_id).unwrap();
+        projects::delete(&project_id).unwrap();
+    }
+
+    #[test]
+    fn test_messages_get_last() {
+        let _database_guard = lock_user_data_db_for_tests();
+        let prefix = format!("get-last-{}", std::process::id());
+        let project_id = format!("{prefix}-project");
+        let workspace_id = format!("{prefix}-workspace");
+        let conversation_id = format!("{prefix}-conversation");
+
+        projects::create(Project {
+            id: project_id.clone(),
+            name: "Get last test".to_string(),
+            path: format!("/tmp/{project_id}"),
+            git_remote_url: None,
+            git_provider: None,
+            git_owner: None,
+            git_repo: None,
+            icon_path: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+        workspaces::create(Workspace {
+            id: workspace_id.clone(),
+            project_id: project_id.clone(),
+            name: None,
+            work_dir: format!("/tmp/{workspace_id}"),
+            env: "{}".to_string(),
+            resources: "{}".to_string(),
+            capture_thoughts: false,
+            collaboration_mode: "supervisor".to_string(),
+            status: "active".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+        conversations::create(Conversation {
+            id: conversation_id.clone(),
+            parent_id: None,
+            project_id: project_id.clone(),
+            workspace_id: Some(workspace_id.clone()),
+            name: Some("Get last".to_string()),
+            mode: "agent".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+            archived_at: None,
+        })
+        .unwrap();
+
+        // Test: empty conversation returns None
+        let empty = messages::get_last(&conversation_id).unwrap();
+        assert!(empty.is_none());
+
+        // Append 3 messages
+        let mut last_msg = None;
+        for i in 0..3 {
+            let msg = messages::append(
+                &conversation_id,
+                "user",
+                serde_json::json!([{ "type": "text", "text": format!("Message {}", i) }]),
+                serde_json::json!({ "index": i }),
+            )
+            .unwrap();
+            last_msg = Some(msg);
+        }
+
+        // Test: get_last returns the most recent message
+        let last = messages::get_last(&conversation_id).unwrap();
+        assert!(last.is_some());
+        let last = last.unwrap();
+        assert_eq!(last.id, last_msg.unwrap().id);
+        // Sequence should be the highest among appended messages
+        assert!(last.sequence >= 2); // At least the 3rd message (0-indexed or 1-indexed)
+
+        // Cleanup
+        conversations::delete(&conversation_id).unwrap();
+        projects::delete(&project_id).unwrap();
     }
 }

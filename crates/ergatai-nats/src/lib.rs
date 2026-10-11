@@ -31,6 +31,8 @@ pub use events::{
     AgentMessagePayload,
     // LLM API traffic events (agent semantic state)
     ApiEventPayload,
+    // Conversation-level message for SSE streaming
+    ConversationMessagePayload,
     DagCompletePayload,
     DagEvent,
     EnforcementAction,

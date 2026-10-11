@@ -27,20 +27,24 @@ pub struct StateTransition {
 ///
 /// This struct consolidates information from three separate agent registries
 /// (runtime, collab, core) into a single source of truth.
+///
+/// ## ID System (Simplified)
+///
+/// - `agent_id`: **Runtime ID** — Snowflake ID (e.g., `agent_{timestamp}_{instance}_{sequence}`).
+///   Used for NATS routing. Changes on process restart.
+/// - `cov_id`: **Application ID** — conversation/cov identifier for Cov-centric routing.
+///   1:1 binding with agent. Used for direct delivery via `inject_message_to_cov()`.
+/// - `mcp_agent_id`: **MCP connection ID** — for MCP peer binding (e.g., `opencode@abcd`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRecord {
-    /// Snowflake ID generated at agent start (NOT stable across restarts).
-    /// Used for within-lifecycle message tracking and deduplication.
-    /// For cross-restart identification, use `profile.name` or `mcp_agent_id`.
-    pub agent_instance_id: String,
-
-    /// Dynamic runtime agent ID (e.g., "ws1-agent-1", changes on restart)
+    /// Dynamic runtime agent ID (e.g., "ws1-agent-1", changes on restart).
+    /// This is the primary key for NATS routing and registry lookup.
     pub agent_id: String,
 
-    /// Human-readable stable identifier (e.g., "agent-1").
-    /// Populated from `handle.metadata["ergatai_agent_id"]` during discovery.
-    /// Used for user-facing display, conversation tracking, and batch aggregation.
-    pub stable_id: Option<String>,
+    /// Cov ID (Conversation ID) — the primary identifier for the Cov execution unit.
+    /// Used for Cov-centric message routing and direct delivery.
+    /// Each Cov has a 1:1 binding to an Agent.
+    pub cov_id: Option<String>,
 
     /// Current lifecycle state
     pub state: AgentLifecycleState,
@@ -78,11 +82,7 @@ pub struct AgentRecord {
 
 /// Opaque handle to a running agent (backend-specific)
 ///
-/// ## ID System
-///
-/// - `agent_id`: **Runtime ID** — deterministic identifier from the backend (e.g., `{ws}-agent-{n}`).
-///   Changes when the process is recreated.
-/// - `metadata["ergatai_agent_id"]`: **Stable ID** — survives restarts (e.g., `agent-1`).
+/// Contains the workspace, process ID, and metadata for backend operations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentHandle {
     /// Workspace handle
@@ -90,9 +90,8 @@ pub struct AgentHandle {
 
     /// **Runtime ID** — deterministic identifier from the backend.
     ///
-    /// For ACP backend: `{workspace_id}-agent-{counter}` (e.g., `ws1-agent-1`).
-    /// Not stable across process restarts. For cross-restart identification,
-    /// use `metadata["ergatai_agent_id"]`.
+    /// Snowflake ID with prefix "agent_" (e.g., `agent_502816809136_000_0000`).
+    /// Changes on process restart.
     pub agent_id: String,
 
     /// Process identifier (PID, container ID, etc.) — backend-specific
@@ -101,7 +100,7 @@ pub struct AgentHandle {
     /// Backend-specific metadata.
     ///
     /// Key entries:
-    /// - `ergatai_agent_id`: **Stable ID** — survives agent restarts
+    /// - `conversation_id`: Cov ID for Cov-centric routing
     /// - `work_dir`: agent working directory
     pub metadata: std::collections::HashMap<String, String>,
 }
@@ -121,18 +120,12 @@ pub struct WorkspaceHandle {
 
 impl AgentRecord {
     /// Create a new agent record in the Created state
-    pub fn new(
-        agent_instance_id: String,
-        agent_id: String,
-        workspace_id: String,
-        handle: AgentHandle,
-    ) -> Self {
+    pub fn new(agent_id: String, workspace_id: String, handle: AgentHandle) -> Self {
         let now = Utc::now();
-        let stable_id = handle.metadata.get("ergatai_agent_id").cloned();
+        let cov_id = handle.metadata.get("conversation_id").cloned();
         Self {
-            agent_instance_id,
             agent_id,
-            stable_id,
+            cov_id,
             state: AgentLifecycleState::Created,
             workspace_id,
             task_id: None,
@@ -188,9 +181,9 @@ impl AgentRecord {
             self.state_history.drain(..drain_count);
         }
 
-        // Note: stable_id is set during AgentRecord::new() from handle.metadata["ergatai_agent_id"].
-        // It is NOT updated here because stable_id should remain stable across state transitions.
-        // If the handle's stable_id changes (e.g., agent restart with new metadata), create a new
+        // Note: cov_id is set during AgentRecord::new() from handle.metadata["conversation_id"].
+        // It is NOT updated here because cov_id should remain stable across state transitions.
+        // If the handle's cov_id changes (e.g., agent restart with new metadata), create a new
         // AgentRecord instead of transitioning the existing one.
 
         self.state = new_state;
@@ -267,13 +260,11 @@ mod tests {
     #[test]
     fn test_new_agent_record() {
         let record = AgentRecord::new(
-            "uuid-123".to_string(),
             "agent-1".to_string(),
             "ws-1".to_string(),
             create_test_handle(),
         );
 
-        assert_eq!(record.agent_instance_id, "uuid-123");
         assert_eq!(record.agent_id, "agent-1");
         assert_eq!(record.workspace_id, "ws-1");
         assert_eq!(record.state.state_name(), "created");
@@ -285,7 +276,6 @@ mod tests {
     #[test]
     fn test_transition_to() {
         let mut record = AgentRecord::new(
-            "uuid-123".to_string(),
             "agent-1".to_string(),
             "ws-1".to_string(),
             create_test_handle(),
@@ -316,7 +306,6 @@ mod tests {
     #[test]
     fn test_update_heartbeat() {
         let mut record = AgentRecord::new(
-            "uuid-123".to_string(),
             "agent-1".to_string(),
             "ws-1".to_string(),
             create_test_handle(),
@@ -332,7 +321,6 @@ mod tests {
     #[test]
     fn test_is_methods() {
         let mut record = AgentRecord::new(
-            "uuid-123".to_string(),
             "agent-1".to_string(),
             "ws-1".to_string(),
             create_test_handle(),
@@ -399,7 +387,6 @@ mod tests {
     #[test]
     fn test_current_task_id() {
         let mut record = AgentRecord::new(
-            "uuid-123".to_string(),
             "agent-1".to_string(),
             "ws-1".to_string(),
             create_test_handle(),
@@ -424,7 +411,6 @@ mod tests {
     #[test]
     fn test_state_summary() {
         let record = AgentRecord::new(
-            "uuid-123".to_string(),
             "agent-1".to_string(),
             "ws-1".to_string(),
             create_test_handle(),
@@ -438,7 +424,6 @@ mod tests {
     #[test]
     fn test_serialization_roundtrip() {
         let record = AgentRecord::new(
-            "uuid-123".to_string(),
             "agent-1".to_string(),
             "ws-1".to_string(),
             create_test_handle(),
@@ -447,7 +432,6 @@ mod tests {
         let json = serde_json::to_string(&record).unwrap();
         let decoded: AgentRecord = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(record.agent_instance_id, decoded.agent_instance_id);
         assert_eq!(record.agent_id, decoded.agent_id);
         assert_eq!(record.state.state_name(), decoded.state.state_name());
     }
@@ -455,7 +439,6 @@ mod tests {
     #[test]
     fn test_cannot_transition_from_terminal_state() {
         let mut record = AgentRecord::new(
-            "uuid-123".to_string(),
             "agent-1".to_string(),
             "ws-1".to_string(),
             create_test_handle(),
