@@ -110,9 +110,9 @@ pub async fn stream_conversation_messages(
     let _guard = ConversationSseConnectionGuard;
 
     // Verify conversation exists
-    let conv_id_for_check = conversation_id.clone();
+    let conversation_id_for_check = conversation_id.clone();
     let conversation_exists = match tokio::task::spawn_blocking(move || {
-        crate::user_data_db::conversations::get(&conv_id_for_check)
+        crate::user_data_db::conversations::get(&conversation_id_for_check)
     })
     .await
     {
@@ -148,9 +148,12 @@ pub async fn stream_conversation_messages(
 
     // Step 1: Query SQLite for historical messages
     let after_sequence = params.after_sequence.unwrap_or(0);
-    let conv_id_for_query = conversation_id.clone();
+    let conversation_id_for_query = conversation_id.clone();
     let historical_messages = match tokio::task::spawn_blocking(move || {
-        crate::user_data_db::messages::list_after_sequence(&conv_id_for_query, after_sequence)
+        crate::user_data_db::messages::list_after_sequence(
+            &conversation_id_for_query,
+            after_sequence,
+        )
     })
     .await
     {
@@ -188,12 +191,12 @@ pub async fn stream_conversation_messages(
             let content = crate::messaging::extract_text_from_parts(&msg.parts);
 
             // Clone IDs for error logging before moving into payload
-            let msg_id_for_log = msg.id.clone();
-            let conv_id_for_log = msg.conversation_id.clone();
+            let msg_id_for_log = msg.message_id.clone();
+            let conversation_id_for_log = msg.conversation_id.clone();
 
             let payload = ergatai_nats::ConversationMessagePayload {
                 conversation_id: msg.conversation_id,
-                message_id: msg.id,
+                message_id: msg.message_id,
                 role: msg.role,
                 content,
                 parts: Some(parts),
@@ -209,7 +212,7 @@ pub async fn stream_conversation_messages(
                 Err(e) => {
                     tracing::warn!(
                         message_id = %msg_id_for_log,
-                        conversation_id = %conv_id_for_log,
+                        conversation_id = %conversation_id_for_log,
                         error = %e,
                         "Failed to serialize historical message for SSE (skipping)"
                     );
@@ -245,20 +248,32 @@ pub async fn stream_conversation_messages(
             loop {
                 match subscriber.next().await {
                     Some(msg) => {
-                        match serde_json::from_slice::<ergatai_nats::ConversationMessagePayload>(
-                            &msg.payload,
-                        ) {
-                            Ok(payload) => {
-                                if let Ok(json) = serde_json::to_string(&payload) {
-                                    return Some((Ok(Event::default().data(json)), subscriber));
-                                }
+                        // Try to deserialize as ConversationMessagePayload first (persisted messages)
+                        // If that fails, try AgentOutputEvent (real-time agent output)
+                        if let Ok(payload) = serde_json::from_slice::<
+                            ergatai_nats::ConversationMessagePayload,
+                        >(&msg.payload)
+                        {
+                            if let Ok(json) = serde_json::to_string(&payload) {
+                                return Some((Ok(Event::default().data(json)), subscriber));
                             }
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    "Failed to deserialize conversation message"
-                                );
+                        } else if let Ok(event) = serde_json::from_slice::<
+                            ergatai_runtime::AgentOutputEvent,
+                        >(&msg.payload)
+                        {
+                            // Agent output event (real-time streaming)
+                            // Wrap in a unified envelope for frontend consumption
+                            let envelope = serde_json::json!({
+                                "type": "agent_output",
+                                "event": event,
+                            });
+                            if let Ok(json) = serde_json::to_string(&envelope) {
+                                return Some((Ok(Event::default().data(json)), subscriber));
                             }
+                        } else {
+                            tracing::warn!(
+                                "Failed to deserialize message as either ConversationMessagePayload or AgentOutputEvent"
+                            );
                         }
                     }
                     None => {

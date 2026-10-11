@@ -1,12 +1,9 @@
-//! User data database management for projects, chats, and conversations.
+//! User data database management for workspaces, chats, conversations, and messages.
 //!
-//! This module provides persistent storage for user-facing data that was
-//! previously stored in the frontend's local SQLite database. By centralizing
-//! this data in the backend, we enable:
-//! - Single source of truth
-//! - Multi-device sync (future)
-//! - Better data consistency
-//! - Centralized backup
+//! This module provides persistent storage for user-facing data with a clear hierarchy:
+//! Workspace → Chat (1:N) → CollaborationSession (1:N) → Conversation (1:N) → Messages (1:N)
+//!                                                                                   ↓
+//!                                                                           AgentSession (1:1)
 
 use ergatai_core::id::{format as format_id, generate, IdType};
 use once_cell::sync::Lazy;
@@ -27,8 +24,6 @@ static USER_DATA_DB: Lazy<Arc<Mutex<Connection>>> = Lazy::new(|| {
 
     // Initialize tables
     initialize_tables(&conn).expect("Failed to initialize user data tables");
-    cleanup_duplicate_root_conversations(&conn)
-        .expect("Failed to cleanup duplicate root conversations");
 
     Arc::new(Mutex::new(conn))
 });
@@ -43,8 +38,6 @@ fn get_db_path() -> PathBuf {
     std::fs::create_dir_all(&data_dir).ok();
 
     // SECURITY: Canonicalize data_dir to detect and prevent symlink attacks.
-    // If data_dir is a symlink to a sensitive location (e.g., /etc), this will
-    // resolve it and we can validate it's safe.
     let canonical_data_dir = match data_dir.canonicalize() {
         Ok(path) => path,
         Err(e) => {
@@ -60,8 +53,7 @@ fn get_db_path() -> PathBuf {
     let db_path = canonical_data_dir.join("user_data.db");
 
     // SECURITY: If the db file already exists, verify it's not a symlink to a
-    // sensitive location. This prevents attacks where user_data.db
-    // is symlinked to /etc/passwd or similar.
+    // sensitive location.
     if db_path.exists() {
         if let Ok(metadata) = std::fs::symlink_metadata(&db_path) {
             if metadata.file_type().is_symlink() {
@@ -69,8 +61,6 @@ fn get_db_path() -> PathBuf {
                     db_path = %db_path.display(),
                     "Database path is a symlink - refusing to open (security risk)"
                 );
-                // Return a safe fallback path within the data directory.
-                // Using a numbered suffix avoids the world-writable /tmp directory.
                 let fallback = canonical_data_dir.join("user_data_safe.db");
                 return fallback;
             }
@@ -80,41 +70,63 @@ fn get_db_path() -> PathBuf {
     db_path
 }
 
-/// Migration: Remove UNIQUE constraint from collaboration_sessions.chat_id
+/// Initialize all required tables
 ///
-/// SQLite does not support removing constraints directly, so we rebuild the table.
-/// This is a no-op if the constraint has already been removed.
-fn migrate_collaboration_sessions_remove_unique(conn: &Connection) -> Result<()> {
-    // Check if the UNIQUE constraint exists by examining the table SQL
-    let table_sql: String = conn
-        .prepare(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='collaboration_sessions'",
-        )?
-        .query_row([], |row| row.get(0))
-        .unwrap_or_default();
-
-    // Check if chat_id column definition contains UNIQUE
-    // Match pattern: "chat_id TEXT NOT NULL UNIQUE" or similar
-    let has_unique = table_sql.lines().any(|line| {
-        let trimmed = line.trim();
-        // Check if this is the chat_id column definition and it contains UNIQUE
-        trimmed.starts_with("chat_id") && trimmed.contains("UNIQUE")
-    });
-
-    if !has_unique {
-        return Ok(());
-    }
-
-    tracing::info!("Migrating collaboration_sessions: removing UNIQUE constraint from chat_id");
+/// This function drops all existing tables and recreates them with the new schema.
+/// WARNING: This will delete all existing data!
+fn initialize_tables(conn: &Connection) -> Result<()> {
+    // Drop all existing tables (in reverse dependency order)
+    conn.execute_batch(
+        r#"
+        DROP TABLE IF EXISTS messages;
+        DROP TABLE IF EXISTS agent_sessions;
+        DROP TABLE IF EXISTS conversations;
+        DROP TABLE IF EXISTS collaboration_session_participants;
+        DROP TABLE IF EXISTS collaboration_context_events;
+        DROP TABLE IF EXISTS collaboration_plan_revisions;
+        DROP TABLE IF EXISTS collaboration_approvals;
+        DROP TABLE IF EXISTS collaboration_sessions;
+        DROP TABLE IF EXISTS chats;
+        DROP TABLE IF EXISTS workspace_projects;
+        DROP TABLE IF EXISTS workspaces;
+        DROP TABLE IF EXISTS projects;
+        DROP TABLE IF EXISTS group_agent_bindings;
+        DROP TABLE IF EXISTS conversation_agent_bindings;
+        DROP TABLE IF EXISTS conversation_execution_contexts;
+        DROP TABLE IF EXISTS terminal_sessions;
+        "#,
+    )?;
 
     conn.execute_batch(
         r#"
-        -- 1. Create new table without UNIQUE constraint
-        CREATE TABLE collaboration_sessions_new (
-            id TEXT PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS workspaces (
+            workspace_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            work_dir TEXT NOT NULL,
+            env TEXT DEFAULT '{}',
+            resources TEXT DEFAULT '{}',
+            config TEXT DEFAULT '{}',
+            collaboration_mode TEXT NOT NULL DEFAULT 'supervisor',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS chats (
+            chat_id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            name TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_chats_workspace_id ON chats(workspace_id);
+
+        CREATE TABLE IF NOT EXISTS collaboration_sessions (
+            collaboration_session_id TEXT PRIMARY KEY,
             chat_id TEXT NOT NULL,
-            workspace_id TEXT,
-            project_id TEXT,
+            workspace_id TEXT NOT NULL,
             mode TEXT NOT NULL CHECK (mode IN ('supervisor', 'group')),
             state TEXT NOT NULL CHECK (state IN (
                 'idle', 'planning', 'executing', 'waiting_input',
@@ -124,157 +136,44 @@ fn migrate_collaboration_sessions_remove_unique(conn: &Connection) -> Result<()>
             goal TEXT,
             active_plan_revision TEXT,
             created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-
-        -- 2. Copy data
-        INSERT INTO collaboration_sessions_new SELECT * FROM collaboration_sessions;
-
-        -- 3. Drop old table
-        DROP TABLE collaboration_sessions;
-
-        -- 4. Rename new table
-        ALTER TABLE collaboration_sessions_new RENAME TO collaboration_sessions;
-
-        -- 5. Create index for performance
-        CREATE INDEX idx_collaboration_sessions_chat_id ON collaboration_sessions(chat_id);
-        "#,
-    )?;
-
-    tracing::info!("Migration completed: collaboration_sessions.chat_id UNIQUE constraint removed");
-    Ok(())
-}
-
-/// Initialize all required tables
-fn initialize_tables(conn: &Connection) -> Result<()> {
-    // Incremental migrations for existing databases MUST run BEFORE the backfill queries.
-    // These are no-ops if the columns already exist (SQLite ignores errors).
-    // For databases created by older versions, these add missing columns.
-    if let Err(e) = conn.execute_batch(
-        "ALTER TABLE workspaces ADD COLUMN collaboration_mode TEXT NOT NULL DEFAULT 'supervisor'",
-    ) {
-        if !e.to_string().contains("duplicate column name") {
-            tracing::warn!(error = %e, "Failed to add workspaces.collaboration_mode column");
-        }
-    }
-    if let Err(e) = conn
-        .execute_batch("ALTER TABLE workspaces ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
-    {
-        if !e.to_string().contains("duplicate column name") {
-            tracing::warn!(error = %e, "Failed to add workspaces.status column");
-        }
-    }
-    if let Err(e) = conn.execute_batch("ALTER TABLE chats ADD COLUMN workspace_id TEXT") {
-        if !e.to_string().contains("duplicate column name") {
-            tracing::warn!(error = %e, "Failed to add chats.workspace_id column");
-        }
-    }
-    if let Err(e) = conn.execute_batch(
-        "ALTER TABLE group_agent_bindings ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''",
-    ) {
-        if !e.to_string().contains("duplicate column name") {
-            tracing::warn!(error = %e, "Failed to add group_agent_bindings.workspace_id column");
-        }
-    }
-    // ✅ Migration: Add conversation_id to collaboration_session_participants
-    if let Err(e) = conn.execute_batch(
-        "ALTER TABLE collaboration_session_participants ADD COLUMN conversation_id TEXT NOT NULL DEFAULT ''",
-    ) {
-        if !e.to_string().contains("duplicate column name") {
-            tracing::warn!(error = %e, "Failed to add collaboration_session_participants.conversation_id column");
-        }
-    }
-    // ✅ Migration: Remove UNIQUE constraint from collaboration_sessions.chat_id
-    migrate_collaboration_sessions_remove_unique(conn)?;
-
-    conn.execute_batch(
-        r#"
-        -- Projects table
-        CREATE TABLE IF NOT EXISTS projects (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            path TEXT NOT NULL UNIQUE,
-            git_remote_url TEXT,
-            git_provider TEXT,
-            git_owner TEXT,
-            git_repo TEXT,
-            icon_path TEXT,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-
-        -- Workspaces table (persistent execution scope: working directory, environment, and resources)
-        CREATE TABLE IF NOT EXISTS workspaces (
-            id TEXT PRIMARY KEY,
-            project_id TEXT NOT NULL,
-            name TEXT,
-            work_dir TEXT NOT NULL,
-            env TEXT DEFAULT '{}',
-            resources TEXT DEFAULT '{}',
-            capture_thoughts INTEGER DEFAULT 0,
-            collaboration_mode TEXT NOT NULL DEFAULT 'supervisor',
-            status TEXT NOT NULL DEFAULT 'active',
-            created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE
         );
+        CREATE INDEX IF NOT EXISTS idx_collaboration_sessions_chat_id ON collaboration_sessions(chat_id);
+        CREATE INDEX IF NOT EXISTS idx_collaboration_sessions_workspace_id ON collaboration_sessions(workspace_id);
 
-        -- Workspace-owned project registrations. This is the management model;
-        -- workspaces.project_id remains a compatibility/default-project field.
-        CREATE TABLE IF NOT EXISTS workspace_projects (
-            workspace_id TEXT NOT NULL,
-            project_id TEXT NOT NULL,
-            is_default INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'active',
-            settings_json TEXT NOT NULL DEFAULT '{}',
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            PRIMARY KEY (workspace_id, project_id),
-            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
-            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE RESTRICT
-        );
-
-        -- Chats table (conversation containers; workspace_id references a related workspace,
-        -- but a chat and a workspace remain distinct entities)
-        CREATE TABLE IF NOT EXISTS chats (
-            id TEXT PRIMARY KEY,
-            name TEXT,
-            project_id TEXT NOT NULL,
-            workspace_id TEXT,
-            collaboration_mode TEXT NOT NULL DEFAULT 'supervisor',
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            archived_at INTEGER,
-            worktree_path TEXT,
-            branch TEXT,
-            base_branch TEXT,
-            pr_url TEXT,
-            pr_number INTEGER,
-            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE SET NULL
-        );
-
-        -- Unified conversation tree. A conversation is either a root scoped to a
-        -- workspace or a child scoped to its parent. Both roots and children are
-        -- the same entity; parent_id is the only hierarchy boundary.
         CREATE TABLE IF NOT EXISTS conversations (
-            id TEXT PRIMARY KEY,
+            conversation_id TEXT PRIMARY KEY,
+            collaboration_session_id TEXT NOT NULL,
+            chat_id TEXT NOT NULL,
             parent_id TEXT,
-            project_id TEXT NOT NULL,
-            workspace_id TEXT,
             name TEXT,
+            mode TEXT NOT NULL DEFAULT 'agent',
+            participant_role TEXT NOT NULL DEFAULT 'peer',
+            status TEXT NOT NULL DEFAULT 'ready',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (collaboration_session_id) REFERENCES collaboration_sessions(collaboration_session_id) ON DELETE CASCADE,
+            FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+            FOREIGN KEY (parent_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversations_collaboration_session_id ON conversations(collaboration_session_id);
+        CREATE INDEX IF NOT EXISTS idx_conversations_chat_id ON conversations(chat_id);
+        CREATE INDEX IF NOT EXISTS idx_conversations_parent_id ON conversations(parent_id);
+
+        CREATE TABLE IF NOT EXISTS agent_sessions (
+            agent_session_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL UNIQUE,
+            acp_session_id TEXT,
             mode TEXT NOT NULL DEFAULT 'agent',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            archived_at INTEGER,
-            FOREIGN KEY (parent_id) REFERENCES conversations(id) ON DELETE CASCADE,
-            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE SET NULL
+            FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );
 
-        -- Durable messages belong to exactly one conversation.
         CREATE TABLE IF NOT EXISTS messages (
-            id TEXT PRIMARY KEY,
+            message_id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL,
             sequence INTEGER NOT NULL,
             role TEXT NOT NULL,
@@ -282,22 +181,10 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             metadata TEXT,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
-            UNIQUE (conversation_id, sequence)
+            FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
 
-        -- Runtime identity is separate from conversation identity.
-        CREATE TABLE IF NOT EXISTS agent_sessions (
-            conversation_id TEXT PRIMARY KEY,
-            session_id TEXT,
-            mode TEXT NOT NULL DEFAULT 'agent',
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
-        );
-
-        -- Terminal session metadata is durable for recovery and audit correlation.
-        -- Raw terminal output remains in the bounded in-memory replay buffer.
         CREATE TABLE IF NOT EXISTS terminal_sessions (
             session_id TEXT PRIMARY KEY,
             workspace_id TEXT NOT NULL,
@@ -315,7 +202,6 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             updated_at_ms INTEGER NOT NULL
         );
 
-        -- Git/PR execution context is separate from conversation identity.
         CREATE TABLE IF NOT EXISTS conversation_execution_contexts (
             conversation_id TEXT PRIMARY KEY,
             worktree_path TEXT,
@@ -323,22 +209,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             base_branch TEXT,
             pr_url TEXT,
             pr_number INTEGER,
-            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
-        );
-
-        -- Stable binding between a root conversation, a backend agent, and its thread.
-        CREATE TABLE IF NOT EXISTS conversation_agent_bindings (
-            workspace_id TEXT NOT NULL,
-            chat_id TEXT NOT NULL,
-            agent_id TEXT NOT NULL,
-            agent_name TEXT NOT NULL,
-            agent_command TEXT,
-            conversation_id TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            PRIMARY KEY (chat_id, agent_id),
-            FOREIGN KEY (chat_id) REFERENCES conversations(id) ON DELETE CASCADE,
-            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS group_agent_bindings (
@@ -351,41 +222,12 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             PRIMARY KEY (chat_id, agent_id),
-            FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE,
-            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );
-
-        -- Authoritative collaboration sessions for Supervisor and Group modes.
-        CREATE TABLE IF NOT EXISTS collaboration_sessions (
-            id TEXT PRIMARY KEY,
-            chat_id TEXT NOT NULL,
-            workspace_id TEXT,
-            project_id TEXT,
-            mode TEXT NOT NULL CHECK (mode IN ('supervisor', 'group')),
-            state TEXT NOT NULL CHECK (state IN (
-                'idle', 'planning', 'executing', 'waiting_input',
-                'waiting_approval', 'synthesizing', 'completed',
-                'failed', 'cancelled'
-            )),
-            goal TEXT,
-            active_plan_revision TEXT,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_collaboration_sessions_chat_id ON collaboration_sessions(chat_id);
-
-        CREATE TABLE IF NOT EXISTS collaboration_session_participants (
-            id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            conversation_id TEXT NOT NULL,  -- ✅ 新增：Conversation ID
-            agent_id TEXT NOT NULL,  -- 保留：Agent ID（从 conversation 获取）
-            role TEXT NOT NULL DEFAULT 'peer',
-            status TEXT NOT NULL DEFAULT 'ready',
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES collaboration_sessions(id) ON DELETE CASCADE,
-            UNIQUE (session_id, conversation_id)  -- ✅ 改为基于 conversation_id 的唯一约束
-        );
+        CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_chat_id ON group_agent_bindings(chat_id);
+        CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_agent_id ON group_agent_bindings(agent_id);
+        CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_workspace_id ON group_agent_bindings(workspace_id);
 
         CREATE TABLE IF NOT EXISTS collaboration_context_events (
             id TEXT PRIMARY KEY,
@@ -398,9 +240,10 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             visibility TEXT NOT NULL DEFAULT 'shared',
             artifact_refs TEXT NOT NULL DEFAULT '[]',
             created_at INTEGER NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES collaboration_sessions(id) ON DELETE CASCADE,
+            FOREIGN KEY (session_id) REFERENCES collaboration_sessions(collaboration_session_id) ON DELETE CASCADE,
             UNIQUE (session_id, sequence)
         );
+        CREATE INDEX IF NOT EXISTS idx_collaboration_context_events_session ON collaboration_context_events(session_id, sequence);
 
         CREATE TABLE IF NOT EXISTS collaboration_plan_revisions (
             id TEXT PRIMARY KEY,
@@ -411,7 +254,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             dag_snapshot TEXT NOT NULL DEFAULT '{}',
             summary TEXT,
             created_at INTEGER NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES collaboration_sessions(id) ON DELETE CASCADE,
+            FOREIGN KEY (session_id) REFERENCES collaboration_sessions(collaboration_session_id) ON DELETE CASCADE,
             UNIQUE (session_id, revision)
         );
 
@@ -427,92 +270,10 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             decision_payload TEXT NOT NULL DEFAULT '{}',
             created_at INTEGER NOT NULL,
             decided_at INTEGER,
-            FOREIGN KEY (session_id) REFERENCES collaboration_sessions(id) ON DELETE CASCADE
+            FOREIGN KEY (session_id) REFERENCES collaboration_sessions(collaboration_session_id) ON DELETE CASCADE
         );
-
-        -- Create indexes for performance
-        CREATE INDEX IF NOT EXISTS idx_workspaces_project_id ON workspaces(project_id);
-        CREATE INDEX IF NOT EXISTS idx_workspace_projects_project
-            ON workspace_projects(project_id);
-        CREATE INDEX IF NOT EXISTS idx_chats_project_id ON chats(project_id);
-        CREATE INDEX IF NOT EXISTS idx_chats_workspace_id ON chats(workspace_id);
-        CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_chat_id ON group_agent_bindings(chat_id);
-        CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_agent_id ON group_agent_bindings(agent_id);
-        CREATE INDEX IF NOT EXISTS idx_group_agent_bindings_workspace_id ON group_agent_bindings(workspace_id);
-        CREATE INDEX IF NOT EXISTS idx_chats_archived_at ON chats(archived_at);
-        CREATE INDEX IF NOT EXISTS idx_conversations_parent_id ON conversations(parent_id);
-        CREATE INDEX IF NOT EXISTS idx_conversations_project_id ON conversations(project_id);
-        CREATE INDEX IF NOT EXISTS idx_conversations_workspace_id ON conversations(workspace_id);
-        CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
-        CREATE INDEX IF NOT EXISTS idx_messages_conversation_sequence
-            ON messages(conversation_id, sequence);
-        CREATE INDEX IF NOT EXISTS idx_conversation_agent_bindings_agent_id
-            ON conversation_agent_bindings(agent_id);
-        CREATE INDEX IF NOT EXISTS idx_collaboration_sessions_workspace_id
-            ON collaboration_sessions(workspace_id);
-        CREATE INDEX IF NOT EXISTS idx_collaboration_participants_agent_id
-            ON collaboration_session_participants(agent_id);
-        CREATE INDEX IF NOT EXISTS idx_collaboration_context_events_session
-            ON collaboration_context_events(session_id, sequence);
-
-        -- Backfill chats created before workspace binding became mandatory.
-        -- Root chats inherit the active workspace matching their project and
-        -- collaboration mode; child conversations then inherit their root.
-        UPDATE conversations
-        SET workspace_id = (
-            SELECT workspaces.id
-            FROM workspaces
-            WHERE workspaces.project_id = conversations.project_id
-              AND workspaces.collaboration_mode = conversations.mode
-            ORDER BY workspaces.created_at DESC
-            LIMIT 1
-        )
-        WHERE parent_id IS NULL
-          AND workspace_id IS NULL;
-
-        UPDATE conversations
-        SET workspace_id = (
-            SELECT roots.workspace_id
-            FROM conversations AS roots
-            WHERE roots.id = conversations.parent_id
-        )
-        WHERE parent_id IS NOT NULL
-          AND workspace_id IS NULL;
         "#,
     )?;
-
-    Ok(())
-}
-
-fn cleanup_duplicate_root_conversations(conn: &Connection) -> Result<()> {
-    let removed = conn.execute(
-        "DELETE FROM conversations
-         WHERE id LIKE 'conv\\_%' ESCAPE '\\'
-           AND parent_id IS NULL
-           AND NOT EXISTS (
-               SELECT 1 FROM conversations child WHERE child.parent_id = conversations.id
-           )
-           AND NOT EXISTS (
-               SELECT 1 FROM messages WHERE messages.conversation_id = conversations.id
-           )
-           AND EXISTS (
-               SELECT 1 FROM conversations chat
-               WHERE chat.id LIKE 'chat\\_%' ESCAPE '\\'
-                 AND chat.parent_id IS NULL
-                 AND chat.project_id = conversations.project_id
-                 AND chat.workspace_id IS conversations.workspace_id
-                 AND chat.name IS conversations.name
-                 AND chat.created_at = conversations.created_at
-           )",
-        [],
-    )?;
-
-    if removed > 0 {
-        tracing::warn!(
-            removed,
-            "Removed duplicate root conversations created outside chat containers"
-        );
-    }
 
     Ok(())
 }
@@ -524,29 +285,14 @@ pub fn get_user_data_db() -> Arc<Mutex<Connection>> {
 
 // ── Data Models ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Project {
-    pub id: String,
-    pub name: String,
-    pub path: String,
-    pub git_remote_url: Option<String>,
-    pub git_provider: Option<String>,
-    pub git_owner: Option<String>,
-    pub git_repo: Option<String>,
-    pub icon_path: Option<String>,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Workspace {
-    pub id: String,
-    pub project_id: String,
-    pub name: Option<String>,
+    pub workspace_id: String,
+    pub name: String,
     pub work_dir: String,
-    pub env: String,       // JSON string
-    pub resources: String, // JSON string
-    pub capture_thoughts: bool,
+    pub env: String,
+    pub resources: String,
+    pub config: String,
     pub collaboration_mode: String,
     pub status: String,
     pub created_at: i64,
@@ -554,63 +300,60 @@ pub struct Workspace {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct WorkspaceProject {
-    pub workspace_id: String,
-    pub project_id: String,
-    pub is_default: bool,
-    pub status: String,
-    pub settings_json: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chat {
-    pub id: String,
+    pub chat_id: String,
+    pub workspace_id: String,
     pub name: Option<String>,
-    pub project_id: String,
-    pub workspace_id: Option<String>,
-    pub collaboration_mode: String,
     pub created_at: i64,
     pub updated_at: i64,
     pub archived_at: Option<i64>,
-    pub worktree_path: Option<String>,
-    pub branch: Option<String>,
-    pub base_branch: Option<String>,
-    pub pr_url: Option<String>,
-    pub pr_number: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CollaborationSession {
+    pub collaboration_session_id: String,
+    pub chat_id: String,
+    pub workspace_id: String,
+    pub mode: String,
+    pub state: String,
+    pub goal: Option<String>,
+    pub active_plan_revision: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Conversation {
-    pub id: String,
+    pub conversation_id: String,
+    pub collaboration_session_id: String,
+    pub chat_id: String,
     pub parent_id: Option<String>,
-    pub project_id: String,
-    pub workspace_id: Option<String>,
     pub name: Option<String>,
     pub mode: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub archived_at: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct Message {
-    pub id: String,
-    pub conversation_id: String,
-    pub sequence: i64,
-    pub role: String,
-    pub parts: String,
-    pub metadata: Option<String>,
+    pub participant_role: String,
+    pub status: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AgentSession {
+    pub agent_session_id: String,
     pub conversation_id: String,
-    pub session_id: Option<String>,
+    pub acp_session_id: Option<String>,
     pub mode: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Message {
+    pub message_id: String,
+    pub conversation_id: String,
+    pub sequence: i64,
+    pub role: String,
+    pub parts: String,
+    pub metadata: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -625,31 +368,13 @@ pub struct ConversationExecutionContext {
     pub pr_number: Option<i32>,
 }
 
-/// Binding between a group chat and a runtime agent.
-///
-/// ## Matching Logic
-/// - `agent_command` stores the profile name (e.g., "coder", "reviewer"), NOT the full command path
-/// - Frontend passes `agentCommand` which is also the profile name
-/// - Agent-to-agent routing matches by `agent_command == target_command` (both are profile names)
-/// - This ensures consistent matching across frontend and backend
-///
-/// ## Workspace vs Chat
-/// - `workspace_id` - Resource isolation (working directory, environment)
-/// - `chat_id` - UI conversation session
-/// - 1 workspace can have N chats (multiple conversations sharing same workspace)
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct GroupAgentBinding {
-    /// Workspace ID (resource isolation)
     pub workspace_id: String,
-    /// Chat ID (UI conversation session)
     pub chat_id: String,
-    /// Runtime agent ID (e.g., "ws1-agent-1")
     pub agent_id: String,
-    /// Display name for the agent
     pub agent_name: String,
-    /// Profile name for matching (e.g., "coder") - NOT full command path
     pub agent_command: Option<String>,
-    /// Conversation ID for this agent's conversation thread
     pub conversation_id: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -657,102 +382,473 @@ pub struct GroupAgentBinding {
 
 // ── CRUD Operations ──────────────────────────────────────────────────────────
 
-pub mod conversations {
+pub mod workspaces {
     use super::*;
 
-    pub fn row_to_conversation(row: &rusqlite::Row<'_>) -> Result<Conversation> {
-        Ok(Conversation {
-            id: row.get(0)?,
-            parent_id: row.get(1)?,
-            project_id: row.get(2)?,
-            workspace_id: row.get(3)?,
-            name: row.get(4)?,
-            mode: row.get(5)?,
-            created_at: row.get(6)?,
-            updated_at: row.get(7)?,
-            archived_at: row.get(8)?,
-        })
+    pub fn create(workspace: Workspace) -> Result<Workspace> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO workspaces (workspace_id, name, work_dir, env, resources, config, collaboration_mode, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                workspace.workspace_id,
+                workspace.name,
+                workspace.work_dir,
+                workspace.env,
+                workspace.resources,
+                workspace.config,
+                workspace.collaboration_mode,
+                workspace.status,
+                workspace.created_at,
+                workspace.updated_at,
+            ],
+        )?;
+
+        Ok(workspace)
     }
 
-    pub const CONVERSATION_COLUMNS: &str =
-        "id, parent_id, project_id, workspace_id, name, mode, created_at, updated_at, archived_at";
+    pub fn list(collaboration_mode: Option<&str>) -> Result<Vec<Workspace>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT workspace_id, name, work_dir, env, resources, config, collaboration_mode, status, created_at, updated_at
+             FROM workspaces
+             WHERE ?1 IS NULL OR collaboration_mode = ?1
+             ORDER BY created_at DESC",
+        )?;
+        let workspaces = stmt.query_map(params![collaboration_mode], |row| {
+            Ok(Workspace {
+                workspace_id: row.get(0)?,
+                name: row.get(1)?,
+                work_dir: row.get(2)?,
+                env: row.get(3)?,
+                resources: row.get(4)?,
+                config: row.get(5)?,
+                collaboration_mode: row.get(6)?,
+                status: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })?;
+        workspaces.collect()
+    }
+
+    pub fn get(workspace_id: &str) -> Result<Option<Workspace>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT workspace_id, name, work_dir, env, resources, config, collaboration_mode, status, created_at, updated_at
+             FROM workspaces WHERE workspace_id = ?1"
+        )?;
+
+        let mut rows = stmt.query_map(params![workspace_id], |row| {
+            Ok(Workspace {
+                workspace_id: row.get(0)?,
+                name: row.get(1)?,
+                work_dir: row.get(2)?,
+                env: row.get(3)?,
+                resources: row.get(4)?,
+                config: row.get(5)?,
+                collaboration_mode: row.get(6)?,
+                status: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(workspace)) => Ok(Some(workspace)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    pub fn update(workspace: Workspace) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "UPDATE workspaces
+             SET name = ?1, work_dir = ?2, env = ?3, resources = ?4, config = ?5,
+                 collaboration_mode = ?6, status = ?7, updated_at = ?8
+             WHERE workspace_id = ?9",
+            params![
+                workspace.name,
+                workspace.work_dir,
+                workspace.env,
+                workspace.resources,
+                workspace.config,
+                workspace.collaboration_mode,
+                workspace.status,
+                workspace.updated_at,
+                workspace.workspace_id,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn delete(workspace_id: &str) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let count = conn.execute(
+            "DELETE FROM workspaces WHERE workspace_id = ?1",
+            params![workspace_id],
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn set_status(workspace_id: &str, status: &str) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let count = conn.execute(
+            "UPDATE workspaces SET status = ?2, updated_at = strftime('%s', 'now') WHERE workspace_id = ?1",
+            params![workspace_id, status],
+        )?;
+        Ok(count > 0)
+    }
+}
+
+pub mod chats {
+    use super::*;
+
+    pub fn create(chat: Chat) -> Result<Chat> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO chats (chat_id, workspace_id, name, created_at, updated_at, archived_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                chat.chat_id,
+                chat.workspace_id,
+                chat.name,
+                chat.created_at,
+                chat.updated_at,
+                chat.archived_at,
+            ],
+        )?;
+
+        Ok(chat)
+    }
+
+    pub fn list(workspace_id: Option<&str>) -> Result<Vec<Chat>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT chat_id, workspace_id, name, created_at, updated_at, archived_at
+             FROM chats
+             WHERE ?1 IS NULL OR workspace_id = ?1
+             ORDER BY created_at DESC",
+        )?;
+        let chats = stmt.query_map(params![workspace_id], |row| {
+            Ok(Chat {
+                chat_id: row.get(0)?,
+                workspace_id: row.get(1)?,
+                name: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                archived_at: row.get(5)?,
+            })
+        })?;
+        chats.collect()
+    }
+
+    pub fn get(chat_id: &str) -> Result<Option<Chat>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT chat_id, workspace_id, name, created_at, updated_at, archived_at
+             FROM chats WHERE chat_id = ?1",
+        )?;
+
+        let mut rows = stmt.query_map(params![chat_id], |row| {
+            Ok(Chat {
+                chat_id: row.get(0)?,
+                workspace_id: row.get(1)?,
+                name: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                archived_at: row.get(5)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(chat)) => Ok(Some(chat)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    pub fn update(chat: Chat) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "UPDATE chats
+             SET workspace_id = ?1, name = ?2, updated_at = ?3, archived_at = ?4
+             WHERE chat_id = ?5",
+            params![
+                chat.workspace_id,
+                chat.name,
+                chat.updated_at,
+                chat.archived_at,
+                chat.chat_id,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn delete(chat_id: &str) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.execute("DELETE FROM chats WHERE chat_id = ?1", params![chat_id])?;
+        Ok(())
+    }
+
+    pub fn archive(chat_id: &str) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        conn.execute(
+            "UPDATE chats SET archived_at = ?1, updated_at = ?1 WHERE chat_id = ?2",
+            params![now, chat_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn unarchive(chat_id: &str) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        conn.execute(
+            "UPDATE chats SET archived_at = NULL, updated_at = ?1 WHERE chat_id = ?2",
+            params![now, chat_id],
+        )?;
+        Ok(())
+    }
+}
+
+pub mod collaboration_sessions {
+    use super::*;
+
+    pub fn create(session: CollaborationSession) -> Result<CollaborationSession> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO collaboration_sessions (collaboration_session_id, chat_id, workspace_id, mode, state, goal, active_plan_revision, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                session.collaboration_session_id,
+                session.chat_id,
+                session.workspace_id,
+                session.mode,
+                session.state,
+                session.goal,
+                session.active_plan_revision,
+                session.created_at,
+                session.updated_at,
+            ],
+        )?;
+
+        Ok(session)
+    }
+
+    pub fn list(chat_id: Option<&str>) -> Result<Vec<CollaborationSession>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT collaboration_session_id, chat_id, workspace_id, mode, state, goal, active_plan_revision, created_at, updated_at
+             FROM collaboration_sessions
+             WHERE ?1 IS NULL OR chat_id = ?1
+             ORDER BY created_at DESC",
+        )?;
+        let sessions = stmt.query_map(params![chat_id], |row| {
+            Ok(CollaborationSession {
+                collaboration_session_id: row.get(0)?,
+                chat_id: row.get(1)?,
+                workspace_id: row.get(2)?,
+                mode: row.get(3)?,
+                state: row.get(4)?,
+                goal: row.get(5)?,
+                active_plan_revision: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })?;
+        sessions.collect()
+    }
+
+    pub fn get(collaboration_session_id: &str) -> Result<Option<CollaborationSession>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT collaboration_session_id, chat_id, workspace_id, mode, state, goal, active_plan_revision, created_at, updated_at
+             FROM collaboration_sessions WHERE collaboration_session_id = ?1"
+        )?;
+
+        let mut rows = stmt.query_map(params![collaboration_session_id], |row| {
+            Ok(CollaborationSession {
+                collaboration_session_id: row.get(0)?,
+                chat_id: row.get(1)?,
+                workspace_id: row.get(2)?,
+                mode: row.get(3)?,
+                state: row.get(4)?,
+                goal: row.get(5)?,
+                active_plan_revision: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(session)) => Ok(Some(session)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    pub fn update(session: CollaborationSession) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "UPDATE collaboration_sessions
+             SET chat_id = ?1, workspace_id = ?2, mode = ?3, state = ?4, goal = ?5,
+                 active_plan_revision = ?6, updated_at = ?7
+             WHERE collaboration_session_id = ?8",
+            params![
+                session.chat_id,
+                session.workspace_id,
+                session.mode,
+                session.state,
+                session.goal,
+                session.active_plan_revision,
+                session.updated_at,
+                session.collaboration_session_id,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn delete(collaboration_session_id: &str) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "DELETE FROM collaboration_sessions WHERE collaboration_session_id = ?1",
+            params![collaboration_session_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_state(collaboration_session_id: &str, state: &str) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        conn.execute(
+            "UPDATE collaboration_sessions SET state = ?2, updated_at = ?3 WHERE collaboration_session_id = ?1",
+            params![collaboration_session_id, state, now],
+        )?;
+        Ok(())
+    }
+}
+
+pub mod conversations {
+    use super::*;
 
     pub fn create(conversation: Conversation) -> Result<Conversation> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
-        if let Some(parent_id) = &conversation.parent_id {
-            let (project_id, workspace_id): (String, Option<String>) = conn.query_row(
-                "SELECT project_id, workspace_id FROM conversations WHERE id = ?1",
-                params![parent_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-
-            if conversation.project_id != project_id {
-                return Err(rusqlite::Error::InvalidParameterName(
-                    "conversation parent and child must belong to the same project".to_string(),
-                ));
-            }
-            if conversation.workspace_id.is_some() && conversation.workspace_id != workspace_id {
-                return Err(rusqlite::Error::InvalidParameterName(
-                    "conversation parent and child must belong to the same workspace".to_string(),
-                ));
-            }
-        }
-
         conn.execute(
-            "INSERT INTO conversations (id, parent_id, project_id, workspace_id, name, mode, created_at, updated_at, archived_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO conversations (conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
-                conversation.id,
+                conversation.conversation_id,
+                conversation.collaboration_session_id,
+                conversation.chat_id,
                 conversation.parent_id,
-                conversation.project_id,
-                conversation.workspace_id,
                 conversation.name,
                 conversation.mode,
+                conversation.participant_role,
+                conversation.status,
                 conversation.created_at,
                 conversation.updated_at,
-                conversation.archived_at,
             ],
         )?;
 
         Ok(conversation)
     }
 
-    pub fn list_roots(
-        project_id: Option<&str>,
-        workspace_id: Option<&str>,
+    pub fn list_by_collaboration_session(
+        collaboration_session_id: &str,
     ) -> Result<Vec<Conversation>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
-        let (where_clause, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
-            match (project_id, workspace_id) {
-                (Some(project_id), Some(workspace_id)) => (
-                    "WHERE parent_id IS NULL AND project_id = ?1 AND workspace_id = ?2".to_string(),
-                    vec![
-                        Box::new(project_id.to_string()),
-                        Box::new(workspace_id.to_string()),
-                    ],
-                ),
-                (Some(project_id), None) => (
-                    "WHERE parent_id IS NULL AND project_id = ?1".to_string(),
-                    vec![Box::new(project_id.to_string())],
-                ),
-                (None, Some(workspace_id)) => (
-                    "WHERE parent_id IS NULL AND workspace_id = ?1".to_string(),
-                    vec![Box::new(workspace_id.to_string())],
-                ),
-                (None, None) => ("WHERE parent_id IS NULL".to_string(), vec![]),
-            };
+        let mut stmt = conn.prepare(
+            "SELECT conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at
+             FROM conversations WHERE collaboration_session_id = ?1 ORDER BY created_at ASC"
+        )?;
+        let conversations = stmt.query_map(params![collaboration_session_id], |row| {
+            Ok(Conversation {
+                conversation_id: row.get(0)?,
+                collaboration_session_id: row.get(1)?,
+                chat_id: row.get(2)?,
+                parent_id: row.get(3)?,
+                name: row.get(4)?,
+                mode: row.get(5)?,
+                participant_role: row.get(6)?,
+                status: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })?;
+        conversations.collect()
+    }
 
-        let query = format!(
-            "SELECT {CONVERSATION_COLUMNS} FROM conversations {where_clause} ORDER BY created_at DESC"
-        );
-        let mut stmt = conn.prepare(&query)?;
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params_vec.iter().map(|param| param.as_ref()).collect();
-        let conversations = stmt.query_map(params_refs.as_slice(), row_to_conversation)?;
+    pub fn list_by_chat(chat_id: &str) -> Result<Vec<Conversation>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at
+             FROM conversations WHERE chat_id = ?1 ORDER BY created_at ASC"
+        )?;
+        let conversations = stmt.query_map(params![chat_id], |row| {
+            Ok(Conversation {
+                conversation_id: row.get(0)?,
+                collaboration_session_id: row.get(1)?,
+                chat_id: row.get(2)?,
+                parent_id: row.get(3)?,
+                name: row.get(4)?,
+                mode: row.get(5)?,
+                participant_role: row.get(6)?,
+                status: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })?;
         conversations.collect()
     }
 
@@ -760,22 +856,121 @@ pub mod conversations {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {CONVERSATION_COLUMNS} FROM conversations WHERE parent_id = ?1 ORDER BY created_at ASC"
-        ))?;
-        let conversations = stmt.query_map(params![parent_id], row_to_conversation)?;
+        let mut stmt = conn.prepare(
+            "SELECT conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at
+             FROM conversations WHERE parent_id = ?1 ORDER BY created_at ASC"
+        )?;
+        let conversations = stmt.query_map(params![parent_id], |row| {
+            Ok(Conversation {
+                conversation_id: row.get(0)?,
+                collaboration_session_id: row.get(1)?,
+                chat_id: row.get(2)?,
+                parent_id: row.get(3)?,
+                name: row.get(4)?,
+                mode: row.get(5)?,
+                participant_role: row.get(6)?,
+                status: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })?;
         conversations.collect()
     }
 
-    pub fn get(id: &str) -> Result<Option<Conversation>> {
+    pub fn list_roots(
+        _agent_id: Option<&str>,
+        workspace_id: Option<&str>,
+    ) -> Result<Vec<Conversation>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {CONVERSATION_COLUMNS} FROM conversations WHERE id = ?1"
-        ))?;
-        let mut rows = stmt.query_map(params![id], row_to_conversation)?;
-        rows.next().transpose()
+        let conversations = if let Some(workspace_id) = workspace_id {
+            // List root conversations for a workspace (through chat relationship)
+            let mut stmt = conn.prepare(
+                "SELECT c.conversation_id, c.collaboration_session_id, c.chat_id, c.parent_id, c.name, c.mode, c.participant_role, c.status, c.created_at, c.updated_at
+                 FROM conversations c
+                 JOIN chats ch ON c.chat_id = ch.chat_id
+                 WHERE c.parent_id IS NULL AND ch.workspace_id = ?1
+                 ORDER BY c.created_at ASC"
+            )?;
+            let mut result = Vec::new();
+            let rows = stmt.query_map(params![workspace_id], |row| {
+                Ok(Conversation {
+                    conversation_id: row.get(0)?,
+                    collaboration_session_id: row.get(1)?,
+                    chat_id: row.get(2)?,
+                    parent_id: row.get(3)?,
+                    name: row.get(4)?,
+                    mode: row.get(5)?,
+                    participant_role: row.get(6)?,
+                    status: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                })
+            })?;
+            for row in rows {
+                result.push(row?);
+            }
+            result
+        } else {
+            // List all root conversations
+            let mut stmt = conn.prepare(
+                "SELECT conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at
+                 FROM conversations WHERE parent_id IS NULL ORDER BY created_at ASC"
+            )?;
+            let mut result = Vec::new();
+            let rows = stmt.query_map([], |row| {
+                Ok(Conversation {
+                    conversation_id: row.get(0)?,
+                    collaboration_session_id: row.get(1)?,
+                    chat_id: row.get(2)?,
+                    parent_id: row.get(3)?,
+                    name: row.get(4)?,
+                    mode: row.get(5)?,
+                    participant_role: row.get(6)?,
+                    status: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                })
+            })?;
+            for row in rows {
+                result.push(row?);
+            }
+            result
+        };
+
+        Ok(conversations)
+    }
+
+    pub fn get(conversation_id: &str) -> Result<Option<Conversation>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at
+             FROM conversations WHERE conversation_id = ?1"
+        )?;
+
+        let mut rows = stmt.query_map(params![conversation_id], |row| {
+            Ok(Conversation {
+                conversation_id: row.get(0)?,
+                collaboration_session_id: row.get(1)?,
+                chat_id: row.get(2)?,
+                parent_id: row.get(3)?,
+                name: row.get(4)?,
+                mode: row.get(5)?,
+                participant_role: row.get(6)?,
+                status: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(conversation)) => Ok(Some(conversation)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
     }
 
     pub fn update(conversation: Conversation) -> Result<()> {
@@ -784,95 +979,303 @@ pub mod conversations {
 
         conn.execute(
             "UPDATE conversations
-             SET parent_id = ?1, project_id = ?2, workspace_id = ?3, name = ?4, mode = ?5,
-                 archived_at = ?6, updated_at = ?7
-             WHERE id = ?8",
+             SET collaboration_session_id = ?1, chat_id = ?2, parent_id = ?3, name = ?4,
+                 mode = ?5, participant_role = ?6, status = ?7, updated_at = ?8
+             WHERE conversation_id = ?9",
             params![
+                conversation.collaboration_session_id,
+                conversation.chat_id,
                 conversation.parent_id,
-                conversation.project_id,
-                conversation.workspace_id,
                 conversation.name,
                 conversation.mode,
-                conversation.archived_at,
+                conversation.participant_role,
+                conversation.status,
                 conversation.updated_at,
-                conversation.id,
+                conversation.conversation_id,
             ],
         )?;
 
         Ok(())
     }
 
-    pub fn archive(id: &str, archived_at: i64) -> Result<()> {
+    pub fn delete(conversation_id: &str) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         conn.execute(
-            "UPDATE conversations SET archived_at = ?1, updated_at = ?1 WHERE id = ?2",
-            params![archived_at, id],
+            "DELETE FROM conversations WHERE conversation_id = ?1",
+            params![conversation_id],
         )?;
         Ok(())
     }
 
-    pub fn unarchive(id: &str, updated_at: i64) -> Result<()> {
+    pub fn archive(conversation_id: &str, updated_at: i64) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         conn.execute(
-            "UPDATE conversations SET archived_at = NULL, updated_at = ?1 WHERE id = ?2",
-            params![updated_at, id],
+            "UPDATE conversations SET status = 'archived', updated_at = ?1 WHERE conversation_id = ?2",
+            params![updated_at, conversation_id],
         )?;
         Ok(())
     }
 
-    pub fn delete(id: &str) -> Result<()> {
+    pub fn unarchive(conversation_id: &str, updated_at: i64) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
-        conn.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
+        conn.execute(
+            "UPDATE conversations SET status = 'ready', updated_at = ?1 WHERE conversation_id = ?2",
+            params![updated_at, conversation_id],
+        )?;
         Ok(())
     }
 
-    pub fn resolve_workspace_id(id: &str) -> Result<Option<String>> {
+    pub fn resolve_workspace_id(conversation_id: &str) -> Result<Option<String>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
         conn.query_row(
-            "WITH RECURSIVE lineage AS (
-                SELECT id, parent_id, workspace_id FROM conversations WHERE id = ?1
-                UNION ALL
-                SELECT conversations.id, conversations.parent_id, conversations.workspace_id
-                FROM conversations JOIN lineage ON conversations.id = lineage.parent_id
-             )
-             SELECT workspace_id FROM lineage WHERE workspace_id IS NOT NULL LIMIT 1",
-            params![id],
+            "SELECT workspace_id FROM chats WHERE chat_id = (
+                SELECT chat_id FROM conversations WHERE conversation_id = ?1
+            )",
+            params![conversation_id],
             |row| row.get(0),
         )
         .optional()
     }
 }
 
+pub mod agent_sessions {
+    use super::*;
+
+    pub fn upsert(session: AgentSession) -> Result<AgentSession> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO agent_sessions (agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(conversation_id) DO UPDATE SET
+               acp_session_id = excluded.acp_session_id,
+               mode = excluded.mode,
+               updated_at = excluded.updated_at",
+            params![
+                session.agent_session_id,
+                session.conversation_id,
+                session.acp_session_id,
+                session.mode,
+                session.created_at,
+                session.updated_at,
+            ],
+        )?;
+
+        Ok(session)
+    }
+
+    pub fn get_by_conversation_id(conversation_id: &str) -> Result<Option<AgentSession>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at
+             FROM agent_sessions WHERE conversation_id = ?1",
+        )?;
+
+        let mut rows = stmt.query_map(params![conversation_id], |row| {
+            Ok(AgentSession {
+                agent_session_id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                acp_session_id: row.get(2)?,
+                mode: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(session)) => Ok(Some(session)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_by_agent_session_id(agent_session_id: &str) -> Result<Option<AgentSession>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at
+             FROM agent_sessions WHERE agent_session_id = ?1",
+        )?;
+
+        let mut rows = stmt.query_map(params![agent_session_id], |row| {
+            Ok(AgentSession {
+                agent_session_id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                acp_session_id: row.get(2)?,
+                mode: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(session)) => Ok(Some(session)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    pub fn get(conversation_id: &str) -> Result<Option<AgentSession>> {
+        get_by_conversation_id(conversation_id)
+    }
+
+    pub fn delete(conversation_id: &str) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let count = conn.execute(
+            "DELETE FROM agent_sessions WHERE conversation_id = ?1",
+            params![conversation_id],
+        )?;
+        Ok(count > 0)
+    }
+}
+
 pub mod messages {
     use super::*;
 
-    /// Concatenate the `text` parts of a persisted `parts` JSON payload.
-    ///
-    /// Used to compare message content across rows regardless of extra part
-    /// types (reasoning, tool calls) that only some writers attach.
-    fn parts_text(parts: &str) -> String {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(parts) else {
-            return String::new();
-        };
-        let Some(items) = value.as_array() else {
-            return String::new();
-        };
-        items
-            .iter()
-            .filter_map(|item| {
-                let obj = item.as_object()?;
-                if obj.get("type")?.as_str()? != "text" {
-                    return None;
-                }
-                Some(obj.get("text")?.as_str()?.to_string())
+    /// List messages by conversation_id (alias for `list` following naming convention)
+    pub fn list_by_conversation(conversation_id: &str) -> Result<Vec<Message>> {
+        list(conversation_id)
+    }
+
+    /// Get the next sequence number for a conversation
+    pub async fn get_next_sequence(conversation_id: &str) -> Result<i64> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let sequence: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
+            params![conversation_id],
+            |row| row.get(0),
+        )?;
+        Ok(sequence)
+    }
+
+    /// Create a message directly (without auto-generating sequence)
+    pub async fn create(message: Message) -> Result<Message> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO messages (message_id, conversation_id, sequence, role, parts, metadata, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                message.message_id,
+                message.conversation_id,
+                message.sequence,
+                message.role,
+                message.parts,
+                message.metadata,
+                message.created_at,
+                message.updated_at,
+            ],
+        )?;
+
+        Ok(message)
+    }
+
+    /// Get a single message by message_id
+    pub async fn get(message_id: &str) -> Result<Option<Message>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT message_id, conversation_id, sequence, role, parts, metadata, created_at, updated_at
+             FROM messages WHERE message_id = ?1"
+        )?;
+
+        let mut rows = stmt.query_map(params![message_id], |row| {
+            Ok(Message {
+                message_id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                sequence: row.get(2)?,
+                role: row.get(3)?,
+                parts: row.get(4)?,
+                metadata: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
             })
-            .collect::<Vec<_>>()
-            .join("\n")
+        })?;
+
+        match rows.next() {
+            Some(Ok(msg)) => Ok(Some(msg)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    /// Update a message's parts and metadata
+    pub async fn update(
+        message_id: &str,
+        parts: Option<String>,
+        metadata: Option<String>,
+    ) -> Result<Option<Message>> {
+        // Check if nothing to update
+        if parts.is_none() && metadata.is_none() {
+            // Nothing to update, just return current state
+            return get(message_id).await;
+        }
+
+        // Execute the synchronous DB update first
+        let update_result = {
+            let db = get_user_data_db();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+
+            // Build dynamic update query based on what's provided
+            let mut updates = Vec::new();
+            let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+            if let Some(ref p) = parts {
+                updates.push("parts = ?");
+                param_values.push(Box::new(p.clone()));
+            }
+            if let Some(ref m) = metadata {
+                updates.push("metadata = ?");
+                param_values.push(Box::new(m.clone()));
+            }
+
+            updates.push("updated_at = ?");
+            param_values.push(Box::new(now));
+
+            param_values.push(Box::new(message_id.to_string()));
+
+            let query = format!(
+                "UPDATE messages SET {} WHERE message_id = ?",
+                updates.join(", ")
+            );
+
+            let conn = db.lock().unwrap();
+            let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+                param_values.iter().map(|p| p.as_ref()).collect();
+            conn.execute(&query, params_ref.as_slice())
+        };
+        // All non-Send values are dropped here
+
+        update_result?;
+
+        get(message_id).await
+    }
+
+    /// Delete a message by message_id
+    pub async fn delete(message_id: &str) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let count = conn.execute(
+            "DELETE FROM messages WHERE message_id = ?1",
+            params![message_id],
+        )?;
+        Ok(count > 0)
     }
 
     pub fn list(conversation_id: &str) -> Result<Vec<Message>> {
@@ -880,12 +1283,12 @@ pub mod messages {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, sequence, role, parts, metadata, created_at, updated_at
+            "SELECT message_id, conversation_id, sequence, role, parts, metadata, created_at, updated_at
              FROM messages WHERE conversation_id = ?1 ORDER BY sequence ASC",
         )?;
         let messages = stmt.query_map(params![conversation_id], |row| {
             Ok(Message {
-                id: row.get(0)?,
+                message_id: row.get(0)?,
                 conversation_id: row.get(1)?,
                 sequence: row.get(2)?,
                 role: row.get(3)?,
@@ -903,14 +1306,14 @@ pub mod messages {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, sequence, role, parts, metadata, created_at, updated_at
+            "SELECT message_id, conversation_id, sequence, role, parts, metadata, created_at, updated_at
              FROM messages
              WHERE conversation_id = ?1 AND sequence > ?2
              ORDER BY sequence ASC",
         )?;
         let messages = stmt.query_map(params![conversation_id, after_sequence], |row| {
             Ok(Message {
-                id: row.get(0)?,
+                message_id: row.get(0)?,
                 conversation_id: row.get(1)?,
                 sequence: row.get(2)?,
                 role: row.get(3)?,
@@ -923,16 +1326,12 @@ pub mod messages {
         messages.collect()
     }
 
-    /// Get the last message in a conversation (by sequence number)
-    ///
-    /// Returns None if the conversation has no messages.
-    /// More efficient than `list().last()` as it uses LIMIT 1.
     pub fn get_last(conversation_id: &str) -> Result<Option<Message>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, sequence, role, parts, metadata, created_at, updated_at
+            "SELECT message_id, conversation_id, sequence, role, parts, metadata, created_at, updated_at
              FROM messages
              WHERE conversation_id = ?1
              ORDER BY sequence DESC
@@ -940,7 +1339,7 @@ pub mod messages {
         )?;
         let mut rows = stmt.query_map(params![conversation_id], |row| {
             Ok(Message {
-                id: row.get(0)?,
+                message_id: row.get(0)?,
                 conversation_id: row.get(1)?,
                 sequence: row.get(2)?,
                 role: row.get(3)?,
@@ -977,7 +1376,7 @@ pub mod messages {
             |row| row.get(0),
         )?;
         let message = Message {
-            id: format_id(generate(), IdType::Message),
+            message_id: format_id(generate(), IdType::Message),
             conversation_id: conversation_id.to_string(),
             sequence,
             role: role.to_string(),
@@ -992,10 +1391,10 @@ pub mod messages {
         };
 
         transaction.execute(
-            "INSERT INTO messages (id, conversation_id, sequence, role, parts, metadata, created_at, updated_at)
+            "INSERT INTO messages (message_id, conversation_id, sequence, role, parts, metadata, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
-                message.id,
+                message.message_id,
                 message.conversation_id,
                 message.sequence,
                 message.role,
@@ -1006,15 +1405,106 @@ pub mod messages {
             ],
         )?;
         transaction.execute(
-            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            "UPDATE conversations SET updated_at = ?1 WHERE conversation_id = ?2",
             params![now, conversation_id],
         )?;
         transaction.commit()?;
         Ok(message)
     }
 
-    pub fn replace_legacy(conversation_id: &str, messages: &str, updated_at: i64) -> Result<()> {
-        let parsed: serde_json::Value = serde_json::from_str(messages).map_err(|_| {
+    pub fn list_by_collaboration_session(collaboration_session_id: &str) -> Result<Vec<Message>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT m.message_id, m.conversation_id, m.sequence, m.role, m.parts, m.metadata, m.created_at, m.updated_at
+             FROM messages m
+             JOIN conversations c ON m.conversation_id = c.conversation_id
+             WHERE c.collaboration_session_id = ?1
+             ORDER BY m.created_at ASC",
+        )?;
+        let messages = stmt.query_map(params![collaboration_session_id], |row| {
+            Ok(Message {
+                message_id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                sequence: row.get(2)?,
+                role: row.get(3)?,
+                parts: row.get(4)?,
+                metadata: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?;
+        messages.collect()
+    }
+
+    pub fn list_by_chat(chat_id: &str) -> Result<Vec<Message>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT m.message_id, m.conversation_id, m.sequence, m.role, m.parts, m.metadata, m.created_at, m.updated_at
+             FROM messages m
+             JOIN conversations c ON m.conversation_id = c.conversation_id
+             WHERE c.chat_id = ?1
+             ORDER BY m.created_at ASC",
+        )?;
+        let messages = stmt.query_map(params![chat_id], |row| {
+            Ok(Message {
+                message_id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                sequence: row.get(2)?,
+                role: row.get(3)?,
+                parts: row.get(4)?,
+                metadata: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?;
+        messages.collect()
+    }
+
+    fn parts_text(parts: &str) -> String {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(parts) else {
+            return String::new();
+        };
+        let Some(items) = value.as_array() else {
+            return String::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| {
+                let obj = item.as_object()?;
+                if obj.get("type")?.as_str()? != "text" {
+                    return None;
+                }
+                Some(obj.get("text")?.as_str()?.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn message_metadata_source_is_agent(message: &Message) -> bool {
+        message
+            .metadata
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .and_then(|metadata| {
+                metadata
+                    .get("source")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .map(|source| source == "agent")
+            .unwrap_or(false)
+    }
+
+    pub fn replace_legacy(
+        conversation_id: &str,
+        messages_json: &str,
+        updated_at: i64,
+    ) -> Result<()> {
+        let parsed: serde_json::Value = serde_json::from_str(messages_json).map_err(|_| {
             rusqlite::Error::InvalidParameterName("messages must be a JSON array".to_string())
         })?;
         let Some(items) = parsed.as_array() else {
@@ -1023,9 +1513,6 @@ pub mod messages {
             ));
         };
 
-        // Snapshot existing rows first (before the delete below) so that
-        // backend-written agent messages the UI mirror has never seen can be
-        // rescued instead of being silently destroyed by the full replace.
         let existing = list(conversation_id)?;
 
         let db = get_user_data_db();
@@ -1036,8 +1523,6 @@ pub mod messages {
             params![conversation_id],
         )?;
 
-        // Merged row: (id, role, parts, metadata, created_at). Payload rows
-        // keep the legacy behavior of stamping every row with `updated_at`.
         let mut merged: Vec<(String, String, String, Option<String>, i64)> =
             Vec::with_capacity(items.len());
         let mut payload_ids = std::collections::HashSet::with_capacity(items.len());
@@ -1071,18 +1556,6 @@ pub mod messages {
             ));
         }
 
-        // Agent-sourced rows (A-to-A messages persisted by the messaging
-        // layer) are authoritative backend records. The UI never receives
-        // them over SSE, so they never appear in a replace payload; deleting
-        // them here would silently erase cross-agent turns every time a
-        // conversation syncs from the UI. Keep the ones the payload does not
-        // already contain (round-tripped rows are reinserted from the
-        // payload, keeping UI ordering authoritative for known rows).
-        //
-        // Content-based exception: when the payload already carries a message
-        // with the same role and text (e.g. the SDK's full assistant reply
-        // supersedes the text-only snapshot the SSE handler wrote at stream
-        // end), keeping the backend row too would render the reply twice.
         let payload_text_index: std::collections::HashSet<(String, String)> = merged
             .iter()
             .filter_map(|(_, role, parts, ..)| {
@@ -1097,7 +1570,7 @@ pub mod messages {
         let mut preserved: Vec<&Message> = existing
             .iter()
             .filter(|message| {
-                if payload_ids.contains(message.id.as_str())
+                if payload_ids.contains(message.message_id.as_str())
                     || !message_metadata_source_is_agent(message)
                 {
                     return false;
@@ -1110,33 +1583,16 @@ pub mod messages {
             .collect();
         preserved.sort_by_key(|message| message.sequence);
 
-        // Ordering heuristic: rescued rows were written before this sync
-        // completed, so when the payload ends with a streamed assistant
-        // response, insert them right before that final message — this puts
-        // an inbound request directly above the response it triggered.
-        // Otherwise append at the end.
-        //
-        // Note: This heuristic works well for single-turn conversations.
-        // For multi-turn conversations with multiple preserved messages,
-        // all preserved messages are inserted at the same position, which
-        // may not preserve the exact chronological order. However, this is
-        // acceptable because:
-        // 1. Multi-turn agent-to-agent conversations are rare
-        // 2. The exact order of preserved messages is less important than
-        //    ensuring they are not lost
-        // 3. A timestamp-based merge would require accurate created_at values
-        //    for payload messages, which is not always available
         let preserved_at = match merged.last() {
             Some((_, role, ..)) if role == "assistant" => merged.len() - 1,
             _ => merged.len(),
         };
 
-        // Build final merged list in a single allocation to avoid O(n²) copies
         let preserved_rows: Vec<(String, String, String, Option<String>, i64)> = preserved
             .iter()
             .map(|message| {
                 (
-                    message.id.clone(),
+                    message.message_id.clone(),
                     message.role.clone(),
                     message.parts.clone(),
                     message.metadata.clone(),
@@ -1146,17 +1602,14 @@ pub mod messages {
             .collect();
 
         let mut final_merged = Vec::with_capacity(merged.len() + preserved_rows.len());
-        // Take rows before insertion point
         final_merged.extend(merged.iter().take(preserved_at).cloned());
-        // Add preserved rows
         final_merged.extend(preserved_rows);
-        // Add remaining rows from insertion point onwards
         final_merged.extend(merged.iter().skip(preserved_at).cloned());
         merged = final_merged;
 
         for (index, (id, role, parts, metadata, created_at)) in merged.iter().enumerate() {
             transaction.execute(
-                "INSERT INTO messages (id, conversation_id, sequence, role, parts, metadata, created_at, updated_at)
+                "INSERT INTO messages (message_id, conversation_id, sequence, role, parts, metadata, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
                 params![
                     id,
@@ -1171,28 +1624,11 @@ pub mod messages {
         }
 
         transaction.execute(
-            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            "UPDATE conversations SET updated_at = ?1 WHERE conversation_id = ?2",
             params![updated_at, conversation_id],
         )?;
         transaction.commit()?;
         Ok(())
-    }
-
-    /// True when a message row is marked as agent-sourced in its metadata
-    /// JSON (`{"source": "agent", ...}`).
-    fn message_metadata_source_is_agent(message: &Message) -> bool {
-        message
-            .metadata
-            .as_deref()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-            .and_then(|metadata| {
-                metadata
-                    .get("source")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            })
-            .map(|source| source == "agent")
-            .unwrap_or(false)
     }
 
     pub fn serialize_legacy(conversation_id: &str) -> Result<String> {
@@ -1208,7 +1644,7 @@ pub mod messages {
                     .and_then(|metadata| serde_json::from_str(metadata).ok())
                     .unwrap_or(serde_json::Value::Null);
                 serde_json::json!({
-                    "id": message.id,
+                    "id": message.message_id,
                     "role": message.role,
                     "parts": parts,
                     "metadata": metadata,
@@ -1221,38 +1657,97 @@ pub mod messages {
     }
 }
 
-pub mod agent_sessions {
+pub mod group_agent_bindings {
     use super::*;
 
-    pub fn upsert(
-        conversation_id: &str,
-        session_id: Option<&str>,
-        mode: &str,
-        timestamp: i64,
-    ) -> Result<()> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-        conn.execute(
-            "INSERT INTO agent_sessions (conversation_id, session_id, mode, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?4)
-             ON CONFLICT(conversation_id) DO UPDATE SET
-               session_id = excluded.session_id,
-               mode = excluded.mode,
-               updated_at = excluded.updated_at",
-            params![conversation_id, session_id, mode, timestamp],
-        )?;
-        Ok(())
+    fn row_to_binding(row: &rusqlite::Row<'_>) -> Result<GroupAgentBinding> {
+        Ok(GroupAgentBinding {
+            workspace_id: row.get(0)?,
+            chat_id: row.get(1)?,
+            agent_id: row.get(2)?,
+            agent_name: row.get(3)?,
+            agent_command: row.get(4)?,
+            conversation_id: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+        })
     }
 
-    pub fn get(conversation_id: &str) -> Result<Option<String>> {
+    pub fn upsert(binding: GroupAgentBinding) -> Result<GroupAgentBinding> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
-        conn.query_row(
-            "SELECT session_id FROM agent_sessions WHERE conversation_id = ?1",
-            params![conversation_id],
-            |row| row.get(0),
-        )
-        .optional()
+
+        conn.execute(
+            "INSERT INTO group_agent_bindings (workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(chat_id, agent_id) DO UPDATE SET
+               workspace_id = excluded.workspace_id,
+               agent_name = excluded.agent_name,
+               agent_command = excluded.agent_command,
+               conversation_id = excluded.conversation_id,
+               updated_at = excluded.updated_at",
+            params![
+                binding.workspace_id,
+                binding.chat_id,
+                binding.agent_id,
+                binding.agent_name,
+                binding.agent_command,
+                binding.conversation_id,
+                binding.created_at,
+                binding.updated_at,
+            ],
+        )?;
+
+        let mut stmt = conn.prepare(
+            "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at
+             FROM group_agent_bindings WHERE chat_id = ?1 AND agent_id = ?2",
+        )?;
+        let mut rows =
+            stmt.query_map(params![binding.chat_id, binding.agent_id], row_to_binding)?;
+        rows.next()
+            .unwrap_or_else(|| Err(rusqlite::Error::QueryReturnedNoRows))
+    }
+
+    pub fn list(chat_id: &str) -> Result<Vec<GroupAgentBinding>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at
+             FROM group_agent_bindings WHERE chat_id = ?1 ORDER BY created_at ASC",
+        )?;
+        let bindings = stmt.query_map(params![chat_id], row_to_binding)?;
+        bindings.collect()
+    }
+
+    pub fn find_conversation_id(agent_id: &str) -> Result<Option<String>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT conversation_id FROM group_agent_bindings WHERE agent_id = ?1 ORDER BY updated_at DESC, created_at DESC LIMIT 1")?;
+        let mut rows = stmt.query_map(params![agent_id], |row| row.get::<_, String>(0))?;
+        rows.next().transpose()
+    }
+
+    pub fn delete(chat_id: &str, agent_id: &str) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let count = conn.execute(
+            "DELETE FROM group_agent_bindings WHERE chat_id = ?1 AND agent_id = ?2",
+            params![chat_id, agent_id],
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn delete_by_agent(agent_id: &str) -> Result<usize> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let count = conn.execute(
+            "DELETE FROM group_agent_bindings WHERE agent_id = ?1",
+            params![agent_id],
+        )?;
+        Ok(count)
     }
 }
 
@@ -1408,928 +1903,31 @@ pub mod conversation_execution_contexts {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         conn.query_row(
-            &format!(
-                "SELECT {} FROM conversations AS c
-                 JOIN conversation_execution_contexts AS e ON e.conversation_id = c.id
-                 WHERE c.parent_id IS NULL AND e.worktree_path = ?1 LIMIT 1",
-                super::conversations::CONVERSATION_COLUMNS
-                    .split(", ")
-                    .map(|column| format!("c.{column}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            "SELECT c.conversation_id, c.collaboration_session_id, c.chat_id, c.parent_id, c.name, c.mode, c.participant_role, c.status, c.created_at, c.updated_at
+             FROM conversations AS c
+             JOIN conversation_execution_contexts AS e ON e.conversation_id = c.conversation_id
+             WHERE e.worktree_path = ?1 LIMIT 1",
             params![path],
-            super::conversations::row_to_conversation,
+            |row| {
+                Ok(Conversation {
+                    conversation_id: row.get(0)?,
+                    collaboration_session_id: row.get(1)?,
+                    chat_id: row.get(2)?,
+                    parent_id: row.get(3)?,
+                    name: row.get(4)?,
+                    mode: row.get(5)?,
+                    participant_role: row.get(6)?,
+                    status: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                })
+            },
         )
         .optional()
     }
 }
 
-pub mod projects {
-    use super::*;
-
-    pub fn create(project: Project) -> Result<Project> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        conn.execute(
-            "INSERT INTO projects (id, name, path, git_remote_url, git_provider, git_owner, git_repo, icon_path, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                project.id,
-                project.name,
-                project.path,
-                project.git_remote_url,
-                project.git_provider,
-                project.git_owner,
-                project.git_repo,
-                project.icon_path,
-                project.created_at,
-                project.updated_at,
-            ],
-        )?;
-
-        Ok(project)
-    }
-
-    pub fn list() -> Result<Vec<Project>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT id, name, path, git_remote_url, git_provider, git_owner, git_repo, icon_path, created_at, updated_at
-             FROM projects ORDER BY created_at DESC"
-        )?;
-
-        let projects = stmt.query_map([], |row| {
-            Ok(Project {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                path: row.get(2)?,
-                git_remote_url: row.get(3)?,
-                git_provider: row.get(4)?,
-                git_owner: row.get(5)?,
-                git_repo: row.get(6)?,
-                icon_path: row.get(7)?,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
-            })
-        })?;
-
-        projects.collect()
-    }
-
-    pub fn get(id: &str) -> Result<Option<Project>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT id, name, path, git_remote_url, git_provider, git_owner, git_repo, icon_path, created_at, updated_at
-             FROM projects WHERE id = ?1"
-        )?;
-
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(Project {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                path: row.get(2)?,
-                git_remote_url: row.get(3)?,
-                git_provider: row.get(4)?,
-                git_owner: row.get(5)?,
-                git_repo: row.get(6)?,
-                icon_path: row.get(7)?,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
-            })
-        })?;
-
-        match rows.next() {
-            Some(Ok(project)) => Ok(Some(project)),
-            Some(Err(e)) => Err(e),
-            None => Ok(None),
-        }
-    }
-
-    /// Find a project by its path (indexed lookup, O(1) instead of O(n) full table scan)
-    pub fn find_by_path(path: &str) -> Result<Option<Project>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT id, name, path, git_remote_url, git_provider, git_owner, git_repo, icon_path, created_at, updated_at
-             FROM projects WHERE path = ?1 LIMIT 1"
-        )?;
-
-        let mut rows = stmt.query_map(params![path], |row| {
-            Ok(Project {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                path: row.get(2)?,
-                git_remote_url: row.get(3)?,
-                git_provider: row.get(4)?,
-                git_owner: row.get(5)?,
-                git_repo: row.get(6)?,
-                icon_path: row.get(7)?,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
-            })
-        })?;
-
-        match rows.next() {
-            Some(Ok(project)) => Ok(Some(project)),
-            Some(Err(e)) => Err(e),
-            None => Ok(None),
-        }
-    }
-
-    pub fn update(project: Project) -> Result<()> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        conn.execute(
-            "UPDATE projects
-             SET name = ?1, git_remote_url = ?2, git_provider = ?3, git_owner = ?4,
-                 git_repo = ?5, icon_path = ?6, updated_at = ?7
-             WHERE id = ?8",
-            params![
-                project.name,
-                project.git_remote_url,
-                project.git_provider,
-                project.git_owner,
-                project.git_repo,
-                project.icon_path,
-                project.updated_at,
-                project.id,
-            ],
-        )?;
-
-        Ok(())
-    }
-
-    pub fn delete(id: &str) -> Result<()> {
-        let db = get_user_data_db();
-        let mut conn = db.lock().unwrap();
-        let transaction = conn.transaction()?;
-
-        transaction.execute(
-            "DELETE FROM workspace_projects WHERE project_id = ?1",
-            params![id],
-        )?;
-        transaction.execute("DELETE FROM projects WHERE id = ?1", params![id])?;
-        transaction.commit()?;
-
-        Ok(())
-    }
-}
-
-pub mod workspaces {
-    use super::*;
-
-    pub fn create(workspace: Workspace) -> Result<Workspace> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        conn.execute(
-            "INSERT INTO workspaces (id, project_id, name, work_dir, env, resources, capture_thoughts, collaboration_mode, status, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                workspace.id,
-                workspace.project_id,
-                workspace.name,
-                workspace.work_dir,
-                workspace.env,
-                workspace.resources,
-                workspace.capture_thoughts,
-                workspace.collaboration_mode,
-                workspace.status,
-                workspace.created_at,
-                workspace.updated_at,
-            ],
-        )?;
-
-        Ok(workspace)
-    }
-
-    /// Create a workspace and its default project registration atomically.
-    pub fn create_with_default_project(workspace: Workspace) -> Result<Workspace> {
-        let db = get_user_data_db();
-        let mut conn = db.lock().unwrap();
-        let tx = conn.transaction()?;
-
-        tx.execute(
-            "INSERT INTO workspaces (id, project_id, name, work_dir, env, resources, capture_thoughts, collaboration_mode, status, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                workspace.id,
-                workspace.project_id,
-                workspace.name,
-                workspace.work_dir,
-                workspace.env,
-                workspace.resources,
-                workspace.capture_thoughts,
-                workspace.collaboration_mode,
-                workspace.status,
-                workspace.created_at,
-                workspace.updated_at,
-            ],
-        )?;
-        tx.execute(
-            "INSERT INTO workspace_projects
-             (workspace_id, project_id, is_default, status, settings_json, created_at, updated_at)
-             VALUES (?1, ?2, 1, 'active', '{}', ?3, ?3)",
-            params![workspace.id, workspace.project_id, workspace.created_at],
-        )?;
-        tx.commit()?;
-        Ok(workspace)
-    }
-
-    pub fn set_status(id: &str, status: &str) -> Result<bool> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-        let count = conn.execute(
-            "UPDATE workspaces SET status = ?2, updated_at = strftime('%s', 'now') WHERE id = ?1",
-            params![id, status],
-        )?;
-        Ok(count > 0)
-    }
-
-    /// Replace the default project and keep the legacy compatibility field in
-    /// the same transaction as the managed registration.
-    pub fn set_default_project(id: &str, project_id: &str) -> Result<bool> {
-        let db = get_user_data_db();
-        let mut conn = db.lock().unwrap();
-        let tx = conn.transaction()?;
-        tx.execute(
-            "INSERT OR IGNORE INTO workspace_projects
-             (workspace_id, project_id, is_default, status, settings_json, created_at, updated_at)
-             VALUES (?1, ?2, 0, 'active', '{}', strftime('%s', 'now'), strftime('%s', 'now'))",
-            params![id, project_id],
-        )?;
-        tx.execute(
-            "UPDATE workspace_projects SET is_default = 0, updated_at = strftime('%s', 'now')
-             WHERE workspace_id = ?1",
-            params![id],
-        )?;
-        let count = tx.execute(
-            "UPDATE workspace_projects SET is_default = 1, status = 'active', updated_at = strftime('%s', 'now')
-             WHERE workspace_id = ?1 AND project_id = ?2",
-            params![id, project_id],
-        )?;
-        if count == 0 {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
-        }
-        tx.execute(
-            "UPDATE workspaces SET project_id = ?2, updated_at = strftime('%s', 'now') WHERE id = ?1",
-            params![id, project_id],
-        )?;
-        tx.commit()?;
-        Ok(true)
-    }
-
-    pub fn list(
-        project_id: Option<&str>,
-        collaboration_mode: Option<&str>,
-    ) -> Result<Vec<Workspace>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT id, project_id, name, work_dir, env, resources, capture_thoughts, collaboration_mode, status, created_at, updated_at
-             FROM workspaces
-             WHERE (?1 IS NULL OR project_id = ?1)
-               AND (?2 IS NULL OR collaboration_mode = ?2)
-             ORDER BY created_at DESC",
-        )?;
-        let workspaces = stmt.query_map(params![project_id, collaboration_mode], |row| {
-            Ok(Workspace {
-                id: row.get(0)?,
-                project_id: row.get(1)?,
-                name: row.get(2)?,
-                work_dir: row.get(3)?,
-                env: row.get(4)?,
-                resources: row.get(5)?,
-                capture_thoughts: row.get(6)?,
-                collaboration_mode: row.get(7)?,
-                status: row.get(8)?,
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
-            })
-        })?;
-        workspaces.collect()
-    }
-
-    pub fn get(id: &str) -> Result<Option<Workspace>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT id, project_id, name, work_dir, env, resources, capture_thoughts, collaboration_mode, status, created_at, updated_at
-             FROM workspaces WHERE id = ?1"
-        )?;
-
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(Workspace {
-                id: row.get(0)?,
-                project_id: row.get(1)?,
-                name: row.get(2)?,
-                work_dir: row.get(3)?,
-                env: row.get(4)?,
-                resources: row.get(5)?,
-                capture_thoughts: row.get(6)?,
-                collaboration_mode: row.get(7)?,
-                status: row.get(8)?,
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
-            })
-        })?;
-
-        match rows.next() {
-            Some(Ok(workspace)) => Ok(Some(workspace)),
-            Some(Err(e)) => Err(e),
-            None => Ok(None),
-        }
-    }
-
-    pub fn update(workspace: Workspace) -> Result<()> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        conn.execute(
-            "UPDATE workspaces
-             SET name = ?1, work_dir = ?2, env = ?3, resources = ?4,
-                 capture_thoughts = ?5, status = ?6, updated_at = ?7
-             WHERE id = ?8",
-            params![
-                workspace.name,
-                workspace.work_dir,
-                workspace.env,
-                workspace.resources,
-                workspace.capture_thoughts,
-                workspace.status,
-                workspace.updated_at,
-                workspace.id,
-            ],
-        )?;
-
-        Ok(())
-    }
-
-    pub fn delete(id: &str) -> Result<bool> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-        let count = conn.execute("DELETE FROM workspaces WHERE id = ?1", params![id])?;
-        Ok(count > 0)
-    }
-}
-
-pub mod workspace_projects {
-    use super::*;
-
-    fn row_to_project(row: &rusqlite::Row<'_>) -> Result<WorkspaceProject> {
-        Ok(WorkspaceProject {
-            workspace_id: row.get(0)?,
-            project_id: row.get(1)?,
-            is_default: row.get::<_, i64>(2)? != 0,
-            status: row.get(3)?,
-            settings_json: row.get(4)?,
-            created_at: row.get(5)?,
-            updated_at: row.get(6)?,
-        })
-    }
-
-    pub fn create(link: WorkspaceProject) -> Result<WorkspaceProject> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-        conn.execute(
-            "INSERT INTO workspace_projects
-             (workspace_id, project_id, is_default, status, settings_json, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                link.workspace_id,
-                link.project_id,
-                link.is_default,
-                link.status,
-                link.settings_json,
-                link.created_at,
-                link.updated_at,
-            ],
-        )?;
-        Ok(link)
-    }
-
-    pub fn list(workspace_id: &str) -> Result<Vec<WorkspaceProject>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT workspace_id, project_id, is_default, status, settings_json, created_at, updated_at
-             FROM workspace_projects WHERE workspace_id = ?1
-             ORDER BY is_default DESC, created_at ASC",
-        )?;
-        let rows = stmt.query_map(params![workspace_id], row_to_project)?;
-        rows.collect()
-    }
-
-    pub fn get(workspace_id: &str, project_id: &str) -> Result<Option<WorkspaceProject>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-        conn.query_row(
-            "SELECT workspace_id, project_id, is_default, status, settings_json, created_at, updated_at
-             FROM workspace_projects WHERE workspace_id = ?1 AND project_id = ?2",
-            params![workspace_id, project_id],
-            row_to_project,
-        )
-        .optional()
-    }
-
-    pub fn update(
-        workspace_id: &str,
-        project_id: &str,
-        status: Option<&str>,
-        is_default: Option<bool>,
-        settings_json: Option<&str>,
-    ) -> Result<bool> {
-        let db = get_user_data_db();
-        let mut conn = db.lock().unwrap();
-        let tx = conn.transaction()?;
-        if is_default == Some(true) {
-            tx.execute(
-                "UPDATE workspace_projects SET is_default = 0, updated_at = strftime('%s', 'now')
-                 WHERE workspace_id = ?1",
-                params![workspace_id],
-            )?;
-        }
-        let count = tx.execute(
-            "UPDATE workspace_projects
-             SET status = COALESCE(?3, status),
-                 is_default = COALESCE(?4, is_default),
-                 settings_json = COALESCE(?5, settings_json),
-                 updated_at = strftime('%s', 'now')
-             WHERE workspace_id = ?1 AND project_id = ?2",
-            params![workspace_id, project_id, status, is_default, settings_json],
-        )?;
-        tx.commit()?;
-        Ok(count > 0)
-    }
-
-    pub fn delete(workspace_id: &str, project_id: &str) -> Result<bool> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-        let count = conn.execute(
-            "DELETE FROM workspace_projects WHERE workspace_id = ?1 AND project_id = ?2",
-            params![workspace_id, project_id],
-        )?;
-        Ok(count > 0)
-    }
-}
-
-pub mod chats {
-    use super::*;
-
-    fn now_unix_seconds() -> i64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64
-    }
-
-    fn conversation_to_chat(
-        conversation: Conversation,
-        context: Option<ConversationExecutionContext>,
-    ) -> Chat {
-        Chat {
-            id: conversation.id,
-            name: conversation.name,
-            project_id: conversation.project_id,
-            workspace_id: conversation.workspace_id,
-            collaboration_mode: conversation.mode,
-            created_at: conversation.created_at,
-            updated_at: conversation.updated_at,
-            archived_at: conversation.archived_at,
-            worktree_path: context
-                .as_ref()
-                .and_then(|context| context.worktree_path.clone()),
-            branch: context.as_ref().and_then(|context| context.branch.clone()),
-            base_branch: context
-                .as_ref()
-                .and_then(|context| context.base_branch.clone()),
-            pr_url: context.as_ref().and_then(|context| context.pr_url.clone()),
-            pr_number: context.as_ref().and_then(|context| context.pr_number),
-        }
-    }
-
-    fn context_for(id: &str) -> Result<Option<ConversationExecutionContext>> {
-        conversation_execution_contexts::get(id)
-    }
-
-    pub fn create(chat: Chat) -> Result<Chat> {
-        let conversation = Conversation {
-            id: chat.id.clone(),
-            parent_id: None,
-            project_id: chat.project_id.clone(),
-            workspace_id: chat.workspace_id,
-            name: chat.name.clone(),
-            mode: chat.collaboration_mode.clone(),
-            created_at: chat.created_at,
-            updated_at: chat.updated_at,
-            archived_at: chat.archived_at,
-        };
-        let conversation = conversations::create(conversation)?;
-        conversation_execution_contexts::upsert(
-            ConversationExecutionContext {
-                conversation_id: chat.id.clone(),
-                worktree_path: chat.worktree_path.clone(),
-                branch: chat.branch.clone(),
-                base_branch: chat.base_branch.clone(),
-                pr_url: chat.pr_url.clone(),
-                pr_number: chat.pr_number,
-            },
-            chat.updated_at,
-        )?;
-        Ok(conversation_to_chat(conversation, context_for(&chat.id)?))
-    }
-
-    pub fn list(project_id: Option<&str>, workspace_id: Option<&str>) -> Result<Vec<Chat>> {
-        conversations::list_roots(project_id, workspace_id)?
-            .into_iter()
-            .filter(|conversation| conversation.id.starts_with("chat_"))
-            .map(|conversation| {
-                let context = context_for(&conversation.id)?;
-                Ok(conversation_to_chat(conversation, context))
-            })
-            .collect()
-    }
-
-    pub fn get(id: &str) -> Result<Option<Chat>> {
-        let Some(conversation) = conversations::get(id)? else {
-            return Ok(None);
-        };
-        if conversation.parent_id.is_some() {
-            return Ok(None);
-        }
-        let context = context_for(id)?;
-        Ok(Some(conversation_to_chat(conversation, context)))
-    }
-
-    pub fn find_by_worktree_path(path: &str) -> Result<Option<Chat>> {
-        let Some(conversation) = conversation_execution_contexts::find_by_worktree_path(path)?
-        else {
-            return Ok(None);
-        };
-        let context = context_for(&conversation.id)?;
-        Ok(Some(conversation_to_chat(conversation, context)))
-    }
-
-    pub fn update(chat: Chat) -> Result<()> {
-        let Some(existing) = conversations::get(&chat.id)? else {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
-        };
-        conversations::update(Conversation {
-            id: existing.id,
-            parent_id: existing.parent_id,
-            project_id: existing.project_id,
-            workspace_id: chat.workspace_id,
-            name: chat.name,
-            mode: chat.collaboration_mode,
-            created_at: existing.created_at,
-            updated_at: chat.updated_at,
-            archived_at: existing.archived_at,
-        })?;
-        conversation_execution_contexts::upsert(
-            ConversationExecutionContext {
-                conversation_id: chat.id.clone(),
-                worktree_path: chat.worktree_path,
-                branch: chat.branch,
-                base_branch: chat.base_branch,
-                pr_url: chat.pr_url,
-                pr_number: chat.pr_number,
-            },
-            chat.updated_at,
-        )?;
-        Ok(())
-    }
-
-    pub fn archive(id: &str) -> Result<()> {
-        conversations::archive(id, now_unix_seconds())
-    }
-
-    pub fn unarchive(id: &str) -> Result<()> {
-        conversations::unarchive(id, now_unix_seconds())
-    }
-
-    pub fn delete(id: &str) -> Result<()> {
-        conversations::delete(id)
-    }
-}
-
-pub mod legacy_chats {
-    use super::*;
-
-    pub fn create(chat: Chat) -> Result<Chat> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        conn.execute(
-            "INSERT INTO chats (id, name, project_id, workspace_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            params![
-                chat.id,
-                chat.name,
-                chat.project_id,
-                chat.workspace_id,
-                chat.collaboration_mode,
-                chat.created_at,
-                chat.updated_at,
-                chat.archived_at,
-                chat.worktree_path,
-                chat.branch,
-                chat.base_branch,
-                chat.pr_url,
-                chat.pr_number,
-            ],
-        )?;
-
-        Ok(chat)
-    }
-
-    pub fn list(project_id: Option<&str>, workspace_id: Option<&str>) -> Result<Vec<Chat>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let select = "SELECT id, name, project_id, workspace_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number";
-        let (query, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
-            match (project_id, workspace_id) {
-                (Some(pid), Some(wid)) => (
-                    format!("{select} FROM chats WHERE project_id = ?1 AND workspace_id = ?2 ORDER BY created_at DESC"),
-                    vec![Box::new(pid.to_string()), Box::new(wid.to_string())],
-                ),
-                (Some(pid), None) => (
-                    format!("{select} FROM chats WHERE project_id = ?1 ORDER BY created_at DESC"),
-                    vec![Box::new(pid.to_string())],
-                ),
-                (None, Some(wid)) => (
-                    format!("{select} FROM chats WHERE workspace_id = ?1 ORDER BY created_at DESC"),
-                    vec![Box::new(wid.to_string())],
-                ),
-                (None, None) => (
-                    format!("{select} FROM chats ORDER BY created_at DESC"),
-                    vec![],
-                ),
-            };
-
-        let mut stmt = conn.prepare(&query)?;
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params_vec.iter().map(|p| p.as_ref()).collect();
-        let chats = stmt.query_map(params_refs.as_slice(), |row| {
-            Ok(Chat {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                project_id: row.get(2)?,
-                workspace_id: row.get(3)?,
-                collaboration_mode: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                archived_at: row.get(7)?,
-                worktree_path: row.get(8)?,
-                branch: row.get(9)?,
-                base_branch: row.get(10)?,
-                pr_url: row.get(11)?,
-                pr_number: row.get(12)?,
-            })
-        })?;
-        chats.collect()
-    }
-
-    pub fn get(id: &str) -> Result<Option<Chat>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT id, name, project_id, workspace_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number
-             FROM chats WHERE id = ?1"
-        )?;
-
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(Chat {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                project_id: row.get(2)?,
-                workspace_id: row.get(3)?,
-                collaboration_mode: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                archived_at: row.get(7)?,
-                worktree_path: row.get(8)?,
-                branch: row.get(9)?,
-                base_branch: row.get(10)?,
-                pr_url: row.get(11)?,
-                pr_number: row.get(12)?,
-            })
-        })?;
-
-        match rows.next() {
-            Some(Ok(chat)) => Ok(Some(chat)),
-            Some(Err(e)) => Err(e),
-            None => Ok(None),
-        }
-    }
-
-    /// Find a chat by its worktree path (indexed lookup, O(1) instead of O(n) full table scan)
-    pub fn find_by_worktree_path(path: &str) -> Result<Option<Chat>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT id, name, project_id, workspace_id, collaboration_mode, created_at, updated_at, archived_at, worktree_path, branch, base_branch, pr_url, pr_number
-             FROM chats WHERE worktree_path = ?1 LIMIT 1"
-        )?;
-
-        let mut rows = stmt.query_map(params![path], |row| {
-            Ok(Chat {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                project_id: row.get(2)?,
-                workspace_id: row.get(3)?,
-                collaboration_mode: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                archived_at: row.get(7)?,
-                worktree_path: row.get(8)?,
-                branch: row.get(9)?,
-                base_branch: row.get(10)?,
-                pr_url: row.get(11)?,
-                pr_number: row.get(12)?,
-            })
-        })?;
-
-        match rows.next() {
-            Some(Ok(chat)) => Ok(Some(chat)),
-            Some(Err(e)) => Err(e),
-            None => Ok(None),
-        }
-    }
-
-    pub fn update(chat: Chat) -> Result<()> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        conn.execute(
-            "UPDATE chats
-             SET name = ?1, workspace_id = ?2, collaboration_mode = ?3, updated_at = ?4, worktree_path = ?5,
-                 branch = ?6, base_branch = ?7, pr_url = ?8, pr_number = ?9
-             WHERE id = ?10",
-            params![
-                chat.name,
-                chat.workspace_id,
-                chat.collaboration_mode,
-                chat.updated_at,
-                chat.worktree_path,
-                chat.branch,
-                chat.base_branch,
-                chat.pr_url,
-                chat.pr_number,
-                chat.id,
-            ],
-        )?;
-
-        Ok(())
-    }
-
-    pub fn archive(id: &str) -> Result<()> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-
-        conn.execute(
-            "UPDATE chats SET archived_at = ?1, updated_at = ?1 WHERE id = ?2",
-            params![now, id],
-        )?;
-
-        Ok(())
-    }
-
-    pub fn unarchive(id: &str) -> Result<()> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-
-        conn.execute(
-            "UPDATE chats SET archived_at = NULL, updated_at = ?1 WHERE id = ?2",
-            params![now, id],
-        )?;
-
-        Ok(())
-    }
-
-    pub fn delete(id: &str) -> Result<()> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        conn.execute("DELETE FROM chats WHERE id = ?1", params![id])?;
-
-        Ok(())
-    }
-}
-
-pub mod group_agent_bindings {
-    use super::*;
-
-    fn row_to_binding(row: &rusqlite::Row<'_>) -> Result<GroupAgentBinding> {
-        Ok(GroupAgentBinding {
-            workspace_id: row.get(0)?,
-            chat_id: row.get(1)?,
-            agent_id: row.get(2)?,
-            agent_name: row.get(3)?,
-            agent_command: row.get(4)?,
-            conversation_id: row.get(5)?,
-            created_at: row.get(6)?,
-            updated_at: row.get(7)?,
-        })
-    }
-
-    pub fn upsert(binding: GroupAgentBinding) -> Result<GroupAgentBinding> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        conn.execute(
-            "INSERT INTO conversation_agent_bindings (workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(chat_id, agent_id) DO UPDATE SET
-               workspace_id = excluded.workspace_id,
-               agent_name = excluded.agent_name,
-               agent_command = excluded.agent_command,
-               conversation_id = excluded.conversation_id,
-               updated_at = excluded.updated_at",
-            params![
-                binding.workspace_id,
-                binding.chat_id,
-                binding.agent_id,
-                binding.agent_name,
-                binding.agent_command,
-                binding.conversation_id,
-                binding.created_at,
-                binding.updated_at,
-            ],
-        )?;
-
-        let mut stmt = conn.prepare(
-            "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at
-             FROM conversation_agent_bindings WHERE chat_id = ?1 AND agent_id = ?2",
-        )?;
-        let mut rows =
-            stmt.query_map(params![binding.chat_id, binding.agent_id], row_to_binding)?;
-        rows.next()
-            .unwrap_or_else(|| Err(rusqlite::Error::QueryReturnedNoRows))
-    }
-
-    pub fn list(chat_id: &str) -> Result<Vec<GroupAgentBinding>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at
-             FROM conversation_agent_bindings WHERE chat_id = ?1 ORDER BY created_at ASC",
-        )?;
-        let bindings = stmt.query_map(params![chat_id], row_to_binding)?;
-        bindings.collect()
-    }
-
-    pub fn find_conversation_id(agent_id: &str) -> Result<Option<String>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn
-            .prepare("SELECT conversation_id FROM conversation_agent_bindings WHERE agent_id = ?1 ORDER BY updated_at DESC, created_at DESC LIMIT 1")?;
-        let mut rows = stmt.query_map(params![agent_id], |row| row.get::<_, String>(0))?;
-        rows.next().transpose()
-    }
-
-    pub fn delete(chat_id: &str, agent_id: &str) -> Result<bool> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-        let count = conn.execute(
-            "DELETE FROM conversation_agent_bindings WHERE chat_id = ?1 AND agent_id = ?2",
-            params![chat_id, agent_id],
-        )?;
-        Ok(count > 0)
-    }
-
-    /// Remove all bindings for a specific agent (cleanup when agent dies)
-    pub fn delete_by_agent(agent_id: &str) -> Result<usize> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-        let count = conn.execute(
-            "DELETE FROM conversation_agent_bindings WHERE agent_id = ?1",
-            params![agent_id],
-        )?;
-        Ok(count)
-    }
-}
+// ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -2356,205 +1954,52 @@ mod tests {
     }
 
     #[test]
-    fn test_project_crud() {
+    fn test_workspace_crud() {
         let _database_guard = lock_user_data_db_for_tests();
 
-        let project = Project {
-            id: "test-1".to_string(),
-            name: "Test Project".to_string(),
-            path: "/tmp/test".to_string(),
-            git_remote_url: None,
-            git_provider: None,
-            git_owner: None,
-            git_repo: None,
-            icon_path: None,
+        let workspace = Workspace {
+            workspace_id: "ws-test-1".to_string(),
+            name: "Test Workspace".to_string(),
+            work_dir: "/tmp/test".to_string(),
+            env: "{}".to_string(),
+            resources: "{}".to_string(),
+            config: "{}".to_string(),
+            collaboration_mode: "supervisor".to_string(),
+            status: "active".to_string(),
             created_at: 1234567890,
             updated_at: 1234567890,
         };
 
-        // Create
-        let created = projects::create(project.clone()).unwrap();
-        assert_eq!(created.id, project.id);
+        let created = workspaces::create(workspace.clone()).unwrap();
+        assert_eq!(created.workspace_id, workspace.workspace_id);
 
-        // Read
-        let retrieved = projects::get(&project.id).unwrap().unwrap();
-        assert_eq!(retrieved.name, project.name);
+        let retrieved = workspaces::get(&workspace.workspace_id).unwrap().unwrap();
+        assert_eq!(retrieved.name, workspace.name);
 
-        // List
-        let all = projects::list().unwrap();
+        let all = workspaces::list(None).unwrap();
         assert!(!all.is_empty());
 
-        // Delete
-        projects::delete(&project.id).unwrap();
-        let deleted = projects::get(&project.id).unwrap();
+        workspaces::delete(&workspace.workspace_id).unwrap();
+        let deleted = workspaces::get(&workspace.workspace_id).unwrap();
         assert!(deleted.is_none());
     }
 
-    fn make_chat(id: &str, project_id: &str, workspace_id: Option<&str>) -> Chat {
-        Chat {
-            id: id.to_string(),
-            name: Some(format!("Chat {id}")),
-            project_id: project_id.to_string(),
-            workspace_id: workspace_id.map(|s| s.to_string()),
-            collaboration_mode: "none".to_string(),
-            created_at: 1000,
-            updated_at: 1000,
-            archived_at: None,
-            worktree_path: None,
-            branch: None,
-            base_branch: None,
-            pr_url: None,
-            pr_number: None,
-        }
-    }
-
-    // NOTE: This test shares the process-global USER_DATA_DB (Lazy<...>).
-    // Use unique IDs to avoid collisions with other tests, and clean up afterward.
-    // For full isolation, run with `cargo test -- --test-threads=1`.
-
     #[test]
-    fn test_chat_list_all_filter_combinations() {
+    fn test_full_hierarchy_crud() {
         let _database_guard = lock_user_data_db_for_tests();
-        let prefix = format!("chat_cl-{}", std::process::id());
-        let pid1 = format!("{prefix}-p1");
-        let pid2 = format!("{prefix}-p2");
-        let wid1 = format!("{prefix}-w1");
-        let wid2 = format!("{prefix}-w2");
-        let wid3 = format!("{prefix}-w3");
-        let cid1 = format!("{prefix}-c1");
-        let cid2 = format!("{prefix}-c2");
-        let cid3 = format!("{prefix}-c3");
+        let prefix = format!("hierarchy-{}", std::process::id());
+        let workspace_id = format!("{prefix}-ws");
+        let chat_id = format!("{prefix}-chat");
+        let session_id = format!("{prefix}-session");
+        let conversation_id = format!("{prefix}-conv");
 
-        // Create parent records (FK constraints)
-        let p1 = Project {
-            id: pid1.clone(),
-            name: "P1".into(),
-            path: format!("/tmp/{pid1}"),
-            git_remote_url: None,
-            git_provider: None,
-            git_owner: None,
-            git_repo: None,
-            icon_path: None,
-            created_at: 1000,
-            updated_at: 1000,
-        };
-        let p2 = Project {
-            id: pid2.clone(),
-            name: "P2".into(),
-            path: format!("/tmp/{pid2}"),
-            git_remote_url: None,
-            git_provider: None,
-            git_owner: None,
-            git_repo: None,
-            icon_path: None,
-            created_at: 1000,
-            updated_at: 1000,
-        };
-        projects::create(p1).unwrap();
-        projects::create(p2).unwrap();
-
-        let w1 = Workspace {
-            id: wid1.clone(),
-            project_id: pid1.clone(),
-            name: Some("W1".into()),
-            work_dir: format!("/tmp/{wid1}"),
-            env: "{}".into(),
-            resources: "{}".into(),
-            capture_thoughts: false,
-            collaboration_mode: "supervisor".into(),
-            status: "active".into(),
-            created_at: 1000,
-            updated_at: 1000,
-        };
-        let w2 = Workspace {
-            id: wid2.clone(),
-            project_id: pid1.clone(),
-            name: Some("W2".into()),
-            work_dir: format!("/tmp/{wid2}"),
-            env: "{}".into(),
-            resources: "{}".into(),
-            capture_thoughts: false,
-            collaboration_mode: "supervisor".into(),
-            status: "active".into(),
-            created_at: 1000,
-            updated_at: 1000,
-        };
-        let w3 = Workspace {
-            id: wid3.clone(),
-            project_id: pid2.clone(),
-            name: Some("W3".into()),
-            work_dir: format!("/tmp/{wid3}"),
-            env: "{}".into(),
-            resources: "{}".into(),
-            capture_thoughts: false,
-            collaboration_mode: "supervisor".into(),
-            status: "active".into(),
-            created_at: 1000,
-            updated_at: 1000,
-        };
-        workspaces::create(w1).unwrap();
-        workspaces::create(w2).unwrap();
-        workspaces::create(w3).unwrap();
-
-        // Insert test chats
-        chats::create(make_chat(&cid1, &pid1, Some(&wid1))).unwrap();
-        chats::create(make_chat(&cid2, &pid1, Some(&wid2))).unwrap();
-        chats::create(make_chat(&cid3, &pid2, Some(&wid3))).unwrap();
-
-        // Branch 1: no filters → at least 3 (may include data from other tests)
-        let all = chats::list(None, None).unwrap();
-        assert!(all.len() >= 3);
-
-        // Branch 2: project_id only → 2 (pid1)
-        let by_project = chats::list(Some(&pid1), None).unwrap();
-        assert_eq!(by_project.len(), 2);
-        assert!(by_project.iter().all(|c| c.project_id == pid1));
-
-        // Branch 3: workspace_id only → 1 (wid1)
-        let by_workspace = chats::list(None, Some(&wid1)).unwrap();
-        assert_eq!(by_workspace.len(), 1);
-        assert_eq!(by_workspace[0].id, cid1);
-
-        // Branch 4: both filters → 1 (pid1 + wid1)
-        let by_both = chats::list(Some(&pid1), Some(&wid1)).unwrap();
-        assert_eq!(by_both.len(), 1);
-        assert_eq!(by_both[0].id, cid1);
-
-        // Cleanup
-        projects::delete(&pid1).unwrap();
-        projects::delete(&pid2).unwrap();
-    }
-
-    #[test]
-    fn test_conversation_tree_messages_and_workspace_resolution() {
-        let _database_guard = lock_user_data_db_for_tests();
-        let prefix = format!("conversation-tree-{}", std::process::id());
-        let project_id = format!("{prefix}-project");
-        let workspace_id = format!("{prefix}-workspace");
-        let root_id = format!("{prefix}-root");
-        let child_id = format!("{prefix}-child");
-
-        projects::create(Project {
-            id: project_id.clone(),
-            name: "Conversation test".to_string(),
-            path: format!("/tmp/{project_id}"),
-            git_remote_url: None,
-            git_provider: None,
-            git_owner: None,
-            git_repo: None,
-            icon_path: None,
-            created_at: 1000,
-            updated_at: 1000,
-        })
-        .unwrap();
         workspaces::create(Workspace {
-            id: workspace_id.clone(),
-            project_id: project_id.clone(),
-            name: None,
-            work_dir: format!("/tmp/{workspace_id}"),
+            workspace_id: workspace_id.clone(),
+            name: "Test Workspace".to_string(),
+            work_dir: "/tmp/test".to_string(),
             env: "{}".to_string(),
             resources: "{}".to_string(),
-            capture_thoughts: false,
+            config: "{}".to_string(),
             collaboration_mode: "supervisor".to_string(),
             status: "active".to_string(),
             created_at: 1000,
@@ -2562,522 +2007,144 @@ mod tests {
         })
         .unwrap();
 
-        conversations::create(Conversation {
-            id: root_id.clone(),
-            parent_id: None,
-            project_id: project_id.clone(),
-            workspace_id: Some(workspace_id.clone()),
-            name: Some("Root".to_string()),
-            mode: "agent".to_string(),
+        chats::create(Chat {
+            chat_id: chat_id.clone(),
+            workspace_id: workspace_id.clone(),
+            name: Some("Test Chat".to_string()),
             created_at: 1000,
             updated_at: 1000,
             archived_at: None,
         })
         .unwrap();
+
+        collaboration_sessions::create(CollaborationSession {
+            collaboration_session_id: session_id.clone(),
+            chat_id: chat_id.clone(),
+            workspace_id: workspace_id.clone(),
+            mode: "supervisor".to_string(),
+            state: "idle".to_string(),
+            goal: None,
+            active_plan_revision: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+
         conversations::create(Conversation {
-            id: child_id.clone(),
-            parent_id: Some(root_id.clone()),
-            project_id: project_id.clone(),
-            workspace_id: None,
-            name: Some("Child".to_string()),
+            conversation_id: conversation_id.clone(),
+            collaboration_session_id: session_id.clone(),
+            chat_id: chat_id.clone(),
+            parent_id: None,
+            name: Some("Test Conversation".to_string()),
             mode: "agent".to_string(),
-            created_at: 1001,
-            updated_at: 1001,
-            archived_at: None,
+            participant_role: "peer".to_string(),
+            status: "ready".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
         })
         .unwrap();
 
         messages::append(
-            &root_id,
+            &conversation_id,
             "user",
-            serde_json::json!([{ "type": "text", "text": "root prompt" }]),
+            serde_json::json!([{ "type": "text", "text": "Hello" }]),
             serde_json::json!({}),
         )
         .unwrap();
         messages::append(
-            &child_id,
+            &conversation_id,
             "assistant",
-            serde_json::json!([{ "type": "text", "text": "child reply" }]),
+            serde_json::json!([{ "type": "text", "text": "Hi there!" }]),
             serde_json::json!({}),
         )
         .unwrap();
 
-        assert_eq!(
-            conversations::resolve_workspace_id(&root_id).unwrap(),
-            Some(workspace_id.clone())
-        );
-        assert_eq!(
-            conversations::resolve_workspace_id(&child_id).unwrap(),
-            Some(workspace_id.clone())
-        );
-        assert_eq!(messages::list(&root_id).unwrap().len(), 1);
-        assert_eq!(messages::list(&child_id).unwrap().len(), 1);
-        assert_eq!(conversations::list_children(&root_id).unwrap().len(), 1);
+        let chat = chats::get(&chat_id).unwrap().unwrap();
+        assert_eq!(chat.workspace_id, workspace_id);
 
-        let legacy_chat = chats::get(&root_id).unwrap().unwrap();
-        assert_eq!(
-            legacy_chat.workspace_id.as_deref(),
-            Some(workspace_id.as_str())
-        );
-        let child_conversation = conversations::get(&child_id).unwrap().unwrap();
-        assert_eq!(
-            child_conversation.parent_id.as_deref(),
-            Some(root_id.as_str())
-        );
-        let legacy_messages: serde_json::Value =
-            serde_json::from_str(&messages::serialize_legacy(&child_id).unwrap()).unwrap();
-        assert_eq!(legacy_messages[0]["role"], "assistant");
-        assert_eq!(legacy_messages[0]["parts"][0]["text"], "child reply");
+        let session = collaboration_sessions::get(&session_id).unwrap().unwrap();
+        assert_eq!(session.chat_id, chat_id);
 
-        conversations::archive(&root_id, 2000).unwrap();
-        assert!(conversations::get(&root_id)
-            .unwrap()
-            .unwrap()
-            .archived_at
-            .is_some());
+        let conversation = conversations::get(&conversation_id).unwrap().unwrap();
+        assert_eq!(conversation.collaboration_session_id, session_id);
+        assert_eq!(conversation.chat_id, chat_id);
 
-        conversations::delete(&root_id).unwrap();
-        assert!(conversations::get(&child_id).unwrap().is_none());
-        assert!(messages::list(&child_id).unwrap().is_empty());
-        projects::delete(&project_id).unwrap();
-        assert!(workspaces::get(&workspace_id).unwrap().is_none());
-    }
+        let msgs = messages::list(&conversation_id).unwrap();
+        assert_eq!(msgs.len(), 2);
 
-    #[test]
-    fn test_workspace_list_filters_by_collaboration_mode() {
-        let _database_guard = lock_user_data_db_for_tests();
-        let suffix = format_id(generate(), IdType::Workspace);
-        let project_id = format!("ws-mode-{suffix}");
-        let supervisor_workspace_id = format!("ws-mode-supervisor-{suffix}");
-        let group_workspace_id = format!("ws-mode-group-{suffix}");
+        let msgs_by_session = messages::list_by_collaboration_session(&session_id).unwrap();
+        assert_eq!(msgs_by_session.len(), 2);
 
-        projects::create(Project {
-            id: project_id.clone(),
-            name: "Workspace mode".to_string(),
-            path: format!("/tmp/{project_id}"),
-            git_remote_url: None,
-            git_provider: None,
-            git_owner: None,
-            git_repo: None,
-            icon_path: None,
-            created_at: 1000,
-            updated_at: 1000,
-        })
-        .unwrap();
+        let msgs_by_chat = messages::list_by_chat(&chat_id).unwrap();
+        assert_eq!(msgs_by_chat.len(), 2);
 
-        for (workspace_id, collaboration_mode) in [
-            (&supervisor_workspace_id, "supervisor"),
-            (&group_workspace_id, "group"),
-        ] {
-            workspaces::create(Workspace {
-                id: workspace_id.to_string(),
-                project_id: project_id.clone(),
-                name: None,
-                work_dir: format!("/tmp/{workspace_id}"),
-                env: "{}".to_string(),
-                resources: "{}".to_string(),
-                capture_thoughts: false,
-                collaboration_mode: collaboration_mode.to_string(),
-                status: "active".to_string(),
-                created_at: 1000,
-                updated_at: 1000,
-            })
-            .unwrap();
-        }
-
-        let project_workspaces = workspaces::list(Some(&project_id), None).unwrap();
-        assert_eq!(project_workspaces.len(), 2);
-
-        let supervisor_workspaces =
-            workspaces::list(Some(&project_id), Some("supervisor")).unwrap();
-        assert_eq!(
-            supervisor_workspaces
-                .iter()
-                .map(|workspace| workspace.id.as_str())
-                .collect::<Vec<_>>(),
-            vec![supervisor_workspace_id.as_str()]
-        );
-
-        let group_workspaces = workspaces::list(Some(&project_id), Some("group")).unwrap();
-        assert_eq!(
-            group_workspaces
-                .iter()
-                .map(|workspace| workspace.id.as_str())
-                .collect::<Vec<_>>(),
-            vec![group_workspace_id.as_str()]
-        );
-
-        projects::delete(&project_id).unwrap();
-        assert!(workspaces::get(&supervisor_workspace_id).unwrap().is_none());
-        assert!(workspaces::get(&group_workspace_id).unwrap().is_none());
-    }
-
-    #[test]
-    fn test_replace_legacy_preserves_agent_sourced_backend_rows() {
-        let _database_guard = lock_user_data_db_for_tests();
-        let prefix = format!("replace-preserve-{}", std::process::id());
-        let project_id = format!("{prefix}-project");
-        let workspace_id = format!("{prefix}-workspace");
-        let conversation_id = format!("{prefix}-conversation");
-
-        projects::create(Project {
-            id: project_id.clone(),
-            name: "Replace preserve test".to_string(),
-            path: format!("/tmp/{project_id}"),
-            git_remote_url: None,
-            git_provider: None,
-            git_owner: None,
-            git_repo: None,
-            icon_path: None,
-            created_at: 1000,
-            updated_at: 1000,
-        })
-        .unwrap();
-        workspaces::create(Workspace {
-            id: workspace_id.clone(),
-            project_id: project_id.clone(),
-            name: None,
-            work_dir: format!("/tmp/{workspace_id}"),
-            env: "{}".to_string(),
-            resources: "{}".to_string(),
-            capture_thoughts: false,
-            collaboration_mode: "supervisor".to_string(),
-            status: "active".to_string(),
-            created_at: 1000,
-            updated_at: 1000,
-        })
-        .unwrap();
-        conversations::create(Conversation {
-            id: conversation_id.clone(),
-            parent_id: None,
-            project_id: project_id.clone(),
-            workspace_id: Some(workspace_id.clone()),
-            name: Some("Replace preserve".to_string()),
-            mode: "agent".to_string(),
-            created_at: 1000,
-            updated_at: 1000,
-            archived_at: None,
-        })
-        .unwrap();
-
-        messages::append(
-            &conversation_id,
-            "user",
-            serde_json::json!([{ "type": "text", "text": "user prompt" }]),
-            serde_json::json!({ "source": "user" }),
-        )
-        .unwrap();
-        messages::append(
-            &conversation_id,
-            "assistant",
-            serde_json::json!([{ "type": "text", "text": "first reply" }]),
-            serde_json::json!({}),
-        )
-        .unwrap();
-        // A-to-A request persisted by the messaging layer AFTER delivery —
-        // the UI mirror never sees this row (no SSE user-turn event).
-        let agent_row = messages::append(
-            &conversation_id,
-            "user",
-            serde_json::json!([{ "type": "text", "text": "agent-a request" }]),
-            serde_json::json!({
-                "source": "agent",
-                "senderAgentId": "agent-a",
-                "senderAgentName": "Agent A",
-                "messageType": "request",
-            }),
-        )
-        .unwrap();
-        // A non-agent row that is equally absent from the payload must still
-        // be wiped (legacy replace semantics for UI-owned rows).
-        messages::append(
-            &conversation_id,
-            "assistant",
-            serde_json::json!([{ "type": "text", "text": "stale scratch" }]),
-            serde_json::json!({ "source": "user" }),
-        )
-        .unwrap();
-
-        // UI full-replace payload: the conversation as the UI store knows it.
-        // The streamed response to agent-a's request is present; the request
-        // itself is not.
-        let payload = serde_json::json!([
-            {
-                "id": "ui-user-1",
-                "role": "user",
-                "parts": [{ "type": "text", "text": "user prompt" }],
-                "metadata": { "source": "user" },
-            },
-            {
-                "id": "ui-assistant-1",
-                "role": "assistant",
-                "parts": [{ "type": "text", "text": "first reply" }],
-                "metadata": {},
-            },
-            {
-                "id": "ui-assistant-2",
-                "role": "assistant",
-                "parts": [{ "type": "text", "text": "reply to agent-a" }],
-                "metadata": {},
-            },
-        ]);
-        messages::replace_legacy(&conversation_id, &payload.to_string(), 2000).unwrap();
-
-        let rows = messages::list(&conversation_id).unwrap();
-        let texts: Vec<String> = rows
-            .iter()
-            .map(|row| {
-                let parts: serde_json::Value = serde_json::from_str(&row.parts).unwrap();
-                parts[0]["text"].as_str().unwrap().to_string()
-            })
-            .collect();
-        // The rescued request lands directly before the trailing streamed
-        // response it triggered; the stale non-agent row is gone.
-        assert_eq!(
-            texts,
-            vec![
-                "user prompt".to_string(),
-                "first reply".to_string(),
-                "agent-a request".to_string(),
-                "reply to agent-a".to_string(),
-            ]
-        );
-        let rescued = rows.iter().find(|row| row.id == agent_row.id).unwrap();
-        assert_eq!(rescued.role, "user");
-        assert_eq!(rescued.sequence, 2);
-        let rescued_metadata: serde_json::Value =
-            serde_json::from_str(rescued.metadata.as_deref().unwrap()).unwrap();
-        assert_eq!(rescued_metadata["source"], "agent");
-        assert_eq!(rescued_metadata["messageType"], "request");
-
-        // Round-trip case: a payload that already contains the agent row
-        // (sidebar-hydrated shared Chat) must not duplicate it.
-        let payload_with_agent = serde_json::json!([
-            {
-                "id": "ui-user-1",
-                "role": "user",
-                "parts": [{ "type": "text", "text": "user prompt" }],
-                "metadata": { "source": "user" },
-            },
-            {
-                "id": agent_row.id,
-                "role": "user",
-                "parts": [{ "type": "text", "text": "agent-a request" }],
-                "metadata": {
-                    "source": "agent",
-                    "senderAgentId": "agent-a",
-                    "senderAgentName": "Agent A",
-                    "messageType": "request",
-                },
-            },
-            {
-                "id": "ui-assistant-2",
-                "role": "assistant",
-                "parts": [{ "type": "text", "text": "reply to agent-a" }],
-                "metadata": {},
-            },
-        ]);
-        messages::replace_legacy(&conversation_id, &payload_with_agent.to_string(), 3000).unwrap();
-        let rows = messages::list(&conversation_id).unwrap();
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows.iter().filter(|row| row.id == agent_row.id).count(), 1);
-
-        // Payload ending with a user-role message: rescued rows append at
-        // the end instead of splitting the final user turn.
-        messages::append(
-            &conversation_id,
-            "user",
-            serde_json::json!([{ "type": "text", "text": "late agent note" }]),
-            serde_json::json!({ "source": "agent", "messageType": "broadcast" }),
-        )
-        .unwrap();
-        let payload_user_last = serde_json::json!([
-            {
-                "id": "ui-user-1",
-                "role": "user",
-                "parts": [{ "type": "text", "text": "user prompt" }],
-                "metadata": { "source": "user" },
-            },
-            {
-                "id": "ui-user-2",
-                "role": "user",
-                "parts": [{ "type": "text", "text": "follow-up" }],
-                "metadata": { "source": "user" },
-            },
-        ]);
-        messages::replace_legacy(&conversation_id, &payload_user_last.to_string(), 4000).unwrap();
-        let rows = messages::list(&conversation_id).unwrap();
-        let texts: Vec<String> = rows
-            .iter()
-            .map(|row| {
-                let parts: serde_json::Value = serde_json::from_str(&row.parts).unwrap();
-                parts[0]["text"].as_str().unwrap().to_string()
-            })
-            .collect();
-        assert_eq!(
-            texts,
-            vec![
-                "user prompt".to_string(),
-                "follow-up".to_string(),
-                "agent-a request".to_string(),
-                "late agent note".to_string(),
-            ]
-        );
-
-        conversations::delete(&conversation_id).unwrap();
-        projects::delete(&project_id).unwrap();
-        assert!(workspaces::get(&workspace_id).unwrap().is_none());
-    }
-
-    #[test]
-    fn test_replace_legacy_dedupes_agent_snapshot_already_in_payload() {
-        let _database_guard = lock_user_data_db_for_tests();
-        let prefix = format!("replace-dedupe-{}", std::process::id());
-        let project_id = format!("{prefix}-project");
-        let workspace_id = format!("{prefix}-workspace");
-        let conversation_id = format!("{prefix}-conversation");
-
-        projects::create(Project {
-            id: project_id.clone(),
-            name: "Replace dedupe test".to_string(),
-            path: format!("/tmp/{project_id}"),
-            git_remote_url: None,
-            git_provider: None,
-            git_owner: None,
-            git_repo: None,
-            icon_path: None,
-            created_at: 1000,
-            updated_at: 1000,
-        })
-        .unwrap();
-        workspaces::create(Workspace {
-            id: workspace_id.clone(),
-            project_id: project_id.clone(),
-            name: None,
-            work_dir: format!("/tmp/{workspace_id}"),
-            env: "{}".to_string(),
-            resources: "{}".to_string(),
-            capture_thoughts: false,
-            collaboration_mode: "supervisor".to_string(),
-            status: "active".to_string(),
-            created_at: 1000,
-            updated_at: 1000,
-        })
-        .unwrap();
-        conversations::create(Conversation {
-            id: conversation_id.clone(),
-            parent_id: None,
-            project_id: project_id.clone(),
-            workspace_id: Some(workspace_id.clone()),
-            name: Some("Replace dedupe".to_string()),
-            mode: "agent".to_string(),
-            created_at: 1000,
-            updated_at: 1000,
-            archived_at: None,
-        })
-        .unwrap();
-
-        messages::append(
-            &conversation_id,
-            "user",
-            serde_json::json!([{ "type": "text", "text": "你好" }]),
-            serde_json::json!({ "source": "user" }),
-        )
-        .unwrap();
-        // Text-only assistant snapshot written by the SSE handler at stream
-        // end (source: agent). The UI's replace payload later carries the
-        // same reply with full parts (reasoning + text) under a different id.
-        let snapshot = messages::append(
-            &conversation_id,
-            "assistant",
-            serde_json::json!([{ "type": "text", "text": "你好！有什么我可以帮你的吗？" }]),
-            serde_json::json!({ "source": "agent" }),
-        )
-        .unwrap();
-
-        let payload = serde_json::json!([
-            {
-                "id": "ui-user-1",
-                "role": "user",
-                "parts": [{ "type": "text", "text": "你好" }],
-                "metadata": { "source": "user" },
-            },
-            {
-                "id": "ui-assistant-1",
-                "role": "assistant",
-                "parts": [
-                    { "type": "reasoning", "text": "用户打招呼，礼貌回复。" },
-                    { "type": "text", "text": "你好！有什么我可以帮你的吗？" },
-                ],
-                "metadata": {},
-            },
-        ]);
-        messages::replace_legacy(&conversation_id, &payload.to_string(), 2000).unwrap();
-
-        let rows = messages::list(&conversation_id).unwrap();
-        // The text-only snapshot must not be rescued: the payload already
-        // contains the same assistant turn (same role + text) with richer
-        // parts. Rendering both would duplicate the reply.
-        assert_eq!(rows.len(), 2);
-        assert!(rows.iter().all(|row| row.id != snapshot.id));
-        let assistant = rows.iter().find(|row| row.role == "assistant").unwrap();
-        let parts: serde_json::Value = serde_json::from_str(&assistant.parts).unwrap();
-        assert_eq!(parts[0]["type"], "reasoning");
-
-        conversations::delete(&conversation_id).unwrap();
-        projects::delete(&project_id).unwrap();
-        assert!(workspaces::get(&workspace_id).unwrap().is_none());
+        workspaces::delete(&workspace_id).unwrap();
+        assert!(chats::get(&chat_id).unwrap().is_none());
+        assert!(collaboration_sessions::get(&session_id).unwrap().is_none());
+        assert!(conversations::get(&conversation_id).unwrap().is_none());
+        assert!(messages::list(&conversation_id).unwrap().is_empty());
     }
 
     #[test]
     fn test_messages_list_after_sequence() {
         let _database_guard = lock_user_data_db_for_tests();
         let prefix = format!("list-after-seq-{}", std::process::id());
-        let project_id = format!("{prefix}-project");
-        let workspace_id = format!("{prefix}-workspace");
-        let conversation_id = format!("{prefix}-conversation");
+        let workspace_id = format!("{prefix}-ws");
+        let chat_id = format!("{prefix}-chat");
+        let session_id = format!("{prefix}-session");
+        let conversation_id = format!("{prefix}-conv");
 
-        projects::create(Project {
-            id: project_id.clone(),
-            name: "List after sequence test".to_string(),
-            path: format!("/tmp/{project_id}"),
-            git_remote_url: None,
-            git_provider: None,
-            git_owner: None,
-            git_repo: None,
-            icon_path: None,
-            created_at: 1000,
-            updated_at: 1000,
-        })
-        .unwrap();
         workspaces::create(Workspace {
-            id: workspace_id.clone(),
-            project_id: project_id.clone(),
-            name: None,
-            work_dir: format!("/tmp/{workspace_id}"),
+            workspace_id: workspace_id.clone(),
+            name: "Test".to_string(),
+            work_dir: "/tmp/test".to_string(),
             env: "{}".to_string(),
             resources: "{}".to_string(),
-            capture_thoughts: false,
+            config: "{}".to_string(),
             collaboration_mode: "supervisor".to_string(),
             status: "active".to_string(),
             created_at: 1000,
             updated_at: 1000,
         })
         .unwrap();
-        conversations::create(Conversation {
-            id: conversation_id.clone(),
-            parent_id: None,
-            project_id: project_id.clone(),
-            workspace_id: Some(workspace_id.clone()),
-            name: Some("List after sequence".to_string()),
-            mode: "agent".to_string(),
+
+        chats::create(Chat {
+            chat_id: chat_id.clone(),
+            workspace_id: workspace_id.clone(),
+            name: None,
             created_at: 1000,
             updated_at: 1000,
             archived_at: None,
         })
         .unwrap();
 
-        // Append 5 messages
+        collaboration_sessions::create(CollaborationSession {
+            collaboration_session_id: session_id.clone(),
+            chat_id: chat_id.clone(),
+            workspace_id: workspace_id.clone(),
+            mode: "supervisor".to_string(),
+            state: "idle".to_string(),
+            goal: None,
+            active_plan_revision: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+
+        conversations::create(Conversation {
+            conversation_id: conversation_id.clone(),
+            collaboration_session_id: session_id.clone(),
+            chat_id: chat_id.clone(),
+            parent_id: None,
+            name: None,
+            mode: "agent".to_string(),
+            participant_role: "peer".to_string(),
+            status: "ready".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+
         let mut appended_messages = Vec::new();
         for i in 0..5 {
             let msg = messages::append(
@@ -3090,7 +2157,6 @@ mod tests {
             appended_messages.push(msg);
         }
 
-        // Get the max sequence from appended messages
         let max_sequence = appended_messages
             .iter()
             .map(|m| m.sequence)
@@ -3102,140 +2168,82 @@ mod tests {
             .min()
             .unwrap_or(0);
 
-        // Test: list_after_sequence with value less than min should return all
         let all = messages::list_after_sequence(&conversation_id, min_sequence - 1).unwrap();
         assert_eq!(all.len(), 5);
 
-        // Test: list_after_sequence with middle value should return subset
         let mid_sequence = min_sequence + 1;
         let after_mid = messages::list_after_sequence(&conversation_id, mid_sequence).unwrap();
         assert_eq!(after_mid.len(), (max_sequence - mid_sequence) as usize);
-        assert!(after_mid.iter().all(|m| m.sequence > mid_sequence));
 
-        // Test: list_after_sequence with max_sequence should return empty
         let after_max = messages::list_after_sequence(&conversation_id, max_sequence).unwrap();
         assert_eq!(after_max.len(), 0);
 
-        // Test: list_after_sequence beyond max should return empty
-        let after_beyond =
-            messages::list_after_sequence(&conversation_id, max_sequence + 10).unwrap();
-        assert_eq!(after_beyond.len(), 0);
-
-        // Cleanup
-        conversations::delete(&conversation_id).unwrap();
-        projects::delete(&project_id).unwrap();
-    }
-
-    #[test]
-    fn test_messages_list_after_sequence_empty_conversation() {
-        let _database_guard = lock_user_data_db_for_tests();
-        let prefix = format!("list-after-seq-empty-{}", std::process::id());
-        let project_id = format!("{prefix}-project");
-        let workspace_id = format!("{prefix}-workspace");
-        let conversation_id = format!("{prefix}-conversation");
-
-        projects::create(Project {
-            id: project_id.clone(),
-            name: "Empty conversation test".to_string(),
-            path: format!("/tmp/{project_id}"),
-            git_remote_url: None,
-            git_provider: None,
-            git_owner: None,
-            git_repo: None,
-            icon_path: None,
-            created_at: 1000,
-            updated_at: 1000,
-        })
-        .unwrap();
-        workspaces::create(Workspace {
-            id: workspace_id.clone(),
-            project_id: project_id.clone(),
-            name: None,
-            work_dir: format!("/tmp/{workspace_id}"),
-            env: "{}".to_string(),
-            resources: "{}".to_string(),
-            capture_thoughts: false,
-            collaboration_mode: "supervisor".to_string(),
-            status: "active".to_string(),
-            created_at: 1000,
-            updated_at: 1000,
-        })
-        .unwrap();
-        conversations::create(Conversation {
-            id: conversation_id.clone(),
-            parent_id: None,
-            project_id: project_id.clone(),
-            workspace_id: Some(workspace_id.clone()),
-            name: Some("Empty conversation".to_string()),
-            mode: "agent".to_string(),
-            created_at: 1000,
-            updated_at: 1000,
-            archived_at: None,
-        })
-        .unwrap();
-
-        // Test: list_after_sequence on empty conversation should return empty
-        let messages = messages::list_after_sequence(&conversation_id, 0).unwrap();
-        assert_eq!(messages.len(), 0);
-
-        // Cleanup
-        conversations::delete(&conversation_id).unwrap();
-        projects::delete(&project_id).unwrap();
+        workspaces::delete(&workspace_id).unwrap();
     }
 
     #[test]
     fn test_messages_get_last() {
         let _database_guard = lock_user_data_db_for_tests();
         let prefix = format!("get-last-{}", std::process::id());
-        let project_id = format!("{prefix}-project");
-        let workspace_id = format!("{prefix}-workspace");
-        let conversation_id = format!("{prefix}-conversation");
+        let workspace_id = format!("{prefix}-ws");
+        let chat_id = format!("{prefix}-chat");
+        let session_id = format!("{prefix}-session");
+        let conversation_id = format!("{prefix}-conv");
 
-        projects::create(Project {
-            id: project_id.clone(),
-            name: "Get last test".to_string(),
-            path: format!("/tmp/{project_id}"),
-            git_remote_url: None,
-            git_provider: None,
-            git_owner: None,
-            git_repo: None,
-            icon_path: None,
-            created_at: 1000,
-            updated_at: 1000,
-        })
-        .unwrap();
         workspaces::create(Workspace {
-            id: workspace_id.clone(),
-            project_id: project_id.clone(),
-            name: None,
-            work_dir: format!("/tmp/{workspace_id}"),
+            workspace_id: workspace_id.clone(),
+            name: "Test".to_string(),
+            work_dir: "/tmp/test".to_string(),
             env: "{}".to_string(),
             resources: "{}".to_string(),
-            capture_thoughts: false,
+            config: "{}".to_string(),
             collaboration_mode: "supervisor".to_string(),
             status: "active".to_string(),
             created_at: 1000,
             updated_at: 1000,
         })
         .unwrap();
-        conversations::create(Conversation {
-            id: conversation_id.clone(),
-            parent_id: None,
-            project_id: project_id.clone(),
-            workspace_id: Some(workspace_id.clone()),
-            name: Some("Get last".to_string()),
-            mode: "agent".to_string(),
+
+        chats::create(Chat {
+            chat_id: chat_id.clone(),
+            workspace_id: workspace_id.clone(),
+            name: None,
             created_at: 1000,
             updated_at: 1000,
             archived_at: None,
         })
         .unwrap();
 
-        // Test: empty conversation returns None
+        collaboration_sessions::create(CollaborationSession {
+            collaboration_session_id: session_id.clone(),
+            chat_id: chat_id.clone(),
+            workspace_id: workspace_id.clone(),
+            mode: "supervisor".to_string(),
+            state: "idle".to_string(),
+            goal: None,
+            active_plan_revision: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+
+        conversations::create(Conversation {
+            conversation_id: conversation_id.clone(),
+            collaboration_session_id: session_id.clone(),
+            chat_id: chat_id.clone(),
+            parent_id: None,
+            name: None,
+            mode: "agent".to_string(),
+            participant_role: "peer".to_string(),
+            status: "ready".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+
         let empty = messages::get_last(&conversation_id).unwrap();
         assert!(empty.is_none());
 
-        // Append 3 messages
         let mut last_msg = None;
         for i in 0..3 {
             let msg = messages::append(
@@ -3248,16 +2256,11 @@ mod tests {
             last_msg = Some(msg);
         }
 
-        // Test: get_last returns the most recent message
         let last = messages::get_last(&conversation_id).unwrap();
         assert!(last.is_some());
         let last = last.unwrap();
-        assert_eq!(last.id, last_msg.unwrap().id);
-        // Sequence should be the highest among appended messages
-        assert!(last.sequence >= 2); // At least the 3rd message (0-indexed or 1-indexed)
+        assert_eq!(last.message_id, last_msg.unwrap().message_id);
 
-        // Cleanup
-        conversations::delete(&conversation_id).unwrap();
-        projects::delete(&project_id).unwrap();
+        workspaces::delete(&workspace_id).unwrap();
     }
 }

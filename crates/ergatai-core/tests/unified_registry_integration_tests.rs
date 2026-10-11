@@ -34,7 +34,7 @@ fn make_record(agent_id: &str) -> AgentRecord {
 async fn register_lookup_by_all_keys() {
     let reg = UnifiedAgentRegistry::new();
     let mut rec = make_record("agent-1");
-    rec.cov_id = Some("cov-1".to_string());
+    rec.conversation_id = Some("cov-1".to_string());
     reg.register(rec).await;
 
     reg.set_mcp_agent_id("agent-1", "opencode@xyz".to_string())
@@ -43,7 +43,7 @@ async fn register_lookup_by_all_keys() {
 
     let by_agent = reg.get("agent-1").await.unwrap();
     let by_mcp = reg.get_by_mcp_id("opencode@xyz").await.unwrap();
-    let by_cov = reg.get_by_cov_id("cov-1").await.unwrap();
+    let by_cov = reg.get_by_conversation_id("cov-1").await.unwrap();
 
     assert_eq!(by_agent.agent_id, "agent-1");
     assert_eq!(by_mcp.agent_id, "agent-1");
@@ -56,7 +56,7 @@ async fn register_lookup_by_all_keys() {
 async fn unregister_removes_all_indices() {
     let reg = UnifiedAgentRegistry::new();
     let mut rec = make_record("agent-2");
-    rec.cov_id = Some("cov-2".to_string());
+    rec.conversation_id = Some("cov-2".to_string());
     reg.register(rec).await;
     reg.set_mcp_agent_id("agent-2", "mcp@old".to_string())
         .await
@@ -64,13 +64,13 @@ async fn unregister_removes_all_indices() {
 
     assert!(reg.get("agent-2").await.is_some());
     assert!(reg.get_by_mcp_id("mcp@old").await.is_some());
-    assert!(reg.get_by_cov_id("cov-2").await.is_some());
+    assert!(reg.get_by_conversation_id("cov-2").await.is_some());
 
     reg.unregister("agent-2").await;
 
     assert!(reg.get("agent-2").await.is_none());
     assert!(reg.get_by_mcp_id("mcp@old").await.is_none());
-    assert!(reg.get_by_cov_id("cov-2").await.is_none());
+    assert!(reg.get_by_conversation_id("cov-2").await.is_none());
 }
 
 // ── MCP ID re-binding removes old index ──────────────────────────────

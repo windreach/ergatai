@@ -258,8 +258,8 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
         &self,
         params: SendMessageParams,
     ) -> Result<CallToolResult, ErrorData> {
-        // Use shared helper to resolve target (prefers cov_id, falls back to agent_id)
-        let (target_id, target_cov_id) = params.resolve_target()?;
+        // Use shared helper to resolve target (prefers conversation_id, falls back to agent_id)
+        let (target_id, target_conversation_id) = params.resolve_target()?;
 
         let message = &params.message;
         let message_type = params.message_type.as_deref().unwrap_or("request");
@@ -290,7 +290,7 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
         let send_req = crate::messaging::SendRequest {
             from: from_agent,
             to: target_id.to_string(),
-            target_cov_id,
+            target_conversation_id,
             message: message.to_string(),
             message_type: message_type.to_string(),
             correlation_id,

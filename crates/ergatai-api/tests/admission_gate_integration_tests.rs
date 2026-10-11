@@ -14,7 +14,7 @@ async fn test_self_message_gate_denies_self_send() {
     let request = SendRequest {
         from: "agent-1".to_string(),
         to: "agent-1".to_string(),
-        target_cov_id: None,
+        target_conversation_id: None,
         message: "test".to_string(),
         message_type: "request".to_string(),
         correlation_id: None,
@@ -37,7 +37,7 @@ async fn test_self_message_gate_allows_different_agents() {
     let request = SendRequest {
         from: "agent-1".to_string(),
         to: "agent-2".to_string(),
-        target_cov_id: None,
+        target_conversation_id: None,
         message: "test".to_string(),
         message_type: "request".to_string(),
         correlation_id: None,
@@ -61,7 +61,7 @@ async fn test_composite_gate_short_circuits() {
     let request = SendRequest {
         from: "agent-1".to_string(),
         to: "agent-1".to_string(),
-        target_cov_id: None,
+        target_conversation_id: None,
         message: "test".to_string(),
         message_type: "request".to_string(),
         correlation_id: None,
@@ -84,7 +84,7 @@ async fn test_composite_gate_empty_allows_all() {
     let request = SendRequest {
         from: "agent-1".to_string(),
         to: "agent-2".to_string(),
-        target_cov_id: None,
+        target_conversation_id: None,
         message: "test".to_string(),
         message_type: "request".to_string(),
         correlation_id: None,

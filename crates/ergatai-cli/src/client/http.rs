@@ -341,7 +341,7 @@ pub struct AgentInfoResponse {
     pub agent_id: String,
     #[serde(default)]
     #[allow(dead_code)]
-    pub cov_id: Option<String>,
+    pub conversation_id: Option<String>,
     pub workspace_id: String,
     #[serde(default)]
     #[allow(dead_code)]

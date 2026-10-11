@@ -307,7 +307,7 @@ impl ConversationManager {
         message: &str,
         message_type: &str,
     ) {
-        let conv_id = self.conversation_id(from, to);
+        let conversation_id = self.conversation_id(from, to);
         let record = ConversationMessageRecord {
             from: from.to_string(),
             to: to.to_string(),
@@ -317,7 +317,7 @@ impl ConversationManager {
         };
 
         let mut histories = self.message_history.write().await;
-        let history = histories.entry(conv_id).or_default();
+        let history = histories.entry(conversation_id).or_default();
         history.push_back(record);
         while history.len() > MAX_CONVERSATION_HISTORY {
             history.pop_front();
@@ -325,11 +325,14 @@ impl ConversationManager {
     }
 
     /// Get delivered messages for a conversation in send order.
-    pub async fn get_conversation_history(&self, conv_id: &str) -> Vec<ConversationMessageRecord> {
+    pub async fn get_conversation_history(
+        &self,
+        conversation_id: &str,
+    ) -> Vec<ConversationMessageRecord> {
         self.message_history
             .read()
             .await
-            .get(conv_id)
+            .get(conversation_id)
             .map(|history| history.iter().cloned().collect())
             .unwrap_or_default()
     }
@@ -348,12 +351,12 @@ impl ConversationManager {
     /// * `to` — Target agent ID
     /// * `message` — Message content (checked for TERMINATE keyword)
     pub async fn check_and_record(&self, from: &str, to: &str, message: &str) -> ErgataiResult<()> {
-        let conv_id = self.conversation_id(from, to);
+        let conversation_id = self.conversation_id(from, to);
 
         // Get or create conversation
         let mut conversations = self.conversations.write().await;
         let conv = conversations
-            .entry(conv_id.clone())
+            .entry(conversation_id.clone())
             .or_insert_with(|| Conversation::new(from, to));
 
         // ── Terminal state check ──
@@ -367,7 +370,7 @@ impl ConversationManager {
                 if cooldown_elapsed >= self.config.cooldown_secs {
                     // Cooldown elapsed — reset conversation for new cycle
                     info!(
-                        conv_id = %conv.id,
+                        conversation_id = %conv.id,
                         cooldown_secs = cooldown_elapsed,
                         "Cooldown elapsed — resetting conversation"
                     );
@@ -375,7 +378,7 @@ impl ConversationManager {
                 } else {
                     let remaining = self.config.cooldown_secs - cooldown_elapsed;
                     warn!(
-                        conv_id = %conv.id,
+                        conversation_id = %conv.id,
                         remaining_secs = remaining,
                         "Conversation in cooldown"
                     );
@@ -386,7 +389,7 @@ impl ConversationManager {
                 }
             } else {
                 warn!(
-                    conv_id = %conv.id,
+                    conversation_id = %conv.id,
                     state = ?conv.state,
                     "Conversation already terminated"
                 );
@@ -408,7 +411,7 @@ impl ConversationManager {
             if conv.reset_count >= MAX_TIMEOUT_RESETS {
                 // Permanently terminate — runaway loop detected
                 warn!(
-                    conv_id = %conv.id,
+                    conversation_id = %conv.id,
                     elapsed_secs = elapsed,
                     max_secs = self.config.max_execution_time_secs,
                     reset_count = conv.reset_count,
@@ -428,7 +431,7 @@ impl ConversationManager {
             // Auto-reset with increment
             conv.reset_count += 1;
             info!(
-                conv_id = %conv.id,
+                conversation_id = %conv.id,
                 elapsed_secs = elapsed,
                 max_secs = self.config.max_execution_time_secs,
                 reset_count = conv.reset_count,
@@ -471,12 +474,12 @@ impl ConversationManager {
                     );
                     // Terminate all conversations involving this agent
                     // Use the already-held write lock instead of re-acquiring (deadlock fix)
-                    let conv_ids_to_terminate: Vec<String> = conversations
+                    let conversation_ids_to_terminate: Vec<String> = conversations
                         .values()
                         .filter(|c| c.participants.0 == from || c.participants.1 == from)
                         .map(|c| c.id.clone())
                         .collect();
-                    for cid in conv_ids_to_terminate {
+                    for cid in conversation_ids_to_terminate {
                         if let Some(c) = conversations.get_mut(&cid) {
                             c.state = ConversationState::Terminated {
                                 reason: TerminationReason::RateLimited,
@@ -508,7 +511,7 @@ impl ConversationManager {
             .unwrap_or(0);
         if auto_reply_count >= self.config.max_consecutive_auto_reply {
             warn!(
-                conv_id = %conv.id,
+                conversation_id = %conv.id,
                 from = from,
                 auto_reply_count = auto_reply_count,
                 max = self.config.max_consecutive_auto_reply,
@@ -532,7 +535,7 @@ impl ConversationManager {
                 // Either party can claim the token by sending.
                 // Token will be claimed in the transfer section below.
                 debug!(
-                    conv_id = %conv.id,
+                    conversation_id = %conv.id,
                     from = from,
                     "Token free — {} will claim",
                     from
@@ -551,7 +554,7 @@ impl ConversationManager {
                     // Sender has used up their consecutive send allowance.
                     // They must wait for the other party to respond.
                     warn!(
-                        conv_id = %conv.id,
+                        conversation_id = %conv.id,
                         from = from,
                         token_holder = %previous_holder,
                         consecutive_sends = sender_consecutive,
@@ -567,7 +570,7 @@ impl ConversationManager {
                 let prev = previous_holder.clone();
                 conv.token_owner = TokenOwner::Held(from.to_string());
                 info!(
-                    conv_id = %conv.id,
+                    conversation_id = %conv.id,
                     from = from,
                     previous_holder = %prev,
                     "Reply detected — token transferred to replier"
@@ -580,14 +583,14 @@ impl ConversationManager {
             // TERMINATE releases the token — either party can start a new cycle.
             // Does NOT terminate the conversation — just resets for a new round.
             info!(
-                conv_id = %conv.id,
+                conversation_id = %conv.id,
                 from = from,
                 "TERMINATE detected — releasing token (会话 cycle complete)"
             );
             conv.token_owner = TokenOwner::Free;
             conv.consecutive_sends.clear();
             info!(
-                conv_id = %conv.id,
+                conversation_id = %conv.id,
                 "TERMINATE detected — releasing token (会话 cycle complete)"
             );
         } else {
@@ -596,7 +599,7 @@ impl ConversationManager {
             // Transfer token to the receiver (the other party).
             conv.token_owner = TokenOwner::Held(to.to_string());
             info!(
-                conv_id = %conv.id,
+                conversation_id = %conv.id,
                 from = from,
                 to = to,
                 "Token transferred to receiver (expecting reply)"
@@ -606,7 +609,7 @@ impl ConversationManager {
             let new_count = current_sends + 1;
             conv.consecutive_sends.insert(from.to_string(), new_count);
             debug!(
-                conv_id = %conv.id,
+                conversation_id = %conv.id,
                 from = from,
                 consecutive_sends = new_count,
                 "Consecutive send count updated"
@@ -622,7 +625,7 @@ impl ConversationManager {
         if conv.message_count % 2 == 0 {
             conv.completed_rounds += 1;
             debug!(
-                conv_id = %conv.id,
+                conversation_id = %conv.id,
                 completed_rounds = conv.completed_rounds,
                 max_rounds = self.config.max_rounds,
                 "Round completed"
@@ -631,7 +634,7 @@ impl ConversationManager {
             // Check if max rounds reached — force termination
             if conv.completed_rounds >= self.config.max_rounds {
                 warn!(
-                    conv_id = %conv.id,
+                    conversation_id = %conv.id,
                     completed_rounds = conv.completed_rounds,
                     max_rounds = self.config.max_rounds,
                     cooldown_secs = self.config.cooldown_secs,
@@ -665,7 +668,7 @@ impl ConversationManager {
         }
 
         debug!(
-            conv_id = %conv.id,
+            conversation_id = %conv.id,
             from = from,
             to = to,
             message_count = conv.message_count,
@@ -699,9 +702,9 @@ impl ConversationManager {
     }
 
     /// Get a conversation by ID.
-    pub async fn get_conversation(&self, conv_id: &str) -> Option<Conversation> {
+    pub async fn get_conversation(&self, conversation_id: &str) -> Option<Conversation> {
         let conversations = self.conversations.read().await;
-        conversations.get(conv_id).cloned()
+        conversations.get(conversation_id).cloned()
     }
 
     /// List all active conversations.
@@ -744,7 +747,7 @@ impl ConversationManager {
                 .unsigned_abs();
             let keep = age < max_age.as_secs();
             if !keep {
-                info!(conv_id = %id, age_secs = age, "Cleaning up old conversation");
+                info!(conversation_id = %id, age_secs = age, "Cleaning up old conversation");
             }
             keep
         });
@@ -763,32 +766,32 @@ impl ConversationManager {
         self.message_history
             .write()
             .await
-            .retain(|conv_id, _| conversations.contains_key(conv_id));
+            .retain(|conversation_id, _| conversations.contains_key(conversation_id));
     }
 
     /// Manually terminate a conversation.
     #[allow(dead_code)]
     pub async fn terminate_conversation(
         &self,
-        conv_id: &str,
+        conversation_id: &str,
         reason: TerminationReason,
     ) -> ErgataiResult<()> {
         let mut conversations = self.conversations.write().await;
 
-        if let Some(conv) = conversations.get_mut(conv_id) {
+        if let Some(conv) = conversations.get_mut(conversation_id) {
             if conv.is_terminal() {
                 return Err(ErgataiError::internal(format!(
                     "Conversation {} already terminated",
-                    conv_id
+                    conversation_id
                 )));
             }
             conv.state = ConversationState::Terminated { reason };
-            info!(conv_id = %conv_id, reason = ?reason, "Conversation terminated");
+            info!(conversation_id = %conversation_id, reason = ?reason, "Conversation terminated");
             Ok(())
         } else {
             Err(ErgataiError::internal(format!(
                 "Conversation {} not found",
-                conv_id
+                conversation_id
             )))
         }
     }
@@ -1201,17 +1204,17 @@ mod tests {
         let conv = Conversation::new("a", "b");
         assert!(!conv.is_terminal());
 
-        let mut conv_completed = Conversation::new("a", "b");
-        conv_completed.state = ConversationState::Terminated {
+        let mut completed_conversation = Conversation::new("a", "b");
+        completed_conversation.state = ConversationState::Terminated {
             reason: TerminationReason::Completed,
         };
-        assert!(conv_completed.is_terminal());
+        assert!(completed_conversation.is_terminal());
 
-        let mut conv_failed = Conversation::new("a", "b");
-        conv_failed.state = ConversationState::Terminated {
+        let mut failed_conversation = Conversation::new("a", "b");
+        failed_conversation.state = ConversationState::Terminated {
             reason: TerminationReason::Failed,
         };
-        assert!(conv_failed.is_terminal());
+        assert!(failed_conversation.is_terminal());
 
         let mut conv_timeout = Conversation::new("a", "b");
         conv_timeout.state = ConversationState::Terminated {

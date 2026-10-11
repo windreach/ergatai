@@ -21,8 +21,8 @@ struct RegistryInner {
     primary: HashMap<String, AgentInfo>,
     /// mcp_agent_id → agent_id
     mcp_index: HashMap<String, String>,
-    /// cov_id → agent_id (for O(1) Cov-centric lookups)
-    cov_index: HashMap<String, String>,
+    /// conversation_id → agent_id (for O(1) Conversation-centric lookups)
+    conversation_index: HashMap<String, String>,
     /// agent_id → consecutive unhealthy count
     unhealthy_streaks: HashMap<String, u32>,
 }
@@ -32,7 +32,7 @@ impl RegistryInner {
         Self {
             primary: HashMap::new(),
             mcp_index: HashMap::new(),
-            cov_index: HashMap::new(),
+            conversation_index: HashMap::new(),
             unhealthy_streaks: HashMap::new(),
         }
     }
@@ -42,8 +42,8 @@ impl RegistryInner {
         if let Some(ref mcp_id) = info.mcp_agent_id {
             self.mcp_index.remove(mcp_id);
         }
-        if let Some(ref cov_id) = info.cov_id {
-            self.cov_index.remove(cov_id);
+        if let Some(ref conversation_id) = info.conversation_id {
+            self.conversation_index.remove(conversation_id);
         }
         self.unhealthy_streaks.remove(&info.agent_id);
     }
@@ -53,8 +53,9 @@ impl RegistryInner {
         if let Some(ref mcp_id) = info.mcp_agent_id {
             self.mcp_index.insert(mcp_id.clone(), info.agent_id.clone());
         }
-        if let Some(ref cov_id) = info.cov_id {
-            self.cov_index.insert(cov_id.clone(), info.agent_id.clone());
+        if let Some(ref conversation_id) = info.conversation_id {
+            self.conversation_index
+                .insert(conversation_id.clone(), info.agent_id.clone());
         }
     }
 
@@ -69,13 +70,13 @@ impl RegistryInner {
             })
             .collect();
 
-        self.cov_index = self
+        self.conversation_index = self
             .primary
             .iter()
             .filter_map(|(agent_id, info)| {
-                info.cov_id
+                info.conversation_id
                     .as_ref()
-                    .map(|cov_id| (cov_id.clone(), agent_id.clone()))
+                    .map(|conversation_id| (conversation_id.clone(), agent_id.clone()))
             })
             .collect();
 
@@ -173,22 +174,22 @@ impl AgentRegistry {
         inner.mcp_index.get(mcp_id).cloned()
     }
 
-    /// cov_id → AgentInfo 直接解析（O(1) 索引查找）。
+    /// conversation_id → AgentInfo 直接解析（O(1) 索引查找）。
     ///
-    /// 这是 Cov-centric 消息路由的核心方法：直接从 cov_id 找到目标 AgentInfo，
+    /// 这是 Conversation-centric 消息路由的核心方法：直接从 conversation_id 找到目标 AgentInfo，
     /// 无需先解析到 agent_id 再查找。
     ///
     /// # Arguments
-    /// * `cov_id` - Cov ID（conversation_id）
+    /// * `conversation_id` - Conversation ID（conversation_id）
     ///
     /// # Returns
     /// * `Some(AgentInfo)` - 找到匹配的 agent
-    /// * `None` - 没有找到匹配的 cov_id
-    pub async fn resolve_cov_id(&self, cov_id: &str) -> Option<AgentInfo> {
+    /// * `None` - 没有找到匹配的 conversation_id
+    pub async fn resolve_conversation_id(&self, conversation_id: &str) -> Option<AgentInfo> {
         let inner = self.inner.read().await;
         inner
-            .cov_index
-            .get(cov_id)
+            .conversation_index
+            .get(conversation_id)
             .and_then(|agent_id| inner.primary.get(agent_id))
             .cloned()
     }
@@ -427,7 +428,7 @@ mod tests {
         let now = chrono::Utc::now();
         AgentInfo {
             agent_id: id.to_string(),
-            cov_id: Some(format_id(generate(), IdType::Conversation)),
+            conversation_id: Some(format_id(generate(), IdType::Conversation)),
             workspace_id: "ws-test".to_string(),
             handle: AgentHandle {
                 workspace: WorkspaceHandle {
@@ -463,13 +464,13 @@ mod tests {
 
         let got = registry.get("agent-1").await.unwrap();
         assert_eq!(got.agent_id, "agent-1");
-        // cov_id now uses snowflake format (conv_*), verify format prefix
+        // conversation_id now uses snowflake format (conv_*), verify format prefix
         assert!(
-            got.cov_id
+            got.conversation_id
                 .as_ref()
                 .is_some_and(|id| id.starts_with("conv_")),
-            "cov_id should have conv_ prefix, got: {:?}",
-            got.cov_id
+            "conversation_id should have conv_ prefix, got: {:?}",
+            got.conversation_id
         );
     }
 

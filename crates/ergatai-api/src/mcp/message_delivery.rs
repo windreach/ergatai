@@ -445,8 +445,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
     // - If delivery fails: we explicitly call remove_pending_response() below
     if payload.requires_receipt {
         if let Some(corr_id) = &payload.correlation_id {
-            crate::messaging::record_pending_response(to, corr_id, payload.thread_id.as_deref())
-                .await;
+            crate::messaging::record_pending_response(to, corr_id).await;
             debug!(
                 message_id = %payload.message_id,
                 to = %to,
@@ -466,16 +465,16 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
     // mark since the message is discarded anyway.
     mark_message_processed(&payload.message_id);
 
-    // Cov-centric delivery: direct cov_id → AgentInfo lookup.
+    // Conversation-centric delivery: direct conversation_id → AgentInfo lookup.
     // This bypasses the agent_id intermediary lookup for better performance.
-    let cov_id = match payload.target_cov_id.as_ref() {
+    let conversation_id = match payload.target_conversation_id.as_ref() {
         Some(id) => id.clone(),
         None => {
             error!(
                 message_id = %payload.message_id,
                 from = from,
                 to = to,
-                "Message missing target_cov_id (required for Cov-centric delivery), discarding"
+                "Message missing target_conversation_id (required for Conversation-centric delivery), discarding"
             );
             // Ack to discard the message (it's invalid and won't be deliverable)
             let _ = msg.ack().await;
@@ -486,13 +485,100 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
     info!(
         from = from,
         to = to,
-        cov_id = %cov_id,
-        "Using Cov-centric delivery (direct cov_id → AgentInfo lookup)"
+        conversation_id = %conversation_id,
+        image_count = payload.images.len(),
+        "Using Conversation-centric delivery (direct conversation_id → AgentInfo lookup)"
     );
 
-    let delivery_result = runtime
-        .inject_message_to_cov(&cov_id, formatted_message, payload.thread_id.as_deref())
+    // ── User message persistence and SSE streaming ──
+    // If this is a user message, persist it to SQLite and publish to conversation subject
+    if from == "user" {
+        let conversation_id_for_persist = conversation_id.clone();
+        let message_content = payload.content.clone();
+        let message_id_for_persist = payload.message_id.clone();
+
+        // Build parts array with text and images
+        let mut parts = vec![serde_json::json!({
+            "type": "text",
+            "text": message_content,
+        })];
+        for image in &payload.images {
+            parts.push(serde_json::json!({
+                "type": "data-image",
+                "data": image.base64_data,
+                "media_type": image.media_type,
+            }));
+        }
+
+        // Persist user message to SQLite
+        let append_result = tokio::task::spawn_blocking(move || {
+            crate::user_data_db::messages::append(
+                &conversation_id_for_persist,
+                "user",
+                serde_json::Value::Array(parts),
+                serde_json::json!({ "source": "user" }),
+            )
+        })
         .await;
+
+        match append_result {
+            Ok(Ok(persisted_msg)) => {
+                // Publish to conversation subject for SSE streaming
+                crate::messaging::publish_to_conversation_subject_with_message(
+                    persisted_msg,
+                    None,
+                    None,
+                )
+                .await;
+                info!(
+                    message_id = %message_id_for_persist,
+                    "User message persisted and published to SSE"
+                );
+            }
+            Ok(Err(e)) => {
+                warn!(
+                    message_id = %message_id_for_persist,
+                    conversation_id = %conversation_id,
+                    error = %e,
+                    "Failed to persist user message to SQLite (continuing with delivery)"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    message_id = %message_id_for_persist,
+                    conversation_id = %conversation_id,
+                    error = %e,
+                    "Failed to persist user message (task join error, continuing with delivery)"
+                );
+            }
+        }
+    }
+
+    // Choose delivery method based on whether images are present
+    let delivery_result = if payload.images.is_empty() {
+        runtime
+            .inject_message_to_conversation(&conversation_id, formatted_message)
+            .await
+    } else {
+        // Convert NATS AgentImage to runtime AgentImage
+        let runtime_images: Vec<ergatai_runtime::types::AgentImage> = payload
+            .images
+            .iter()
+            .map(|img| ergatai_runtime::types::AgentImage {
+                base64_data: img.base64_data.clone(),
+                media_type: img.media_type.clone(),
+                filename: img.filename.clone(),
+            })
+            .collect();
+
+        runtime
+            .inject_message_to_conversation_with_images(
+                &conversation_id,
+                formatted_message,
+                runtime_images,
+            )
+            .await
+    };
 
     match delivery_result {
         Ok(()) => {
@@ -517,6 +603,75 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                         error = %e,
                         "Failed to ack message delivery - NATS will redeliver but dedup will prevent duplicate"
                     );
+                }
+            }
+
+            // ── Agent message persistence and SSE streaming ──
+            // If this is an agent message (not from user), persist it to SQLite and publish to SSE
+            if from != "user" {
+                let conversation_id_for_persist = conversation_id.clone();
+                let message_content = payload.content.clone();
+                let message_id_for_persist = payload.message_id.clone();
+                let from_agent = from.to_string();
+                let message_type = payload.message_type.clone();
+
+                // Determine role based on message type
+                let role = match message_type.as_str() {
+                    "request" => "agent",
+                    "response" | "broadcast" => "assistant",
+                    _ => "agent",
+                };
+
+                // Persist agent message to SQLite
+                let append_result = tokio::task::spawn_blocking(move || {
+                    let metadata = serde_json::json!({
+                        "source": "agent",
+                        "senderAgentId": from_agent,
+                        "senderAgentName": from_agent,  // Use agent ID as name (no separate name field in payload)
+                        "messageType": message_type,
+                    });
+                    crate::user_data_db::messages::append(
+                        &conversation_id_for_persist,
+                        role,
+                        serde_json::json!([{ "type": "text", "text": message_content }]),
+                        metadata,
+                    )
+                })
+                .await;
+
+                match append_result {
+                    Ok(Ok(persisted_msg)) => {
+                        // Publish to conversation subject for SSE streaming
+                        crate::messaging::publish_to_conversation_subject_with_message(
+                            persisted_msg,
+                            Some(from.to_string()),
+                            Some(from.to_string()), // Use agent ID as name
+                        )
+                        .await;
+                        info!(
+                            message_id = %message_id_for_persist,
+                            role = role,
+                            "Agent message persisted and published to SSE"
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        warn!(
+                            message_id = %message_id_for_persist,
+                            conversation_id = %conversation_id,
+                            from_agent = %from,
+                            error = %e,
+                            "Failed to persist agent message to SQLite (message was delivered)"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            message_id = %message_id_for_persist,
+                            conversation_id = %conversation_id,
+                            from_agent = %from,
+                            error = %e,
+                            "Failed to persist agent message (task join error, message was delivered)"
+                        );
+                    }
                 }
             }
 

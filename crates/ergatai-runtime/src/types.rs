@@ -180,7 +180,7 @@ pub struct SessionInfo {
 /// ## ID System (Simplified)
 ///
 /// - `agent_id`: Runtime ID for NATS routing (e.g., "ws1-agent-1")
-/// - `cov_id`: Application ID for Cov-centric routing (1:1 with agent)
+/// - `conversation_id`: Application ID for Conversation-centric routing (1:1 with agent)
 /// - `mcp_agent_id`: MCP connection ID (e.g., "opencode@abcd1234")
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
@@ -188,10 +188,10 @@ pub struct AgentInfo {
     /// Changes when the process dies and a new one is created.
     pub agent_id: String,
 
-    /// Cov ID (Conversation ID) — the primary identifier for the Cov execution unit.
-    /// Used for Cov-centric message routing and direct delivery.
+    /// Conversation ID (Conversation ID) — the primary identifier for the Cov execution unit.
+    /// Used for Conversation-centric message routing and direct delivery.
     /// Each Cov has a 1:1 binding to an Agent.
-    pub cov_id: Option<String>,
+    pub conversation_id: Option<String>,
 
     /// Workspace ID this agent belongs to
     pub workspace_id: String,
@@ -468,7 +468,7 @@ mod tests {
         let now = chrono::Utc::now();
         let info = AgentInfo {
             agent_id: "agent-1".to_string(),
-            cov_id: None,
+            conversation_id: None,
             workspace_id: "ws-1".to_string(),
             handle: AgentHandle {
                 workspace: WorkspaceHandle {
@@ -504,7 +504,7 @@ mod tests {
         let now = chrono::Utc::now();
         let info = AgentInfo {
             agent_id: "agent-1".to_string(),
-            cov_id: None,
+            conversation_id: None,
             workspace_id: "ws-1".to_string(),
             handle: AgentHandle {
                 workspace: WorkspaceHandle {

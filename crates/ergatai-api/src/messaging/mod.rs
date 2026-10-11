@@ -83,12 +83,12 @@ pub enum SendMessageResult {
 pub struct SendRequest {
     /// Sender identifier (MCP session ID, "api", or agent ID).
     pub from: String,
-    /// Target agent ID (supports runtime ID, cov_id, or name prefix).
+    /// Target agent ID (supports runtime ID, conversation_id, or name prefix).
     pub to: String,
-    /// When present, the system uses `ergatai.conversation.message.{cov_id}` subject
+    /// When present, the system uses `ergatai.conversation.message.{conversation_id}` subject
     /// instead of `ergatai.agent.message.{agent_id}`.
     /// This is the new preferred routing; `to` is kept for backward compatibility.
-    pub target_cov_id: Option<String>,
+    pub target_conversation_id: Option<String>,
     /// Message content.
     pub message: String,
     /// Message type: "request", "response", or "broadcast".
@@ -110,7 +110,6 @@ pub struct SendRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingResponseContext {
     correlation_id: String,
-    conversation_id: Option<String>,
 }
 
 /// Unified message sending service.
@@ -132,7 +131,7 @@ pub struct MessageSender {
 
 /// Find a running agent by conversation_id.
 ///
-/// Uses the cov_id index for O(1) lookup since cov_id == conversation_id
+/// Uses the conversation_id index for O(1) lookup since conversation_id == conversation_id
 /// (populated from `handle.metadata.get("conversation_id")`).
 ///
 /// This is useful for routing messages to agents when only the conversation_id
@@ -141,13 +140,16 @@ async fn find_agent_by_conversation(
     runtime: &AgentRuntime,
     conversation_id: &str,
 ) -> Option<String> {
-    // Use cov_id index for O(1) lookup (cov_id == conversation_id)
-    let info = runtime.registry().resolve_cov_id(conversation_id).await?;
+    // Use conversation_id index for O(1) lookup (conversation_id == conversation_id)
+    let info = runtime
+        .registry()
+        .resolve_conversation_id(conversation_id)
+        .await?;
     if info.lifecycle.is_alive() {
         tracing::debug!(
             conversation_id = %conversation_id,
             agent_id = %info.agent_id,
-            "Found running agent with matching conversation_id (O(1) cov_id index)"
+            "Found running agent with matching conversation_id (O(1) conversation_id index)"
         );
         Some(info.agent_id)
     } else {
@@ -307,7 +309,7 @@ impl MessageSender {
         let resolved_req = SendRequest {
             from: resolved_sender_id.clone(),
             to: resolved_target_id.clone(),
-            target_cov_id: req.target_cov_id.clone(), // Pass through Cov ID
+            target_conversation_id: req.target_conversation_id.clone(), // Pass through Conversation ID
             message: req.message.clone(),
             message_type: req.message_type.clone(),
             correlation_id: req.correlation_id.clone(),
@@ -351,11 +353,7 @@ impl MessageSender {
             None
         };
 
-        let mut target_conversation_id = req.conversation_id.clone().or_else(|| {
-            pending_response
-                .as_ref()
-                .and_then(|p| p.conversation_id.clone())
-        });
+        let mut target_conversation_id = req.conversation_id.clone();
         if target_conversation_id.is_none() {
             let ensured_conversation_id = self
                 .ensure_target_conversation(&resolved_sender_id, &resolved_target_id, &req.to)
@@ -418,7 +416,7 @@ impl MessageSender {
 
         let formatted_content = Self::format_agent_message(
             &sender_display,
-            &self.get_sender_cov_id(&resolved_sender_id).await,
+            &self.get_sender_conversation_id(&resolved_sender_id).await,
             &req.message,
             &req.message_type,
             correlation_id.as_deref(),
@@ -441,7 +439,6 @@ impl MessageSender {
                 from_agent: resolved_sender_id.clone(),
                 to_agent: resolved_target_id.clone(),
                 content: formatted_content.clone(),
-                thread_id: target_conversation_id.clone(),
                 timestamp,
                 metadata,
                 // Generate unique message ID for tracking
@@ -454,8 +451,10 @@ impl MessageSender {
                 timeout_ms,
                 // Message type for proper classification on the receiving end
                 message_type: req.message_type.clone(),
-                // Cov ID for direct delivery (bypasses agent_id intermediary)
-                target_cov_id: resolved_req.target_cov_id.clone(),
+                // Conversation ID for direct delivery (bypasses agent_id intermediary)
+                target_conversation_id: resolved_req.target_conversation_id.clone(),
+                // Images (empty for agent-to-agent messages, used for user messages)
+                images: vec![],
             };
 
             // Track request for reqwatch monitoring
@@ -483,7 +482,7 @@ impl MessageSender {
             }
 
             // Unified agent-centric routing: publish to ergatai.agent.message.{agent_id}
-            // The target_cov_id is included in the payload for direct Cov delivery on the consumer side.
+            // The target_conversation_id is included in the payload for direct Cov delivery on the consumer side.
             let publish_result = bus
                 .publish_agent_message_reliable(&payload)
                 .await
@@ -508,54 +507,9 @@ impl MessageSender {
                         )
                         .await;
 
-                    // Persist message AFTER successful delivery. The conversation helper
-                    // owns writes to the normalized `messages` table.
-                    if let Some(conversation_id) = target_conversation_id.clone() {
-                        let message = req.message.clone();
-                        let from = req.from.clone();
-                        let sender_name = sender_display.clone();
-                        let message_type = req.message_type.clone();
-                        let conversation_id_for_persist = conversation_id.clone();
-                        // Wrap synchronous DB call in spawn_blocking
-                        let append_result = tokio::task::spawn_blocking(move || {
-                            let role = agent_message_role(&message_type);
-                            let metadata = serde_json::json!({
-                                "source": "agent",
-                                "senderAgentId": from,
-                                "senderAgentName": sender_name,
-                                "messageType": message_type,
-                            });
-                            user_data_db::messages::append(
-                                &conversation_id_for_persist,
-                                role,
-                                serde_json::json!([{ "type": "text", "text": message }]),
-                                metadata,
-                            )
-                        })
-                        .await;
-
-                        // Publish to conversation subject for SSE streaming
-                        // Use the Message returned by append() to avoid race condition
-                        match append_result {
-                            Ok(Ok(persisted_msg)) => {
-                                publish_to_conversation_subject_with_message(
-                                    persisted_msg,
-                                    Some(req.from.clone()),
-                                    Some(sender_display.clone()),
-                                )
-                                .await;
-                            }
-                            Ok(Err(e)) => {
-                                warn!("Failed to persist A-to-A message to messages table: {}", e);
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Failed to persist delivered message (task join error): {}",
-                                    e
-                                );
-                            }
-                        }
-                    }
+                    // Note: Message persistence and SSE streaming are now handled by the consumer
+                    // in message_delivery.rs, not here. This ensures unified delivery path for
+                    // both user and agent messages.
 
                     return SendMessageResult::Queued {
                         target_agent: resolved_target_id,
@@ -575,7 +529,7 @@ impl MessageSender {
 
         // ── Fallback: direct delivery via ACP protocol ──
         match runtime
-            .inject_message(&resolved_target_id, &formatted_content, None)
+            .inject_message(&resolved_target_id, &formatted_content)
             .await
         {
             Ok(_) => {
@@ -722,7 +676,24 @@ impl MessageSender {
             return Some(conversation_id);
         }
 
-        let conversation_id = format_id(generate(), IdType::Conversation);
+        // Get conversation_id from target agent's metadata to ensure consistency
+        // between database conversation ID and NATS routing ID
+        let runtime = crate::context::get_app_context().agent_runtime.clone();
+        let conversation_id = match runtime.get_agent(&target_id).await {
+            Some(agent_info) => agent_info
+                .handle
+                .metadata
+                .get("conversation_id")
+                .cloned()
+                .unwrap_or_else(|| format_id(generate(), IdType::Conversation)),
+            None => {
+                tracing::warn!(
+                    target_agent = %target_id,
+                    "Failed to get target agent info, generating new conversation_id"
+                );
+                format_id(generate(), IdType::Conversation)
+            }
+        };
         let timestamp = chrono::Utc::now().timestamp();
         let conversation_id_for_db = conversation_id.clone();
         let chat_id_for_conversation = chat_id.clone();
@@ -737,23 +708,21 @@ impl MessageSender {
         let conversation_id_for_agent_session = conversation_id_for_db.clone();
         let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
             user_data_db::conversations::create(user_data_db::Conversation {
-                id: conversation_id_for_create,
+                conversation_id: conversation_id_for_create,
+                collaboration_session_id: root_conversation_for_db.collaboration_session_id.clone(),
+                chat_id: root_conversation_for_db.chat_id.clone(),
                 parent_id: Some(chat_id_for_conversation),
-                project_id: root_conversation_for_db.project_id.clone(),
-                workspace_id: root_conversation_for_db.workspace_id.clone(),
                 name: Some(target_label_for_conversation),
                 mode: "agent".to_string(),
+                participant_role: "peer".to_string(),
+                status: "ready".to_string(),
                 created_at: timestamp,
                 updated_at: timestamp,
-                archived_at: None,
             })
             .map_err(|error| error.to_string())?;
 
             user_data_db::group_agent_bindings::upsert(user_data_db::GroupAgentBinding {
-                workspace_id: root_conversation_for_db
-                    .workspace_id
-                    .clone()
-                    .unwrap_or_default(),
+                workspace_id: root_conversation_for_db.chat_id.clone(),
                 chat_id: chat_id_for_binding,
                 agent_id: target_id_for_db,
                 agent_name: target_label_for_agent_name,
@@ -764,12 +733,14 @@ impl MessageSender {
             })
             .map_err(|error| error.to_string())?;
 
-            user_data_db::agent_sessions::upsert(
-                &conversation_id_for_agent_session,
-                None,
-                "agent",
-                timestamp,
-            )
+            user_data_db::agent_sessions::upsert(user_data_db::AgentSession {
+                agent_session_id: format_id(generate(), IdType::Session),
+                conversation_id: conversation_id_for_agent_session,
+                acp_session_id: None,
+                mode: "agent".to_string(),
+                created_at: timestamp,
+                updated_at: timestamp,
+            })
             .map_err(|error| error.to_string())?;
 
             Ok(())
@@ -797,7 +768,7 @@ impl MessageSender {
             let participant_agent_id = target_id.clone();
             if let Err(error) = tokio::task::spawn_blocking(move || {
                 crate::services::collaboration_session::upsert_participant(
-                    &session.id,
+                    &session.collaboration_session_id,
                     crate::services::collaboration_session::ParticipantInput {
                         conversation_id: participant_conversation_id,
                         agent_id: participant_agent_id,
@@ -1068,10 +1039,13 @@ impl MessageSender {
         }
 
         // Step 2: Check if conversation_id matches a suspended agent
-        if let Some(conv_id) = conversation_id {
-            if let Ok(Some(suspended)) = runtime.suspend_store().find_by_conversation(conv_id) {
+        if let Some(conversation_id) = conversation_id {
+            if let Ok(Some(suspended)) = runtime
+                .suspend_store()
+                .find_by_conversation(conversation_id)
+            {
                 tracing::info!(
-                    conversation_id = %conv_id,
+                    conversation_id = %conversation_id,
                     suspended_id = %suspended.id,
                     "Found suspended agent by conversation_id, attempting resume"
                 );
@@ -1081,7 +1055,7 @@ impl MessageSender {
                         tracing::info!(
                             suspended_id = %suspended.id,
                             new_agent_id = %new_agent_id,
-                            conversation_id = %conv_id,
+                            conversation_id = %conversation_id,
                             "Successfully resumed suspended agent by conversation_id"
                         );
                         // Agent is fully ready: resume_agent() waits for ACP connection + session setup
@@ -1091,7 +1065,7 @@ impl MessageSender {
                         tracing::warn!(
                             error = %e,
                             suspended_id = %suspended.id,
-                            conversation_id = %conv_id,
+                            conversation_id = %conversation_id,
                             "Failed to resume suspended agent by conversation_id"
                         );
                         return None;
@@ -1102,10 +1076,10 @@ impl MessageSender {
 
         // Step 3: Check if any running agent has this conversation_id in metadata
         // (This handles the case where the agent is running but not found by ID)
-        if let Some(conv_id) = conversation_id {
-            if let Some(agent_id) = find_agent_by_conversation(runtime, conv_id).await {
+        if let Some(conversation_id) = conversation_id {
+            if let Some(agent_id) = find_agent_by_conversation(runtime, conversation_id).await {
                 tracing::debug!(
-                    conversation_id = %conv_id,
+                    conversation_id = %conversation_id,
                     agent_id = %agent_id,
                     "Found running agent with matching conversation_id"
                 );
@@ -1220,12 +1194,13 @@ impl MessageSender {
         Some(from.to_string())
     }
 
-    /// Look up the sender's cov_id from the runtime registry.
-    /// Falls back to the sender's agent_id if cov_id is not set.
-    async fn get_sender_cov_id(&self, from: &str) -> String {
+    /// Look up the sender's conversation_id from the runtime registry.
+    /// Falls back to the sender's agent_id if conversation_id is not set.
+    async fn get_sender_conversation_id(&self, from: &str) -> String {
         let runtime = crate::context::get_app_context().agent_runtime.clone();
         if let Some(info) = runtime.get_agent(from).await {
-            info.cov_id.unwrap_or_else(|| info.agent_id.clone())
+            info.conversation_id
+                .unwrap_or_else(|| info.agent_id.clone())
         } else {
             from.to_string()
         }
@@ -1272,7 +1247,7 @@ impl MessageSender {
     /// agents to message themselves or waste tokens on unnecessary replies.
     pub fn format_agent_message(
         sender_display: &str,
-        sender_cov_id: &str,
+        sender_conversation_id: &str,
         message: &str,
         message_type: &str,
         correlation_id: Option<&str>,
@@ -1289,8 +1264,8 @@ impl MessageSender {
         let (reply_value, rules): (serde_json::Value, Vec<&str>) = match message_type {
             "request" => (
                 serde_json::json!(format!(
-                    "MUST call send_message(target_cov_id='{}')",
-                    sender_cov_id,
+                    "MUST call send_message(target_conversation_id='{}')",
+                    sender_conversation_id,
                 )),
                 vec![
                     "DO NOT write reply as terminal text, MUST use send_message tool",
@@ -1314,8 +1289,8 @@ impl MessageSender {
             // Fallback: treat unknown types like request
             _ => (
                 serde_json::json!(format!(
-                    "MUST call send_message(target_cov_id='{}')",
-                    sender_cov_id,
+                    "MUST call send_message(target_conversation_id='{}')",
+                    sender_conversation_id,
                 )),
                 vec![
                     "DO NOT write reply as terminal text, MUST use send_message tool",
@@ -1367,10 +1342,10 @@ static MESSAGE_SENDER: OnceLock<MessageSender> = OnceLock::new();
 pub fn init_message_sender() -> &'static MessageSender {
     MESSAGE_SENDER.get_or_init(|| {
         let config = ConversationConfig::default();
-        let conv_manager = Arc::new(ConversationManager::new(config));
+        let conversation_manager = Arc::new(ConversationManager::new(config));
         let request_monitor = Arc::new(RequestMonitor::new());
         MessageSender::new(
-            conv_manager,
+            conversation_manager,
             Arc::new(agent_registry().clone()),
             request_monitor,
         )
@@ -1397,18 +1372,13 @@ pub fn get_message_sender() -> Option<&'static MessageSender> {
 /// usage in long-running sessions with unresponsive agents.
 const MAX_PENDING_PER_AGENT: usize = 100;
 
-pub async fn record_pending_response(
-    to_agent: &str,
-    correlation_id: &str,
-    conversation_id: Option<&str>,
-) {
+pub async fn record_pending_response(to_agent: &str, correlation_id: &str) {
     if let Some(sender) = get_message_sender() {
         sender
             .store_pending_response(
                 to_agent,
                 PendingResponseContext {
                     correlation_id: correlation_id.to_string(),
-                    conversation_id: conversation_id.map(str::to_string),
                 },
             )
             .await;
@@ -1436,8 +1406,8 @@ pub async fn publish_to_conversation_subject_with_message(
         return;
     };
 
-    let conv_id_for_log = persisted_msg.conversation_id.clone();
-    let msg_id_for_log = persisted_msg.id.clone();
+    let conversation_id_for_log = persisted_msg.conversation_id.clone();
+    let msg_id_for_log = persisted_msg.message_id.clone();
 
     // Extract text content from parts to ensure consistency
     let content = extract_text_from_parts(&persisted_msg.parts);
@@ -1447,7 +1417,7 @@ pub async fn publish_to_conversation_subject_with_message(
         let bus = ergatai_nats::EventBus::new(conn);
         let payload = ergatai_nats::ConversationMessagePayload {
             conversation_id: persisted_msg.conversation_id,
-            message_id: persisted_msg.id,
+            message_id: persisted_msg.message_id,
             role: persisted_msg.role,
             content,
             parts: Some(
@@ -1472,7 +1442,7 @@ pub async fn publish_to_conversation_subject_with_message(
 
         if let Err(e) = bus.publish_conversation_message(&payload).await {
             warn!(
-                conversation_id = %conv_id_for_log,
+                conversation_id = %conversation_id_for_log,
                 message_id = %payload.message_id,
                 error = %e,
                 "Failed to publish to conversation subject (non-fatal)"
@@ -1620,7 +1590,6 @@ mod pending_response_tests {
                 "agent-2",
                 PendingResponseContext {
                     correlation_id: "corr-1".to_string(),
-                    conversation_id: Some("conversation-1".to_string()),
                 },
             )
             .await;
@@ -1629,20 +1598,17 @@ mod pending_response_tests {
                 "agent-2",
                 PendingResponseContext {
                     correlation_id: "corr-2".to_string(),
-                    conversation_id: Some("conversation-2".to_string()),
                 },
             )
             .await;
 
-        let matched = sender
+        let _matched = sender
             .take_pending_response("agent-2", Some("corr-2"))
             .await
             .expect("matched context");
-        assert_eq!(matched.conversation_id.as_deref(), Some("conversation-2"));
 
         let oldest = sender.take_pending_response("agent-2", None).await.unwrap();
         assert_eq!(oldest.correlation_id, "corr-1");
-        assert_eq!(oldest.conversation_id.as_deref(), Some("conversation-1"));
 
         assert!(sender
             .take_pending_response("agent-2", None)

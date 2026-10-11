@@ -19,27 +19,18 @@ use crate::AppState;
 
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ListChatsParams {
-    pub project_id: Option<String>,
     pub workspace_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateChatRequest {
     pub name: Option<String>,
-    pub project_id: String,
-    pub workspace_id: Option<String>,
-    pub collaboration_mode: Option<String>,
+    pub workspace_id: String,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateChatRequest {
     pub name: Option<String>,
-    pub collaboration_mode: Option<Option<String>>,
-    pub worktree_path: Option<Option<String>>,
-    pub branch: Option<Option<String>>,
-    pub base_branch: Option<Option<String>>,
-    pub pr_url: Option<Option<String>>,
-    pub pr_number: Option<Option<i32>>,
 }
 
 /// Request to create a new conversation (formerly sub-chat).
@@ -108,17 +99,10 @@ pub struct RegisteredWorktreeResponse {
 pub struct ChatResponse {
     pub id: String,
     pub name: Option<String>,
-    pub project_id: String,
-    pub workspace_id: Option<String>,
-    pub collaboration_mode: String,
+    pub workspace_id: String,
     pub created_at: i64,
     pub updated_at: i64,
     pub archived_at: Option<i64>,
-    pub worktree_path: Option<String>,
-    pub branch: Option<String>,
-    pub base_branch: Option<String>,
-    pub pr_url: Option<String>,
-    pub pr_number: Option<i32>,
 }
 
 /// Response representing a conversation (formerly sub-chat).
@@ -127,9 +111,11 @@ pub struct ConversationResponse {
     pub id: String,
     pub name: Option<String>,
     pub chat_id: String,
-    pub session_id: Option<String>,
+    pub collaboration_session_id: String,
+    pub parent_id: Option<String>,
     pub mode: String,
-    pub messages: String,
+    pub participant_role: String,
+    pub status: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -164,51 +150,36 @@ fn db_error(operation: &'static str, error: rusqlite::Error) -> Response {
 
 fn chat_to_response(chat: Chat) -> ChatResponse {
     ChatResponse {
-        id: chat.id,
+        id: chat.chat_id,
         name: chat.name,
-        project_id: chat.project_id,
         workspace_id: chat.workspace_id,
-        collaboration_mode: chat.collaboration_mode,
         created_at: chat.created_at,
         updated_at: chat.updated_at,
         archived_at: chat.archived_at,
-        worktree_path: chat.worktree_path,
-        branch: chat.branch,
-        base_branch: chat.base_branch,
-        pr_url: chat.pr_url,
-        pr_number: chat.pr_number,
     }
 }
 
-fn conversation_to_response(
-    conversation: user_data_db::Conversation,
-    session_id: Option<String>,
-    messages: String,
-) -> ConversationResponse {
+fn conversation_to_response(conversation: user_data_db::Conversation) -> ConversationResponse {
     ConversationResponse {
-        id: conversation.id,
+        id: conversation.conversation_id,
         name: conversation.name,
-        chat_id: conversation.parent_id.unwrap_or_default(),
-        session_id,
+        chat_id: conversation.chat_id,
+        collaboration_session_id: conversation.collaboration_session_id,
+        parent_id: conversation.parent_id,
         mode: conversation.mode,
-        messages,
+        participant_role: conversation.participant_role,
+        status: conversation.status,
         created_at: conversation.created_at,
         updated_at: conversation.updated_at,
     }
 }
 
-/// Builds a ConversationResponse by loading conversation + session + messages.
+/// Builds a ConversationResponse by loading conversation.
 fn build_conversation_response(id: &str) -> rusqlite::Result<Option<ConversationResponse>> {
     let Some(conversation) = user_data_db::conversations::get(id)? else {
         return Ok(None);
     };
-    let session_id = user_data_db::agent_sessions::get(id)?;
-    let messages = user_data_db::messages::serialize_legacy(id)?;
-    Ok(Some(conversation_to_response(
-        conversation,
-        session_id,
-        messages,
-    )))
+    Ok(Some(conversation_to_response(conversation)))
 }
 
 fn generate_id() -> String {
@@ -247,18 +218,9 @@ pub async fn list_chats(
     State(_state): State<AppState>,
     Query(params): Query<ListChatsParams>,
 ) -> impl IntoResponse {
-    if let Some(project_id) = params.project_id.as_deref() {
-        if !crate::api::validation::is_valid_project_id(project_id) {
-            return crate::api::validation::invalid_project_id_response();
-        }
-    }
-
-    let project_id = params.project_id.clone();
     let workspace_id = params.workspace_id.clone();
-    match tokio::task::spawn_blocking(move || {
-        user_data_db::chats::list(project_id.as_deref(), workspace_id.as_deref())
-    })
-    .await
+    match tokio::task::spawn_blocking(move || user_data_db::chats::list(workspace_id.as_deref()))
+        .await
     {
         Ok(Ok(chats)) => {
             let response: Vec<ChatResponse> = chats.into_iter().map(chat_to_response).collect();
@@ -292,41 +254,35 @@ pub async fn create_chat(
     State(_state): State<AppState>,
     Json(req): Json<CreateChatRequest>,
 ) -> impl IntoResponse {
-    if !crate::api::validation::is_valid_project_id(&req.project_id) {
-        return crate::api::validation::invalid_project_id_response();
+    // Validate workspace_id
+    if req.workspace_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Workspace ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
     }
 
-    // Validate collaboration_mode if provided
-    if let Some(ref mode) = req.collaboration_mode {
-        if !matches!(mode.as_str(), "supervisor" | "mesh" | "star" | "group") {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "collaboration_mode must be one of: supervisor, mesh, star, group"
-                        .to_string(),
-                }),
-            )
-                .into_response();
-        }
-    }
-
-    // Validate project exists
-    let project_id_for_check = req.project_id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::projects::get(&project_id_for_check))
-        .await
+    let workspace_id_for_check = req.workspace_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::workspaces::get(&workspace_id_for_check)
+    })
+    .await
     {
         Ok(Ok(Some(_))) => {}
         Ok(Ok(None)) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
-                    error: format!("Project {} not found", req.project_id),
+                    error: format!("Workspace {} not found", req.workspace_id),
                 }),
             )
                 .into_response();
         }
         Ok(Err(error)) => {
-            return db_error("Failed to validate project", error);
+            return db_error("Failed to validate workspace", error);
         }
         Err(e) => {
             return (
@@ -339,69 +295,18 @@ pub async fn create_chat(
         }
     }
 
-    // Validate workspace_id if provided
-    if let Some(ref workspace_id) = req.workspace_id {
-        if workspace_id.is_empty() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Workspace ID cannot be empty".to_string(),
-                }),
-            )
-                .into_response();
-        }
-        let workspace_id_for_check = workspace_id.clone();
-        match tokio::task::spawn_blocking(move || {
-            user_data_db::workspaces::get(&workspace_id_for_check)
-        })
-        .await
-        {
-            Ok(Ok(Some(_))) => {}
-            Ok(Ok(None)) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("Workspace {} not found", workspace_id),
-                    }),
-                )
-                    .into_response();
-            }
-            Ok(Err(error)) => {
-                return db_error("Failed to validate workspace", error);
-            }
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("Task join error: {}", e),
-                    }),
-                )
-                    .into_response();
-            }
-        }
-    }
-
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
 
     let chat = Chat {
-        id: generate_id(),
+        chat_id: generate_id(),
         name: req.name,
-        project_id: req.project_id,
         workspace_id: req.workspace_id,
-        collaboration_mode: req
-            .collaboration_mode
-            .unwrap_or_else(|| "supervisor".to_string()),
         created_at: now,
         updated_at: now,
         archived_at: None,
-        worktree_path: None,
-        branch: None,
-        base_branch: None,
-        pr_url: None,
-        pr_number: None,
     };
 
     match tokio::task::spawn_blocking(move || user_data_db::chats::create(chat)).await {
@@ -513,30 +418,14 @@ pub async fn update_chat(
         .as_secs() as i64;
 
     let name = req.name.or(existing.name);
-    let collaboration_mode = req
-        .collaboration_mode
-        .flatten()
-        .unwrap_or(existing.collaboration_mode);
-    let worktree_path = req.worktree_path.flatten().or(existing.worktree_path);
-    let branch = req.branch.flatten().or(existing.branch);
-    let base_branch = req.base_branch.flatten().or(existing.base_branch);
-    let pr_url = req.pr_url.flatten().or(existing.pr_url);
-    let pr_number = req.pr_number.flatten().or(existing.pr_number);
 
     let updated_chat = Chat {
-        id: existing.id.clone(),
+        chat_id: existing.chat_id.clone(),
         name,
-        project_id: existing.project_id.clone(),
         workspace_id: existing.workspace_id.clone(),
-        collaboration_mode,
         created_at: existing.created_at,
         updated_at: now,
         archived_at: existing.archived_at,
-        worktree_path,
-        branch,
-        base_branch,
-        pr_url,
-        pr_number,
     };
 
     let id_for_update = id.clone();
@@ -674,85 +563,18 @@ pub async fn delete_chat(
 /// GET /api/v1/worktrees/registered?path=...
 ///
 /// Resolve a filesystem path against backend-registered chats and projects.
+/// TODO: This endpoint is temporarily stubbed since worktree tracking has been removed.
 pub async fn lookup_registered_worktree(
     State(_state): State<AppState>,
-    Query(params): Query<WorktreeLookupParams>,
+    Query(_params): Query<WorktreeLookupParams>,
 ) -> impl IntoResponse {
-    let path_for_lookup = params.path.clone();
-    let chat_result = match tokio::task::spawn_blocking(move || {
-        user_data_db::chats::find_by_worktree_path(&path_for_lookup)
-    })
-    .await
-    {
-        Ok(Ok(chat)) => chat,
-        Ok(Err(error)) => {
-            return db_error("Failed to lookup registered worktree", error);
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    if let Some(chat) = chat_result {
-        let project_id_for_get = chat.project_id.clone();
-        let project_result = match tokio::task::spawn_blocking(move || {
-            user_data_db::projects::get(&project_id_for_get)
-        })
-        .await
-        {
-            Ok(Ok(project)) => project,
-            Ok(Err(error)) => return db_error("Failed to lookup registered worktree", error),
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("Task join error: {}", e),
-                    }),
-                )
-                    .into_response();
-            }
-        };
-        let project_path = project_result.map(|p| p.path);
-        return (
-            StatusCode::OK,
-            Json(RegisteredWorktreeResponse {
-                chat: Some(chat_to_response(chat)),
-                project_path,
-            }),
-        )
-            .into_response();
-    }
-
-    let path_for_project_lookup = params.path.clone();
-    let project_result = match tokio::task::spawn_blocking(move || {
-        user_data_db::projects::find_by_path(&path_for_project_lookup)
-    })
-    .await
-    {
-        Ok(Ok(project)) => project,
-        Ok(Err(error)) => return db_error("Failed to lookup registered worktree", error),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response();
-        }
-    };
-    let project_path = project_result.map(|p| p.path);
+    // TODO: Worktree tracking has been removed from the schema.
+    // This endpoint is temporarily stubbed.
     (
         StatusCode::OK,
         Json(RegisteredWorktreeResponse {
             chat: None,
-            project_path,
+            project_path: None,
         }),
     )
         .into_response()
@@ -782,9 +604,7 @@ pub async fn list_sub_chats(
         let children = user_data_db::conversations::list_children(&chat_id_for_list)?;
         let mut responses = Vec::with_capacity(children.len());
         for conversation in children {
-            let session_id = user_data_db::agent_sessions::get(&conversation.id)?;
-            let messages = user_data_db::messages::serialize_legacy(&conversation.id)?;
-            responses.push(conversation_to_response(conversation, session_id, messages));
+            responses.push(conversation_to_response(conversation));
         }
         Ok::<_, rusqlite::Error>(responses)
     })
@@ -857,8 +677,90 @@ pub async fn create_sub_chat(
     let conversation_id = generate_conversation_id();
     let mode = req.mode.unwrap_or_else(|| "agent".to_string());
     let name = req.name;
-    let session_id = req.session_id;
+    let chat_id_for_create = chat_id.clone();
+
+    // Get the chat to find its associated collaboration session
+    let chat_for_session =
+        match tokio::task::spawn_blocking(move || user_data_db::chats::get(&chat_id_for_create))
+            .await
+        {
+            Ok(Ok(Some(chat))) => chat,
+            Ok(Ok(None)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("Chat {} not found", chat_id),
+                    }),
+                )
+                    .into_response();
+            }
+            Ok(Err(error)) => return db_error("Failed to get chat", error),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Task join error: {}", e),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+    // Get or create a default collaboration session for this chat
+    let chat_id_for_list = chat_for_session.chat_id.clone();
+    let chat_id_for_create = chat_for_session.chat_id.clone();
+    let workspace_id_for_session = chat_for_session.workspace_id.clone();
+    let collaboration_session_id = match tokio::task::spawn_blocking(move || {
+        user_data_db::collaboration_sessions::list(Some(&chat_id_for_list))
+    })
+    .await
+    {
+        Ok(Ok(sessions)) if !sessions.is_empty() => sessions[0].collaboration_session_id.clone(),
+        Ok(Ok(_)) => {
+            // Create a default collaboration session
+            let session = user_data_db::CollaborationSession {
+                collaboration_session_id: format_id(generate(), IdType::Conversation),
+                chat_id: chat_id_for_create.clone(),
+                workspace_id: workspace_id_for_session.clone(),
+                mode: "supervisor".to_string(),
+                state: "idle".to_string(),
+                goal: None,
+                active_plan_revision: None,
+                created_at: now,
+                updated_at: now,
+            };
+            match tokio::task::spawn_blocking(move || {
+                user_data_db::collaboration_sessions::create(session)
+            })
+            .await
+            {
+                Ok(Ok(session)) => session.collaboration_session_id,
+                Ok(Err(error)) => return db_error("Failed to create collaboration session", error),
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: format!("Task join error: {}", e),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        Ok(Err(error)) => return db_error("Failed to list collaboration sessions", error),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
+
     let chat_id_for_create = chat_id;
+    let collab_session_id_for_create = collaboration_session_id.clone();
 
     match tokio::task::spawn_blocking(move || {
         // Get parent conversation (chat is a root conversation)
@@ -867,22 +769,30 @@ pub async fn create_sub_chat(
 
         // Create child conversation
         let conversation = user_data_db::conversations::create(user_data_db::Conversation {
-            id: conversation_id.clone(),
-            parent_id: Some(parent.id.clone()),
-            project_id: parent.project_id.clone(),
-            workspace_id: parent.workspace_id.clone(),
+            conversation_id: conversation_id.clone(),
+            collaboration_session_id: collab_session_id_for_create,
+            chat_id: parent.chat_id.clone(),
+            parent_id: Some(parent.conversation_id.clone()),
             name: name.clone(),
             mode: mode.clone(),
+            participant_role: "peer".to_string(),
+            status: "ready".to_string(),
             created_at: now,
             updated_at: now,
-            archived_at: None,
         })?;
 
         // Register agent session
-        user_data_db::agent_sessions::upsert(&conversation_id, session_id.as_deref(), &mode, now)?;
+        let agent_session = user_data_db::AgentSession {
+            agent_session_id: format_id(generate(), IdType::Session),
+            conversation_id: conversation_id.clone(),
+            acp_session_id: None,
+            mode: mode.clone(),
+            created_at: now,
+            updated_at: now,
+        };
+        user_data_db::agent_sessions::upsert(agent_session)?;
 
-        let messages = user_data_db::messages::serialize_legacy(&conversation_id)?;
-        Ok::<_, rusqlite::Error>(conversation_to_response(conversation, session_id, messages))
+        Ok::<_, rusqlite::Error>(conversation_to_response(conversation))
     })
     .await
     {
@@ -1050,26 +960,30 @@ pub async fn update_sub_chat(
         let Some(existing) = user_data_db::conversations::get(&sub_chat_id_for_update)? else {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         };
+        let existing_conv_id = existing.conversation_id.clone();
         user_data_db::conversations::update(user_data_db::Conversation {
-            id: existing.id,
+            conversation_id: existing_conv_id.clone(),
+            collaboration_session_id: existing.collaboration_session_id,
+            chat_id: existing.chat_id,
             parent_id: existing.parent_id,
-            project_id: existing.project_id,
-            workspace_id: existing.workspace_id,
             name: name.or(existing.name),
             mode: mode.clone().unwrap_or_else(|| existing.mode.clone()),
+            participant_role: existing.participant_role,
+            status: existing.status,
             created_at: existing.created_at,
             updated_at: now,
-            archived_at: existing.archived_at,
         })?;
         // Update session
         if let Some(ref sid) = session_id {
             let mode_for_session = mode.as_deref().unwrap_or(&existing.mode);
-            user_data_db::agent_sessions::upsert(
-                &sub_chat_id_for_update,
-                Some(sid),
-                mode_for_session,
-                now,
-            )?;
+            user_data_db::agent_sessions::upsert(user_data_db::AgentSession {
+                agent_session_id: format_id(generate(), IdType::Session),
+                conversation_id: existing_conv_id.clone(),
+                acp_session_id: Some(sid.clone()),
+                mode: mode_for_session.to_string(),
+                created_at: existing.created_at,
+                updated_at: now,
+            })?;
         }
         // Update messages
         if let Some(ref msgs) = messages {
@@ -1150,24 +1064,29 @@ pub async fn update_sub_chat_by_id(
             return Err(rusqlite::Error::QueryReturnedNoRows);
         };
         user_data_db::conversations::update(user_data_db::Conversation {
-            id: existing.id,
+            conversation_id: existing.conversation_id,
+            collaboration_session_id: existing.collaboration_session_id,
+            chat_id: existing.chat_id,
             parent_id: existing.parent_id,
-            project_id: existing.project_id,
-            workspace_id: existing.workspace_id,
             name: name.or(existing.name),
             mode: mode.clone().unwrap_or_else(|| existing.mode.clone()),
+            participant_role: existing.participant_role,
+            status: existing.status,
             created_at: existing.created_at,
             updated_at: now,
-            archived_at: existing.archived_at,
         })?;
         if let Some(ref sid) = session_id {
             let mode_for_session = mode.as_deref().unwrap_or(&existing.mode);
-            user_data_db::agent_sessions::upsert(
-                &sub_chat_id_for_update,
-                Some(sid),
-                mode_for_session,
-                now,
-            )?;
+            let agent_session_id = format_id(generate(), IdType::Session);
+            let conv_id_for_session = sub_chat_id_for_update.clone();
+            user_data_db::agent_sessions::upsert(user_data_db::AgentSession {
+                agent_session_id,
+                conversation_id: conv_id_for_session,
+                acp_session_id: Some(sid.clone()),
+                mode: mode_for_session.to_string(),
+                created_at: now,
+                updated_at: now,
+            })?;
         }
         if let Some(ref msgs) = messages {
             user_data_db::messages::replace_legacy(&sub_chat_id_for_update, msgs, now)?;
@@ -1301,7 +1220,7 @@ pub async fn bind_agent(
     .await
     {
         Ok(Ok(Some(conv))) if conv.parent_id.as_deref() == Some(&chat_id_for_cmp) => conv,
-        Ok(Ok(Some(conv))) if conv.id == chat_id_for_cmp => conv,
+        Ok(Ok(Some(conv))) if conv.conversation_id == chat_id_for_cmp => conv,
         Ok(Ok(_)) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -1339,7 +1258,7 @@ pub async fn bind_agent(
         agent_id: req.agent_id,
         agent_name: req.agent_name,
         agent_command: req.agent_command,
-        conversation_id: conversation.id,
+        conversation_id: conversation.conversation_id,
         created_at: now,
         updated_at: now,
     };
@@ -1572,4 +1491,159 @@ pub async fn append_sub_chat_message(
         )
             .into_response(),
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Chat API（新版扁平化路由）
+// ════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PatchChatRequest {
+    pub name: Option<String>,
+    pub collaboration_mode: Option<String>,
+    pub worktree_path: Option<String>,
+    pub branch: Option<String>,
+    pub base_branch: Option<String>,
+    pub pr_url: Option<String>,
+    pub pr_number: Option<i32>,
+}
+
+/// PATCH /api/v1/chats/{chat_id}
+#[utoipa::path(
+    patch,
+    path = "/api/v1/chats/{chat_id}",
+    tag = "Chats",
+    params(("chat_id" = String, Path, description = "Chat ID")),
+    request_body = PatchChatRequest,
+    responses(
+        (status = 200, description = "Chat updated", body = Chat),
+        (status = 404, description = "Chat not found", body = crate::api::ApiError),
+        (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn patch_chat(
+    State(_state): State<AppState>,
+    Path(chat_id): Path<String>,
+    Json(req): Json<PatchChatRequest>,
+) -> impl IntoResponse {
+    // Get existing chat
+    let chat_id_for_get = chat_id.clone();
+    match tokio::task::spawn_blocking(move || user_data_db::chats::get(&chat_id_for_get)).await {
+        Ok(Ok(Some(chat))) => {
+            // Update fields
+            let updated = user_data_db::Chat {
+                name: req.name.or(chat.name),
+                updated_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64,
+                ..chat
+            };
+
+            match tokio::task::spawn_blocking(move || user_data_db::chats::update(updated)).await {
+                Ok(Ok(())) => {
+                    // Fetch updated chat
+                    let chat_id_for_refetch = chat_id.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        user_data_db::chats::get(&chat_id_for_refetch)
+                    })
+                    .await
+                    {
+                        Ok(Ok(Some(updated_chat))) => {
+                            (StatusCode::OK, Json(updated_chat)).into_response()
+                        }
+                        Ok(Ok(None)) => (
+                            StatusCode::NOT_FOUND,
+                            Json(ErrorResponse {
+                                error: format!("Chat {} not found after update", chat_id),
+                            }),
+                        )
+                            .into_response(),
+                        Ok(Err(error)) => db_error("get chat after update", error),
+                        Err(e) => (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: format!("Task join error: {}", e),
+                            }),
+                        )
+                            .into_response(),
+                    }
+                }
+                Ok(Err(error)) => db_error("update chat", error),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Task join error: {}", e),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Chat {} not found", chat_id),
+            }),
+        )
+            .into_response(),
+        Ok(Err(error)) => db_error("get chat for update", error),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/v1/chats/{chat_id}/events
+#[utoipa::path(
+    get,
+    path = "/api/v1/chats/{chat_id}/events",
+    tag = "Chats",
+    params(("chat_id" = String, Path, description = "Chat ID")),
+    responses(
+        (status = 200, description = "Event stream"),
+        (status = 404, description = "Chat not found", body = crate::api::ApiError),
+    )
+)]
+pub async fn stream_chat_events(Path(chat_id): Path<String>) -> impl axum::response::IntoResponse {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use std::convert::Infallible;
+
+    // Check if chat exists
+    let chat_exists = matches!(
+        tokio::task::spawn_blocking({
+            let _chat_id = chat_id.clone();
+            move || user_data_db::chats::get(&_chat_id)
+        })
+        .await,
+        Ok(Ok(Some(_)))
+    );
+
+    // Create stream based on whether chat exists
+    let stream: futures::stream::BoxStream<'static, Result<Event, Infallible>> = if !chat_exists {
+        // Return empty stream for not found
+        Box::pin(futures::stream::empty())
+    } else {
+        // Create a simple polling stream
+        Box::pin(futures::stream::unfold(0, move |state| {
+            let _chat_id = chat_id.clone();
+            async move {
+                // Simple polling every 2 seconds
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+                // For now, just send a keepalive event
+                let event = Event::default()
+                    .event("ping")
+                    .data("{\"type\": \"keepalive\"}");
+
+                Some((Ok(event), state + 1))
+            }
+        }))
+    };
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }

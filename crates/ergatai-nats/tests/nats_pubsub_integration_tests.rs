@@ -200,9 +200,8 @@ async fn test_event_bus_agent_message_roundtrip() {
     let payload = AgentMessagePayload {
         from_agent: "sender-agent".to_string(),
         to_agent: agent_id.to_string(),
-        target_cov_id: None,
+        target_conversation_id: None,
         content: "@test-agent-5 please review".to_string(),
-        thread_id: Some("thread-1".to_string()),
         timestamp: 1_700_000_000,
         metadata: HashMap::new(),
         message_id: "msg-integration".to_string(),
@@ -210,6 +209,7 @@ async fn test_event_bus_agent_message_roundtrip() {
         correlation_id: None,
         timeout_ms: None,
         message_type: "request".to_string(),
+        images: vec![],
     };
 
     bus.publish_agent_message(&payload).await.unwrap();
@@ -224,7 +224,6 @@ async fn test_event_bus_agent_message_roundtrip() {
     assert_eq!(received.from_agent, "sender-agent");
     assert_eq!(received.to_agent, agent_id);
     assert_eq!(received.content, "@test-agent-5 please review");
-    assert_eq!(received.thread_id, Some("thread-1".to_string()));
 }
 
 // ---------------------------------------------------------------------------

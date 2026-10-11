@@ -60,7 +60,7 @@ async fn test_acp_start_agent_and_inject_message() {
 
     // Inject a message.
     backend
-        .inject_message(&handle, "Hello, ACP agent!", None)
+        .inject_message(&handle, "Hello, ACP agent!")
         .await
         .expect("inject_message should succeed");
 
@@ -140,11 +140,11 @@ async fn test_acp_multiple_agents() {
 
     // Send messages to both.
     backend
-        .inject_message(&h1, "msg for agent 1", None)
+        .inject_message(&h1, "msg for agent 1")
         .await
         .unwrap();
     backend
-        .inject_message(&h2, "msg for agent 2", None)
+        .inject_message(&h2, "msg for agent 2")
         .await
         .unwrap();
 

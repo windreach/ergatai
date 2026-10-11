@@ -596,12 +596,7 @@ impl AcpBackendInterface for AcpHttpBackend {
         self.connect_remote_agent(&handle.id, command, None).await
     }
 
-    async fn inject_message(
-        &self,
-        handle: &AgentHandle,
-        message: &str,
-        _conversation_id: Option<&str>,
-    ) -> ErgataiResult<()> {
+    async fn inject_message(&self, handle: &AgentHandle, message: &str) -> ErgataiResult<()> {
         let command_tx = {
             let agents = self.agents.read();
             if let Some(entry) = agents.get(&handle.agent_id) {
@@ -835,15 +830,6 @@ impl AcpBackendInterface for AcpHttpBackend {
 
     async fn pid(&self, _agent_id: &str) -> ErgataiResult<Option<u32>> {
         Err(ErgataiError::BackendUnsupported("pid".into()))
-    }
-
-    async fn subscribe_output(
-        &self,
-        _agent_id: &str,
-    ) -> ErgataiResult<
-        Option<tokio::sync::broadcast::Receiver<crate::backends::acp::AgentOutputEvent>>,
-    > {
-        Err(ErgataiError::BackendUnsupported("subscribe_output".into()))
     }
 
     async fn list_sessions(

@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use ergatai_error::id::{format as format_id, generate, IdType};
@@ -248,6 +248,21 @@ impl JsonRpcMessage for ExtendedSessionNotification {
 
 impl JsonRpcNotification for ExtendedSessionNotification {}
 
+/// Helper function to send an event to output publisher (NATS).
+/// Broadcast channel has been removed - all output goes through NATS for unified routing.
+fn send_output_event(conversation_id: &str, event: AgentOutputEvent) {
+    // Get global output publisher (set during initialization)
+    if let Some(publisher) = crate::output_publisher::get_global_output_publisher() {
+        if let Err(e) = publisher.publish(conversation_id, event) {
+            tracing::warn!(
+                conversation_id = %conversation_id,
+                error = %e,
+                "Failed to publish agent output event"
+            );
+        }
+    }
+}
+
 /// Helper function to handle standard v1 session notifications.
 /// This contains the original session notification handling logic extracted from the main handler.
 #[allow(clippy::too_many_arguments)]
@@ -260,8 +275,8 @@ async fn handle_standard_session_notification(
     usage: &Arc<UsageTracker>,
     capture_thoughts: bool,
     last_activity: &parking_lot::RwLock<Instant>,
-    output_tx: &broadcast::Sender<AgentOutputEvent>,
     agent_id: &str,
+    conversation_id: &str,
     session_id: &parking_lot::RwLock<Option<String>>,
     _workspace_id: &str,
     plan_state: &RwLock<Option<TrackedPlan>>,
@@ -285,7 +300,7 @@ async fn handle_standard_session_notification(
                     debug!(text_len = text.len(), "ACP agent message chunk");
                 }
                 out.append(text.as_bytes());
-                let _ = output_tx.send(AgentOutputEvent::Text { delta: text });
+                send_output_event(conversation_id, AgentOutputEvent::Text { delta: text });
             }
         }
         SessionUpdate::AgentThoughtChunk(chunk) => {
@@ -304,7 +319,7 @@ async fn handle_standard_session_notification(
                         thinking.push_str(&text);
                     }
                 }
-                let _ = output_tx.send(AgentOutputEvent::Thinking { delta: text });
+                send_output_event(conversation_id, AgentOutputEvent::Thinking { delta: text });
             }
         }
         SessionUpdate::UsageUpdate(usage_update) => {
@@ -344,12 +359,15 @@ async fn handle_standard_session_notification(
             }
 
             tool_calls.record_initial(tc);
-            let _ = output_tx.send(AgentOutputEvent::ToolCallStart {
-                id: tc.tool_call_id.to_string(),
-                name: tc.title.clone(),
-                input: tc.raw_input.clone(),
-                locations: tc.locations.clone(),
-            });
+            send_output_event(
+                conversation_id,
+                AgentOutputEvent::ToolCallStart {
+                    id: tc.tool_call_id.to_string(),
+                    name: tc.title.clone(),
+                    input: tc.raw_input.clone(),
+                    locations: tc.locations.clone(),
+                },
+            );
         }
         SessionUpdate::ToolCallUpdate(update) => {
             debug!(
@@ -418,22 +436,28 @@ async fn handle_standard_session_notification(
                 }
 
                 if is_complete {
-                    let _ = output_tx.send(AgentOutputEvent::ToolCallComplete {
-                        id: update.tool_call_id.to_string(),
-                        name: update.fields.title.clone().unwrap_or_default(),
-                        input: raw_input,
-                        output: raw_output,
-                        locations,
-                    });
+                    send_output_event(
+                        conversation_id,
+                        AgentOutputEvent::ToolCallComplete {
+                            id: update.tool_call_id.to_string(),
+                            name: update.fields.title.clone().unwrap_or_default(),
+                            input: raw_input,
+                            output: raw_output,
+                            locations,
+                        },
+                    );
                 } else {
-                    let _ = output_tx.send(AgentOutputEvent::ToolCallError {
-                        id: update.tool_call_id.to_string(),
-                        error: update
-                            .fields
-                            .title
-                            .clone()
-                            .unwrap_or_else(|| "tool call failed".to_string()),
-                    });
+                    send_output_event(
+                        conversation_id,
+                        AgentOutputEvent::ToolCallError {
+                            id: update.tool_call_id.to_string(),
+                            error: update
+                                .fields
+                                .title
+                                .clone()
+                                .unwrap_or_else(|| "tool call failed".to_string()),
+                        },
+                    );
                 }
             }
         }
@@ -452,9 +476,12 @@ async fn handle_standard_session_notification(
                     debug!(agent_id = agent_id, title = %new_title, "ACP session title updated");
                     *title_lock = Some(new_title.clone());
                     title_no_change_count.store(0, Ordering::Relaxed);
-                    let _ = output_tx.send(AgentOutputEvent::SessionTitleUpdate {
-                        title: new_title.clone(),
-                    });
+                    send_output_event(
+                        conversation_id,
+                        AgentOutputEvent::SessionTitleUpdate {
+                            title: new_title.clone(),
+                        },
+                    );
                 } else {
                     title_no_change_count.fetch_add(1, Ordering::Relaxed);
                 }
@@ -679,7 +706,7 @@ impl OutputBuffer {
 ///
 /// These events are broadcast to SSE subscribers in real-time, enabling
 /// the frontend to render streaming output without polling.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentOutputEvent {
     /// Incremental text content from the agent.
@@ -942,8 +969,14 @@ enum AcpCommand {
     QueuePrompt {
         message: String,
         images: Vec<crate::types::AgentImage>,
-        /// Conversation ID for SSE persistence (from agent-to-agent message thread_id).
-        conversation_id: Option<String>,
+        response_tx: oneshot::Sender<ErgataiResult<()>>,
+    },
+    /// Insert a message at the next safe point (after thinking/tool completion).
+    /// The current task will be paused and resumed after the interrupt is processed.
+    InterruptPrompt {
+        message: String,
+        images: Vec<crate::types::AgentImage>,
+        message_id: String,
         response_tx: oneshot::Sender<ErgataiResult<()>>,
     },
     /// Cancel the current prompt turn (sends `session/cancel` notification).
@@ -1102,12 +1135,37 @@ impl ElicitationTracker {
     }
 }
 
+/// Pending interrupt message waiting to be inserted at a safe point.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // Fields reserved for future interrupt queue implementation
+struct PendingInterrupt {
+    /// Unique message ID for this interrupt
+    message_id: String,
+    /// Message content
+    message: String,
+    /// Image attachments
+    images: Vec<crate::types::AgentImage>,
+    /// When this interrupt was queued
+    inserted_at: Instant,
+    /// Response channel to notify when the interrupt is acknowledged
+    response_tx: Option<Arc<tokio::sync::Notify>>,
+}
+
+/// A task that was paused by an interrupt.
+#[derive(Debug, Clone)]
+pub struct PausedTask {
+    /// Message ID of the paused task (if available)
+    pub message_id: Option<String>,
+    /// When the task was paused
+    pub paused_at: Instant,
+    /// Whether the task has been resumed
+    pub resumed: bool,
+}
+
 /// Tracks a running ACP agent's state.
 struct AcpAgentEntry {
     /// Channel to send commands to the connection task.
     command_tx: mpsc::Sender<AcpCommand>,
-    /// Broadcast sender for real-time output events (SSE subscribers).
-    output_tx: broadcast::Sender<AgentOutputEvent>,
     /// Output buffer for captured agent responses.
     output: Arc<OutputBuffer>,
     /// Thought buffer for captured agent thoughts (if capture_thoughts enabled).
@@ -1150,6 +1208,14 @@ struct AcpAgentEntry {
     exit_code: Arc<RwLock<Option<i32>>>,
     /// Signal number when process supervision observed a fatal signal.
     exit_signal: Arc<RwLock<Option<i32>>>,
+    /// Queue of pending interrupt messages (FIFO order).
+    #[allow(dead_code)] // Reserved for future interrupt queue implementation
+    pending_interrupts: Arc<parking_lot::Mutex<VecDeque<PendingInterrupt>>>,
+    /// Currently paused task (if any) due to an interrupt.
+    paused_task: Arc<RwLock<Option<PausedTask>>>,
+    /// Current message ID being processed (for interrupt tracking).
+    #[allow(dead_code)] // Reserved for future interrupt tracking
+    current_message_id: Arc<RwLock<Option<String>>>,
 }
 
 /// Logical workspace (no physical resources, just metadata).
@@ -1328,6 +1394,7 @@ impl AcpBackend {
         self
     }
 
+    /// Attach an output publisher for publishing agent output events to a message system.
     /// Generate a Snowflake-based agent ID: `agent_{timestamp}_{instance}_{sequence}`.
     fn next_agent_id(&self, _workspace_id: &str) -> String {
         let id = generate();
@@ -1471,18 +1538,6 @@ impl AcpBackend {
     ///
     /// Returns a broadcast receiver that yields `AgentOutputEvent` values as
     /// the agent produces them during prompt execution. Used by the SSE stream
-    /// endpoint to push streaming output to the frontend.
-    pub fn subscribe_output(
-        &self,
-        agent_id: &str,
-    ) -> Option<broadcast::Receiver<AgentOutputEvent>> {
-        self.reap_dead();
-        let agents = self.agents.read();
-        agents
-            .get(agent_id)
-            .map(|entry| entry.output_tx.subscribe())
-    }
-
     /// Get recent tool calls for an agent (last 100, newest first).
     ///
     /// Returns the full structured `TrackedToolCall` records with all ACP fields
@@ -1939,6 +1994,68 @@ impl AcpBackend {
     pub fn is_session_persistence_enabled(&self) -> bool {
         self.session_store.is_some()
     }
+
+    /// Insert a message at the next safe point (after thinking/tool completion).
+    /// The current task will be paused and resumed after the interrupt is processed.
+    pub async fn inject_interrupt(
+        &self,
+        agent_id: &str,
+        message: &str,
+        images: &[crate::types::AgentImage],
+        message_id: &str,
+    ) -> ErgataiResult<()> {
+        self.reap_dead();
+        let command_tx = {
+            let agents = self.agents.read();
+            match agents.get(agent_id) {
+                Some(entry) => entry.command_tx.clone(),
+                None => {
+                    return Err(ErgataiError::NotFound(format!(
+                        "Agent not found: {}",
+                        agent_id
+                    )));
+                }
+            }
+        };
+
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(AcpCommand::InterruptPrompt {
+                message: message.to_string(),
+                images: images.to_vec(),
+                message_id: message_id.to_string(),
+                response_tx,
+            })
+            .await
+            .map_err(|_| ErgataiError::internal("ACP command channel closed"))?;
+
+        match response_rx.await {
+            Ok(result) => result,
+            Err(_) => Err(ErgataiError::internal("ACP response channel closed")),
+        }
+    }
+
+    /// Get the current paused task (if any) for an agent.
+    pub async fn get_paused_task(&self, agent_id: &str) -> Option<PausedTask> {
+        let agents = self.agents.read();
+        let entry = agents.get(agent_id)?;
+        let task = entry.paused_task.read().clone();
+        task
+    }
+
+    /// Resume a paused task (clears the paused state).
+    pub async fn resume_paused_task(&self, agent_id: &str) -> Option<PausedTask> {
+        let agents = self.agents.read();
+        let entry = agents.get(agent_id)?;
+        let mut paused = entry.paused_task.write();
+        let task = paused.take();
+        if let Some(mut t) = task {
+            t.resumed = true;
+            Some(t)
+        } else {
+            None
+        }
+    }
 }
 
 impl Default for AcpBackend {
@@ -2133,7 +2250,6 @@ impl AcpBackendInterface for AcpBackend {
         self.register_pid(pid, &agent_id);
 
         // Shared state between this backend and the connection task.
-        let (output_tx, _) = broadcast::channel::<AgentOutputEvent>(256);
         let output = Arc::new(OutputBuffer::new(OUTPUT_BUFFER_MAX_SIZE));
         let thoughts = Arc::new(OutputBuffer::new(OUTPUT_BUFFER_MAX_SIZE));
         let recent_thinking = Arc::new(parking_lot::Mutex::new(String::new()));
@@ -2168,7 +2284,6 @@ impl AcpBackendInterface for AcpBackend {
 
         // Clone shared state for the connection task.
         let task_command_tx = command_tx.clone();
-        let task_output_tx = output_tx.clone();
         let task_output = output.clone();
         let task_thoughts = thoughts.clone();
         let task_recent_thinking = recent_thinking.clone();
@@ -2192,6 +2307,11 @@ impl AcpBackendInterface for AcpBackend {
         let task_exit_signal = exit_signal.clone();
         let task_agent_id = agent_id.clone();
         let task_agent_id_label = agent_id.clone();
+        let task_conversation_id = handle
+            .metadata
+            .get("conversation_id")
+            .cloned()
+            .unwrap_or_else(|| agent_id.clone());
         let task_workspace_id = handle.id.clone();
         let task_dead_agents = self.dead_agents.clone();
         let task_permission_handler = self.permission_handler.clone();
@@ -2199,6 +2319,7 @@ impl AcpBackendInterface for AcpBackend {
         let task_auto_continue = self.auto_continue;
         let task_max_auto_continues = self.max_auto_continues;
         let task_pending_elicitations = self.pending_elicitations.clone();
+        let task_current_message_id: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
         let cwd = handle
             .metadata
             .get("work_dir")
@@ -2243,6 +2364,7 @@ impl AcpBackendInterface for AcpBackend {
         // We can't capture `task_agent_id` itself because it's needed after the closure exits.
         let task_agent_id_for_save = task_agent_id.clone();
         let connection_agent_id = task_agent_id.clone();
+        let connection_conversation_id = task_conversation_id.clone();
         let task_http_mcp_url = self.http_mcp_url.as_ref().map(|base_url| {
             let encoded_agent_id = percent_encoding::utf8_percent_encode(
                 &task_agent_id_label,
@@ -2339,9 +2461,9 @@ impl AcpBackendInterface for AcpBackend {
                         let usage = task_usage.clone();
                         let capture_thoughts = task_capture_thoughts;
                         let last_activity = task_last_activity_at.clone();
-                        let output_tx = task_output_tx.clone();
                         // Clone for use in this closure (will also be used in on_receive_request)
                         let notify_agent_id = task_agent_id.clone();
+                        let notify_conversation_id = task_conversation_id.clone();
                         let notify_session_id = task_shared_session_id.clone();
                         let notify_workspace_id = task_workspace_id.clone();
                         let notify_plan = task_plan.clone();
@@ -2356,8 +2478,8 @@ impl AcpBackendInterface for AcpBackend {
                                 ExtendedSessionNotification::Standard(std_notif) => {
                                     handle_standard_session_notification(
                                         *std_notif, &out, &thoughts, &notify_recent_thinking, &tool_calls, &usage,
-                                        capture_thoughts, &last_activity, &output_tx,
-                                        &notify_agent_id, &notify_session_id, &notify_workspace_id,
+                                        capture_thoughts, &last_activity,
+                                        &notify_agent_id, &notify_conversation_id, &notify_session_id, &notify_workspace_id,
                                         &notify_plan, &notify_text_output_seen,
                                         &notify_session_title, &notify_title_no_change,
                                         &notify_config_options, &notify_available_commands,
@@ -2372,11 +2494,14 @@ impl AcpBackendInterface for AcpBackend {
                                         "Subagent spawned by agent"
                                     );
                                     // Emit subagent event for upstream processing
-                                    let _ = output_tx.send(AgentOutputEvent::SubagentSpawned {
-                                        subagent_session_id: event.subagent_session_id.clone(),
-                                        name: event.name.clone(),
-                                        task: event.task.clone(),
-                                    });
+                                    send_output_event(
+                                        &notify_conversation_id,
+                                        AgentOutputEvent::SubagentSpawned {
+                                            subagent_session_id: event.subagent_session_id.clone(),
+                                            name: event.name.clone(),
+                                            task: event.task.clone(),
+                                        },
+                                    );
                                     // TODO: Create subagent conversation in database
                                     // This requires access to user_data_db which is in ergatai-api
                                     // For now, we emit the event and let the API layer handle persistence
@@ -2388,10 +2513,13 @@ impl AcpBackendInterface for AcpBackend {
                                         "Subagent state updated"
                                     );
                                     // Emit subagent state update for upstream processing
-                                    let _ = output_tx.send(AgentOutputEvent::SubagentStateUpdate {
-                                        subagent_session_id: event.subagent_session_id.clone(),
-                                        state: event.state.clone(),
-                                    });
+                                    send_output_event(
+                                        &notify_conversation_id,
+                                        AgentOutputEvent::SubagentStateUpdate {
+                                            subagent_session_id: event.subagent_session_id.clone(),
+                                            state: event.state.clone(),
+                                        },
+                                    );
                                     // TODO: Update subagent conversation state in database
                                 }
                             }
@@ -2723,11 +2851,85 @@ impl AcpBackendInterface for AcpBackend {
                     // Step 3: Command loop — receive prompts from the channel and send to agent.
                     loop {
                         match command_rx.recv().await {
-                            Some(AcpCommand::QueuePrompt { message, images, conversation_id, response_tx }) => {
-                                // Emit conversation_id for SSE persistence layer.
-                                // This allows agent-to-agent messages (injected via inject_message)
-                                // to have their responses persisted to the correct conversation.
-                                let _ = task_output_tx.send(AgentOutputEvent::ConversationId { id: conversation_id });
+                            Some(AcpCommand::InterruptPrompt {
+                                message,
+                                images,
+                                message_id,
+                                response_tx,
+                            }) => {
+                                // Interrupt message: queue it for processing at the next safe point
+                                info!(
+                                    agent_id = %connection_agent_id,
+                                    message_id = %message_id,
+                                    message_bytes = message.len(),
+                                    "Interrupt message queued"
+                                );
+
+                                // Store the current message ID being processed (for pause tracking)
+                                *task_current_message_id.write() = Some(message_id.clone());
+
+                                // Send the interrupt prompt immediately
+                                // The agent will process it after the current prompt completes
+                                task_text_output_seen.store(false, Ordering::Relaxed);
+                                task_recent_thinking.lock().clear();
+                                let prompt_started_at = Instant::now();
+
+                                let mut content = if message.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    vec![ContentBlock::Text(TextContent::new(message.clone()))]
+                                };
+                                content.extend(images.into_iter().map(|image| {
+                                    ContentBlock::Image(ImageContent::new(
+                                        image.base64_data,
+                                        image.media_type,
+                                    ))
+                                }));
+                                if content.is_empty() {
+                                    content.push(ContentBlock::Text(TextContent::new(String::new())));
+                                }
+
+                                let request = connection.send_request(PromptRequest::new(
+                                    session_id.clone(),
+                                    content,
+                                ));
+
+                                let result = request.block_task().await;
+                                match result {
+                                    Ok(response) => {
+                                        let sr = serde_json::to_string(&response.stop_reason)
+                                            .unwrap_or_else(|_| format!("{:?}", response.stop_reason))
+                                            .trim_matches('"')
+                                            .to_string();
+                                        info!(
+                                            agent_id = %connection_agent_id,
+                                            message_id = %message_id,
+                                            stop_reason = %sr,
+                                            duration_ms = prompt_started_at.elapsed().as_millis() as u64,
+                                            "Interrupt prompt completed"
+                                        );
+                                        crate::permission_service::global_permission_service()
+                                            .force_resolve_rejected_for_agent(&connection_agent_id)
+                                            .await;
+                                        *task_stop_reason.write() = Some(sr.clone());
+                                        send_output_event(
+                                            &connection_conversation_id,
+                                            AgentOutputEvent::Done { stop_reason: sr },
+                                        );
+                                        let _ = response_tx.send(Ok(()));
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, message_id = %message_id, "Interrupt prompt failed");
+                                        let _ = response_tx.send(Err(ErgataiError::internal(
+                                            format!("Interrupt prompt failed: {e}"),
+                                        )));
+                                    }
+                                }
+
+                                // Clear the current message ID
+                                *task_current_message_id.write() = None;
+                            }
+                            Some(AcpCommand::QueuePrompt { message, images, response_tx }) => {
                                 task_text_output_seen.store(false, Ordering::Relaxed);
                                 // New prompt turn — reset the thinking
                                 // accumulator so it only covers this turn.
@@ -2778,9 +2980,12 @@ impl AcpBackendInterface for AcpBackend {
                                             .force_resolve_rejected_for_agent(&connection_agent_id)
                                             .await;
                                         *task_stop_reason.write() = Some(sr.clone());
-                                        let _ = task_output_tx.send(AgentOutputEvent::Done {
-                                            stop_reason: sr,
-                                        });
+                                        send_output_event(
+                                            &connection_conversation_id,
+                                            AgentOutputEvent::Done {
+                                                stop_reason: sr,
+                                            },
+                                        );
                                         let _ = response_tx.send(Ok(()));
                                     }
                                     Err(e) => {
@@ -2849,7 +3054,10 @@ impl AcpBackendInterface for AcpBackend {
                                             .force_resolve_rejected_for_agent(&connection_agent_id)
                                             .await;
                                         *task_stop_reason.write() = Some(sr.clone());
-                                        let _ = task_output_tx.send(AgentOutputEvent::Done { stop_reason: sr.clone() });
+                                        send_output_event(
+                                            &connection_conversation_id,
+                                            AgentOutputEvent::Done { stop_reason: sr.clone() },
+                                        );
                                         let _ = response_tx.send(Ok(()));
 
                                         // Auto-continue on max_tokens / max_turn_requests
@@ -3173,7 +3381,6 @@ impl AcpBackendInterface for AcpBackend {
         // Build the agent entry.
         let entry = AcpAgentEntry {
             command_tx,
-            output_tx,
             output,
             thoughts,
             recent_thinking,
@@ -3200,12 +3407,19 @@ impl AcpBackendInterface for AcpBackend {
                     }
                     m.insert("command".to_string(), command.to_string());
                     m.insert("transport".to_string(), "stdio-pipes".to_string());
+                    // Copy conversation_id from workspace metadata for NATS routing
+                    if let Some(conversation_id) = handle.metadata.get("conversation_id") {
+                        m.insert("conversation_id".to_string(), conversation_id.clone());
+                    }
                     m
                 },
             },
             abort_handle: join_handle.abort_handle(),
             exit_code,
             exit_signal,
+            pending_interrupts: Arc::new(parking_lot::Mutex::new(VecDeque::new())),
+            paused_task: Arc::new(RwLock::new(None)),
+            current_message_id: Arc::new(RwLock::new(None)),
         };
 
         self.agents.write().insert(agent_id.clone(), entry);
@@ -3234,7 +3448,7 @@ impl AcpBackendInterface for AcpBackend {
                 agents.get(&agent_id).map(|e| e.handle.clone())
             };
             if let Some(h) = agent_handle {
-                if let Err(e) = self.inject_message(&h, instr, None).await {
+                if let Err(e) = self.inject_message(&h, instr).await {
                     warn!(
                         agent_id = %agent_id,
                         error = %e,
@@ -3253,14 +3467,8 @@ impl AcpBackendInterface for AcpBackend {
         }
     }
 
-    async fn inject_message(
-        &self,
-        handle: &AgentHandle,
-        message: &str,
-        conversation_id: Option<&str>,
-    ) -> ErgataiResult<()> {
-        self.inject_message_with_images(handle, message, &[], conversation_id)
-            .await
+    async fn inject_message(&self, handle: &AgentHandle, message: &str) -> ErgataiResult<()> {
+        self.inject_message_with_images(handle, message, &[]).await
     }
 
     async fn inject_message_with_images(
@@ -3268,7 +3476,6 @@ impl AcpBackendInterface for AcpBackend {
         handle: &AgentHandle,
         message: &str,
         images: &[crate::types::AgentImage],
-        conversation_id: Option<&str>,
     ) -> ErgataiResult<()> {
         self.reap_dead();
         let command_tx = {
@@ -3289,7 +3496,6 @@ impl AcpBackendInterface for AcpBackend {
             .send(AcpCommand::QueuePrompt {
                 message: message.to_string(),
                 images: images.to_vec(),
-                conversation_id: conversation_id.map(String::from),
                 response_tx,
             })
             .await
@@ -3649,13 +3855,6 @@ impl AcpBackendInterface for AcpBackend {
         Ok(self.get_pid_by_agent(agent_id))
     }
 
-    async fn subscribe_output(
-        &self,
-        agent_id: &str,
-    ) -> ErgataiResult<Option<tokio::sync::broadcast::Receiver<AgentOutputEvent>>> {
-        Ok(self.subscribe_output(agent_id))
-    }
-
     async fn list_sessions(&self, agent_id: &str) -> ErgataiResult<Vec<crate::types::SessionInfo>> {
         self.list_sessions(agent_id).await
     }
@@ -3745,10 +3944,8 @@ mod tests {
         use std::sync::atomic::AtomicBool;
 
         let (command_tx, _) = mpsc::channel(1);
-        let (output_tx, _) = broadcast::channel::<AgentOutputEvent>(16);
         let entry = AcpAgentEntry {
             command_tx,
-            output_tx,
             output: Arc::new(OutputBuffer::new(100)),
             thoughts: Arc::new(OutputBuffer::new(100)),
             tool_calls: Arc::new(ToolCallTracker::new(1000)),
@@ -3777,6 +3974,9 @@ mod tests {
             abort_handle: tokio::task::spawn(async {}).abort_handle(),
             exit_code: Arc::new(RwLock::new(None)),
             exit_signal: Arc::new(RwLock::new(None)),
+            pending_interrupts: Arc::new(parking_lot::Mutex::new(VecDeque::new())),
+            paused_task: Arc::new(RwLock::new(None)),
+            current_message_id: Arc::new(RwLock::new(None)),
         };
         backend.agents.write().insert(agent_id.to_string(), entry);
     }

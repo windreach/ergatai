@@ -121,10 +121,38 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route("/health", get(health_check))
         .route("/ready", get(readiness_check))
         .route("/metrics", get(metrics_endpoint))
+        // ════════════════════════════════════════════════════════════════
+        // Workspace API（最顶层容器）
+        // ════════════════════════════════════════════════════════════════
         .route("/api/v1/workspaces", get(api::workspaces::list_workspaces))
         .route(
             "/api/v1/workspaces",
             post(api::workspaces::create_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/{workspace_id}",
+            get(api::workspaces::get_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/{workspace_id}",
+            patch(api::workspaces::update_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/{workspace_id}",
+            delete(api::workspaces::delete_workspace),
+        )
+        // Workspace Config（项目配置）
+        .route(
+            "/api/v1/workspaces/{workspace_id}/config",
+            get(api::workspaces::get_workspace_config),
+        )
+        .route(
+            "/api/v1/workspaces/{workspace_id}/config",
+            patch(api::workspaces::update_workspace_config),
+        )
+        .route(
+            "/api/v1/workspaces/{workspace_id}/config",
+            delete(api::workspaces::delete_workspace_config),
         )
         .route(
             "/api/v1/terminal-sessions",
@@ -160,7 +188,7 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::terminal_sessions::list_audit),
         )
         .route(
-            "/api/v1/workspaces/{id}",
+            "/api/v1/workspaces/{workspace_id}",
             delete(api::workspaces::delete_workspace),
         )
         // Persistent workspace routes
@@ -213,24 +241,45 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/workspaces/managed/{id}/restore",
             post(api::workspaces::restore_managed_workspace),
         )
+        // TODO: Project management endpoints temporarily disabled
+        // .route(
+        //     "/api/v1/workspaces/managed/{id}/projects",
+        //     get(api::workspaces::list_managed_workspace_projects),
+        // )
+        // .route(
+        //     "/api/v1/workspaces/managed/{id}/projects",
+        //     post(api::workspaces::register_managed_workspace_project),
+        // )
+        // .route(
+        //     "/api/v1/workspaces/managed/{id}/projects/{project_id}",
+        //     delete(api::workspaces::remove_managed_workspace_project),
+        // )
+        // .route(
+        //     "/api/v1/workspaces/managed/{id}/status",
+        //     get(api::workspaces::managed_workspace_status),
+        // )
+        // ════════════════════════════════════════════════════════════════
+        // Message API（属于 Conversation）
+        // ════════════════════════════════════════════════════════════════
         .route(
-            "/api/v1/workspaces/managed/{id}/projects",
-            get(api::workspaces::list_managed_workspace_projects),
+            "/api/v1/messages",
+            get(api::messages::list_messages).post(api::messages::create_message),
         )
         .route(
-            "/api/v1/workspaces/managed/{id}/projects",
-            post(api::workspaces::register_managed_workspace_project),
+            "/api/v1/messages/{message_id}",
+            get(api::messages::get_message)
+                .patch(api::messages::update_message)
+                .delete(api::messages::delete_message),
         )
-        .route(
-            "/api/v1/workspaces/managed/{id}/projects/{project_id}",
-            delete(api::workspaces::remove_managed_workspace_project),
-        )
-        .route(
-            "/api/v1/workspaces/managed/{id}/status",
-            get(api::workspaces::managed_workspace_status),
-        )
+        // ════════════════════════════════════════════════════════════════
+        // Agent API（批量查询 / 管理端点）
+        // ════════════════════════════════════════════════════════════════
         .route("/api/v1/agents", get(api::agents::list_agents))
         .route("/api/v1/agents", post(api::agents::spawn_agent))
+        .route(
+            "/api/v1/agents/{agent_id}",
+            get(api::agents::get_agent),
+        )
         .route(
             "/api/v1/agents/suspended",
             get(api::agents::list_suspended_agents),
@@ -257,10 +306,6 @@ pub fn build_rest_app(state: AppState) -> Router {
             post(api::agents::resume_agent),
         )
         .route("/api/v1/agents/{id}/prompt", post(api::agents::prompt_agent))
-        .route(
-            "/api/v1/agents/{id}/stream",
-            get(api::agents::stream_agent_output),
-        )
         // ACP monitoring endpoints
         .route(
             "/api/v1/agents/{id}/thoughts",
@@ -354,17 +399,32 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/projects/{id}",
             delete(api::projects::delete_project),
         )
-        // Chats CRUD
-        .route("/api/v1/chats", get(api::chats::list_chats))
-        .route("/api/v1/chats", post(api::chats::create_chat))
-        .route("/api/v1/chats/{id}", get(api::chats::get_chat))
-        .route("/api/v1/chats/{id}", put(api::chats::update_chat))
-        .route("/api/v1/chats/{id}/archive", post(api::chats::archive_chat))
+        // ════════════════════════════════════════════════════════════════
+        // Chat API（属于 Workspace，1:N）
+        // ════════════════════════════════════════════════════════════════
         .route(
-            "/api/v1/chats/{id}/unarchive",
+            "/api/v1/chats",
+            get(api::chats::list_chats).post(api::chats::create_chat),
+        )
+        .route(
+            "/api/v1/chats/{chat_id}",
+            get(api::chats::get_chat)
+                .patch(api::chats::patch_chat)
+                .delete(api::chats::delete_chat),
+        )
+        .route(
+            "/api/v1/chats/{chat_id}/archive",
+            post(api::chats::archive_chat),
+        )
+        .route(
+            "/api/v1/chats/{chat_id}/unarchive",
             post(api::chats::unarchive_chat),
         )
-        .route("/api/v1/chats/{id}", delete(api::chats::delete_chat))
+        // Chat Events SSE
+        .route(
+            "/api/v1/chats/{chat_id}/events",
+            get(api::chats::stream_chat_events),
+        )
         // Sub-chats CRUD
         .route("/api/v1/sub-chats/{id}", get(api::chats::get_sub_chat_by_id))
         .route(
@@ -462,61 +522,62 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/runtime/conversations/{id}",
             get(api::conversations::get_conversation_detail),
         )
+        // ════════════════════════════════════════════════════════════════
+        // Conversation API（属于 Collaboration Session，1:N）
+        // ════════════════════════════════════════════════════════════════
         .route(
-            "/api/v1/workspaces/{workspace_id}/conversations",
-            get(api::user_conversations::list_workspace_conversations),
+            "/api/v1/conversations",
+            get(api::user_conversations::list_conversations)
+                .post(api::user_conversations::create_conversation),
         )
         .route(
-            "/api/v1/workspaces/{workspace_id}/conversations",
-            post(api::user_conversations::create_workspace_conversation),
+            "/api/v1/conversations/{conversation_id}",
+            get(api::user_conversations::get_conversation)
+                .patch(api::user_conversations::update_conversation)
+                .delete(api::user_conversations::delete_conversation),
+        )
+        // 子对话（树形结构）
+        .route(
+            "/api/v1/conversations/{conversation_id}/children",
+            get(api::user_conversations::list_child_conversations)
+                .post(api::user_conversations::create_child_conversation),
+        )
+        // Conversation Messages
+        .route(
+            "/api/v1/conversations/{conversation_id}/messages",
+            get(api::user_conversations::list_conversation_messages)
+                .post(api::user_conversations::append_conversation_message)
+                .put(api::user_conversations::replace_conversation_messages),
         )
         .route(
-            "/api/v1/conversations/{id}",
-            get(api::user_conversations::get_conversation),
-        )
-        .route(
-            "/api/v1/conversations/{id}",
-            patch(api::user_conversations::update_conversation),
-        )
-        .route(
-            "/api/v1/conversations/{id}",
-            delete(api::user_conversations::delete_conversation),
-        )
-        .route(
-            "/api/v1/conversations/{id}/archive",
-            post(api::user_conversations::archive_conversation),
-        )
-        .route(
-            "/api/v1/conversations/{id}/unarchive",
-            post(api::user_conversations::unarchive_conversation),
-        )
-        .route(
-            "/api/v1/conversations/{id}/children",
-            get(api::user_conversations::list_child_conversations),
-        )
-        .route(
-            "/api/v1/conversations/{id}/children",
-            post(api::user_conversations::create_child_conversation),
-        )
-        .route(
-            "/api/v1/conversations/{id}/messages",
-            get(api::user_conversations::list_conversation_messages),
-        )
-        .route(
-            "/api/v1/conversations/{id}/messages",
-            post(api::user_conversations::append_conversation_message),
-        )
-        .route(
-            "/api/v1/conversations/{id}/messages",
-            put(api::user_conversations::replace_conversation_messages),
-        )
-        .route(
-            "/api/v1/conversations/{id}/file-changes",
+            "/api/v1/conversations/{conversation_id}/file-changes",
             get(api::user_conversations::list_conversation_file_changes),
         )
+        // Conversation Events SSE（替代旧的 /sse）
         .route(
-            "/api/v1/conversations/{id}/sse",
+            "/api/v1/conversations/{conversation_id}/events",
             get(api::conversation_sse::stream_conversation_messages),
+        )
+        // ════════════════════════════════════════════════════════════════
+        // Agent API（1:1 绑定 Conversation，单数路径）
+        // ════════════════════════════════════════════════════════════════
+        .route(
+            "/api/v1/conversations/{conversation_id}/agent",
+            get(api::agents::get_conversation_agent)
+                .post(api::agents::create_conversation_agent)
+                .delete(api::agents::delete_conversation_agent),
+        )
+        .route(
+            "/api/v1/conversations/{conversation_id}/agent/prompt",
+            post(api::agents::prompt_conversation_agent),
+        )
+        .route(
+            "/api/v1/conversations/{conversation_id}/agent/cancel",
+            post(api::agents::cancel_conversation_agent),
+        )
+        .route(
+            "/api/v1/conversations/{conversation_id}/agent/interrupt",
+            post(api::agents::interrupt_conversation_agent),
         )
         .route(
             "/api/v1/stats/message-types",
@@ -599,9 +660,27 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/collaboration/sessions",
             post(api::collaboration_sessions::create_collaboration_session),
         )
+        // ════════════════════════════════════════════════════════════════
+        // Collaboration Session API（属于 Chat，1:N）
+        // ════════════════════════════════════════════════════════════════
         .route(
-            "/api/v1/collaboration-sessions/by-chat/{chat_id}",
-            get(api::collaboration_sessions::list_collaboration_sessions_by_chat),
+            "/api/v1/collaboration-sessions",
+            get(api::collaboration_sessions::list_collaboration_sessions)
+                .post(api::collaboration_sessions::create_collaboration_session),
+        )
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}",
+            get(api::collaboration_sessions::get_collaboration_session)
+                .patch(api::collaboration_sessions::patch_collaboration_session)
+                .delete(api::collaboration_sessions::delete_collaboration_session),
+        )
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}/status",
+            get(api::collaboration_sessions::get_collaboration_session_status),
+        )
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}/progress",
+            get(api::collaboration_sessions::get_collaboration_session_progress),
         )
         .route("/api/v1/dag", post(submit_dag))
         .route("/api/v1/dag/validate", post(validate_dag))

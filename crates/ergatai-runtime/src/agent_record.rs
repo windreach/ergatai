@@ -32,8 +32,8 @@ pub struct StateTransition {
 ///
 /// - `agent_id`: **Runtime ID** — Snowflake ID (e.g., `agent_{timestamp}_{instance}_{sequence}`).
 ///   Used for NATS routing. Changes on process restart.
-/// - `cov_id`: **Application ID** — conversation/cov identifier for Cov-centric routing.
-///   1:1 binding with agent. Used for direct delivery via `inject_message_to_cov()`.
+/// - `conversation_id`: **Application ID** — conversation identifier for Conversation-centric routing.
+///   1:1 binding with agent. Used for direct delivery via `inject_message_to_conversation()`.
 /// - `mcp_agent_id`: **MCP connection ID** — for MCP peer binding (e.g., `opencode@abcd`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRecord {
@@ -41,10 +41,10 @@ pub struct AgentRecord {
     /// This is the primary key for NATS routing and registry lookup.
     pub agent_id: String,
 
-    /// Cov ID (Conversation ID) — the primary identifier for the Cov execution unit.
-    /// Used for Cov-centric message routing and direct delivery.
+    /// Conversation ID (Conversation ID) — the primary identifier for the Cov execution unit.
+    /// Used for Conversation-centric message routing and direct delivery.
     /// Each Cov has a 1:1 binding to an Agent.
-    pub cov_id: Option<String>,
+    pub conversation_id: Option<String>,
 
     /// Current lifecycle state
     pub state: AgentLifecycleState,
@@ -100,7 +100,7 @@ pub struct AgentHandle {
     /// Backend-specific metadata.
     ///
     /// Key entries:
-    /// - `conversation_id`: Cov ID for Cov-centric routing
+    /// - `conversation_id`: Conversation ID for Conversation-centric routing
     /// - `work_dir`: agent working directory
     pub metadata: std::collections::HashMap<String, String>,
 }
@@ -122,10 +122,10 @@ impl AgentRecord {
     /// Create a new agent record in the Created state
     pub fn new(agent_id: String, workspace_id: String, handle: AgentHandle) -> Self {
         let now = Utc::now();
-        let cov_id = handle.metadata.get("conversation_id").cloned();
+        let conversation_id = handle.metadata.get("conversation_id").cloned();
         Self {
             agent_id,
-            cov_id,
+            conversation_id,
             state: AgentLifecycleState::Created,
             workspace_id,
             task_id: None,
@@ -181,9 +181,9 @@ impl AgentRecord {
             self.state_history.drain(..drain_count);
         }
 
-        // Note: cov_id is set during AgentRecord::new() from handle.metadata["conversation_id"].
-        // It is NOT updated here because cov_id should remain stable across state transitions.
-        // If the handle's cov_id changes (e.g., agent restart with new metadata), create a new
+        // Note: conversation_id is set during AgentRecord::new() from handle.metadata["conversation_id"].
+        // It is NOT updated here because conversation_id should remain stable across state transitions.
+        // If the handle's conversation_id changes (e.g., agent restart with new metadata), create a new
         // AgentRecord instead of transitioning the existing one.
 
         self.state = new_state;

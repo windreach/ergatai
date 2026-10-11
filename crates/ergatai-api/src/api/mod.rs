@@ -9,6 +9,7 @@ pub mod collaboration_sessions;
 pub mod conversation_sse;
 pub mod conversations;
 pub mod locks;
+pub mod messages;
 pub mod openapi;
 pub mod permissions;
 pub mod projects;

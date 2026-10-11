@@ -45,7 +45,7 @@ pub(crate) struct SendMessageParams {
     /// ID of the target Cov (Conversation).
     /// Cov and Agent have 1:1 binding relationship.
     /// The system will automatically resolve it to the bound agent_id.
-    pub target_cov_id: String,
+    pub target_conversation_id: String,
 
     /// Message content
     pub message: String,
@@ -72,12 +72,15 @@ pub(crate) struct SendMessageParams {
 }
 
 impl SendMessageParams {
-    /// Get the target cov_id from the params.
+    /// Get the target conversation_id from the params.
     ///
-    /// Since `target_cov_id` is now required, this simply returns it.
-    /// Returns `(target_cov_id, Some(target_cov_id))` for consistency with previous API.
+    /// Since `target_conversation_id` is now required, this simply returns it.
+    /// Returns `(target_conversation_id, Some(target_conversation_id))` for consistency with previous API.
     pub fn resolve_target(&self) -> Result<(String, Option<String>), ErrorData> {
-        Ok((self.target_cov_id.clone(), Some(self.target_cov_id.clone())))
+        Ok((
+            self.target_conversation_id.clone(),
+            Some(self.target_conversation_id.clone()),
+        ))
     }
 }
 

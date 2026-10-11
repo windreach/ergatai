@@ -302,9 +302,8 @@ fn agent_message_payload_roundtrip() {
     let payload = AgentMessagePayload {
         from_agent: "%10".to_string(),
         to_agent: "%20".to_string(),
-        target_cov_id: None,
+        target_conversation_id: None,
         content: "Hello from agent 10".to_string(),
-        thread_id: Some("thread-abc".to_string()),
         timestamp: 1700000000,
         metadata: HashMap::from([("priority".to_string(), "high".to_string())]),
         message_id: "msg-core-test".to_string(),
@@ -312,6 +311,7 @@ fn agent_message_payload_roundtrip() {
         correlation_id: None,
         timeout_ms: None,
         message_type: "request".to_string(),
+        images: vec![],
     };
 
     let json = serde_json::to_string(&payload).unwrap();

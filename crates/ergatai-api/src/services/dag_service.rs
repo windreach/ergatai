@@ -16,6 +16,7 @@ use serde_json::Value;
 use crate::services::collaboration_session::{
     create_session, CollaborationMode, CreateCollaborationSessionRequest,
 };
+use crate::user_data_db;
 use ergatai_core::cross_agent::CollaborationExecutionScope;
 use ergatai_core::cross_agent::{
     get_dag_scheduler, get_dag_scheduler_by_id, list_dag_schedulers, set_dag_scheduler,
@@ -223,6 +224,17 @@ pub async fn submit_dag(req: DagSubmitRequest) -> Result<DagSubmitResponse> {
 
     // 4. 创建临时 CollaborationSession（如果提供了 chat_id）
     let session_id = if let Some(chat_id) = &req.chat_id {
+        // Get workspace_id from chat if not provided
+        let workspace_id = if let Some(wid) = &req.workspace_id {
+            wid.clone()
+        } else {
+            // Try to get workspace_id from chat
+            match user_data_db::chats::get(chat_id)? {
+                Some(chat) => chat.workspace_id,
+                None => anyhow::bail!("Chat {} not found", chat_id),
+            }
+        };
+
         // 从 graph.nodes 提取唯一的 agents 作为 participants
         let unique_agents: Vec<String> = {
             let mut agents: Vec<String> = graph.nodes.iter().map(|n| n.agent.clone()).collect();
@@ -233,8 +245,7 @@ pub async fn submit_dag(req: DagSubmitRequest) -> Result<DagSubmitResponse> {
 
         let session_request = CreateCollaborationSessionRequest {
             chat_id: chat_id.clone(),
-            workspace_id: req.workspace_id.clone(),
-            project_id: req.project_id.clone(),
+            workspace_id,
             mode: CollaborationMode::Group,
             goal: Some(format!(
                 "DAG orchestration: {}",
@@ -253,7 +264,7 @@ pub async fn submit_dag(req: DagSubmitRequest) -> Result<DagSubmitResponse> {
                 .collect(),
         };
         let session = create_session(session_request)?;
-        Some(session.session.id)
+        Some(session.session.collaboration_session_id)
     } else {
         None
     };
@@ -304,11 +315,11 @@ pub async fn submit_dag(req: DagSubmitRequest) -> Result<DagSubmitResponse> {
             // Clean up the session if DAG submission fails
             if let Some(ref sid) = session_id {
                 if let Err(cleanup_err) = crate::services::collaboration_session::fail_session(
-                    sid,
+                    sid.as_str(),
                     &format!("DAG submission failed: {}", e),
                 ) {
                     tracing::warn!(
-                        session_id = sid,
+                        session_id = sid.as_str(),
                         error = %cleanup_err,
                         "Failed to clean up session after DAG submission failure"
                     );

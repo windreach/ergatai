@@ -67,17 +67,7 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
     fn next_agent_id(&self, workspace_id: &str) -> String;
 
     /// Inject a message into a running agent.
-    ///
-    /// `conversation_id` is an optional thread/conversation identifier used by
-    /// the SSE persistence layer to associate the agent's response with the
-    /// correct conversation. Pass `None` when the conversation context is
-    /// unknown (e.g. initial instruction, auto-continue).
-    async fn inject_message(
-        &self,
-        handle: &AgentHandle,
-        message: &str,
-        conversation_id: Option<&str>,
-    ) -> ErgataiResult<()>;
+    async fn inject_message(&self, handle: &AgentHandle, message: &str) -> ErgataiResult<()>;
 
     /// Inject a message and optional image attachments into a running agent.
     async fn inject_message_with_images(
@@ -85,10 +75,9 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
         handle: &AgentHandle,
         message: &str,
         images: &[crate::types::AgentImage],
-        conversation_id: Option<&str>,
     ) -> ErgataiResult<()> {
         if images.is_empty() {
-            self.inject_message(handle, message, conversation_id).await
+            self.inject_message(handle, message).await
         } else {
             Err(ErgataiError::internal(
                 "Image attachments are not supported by this backend",
@@ -214,14 +203,6 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
     /// Get the agent's process ID.
     async fn pid(&self, agent_id: &str) -> ErgataiResult<Option<u32>>;
 
-    /// Subscribe to real-time output events from an agent.
-    async fn subscribe_output(
-        &self,
-        agent_id: &str,
-    ) -> ErgataiResult<
-        Option<tokio::sync::broadcast::Receiver<crate::backends::acp::AgentOutputEvent>>,
-    >;
-
     /// List available ACP sessions for an agent.
     async fn list_sessions(&self, agent_id: &str) -> ErgataiResult<Vec<crate::types::SessionInfo>>;
 
@@ -337,12 +318,7 @@ mod tests {
             })
         }
 
-        async fn inject_message(
-            &self,
-            _handle: &AgentHandle,
-            _message: &str,
-            _conversation_id: Option<&str>,
-        ) -> ErgataiResult<()> {
+        async fn inject_message(&self, _handle: &AgentHandle, _message: &str) -> ErgataiResult<()> {
             Ok(())
         }
 
@@ -351,7 +327,6 @@ mod tests {
             _handle: &AgentHandle,
             _message: &str,
             images: &[crate::types::AgentImage],
-            _conversation_id: Option<&str>,
         ) -> ErgataiResult<()> {
             if images.is_empty() {
                 Ok(())
@@ -510,15 +485,6 @@ mod tests {
             Ok(None)
         }
 
-        async fn subscribe_output(
-            &self,
-            _agent_id: &str,
-        ) -> ErgataiResult<
-            Option<tokio::sync::broadcast::Receiver<crate::backends::acp::AgentOutputEvent>>,
-        > {
-            Ok(None)
-        }
-
         async fn list_sessions(
             &self,
             _agent_id: &str,
@@ -637,7 +603,7 @@ mod tests {
             process_id: None,
             metadata: HashMap::new(),
         };
-        assert!(backend.inject_message(&agent, "hello", None).await.is_ok());
+        assert!(backend.inject_message(&agent, "hello").await.is_ok());
     }
 
     #[tokio::test]

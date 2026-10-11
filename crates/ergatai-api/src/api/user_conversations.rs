@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -382,7 +382,7 @@ pub async fn create_workspace_conversation(
     }
 
     let workspace_id_for_get = workspace_id.clone();
-    let workspace = match tokio::task::spawn_blocking(move || {
+    let _workspace = match tokio::task::spawn_blocking(move || {
         user_data_db::workspaces::get(&workspace_id_for_get)
     })
     .await
@@ -402,16 +402,91 @@ pub async fn create_workspace_conversation(
     };
 
     let now = now_unix_seconds();
+    let workspace_id_for_conv = workspace_id.clone();
+
+    // Create or get chat for this workspace
+    let chat = match tokio::task::spawn_blocking(move || {
+        let chats = user_data_db::chats::list(Some(&workspace_id_for_conv))?;
+        if let Some(chat) = chats.into_iter().next() {
+            Ok(chat)
+        } else {
+            // Create a default chat for this workspace
+            let chat_id = format_id(generate(), IdType::Chat);
+            user_data_db::chats::create(user_data_db::Chat {
+                chat_id: chat_id.clone(),
+                workspace_id: workspace_id_for_conv.clone(),
+                name: Some("Default Chat".to_string()),
+                created_at: now,
+                updated_at: now,
+                archived_at: None,
+            })
+        }
+    })
+    .await
+    {
+        Ok(Ok(chat)) => chat,
+        Ok(Err(error)) => return db_error("Failed to create/get chat", error),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    // Create or get collaboration session for this chat
+    let chat_id_for_closure = chat.chat_id.clone();
+    let workspace_id_for_session = chat.workspace_id.clone();
+    let chat_id_for_session = chat.chat_id.clone();
+    let session = match tokio::task::spawn_blocking(move || {
+        let sessions = user_data_db::collaboration_sessions::list(Some(&chat_id_for_closure))?;
+        if let Some(session) = sessions.into_iter().next() {
+            Ok(session)
+        } else {
+            // Create a default collaboration session
+            let session_id = format_id(generate(), IdType::Session);
+            user_data_db::collaboration_sessions::create(user_data_db::CollaborationSession {
+                collaboration_session_id: session_id.clone(),
+                chat_id: chat_id_for_closure.clone(),
+                workspace_id: workspace_id_for_session.clone(),
+                mode: "supervisor".to_string(),
+                state: "idle".to_string(),
+                goal: None,
+                active_plan_revision: None,
+                created_at: now,
+                updated_at: now,
+            })
+        }
+    })
+    .await
+    {
+        Ok(Ok(session)) => session,
+        Ok(Err(error)) => return db_error("Failed to create/get collaboration session", error),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
+    };
+
     let conversation = Conversation {
-        id: conversation_id(),
+        conversation_id: conversation_id(),
+        collaboration_session_id: session.collaboration_session_id,
+        chat_id: chat_id_for_session,
         parent_id: None,
-        project_id: workspace.project_id,
-        workspace_id: Some(workspace_id),
         name: request.name,
         mode: request.mode.unwrap_or_else(|| "agent".to_string()),
+        participant_role: "peer".to_string(),
+        status: "ready".to_string(),
         created_at: now,
         updated_at: now,
-        archived_at: None,
     };
 
     match tokio::task::spawn_blocking(move || user_data_db::conversations::create(conversation))
@@ -803,15 +878,16 @@ pub async fn create_child_conversation(
 
     let now = now_unix_seconds();
     let conversation = Conversation {
-        id: conversation_id(),
-        parent_id: Some(parent.id),
-        project_id: parent.project_id,
-        workspace_id: parent.workspace_id,
+        conversation_id: conversation_id(),
+        collaboration_session_id: parent.collaboration_session_id.clone(),
+        chat_id: parent.chat_id.clone(),
+        parent_id: Some(parent.conversation_id.clone()),
         name: request.name,
         mode: request.mode.unwrap_or_else(|| "agent".to_string()),
+        participant_role: "peer".to_string(),
+        status: "ready".to_string(),
         created_at: now,
         updated_at: now,
-        archived_at: None,
     };
 
     match tokio::task::spawn_blocking(move || user_data_db::conversations::create(conversation))
@@ -899,8 +975,13 @@ pub async fn list_conversation_file_changes(
         };
 
         let context = user_data_db::conversation_execution_contexts::get(&id_for_changes)?;
-        let project_path =
-            user_data_db::projects::get(&conversation.project_id)?.map(|project| project.path);
+        let project_path = user_data_db::chats::get(&conversation.chat_id)?
+            .and_then(|chat| {
+                user_data_db::workspaces::get(&chat.workspace_id)
+                    .ok()
+                    .flatten()
+            })
+            .map(|workspace| workspace.work_dir);
         let messages = user_data_db::messages::list(&id_for_changes)?;
         let worktree_path = context.and_then(|context| context.worktree_path);
 
@@ -932,7 +1013,7 @@ mod conversation_file_change_tests {
 
     fn message(role: &str, parts: serde_json::Value) -> Message {
         Message {
-            id: format!("msg_{}", role),
+            message_id: format!("msg_{}", role),
             conversation_id: "conversation_test".to_owned(),
             sequence: 0,
             role: role.to_owned(),
@@ -1399,6 +1480,233 @@ pub async fn replace_conversation_messages(
     {
         Ok(Ok(messages)) => (StatusCode::OK, Json(messages)).into_response(),
         Ok(Err(error)) => db_error("Failed to list messages", error),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Conversation API（新版扁平化路由）
+// ════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ListConversationsQuery {
+    pub collaboration_session_id: Option<String>,
+    pub chat_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateConversationRequestNew {
+    pub collaboration_session_id: Option<String>,
+    pub chat_id: Option<String>,
+    pub name: Option<String>,
+    pub mode: Option<String>,
+    pub participant_role: Option<String>,
+}
+
+/// GET /api/v1/conversations
+pub async fn list_conversations(Query(query): Query<ListConversationsQuery>) -> impl IntoResponse {
+    let conversations = if let Some(collaboration_session_id) = query.collaboration_session_id {
+        match tokio::task::spawn_blocking(move || {
+            crate::user_data_db::conversations::list_by_collaboration_session(
+                &collaboration_session_id,
+            )
+        })
+        .await
+        {
+            Ok(Ok(convs)) => convs,
+            Ok(Err(e)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: crate::sanitize_error(&e, "list_conversations_by_session"),
+                    }),
+                )
+                    .into_response()
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Task join error: {}", e),
+                    }),
+                )
+                    .into_response()
+            }
+        }
+    } else if let Some(chat_id) = query.chat_id {
+        match tokio::task::spawn_blocking(move || {
+            crate::user_data_db::conversations::list_by_chat(&chat_id)
+        })
+        .await
+        {
+            Ok(Ok(convs)) => convs,
+            Ok(Err(e)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: crate::sanitize_error(&e, "list_conversations_by_chat"),
+                    }),
+                )
+                    .into_response()
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Task join error: {}", e),
+                    }),
+                )
+                    .into_response()
+            }
+        }
+    } else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "至少需要一个查询参数：collaboration_session_id 或 chat_id".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    (StatusCode::OK, Json(conversations)).into_response()
+}
+
+/// POST /api/v1/conversations
+///
+/// Create a new conversation. Requires either `collaboration_session_id` or `chat_id`.
+pub async fn create_conversation(
+    Json(req): Json<CreateConversationRequestNew>,
+) -> impl IntoResponse {
+    // Validate: at least one of collaboration_session_id or chat_id must be provided
+    if req.collaboration_session_id.is_none() && req.chat_id.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "At least one of collaboration_session_id or chat_id must be provided"
+                    .to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let now = now_unix_seconds();
+
+    // Resolve collaboration_session_id and chat_id
+    let (collaboration_session_id, chat_id) = if let Some(session_id) = req.collaboration_session_id
+    {
+        // Validate collaboration session exists
+        let session_id_for_lookup = session_id.clone();
+        match tokio::task::spawn_blocking(move || {
+            crate::user_data_db::collaboration_sessions::get(&session_id_for_lookup)
+        })
+        .await
+        {
+            Ok(Ok(Some(session))) => (session.collaboration_session_id, session.chat_id),
+            Ok(Ok(None)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("Collaboration session {} not found", session_id),
+                    }),
+                )
+                    .into_response();
+            }
+            Ok(Err(error)) => return db_error("Failed to lookup collaboration session", error),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Task join error: {}", e),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    } else if let Some(chat_id) = req.chat_id {
+        // Validate chat exists and get its collaboration session
+        let chat_id_for_lookup = chat_id.clone();
+        match tokio::task::spawn_blocking(move || {
+            let chat = crate::user_data_db::chats::get(&chat_id_for_lookup)?;
+            if let Some(chat) = chat {
+                // Get or create collaboration session for this chat
+                let sessions =
+                    crate::user_data_db::collaboration_sessions::list(Some(&chat_id_for_lookup))?;
+                let session = if let Some(s) = sessions.into_iter().next() {
+                    s
+                } else {
+                    // Create default collaboration session
+                    let session_id = format_id(generate(), IdType::Session);
+                    crate::user_data_db::collaboration_sessions::create(
+                        crate::user_data_db::CollaborationSession {
+                            collaboration_session_id: session_id.clone(),
+                            chat_id: chat_id_for_lookup.clone(),
+                            workspace_id: chat.workspace_id.clone(),
+                            mode: "supervisor".to_string(),
+                            state: "idle".to_string(),
+                            goal: None,
+                            active_plan_revision: None,
+                            created_at: now,
+                            updated_at: now,
+                        },
+                    )?
+                };
+                Ok::<_, rusqlite::Error>((session, chat))
+            } else {
+                Err(rusqlite::Error::QueryReturnedNoRows)
+            }
+        })
+        .await
+        {
+            Ok(Ok((session, _chat))) => (session.collaboration_session_id, _chat.chat_id),
+            Ok(Err(rusqlite::Error::QueryReturnedNoRows)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("Chat {} not found", chat_id),
+                    }),
+                )
+                    .into_response();
+            }
+            Ok(Err(error)) => return db_error("Failed to lookup chat", error),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Task join error: {}", e),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        unreachable!("Validated above")
+    };
+
+    let conversation = Conversation {
+        conversation_id: conversation_id(),
+        collaboration_session_id,
+        chat_id,
+        parent_id: None,
+        name: req.name,
+        mode: req.mode.unwrap_or_else(|| "agent".to_string()),
+        participant_role: req.participant_role.unwrap_or_else(|| "peer".to_string()),
+        status: "ready".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::create(conversation))
+        .await
+    {
+        Ok(Ok(created)) => (StatusCode::CREATED, Json(created)).into_response(),
+        Ok(Err(error)) => db_error("Failed to create conversation", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {

@@ -103,12 +103,7 @@ impl AcpBackendInterface for MockBackend {
         })
     }
 
-    async fn inject_message(
-        &self,
-        _handle: &AgentHandle,
-        _message: &str,
-        _conversation_id: Option<&str>,
-    ) -> ErgataiResult<()> {
+    async fn inject_message(&self, _handle: &AgentHandle, _message: &str) -> ErgataiResult<()> {
         Ok(())
     }
 
@@ -233,14 +228,6 @@ impl AcpBackendInterface for MockBackend {
     }
 
     async fn pid(&self, _agent_id: &str) -> ErgataiResult<Option<u32>> {
-        Ok(None)
-    }
-
-    async fn subscribe_output(
-        &self,
-        _agent_id: &str,
-    ) -> ErgataiResult<Option<tokio::sync::broadcast::Receiver<ergatai_runtime::AgentOutputEvent>>>
-    {
         Ok(None)
     }
 
@@ -1356,10 +1343,7 @@ async fn runtime_try_bind_mcp_agent_to_unbound_runtime_agent() {
     assert_eq!(resolved, Some(agent_id.clone()));
 
     // Inject message via auto-generated MCP ID resolves correctly
-    runtime
-        .inject_message(mcp_id_str, "hello", None)
-        .await
-        .unwrap();
+    runtime.inject_message(mcp_id_str, "hello").await.unwrap();
 
     runtime.stop_agent(&agent_id).await.unwrap();
 }

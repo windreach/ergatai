@@ -418,7 +418,7 @@ pub async fn prompt_agent_with_images(
     set_current_prompt_conversation(agent_id, conversation_id.clone());
     crate::context::get_app_context()
         .agent_runtime
-        .inject_message_with_images(agent_id, message, images, conversation_id.as_deref())
+        .inject_message_with_images(agent_id, message, images)
         .await?;
     Ok(())
 }
@@ -520,13 +520,6 @@ pub async fn is_backend_session_persistence_enabled() -> anyhow::Result<bool> {
 /// Get workspace configuration (capture_thoughts flag).
 pub async fn get_workspace_capture_thoughts(workspace_id: &str) -> anyhow::Result<Option<bool>> {
     Ok(backend().workspace_capture_thoughts(workspace_id).await?)
-}
-
-/// Subscribe to real-time output events from an agent.
-pub async fn subscribe_agent_output(
-    agent_id: &str,
-) -> anyhow::Result<Option<tokio::sync::broadcast::Receiver<ergatai_runtime::AgentOutputEvent>>> {
-    Ok(backend().subscribe_output(agent_id).await?)
 }
 
 // ── Agent list query (Phase 4) ──
@@ -760,7 +753,7 @@ pub async fn prompt_agent(
 
     let runtime = crate::context::get_app_context().agent_runtime.clone();
     runtime
-        .inject_message_with_images(&runtime_id, message, images, None)
+        .inject_message_with_images(&runtime_id, message, images)
         .await?;
     Ok(())
 }

@@ -525,6 +525,18 @@ async fn async_main(args: Args) -> Result<()> {
         Ok(conn) => {
             tracing::info!("✅ NATS initialized successfully");
 
+            // Set global output publisher for agent output events
+            let output_publisher = std::sync::Arc::new(
+                ergatai_api::services::nats_output_publisher::NatsOutputPublisher::new(
+                    conn.clone(),
+                ),
+            );
+            if ergatai_runtime::set_global_output_publisher(output_publisher).is_err() {
+                tracing::warn!("Global output publisher already set (skipping)");
+            } else {
+                tracing::info!("✅ Global output publisher set (agent output → NATS)");
+            }
+
             let delivery_handle =
                 start_message_delivery_consumer(conn.clone(), mcp_cancellation_token.clone());
             let cancel_monitor = mcp_cancellation_token.clone();
@@ -590,7 +602,7 @@ async fn async_main(args: Args) -> Result<()> {
             // lock manager initialized and file writes would fall back to auto-approve.
             if let Some(permission_handler) = ergatai_api::get_permission_handler() {
                 let list_result = tokio::task::spawn_blocking(|| {
-                    ergatai_api::user_data_db::workspaces::list(None, None)
+                    ergatai_api::user_data_db::workspaces::list(None)
                 })
                 .await;
 
@@ -599,7 +611,7 @@ async fn async_main(args: Args) -> Result<()> {
                         let ws_count = workspaces.len();
                         for ws in workspaces {
                             permission_handler
-                                .register_workspace(&ws.id, ws.work_dir.into())
+                                .register_workspace(&ws.workspace_id, ws.work_dir.into())
                                 .await;
                         }
                         tracing::info!(
@@ -633,7 +645,7 @@ async fn async_main(args: Args) -> Result<()> {
                             match recover_session_dag(scheduler).await {
                                 Ok(Some(activation)) => {
                                     tracing::info!(
-                                        session_id = %activation.session.session.id,
+                                        session_id = %activation.session.session.collaboration_session_id,
                                         dag_id = %activation.dag_id,
                                         submitted_nodes = activation.submitted_nodes,
                                         "✅ Collaboration session DAG recovery complete"

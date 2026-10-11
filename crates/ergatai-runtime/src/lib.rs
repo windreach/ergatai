@@ -59,6 +59,9 @@ pub mod backend;
 // Backend implementations
 pub mod backends;
 
+// Output publisher trait
+pub mod output_publisher;
+
 // Runtime facade
 pub mod runtime;
 
@@ -76,6 +79,9 @@ pub use backend::AcpBackendInterface;
 pub use backends::acp::{
     AcpBackend, AgentOutputEvent, ElicitationResponse, TrackedElicitation, TrackedPlan,
     TrackedPlanEntry, TrackedToolCall,
+};
+pub use output_publisher::{
+    get_global_output_publisher, set_global_output_publisher, NoOpOutputPublisher, OutputPublisher,
 };
 pub use permission::{
     InteractivePermissionHandler, PermissionDecision, PermissionHandler, YoloPermissionHandler,

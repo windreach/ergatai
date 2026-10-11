@@ -281,24 +281,22 @@ pub async fn delete_workspace(
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct PersistentWorkspaceRequest {
     pub id: String,
-    pub project_id: String,
     pub name: Option<String>,
     pub work_dir: String,
     pub env: Option<String>,
     pub resources: Option<String>,
-    pub capture_thoughts: Option<bool>,
+    pub config: Option<String>,
     pub collaboration_mode: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PersistentWorkspaceResponse {
     pub id: String,
-    pub project_id: String,
-    pub name: Option<String>,
+    pub name: String,
     pub work_dir: String,
     pub env: String,
     pub resources: String,
-    pub capture_thoughts: bool,
+    pub config: String,
     pub collaboration_mode: String,
     pub status: String,
     pub created_at: i64,
@@ -307,13 +305,12 @@ pub struct PersistentWorkspaceResponse {
 
 pub fn persistent_response(workspace: manager::ManagedWorkspace) -> PersistentWorkspaceResponse {
     PersistentWorkspaceResponse {
-        id: workspace.id,
-        project_id: workspace.project_id,
+        id: workspace.workspace_id,
         name: workspace.name,
         work_dir: workspace.work_dir,
         env: workspace.env,
         resources: workspace.resources,
-        capture_thoughts: workspace.capture_thoughts,
+        config: workspace.config,
         collaboration_mode: workspace.collaboration_mode,
         status: workspace.status,
         created_at: workspace.created_at,
@@ -323,7 +320,6 @@ pub fn persistent_response(workspace: manager::ManagedWorkspace) -> PersistentWo
 
 #[derive(Debug, Deserialize)]
 pub struct ListPersistentWorkspacesQuery {
-    pub project_id: Option<String>,
     pub collaboration_mode: Option<String>,
 }
 
@@ -332,7 +328,6 @@ pub struct ListPersistentWorkspacesQuery {
     path = "/api/v1/workspaces/persistent",
     tag = "PersistentWorkspaces",
     params(
-        ("project_id" = Option<String>, Query, description = "Filter by project ID"),
         ("collaboration_mode" = Option<String>, Query, description = "Filter by collaboration mode")
     ),
     responses(
@@ -343,18 +338,7 @@ pub struct ListPersistentWorkspacesQuery {
 pub async fn list_persistent_workspaces(
     axum::extract::Query(query): axum::extract::Query<ListPersistentWorkspacesQuery>,
 ) -> impl IntoResponse {
-    if let Some(project_id) = query.project_id.as_deref() {
-        if !crate::api::validation::is_valid_project_id(project_id) {
-            return crate::api::validation::invalid_project_id_response();
-        }
-    }
-
-    match manager::list(
-        query.project_id.as_deref(),
-        query.collaboration_mode.as_deref(),
-    )
-    .await
-    {
+    match manager::list(query.collaboration_mode.as_deref()).await {
         Ok(ws_list) => (
             StatusCode::OK,
             Json(
@@ -389,13 +373,6 @@ pub async fn create_persistent_workspace(
             manager::WorkspaceManagerError::Validation(
                 "Workspace ID contains invalid characters".to_string(),
             ),
-            "create_persistent_workspace",
-        );
-    }
-
-    if !crate::api::validation::is_valid_project_id(&req.project_id) {
-        return managed_error(
-            manager::WorkspaceManagerError::Validation("Invalid project ID".to_string()),
             "create_persistent_workspace",
         );
     }
@@ -443,12 +420,9 @@ pub async fn create_persistent_workspace(
         id: Some(req.id),
         name: req.name,
         work_dir: req.work_dir,
-        project_id: Some(req.project_id),
-        project_path: None,
-        project_name: None,
         env,
         resources,
-        capture_thoughts: req.capture_thoughts.unwrap_or(false),
+        config: req.config,
         collaboration_mode: req.collaboration_mode,
     };
     match manager::create(request).await {
@@ -503,13 +477,6 @@ pub async fn update_persistent_workspace(
         );
     }
 
-    if !crate::api::validation::is_valid_project_id(&req.project_id) {
-        return managed_error(
-            manager::WorkspaceManagerError::Validation("Invalid project ID".to_string()),
-            "update_persistent_workspace",
-        );
-    }
-
     // Validate work_dir is not empty/whitespace
     if req.work_dir.trim().is_empty() {
         return managed_error(
@@ -554,9 +521,8 @@ pub async fn update_persistent_workspace(
         work_dir: Some(req.work_dir),
         env,
         resources,
-        capture_thoughts: req.capture_thoughts,
+        config: req.config,
         status: None,
-        default_project_id: Some(req.project_id),
     };
     match manager::update(&id, request).await {
         Ok(workspace) => (StatusCode::OK, Json(persistent_response(workspace))).into_response(),
@@ -610,7 +576,7 @@ pub struct ListManagedWorkspacesQuery {
 pub async fn list_managed_workspaces(
     axum::extract::Query(query): axum::extract::Query<ListManagedWorkspacesQuery>,
 ) -> impl IntoResponse {
-    match manager::list(None, query.collaboration_mode.as_deref()).await {
+    match manager::list(query.collaboration_mode.as_deref()).await {
         Ok(workspaces) => (StatusCode::OK, Json(workspaces)).into_response(),
         Err(error) => managed_error(error, "list_managed_workspaces"),
     }
@@ -631,12 +597,6 @@ pub async fn list_managed_workspaces(
 pub async fn create_managed_workspace(
     Json(request): Json<manager::CreateManagedWorkspaceRequest>,
 ) -> impl IntoResponse {
-    if let Some(project_id) = request.project_id.as_deref() {
-        if !crate::api::validation::is_valid_project_id(project_id) {
-            return crate::api::validation::invalid_project_id_response();
-        }
-    }
-
     match manager::create(request).await {
         Ok(workspace) => (StatusCode::CREATED, Json(workspace)).into_response(),
         Err(error) => managed_error(error, "create_managed_workspace"),
@@ -678,12 +638,6 @@ pub async fn update_managed_workspace(
     Path(id): Path<String>,
     Json(request): Json<manager::UpdateManagedWorkspaceRequest>,
 ) -> impl IntoResponse {
-    if let Some(project_id) = request.default_project_id.as_deref() {
-        if !crate::api::validation::is_valid_project_id(project_id) {
-            return crate::api::validation::invalid_project_id_response();
-        }
-    }
-
     match manager::update(&id, request).await {
         Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
         Err(error) => managed_error(error, "update_managed_workspace"),
@@ -751,98 +705,263 @@ pub async fn delete_managed_workspace(
     }
 }
 
+// ════════════════════════════════════════════════════════════════════════
+// Workspace API（新版扁平化路由）
+// ════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateWorkspaceRequest {
+    pub name: Option<String>,
+    pub work_dir: Option<String>,
+    pub env: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct WorkspaceConfig {
+    pub projects: Option<Vec<serde_json::Value>>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WorkspaceDetailResponse {
+    pub workspace_id: String,
+    pub name: String,
+    pub work_dir: String,
+    pub env: HashMap<String, String>,
+    pub resources: HashMap<String, String>,
+    pub collaboration_mode: String,
+    pub status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// GET /api/v1/workspaces/{workspace_id}
 #[utoipa::path(
     get,
-    path = "/api/v1/workspaces/managed/{id}/projects",
-    tag = "ManagedWorkspaces",
-    params(("id" = String, Path, description = "Workspace ID")),
+    path = "/api/v1/workspaces/{workspace_id}",
+    tag = "Workspaces",
+    params(("workspace_id" = String, Path, description = "Workspace ID")),
     responses(
-        (status = 200, description = "Workspace projects", body = Vec<manager::ManagedWorkspaceProject>),
+        (status = 200, description = "Workspace details", body = WorkspaceDetailResponse),
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
-pub async fn list_managed_workspace_projects(Path(id): Path<String>) -> impl IntoResponse {
-    match manager::list_projects(&id).await {
-        Ok(projects) => (StatusCode::OK, Json(projects)).into_response(),
-        Err(error) => managed_error(error, "list_managed_workspace_projects"),
+pub async fn get_workspace(Path(workspace_id): Path<String>) -> impl IntoResponse {
+    let workspace_id_for_closure = workspace_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::user_data_db::workspaces::get(&workspace_id_for_closure)
+    })
+    .await
+    {
+        Ok(Ok(Some(workspace))) => (StatusCode::OK, Json(workspace)).into_response(),
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Workspace {} not found", workspace_id),
+            }),
+        )
+            .into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: crate::sanitize_error(&e, "get_workspace"),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
     }
 }
 
+/// PATCH /api/v1/workspaces/{workspace_id}
 #[utoipa::path(
-    post,
-    path = "/api/v1/workspaces/managed/{id}/projects",
-    tag = "ManagedWorkspaces",
-    params(("id" = String, Path, description = "Workspace ID")),
-    request_body = manager::RegisterWorkspaceProjectRequest,
+    patch,
+    path = "/api/v1/workspaces/{workspace_id}",
+    tag = "Workspaces",
+    params(("workspace_id" = String, Path, description = "Workspace ID")),
+    request_body = UpdateWorkspaceRequest,
     responses(
-        (status = 200, description = "Project registered", body = manager::ManagedWorkspace),
-        (status = 400, description = "Invalid project", body = crate::api::ApiError),
-        (status = 404, description = "Workspace or project not found", body = crate::api::ApiError),
-        (status = 409, description = "Project already registered", body = crate::api::ApiError),
+        (status = 200, description = "Workspace updated", body = WorkspaceDetailResponse),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 400, description = "Invalid request", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
-pub async fn register_managed_workspace_project(
-    Path(id): Path<String>,
-    Json(request): Json<manager::RegisterWorkspaceProjectRequest>,
+pub async fn update_workspace(
+    Path(workspace_id): Path<String>,
+    Json(req): Json<UpdateWorkspaceRequest>,
 ) -> impl IntoResponse {
-    if let Some(project_id) = request.project_id.as_deref() {
-        if !crate::api::validation::is_valid_project_id(project_id) {
-            return crate::api::validation::invalid_project_id_response();
+    let workspace_id_for_get = workspace_id.clone();
+    let existing = match tokio::task::spawn_blocking(move || {
+        crate::user_data_db::workspaces::get(&workspace_id_for_get)
+    })
+    .await
+    {
+        Ok(Ok(Some(workspace))) => workspace,
+        Ok(Ok(None)) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("Workspace {} not found", workspace_id),
+                }),
+            )
+                .into_response()
         }
-    }
+        Ok(Err(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: crate::sanitize_error(&e, "update_workspace"),
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
+    };
 
-    match manager::register_project(&id, request).await {
-        Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
-        Err(error) => managed_error(error, "register_managed_workspace_project"),
+    let mut updated = existing;
+    if let Some(name) = req.name {
+        updated.name = name;
+    }
+    if let Some(work_dir) = req.work_dir {
+        updated.work_dir = work_dir;
+    }
+    if let Some(env) = req.env {
+        updated.env = serde_json::to_string(&env).unwrap_or_else(|_| "{}".to_string());
+    }
+    updated.updated_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    match tokio::task::spawn_blocking(move || crate::user_data_db::workspaces::update(updated))
+        .await
+    {
+        Ok(Ok(())) => {
+            let workspace_id_for_reload = workspace_id.clone();
+            match tokio::task::spawn_blocking(move || {
+                crate::user_data_db::workspaces::get(&workspace_id_for_reload)
+            })
+            .await
+            {
+                Ok(Ok(Some(workspace))) => (StatusCode::OK, Json(workspace)).into_response(),
+                Ok(Ok(None)) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Workspace disappeared after update".to_string(),
+                    }),
+                )
+                    .into_response(),
+                Ok(Err(e)) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: crate::sanitize_error(&e, "update_workspace"),
+                    }),
+                )
+                    .into_response(),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Task join error: {}", e),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: crate::sanitize_error(&e, "update_workspace"),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
     }
 }
 
+/// GET /api/v1/workspaces/{workspace_id}/config
+///
+/// TODO: Workspace config is now part of the workspace object.
+/// This endpoint is temporarily stubbed.
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/{workspace_id}/config",
+    tag = "Workspaces",
+    responses(
+        (status = 501, description = "Config endpoint temporarily unavailable"),
+    )
+)]
+pub async fn get_workspace_config(Path(_workspace_id): Path<String>) -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(ErrorResponse {
+            error: "Workspace config is now part of the workspace object".to_string(),
+        }),
+    )
+        .into_response()
+}
+
+/// PATCH /api/v1/workspaces/{workspace_id}/config
+///
+/// TODO: Workspace config is now part of the workspace object.
+/// This endpoint is temporarily stubbed.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/workspaces/{workspace_id}/config",
+    tag = "Workspaces",
+    responses(
+        (status = 501, description = "Config endpoint temporarily unavailable"),
+    )
+)]
+pub async fn update_workspace_config(Path(_workspace_id): Path<String>) -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(ErrorResponse {
+            error: "Workspace config is now part of the workspace object".to_string(),
+        }),
+    )
+        .into_response()
+}
+
+/// DELETE /api/v1/workspaces/{workspace_id}/config
+///
+/// TODO: Workspace config is now part of the workspace object.
+/// This endpoint is temporarily stubbed.
 #[utoipa::path(
     delete,
-    path = "/api/v1/workspaces/managed/{id}/projects/{project_id}",
-    tag = "ManagedWorkspaces",
-    params(
-        ("id" = String, Path, description = "Workspace ID"),
-        ("project_id" = String, Path, description = "Project ID")
-    ),
+    path = "/api/v1/workspaces/{workspace_id}/config",
+    tag = "Workspaces",
     responses(
-        (status = 200, description = "Project registration removed", body = manager::ManagedWorkspace),
-        (status = 404, description = "Workspace or project link not found", body = crate::api::ApiError),
-        (status = 409, description = "Workspace must retain one project", body = crate::api::ApiError),
-        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+        (status = 501, description = "Config endpoint temporarily unavailable"),
     )
 )]
-pub async fn remove_managed_workspace_project(
-    Path((id, project_id)): Path<(String, String)>,
-) -> impl IntoResponse {
-    if !crate::api::validation::is_valid_project_id(&project_id) {
-        return crate::api::validation::invalid_project_id_response();
-    }
-
-    match manager::remove_project(&id, &project_id).await {
-        Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
-        Err(error) => managed_error(error, "remove_managed_workspace_project"),
-    }
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/v1/workspaces/managed/{id}/status",
-    tag = "ManagedWorkspaces",
-    params(("id" = String, Path, description = "Workspace ID")),
-    responses(
-        (status = 200, description = "Workspace status", body = manager::WorkspaceStatus),
-        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
-        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+pub async fn delete_workspace_config(Path(_workspace_id): Path<String>) -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(ErrorResponse {
+            error: "Workspace config is now part of the workspace object".to_string(),
+        }),
     )
-)]
-pub async fn managed_workspace_status(Path(id): Path<String>) -> impl IntoResponse {
-    match manager::status(&id).await {
-        Ok(status) => (StatusCode::OK, Json(status)).into_response(),
-        Err(error) => managed_error(error, "managed_workspace_status"),
-    }
+        .into_response()
 }
 
 // ── Tests ──

@@ -64,11 +64,18 @@ pub async fn submit_session_interaction(
             let plan_revision_id = plan.plan_revision.id.clone();
             match plan.session.session.state {
                 SessionState::Planning => Some(
-                    activate_plan_revision(&outcome.session.session.id, &plan_revision_id).await?,
+                    activate_plan_revision(
+                        &outcome.session.session.collaboration_session_id,
+                        &plan_revision_id,
+                    )
+                    .await?,
                 ),
                 SessionState::Executing => Some(
-                    replace_session_plan_revision(&outcome.session.session.id, &plan_revision_id)
-                        .await?,
+                    replace_session_plan_revision(
+                        &outcome.session.session.collaboration_session_id,
+                        &plan_revision_id,
+                    )
+                    .await?,
                 ),
                 _ => None,
             }
@@ -628,8 +635,8 @@ pub async fn activate_plan_revision(
         &revision.dag_snapshot,
         detail.session.mode,
         &detail.participants,
-        detail.session.workspace_id.as_deref(),
-        detail.session.project_id.as_deref(),
+        Some(detail.session.workspace_id.as_str()),
+        None, // project_id is deprecated
     )?;
 
     if !matches!(
@@ -644,11 +651,14 @@ pub async fn activate_plan_revision(
 
     let detail =
         transition_if_allowed(session_id, SessionState::Executing, "Plan activated").await?;
-    let dag_id = format!("dag-session-{}-{}", detail.session.id, revision.id);
+    let dag_id = format!(
+        "dag-session-{}-{}",
+        detail.session.collaboration_session_id, revision.id
+    );
     let mut graph = graph;
     graph.dag_id = Some(dag_id.clone());
     let scope = CollaborationExecutionScope::new(
-        detail.session.id.clone(),
+        detail.session.collaboration_session_id.clone(),
         Some(detail.session.chat_id.clone()),
         revision.id.clone(),
     );
@@ -840,8 +850,8 @@ pub async fn replace_session_plan_revision(
         &revision.dag_snapshot,
         detail.session.mode,
         &detail.participants,
-        detail.session.workspace_id.as_deref(),
-        detail.session.project_id.as_deref(),
+        Some(detail.session.workspace_id.as_str()),
+        None, // project_id is deprecated
     )?;
 
     let old_scheduler = get_session_dag_scheduler(Some(session_id));
@@ -869,11 +879,14 @@ pub async fn replace_session_plan_revision(
         clear_session_dag_scheduler(Some(session_id));
     }
 
-    let dag_id = format!("dag-session-{}-{}", detail.session.id, revision.id);
+    let dag_id = format!(
+        "dag-session-{}-{}",
+        detail.session.collaboration_session_id, revision.id
+    );
     let mut graph = graph;
     graph.dag_id = Some(dag_id.clone());
     let scope = CollaborationExecutionScope::new(
-        detail.session.id.clone(),
+        detail.session.collaboration_session_id.clone(),
         Some(detail.session.chat_id.clone()),
         revision.id.clone(),
     );

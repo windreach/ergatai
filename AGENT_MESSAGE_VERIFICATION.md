@@ -9,7 +9,7 @@
 ```rust
 // stream_agent_output 函数中
 if is_done {
-    if let Some(ref cid) = conv_id {
+    if let Some(ref cid) = conversation_id {
         if !acc_text.is_empty() {
             let mut parts = vec![];
             if !thinking_to_persist.trim().is_empty() {
@@ -191,7 +191,7 @@ Agent bindings 用于将 MCP 连接或 ACP workspace 映射到 conversation ID�
 ### 关键函数
 
 - `insert_mcp_binding`: 绑定 MCP peer → conversation
-- `register_agent`: 绑定 ACP agent → conversation (via AgentRecord with cov_id)
+- `register_agent`: 绑定 ACP agent → conversation (via AgentRecord with conversation_id)
 
 ### 需要验证的点
 
@@ -220,7 +220,7 @@ stream_agent_output 监听 AgentOutputEvent
   ↓
 创建 metadata: {"source": "agent"}  ← 不完整
   ↓
-user_data_db::messages::append(conv_id, "assistant", parts, metadata)
+user_data_db::messages::append(conversation_id, "assistant", parts, metadata)
   ↓
 消息存储到 messages 表
 ```
@@ -244,7 +244,7 @@ inject_message 到 Agent B
   ↓
 存储消息到 Agent B 的 conversation
   ↓
-user_data_db::messages::append(conv_id, role, parts, metadata)
+user_data_db::messages::append(conversation_id, role, parts, metadata)
   - role = agent_message_role(message_type)
   - metadata = {source, senderAgentId, senderAgentName, messageType}
 ```

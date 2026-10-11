@@ -27,6 +27,7 @@ pub use dag_event_stream::{
 };
 pub use event_bus::EventBus;
 pub use events::{
+    AgentInterrupted,
     AgentLifecycleEventPayload,
     AgentMessagePayload,
     // LLM API traffic events (agent semantic state)

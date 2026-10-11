@@ -36,6 +36,29 @@ fn lock_user_data_db_for_tests() -> tokio::sync::MutexGuard<'static, ()> {
     guard
 }
 
+fn ensure_workspace_and_chat_exist(workspace_id: &str, chat_id: &str) {
+    let _ = ergatai_api::user_data_db::workspaces::create(ergatai_api::user_data_db::Workspace {
+        workspace_id: workspace_id.to_string(),
+        name: format!("Test Workspace {}", workspace_id),
+        work_dir: format!("/tmp/{}", workspace_id),
+        env: "{}".to_string(),
+        resources: "{}".to_string(),
+        config: "{}".to_string(),
+        collaboration_mode: "none".to_string(),
+        status: "active".to_string(),
+        created_at: 0,
+        updated_at: 0,
+    });
+    let _ = ergatai_api::user_data_db::chats::create(ergatai_api::user_data_db::Chat {
+        chat_id: chat_id.to_string(),
+        workspace_id: workspace_id.to_string(),
+        name: format!("Test Chat {}", chat_id),
+        created_at: 0,
+        updated_at: 0,
+        archived_at: None,
+    });
+}
+
 async fn lock_user_data_db_for_tests_async() -> tokio::sync::MutexGuard<'static, ()> {
     let guard = TEST_DB_MUTEX.lock().await;
     TEST_DB_DATA_DIR.get_or_init(|| {
@@ -53,11 +76,13 @@ async fn lock_user_data_db_for_tests_async() -> tokio::sync::MutexGuard<'static,
 #[test]
 fn recovery_queries_track_active_sessions_plans_and_approvals() {
     let _database_guard = lock_user_data_db_for_tests();
+    let workspace_id = "workspace-recovery".to_string();
     let chat_id = format_id(generate(), IdType::Chat);
+    ensure_workspace_and_chat_exist(&workspace_id, &chat_id);
+
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id,
-        workspace_id: Some("workspace-recovery".to_string()),
-        project_id: Some("project-recovery".to_string()),
+        workspace_id,
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Recover after restart".to_string()),
         participants: vec![ParticipantInput {
@@ -70,7 +95,7 @@ fn recovery_queries_track_active_sessions_plans_and_approvals() {
     .unwrap();
 
     transition_state(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         ergatai_api::services::collaboration_session::SessionStateTransitionRequest {
             state: SessionState::Planning,
             reason: Some("Prepare recovery test".to_string()),
@@ -78,7 +103,7 @@ fn recovery_queries_track_active_sessions_plans_and_approvals() {
     )
     .unwrap();
     transition_state(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         ergatai_api::services::collaboration_session::SessionStateTransitionRequest {
             state: SessionState::Executing,
             reason: Some("Recovery test".to_string()),
@@ -86,7 +111,7 @@ fn recovery_queries_track_active_sessions_plans_and_approvals() {
     )
     .unwrap();
     let plan = create_plan_revision(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         CreatePlanRevisionRequest {
             dag_snapshot: json!({
                 "nodes": [{ "id": "recover", "agent": "agent-recovery" }]
@@ -97,7 +122,7 @@ fn recovery_queries_track_active_sessions_plans_and_approvals() {
     )
     .unwrap();
     create_approval(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         CreateApprovalRequest {
             kind: "file_write".to_string(),
             node_id: Some("recover".to_string()),
@@ -110,7 +135,8 @@ fn recovery_queries_track_active_sessions_plans_and_approvals() {
     let active_sessions = list_active_sessions().unwrap();
     assert!(active_sessions
         .iter()
-        .any(|session| session.session.id == created.session.id));
+        .any(|session| session.session.collaboration_session_id
+            == created.session.collaboration_session_id));
     let active_plans = list_active_plan_revisions().unwrap();
     assert!(active_plans
         .iter()
@@ -120,19 +146,24 @@ fn recovery_queries_track_active_sessions_plans_and_approvals() {
         .iter()
         .any(|approval| approval.plan_revision_id == Some(plan.plan_revision.id.clone())));
 
-    cancel_session(&created.session.id, Some("Test finished".to_string())).unwrap();
+    cancel_session(
+        &created.session.collaboration_session_id,
+        Some("Test finished".to_string()),
+    )
+    .unwrap();
     assert!(list_active_sessions()
         .unwrap()
         .iter()
-        .all(|session| session.session.id != created.session.id));
+        .all(|session| session.session.collaboration_session_id
+            != created.session.collaboration_session_id));
     assert!(list_active_plan_revisions()
         .unwrap()
         .iter()
-        .all(|revision| revision.session_id != created.session.id));
+        .all(|revision| revision.session_id != created.session.collaboration_session_id));
     assert!(list_pending_approvals()
         .unwrap()
         .iter()
-        .all(|approval| approval.session_id != created.session.id));
+        .all(|approval| approval.session_id != created.session.collaboration_session_id));
 }
 
 #[tokio::test]
@@ -142,8 +173,7 @@ async fn concurrent_session_dag_registries_stay_isolated() {
     let make_active_session = |agent_id: &'static str| async move {
         let created = create_session(CreateCollaborationSessionRequest {
             chat_id: format_id(generate(), IdType::Chat),
-            workspace_id: Some("workspace-concurrent".to_string()),
-            project_id: Some("project-concurrent".to_string()),
+            workspace_id: "workspace-concurrent".to_string(),
             mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
             goal: Some("Execute concurrent session DAGs".to_string()),
             participants: vec![ParticipantInput {
@@ -155,7 +185,7 @@ async fn concurrent_session_dag_registries_stay_isolated() {
         })
         .unwrap();
         transition_state(
-            &created.session.id,
+            &created.session.collaboration_session_id,
             ergatai_api::services::collaboration_session::SessionStateTransitionRequest {
                 state: SessionState::Planning,
                 reason: Some("Prepare concurrent execution".to_string()),
@@ -163,7 +193,7 @@ async fn concurrent_session_dag_registries_stay_isolated() {
         )
         .unwrap();
         let plan = create_plan_revision(
-            &created.session.id,
+            &created.session.collaboration_session_id,
             CreatePlanRevisionRequest {
                 dag_snapshot: json!({
                     "nodes": [{ "id": "work", "agent": agent_id, "task": "Work" }]
@@ -173,7 +203,10 @@ async fn concurrent_session_dag_registries_stay_isolated() {
             },
         )
         .unwrap();
-        (created.session.id, plan.plan_revision.id)
+        (
+            created.session.collaboration_session_id,
+            plan.plan_revision.id,
+        )
     };
 
     let (first, second) = tokio::join!(
@@ -248,8 +281,7 @@ async fn inactive_session_plan_is_not_recovered() {
     let _database_guard = lock_user_data_db_for_tests_async().await;
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id: format_id(generate(), IdType::Chat),
-        workspace_id: Some("workspace-recovery".to_string()),
-        project_id: Some("project-recovery".to_string()),
+        workspace_id: "workspace-recovery".to_string(),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Do not recover inactive plan".to_string()),
         participants: vec![ParticipantInput {
@@ -261,7 +293,7 @@ async fn inactive_session_plan_is_not_recovered() {
     })
     .unwrap();
     let plan = create_plan_revision(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         CreatePlanRevisionRequest {
             dag_snapshot: json!({
                 "nodes": [{ "id": "work", "agent": "agent-inactive" }]
@@ -279,7 +311,7 @@ async fn inactive_session_plan_is_not_recovered() {
         ]),
     )
     .with_collaboration_scope(ergatai_core::cross_agent::CollaborationExecutionScope::new(
-        created.session.id.clone(),
+        created.session.collaboration_session_id.clone(),
         Some(created.session.chat_id.clone()),
         plan.plan_revision.id.clone(),
     ));
@@ -293,8 +325,7 @@ async fn executing_user_message_hot_swaps_active_revision() {
     ergatai_api::app_state_with_token(None);
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id: format_id(generate(), IdType::Chat),
-        workspace_id: Some("workspace-hot-swap".to_string()),
-        project_id: Some("project-hot-swap".to_string()),
+        workspace_id: "workspace-hot-swap".to_string(),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Hot-swap the active plan".to_string()),
         participants: vec![ParticipantInput {
@@ -306,7 +337,7 @@ async fn executing_user_message_hot_swaps_active_revision() {
     })
     .unwrap();
     transition_state(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         ergatai_api::services::collaboration_session::SessionStateTransitionRequest {
             state: SessionState::Planning,
             reason: Some("Prepare first plan".to_string()),
@@ -314,7 +345,7 @@ async fn executing_user_message_hot_swaps_active_revision() {
     )
     .unwrap();
     let first = create_plan_revision(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         CreatePlanRevisionRequest {
             dag_snapshot: json!({
                 "nodes": [{ "id": "peer-1", "agent": "peer-a", "task": "First work" }]
@@ -325,7 +356,7 @@ async fn executing_user_message_hot_swaps_active_revision() {
     )
     .unwrap();
     transition_state(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         ergatai_api::services::collaboration_session::SessionStateTransitionRequest {
             state: SessionState::Executing,
             reason: Some("Activate first plan".to_string()),
@@ -333,7 +364,7 @@ async fn executing_user_message_hot_swaps_active_revision() {
     )
     .unwrap();
     append_context_event(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         "task_completed",
         "agent",
         Some("peer-a"),
@@ -360,14 +391,14 @@ async fn executing_user_message_hot_swaps_active_revision() {
         first_graph,
     )
     .with_collaboration_scope(ergatai_core::cross_agent::CollaborationExecutionScope::new(
-        created.session.id.clone(),
+        created.session.collaboration_session_id.clone(),
         Some(created.session.chat_id.clone()),
         first.plan_revision.id.clone(),
     ));
     ergatai_core::cross_agent::set_session_dag_scheduler(old_scheduler);
 
     let submitted = ergatai_api::services::collaboration_session_dag::submit_session_interaction(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         SubmitSessionInteractionRequest {
             text: "Please add a security review before finishing".to_string(),
             kind: SessionInteractionKind::Message,
@@ -407,21 +438,27 @@ async fn executing_user_message_hot_swaps_active_revision() {
     assert_eq!(preserved[0]["node_id"], "peer-1");
     assert_eq!(activation.submitted_nodes, 0);
 
-    let old_revision = get_plan_revision(&created.session.id, &first.plan_revision.id).unwrap();
+    let old_revision = get_plan_revision(
+        &created.session.collaboration_session_id,
+        &first.plan_revision.id,
+    )
+    .unwrap();
     assert_eq!(old_revision.status, "superseded");
-    assert!(list_events(&created.session.id, None, 100)
-        .unwrap()
-        .iter()
-        .any(|event| event.event_type == "plan_hot_swapped"));
+    assert!(
+        list_events(&created.session.collaboration_session_id, None, 100)
+            .unwrap()
+            .iter()
+            .any(|event| event.event_type == "plan_hot_swapped")
+    );
 }
 
 #[test]
 fn collaboration_interaction_routes_lightweight_and_plans() {
     let _database_guard = lock_user_data_db_for_tests();
+    ensure_workspace_and_chat_exist("workspace-interactions", &format_id(generate(), IdType::Chat));
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id: format_id(generate(), IdType::Chat),
-        workspace_id: Some("workspace-interactions".to_string()),
-        project_id: Some("project-interactions".to_string()),
+        workspace_id: "workspace-interactions".to_string(),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Route interactions".to_string()),
         participants: vec![
@@ -442,7 +479,7 @@ fn collaboration_interaction_routes_lightweight_and_plans() {
     .unwrap();
 
     let collaboration = submit_session_interaction(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         SubmitSessionInteractionRequest {
             text: "@peer-a please review the shared context".to_string(),
             kind: SessionInteractionKind::Message,
@@ -471,7 +508,7 @@ fn collaboration_interaction_routes_lightweight_and_plans() {
     assert_eq!(nodes[0]["agent"], "peer-a");
 
     let lightweight = submit_session_interaction(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         SubmitSessionInteractionRequest {
             text: "Just add this to the shared context".to_string(),
             kind: SessionInteractionKind::Message,
@@ -500,8 +537,7 @@ async fn collaboration_session_stream_replays_requested_events() {
     let _database_guard = lock_user_data_db_for_tests_async().await;
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id: format_id(generate(), IdType::Chat),
-        workspace_id: Some("workspace-stream".to_string()),
-        project_id: Some("project-stream".to_string()),
+        workspace_id: "workspace-stream".to_string(),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Stream replay".to_string()),
         participants: vec![ParticipantInput {
@@ -514,7 +550,7 @@ async fn collaboration_session_stream_replays_requested_events() {
     .unwrap();
 
     let response = ergatai_api::api::collaboration_sessions::stream_collaboration_session_events(
-        axum::extract::Path(created.session.id.clone()),
+        axum::extract::Path(created.session.collaboration_session_id.clone()),
         axum::extract::Query(ergatai_api::api::collaboration_sessions::StreamEventQuery {
             after_sequence: Some(0),
             poll_interval_ms: Some(50),
@@ -529,7 +565,7 @@ async fn collaboration_session_stream_replays_requested_events() {
     assert!(body.contains("id: 1"));
 
     let response = ergatai_api::api::collaboration_sessions::stream_collaboration_session_events(
-        axum::extract::Path(created.session.id),
+        axum::extract::Path(created.session.collaboration_session_id),
         axum::extract::Query(ergatai_api::api::collaboration_sessions::StreamEventQuery {
             after_sequence: Some(1),
             poll_interval_ms: Some(50),
@@ -542,12 +578,12 @@ async fn collaboration_session_stream_replays_requested_events() {
 #[test]
 fn collaboration_session_persists_context_plans_and_approvals() {
     let _database_guard = lock_user_data_db_for_tests();
+    ensure_workspace_and_chat_exist("workspace-recovery", &format_id(generate(), IdType::Chat));
     let chat_id = format_id(generate(), IdType::Chat);
 
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id: chat_id.clone(),
-        workspace_id: Some("workspace-1".to_string()),
-        project_id: Some("project-1".to_string()),
+        workspace_id: "workspace-1".to_string(),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Supervisor,
         goal: Some("Fix the failing test".to_string()),
         participants: vec![ParticipantInput {
@@ -564,10 +600,13 @@ fn collaboration_session_persists_context_plans_and_approvals() {
     let found = ergatai_api::services::collaboration_session::find_session_by_chat(&chat_id)
         .unwrap()
         .unwrap();
-    assert_eq!(found.id, created.session.id);
+    assert_eq!(
+        found.collaboration_session_id,
+        created.session.collaboration_session_id
+    );
 
     let messaged = append_message(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         AppendSessionMessageRequest {
             actor_type: "user".to_string(),
             actor_id: Some("user-1".to_string()),
@@ -580,7 +619,7 @@ fn collaboration_session_persists_context_plans_and_approvals() {
     assert_eq!(messaged.session.state, SessionState::Planning);
 
     transition_state(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         ergatai_api::services::collaboration_session::SessionStateTransitionRequest {
             state: SessionState::Executing,
             reason: Some("Plan accepted".to_string()),
@@ -589,7 +628,7 @@ fn collaboration_session_persists_context_plans_and_approvals() {
     .unwrap();
 
     let plan = create_plan_revision(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         CreatePlanRevisionRequest {
             dag_snapshot: json!({
                 "nodes": [{ "id": "investigate", "agent": "agent-1" }]
@@ -601,14 +640,17 @@ fn collaboration_session_persists_context_plans_and_approvals() {
     .unwrap();
     assert_eq!(plan.plan_revision.revision, 1);
     assert_eq!(
-        get_plan_revision(&created.session.id, &plan.plan_revision.id)
-            .unwrap()
-            .id,
+        get_plan_revision(
+            &created.session.collaboration_session_id,
+            &plan.plan_revision.id
+        )
+        .unwrap()
+        .id,
         plan.plan_revision.id
     );
 
     let approval = create_approval(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         CreateApprovalRequest {
             kind: "file_write".to_string(),
             node_id: Some("investigate".to_string()),
@@ -624,7 +666,7 @@ fn collaboration_session_persists_context_plans_and_approvals() {
     );
 
     let decided = decide_approval(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         &approval.approval.id,
         ApprovalDecisionRequest {
             decision: ApprovalDecision::Approve,
@@ -636,10 +678,14 @@ fn collaboration_session_persists_context_plans_and_approvals() {
     assert_eq!(decided.approval.status, ApprovalStatus::Approved);
     assert_eq!(decided.session.session.state, SessionState::Executing);
 
-    let cancelled = cancel_session(&created.session.id, Some("Test complete".to_string())).unwrap();
+    let cancelled = cancel_session(
+        &created.session.collaboration_session_id,
+        Some("Test complete".to_string()),
+    )
+    .unwrap();
     assert_eq!(cancelled.session.state, SessionState::Cancelled);
 
-    let events = list_events(&created.session.id, None, 100).unwrap();
+    let events = list_events(&created.session.collaboration_session_id, None, 100).unwrap();
     let event_types: Vec<_> = events
         .iter()
         .map(|event| event.event_type.as_str())
@@ -651,7 +697,7 @@ fn collaboration_session_persists_context_plans_and_approvals() {
     assert!(event_types.contains(&"approval_granted"));
     assert!(event_types.contains(&"session_cancelled"));
 
-    let detail = get_session(&created.session.id).unwrap();
+    let detail = get_session(&created.session.collaboration_session_id).unwrap();
     assert_eq!(detail.session.state, SessionState::Cancelled);
 }
 
@@ -660,8 +706,7 @@ async fn approval_rejection_and_cancellation_cancel_pending_work() {
     let _database_guard = lock_user_data_db_for_tests_async().await;
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id: format_id(generate(), IdType::Chat),
-        workspace_id: Some("workspace-lifecycle".to_string()),
-        project_id: Some("project-lifecycle".to_string()),
+        workspace_id: "workspace-lifecycle".to_string(),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Cancel rejected and pending work".to_string()),
         participants: vec![ParticipantInput {
@@ -673,7 +718,7 @@ async fn approval_rejection_and_cancellation_cancel_pending_work() {
     })
     .unwrap();
     transition_state(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         ergatai_api::services::collaboration_session::SessionStateTransitionRequest {
             state: SessionState::Planning,
             reason: Some("Prepare lifecycle test".to_string()),
@@ -681,7 +726,7 @@ async fn approval_rejection_and_cancellation_cancel_pending_work() {
     )
     .unwrap();
     let plan = create_plan_revision(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         CreatePlanRevisionRequest {
             dag_snapshot: json!({
                 "nodes": [{ "id": "work", "agent": "agent-lifecycle", "task": "Work" }]
@@ -692,7 +737,7 @@ async fn approval_rejection_and_cancellation_cancel_pending_work() {
     )
     .unwrap();
     transition_state(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         ergatai_api::services::collaboration_session::SessionStateTransitionRequest {
             state: SessionState::Executing,
             reason: Some("Activate lifecycle plan".to_string()),
@@ -708,14 +753,14 @@ async fn approval_rejection_and_cancellation_cancel_pending_work() {
         ]),
     )
     .with_collaboration_scope(ergatai_core::cross_agent::CollaborationExecutionScope::new(
-        created.session.id.clone(),
+        created.session.collaboration_session_id.clone(),
         Some(created.session.chat_id.clone()),
         plan.plan_revision.id.clone(),
     ));
     ergatai_core::cross_agent::set_session_dag_scheduler(scheduler);
 
     let first = create_approval(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         CreateApprovalRequest {
             kind: "file_write".to_string(),
             node_id: Some("work".to_string()),
@@ -727,7 +772,7 @@ async fn approval_rejection_and_cancellation_cancel_pending_work() {
     assert_eq!(first.session.session.state, SessionState::WaitingApproval);
 
     let rejected = decide_approval(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         &first.approval.id,
         ApprovalDecisionRequest {
             decision: ApprovalDecision::Reject,
@@ -740,7 +785,7 @@ async fn approval_rejection_and_cancellation_cancel_pending_work() {
     assert_eq!(rejected.session.session.state, SessionState::Planning);
 
     transition_state(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         ergatai_api::services::collaboration_session::SessionStateTransitionRequest {
             state: SessionState::Executing,
             reason: Some("Prepare pending approval cancellation".to_string()),
@@ -749,7 +794,7 @@ async fn approval_rejection_and_cancellation_cancel_pending_work() {
     .unwrap();
 
     let second = create_approval(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         CreateApprovalRequest {
             kind: "file_write".to_string(),
             node_id: Some("work".to_string()),
@@ -763,39 +808,45 @@ async fn approval_rejection_and_cancellation_cancel_pending_work() {
         .iter()
         .any(|approval| approval.id == second.approval.id));
 
-    let cancelled =
-        cancel_session_execution(&created.session.id, Some("User cancelled".to_string()))
-            .await
-            .unwrap();
+    let cancelled = cancel_session_execution(
+        &created.session.collaboration_session_id,
+        Some("User cancelled".to_string()),
+    )
+    .await
+    .unwrap();
     assert_eq!(cancelled.session.state, SessionState::Cancelled);
-    assert!(
-        ergatai_core::cross_agent::get_session_dag_scheduler(Some(&created.session.id)).is_none()
-    );
+    assert!(ergatai_core::cross_agent::get_session_dag_scheduler(Some(
+        &created.session.collaboration_session_id
+    ))
+    .is_none());
     assert!(list_active_sessions()
         .unwrap()
         .iter()
-        .all(|session| session.session.id != created.session.id));
+        .all(|session| session.session.collaboration_session_id
+            != created.session.collaboration_session_id));
     assert!(list_active_plan_revisions()
         .unwrap()
         .iter()
-        .all(|revision| revision.session_id != created.session.id));
+        .all(|revision| revision.session_id != created.session.collaboration_session_id));
     assert!(list_pending_approvals()
         .unwrap()
         .iter()
         .all(|approval| approval.id != second.approval.id));
-    assert!(list_events(&created.session.id, None, 100)
-        .unwrap()
-        .iter()
-        .any(|event| event.event_type == "approval_rejected"));
+    assert!(
+        list_events(&created.session.collaboration_session_id, None, 100)
+            .unwrap()
+            .iter()
+            .any(|event| event.event_type == "approval_rejected")
+    );
 }
 
 #[test]
 fn plan_revision_preserves_completed_outputs() {
     let _database_guard = lock_user_data_db_for_tests();
+    ensure_workspace_and_chat_exist("workspace-recovery", &format_id(generate(), IdType::Chat));
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id: format_id(generate(), IdType::Chat),
-        workspace_id: Some("workspace-preserve".to_string()),
-        project_id: Some("project-preserve".to_string()),
+        workspace_id: "workspace-preserve".to_string(),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Preserve outputs across revisions".to_string()),
         participants: vec![ParticipantInput {
@@ -807,7 +858,7 @@ fn plan_revision_preserves_completed_outputs() {
     })
     .unwrap();
     transition_state(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         ergatai_api::services::collaboration_session::SessionStateTransitionRequest {
             state: SessionState::Planning,
             reason: Some("Prepare output preservation test".to_string()),
@@ -816,7 +867,7 @@ fn plan_revision_preserves_completed_outputs() {
     .unwrap();
 
     let first = create_plan_revision(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         CreatePlanRevisionRequest {
             dag_snapshot: json!({
                 "nodes": [{ "id": "work", "agent": "agent-preserve", "task": "Do work" }]
@@ -827,7 +878,7 @@ fn plan_revision_preserves_completed_outputs() {
     )
     .unwrap();
     append_context_event(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         "task_completed",
         "agent",
         Some("agent-preserve"),
@@ -844,7 +895,7 @@ fn plan_revision_preserves_completed_outputs() {
     .unwrap();
 
     let second = create_plan_revision(
-        &created.session.id,
+        &created.session.collaboration_session_id,
         CreatePlanRevisionRequest {
             dag_snapshot: json!({
                 "nodes": [{ "id": "work", "agent": "agent-preserve", "task": "Continue work" }]

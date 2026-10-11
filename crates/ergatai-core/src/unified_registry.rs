@@ -33,8 +33,8 @@ pub struct UnifiedAgentRegistry {
     agents: Arc<RwLock<HashMap<String, AgentRecord>>>,
     /// Index by mcp_agent_id (for MCP-connected agents)
     mcp_id_to_agent_id: Arc<RwLock<HashMap<String, String>>>,
-    /// Index by cov_id (for Cov-centric routing)
-    cov_id_to_agent_id: Arc<RwLock<HashMap<String, String>>>,
+    /// Index by conversation_id (for Conversation-centric routing)
+    conversation_id_to_agent_id: Arc<RwLock<HashMap<String, String>>>,
     /// Optional NATS event bus for publishing lifecycle events.
     event_bus: Arc<RwLock<Option<Arc<ergatai_nats::EventBus>>>>,
 }
@@ -43,7 +43,7 @@ pub struct UnifiedAgentRegistry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSummary {
     pub agent_id: String,
-    pub cov_id: Option<String>,
+    pub conversation_id: Option<String>,
     pub state: String,
     pub workspace_id: String,
     pub task_id: Option<String>,
@@ -71,7 +71,7 @@ impl UnifiedAgentRegistry {
         Self {
             agents: Arc::new(RwLock::new(HashMap::new())),
             mcp_id_to_agent_id: Arc::new(RwLock::new(HashMap::new())),
-            cov_id_to_agent_id: Arc::new(RwLock::new(HashMap::new())),
+            conversation_id_to_agent_id: Arc::new(RwLock::new(HashMap::new())),
             event_bus: Arc::new(RwLock::new(None)),
         }
     }
@@ -85,20 +85,20 @@ impl UnifiedAgentRegistry {
     pub async fn register(&self, record: AgentRecord) {
         let agent_id = record.agent_id.clone();
         let mcp_id = record.mcp_agent_id.clone();
-        let cov_id = record.cov_id.clone();
+        let conversation_id = record.conversation_id.clone();
 
         // Acquire write locks and perform all operations atomically
         let mut agents = self.agents.write().await;
         let mut mcp_index = self.mcp_id_to_agent_id.write().await;
-        let mut cov_index = self.cov_id_to_agent_id.write().await;
+        let mut conversation_index = self.conversation_id_to_agent_id.write().await;
 
         // Remove old indices if this agent_id already exists
         if let Some(old_record) = agents.get(&agent_id) {
             if let Some(ref old_mcp) = old_record.mcp_agent_id {
                 mcp_index.remove(old_mcp);
             }
-            if let Some(ref old_cov) = old_record.cov_id {
-                cov_index.remove(old_cov);
+            if let Some(ref old_conversation) = old_record.conversation_id {
+                conversation_index.remove(old_conversation);
             }
         }
 
@@ -109,8 +109,8 @@ impl UnifiedAgentRegistry {
         if let Some(ref mcp) = mcp_id {
             mcp_index.insert(mcp.clone(), agent_id.clone());
         }
-        if let Some(ref cov) = cov_id {
-            cov_index.insert(cov.clone(), agent_id.clone());
+        if let Some(ref conversation) = conversation_id {
+            conversation_index.insert(conversation.clone(), agent_id.clone());
         }
 
         debug!(agent_id = %agent_id, "Registered agent in unified registry");
@@ -120,14 +120,14 @@ impl UnifiedAgentRegistry {
     pub async fn unregister(&self, agent_id: &str) -> Option<AgentRecord> {
         let mut agents = self.agents.write().await;
         let mut mcp_index = self.mcp_id_to_agent_id.write().await;
-        let mut cov_index = self.cov_id_to_agent_id.write().await;
+        let mut conversation_index = self.conversation_id_to_agent_id.write().await;
 
         if let Some(record) = agents.remove(agent_id) {
             if let Some(ref mcp) = record.mcp_agent_id {
                 mcp_index.remove(mcp);
             }
-            if let Some(ref cov) = record.cov_id {
-                cov_index.remove(cov);
+            if let Some(ref conversation) = record.conversation_id {
+                conversation_index.remove(conversation);
             }
             debug!(agent_id = %agent_id, "Unregistered agent from unified registry");
             Some(record)
@@ -151,10 +151,10 @@ impl UnifiedAgentRegistry {
         }
     }
 
-    /// Get an agent by Cov ID
-    pub async fn get_by_cov_id(&self, cov_id: &str) -> Option<AgentRecord> {
-        let cov_index = self.cov_id_to_agent_id.read().await;
-        if let Some(agent_id) = cov_index.get(cov_id) {
+    /// Get an agent by Conversation ID
+    pub async fn get_by_conversation_id(&self, conversation_id: &str) -> Option<AgentRecord> {
+        let conversation_index = self.conversation_id_to_agent_id.read().await;
+        if let Some(agent_id) = conversation_index.get(conversation_id) {
             self.agents.read().await.get(agent_id).cloned()
         } else {
             None
@@ -174,7 +174,7 @@ impl UnifiedAgentRegistry {
             .values()
             .map(|record| AgentSummary {
                 agent_id: record.agent_id.clone(),
-                cov_id: record.cov_id.clone(),
+                conversation_id: record.conversation_id.clone(),
                 state: format!("{:?}", record.state),
                 workspace_id: record.workspace_id.clone(),
                 task_id: record.task_id.clone(),

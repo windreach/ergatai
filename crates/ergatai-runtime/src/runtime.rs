@@ -312,8 +312,16 @@ impl AgentRuntime {
         profile_name: Option<&str>,
         transport: Option<&str>,
     ) -> ErgataiResult<String> {
-        self.launch_agent_scoped(spec, command, instruction, None, profile_name, transport)
-            .await
+        self.launch_agent_scoped(
+            spec,
+            command,
+            instruction,
+            None,
+            None,
+            profile_name,
+            transport,
+        )
+        .await
     }
 
     /// Launch an agent bound to a chat scope. `chat_id` is runtime registry
@@ -321,12 +329,15 @@ impl AgentRuntime {
     ///
     /// # Arguments
     /// * `transport` - Transport type: "stdio" (default) or "http"
+    /// * `conversation_id` - Optional conversation ID for NATS routing. If None, a new ID is generated.
+    #[allow(clippy::too_many_arguments)]
     pub async fn launch_agent_scoped(
         &self,
         spec: WorkspaceSpec,
         command: &str,
         instruction: Option<&str>,
         chat_id: Option<&str>,
+        conversation_id: Option<&str>,
         profile_name: Option<&str>,
         transport: Option<&str>,
     ) -> ErgataiResult<String> {
@@ -394,6 +405,18 @@ impl AgentRuntime {
                 .metadata
                 .insert("ergatai_chat_id".to_string(), chat_id.to_string());
         }
+
+        // Generate or use provided conversation_id for this agent
+        // This is used for NATS subject routing: ergatai.conversation.message.{conversation_id}
+        let conversation_id = conversation_id.map(|s| s.to_string()).unwrap_or_else(|| {
+            ergatai_error::id::format(
+                ergatai_error::id::generate(),
+                ergatai_error::id::IdType::Conversation,
+            )
+        });
+        workspace_with_id
+            .metadata
+            .insert("conversation_id".to_string(), conversation_id.clone());
 
         // Inject per-agent MCP config so the spawned Claude Code connects to
         // ergatai's own MCP server and sees the built-in tools
@@ -472,7 +495,7 @@ impl AgentRuntime {
 
         let info = AgentInfo {
             agent_id: agent_id.clone(),
-            cov_id: handle.metadata.get("conversation_id").cloned(),
+            conversation_id: handle.metadata.get("conversation_id").cloned(),
             workspace_id: spec.id,
             handle: handle.clone(),
             lifecycle: crate::agent_lifecycle::AgentLifecycleState::Idle {
@@ -503,15 +526,7 @@ impl AgentRuntime {
     /// Supports both runtime IDs (e.g., "%198") and MCP IDs (e.g., "opencode@abcd1234")
     /// — MCP IDs are resolved to runtime IDs via the `mcp_index` mapping.
     ///
-    /// `conversation_id` is an optional conversation thread identifier used by
-    /// the SSE persistence layer to associate the agent's response with the
-    /// correct conversation. Pass `None` when unknown.
-    pub async fn inject_message(
-        &self,
-        agent_id: &str,
-        message: &str,
-        conversation_id: Option<&str>,
-    ) -> ErgataiResult<()> {
+    pub async fn inject_message(&self, agent_id: &str, message: &str) -> ErgataiResult<()> {
         // Resolve MCP ID to runtime ID if needed
         let runtime_id = self
             .resolve_agent_id(agent_id)
@@ -542,10 +557,7 @@ impl AgentRuntime {
         }
 
         // Deliver via backend injection (synchronous wait for prompt completion)
-        let result = self
-            .backend
-            .inject_message(&info.handle, message, conversation_id)
-            .await;
+        let result = self.backend.inject_message(&info.handle, message).await;
 
         // Transition: Running → Idle (agent finished processing, back to idle)
         // Do this regardless of success/failure
@@ -568,30 +580,28 @@ impl AgentRuntime {
         result
     }
 
-    /// Inject a message directly to a Cov by cov_id — bypasses agent_id intermediary.
+    /// Inject a message directly to a Cov by conversation_id — bypasses agent_id intermediary.
     ///
-    /// This is the simplified Cov-centric message delivery path:
-    /// `cov_id → AgentInfo → backend.inject_message()` — one lookup instead of two.
+    /// This is the simplified Conversation-centric message delivery path:
+    /// `conversation_id → AgentInfo → backend.inject_message()` — one lookup instead of two.
     ///
     /// # Arguments
-    /// * `cov_id` - The Cov ID (conversation_id) to deliver to
+    /// * `conversation_id` - The Conversation ID (conversation_id) to deliver to
     /// * `message` - The message content
-    /// * `conversation_id` - Optional conversation ID for SSE persistence
-    pub async fn inject_message_to_cov(
+    pub async fn inject_message_to_conversation(
         &self,
-        cov_id: &str,
+        conversation_id: &str,
         message: &str,
-        conversation_id: Option<&str>,
     ) -> ErgataiResult<()> {
-        // Direct lookup: cov_id → AgentInfo (skips agent_id intermediary)
+        // Direct lookup: conversation_id → AgentInfo (skips agent_id intermediary)
         let info = self
             .registry
-            .resolve_cov_id(cov_id)
+            .resolve_conversation_id(conversation_id)
             .await
-            .ok_or_else(|| ErgataiError::internal(format!("Cov {} not found", cov_id)))?;
+            .ok_or_else(|| ErgataiError::internal(format!("Cov {} not found", conversation_id)))?;
 
         tracing::debug!(
-            cov_id = %cov_id,
+            conversation_id = %conversation_id,
             agent_id = %info.agent_id,
             "Injecting message directly to Cov (bypassed agent_id lookup)"
         );
@@ -614,9 +624,71 @@ impl AgentRuntime {
         }
 
         // Deliver via backend injection (synchronous wait for prompt completion)
+        let result = self.backend.inject_message(&info.handle, message).await;
+
+        // Transition: Running → Idle (agent finished processing, back to idle)
+        let now = chrono::Utc::now();
+        {
+            let mut reg_guard = self.registry.write().await;
+            if let Some(info) = reg_guard.get_mut(&info.agent_id) {
+                info.lifecycle = crate::agent_lifecycle::AgentLifecycleState::Idle {
+                    ready_since: now,
+                    capabilities: Vec::new(),
+                };
+                info.last_heartbeat = now;
+                info.state_changed_at = now;
+            }
+        }
+
+        // Mark guard as completed to prevent cleanup task from running
+        state_guard.complete();
+
+        result
+    }
+
+    /// Inject a message with images directly to a Cov (conversation-centric delivery).
+    /// Combines conversation_id lookup with image support.
+    pub async fn inject_message_to_conversation_with_images(
+        &self,
+        conversation_id: &str,
+        message: &str,
+        images: Vec<crate::types::AgentImage>,
+    ) -> ErgataiResult<()> {
+        // Direct lookup: conversation_id → AgentInfo (skips agent_id intermediary)
+        let info = self
+            .registry
+            .resolve_conversation_id(conversation_id)
+            .await
+            .ok_or_else(|| ErgataiError::internal(format!("Cov {} not found", conversation_id)))?;
+
+        tracing::debug!(
+            conversation_id = %conversation_id,
+            agent_id = %info.agent_id,
+            image_count = images.len(),
+            "Injecting message with images directly to Cov"
+        );
+
+        // Transition: Idle → Running (agent is now processing a message)
+        // Create guard BEFORE transition to ensure cleanup on panic/cancellation
+        let state_guard = StateGuard::new(self.registry.clone(), info.agent_id.clone());
+        let now = chrono::Utc::now();
+        {
+            let mut reg_guard = self.registry.write().await;
+            if let Some(info) = reg_guard.get_mut(&info.agent_id) {
+                info.lifecycle = crate::agent_lifecycle::AgentLifecycleState::Running {
+                    task_id: None,
+                    started_at: now,
+                    last_heartbeat: now,
+                };
+                info.last_heartbeat = now;
+                info.state_changed_at = now;
+            }
+        }
+
+        // Deliver via backend injection (synchronous wait for prompt completion)
         let result = self
             .backend
-            .inject_message(&info.handle, message, conversation_id)
+            .inject_message_with_images(&info.handle, message, &images)
             .await;
 
         // Transition: Running → Idle (agent finished processing, back to idle)
@@ -645,7 +717,6 @@ impl AgentRuntime {
         agent_id: &str,
         message: &str,
         images: Vec<crate::types::AgentImage>,
-        conversation_id: Option<&str>,
     ) -> ErgataiResult<()> {
         let runtime_id = self
             .resolve_agent_id(agent_id)
@@ -678,7 +749,7 @@ impl AgentRuntime {
         // Deliver via backend injection (synchronous wait for prompt completion)
         let result = self
             .backend
-            .inject_message_with_images(&info.handle, message, &images, conversation_id)
+            .inject_message_with_images(&info.handle, message, &images)
             .await;
 
         // Transition: Running → Idle (agent finished processing, back to idle)
@@ -884,7 +955,10 @@ impl AgentRuntime {
         ) {
             Ok(registry) => match registry.list_with_status() {
                 Ok(profiles) => {
-                    match profiles.into_iter().find(|p| p.name == suspended.profile_name) {
+                    match profiles
+                        .into_iter()
+                        .find(|p| p.name == suspended.profile_name)
+                    {
                         Some(profile) => {
                             info!(
                                 profile_name = %suspended.profile_name,
@@ -1021,7 +1095,7 @@ impl AgentRuntime {
 
     /// Get a reference to the agent registry for direct queries.
     ///
-    /// This enables Cov-centric lookups like `resolve_cov_id()` that bypass
+    /// This enables Conversation-centric lookups like `resolve_conversation_id()` that bypass
     /// the agent_id intermediary.
     pub fn registry(&self) -> &crate::agent_registry::AgentRegistry {
         &self.registry
@@ -1062,10 +1136,10 @@ impl AgentRuntime {
         handle: AgentHandle,
     ) -> ErgataiResult<()> {
         let now = chrono::Utc::now();
-        let cov_id = handle.metadata.get("conversation_id").cloned();
+        let conversation_id = handle.metadata.get("conversation_id").cloned();
         let info = AgentInfo {
             agent_id: agent_id.clone(),
-            cov_id,
+            conversation_id,
             workspace_id: handle.workspace.id.clone(),
             handle: handle.clone(),
             lifecycle: crate::agent_lifecycle::AgentLifecycleState::Running {
@@ -1180,20 +1254,20 @@ impl AgentRuntime {
                 // If the previous entry had an MCP binding (process restart case),
                 // preserve it. Use MCP path name as ergatai_agent_id
                 // for ID consistency.
-                let (mcp_agent_id, ergatai_id, cov_id) = if let Some(ref mcp_id) = preserved_mcp_id
-                {
-                    (
-                        Some(mcp_id.clone()),
-                        Some(mcp_id.clone()),
-                        handle.metadata.get("conversation_id").cloned(),
-                    )
-                } else {
-                    (
-                        None,
-                        handle.metadata.get("ergatai_agent_id").cloned(),
-                        handle.metadata.get("conversation_id").cloned(),
-                    )
-                };
+                let (mcp_agent_id, ergatai_id, conversation_id) =
+                    if let Some(ref mcp_id) = preserved_mcp_id {
+                        (
+                            Some(mcp_id.clone()),
+                            Some(mcp_id.clone()),
+                            handle.metadata.get("conversation_id").cloned(),
+                        )
+                    } else {
+                        (
+                            None,
+                            handle.metadata.get("ergatai_agent_id").cloned(),
+                            handle.metadata.get("conversation_id").cloned(),
+                        )
+                    };
                 let mut new_handle = handle;
                 if let Some(ref eid) = ergatai_id {
                     new_handle
@@ -1203,7 +1277,7 @@ impl AgentRuntime {
                 new_agents.push((agent_id.clone(), new_handle.clone()));
                 AgentInfo {
                     agent_id: agent_id.clone(),
-                    cov_id,
+                    conversation_id,
                     workspace_id: new_handle.workspace.id.clone(),
                     handle: new_handle,
                     lifecycle: crate::agent_lifecycle::AgentLifecycleState::Running {
@@ -1246,9 +1320,9 @@ impl AgentRuntime {
         Ok(count)
     }
 
-    /// Scan the backend for running Covs and register any new ones (Cov-centric alias).
+    /// Scan the backend for running Covs and register any new ones (Conversation-centric alias).
     ///
-    /// This is the Cov-centric name for `discover_and_register_agents()`.
+    /// This is the Conversation-centric name for `discover_and_register_agents()`.
     /// Each Cov has a 1:1 binding to an Agent, so discovery is identical —
     /// the name emphasizes the Cov (conversation/execution unit) concept.
     ///
@@ -2139,12 +2213,7 @@ mod tests {
                 metadata: HashMap::new(),
             })
         }
-        async fn inject_message(
-            &self,
-            _handle: &AgentHandle,
-            _message: &str,
-            _conversation_id: Option<&str>,
-        ) -> ErgataiResult<()> {
+        async fn inject_message(&self, _handle: &AgentHandle, _message: &str) -> ErgataiResult<()> {
             if self.inject_fail {
                 Err(ErgataiError::internal("inject failed".to_string()))
             } else {
@@ -2267,14 +2336,6 @@ mod tests {
             Ok(None)
         }
         async fn pid(&self, _agent_id: &str) -> ErgataiResult<Option<u32>> {
-            Ok(None)
-        }
-        async fn subscribe_output(
-            &self,
-            _agent_id: &str,
-        ) -> ErgataiResult<
-            Option<tokio::sync::broadcast::Receiver<crate::backends::acp::AgentOutputEvent>>,
-        > {
             Ok(None)
         }
         async fn list_sessions(
@@ -2438,16 +2499,13 @@ mod tests {
             .launch_agent(make_spec("ws-1"), "cmd", None, None, None)
             .await
             .unwrap();
-        runtime
-            .inject_message(&agent_id, "hello", None)
-            .await
-            .unwrap();
+        runtime.inject_message(&agent_id, "hello").await.unwrap();
     }
 
     #[tokio::test]
     async fn test_inject_message_unknown_agent() {
         let runtime = make_runtime();
-        let result = runtime.inject_message("nonexistent", "hello", None).await;
+        let result = runtime.inject_message("nonexistent", "hello").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -2462,7 +2520,7 @@ mod tests {
             .await
             .unwrap();
         // No MCP integration set → error
-        let result = runtime.inject_message(&agent_id, "hello", None).await;
+        let result = runtime.inject_message(&agent_id, "hello").await;
         assert!(result.is_err());
     }
 
@@ -2597,7 +2655,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = runtime.inject_message(&agent_id, "hello", None).await;
+        let result = runtime.inject_message(&agent_id, "hello").await;
         assert!(result.is_err(), "backend failure should propagate as error");
     }
 

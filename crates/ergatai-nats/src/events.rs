@@ -157,8 +157,6 @@ pub struct AgentMessagePayload {
     pub to_agent: String,
     /// Message content (the text mentioning @target_agent)
     pub content: String,
-    /// Optional: conversation thread ID (for multi-turn dialogs)
-    pub thread_id: Option<String>,
     /// Timestamp (Unix epoch seconds)
     pub timestamp: u64,
     /// Optional: structured data payload (JSON)
@@ -178,11 +176,49 @@ pub struct AgentMessagePayload {
     /// Message type: "request", "response", or "broadcast"
     #[serde(default = "default_message_type")]
     pub message_type: String,
-    /// Target Cov ID (conversation_id) for Cov-centric delivery.
-    /// When present, the consumer uses `inject_message_to_cov()` for direct delivery,
+    /// Target Conversation ID (conversation_id) for Conversation-centric delivery.
+    /// When present, the consumer uses `inject_message_to_conversation()` for direct delivery,
     /// bypassing the agent_id intermediary lookup.
     #[serde(default)]
-    pub target_cov_id: Option<String>,
+    pub target_conversation_id: Option<String>,
+    /// Image attachments (base64-encoded). Used for user messages with images.
+    #[serde(default)]
+    pub images: Vec<AgentImage>,
+}
+
+/// Image attachment for agent messages
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentImage {
+    /// Base64-encoded image data
+    pub base64_data: String,
+    /// MIME type (e.g., "image/png")
+    pub media_type: String,
+    /// Optional filename
+    #[serde(default)]
+    pub filename: Option<String>,
+}
+
+/// Agent interrupted event: published when an interrupt message is inserted at a safe point
+///
+/// This event signals that:
+/// 1. A new message with `interrupt: true` was received
+/// 2. The current task has been paused at a safe point (after thinking/tool completion)
+/// 3. The new message will be processed next
+///
+/// Published to: `ergatai.agent.interrupted.{agent_id}`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentInterrupted {
+    /// Agent ID that was interrupted
+    pub agent_id: String,
+    /// Message ID of the task that was paused (if any)
+    pub paused_message_id: Option<String>,
+    /// Message ID of the new interrupt message
+    pub new_message_id: String,
+    /// Timestamp when the interrupt occurred (Unix epoch seconds)
+    pub interrupted_at: u64,
+    /// Conversation ID (if applicable)
+    #[serde(default)]
+    pub conversation_id: Option<String>,
 }
 
 /// Conversation message: published to conversation subject for SSE streaming
@@ -641,6 +677,64 @@ pub struct ApiEventPayload {
     pub timestamp: String,
 }
 
+/// Agent output event payload for real-time streaming via NATS core pub/sub.
+///
+/// Published on `ergatai.conversation.message.{conversation_id}` when an agent produces output
+/// (text, thinking, tool calls, etc.). SSE subscribers consume these events for
+/// real-time rendering in the frontend.
+///
+/// Uses core NATS (non-JetStream) for low-latency delivery. SQLite is the
+/// authoritative source of truth for persistence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentOutputPayload {
+    /// Incremental text content from the agent.
+    Text { delta: String },
+    /// Incremental thinking/reasoning content.
+    Thinking { delta: String },
+    /// A tool call has started.
+    ToolCallStart {
+        id: String,
+        name: String,
+        input: Option<serde_json::Value>,
+        locations: Vec<ToolCallLocation>,
+    },
+    /// Streaming tool call input (JSON delta).
+    ToolCallInput { id: String, delta: String },
+    /// Tool call input is complete and results are available.
+    ToolCallComplete {
+        id: String,
+        name: String,
+        input: Option<serde_json::Value>,
+        output: Option<serde_json::Value>,
+        locations: Vec<ToolCallLocation>,
+    },
+    /// Tool call encountered an error.
+    ToolCallError {
+        id: String,
+        name: String,
+        error: String,
+        locations: Vec<ToolCallLocation>,
+    },
+    /// Session title was updated.
+    SessionTitleUpdate { title: String },
+    /// Agent finished processing the current turn.
+    Done { reason: String },
+    /// Agent encountered an error.
+    Error { message: String },
+}
+
+/// Tool call location for code references.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallLocation {
+    /// File path.
+    pub file: String,
+    /// Start line (1-based).
+    pub line: u32,
+    /// Optional end line.
+    pub end_line: Option<u32>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -855,7 +949,6 @@ mod tests {
                 from_agent: "claude-code".to_string(),
                 to_agent: "codex".to_string(),
                 content: "@codex please review this code".to_string(),
-                thread_id: Some("thread-123".to_string()),
                 timestamp: 1234567890,
                 metadata: HashMap::new(),
                 message_id: "test-msg-id".to_string(),
@@ -863,7 +956,8 @@ mod tests {
                 correlation_id: None,
                 timeout_ms: None,
                 message_type: "request".to_string(),
-                target_cov_id: None,
+                target_conversation_id: None,
+                images: vec![],
             }),
         ];
 
@@ -884,7 +978,6 @@ mod tests {
             from_agent: "claude-code".to_string(),
             to_agent: "codex".to_string(),
             content: "@codex please review this code".to_string(),
-            thread_id: Some("thread-123".to_string()),
             timestamp: 1234567890,
             metadata: metadata.clone(),
             message_id: "msg-roundtrip".to_string(),
@@ -892,7 +985,8 @@ mod tests {
             correlation_id: Some("corr-123".to_string()),
             timeout_ms: Some(30_000),
             message_type: "request".to_string(),
-            target_cov_id: None,
+            target_conversation_id: None,
+            images: vec![],
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -901,7 +995,6 @@ mod tests {
         assert_eq!(restored.from_agent, "claude-code");
         assert_eq!(restored.to_agent, "codex");
         assert_eq!(restored.content, "@codex please review this code");
-        assert_eq!(restored.thread_id, Some("thread-123".to_string()));
         assert_eq!(restored.timestamp, 1234567890);
         assert_eq!(restored.metadata.get("priority"), Some(&"high".to_string()));
     }
@@ -912,7 +1005,6 @@ mod tests {
             from_agent: "agent-a".to_string(),
             to_agent: "agent-b".to_string(),
             content: "hello".to_string(),
-            thread_id: None,
             timestamp: 0,
             metadata: HashMap::new(),
             message_id: "msg-optional".to_string(),
@@ -920,13 +1012,13 @@ mod tests {
             correlation_id: None,
             timeout_ms: None,
             message_type: "request".to_string(),
-            target_cov_id: None,
+            target_conversation_id: None,
+            images: vec![],
         };
 
         let json = serde_json::to_string(&payload).unwrap();
         let restored: AgentMessagePayload = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(restored.thread_id, None);
         assert!(restored.metadata.is_empty());
     }
 
@@ -1028,7 +1120,6 @@ mod tests {
             from_agent: "a".to_string(),
             to_agent: "b".to_string(),
             content: "".to_string(),
-            thread_id: None,
             timestamp: 0,
             metadata: HashMap::new(),
             message_id: "msg-empty".to_string(),
@@ -1036,7 +1127,8 @@ mod tests {
             correlation_id: None,
             timeout_ms: None,
             message_type: "request".to_string(),
-            target_cov_id: None,
+            target_conversation_id: None,
+            images: vec![],
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -1051,7 +1143,6 @@ mod tests {
             from_agent: "a".to_string(),
             to_agent: "b".to_string(),
             content: long_content.clone(),
-            thread_id: None,
             timestamp: 0,
             metadata: HashMap::new(),
             message_id: "msg-long".to_string(),
@@ -1059,7 +1150,8 @@ mod tests {
             correlation_id: None,
             timeout_ms: None,
             message_type: "request".to_string(),
-            target_cov_id: None,
+            target_conversation_id: None,
+            images: vec![],
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -1074,7 +1166,6 @@ mod tests {
             from_agent: "agent-1".to_string(),
             to_agent: "agent-2".to_string(),
             content: "Hello\nWorld\t\"quotes\" and \\slashes\\".to_string(),
-            thread_id: None,
             timestamp: 0,
             metadata: HashMap::new(),
             message_id: "msg-special".to_string(),
@@ -1082,7 +1173,8 @@ mod tests {
             correlation_id: None,
             timeout_ms: None,
             message_type: "request".to_string(),
-            target_cov_id: None,
+            target_conversation_id: None,
+            images: vec![],
         };
 
         let json = serde_json::to_string(&payload).unwrap();

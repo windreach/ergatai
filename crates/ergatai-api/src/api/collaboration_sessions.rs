@@ -101,12 +101,6 @@ fn response_from_error(error: CollaborationSessionError, operation: &'static str
 pub async fn create_collaboration_session(
     Json(request): Json<CreateCollaborationSessionRequest>,
 ) -> Response {
-    if let Some(project_id) = request.project_id.as_deref() {
-        if !crate::api::validation::is_valid_project_id(project_id) {
-            return crate::api::validation::invalid_project_id_response();
-        }
-    }
-
     match tokio::task::spawn_blocking(move || create_session(request)).await {
         Ok(Ok(detail)) => (StatusCode::CREATED, Json(detail)).into_response(),
         Ok(Err(error)) => response_from_error(error, "create collaboration session"),
@@ -673,4 +667,220 @@ pub async fn cancel_collaboration_session(
         Ok(detail) => (StatusCode::OK, Json(detail)).into_response(),
         Err(error) => response_from_dag_error(error, "cancel collaboration session"),
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Collaboration Session API（新版扁平化路由）
+// ════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct ListCollaborationSessionsQuery {
+    pub chat_id: Option<String>,
+}
+
+/// GET /api/v1/collaboration-sessions
+#[utoipa::path(
+    get,
+    path = "/api/v1/collaboration-sessions",
+    tag = "Collaboration Sessions",
+    params(ListCollaborationSessionsQuery),
+    responses(
+        (status = 200, description = "List collaboration sessions", body = Vec<crate::services::collaboration_session::CollaborationSessionDetail>),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn list_collaboration_sessions(
+    Query(query): Query<ListCollaborationSessionsQuery>,
+) -> Response {
+    use crate::services::collaboration_session::list_sessions;
+
+    let result = if let Some(chat_id) = query.chat_id {
+        list_sessions(Some(&chat_id), None).await
+    } else {
+        list_sessions(None, None).await
+    };
+
+    match result {
+        Ok(sessions) => (StatusCode::OK, Json(sessions)).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to list collaboration sessions");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "Failed to list collaboration sessions".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct PatchCollaborationSessionRequest {
+    pub mode: Option<String>,
+    pub goal: Option<String>,
+    pub state: Option<String>,
+}
+
+/// PATCH /api/v1/collaboration-sessions/{collaboration_session_id}
+#[utoipa::path(
+    patch,
+    path = "/api/v1/collaboration-sessions/{collaboration_session_id}",
+    tag = "Collaboration Sessions",
+    params(("collaboration_session_id" = String, Path, description = "Collaboration session ID")),
+    request_body = PatchCollaborationSessionRequest,
+    responses(
+        (status = 200, description = "Session updated", body = crate::services::collaboration_session::CollaborationSessionDetail),
+        (status = 404, description = "Session not found", body = crate::api::ApiError),
+        (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn patch_collaboration_session(
+    Path(collaboration_session_id): Path<String>,
+    Json(req): Json<PatchCollaborationSessionRequest>,
+) -> Response {
+    use crate::services::collaboration_session::{get_session, update_session};
+
+    // Get existing session
+    let _session = match get_session(&collaboration_session_id) {
+        Ok(s) => s,
+        Err(e) => return response_from_error(e, "get collaboration session for update"),
+    };
+
+    // Update fields
+    let update_req = crate::services::collaboration_session::UpdateCollaborationSessionRequest {
+        mode: req.mode,
+        goal: req.goal,
+        state: req.state,
+    };
+
+    match update_session(&collaboration_session_id, update_req).await {
+        Ok(Some(detail)) => (StatusCode::OK, Json(detail)).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: format!(
+                    "Collaboration session {} not found",
+                    collaboration_session_id
+                ),
+            }),
+        )
+            .into_response(),
+        Err(e) => response_from_error(e, "update collaboration session"),
+    }
+}
+
+/// DELETE /api/v1/collaboration-sessions/{collaboration_session_id}
+#[utoipa::path(
+    delete,
+    path = "/api/v1/collaboration-sessions/{collaboration_session_id}",
+    tag = "Collaboration Sessions",
+    params(("collaboration_session_id" = String, Path, description = "Collaboration session ID")),
+    responses(
+        (status = 204, description = "Session deleted"),
+        (status = 404, description = "Session not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn delete_collaboration_session(
+    Path(collaboration_session_id): Path<String>,
+) -> Response {
+    use crate::services::collaboration_session::delete_session;
+
+    match delete_session(&collaboration_session_id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: format!(
+                    "Collaboration session {} not found",
+                    collaboration_session_id
+                ),
+            }),
+        )
+            .into_response(),
+        Err(e) => response_from_error(e, "delete collaboration session"),
+    }
+}
+
+/// GET /api/v1/collaboration-sessions/{collaboration_session_id}/status
+#[utoipa::path(
+    get,
+    path = "/api/v1/collaboration-sessions/{collaboration_session_id}/status",
+    tag = "Collaboration Sessions",
+    params(("collaboration_session_id" = String, Path, description = "Collaboration session ID")),
+    responses(
+        (status = 200, description = "Session status", body = serde_json::Value),
+        (status = 404, description = "Session not found", body = crate::api::ApiError),
+    )
+)]
+pub async fn get_collaboration_session_status(
+    Path(collaboration_session_id): Path<String>,
+) -> Response {
+    use crate::services::collaboration_session::get_session;
+
+    match get_session(&collaboration_session_id) {
+        Ok(session) => {
+            let status = serde_json::json!({
+                "collaboration_session_id": session.session.collaboration_session_id,
+                "state": session.session.state,
+                "mode": session.session.mode,
+                "goal": session.session.goal,
+                "created_at": session.session.created_at,
+                "updated_at": session.session.updated_at,
+            });
+            (StatusCode::OK, Json(status)).into_response()
+        }
+        Err(e) => response_from_error(e, "get collaboration session status"),
+    }
+}
+
+/// GET /api/v1/collaboration-sessions/{collaboration_session_id}/progress
+#[utoipa::path(
+    get,
+    path = "/api/v1/collaboration-sessions/{collaboration_session_id}/progress",
+    tag = "Collaboration Sessions",
+    params(("collaboration_session_id" = String, Path, description = "Collaboration session ID")),
+    responses(
+        (status = 200, description = "Session progress", body = serde_json::Value),
+        (status = 404, description = "Session not found", body = crate::api::ApiError),
+    )
+)]
+pub async fn get_collaboration_session_progress(
+    Path(collaboration_session_id): Path<String>,
+) -> Response {
+    use crate::services::collaboration_session::{get_session, list_events};
+
+    // Get session
+    let session = match get_session(&collaboration_session_id) {
+        Ok(s) => s,
+        Err(e) => return response_from_error(e, "get collaboration session for progress"),
+    };
+
+    // Get events for progress calculation
+    let events = match list_events(&collaboration_session_id, None, 1000) {
+        Ok(evts) => evts,
+        Err(e) => return response_from_error(e, "list events for progress"),
+    };
+
+    let total_events = events.len();
+    let completed_events = events
+        .iter()
+        .filter(|e| e.event_type == "completed")
+        .count();
+
+    let progress = serde_json::json!({
+        "collaboration_session_id": session.session.collaboration_session_id,
+        "state": session.session.state,
+        "total_events": total_events,
+        "completed_events": completed_events,
+        "progress_percentage": if total_events > 0 {
+            (completed_events as f64 / total_events as f64) * 100.0
+        } else {
+            0.0
+        },
+    });
+
+    (StatusCode::OK, Json(progress)).into_response()
 }

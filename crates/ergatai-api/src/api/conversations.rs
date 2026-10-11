@@ -87,7 +87,7 @@ pub async fn list_conversations(State(_state): State<AppState>) -> impl IntoResp
 /// GET /api/v1/runtime/conversations/:id — get conversation detail with message history.
 pub async fn get_conversation_detail(
     State(_state): State<AppState>,
-    Path(conv_id): Path<String>,
+    Path(conversation_id): Path<String>,
 ) -> impl IntoResponse {
     let Some(sender) = get_message_sender() else {
         return Json(None::<ConversationDetail>).into_response();
@@ -96,7 +96,7 @@ pub async fn get_conversation_detail(
     let manager = sender.conversation_manager();
 
     // Direct O(1) lookup instead of linear scan over all conversations.
-    let Some(conv) = manager.get_conversation(&conv_id).await else {
+    let Some(conv) = manager.get_conversation(&conversation_id).await else {
         return Json(None::<ConversationDetail>).into_response();
     };
 

@@ -461,7 +461,7 @@ impl AgentLauncher {
 
             // Inject the instruction as a message to the existing agent
             if let Err(e) = runtime
-                .inject_message(&runtime_agent_id, &instruction, None)
+                .inject_message(&runtime_agent_id, &instruction)
                 .await
             {
                 tracing::error!(
@@ -532,7 +532,7 @@ impl AgentLauncher {
 
     /// Check if an agent with the given name is already registered in the runtime.
     ///
-    /// Searches by: agent_id, cov_id, and mcp_agent_id.
+    /// Searches by: agent_id, conversation_id, and mcp_agent_id.
     /// Returns the runtime agent_id if found and alive.
     async fn find_registered_agent(
         &self,
@@ -544,12 +544,12 @@ impl AgentLauncher {
         for info in &agents {
             let matches = info.agent_id == agent_name
                 || info.mcp_agent_id.as_deref() == Some(agent_name)
-                || info.cov_id.as_deref() == Some(agent_name);
+                || info.conversation_id.as_deref() == Some(agent_name);
             if matches && info.lifecycle.is_alive() {
                 tracing::info!(
                     agent_name = %agent_name,
                     runtime_id = %info.agent_id,
-                    cov_id = ?info.cov_id,
+                    conversation_id = ?info.conversation_id,
                     "Found existing registered agent — will reuse instead of launching new process"
                 );
                 return Some(info.agent_id.clone());

@@ -255,6 +255,7 @@ GET  /api/v1/agents                  列出所有 agent
 POST /api/v1/agents                  启动新 agent
 DELETE /api/v1/agents/:id            停止 agent
 POST /api/v1/agents/:id/message      向 agent 发消息 (经 MessageSender 路由: 速率限制 + 对话防护 + MeshPolicy + NATS 发布)
+POST /api/v1/agents/:id/prompt       向 agent 发送 prompt (支持 interrupt: true 在安全点插入)
 
 # 系统状态
 GET  /api/v1/status                  聚合状态 (agent + workspace + DAG)
@@ -295,6 +296,64 @@ POST /mcp/...                        MCP JSON-RPC (default)
 
 认证: `Authorization: Bearer <token>`（当 `--api-token` 设置时）。
 HTTP 层限速: tower-governor（per-session / per-IP 分桶）。
+
+---
+
+## Agent Interrupt 机制
+
+允许用户在 agent 执行循环的**安全点**插入新消息，而不是等待 FIFO 队列。
+
+### 安全点定义
+
+1. **Thinking 结束后**：LLM 生成回复完成
+2. **工具调用结束后**：所有工具执行完成
+3. **下一个 thinking 开启前**：新 prompt turn 开始前
+
+### API 使用
+
+```bash
+POST /api/v1/agents/:id/prompt
+{
+  "message": "紧急：请停止当前任务",
+  "interrupt": true  // 在安全点插入
+}
+```
+
+### 行为
+
+- `interrupt: false`（默认）：等当前任务完成后处理（FIFO 队列）
+- `interrupt: true`：在安全点插入新消息，当前任务暂停（状态保留）
+
+### 事件流
+
+```
+用户发送 interrupt 消息
+  ↓
+API 调用 AcpBackend::inject_interrupt()
+  ↓
+AcpCommand::InterruptPrompt 发送到 connection task
+  ↓
+Connection task 在下一个安全点处理 interrupt
+  ↓
+AgentInterrupted 事件发布到 NATS (ergatai.agent.interrupted.{agent_id})
+  ↓
+SSE 客户端收到实时通知
+  ↓
+当前任务暂停，interrupt 消息被处理
+```
+
+### 关键类型
+
+| 类型 | 文件 | 用途 |
+|------|------|------|
+| `AcpCommand::InterruptPrompt` | `runtime/backends/acp.rs` | Interrupt 命令变体 |
+| `PausedTask` | `runtime/backends/acp.rs` | 被暂停的任务状态 |
+| `AgentInterrupted` | `nats/events.rs` | Interrupt 事件 |
+| `AcpBackend::inject_interrupt()` | `runtime/backends/acp.rs` | 注入 interrupt 的公共方法 |
+
+### 详细文档
+
+参见 `INTERRUPT_MECHANISM.md` 获取完整的设计说明和使用指南。
 
 ---
 

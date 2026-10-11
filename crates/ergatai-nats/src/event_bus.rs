@@ -199,6 +199,22 @@ impl EventBus {
         self.publish(&subject, payload).await
     }
 
+    /// Publish an agent interrupt event (core NATS, fire-and-forget)
+    ///
+    /// Routes to `ergatai.agent.interrupted.{agent_id}`.
+    /// SSE clients subscribe to this subject for real-time interrupt notifications.
+    /// No JetStream persistence — this is a transient event.
+    pub async fn publish_interrupt_event(
+        &self,
+        payload: &crate::events::AgentInterrupted,
+    ) -> ErgataiResult<()> {
+        let subject = format!(
+            "ergatai.agent.interrupted.{}",
+            sanitize_agent_name(&payload.agent_id)
+        );
+        self.publish(&subject, payload).await
+    }
+
     /// Check whether the AGENT_MESSAGES stream is under the backpressure threshold.
     /// Returns Ok(()) if under threshold, or Err if the stream is overloaded.
     /// Caches the last check result for 5s to avoid per-message NATS round-trips.
@@ -284,13 +300,13 @@ impl EventBus {
 
     /// Publish a message to a Cov (Conversation) via JetStream (reliable, persisted).
     ///
-    /// This is the Cov-centric routing, publishing to `ergatai.conversation.message.{cov_id}`
+    /// This is the Conversation-centric routing, publishing to `ergatai.conversation.message.{conversation_id}`
     /// on the `COV_MESSAGES` stream. Each Cov has a 1:1 binding to an Agent, so the
-    /// underlying delivery is the same, but the routing is Cov-centric.
+    /// underlying delivery is the same, but the routing is Conversation-centric.
     ///
     /// # Arguments
     ///
-    /// * `cov_id` - The target Cov ID (conversation_id)
+    /// * `conversation_id` - The target Conversation ID (conversation_id)
     /// * `payload` - The message payload (same as agent messages)
     ///
     /// # Returns
@@ -298,7 +314,7 @@ impl EventBus {
     /// `PublishAck` with the stream sequence number on success.
     pub async fn publish_cov_message_reliable(
         &self,
-        cov_id: &str,
+        conversation_id: &str,
         payload: &AgentMessagePayload,
     ) -> ErgataiResult<async_nats::jetstream::publish::PublishAck> {
         // Backpressure check: refuse publish if stream is overloaded.
@@ -306,7 +322,7 @@ impl EventBus {
 
         let subject = format!(
             "ergatai.conversation.message.{}",
-            sanitize_agent_name(cov_id)
+            sanitize_agent_name(conversation_id)
         );
         let json = serde_json::to_vec(payload)?;
         self.connection.publish_jetstream(&subject, json).await
@@ -1132,9 +1148,8 @@ mod tests {
         let payload = AgentMessagePayload {
             from_agent: "claude-code".to_string(),
             to_agent: "codex".to_string(),
-            target_cov_id: None,
+            target_conversation_id: None,
             content: "@codex review this".to_string(),
-            thread_id: Some("thread-1".to_string()),
             timestamp: 1234567890,
             metadata: HashMap::new(),
             message_id: "msg-bus-test".to_string(),
@@ -1142,6 +1157,7 @@ mod tests {
             correlation_id: None,
             timeout_ms: None,
             message_type: "request".to_string(),
+            images: vec![],
         };
 
         bus.publish_agent_message(&payload).await.unwrap();

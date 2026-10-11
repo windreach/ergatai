@@ -144,10 +144,9 @@ pub struct CollaborationSessionParticipant {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CollaborationSession {
-    pub id: String,
+    pub collaboration_session_id: String,
     pub chat_id: String,
-    pub workspace_id: Option<String>,
-    pub project_id: Option<String>,
+    pub workspace_id: String,
     pub mode: CollaborationMode,
     pub state: SessionState,
     pub goal: Option<String>,
@@ -191,10 +190,7 @@ pub struct ParticipantInput {
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct CreateCollaborationSessionRequest {
     pub chat_id: String,
-    #[serde(default)]
-    pub workspace_id: Option<String>,
-    #[serde(default)]
-    pub project_id: Option<String>,
+    pub workspace_id: String,
     pub mode: CollaborationMode,
     #[serde(default)]
     pub goal: Option<String>,
@@ -413,27 +409,26 @@ fn validate_visibility(value: &str) -> Result<(), CollaborationSessionError> {
 }
 
 fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CollaborationSession> {
-    let mode = row.get::<_, String>(4)?;
-    let state = row.get::<_, String>(5)?;
+    let mode = row.get::<_, String>(3)?;
+    let state = row.get::<_, String>(4)?;
     Ok(CollaborationSession {
-        id: row.get(0)?,
+        collaboration_session_id: row.get(0)?,
         chat_id: row.get(1)?,
         workspace_id: row.get(2)?,
-        project_id: row.get(3)?,
         mode: CollaborationMode::parse(&mode).map_err(|_| {
-            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, mode.into())
+            rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, mode.into())
         })?,
         state: SessionState::parse(&state).map_err(|_| {
-            rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, state.into())
+            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, state.into())
         })?,
-        goal: row.get(6)?,
-        active_plan_revision: row.get(7)?,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
+        goal: row.get(5)?,
+        active_plan_revision: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
     })
 }
 
-const SESSION_COLUMNS: &str = "id, chat_id, workspace_id, project_id, mode, state, goal, active_plan_revision, created_at, updated_at";
+const SESSION_COLUMNS: &str = "collaboration_session_id, chat_id, workspace_id, mode, state, goal, active_plan_revision, created_at, updated_at";
 
 fn participant_from_row(
     row: &rusqlite::Row<'_>,
@@ -634,7 +629,7 @@ fn get_session_with_connection(
     session_id: &str,
 ) -> Result<Option<CollaborationSession>, CollaborationSessionError> {
     let mut statement = connection.prepare(&format!(
-        "SELECT {SESSION_COLUMNS} FROM collaboration_sessions WHERE id = ?1"
+        "SELECT {SESSION_COLUMNS} FROM collaboration_sessions WHERE collaboration_session_id = ?1"
     ))?;
     let session = statement
         .query_row(params![session_id], session_from_row)
@@ -661,13 +656,12 @@ pub fn create_session(
         transaction.execute(
             &format!(
                 "INSERT INTO collaboration_sessions ({SESSION_COLUMNS})
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
             ),
             params![
                 session_id,
                 chat_id,
                 request.workspace_id,
-                request.project_id,
                 request.mode.as_str(),
                 SessionState::Idle.as_str(),
                 request.goal,
@@ -811,7 +805,7 @@ pub fn append_message(
     )?;
     if matches!(current.state, SessionState::Idle | SessionState::Completed) {
         transaction.execute(
-            "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE id = ?3",
+            "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE collaboration_session_id = ?3",
             params![SessionState::Planning.as_str(), now(), session_id],
         )?;
     }
@@ -886,7 +880,7 @@ pub fn transition_state(
         },
     )?;
     transaction.execute(
-        "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE collaboration_session_id = ?3",
         params![request.state.as_str(), now(), session_id],
     )?;
     transaction.commit()?;
@@ -968,36 +962,17 @@ pub fn create_plan_revision(
     }
 
     let mut dag_snapshot = request.dag_snapshot.clone();
-    if let Some(workspace_id) = dag_snapshot.get("workspace_id") {
-        if workspace_id.as_str() != current.workspace_id.as_deref() {
+    if let Some(workspace_id) = dag_snapshot.get("workspace_id").and_then(|v| v.as_str()) {
+        if workspace_id != current.workspace_id.as_str() {
             return Err(CollaborationSessionError::Validation(
                 "Plan workspace boundary does not match the session".to_string(),
-            ));
-        }
-    }
-    if let Some(project_id) = dag_snapshot.get("project_id") {
-        if project_id.as_str() != current.project_id.as_deref() {
-            return Err(CollaborationSessionError::Validation(
-                "Plan project boundary does not match the session".to_string(),
             ));
         }
     }
     if let Some(snapshot) = dag_snapshot.as_object_mut() {
         snapshot.insert(
             "workspace_id".to_string(),
-            current
-                .workspace_id
-                .clone()
-                .map(serde_json::Value::String)
-                .unwrap_or(serde_json::Value::Null),
-        );
-        snapshot.insert(
-            "project_id".to_string(),
-            current
-                .project_id
-                .clone()
-                .map(serde_json::Value::String)
-                .unwrap_or(serde_json::Value::Null),
+            serde_json::Value::String(current.workspace_id.clone()),
         );
     }
 
@@ -1101,7 +1076,7 @@ pub fn create_plan_revision(
     transaction.execute(
         "UPDATE collaboration_sessions
          SET active_plan_revision = ?1, state = COALESCE(?2, state), updated_at = ?3
-         WHERE id = ?4",
+         WHERE collaboration_session_id = ?4",
         params![
             plan_id,
             next_state.map(SessionState::as_str),
@@ -1234,7 +1209,7 @@ pub fn create_approval(
         },
     )?;
     transaction.execute(
-        "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE collaboration_session_id = ?3",
         params![SessionState::WaitingApproval.as_str(), now(), session_id],
     )?;
     transaction.commit()?;
@@ -1331,7 +1306,7 @@ pub fn decide_approval(
         },
     )?;
     transaction.execute(
-        "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE collaboration_session_id = ?3",
         params![next_state.as_str(), now(), session_id],
     )?;
     transaction.commit()?;
@@ -1386,7 +1361,7 @@ pub fn cancel_session(
         },
     )?;
     transaction.execute(
-        "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE collaboration_session_id = ?3",
         params![SessionState::Cancelled.as_str(), now(), session_id],
     )?;
     transaction.commit()?;
@@ -1414,7 +1389,7 @@ pub fn fail_session(
         },
     )?;
     transaction.execute(
-        "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE collaboration_session_id = ?3",
         params![SessionState::Failed.as_str(), now(), session_id],
     )?;
     transaction.commit()?;
@@ -1439,7 +1414,7 @@ pub fn list_active_sessions() -> Result<Vec<CollaborationSessionDetail>, Collabo
     sessions
         .into_iter()
         .map(|session| {
-            let participants = load_participants(&connection, &session.id)?;
+            let participants = load_participants(&connection, &session.collaboration_session_id)?;
             Ok(CollaborationSessionDetail {
                 session,
                 participants,
@@ -1455,7 +1430,7 @@ pub fn list_active_plan_revisions(
         "SELECT {PLAN_REVISION_COLUMNS} FROM collaboration_plan_revisions
          WHERE status = 'active'
            AND session_id IN (
-             SELECT id FROM collaboration_sessions
+             SELECT collaboration_session_id FROM collaboration_sessions
              WHERE state IN ({ACTIVE_SESSION_STATES_SQL})
            )
          ORDER BY created_at DESC"
@@ -1475,7 +1450,7 @@ pub fn list_pending_approvals() -> Result<Vec<CollaborationApproval>, Collaborat
         "SELECT {APPROVAL_COLUMNS} FROM collaboration_approvals
          WHERE status = 'pending'
            AND session_id IN (
-             SELECT id FROM collaboration_sessions
+             SELECT collaboration_session_id FROM collaboration_sessions
              WHERE state IN ({ACTIVE_SESSION_STATES_SQL})
            )
          ORDER BY created_at DESC"
@@ -1487,6 +1462,119 @@ pub fn list_pending_approvals() -> Result<Vec<CollaborationApproval>, Collaborat
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(approvals)
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Additional API support functions
+// ════════════════════════════════════════════════════════════════════════
+
+pub async fn list_sessions(
+    chat_id: Option<&str>,
+    workspace_id: Option<&str>,
+) -> Result<Vec<CollaborationSession>, CollaborationSessionError> {
+    lock_db!(connection);
+
+    let mut sql = format!("SELECT {SESSION_COLUMNS} FROM collaboration_sessions WHERE 1=1");
+    let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+    if let Some(chat_id) = chat_id {
+        sql.push_str(" AND chat_id = ?");
+        params_vec.push(Box::new(chat_id.to_string()));
+    }
+    if let Some(workspace_id) = workspace_id {
+        sql.push_str(" AND workspace_id = ?");
+        params_vec.push(Box::new(workspace_id.to_string()));
+    }
+
+    sql.push_str(" ORDER BY created_at DESC");
+
+    let mut statement = connection.prepare(&sql)?;
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params_vec.iter().map(|p| p.as_ref()).collect();
+
+    let sessions = statement
+        .query_map(params_refs.as_slice(), |row| {
+            session_from_row(row)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(sessions)
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateCollaborationSessionRequest {
+    pub mode: Option<String>,
+    pub goal: Option<String>,
+    pub state: Option<String>,
+}
+
+pub async fn update_session(
+    session_id: &str,
+    req: UpdateCollaborationSessionRequest,
+) -> Result<Option<CollaborationSessionDetail>, CollaborationSessionError> {
+    lock_db!(connection);
+
+    // Check if session exists
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM collaboration_sessions WHERE collaboration_session_id = ?1",
+            [session_id],
+            |_| Ok(()),
+        )
+        .is_ok();
+
+    if !exists {
+        return Ok(None);
+    }
+
+    let mut updates = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+    if let Some(mode) = req.mode {
+        updates.push("mode = ?");
+        params.push(Box::new(mode));
+    }
+    if let Some(goal) = req.goal {
+        updates.push("goal = ?");
+        params.push(Box::new(goal));
+    }
+    if let Some(state) = req.state {
+        updates.push("state = ?");
+        params.push(Box::new(state));
+    }
+
+    if !updates.is_empty() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        updates.push("updated_at = ?");
+        params.push(Box::new(now));
+
+        let sql = format!(
+            "UPDATE collaboration_sessions SET {} WHERE collaboration_session_id = ?",
+            updates.join(", ")
+        );
+        params.push(Box::new(session_id.to_string()));
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
+        connection.execute(&sql, params_refs.as_slice())?;
+    }
+
+    get_session(session_id).map(Some)
+}
+
+pub async fn delete_session(session_id: &str) -> Result<bool, CollaborationSessionError> {
+    lock_db!(connection);
+
+    let count = connection.execute(
+        "DELETE FROM collaboration_sessions WHERE collaboration_session_id = ?1",
+        [session_id],
+    )?;
+
+    Ok(count > 0)
 }
 
 #[cfg(test)]

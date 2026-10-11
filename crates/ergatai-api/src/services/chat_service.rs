@@ -1,0 +1,79 @@
+//! Chat Service — 封装 Chat 业务逻辑
+//!
+//! 职责：
+//! - Chat CRUD
+//! - 关联查询（通过 workspace_id 查询）
+//! - 级联删除（删除 Chat 时级联删除 CollaborationSession 和 Conversation）
+
+use crate::user_data_db::{chats, Chat};
+use ergatai_core::id::{format as format_id, generate, IdType};
+
+pub struct ChatService;
+
+impl ChatService {
+    /// 创建 Chat
+    pub async fn create_chat(workspace_id: &str, name: Option<String>) -> anyhow::Result<Chat> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let chat = Chat {
+            chat_id: format_id(generate(), IdType::Chat),
+            workspace_id: workspace_id.to_string(),
+            name,
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+        };
+
+        let chat = chats::create(chat)?;
+        Ok(chat)
+    }
+
+    /// 获取 Chat
+    pub async fn get_chat(chat_id: &str) -> anyhow::Result<Option<Chat>> {
+        let chat = chats::get(chat_id)?;
+        Ok(chat)
+    }
+
+    /// 列出 Chat（通过 workspace_id 过滤）
+    pub async fn list_chats_by_workspace(workspace_id: &str) -> anyhow::Result<Vec<Chat>> {
+        let chats = chats::list(Some(workspace_id))?;
+        Ok(chats)
+    }
+
+    /// 列出所有 Chat
+    pub async fn list_chats(workspace_id: Option<&str>) -> anyhow::Result<Vec<Chat>> {
+        let chats = chats::list(workspace_id)?;
+        Ok(chats)
+    }
+
+    /// 更新 Chat
+    pub async fn update_chat(chat: Chat) -> anyhow::Result<()> {
+        chats::update(chat)?;
+        Ok(())
+    }
+
+    /// 删除 Chat（级联删除 CollaborationSession 和 Conversation）
+    pub async fn delete_chat(chat_id: &str) -> anyhow::Result<()> {
+        // TODO: 实现级联删除
+        // 1. 删除该 chat 下的所有 collaboration_session
+        // 2. 删除该 chat 下的所有 conversation
+        // 3. 删除 chat 本身
+        chats::delete(chat_id)?;
+        Ok(())
+    }
+
+    /// 归档 Chat
+    pub async fn archive_chat(chat_id: &str) -> anyhow::Result<()> {
+        chats::archive(chat_id)?;
+        Ok(())
+    }
+
+    /// 取消归档 Chat
+    pub async fn unarchive_chat(chat_id: &str) -> anyhow::Result<()> {
+        chats::unarchive(chat_id)?;
+        Ok(())
+    }
+}
