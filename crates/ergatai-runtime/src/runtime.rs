@@ -876,15 +876,56 @@ impl AgentRuntime {
             capture_thoughts: false,
         };
 
-        // 4. Use profile_name as the command (simplified approach)
-        // In production, this should query ProfileRegistry for the actual command
-        let command = &suspended.profile_name;
+        // 4. Resolve profile_name to actual command via ProfileRegistry
+        // Query the profile registry to get the configured command for this profile.
+        // Falls back to using profile_name as command if profile not found (backward compat).
+        let command = match crate::profile_registry::ProfileRegistry::new(
+            crate::dirs::profile_registry_db_path(),
+        ) {
+            Ok(registry) => match registry.list_with_status() {
+                Ok(profiles) => {
+                    match profiles.into_iter().find(|p| p.name == suspended.profile_name) {
+                        Some(profile) => {
+                            info!(
+                                profile_name = %suspended.profile_name,
+                                profile_command = %profile.command,
+                                "Resolved profile to command for resume"
+                            );
+                            profile.command
+                        }
+                        None => {
+                            warn!(
+                                profile_name = %suspended.profile_name,
+                                "Profile not found in registry, using profile_name as command"
+                            );
+                            suspended.profile_name.clone()
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        profile_name = %suspended.profile_name,
+                        error = %e,
+                        "Failed to list profiles, using profile_name as command"
+                    );
+                    suspended.profile_name.clone()
+                }
+            },
+            Err(e) => {
+                warn!(
+                    profile_name = %suspended.profile_name,
+                    error = %e,
+                    "Failed to open profile registry, using profile_name as command"
+                );
+                suspended.profile_name.clone()
+            }
+        };
 
         // 5. Launch new agent process
         let new_agent_id = self
             .launch_agent(
                 workspace_spec,
-                command,
+                &command,
                 None, // instruction
                 Some(&suspended.profile_name),
                 None, // transport (default stdio)
