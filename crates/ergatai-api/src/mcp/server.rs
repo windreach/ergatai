@@ -517,11 +517,11 @@ mod tests {
     #[test]
     fn test_send_message_params_required_fields() {
         let params: SendMessageParams = serde_json::from_value(json!({
-            "target_agent_id": "agent-1",
+            "target_cov_id": "cov-1",
             "message": "hello"
         }))
         .unwrap();
-        assert_eq!(params.target_agent_id.as_deref(), Some("agent-1"));
+        assert_eq!(params.target_cov_id, "cov-1");
         assert_eq!(params.message, "hello");
         assert_eq!(params.message_type, None);
     }
@@ -529,7 +529,7 @@ mod tests {
     #[test]
     fn test_send_message_params_with_message_type() {
         let params: SendMessageParams = serde_json::from_value(json!({
-            "target_agent_id": "agent-1",
+            "target_cov_id": "cov-1",
             "message": "hello",
             "message_type": "broadcast"
         }))
@@ -538,25 +538,20 @@ mod tests {
     }
 
     #[test]
-    fn test_send_message_params_missing_target_succeeds_but_validated_at_runtime() {
-        // Both target_cov_id and target_agent_id are optional (Option<String>).
-        // Deserialization succeeds, but runtime validation in send_message tool
-        // requires at least one to be provided.
+    fn test_send_message_params_missing_target_fails() {
+        // target_cov_id is now required, so deserialization should fail
         let result: Result<SendMessageParams, _> =
             serde_json::from_value(json!({"message": "hello"}));
         assert!(
-            result.is_ok(),
-            "deserialization should succeed (fields are optional)"
+            result.is_err(),
+            "missing target_cov_id should fail deserialization"
         );
-        let params = result.unwrap();
-        assert!(params.target_cov_id.is_none());
-        assert!(params.target_agent_id.is_none());
     }
 
     #[test]
     fn test_send_message_params_missing_message_fails() {
         let result: Result<SendMessageParams, _> =
-            serde_json::from_value(json!({"target_agent_id": "a"}));
+            serde_json::from_value(json!({"target_cov_id": "cov-1"}));
         assert!(
             result.is_err(),
             "missing message should fail deserialization"

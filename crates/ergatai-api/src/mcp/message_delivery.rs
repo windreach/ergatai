@@ -466,29 +466,33 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
     // mark since the message is discarded anyway.
     mark_message_processed(&payload.message_id);
 
-    // Simplified Cov-centric delivery: use inject_message_to_cov when target_cov_id is present.
-    // This bypasses the agent_id intermediary lookup (cov_id → AgentInfo → backend.inject_message).
-    // Falls back to agent-centric inject_message for legacy messages without target_cov_id.
-    let delivery_result = if let Some(ref cov_id) = payload.target_cov_id {
-        info!(
-            from = from,
-            to = to,
-            cov_id = %cov_id,
-            "Using Cov-centric delivery (direct cov_id → AgentInfo lookup)"
-        );
-        runtime
-            .inject_message_to_cov(cov_id, formatted_message, payload.thread_id.as_deref())
-            .await
-    } else {
-        // Legacy agent-centric delivery
-        runtime
-            .inject_message(
-                &to_runtime_id,
-                formatted_message,
-                payload.thread_id.as_deref(),
-            )
-            .await
+    // Cov-centric delivery: direct cov_id → AgentInfo lookup.
+    // This bypasses the agent_id intermediary lookup for better performance.
+    let cov_id = match payload.target_cov_id.as_ref() {
+        Some(id) => id.clone(),
+        None => {
+            error!(
+                message_id = %payload.message_id,
+                from = from,
+                to = to,
+                "Message missing target_cov_id (required for Cov-centric delivery), discarding"
+            );
+            // Ack to discard the message (it's invalid and won't be deliverable)
+            let _ = msg.ack().await;
+            return;
+        }
     };
+
+    info!(
+        from = from,
+        to = to,
+        cov_id = %cov_id,
+        "Using Cov-centric delivery (direct cov_id → AgentInfo lookup)"
+    );
+
+    let delivery_result = runtime
+        .inject_message_to_cov(&cov_id, formatted_message, payload.thread_id.as_deref())
+        .await;
 
     match delivery_result {
         Ok(()) => {
