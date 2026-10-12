@@ -77,3 +77,6 @@ coverage.lcov
 *.lcov
 lcov.info
 *.lcov
+
+# Frontend (separate repository)
+frontend/
