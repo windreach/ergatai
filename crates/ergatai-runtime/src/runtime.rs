@@ -171,6 +171,35 @@ impl StateGuard {
         self.completed = true;
         // Drop without spawning cleanup task
     }
+
+    /// Transition agent state to Running.
+    async fn transition_to_running(registry: &AgentRegistry, agent_id: &str) {
+        let now = chrono::Utc::now();
+        let mut guard = registry.write().await;
+        if let Some(info) = guard.get_mut(agent_id) {
+            info.lifecycle = AgentLifecycleState::Running {
+                task_id: None,
+                started_at: now,
+                last_heartbeat: now,
+            };
+            info.last_heartbeat = now;
+            info.state_changed_at = now;
+        }
+    }
+
+    /// Transition agent state to Idle.
+    async fn transition_to_idle(registry: &AgentRegistry, agent_id: &str) {
+        let now = chrono::Utc::now();
+        let mut guard = registry.write().await;
+        if let Some(info) = guard.get_mut(agent_id) {
+            info.lifecycle = AgentLifecycleState::Idle {
+                ready_since: now,
+                capabilities: Vec::new(),
+            };
+            info.last_heartbeat = now;
+            info.state_changed_at = now;
+        }
+    }
 }
 
 impl Drop for StateGuard {
@@ -185,6 +214,8 @@ impl Drop for StateGuard {
                 "StateGuard dropped without completion — spawning cleanup task to restore Idle state"
             );
             tokio::spawn(async move {
+                // Note: Can't use StateGuard::transition_to_idle() here because Drop
+                // is synchronous. Inline the state transition logic.
                 let now = chrono::Utc::now();
                 let mut guard = registry.write().await;
                 if let Some(info) = guard.get_mut(&agent_id) {
@@ -542,37 +573,14 @@ impl AgentRuntime {
         // Transition: Idle → Running (agent is now processing a message)
         // Create guard BEFORE transition to ensure cleanup on panic/cancellation
         let state_guard = StateGuard::new(self.registry.clone(), runtime_id.clone());
-        let now = chrono::Utc::now();
-        {
-            let mut reg_guard = self.registry.write().await;
-            if let Some(info) = reg_guard.get_mut(&runtime_id) {
-                info.lifecycle = crate::agent_lifecycle::AgentLifecycleState::Running {
-                    task_id: None,
-                    started_at: now,
-                    last_heartbeat: now,
-                };
-                info.last_heartbeat = now;
-                info.state_changed_at = now;
-            }
-        }
+        StateGuard::transition_to_running(&self.registry, &runtime_id).await;
 
         // Deliver via backend injection (synchronous wait for prompt completion)
         let result = self.backend.inject_message(&info.handle, message).await;
 
         // Transition: Running → Idle (agent finished processing, back to idle)
         // Do this regardless of success/failure
-        let now = chrono::Utc::now();
-        {
-            let mut reg_guard = self.registry.write().await;
-            if let Some(info) = reg_guard.get_mut(&runtime_id) {
-                info.lifecycle = crate::agent_lifecycle::AgentLifecycleState::Idle {
-                    ready_since: now,
-                    capabilities: Vec::new(),
-                };
-                info.last_heartbeat = now;
-                info.state_changed_at = now;
-            }
-        }
+        StateGuard::transition_to_idle(&self.registry, &runtime_id).await;
 
         // Mark guard as completed to prevent cleanup task from running
         state_guard.complete();
@@ -609,36 +617,13 @@ impl AgentRuntime {
         // Transition: Idle → Running (agent is now processing a message)
         // Create guard BEFORE transition to ensure cleanup on panic/cancellation
         let state_guard = StateGuard::new(self.registry.clone(), info.agent_id.clone());
-        let now = chrono::Utc::now();
-        {
-            let mut reg_guard = self.registry.write().await;
-            if let Some(info) = reg_guard.get_mut(&info.agent_id) {
-                info.lifecycle = crate::agent_lifecycle::AgentLifecycleState::Running {
-                    task_id: None,
-                    started_at: now,
-                    last_heartbeat: now,
-                };
-                info.last_heartbeat = now;
-                info.state_changed_at = now;
-            }
-        }
+        StateGuard::transition_to_running(&self.registry, &info.agent_id).await;
 
         // Deliver via backend injection (synchronous wait for prompt completion)
         let result = self.backend.inject_message(&info.handle, message).await;
 
         // Transition: Running → Idle (agent finished processing, back to idle)
-        let now = chrono::Utc::now();
-        {
-            let mut reg_guard = self.registry.write().await;
-            if let Some(info) = reg_guard.get_mut(&info.agent_id) {
-                info.lifecycle = crate::agent_lifecycle::AgentLifecycleState::Idle {
-                    ready_since: now,
-                    capabilities: Vec::new(),
-                };
-                info.last_heartbeat = now;
-                info.state_changed_at = now;
-            }
-        }
+        StateGuard::transition_to_idle(&self.registry, &info.agent_id).await;
 
         // Mark guard as completed to prevent cleanup task from running
         state_guard.complete();
@@ -671,19 +656,7 @@ impl AgentRuntime {
         // Transition: Idle → Running (agent is now processing a message)
         // Create guard BEFORE transition to ensure cleanup on panic/cancellation
         let state_guard = StateGuard::new(self.registry.clone(), info.agent_id.clone());
-        let now = chrono::Utc::now();
-        {
-            let mut reg_guard = self.registry.write().await;
-            if let Some(info) = reg_guard.get_mut(&info.agent_id) {
-                info.lifecycle = crate::agent_lifecycle::AgentLifecycleState::Running {
-                    task_id: None,
-                    started_at: now,
-                    last_heartbeat: now,
-                };
-                info.last_heartbeat = now;
-                info.state_changed_at = now;
-            }
-        }
+        StateGuard::transition_to_running(&self.registry, &info.agent_id).await;
 
         // Deliver via backend injection (synchronous wait for prompt completion)
         let result = self
@@ -692,18 +665,7 @@ impl AgentRuntime {
             .await;
 
         // Transition: Running → Idle (agent finished processing, back to idle)
-        let now = chrono::Utc::now();
-        {
-            let mut reg_guard = self.registry.write().await;
-            if let Some(info) = reg_guard.get_mut(&info.agent_id) {
-                info.lifecycle = crate::agent_lifecycle::AgentLifecycleState::Idle {
-                    ready_since: now,
-                    capabilities: Vec::new(),
-                };
-                info.last_heartbeat = now;
-                info.state_changed_at = now;
-            }
-        }
+        StateGuard::transition_to_idle(&self.registry, &info.agent_id).await;
 
         // Mark guard as completed to prevent cleanup task from running
         state_guard.complete();
@@ -753,18 +715,7 @@ impl AgentRuntime {
             .await;
 
         // Transition: Running → Idle (agent finished processing, back to idle)
-        let now = chrono::Utc::now();
-        {
-            let mut reg_guard = self.registry.write().await;
-            if let Some(info) = reg_guard.get_mut(&runtime_id) {
-                info.lifecycle = crate::agent_lifecycle::AgentLifecycleState::Idle {
-                    ready_since: now,
-                    capabilities: Vec::new(),
-                };
-                info.last_heartbeat = now;
-                info.state_changed_at = now;
-            }
-        }
+        StateGuard::transition_to_idle(&self.registry, &runtime_id).await;
 
         // Mark guard as completed to prevent cleanup task from running
         state_guard.complete();

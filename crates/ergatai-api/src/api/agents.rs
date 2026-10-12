@@ -1421,7 +1421,6 @@ pub async fn send_message(
                 // Bind the new agent to its own conversation below the chat.
                 let now = chrono::Utc::now().timestamp();
                 let chat_id_for_conversation = chat_id.clone();
-                let _workspace_id_for_conversation = sender_info.workspace_id.clone();
                 let agent_command_for_name = target_command.clone();
                 let conversation_id_for_create = agent_conversation_id.clone();
                 let create_conversation =

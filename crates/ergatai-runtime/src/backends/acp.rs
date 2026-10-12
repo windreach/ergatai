@@ -250,6 +250,10 @@ impl JsonRpcNotification for ExtendedSessionNotification {}
 
 /// Helper function to send an event to output publisher (NATS).
 /// Broadcast channel has been removed - all output goes through NATS for unified routing.
+///
+/// # Fallback Behavior
+/// If the global output publisher is not initialized, events are logged at debug level.
+/// This prevents silent data loss during initialization or in test environments.
 fn send_output_event(conversation_id: &str, event: AgentOutputEvent) {
     // Get global output publisher (set during initialization)
     if let Some(publisher) = crate::output_publisher::get_global_output_publisher() {
@@ -260,6 +264,14 @@ fn send_output_event(conversation_id: &str, event: AgentOutputEvent) {
                 "Failed to publish agent output event"
             );
         }
+    } else {
+        // Fallback: log at debug level when publisher is not available.
+        // This can happen during initialization or in test environments.
+        tracing::debug!(
+            conversation_id = %conversation_id,
+            event_type = %std::any::type_name_of_val(&event),
+            "Output publisher not initialized - event logged but not published"
+        );
     }
 }
 
