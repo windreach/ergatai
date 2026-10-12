@@ -22,6 +22,37 @@ pub struct AgentImage {
     pub filename: Option<String>,
 }
 
+impl AgentImage {
+    /// Maximum allowed size for base64-encoded image data (10 MB).
+    pub const MAX_BASE64_SIZE: usize = 10 * 1024 * 1024;
+
+    /// Validate image attachment size and media type.
+    ///
+    /// Returns `Err(reason)` if the base64 payload exceeds
+    /// [`MAX_BASE64_SIZE`](Self::MAX_BASE64_SIZE) or the media type is not
+    /// an allowed image format.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.base64_data.len() > Self::MAX_BASE64_SIZE {
+            return Err(format!(
+                "Image too large: {} bytes (max: {} bytes)",
+                self.base64_data.len(),
+                Self::MAX_BASE64_SIZE
+            ));
+        }
+
+        const ALLOWED_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+        if !ALLOWED_TYPES.contains(&self.media_type.as_str()) {
+            return Err(format!(
+                "Unsupported image media type: '{}' (allowed: {})",
+                self.media_type,
+                ALLOWED_TYPES.join(", ")
+            ));
+        }
+
+        Ok(())
+    }
+}
+
 /// Specification for creating a new agent workspace.
 ///
 /// A workspace is the execution environment for an agent — it is a process-based

@@ -796,91 +796,67 @@ pub async fn update_workspace(
     Path(workspace_id): Path<String>,
     Json(req): Json<UpdateWorkspaceRequest>,
 ) -> impl IntoResponse {
-    let workspace_id_for_get = workspace_id.clone();
-    let existing = match tokio::task::spawn_blocking(move || {
-        crate::user_data_db::workspaces::get(&workspace_id_for_get)
+    // Serialize env before entering spawn_blocking (fallible, so fail fast).
+    let serialized_env: Option<String> = match req.env {
+        Some(ref env) => match serde_json::to_string(env) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Invalid env JSON: {}", e),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+
+    // Perform read-modify-write atomically inside a single spawn_blocking,
+    // so no other request can interleave between the get and the update.
+    let workspace_id_for_update = workspace_id.clone();
+    let name = req.name;
+    let work_dir = req.work_dir;
+    match tokio::task::spawn_blocking(move || {
+        let existing = crate::user_data_db::workspaces::get(&workspace_id_for_update)?;
+        let mut existing = match existing {
+            Some(w) => w,
+            None => return Err(anyhow::anyhow!("__NOT_FOUND__")),
+        };
+        if let Some(name) = name {
+            existing.name = name;
+        }
+        if let Some(work_dir) = work_dir {
+            existing.work_dir = work_dir;
+        }
+        if let Some(env) = serialized_env {
+            existing.env = env;
+        }
+        existing.updated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        crate::user_data_db::workspaces::update(existing)?;
+        crate::user_data_db::workspaces::get(&workspace_id_for_update)
     })
     .await
     {
-        Ok(Ok(Some(workspace))) => workspace,
-        Ok(Ok(None)) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: format!("Workspace {} not found", workspace_id),
-                }),
-            )
-                .into_response()
-        }
-        Ok(Err(e)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: crate::sanitize_error(&e, "update_workspace"),
-                }),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
-    };
-
-    let mut updated = existing;
-    if let Some(name) = req.name {
-        updated.name = name;
-    }
-    if let Some(work_dir) = req.work_dir {
-        updated.work_dir = work_dir;
-    }
-    if let Some(env) = req.env {
-        updated.env = serde_json::to_string(&env).unwrap_or_else(|_| "{}".to_string());
-    }
-    updated.updated_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
-
-    match tokio::task::spawn_blocking(move || crate::user_data_db::workspaces::update(updated))
-        .await
-    {
-        Ok(Ok(())) => {
-            let workspace_id_for_reload = workspace_id.clone();
-            match tokio::task::spawn_blocking(move || {
-                crate::user_data_db::workspaces::get(&workspace_id_for_reload)
-            })
-            .await
-            {
-                Ok(Ok(Some(workspace))) => (StatusCode::OK, Json(workspace)).into_response(),
-                Ok(Ok(None)) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: "Workspace disappeared after update".to_string(),
-                    }),
-                )
-                    .into_response(),
-                Ok(Err(e)) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: crate::sanitize_error(&e, "update_workspace"),
-                    }),
-                )
-                    .into_response(),
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("Task join error: {}", e),
-                    }),
-                )
-                    .into_response(),
-            }
-        }
+        Ok(Ok(Some(workspace))) => (StatusCode::OK, Json(workspace)).into_response(),
+        Ok(Ok(None)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Workspace disappeared after update".to_string(),
+            }),
+        )
+            .into_response(),
+        Ok(Err(e)) if e.to_string() == "__NOT_FOUND__" => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Workspace {} not found", workspace_id),
+            }),
+        )
+            .into_response(),
         Ok(Err(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {

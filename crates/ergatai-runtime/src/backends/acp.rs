@@ -2323,7 +2323,7 @@ impl AcpBackendInterface for AcpBackend {
             .metadata
             .get("conversation_id")
             .cloned()
-            .unwrap_or_else(|| agent_id.clone());
+            .unwrap_or_else(|| format!("auto-{}", agent_id));
         let task_workspace_id = handle.id.clone();
         let task_dead_agents = self.dead_agents.clone();
         let task_permission_handler = self.permission_handler.clone();
@@ -2869,12 +2869,14 @@ impl AcpBackendInterface for AcpBackend {
                                 message_id,
                                 response_tx,
                             }) => {
-                                // Interrupt message: queue it for processing at the next safe point
+                                // M1 NOTE: The comment below says "queued" but the interrupt is actually sent immediately.
+                                // TODO: Implement proper interrupt queueing via PendingInterrupt structure if needed.
+                                // For now, the interrupt is processed at the next safe point by the ACP protocol itself.
                                 info!(
                                     agent_id = %connection_agent_id,
                                     message_id = %message_id,
                                     message_bytes = message.len(),
-                                    "Interrupt message queued"
+                                    "Interrupt prompt sent (not queued - processed at next safe point by ACP)"
                                 );
 
                                 // Store the current message ID being processed (for pause tracking)

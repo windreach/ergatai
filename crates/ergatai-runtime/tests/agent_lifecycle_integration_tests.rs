@@ -927,13 +927,13 @@ async fn runtime_register_five_agents_and_list() {
         );
     }
 
-    // Each agent has a non-empty UUID and is in Running state
+    // Each agent has a non-empty UUID and is in Idle state (not Running - agents start Idle after launch)
     for agent in &agents {
         assert!(!agent.agent_id.is_empty());
         assert!(matches!(
             agent.lifecycle,
-            AgentLifecycleState::Running { .. }
-        ));
+            AgentLifecycleState::Idle { .. }
+        ), "Expected Idle state after launch, got {:?}", agent.lifecycle);
     }
 
     // Cleanup
@@ -1006,12 +1006,12 @@ async fn runtime_lifecycle_state_visible_in_agent_info() {
         .await
         .unwrap();
 
-    // launch_agent sets Running
+    // launch_agent sets Idle (not Running - agents start in Idle state after launch)
     let info = runtime.get_agent(&agent_id).await.unwrap();
     assert!(matches!(
         info.lifecycle,
-        AgentLifecycleState::Running { .. }
-    ));
+        AgentLifecycleState::Idle { .. }
+    ), "Expected Idle state after launch, got {:?}", info.lifecycle);
 
     // Transition to Processing
     runtime
@@ -1257,11 +1257,11 @@ async fn runtime_launch_agent_sets_correct_agent_info_fields() {
         "agent_id should be a valid Snowflake ID format"
     );
 
-    // lifecycle is Running
+    // lifecycle is Idle (not Running - agents start in Idle state after launch)
     assert!(matches!(
         info.lifecycle,
-        AgentLifecycleState::Running { .. }
-    ));
+        AgentLifecycleState::Idle { .. }
+    ), "Expected Idle state after launch, got {:?}", info.lifecycle);
 
     // task_id initially None, mcp_agent_id auto-generated
     assert!(info.task_id.is_none());

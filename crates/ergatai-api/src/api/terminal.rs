@@ -190,9 +190,9 @@ async fn run_terminal(socket: WebSocket, cwd: String, cols: u16, rows: u16) {
         _ = client_to_pty => {
             tracing::debug!("Client WebSocket closed");
         }
-        _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
-            tracing::warn!("Terminal session timeout (30s inactivity)");
-        }
+        // NOTE: No inactivity timeout — the WebSocket close or PTY exit handles cleanup.
+        // A fixed timeout would kill sessions when users read output, type long commands,
+        // or step away temporarily.
     }
 
     if let Err(e) = killer.kill() {

@@ -2794,6 +2794,20 @@ pub async fn prompt_agent(
     Path(id): Path<String>,
     Json(body): Json<PromptAgentRequest>,
 ) -> impl IntoResponse {
+    // Validate image attachments before any processing to prevent
+    // memory-exhaustion from oversized or unsupported payloads.
+    for (i, image) in body.images.iter().enumerate() {
+        if let Err(reason) = image.validate() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid image attachment at index {}: {}", i, reason),
+                }),
+            )
+                .into_response();
+        }
+    }
+
     // Resolve the agent ID to a runtime ID (handles profile names, ergatai_agent_id, etc.)
     let runtime_id = match crate::services::agent_service::resolve_to_runtime_id(&id).await {
         Some(rid) => rid,
@@ -2931,11 +2945,11 @@ pub async fn prompt_agent(
                             &body.message,
                             &body
                                 .images
-                                .iter()
+                                .into_iter()
                                 .map(|img| ergatai_runtime::AgentImage {
-                                    base64_data: img.base64_data.clone(),
-                                    media_type: img.media_type.clone(),
-                                    filename: img.filename.clone(),
+                                    base64_data: img.base64_data,
+                                    media_type: img.media_type,
+                                    filename: img.filename,
                                 })
                                 .collect::<Vec<_>>(),
                             &prompt_id,
@@ -3198,7 +3212,19 @@ pub async fn suspend_agent(
     Path(agent_id): Path<String>,
     Json(req): Json<SuspendRequest>,
 ) -> impl IntoResponse {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    let ctx = match crate::context::try_get_app_context() {
+        Some(ctx) => ctx,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse {
+                    error: "Application not initialized".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let runtime = ctx.agent_runtime.clone();
     let reason = req.reason;
 
     match runtime.suspend_agent(&agent_id, reason).await {
@@ -3228,7 +3254,19 @@ pub async fn resume_agent(
     State(_state): State<AppState>,
     Path(suspended_id): Path<String>,
 ) -> impl IntoResponse {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    let ctx = match crate::context::try_get_app_context() {
+        Some(ctx) => ctx,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse {
+                    error: "Application not initialized".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let runtime = ctx.agent_runtime.clone();
 
     match runtime.resume_agent(&suspended_id).await {
         Ok(new_agent_id) => (
@@ -3254,7 +3292,19 @@ pub async fn resume_agent(
 ///
 /// List all suspended agents.
 pub async fn list_suspended_agents(State(_state): State<AppState>) -> impl IntoResponse {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    let ctx = match crate::context::try_get_app_context() {
+        Some(ctx) => ctx,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse {
+                    error: "Application not initialized".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let runtime = ctx.agent_runtime.clone();
 
     match runtime.suspend_store().list_suspended() {
         Ok(suspended) => (

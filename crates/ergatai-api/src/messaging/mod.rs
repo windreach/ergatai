@@ -1002,6 +1002,14 @@ impl MessageSender {
     /// that agent and delivers the message.
     ///
     /// Returns Some(new_agent_id) if successfully resumed, None otherwise.
+    ///
+    /// # TOCTOU Note
+    ///
+    /// If two messages arrive concurrently for the same suspended agent, both may attempt
+    /// to resume it. This is benign: `resume_agent()` consumes the suspended record on
+    /// success, so the second call will fail with a "not found" error and the message
+    /// will be retried via the normal delivery path. The warn-level log below captures
+    /// this case for observability.
     async fn try_auto_resume_suspended_agent(
         &self,
         runtime: &AgentRuntime,
@@ -1028,10 +1036,12 @@ impl MessageSender {
                     return Some(new_agent_id);
                 }
                 Err(e) => {
+                    // Likely TOCTOU: another concurrent message already resumed this agent.
+                    // The message will be retried via the normal delivery path.
                     tracing::warn!(
                         error = %e,
                         suspended_id = %suspended.id,
-                        "Failed to resume suspended agent by ID"
+                        "Failed to resume suspended agent by ID (likely concurrent resume)"
                     );
                     return None;
                 }
@@ -1062,11 +1072,12 @@ impl MessageSender {
                         return Some(new_agent_id);
                     }
                     Err(e) => {
+                        // Likely TOCTOU: another concurrent message already resumed this agent.
                         tracing::warn!(
                             error = %e,
                             suspended_id = %suspended.id,
                             conversation_id = %conversation_id,
-                            "Failed to resume suspended agent by conversation_id"
+                            "Failed to resume suspended agent by conversation_id (likely concurrent resume)"
                         );
                         return None;
                     }

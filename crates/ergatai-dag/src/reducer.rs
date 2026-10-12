@@ -39,8 +39,18 @@ pub fn evaluate(expr: &str, existing: &Value, new: &Value) -> Result<Value, Redu
     let mut context = HashMapContext::new();
 
     // Convert JSON values to evalexpr values and bind them
-    let existing_eval = json_to_evalexpr(existing)?;
-    let new_eval = json_to_evalexpr(new)?;
+    let existing_eval = json_to_evalexpr(existing).map_err(|e| ReducerError {
+        message: format!(
+            "Failed to convert 'existing' value '{}' for expression '{}': {}",
+            existing, expr, e
+        ),
+    })?;
+    let new_eval = json_to_evalexpr(new).map_err(|e| ReducerError {
+        message: format!(
+            "Failed to convert 'new' value '{}' for expression '{}': {}",
+            new, expr, e
+        ),
+    })?;
 
     context
         .set_value("existing".into(), existing_eval)
@@ -55,7 +65,10 @@ pub fn evaluate(expr: &str, existing: &Value, new: &Value) -> Result<Value, Redu
 
     // Evaluate the expression
     let result = eval_with_context(expr, &context).map_err(|e| ReducerError {
-        message: format!("expression evaluation failed: {e}"),
+        message: format!(
+            "Failed to evaluate '{}' (existing: {}, new: {}): {}",
+            expr, existing, new, e
+        ),
     })?;
 
     // Convert back to JSON
@@ -92,7 +105,15 @@ fn evalexpr_to_json(val: EvalexprValue) -> Result<Value, ReducerError> {
         EvalexprValue::Boolean(b) => Ok(Value::Bool(b)),
         EvalexprValue::Int(i) => Ok(Value::Number(serde_json::Number::from(i))),
         EvalexprValue::Float(f) => {
-            if f.fract() == 0.0 && f.is_finite() && f >= i64::MIN as f64 && f <= i64::MAX as f64 {
+            // Use epsilon comparison for the fractional part to handle
+            // floating-point precision issues (e.g., 3.0000000000000004
+            // from arithmetic should still be treated as integer 3).
+            const EPSILON: f64 = 1e-9;
+            if f.abs().fract() < EPSILON
+                && f.is_finite()
+                && f >= i64::MIN as f64
+                && f <= i64::MAX as f64
+            {
                 Ok(Value::Number(serde_json::Number::from(f as i64)))
             } else {
                 serde_json::Number::from_f64(f)

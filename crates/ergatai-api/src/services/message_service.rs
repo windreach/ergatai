@@ -12,7 +12,7 @@ pub struct MessageService;
 
 impl MessageService {
     /// 创建 Message
-    pub async fn create_message(
+    pub fn create_message(
         conversation_id: &str,
         role: &str,
         content: &str,
@@ -31,14 +31,14 @@ impl MessageService {
     }
 
     /// 获取 Message
-    pub async fn get_message(_message_id: &str) -> anyhow::Result<Option<Message>> {
+    pub fn get_message(_message_id: &str) -> anyhow::Result<Option<Message>> {
         // TODO: 实现单个 message 查询
         // 目前 messages 模块没有 get 方法，需要添加
         Ok(None)
     }
 
     /// 列出 Message（通过 conversation_id 过滤）
-    pub async fn list_messages_by_conversation(
+    pub fn list_messages_by_conversation(
         conversation_id: &str,
     ) -> anyhow::Result<Vec<Message>> {
         let messages = messages::list(conversation_id)?;
@@ -46,7 +46,7 @@ impl MessageService {
     }
 
     /// 列出 Message（通过 collaboration_session_id 过滤）
-    pub async fn list_messages_by_collaboration_session(
+    pub fn list_messages_by_collaboration_session(
         collaboration_session_id: &str,
     ) -> anyhow::Result<Vec<Message>> {
         let messages = messages::list_by_collaboration_session(collaboration_session_id)?;
@@ -54,13 +54,13 @@ impl MessageService {
     }
 
     /// 列出 Message（通过 chat_id 过滤）
-    pub async fn list_messages_by_chat(chat_id: &str) -> anyhow::Result<Vec<Message>> {
+    pub fn list_messages_by_chat(chat_id: &str) -> anyhow::Result<Vec<Message>> {
         let messages = messages::list_by_chat(chat_id)?;
         Ok(messages)
     }
 
     /// 列出 Message（after_sequence 之后的）
-    pub async fn list_messages_after_sequence(
+    pub fn list_messages_after_sequence(
         conversation_id: &str,
         after_sequence: i64,
     ) -> anyhow::Result<Vec<Message>> {
@@ -69,25 +69,25 @@ impl MessageService {
     }
 
     /// 获取最后一个 Message
-    pub async fn get_last_message(conversation_id: &str) -> anyhow::Result<Option<Message>> {
+    pub fn get_last_message(conversation_id: &str) -> anyhow::Result<Option<Message>> {
         let message = messages::get_last(conversation_id)?;
         Ok(message)
     }
 
     /// 更新 Message
-    pub async fn update_message(_message_id: &str, _content: &str) -> anyhow::Result<bool> {
+    pub fn update_message(_message_id: &str, _content: &str) -> anyhow::Result<bool> {
         // TODO: 实现 message 更新
         Ok(true)
     }
 
     /// 删除 Message
-    pub async fn delete_message(_message_id: &str) -> anyhow::Result<bool> {
+    pub fn delete_message(_message_id: &str) -> anyhow::Result<bool> {
         // TODO: 实现 message 删除
         Ok(true)
     }
 
     /// 替换历史消息（用于同步）
-    pub async fn replace_legacy_messages(
+    pub fn replace_legacy_messages(
         conversation_id: &str,
         messages_json: &str,
         updated_at: i64,
@@ -97,7 +97,7 @@ impl MessageService {
     }
 
     /// 序列化消息为旧格式
-    pub async fn serialize_legacy(conversation_id: &str) -> anyhow::Result<String> {
+    pub fn serialize_legacy(conversation_id: &str) -> anyhow::Result<String> {
         let serialized = messages::serialize_legacy(conversation_id)?;
         Ok(serialized)
     }

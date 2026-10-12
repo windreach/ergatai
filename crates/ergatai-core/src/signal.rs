@@ -158,9 +158,11 @@ async fn graceful_shutdown() -> ErgataiResult<()> {
                 continue;
             }
 
-            // Check if we've exceeded the budget
-            if suspend_start.elapsed() >= SUSPEND_BUDGET {
-                tracing::warn!("Suspend budget exceeded (5s), stopping auto-suspend");
+            // Wrap each suspend_agent() call with the remaining budget so a
+            // single slow suspend cannot consume the entire 5s budget.
+            let remaining = SUSPEND_BUDGET.saturating_sub(suspend_start.elapsed());
+            if remaining.is_zero() {
+                tracing::warn!("Suspend budget exhausted before all agents could be suspended");
                 break;
             }
 
@@ -169,15 +171,27 @@ async fn graceful_shutdown() -> ErgataiResult<()> {
                 "Auto-suspending agent for shutdown"
             );
 
-            if let Err(e) = runtime
-                .suspend_agent(&agent.agent_id, SuspendReason::Shutdown)
-                .await
+            match tokio::time::timeout(
+                remaining,
+                runtime.suspend_agent(&agent.agent_id, SuspendReason::Shutdown),
+            )
+            .await
             {
-                tracing::warn!(
-                    agent_id = %agent.agent_id,
-                    error = %e,
-                    "Failed to suspend agent during shutdown, continuing with others"
-                );
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        agent_id = %agent.agent_id,
+                        error = %e,
+                        "Failed to suspend agent during shutdown, continuing with others"
+                    );
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        agent_id = %agent.agent_id,
+                        timeout_ms = remaining.as_millis() as u64,
+                        "Suspend timed out for agent, continuing with others"
+                    );
+                }
             }
         }
     })

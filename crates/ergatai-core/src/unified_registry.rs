@@ -82,6 +82,17 @@ impl UnifiedAgentRegistry {
     }
 
     /// Register a new agent
+    ///
+    /// # Lock ordering
+    ///
+    /// Acquires write locks on `agents`, `mcp_id_to_agent_id`, and
+    /// `conversation_id_to_agent_id` in that order. The same order is used in
+    /// `unregister()` and `set_mcp_agent_id()` to prevent deadlocks. Holding
+    /// all three write locks simultaneously is intentional — it keeps the
+    /// primary key and both secondary indices consistent. If profiling ever
+    /// shows this as a contention bottleneck, the indices could be merged into
+    /// a single `RwLock`-protected struct, but until then the separate locks
+    /// are clearer and avoid spurious write contention on read-only paths.
     pub async fn register(&self, record: AgentRecord) {
         let agent_id = record.agent_id.clone();
         let mcp_id = record.mcp_agent_id.clone();
@@ -117,6 +128,9 @@ impl UnifiedAgentRegistry {
     }
 
     /// Unregister an agent
+    ///
+    /// Lock ordering: `agents` → `mcp_id_to_agent_id` → `conversation_id_to_agent_id`.
+    /// See `register()` for rationale on holding all three write locks simultaneously.
     pub async fn unregister(&self, agent_id: &str) -> Option<AgentRecord> {
         let mut agents = self.agents.write().await;
         let mut mcp_index = self.mcp_id_to_agent_id.write().await;
@@ -142,23 +156,27 @@ impl UnifiedAgentRegistry {
     }
 
     /// Get an agent by MCP ID
+    ///
+    /// Both the index and agents map are read-locked simultaneously to prevent
+    /// a race where the agent is unregistered between the index lookup and the
+    /// agents lookup (which would silently return None).
     pub async fn get_by_mcp_id(&self, mcp_id: &str) -> Option<AgentRecord> {
+        let agents_guard = self.agents.read().await;
         let mcp_index = self.mcp_id_to_agent_id.read().await;
-        if let Some(agent_id) = mcp_index.get(mcp_id) {
-            self.agents.read().await.get(agent_id).cloned()
-        } else {
-            None
-        }
+        let agent_id = mcp_index.get(mcp_id)?;
+        agents_guard.get(agent_id).cloned()
     }
 
     /// Get an agent by Conversation ID
+    ///
+    /// Both the index and agents map are read-locked simultaneously to prevent
+    /// a race where the agent is unregistered between the index lookup and the
+    /// agents lookup (which would silently return None).
     pub async fn get_by_conversation_id(&self, conversation_id: &str) -> Option<AgentRecord> {
+        let agents_guard = self.agents.read().await;
         let conversation_index = self.conversation_id_to_agent_id.read().await;
-        if let Some(agent_id) = conversation_index.get(conversation_id) {
-            self.agents.read().await.get(agent_id).cloned()
-        } else {
-            None
-        }
+        let agent_id = conversation_index.get(conversation_id)?;
+        agents_guard.get(agent_id).cloned()
     }
 
     /// List all agents

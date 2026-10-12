@@ -198,6 +198,45 @@ pub struct AgentImage {
     pub filename: Option<String>,
 }
 
+impl AgentImage {
+    /// Maximum allowed size for base64-encoded image data (10 MB).
+    ///
+    /// Base64 encoding expands binary by ~33%, so 10 MB of base64 text
+    /// corresponds to roughly 7.5 MB of raw image data — sufficient for
+    /// screenshots and reasonable image attachments while preventing
+    /// memory-exhaustion attacks from malicious agents.
+    pub const MAX_BASE64_SIZE: usize = 10 * 1024 * 1024;
+
+    /// Validate image attachment size and media type.
+    ///
+    /// Returns `Err(reason)` if:
+    /// - `base64_data` exceeds [`MAX_BASE64_SIZE`](Self::MAX_BASE64_SIZE)
+    /// - `media_type` is not one of the allowed image MIME types
+    ///
+    /// Call this at every ingress point (MCP tools, REST API) before the
+    /// image is stored or forwarded to prevent memory-exhaustion DoS.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.base64_data.len() > Self::MAX_BASE64_SIZE {
+            return Err(format!(
+                "Image too large: {} bytes (max: {} bytes)",
+                self.base64_data.len(),
+                Self::MAX_BASE64_SIZE
+            ));
+        }
+
+        const ALLOWED_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+        if !ALLOWED_TYPES.contains(&self.media_type.as_str()) {
+            return Err(format!(
+                "Unsupported image media type: '{}' (allowed: {})",
+                self.media_type,
+                ALLOWED_TYPES.join(", ")
+            ));
+        }
+
+        Ok(())
+    }
+}
+
 /// Agent interrupted event: published when an interrupt message is inserted at a safe point
 ///
 /// This event signals that:

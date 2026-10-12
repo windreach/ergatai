@@ -240,7 +240,11 @@ impl MailboxManager {
         }
     }
 
-    /// Record successful message delivery
+    /// Record successful message delivery.
+    ///
+    /// This also decrements the pending message count for the agent (equivalent
+    /// to calling `decrement_pending` separately). Callers should NOT also call
+    /// `decrement_pending` after this method, or the counter will underflow.
     pub fn record_delivery(
         &self,
         agent_id: &str,

@@ -12,7 +12,7 @@ pub struct WorkspaceService;
 
 impl WorkspaceService {
     /// 创建 Workspace
-    pub async fn create_workspace(
+    pub fn create_workspace(
         name: String,
         work_dir: String,
         env: Option<String>,
@@ -43,13 +43,13 @@ impl WorkspaceService {
     }
 
     /// 获取 Workspace
-    pub async fn get_workspace(workspace_id: &str) -> anyhow::Result<Option<Workspace>> {
+    pub fn get_workspace(workspace_id: &str) -> anyhow::Result<Option<Workspace>> {
         let workspace = workspaces::get(workspace_id)?;
         Ok(workspace)
     }
 
     /// 列出 Workspace
-    pub async fn list_workspaces(
+    pub fn list_workspaces(
         collaboration_mode: Option<&str>,
     ) -> anyhow::Result<Vec<Workspace>> {
         let workspaces = workspaces::list(collaboration_mode)?;
@@ -57,13 +57,13 @@ impl WorkspaceService {
     }
 
     /// 更新 Workspace
-    pub async fn update_workspace(workspace: Workspace) -> anyhow::Result<()> {
+    pub fn update_workspace(workspace: Workspace) -> anyhow::Result<()> {
         workspaces::update(workspace)?;
         Ok(())
     }
 
     /// 更新 Workspace Config
-    pub async fn update_config(workspace_id: &str, config: &str) -> anyhow::Result<bool> {
+    pub fn update_config(workspace_id: &str, config: &str) -> anyhow::Result<bool> {
         // Get the workspace, update config, and save
         let workspace = workspaces::get(workspace_id)?;
         if let Some(mut workspace) = workspace {
@@ -76,7 +76,7 @@ impl WorkspaceService {
     }
 
     /// 删除 Workspace（级联删除 Chat）
-    pub async fn delete_workspace(workspace_id: &str) -> anyhow::Result<bool> {
+    pub fn delete_workspace(workspace_id: &str) -> anyhow::Result<bool> {
         // 1. 获取该 workspace 下的所有 chat
         let chats_list = chats::list(Some(workspace_id))?;
 
@@ -91,7 +91,7 @@ impl WorkspaceService {
     }
 
     /// 设置 Workspace 状态
-    pub async fn set_status(workspace_id: &str, status: &str) -> anyhow::Result<bool> {
+    pub fn set_status(workspace_id: &str, status: &str) -> anyhow::Result<bool> {
         let updated = workspaces::set_status(workspace_id, status)?;
         Ok(updated)
     }
