@@ -54,11 +54,6 @@ enum Commands {
         #[command(subcommand)]
         action: LocksAction,
     },
-    /// Manage DAG workflows
-    Dag {
-        #[command(subcommand)]
-        action: DagAction,
-    },
     /// Show system status
     Status {
         /// Watch for real-time updates via WebSocket
@@ -152,22 +147,6 @@ enum LocksAction {
     Contention,
 }
 
-#[derive(Subcommand)]
-enum DagAction {
-    /// List all DAGs
-    List,
-    /// Show DAG status
-    Status {
-        /// DAG ID (optional, shows current DAG if not specified)
-        dag_id: Option<String>,
-    },
-    /// Submit a DAG from YAML file
-    Submit {
-        /// Path to YAML file
-        file: String,
-    },
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize the Snowflake ID generator BEFORE anything else.
@@ -207,9 +186,6 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Locks { action }) => {
             commands::locks::handle(action, &cli.api_url, cli.token.as_deref()).await?;
-        }
-        Some(Commands::Dag { action }) => {
-            commands::dag::handle(action, &cli.api_url, cli.token.as_deref()).await?;
         }
         Some(Commands::Status { watch }) => {
             commands::status::handle(watch, &cli.api_url, cli.token.as_deref()).await?;

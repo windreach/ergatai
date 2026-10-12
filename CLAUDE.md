@@ -280,13 +280,6 @@ GET  /api/v1/stats/message-types     消息类型统计
 GET  /api/v1/activity/recent         最近活动事件
 GET  /api/v1/activity/stream         SSE 实时活动流
 
-# DAG
-POST /api/v1/dag                     提交 DAG
-GET  /api/v1/dag/status              查询 DAG 状态
-GET  /api/v1/dag/visualization       DAG 可视化数据
-GET  /api/v1/dag/metrics             DAG 指标
-GET  /api/v1/dags                    列出所有 DAG
-
 # MCP (Streamable HTTP, 每个 agent 独立路径)
 POST /mcp/agent-1/...                MCP JSON-RPC (agent-1)
 POST /mcp/agent-2/...                MCP JSON-RPC (agent-2)

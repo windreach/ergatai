@@ -3,13 +3,12 @@
 //! This library is used by the `ergatai-server` binary and by integration tests.
 //! It contains all HTTP/MCP handler logic, AppState, and middleware.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use axum::{
     body::Body,
-    extract::{Query, State},
+    extract::State,
     http::{header, Request, StatusCode},
     middleware::{self, Next},
     response::IntoResponse,
@@ -420,60 +419,17 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/chats/{chat_id}/unarchive",
             post(api::chats::unarchive_chat),
         )
-        // Chat Events SSE
-        .route(
-            "/api/v1/chats/{chat_id}/events",
-            get(api::chats::stream_chat_events),
-        )
-        // Sub-chats CRUD
-        .route("/api/v1/sub-chats/{id}", get(api::chats::get_sub_chat_by_id))
-        .route(
-            "/api/v1/sub-chats/{id}",
-            put(api::chats::update_sub_chat_by_id),
-        )
         .route(
             "/api/v1/worktrees/registered",
             get(api::chats::lookup_registered_worktree),
-        )
-        .route(
-            "/api/v1/chats/{id}/sub-chats",
-            get(api::chats::list_sub_chats),
-        )
-        .route(
-            "/api/v1/chats/{id}/sub-chats",
-            post(api::chats::create_sub_chat),
-        )
-        .route(
-            "/api/v1/chats/{chat_id}/sub-chats/{sub_chat_id}",
-            get(api::chats::get_sub_chat),
-        )
-        .route(
-            "/api/v1/chats/{chat_id}/sub-chats/{sub_chat_id}",
-            put(api::chats::update_sub_chat),
-        )
-        .route(
-            "/api/v1/chats/{chat_id}/sub-chats/{sub_chat_id}",
-            delete(api::chats::delete_sub_chat),
-        )
-        .route(
-            "/api/v1/chats/{chat_id}/agent-bindings",
-            get(api::chats::list_agent_bindings),
-        )
-        .route(
-            "/api/v1/chats/{chat_id}/agent-bindings",
-            post(api::chats::bind_agent),
-        )
-        .route(
-            "/api/v1/chats/{chat_id}/agent-bindings/{agent_id}",
-            delete(api::chats::unbind_agent),
         )
         .route(
             "/api/v1/chats/{chat_id}/agents",
             get(api::chats::list_chat_agents),
         )
         .route(
-            "/api/v1/chats/{chat_id}/sub-chats/{sub_chat_id}/messages",
-            post(api::chats::append_sub_chat_message),
+            "/api/v1/chats/{chat_id}/agent-graph",
+            get(api::chats::get_agent_graph),
         )
         .route(
             "/api/v1/agent-profiles",
@@ -514,14 +470,6 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/locks/contention",
             get(api::locks::get_lock_contention),
         )
-        .route(
-            "/api/v1/runtime/conversations",
-            get(api::conversations::list_conversations),
-        )
-        .route(
-            "/api/v1/runtime/conversations/{id}",
-            get(api::conversations::get_conversation_detail),
-        )
         // ════════════════════════════════════════════════════════════════
         // Conversation API（属于 Collaboration Session，1:N）
         // ════════════════════════════════════════════════════════════════
@@ -535,12 +483,6 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::user_conversations::get_conversation)
                 .patch(api::user_conversations::update_conversation)
                 .delete(api::user_conversations::delete_conversation),
-        )
-        // 子对话（树形结构）
-        .route(
-            "/api/v1/conversations/{conversation_id}/children",
-            get(api::user_conversations::list_child_conversations)
-                .post(api::user_conversations::create_child_conversation),
         )
         // Conversation Messages
         .route(
@@ -580,10 +522,6 @@ pub fn build_rest_app(state: AppState) -> Router {
             post(api::agents::interrupt_conversation_agent),
         )
         .route(
-            "/api/v1/stats/message-types",
-            get(api::conversations::get_message_type_stats),
-        )
-        .route(
             "/api/v1/activity/recent",
             get(api::activity_routes::get_recent_events),
         )
@@ -599,67 +537,6 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/collab-runtime/stream",
             get(api::collab_runtime::stream_events),
         )
-        // Authoritative collaboration session runtime
-        .route(
-            "/api/v1/collaboration/sessions/by-chat/{chat_id}",
-            get(api::collaboration_sessions::get_collaboration_session_by_chat),
-        )
-        .route(
-            "/api/v1/collaboration/sessions/{session_id}",
-            get(api::collaboration_sessions::get_collaboration_session),
-        )
-        .route(
-            "/api/v1/collaboration/sessions/{session_id}/messages",
-            post(api::collaboration_sessions::append_collaboration_session_message),
-        )
-        .route(
-            "/api/v1/collaboration/sessions/{session_id}/interactions",
-            post(api::collaboration_sessions::submit_collaboration_session_interaction),
-        )
-        .route(
-            "/api/v1/collaboration/sessions/{session_id}/state",
-            post(api::collaboration_sessions::transition_collaboration_session_state),
-        )
-        .route(
-            "/api/v1/collaboration/sessions/{session_id}/events",
-            get(api::collaboration_sessions::list_collaboration_session_events),
-        )
-        .route(
-            "/api/v1/collaboration/sessions/{session_id}/stream",
-            get(api::collaboration_sessions::stream_collaboration_session_events),
-        )
-        .route(
-            "/api/v1/collaboration/sessions/{session_id}/plans",
-            post(api::collaboration_sessions::create_collaboration_session_plan),
-        )
-        .route(
-            "/api/v1/collaboration/sessions/{session_id}/plans",
-            get(api::collaboration_sessions::list_collaboration_session_plans),
-        )
-        .route(
-            "/api/v1/collaboration/sessions/{session_id}/plans/{plan_revision_id}",
-            get(api::collaboration_sessions::get_collaboration_session_plan),
-        )
-        .route(
-            "/api/v1/collaboration/sessions/{session_id}/plans/{plan_revision_id}/execute",
-            post(api::collaboration_sessions::execute_collaboration_session_plan),
-        )
-        .route(
-            "/api/v1/collaboration/sessions/{session_id}/approvals",
-            post(api::collaboration_sessions::create_collaboration_session_approval),
-        )
-        .route(
-            "/api/v1/collaboration/sessions/{session_id}/approvals/{approval_id}/decision",
-            post(api::collaboration_sessions::decide_collaboration_session_approval),
-        )
-        .route(
-            "/api/v1/collaboration/sessions/{session_id}/cancel",
-            post(api::collaboration_sessions::cancel_collaboration_session),
-        )
-        .route(
-            "/api/v1/collaboration/sessions",
-            post(api::collaboration_sessions::create_collaboration_session),
-        )
         // ════════════════════════════════════════════════════════════════
         // Collaboration Session API（属于 Chat，1:N）
         // ════════════════════════════════════════════════════════════════
@@ -667,6 +544,10 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/collaboration-sessions",
             get(api::collaboration_sessions::list_collaboration_sessions)
                 .post(api::collaboration_sessions::create_collaboration_session),
+        )
+        .route(
+            "/api/v1/collaboration-sessions/by-chat/{chat_id}",
+            get(api::collaboration_sessions::get_collaboration_session_by_chat),
         )
         .route(
             "/api/v1/collaboration-sessions/{collaboration_session_id}",
@@ -682,12 +563,54 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/collaboration-sessions/{collaboration_session_id}/progress",
             get(api::collaboration_sessions::get_collaboration_session_progress),
         )
-        .route("/api/v1/dag", post(submit_dag))
-        .route("/api/v1/dag/validate", post(validate_dag))
-        .route("/api/v1/dag/status", get(dag_status))
-        .route("/api/v1/dag/visualization", get(dag_visualization))
-        .route("/api/v1/dag/metrics", get(dag_metrics))
-        .route("/api/v1/dags", get(list_dags))
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}/state",
+            post(api::collaboration_sessions::transition_collaboration_session_state),
+        )
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}/events",
+            get(api::collaboration_sessions::list_collaboration_session_events),
+        )
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}/stream",
+            get(api::collaboration_sessions::stream_collaboration_session_events),
+        )
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}/plans",
+            post(api::collaboration_sessions::create_collaboration_session_plan),
+        )
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}/plans",
+            get(api::collaboration_sessions::list_collaboration_session_plans),
+        )
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}/plans/{plan_revision_id}",
+            get(api::collaboration_sessions::get_collaboration_session_plan),
+        )
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}/plans/{plan_revision_id}/execute",
+            post(api::collaboration_sessions::execute_collaboration_session_plan),
+        )
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}/approvals",
+            post(api::collaboration_sessions::create_collaboration_session_approval),
+        )
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}/approvals/{approval_id}/decision",
+            post(api::collaboration_sessions::decide_collaboration_session_approval),
+        )
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}/cancel",
+            post(api::collaboration_sessions::cancel_collaboration_session),
+        )
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}/conversations",
+            get(api::collaboration_sessions::list_session_conversations),
+        )
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}/conversations/{conversation_id}",
+            get(api::collaboration_sessions::get_session_conversation),
+        )
         .with_state(state.clone())
         // Auth middleware (exempts /health, /ready, /metrics)
         .layer(middleware::from_fn_with_state(
@@ -942,6 +865,68 @@ pub fn sanitize_error(err: &dyn std::fmt::Display, context: &str) -> String {
     format!("Internal error ({})", context)
 }
 
+/// HTTP error response helpers — reduce boilerplate in API handlers.
+///
+/// These helpers combine status code selection, error sanitization, and
+/// server-side logging into single calls, eliminating hundreds of lines of
+/// repeated `(StatusCode, String)` construction across API handlers.
+pub mod http_error {
+    use axum::http::StatusCode;
+
+    /// 500 Internal Server Error with sanitized message.
+    /// Logs the full error at ERROR level, returns generic message to client.
+    pub fn internal<E: std::fmt::Display>(err: E, context: &str) -> (StatusCode, String) {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            crate::sanitize_error(&err, context),
+        )
+    }
+
+    /// 400 Bad Request with a client-facing message.
+    pub fn bad_request(message: impl Into<String>) -> (StatusCode, String) {
+        (StatusCode::BAD_REQUEST, message.into())
+    }
+
+    /// 404 Not Found with a client-facing message.
+    pub fn not_found(resource: &str, id: &str) -> (StatusCode, String) {
+        (StatusCode::NOT_FOUND, format!("{} {} not found", resource, id))
+    }
+
+    /// 503 Service Unavailable (e.g., during initialization or overload).
+    pub fn unavailable(message: impl Into<String>) -> (StatusCode, String) {
+        (StatusCode::SERVICE_UNAVAILABLE, message.into())
+    }
+}
+
+/// Run a blocking operation on the thread pool with unified error handling.
+///
+/// Eliminates the repeated pattern of:
+/// ```ignore
+/// match tokio::task::spawn_blocking(move || blocking_fn(args)).await {
+///     Ok(Ok(result)) => { /* use result */ }
+///     Ok(Err(e)) => { /* handle blocking error */ }
+///     Err(e) => { /* handle JoinError */ }
+/// }
+/// ```
+///
+/// Converts both the blocking error and JoinError into a single `Result<T, (StatusCode, String)>`
+/// suitable for direct use in API handlers.
+pub async fn run_blocking<F, T, E>(f: F) -> Result<T, (StatusCode, String)>
+where
+    F: FnOnce() -> std::result::Result<T, E> + Send + 'static,
+    T: Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(e)) => Err(crate::http_error::internal(e, "blocking operation")),
+        Err(e) => Err(crate::http_error::internal(
+            format!("Task join error: {}", e),
+            "spawn_blocking",
+        )),
+    }
+}
+
 /// Validate and canonicalize a working directory path.
 ///
 /// SECURITY (P1 #13):
@@ -1027,168 +1012,3 @@ struct AgentSummary {
     available: bool,
 }
 
-// ── DAG handlers ─────────────────────────────────────────────────────
-
-#[derive(Deserialize)]
-struct SubmitDagRequest {
-    definition: String,
-    #[serde(default)]
-    parameters: Option<HashMap<String, serde_json::Value>>,
-}
-
-async fn submit_dag(body: String) -> impl IntoResponse {
-    let (definition, parameters) = if let Ok(req) = serde_json::from_str::<SubmitDagRequest>(&body)
-    {
-        (req.definition, req.parameters)
-    } else {
-        (body, None)
-    };
-
-    let req = services::dag_service::DagSubmitRequest {
-        definition,
-        parameters,
-        context: None,
-        submitter_agent_id: None,
-        chat_id: None,
-        workspace_id: None,
-        project_id: None,
-    };
-
-    match services::dag_service::submit_dag(req).await {
-        Ok(resp) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "submitted",
-                "submitted_nodes": resp.submitted_nodes,
-            })),
-        ),
-        Err(e) => {
-            let msg = e.to_string();
-            let status = if msg.contains("already running") {
-                StatusCode::CONFLICT
-            } else if msg.contains("Failed to parse")
-                || msg.contains("cannot also be a task worker")
-            {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-            (status, Json(serde_json::json!({ "error": msg })))
-        }
-    }
-}
-
-#[derive(Deserialize)]
-struct DagStatusQuery {
-    dag_id: Option<String>,
-}
-
-async fn dag_status(Query(query): Query<DagStatusQuery>) -> impl IntoResponse {
-    let info = services::dag_service::get_dag_status(query.dag_id.as_deref()).await;
-
-    // REST response 兼容旧格式
-    #[derive(Serialize)]
-    struct DagStatusRest {
-        running: bool,
-        progress: Option<f64>,
-        status_prompt: Option<String>,
-        is_complete: Option<bool>,
-        nodes: Option<Vec<services::dag_service::NodeStatusInfo>>,
-    }
-
-    Json(DagStatusRest {
-        running: info.running,
-        progress: info.progress,
-        status_prompt: info.status_prompt,
-        is_complete: info.is_complete,
-        nodes: info.nodes,
-    })
-}
-
-#[derive(Serialize)]
-struct DagInfo {
-    dag_id: String,
-    progress: f32,
-    is_complete: bool,
-    status_prompt: String,
-}
-
-async fn list_dags() -> impl IntoResponse {
-    let entries = services::dag_service::list_dags().await;
-    let dags: Vec<DagInfo> = entries
-        .into_iter()
-        .map(|e| DagInfo {
-            dag_id: e.dag_id,
-            progress: e.progress,
-            is_complete: e.is_complete,
-            status_prompt: e.status_prompt,
-        })
-        .collect();
-    Json(dags)
-}
-
-#[derive(Serialize)]
-struct DagVisualizationResponse {
-    dag_id: String,
-    nodes: Vec<services::dag_service::DagVisualizationNode>,
-    edges: Vec<services::dag_service::DagEdge>,
-}
-
-async fn dag_visualization(Query(query): Query<DagStatusQuery>) -> impl IntoResponse {
-    let result = services::dag_service::get_dag_visualization(query.dag_id.as_deref()).await;
-    Json(DagVisualizationResponse {
-        dag_id: result.dag_id,
-        nodes: result.nodes,
-        edges: result.edges,
-    })
-}
-
-#[derive(Serialize)]
-struct DagMetrics {
-    total_nodes: u32,
-    completed_nodes: u32,
-    failed_nodes: u32,
-    running_nodes: u32,
-    pending_nodes: u32,
-    avg_completion_time_secs: Option<f32>,
-}
-
-async fn dag_metrics(Query(query): Query<DagStatusQuery>) -> impl IntoResponse {
-    let result = services::dag_service::get_dag_metrics(query.dag_id.as_deref()).await;
-    Json(DagMetrics {
-        total_nodes: result.total_nodes,
-        completed_nodes: result.completed_nodes,
-        failed_nodes: result.failed_nodes,
-        running_nodes: result.running_nodes,
-        pending_nodes: result.pending_nodes,
-        avg_completion_time_secs: result.avg_completion_time_secs,
-    })
-}
-
-/// REST 端点：dry-run 验证 DAG YAML。
-#[derive(Deserialize)]
-struct ValidateDagRestRequest {
-    definition: String,
-    #[serde(default)]
-    parameters: Option<HashMap<String, serde_json::Value>>,
-}
-
-async fn validate_dag(body: String) -> impl IntoResponse {
-    let (definition, parameters) =
-        if let Ok(req) = serde_json::from_str::<ValidateDagRestRequest>(&body) {
-            (req.definition, req.parameters)
-        } else {
-            (body, None)
-        };
-
-    match services::dag_service::validate_dag(&definition, parameters) {
-        Ok(result) => (
-            StatusCode::OK,
-            Json(serde_json::to_value(result).unwrap_or_default()),
-        ),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": e.to_string() })),
-        ),
-    }
-}

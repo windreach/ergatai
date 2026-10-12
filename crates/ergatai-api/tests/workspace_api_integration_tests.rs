@@ -387,50 +387,6 @@ async fn health_endpoint_returns_json() {
     );
 }
 
-// ── DAG status endpoint ──────────────────────────────────────────────
-
-#[tokio::test]
-async fn dag_status_no_dag_running() {
-    let app = build_rest_app(test_state());
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/dag/status")
-                .method(Method::GET)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body = body_json(response).await;
-    assert_eq!(body["running"], false);
-}
-
-#[tokio::test]
-async fn list_dags_returns_array() {
-    let app = build_rest_app(test_state());
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/dags")
-                .method(Method::GET)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body = body_json(response).await;
-    assert!(body.is_array(), "dags should be an array");
-}
-
 // ── Agent list ───────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -449,34 +405,4 @@ async fn list_agents_returns_200() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-}
-
-// ── Submit DAG with invalid YAML ─────────────────────────────────────
-
-#[tokio::test]
-async fn submit_dag_invalid_yaml_returns_400() {
-    let app = build_rest_app(test_state());
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/dag")
-                .method(Method::POST)
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({"definition": "not: valid: dag: yaml: [[["}).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-    let body = body_json(response).await;
-    assert!(
-        body["error"].as_str().unwrap().contains("parse")
-            || body["error"].as_str().unwrap().contains("DAG"),
-        "error should mention parsing"
-    );
 }
