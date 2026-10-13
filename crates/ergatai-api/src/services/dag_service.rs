@@ -229,8 +229,9 @@ pub async fn submit_dag(req: DagSubmitRequest) -> Result<DagSubmitResponse> {
             wid.clone()
         } else {
             // Try to get workspace_id from chat
-            match user_data_db::chats::get(chat_id)? {
-                Some(chat) => chat.workspace_id,
+            let chat_id_i64 = chat_id.parse::<i64>()?;
+            match user_data_db::chats::get(chat_id_i64)? {
+                Some(chat) => chat.workspace_id.to_string(),
                 None => anyhow::bail!("Chat {} not found", chat_id),
             }
         };

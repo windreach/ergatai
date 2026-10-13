@@ -5,8 +5,8 @@
 //! - Config 管理
 //! - 级联删除（删除 Workspace 时级联删除 Chat）
 
-use crate::user_data_db::{chats, workspaces, Workspace};
-use ergatai_core::id::{format as format_id, generate, IdType};
+use crate::user_data_db::{workspaces, Workspace};
+use ergatai_core::id::generate;
 
 pub struct WorkspaceService;
 
@@ -26,7 +26,7 @@ impl WorkspaceService {
             .as_secs() as i64;
 
         let workspace = Workspace {
-            workspace_id: format_id(generate(), IdType::Workspace),
+            workspace_id: generate(),
             name,
             work_dir,
             env: env.unwrap_or_else(|| "{}".to_string()),
@@ -43,27 +43,36 @@ impl WorkspaceService {
     }
 
     /// 获取 Workspace
-    pub fn get_workspace(workspace_id: &str) -> anyhow::Result<Option<Workspace>> {
+    pub fn get_workspace(workspace_id: i64) -> anyhow::Result<Option<Workspace>> {
         let workspace = workspaces::get(workspace_id)?;
         Ok(workspace)
     }
 
     /// 列出 Workspace
-    pub fn list_workspaces(
-        collaboration_mode: Option<&str>,
-    ) -> anyhow::Result<Vec<Workspace>> {
+    pub fn list_workspaces(collaboration_mode: Option<&str>) -> anyhow::Result<Vec<Workspace>> {
         let workspaces = workspaces::list(collaboration_mode)?;
         Ok(workspaces)
     }
 
-    /// 更新 Workspace
+    /// 更新 Workspace（含验证）
     pub fn update_workspace(workspace: Workspace) -> anyhow::Result<()> {
+        // 验证 name 非空且长度合理
+        if workspace.name.trim().is_empty() {
+            anyhow::bail!("Workspace name cannot be empty");
+        }
+        if workspace.name.len() > 255 {
+            anyhow::bail!("Workspace name cannot exceed 255 characters");
+        }
+        // 验证 work_dir 非空
+        if workspace.work_dir.trim().is_empty() {
+            anyhow::bail!("Workspace work_dir cannot be empty");
+        }
         workspaces::update(workspace)?;
         Ok(())
     }
 
     /// 更新 Workspace Config
-    pub fn update_config(workspace_id: &str, config: &str) -> anyhow::Result<bool> {
+    pub fn update_config(workspace_id: i64, config: &str) -> anyhow::Result<bool> {
         // Get the workspace, update config, and save
         let workspace = workspaces::get(workspace_id)?;
         if let Some(mut workspace) = workspace {
@@ -75,23 +84,14 @@ impl WorkspaceService {
         }
     }
 
-    /// 删除 Workspace（级联删除 Chat）
-    pub fn delete_workspace(workspace_id: &str) -> anyhow::Result<bool> {
-        // 1. 获取该 workspace 下的所有 chat
-        let chats_list = chats::list(Some(workspace_id))?;
-
-        // 2. 级联删除所有 chat
-        for chat in chats_list {
-            chats::delete(&chat.chat_id)?;
-        }
-
-        // 3. 删除 workspace
+    /// 删除 Workspace（事务性级联删除 Chat、Conversation、Message 等）
+    pub fn delete_workspace(workspace_id: i64) -> anyhow::Result<bool> {
         let deleted = workspaces::delete(workspace_id)?;
         Ok(deleted)
     }
 
     /// 设置 Workspace 状态
-    pub fn set_status(workspace_id: &str, status: &str) -> anyhow::Result<bool> {
+    pub fn set_status(workspace_id: i64, status: &str) -> anyhow::Result<bool> {
         let updated = workspaces::set_status(workspace_id, status)?;
         Ok(updated)
     }

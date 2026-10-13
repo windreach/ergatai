@@ -10,6 +10,7 @@ use std::sync::{Mutex, OnceLock};
 use tokio::sync::{broadcast, oneshot, RwLock};
 
 use ergatai_error::id::{format as format_id, generate, IdType};
+use ergatai_error::ErgataiError;
 
 /// Category of a pending permission request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -185,12 +186,14 @@ impl PermissionRequestService {
         &self,
         request_id: &str,
         decision: PermissionDecisionKind,
-    ) -> Result<PendingPermissionRequest, String> {
+    ) -> Result<PendingPermissionRequest, ErgataiError> {
         let request = {
             let mut pending = self.pending.write().await;
             pending.remove(request_id)
         }
-        .ok_or_else(|| format!("Permission request {} not found", request_id))?;
+        .ok_or_else(|| {
+            ErgataiError::PermissionDenied(format!("Permission request {} not found", request_id))
+        })?;
 
         if let Ok(mut waiters) = self.waiters.lock() {
             if let Some(sender) = waiters.remove(request_id) {

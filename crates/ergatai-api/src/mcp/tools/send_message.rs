@@ -15,7 +15,8 @@ pub(crate) async fn handle(
     params: Parameters<SendMessageParams>,
 ) -> Result<CallToolResult, ErrorData> {
     // Use shared helper to resolve target (prefers conversation_id, falls back to agent_id)
-    let (target_id, target_conversation_id) = params.0.resolve_target()?;
+    let (target_id, target_conversation_id_str) = params.0.resolve_target()?;
+    let target_conversation_id = target_conversation_id_str.and_then(|s| s.parse::<i64>().ok());
 
     let message = &params.0.message;
     let message_type = params.0.message_type.as_deref().unwrap_or("request");

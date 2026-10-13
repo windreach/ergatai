@@ -4,7 +4,7 @@
 //! WAL mode enabled for concurrent read performance.
 
 use chrono::{DateTime, Utc};
-use ergatai_error::id::{format as id_format, generate, IdType};
+use ergatai_error::id::generate;
 use ergatai_error::ErgataiError;
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -355,7 +355,7 @@ impl FileLockManager {
             "
             -- System tokens (agent admission)
             CREATE TABLE IF NOT EXISTS system_tokens (
-                id TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY,
                 agent_id TEXT NOT NULL,
                 session_id TEXT NOT NULL UNIQUE,
                 project_root TEXT NOT NULL,
@@ -371,13 +371,13 @@ impl FileLockManager {
 
             -- File locks
             CREATE TABLE IF NOT EXISTS file_locks (
-                id TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY,
                 file_path TEXT NOT NULL,
                 agent_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 mode TEXT NOT NULL,
                 scope TEXT,
-                token_id TEXT NOT NULL,
+                token_id INTEGER NOT NULL,
                 reason TEXT,
                 approved_by TEXT,
                 created_at TEXT NOT NULL,
@@ -429,7 +429,7 @@ impl FileLockManager {
 
             -- File snapshots (for READ_HISTORY and rollback)
             CREATE TABLE IF NOT EXISTS snapshots (
-                id TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY,
                 file_path TEXT NOT NULL,
                 git_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL,
@@ -443,10 +443,10 @@ impl FileLockManager {
 
             -- File tokens (per-operation tokens linked to a system token)
             CREATE TABLE IF NOT EXISTS file_tokens (
-                id TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY,
                 agent_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
-                system_token_id TEXT NOT NULL,
+                system_token_id INTEGER NOT NULL,
                 scope TEXT NOT NULL,
                 mode TEXT NOT NULL,
                 reason TEXT,
@@ -481,7 +481,7 @@ impl FileLockManager {
                 issued_at, expires_at, heartbeat_interval_secs, heartbeat_at, status
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
-                token.id.as_str(),
+                token.id.as_i64(),
                 token.agent_id,
                 token.session_id,
                 token.project_root,
@@ -531,7 +531,7 @@ impl FileLockManager {
             .query_row(
                 "SELECT id FROM system_tokens WHERE session_id = ?1 AND status = 'ACTIVE'",
                 params![token.session_id],
-                |row| row.get::<_, String>(0).map(TokenId::from_string),
+                |row| row.get::<_, i64>(0).map(TokenId::from_i64),
             )
             .ok();
 
@@ -550,7 +550,7 @@ impl FileLockManager {
                 issued_at, expires_at, heartbeat_interval_secs, heartbeat_at, status
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
-                token.id.as_str(),
+                token.id.as_i64(),
                 token.agent_id,
                 token.session_id,
                 token.project_root,
@@ -769,8 +769,8 @@ impl FileLockManager {
         let tx = TransactionGuard::begin(&conn)
             .map_err(|e| ErgataiError::internal(format!("Failed to begin transaction: {}", e)))?;
 
-        let lock_id = id_format(generate(), IdType::Lock);
-        let token_id = TokenId::new().to_string();
+        let lock_id = generate();
+        let token_id = TokenId::new().as_i64();
 
         // Compute initial hash of the file at lock creation time
         let initial_hash = self.compute_file_hash(&normalized_path).ok();
@@ -1100,8 +1100,8 @@ impl FileLockManager {
         let active_count = Self::count_active_locks_by_agent_with_conn(&conn, agent_id)?;
         Self::check_agent_lock_limit_with_count(agent_id, active_count)?;
 
-        let lock_id = id_format(generate(), IdType::Lock);
-        let token_id = TokenId::new().to_string();
+        let lock_id = generate();
+        let token_id = TokenId::new().as_i64();
         let initial_hash = self.compute_file_hash(&normalized_path).ok();
 
         let insert_result = conn.execute(
@@ -1500,7 +1500,7 @@ impl FileLockManager {
     /// Update heartbeat for a token.
     ///
     /// M3 fix: Uses transaction to ensure atomicity across both tables.
-    pub fn update_heartbeat(&self, token_id: &str) -> Result<(), ErgataiError> {
+    pub fn update_heartbeat(&self, token_id: i64) -> Result<(), ErgataiError> {
         let now = Utc::now().to_rfc3339();
 
         let conn = self.conn.lock();
@@ -1733,7 +1733,7 @@ impl FileLockManager {
     /// Unlike the old `release_lock`, this does NOT publish NATS notifications
     /// (the NATS approval flow has been removed). The caller is responsible for
     /// broadcasting file.error events if needed.
-    pub fn expire_lock(&self, token_id: &str, file_path: &str) -> Result<(), ErgataiError> {
+    pub fn expire_lock(&self, token_id: i64, file_path: &str) -> Result<(), ErgataiError> {
         let normalized_path = self.validate_and_normalize_path(file_path)?;
         let conn = self.conn.lock();
 
@@ -1822,7 +1822,7 @@ impl FileLockManager {
             .map_err(|e| ErgataiError::internal(format!("Failed to begin transaction: {}", e)))?;
 
         // Get lock info for audit
-        let lock_info: Option<(String, String, String, String)> = match conn.query_row(
+        let lock_info: Option<(i64, String, String, String)> = match conn.query_row(
             "SELECT token_id, agent_id, session_id, mode FROM file_locks
              WHERE file_path = ?1 AND agent_id = ?2 AND session_id = ?3 AND status = 'ACTIVE'
              LIMIT 1",
@@ -1928,7 +1928,7 @@ impl FileLockManager {
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare statement: {}", e)))?;
 
-        let locks: Vec<(String, String, String)> = stmt
+        let locks: Vec<(i64, String, String)> = stmt
             .query_map(params![agent_id, session_id], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
@@ -2063,7 +2063,7 @@ impl FileLockManager {
     }
 
     /// Get all locks held by a token (for reclaim on timeout).
-    pub fn get_locks_by_token(&self, token_id: &str) -> Result<Vec<FileLock>, ErgataiError> {
+    pub fn get_locks_by_token(&self, token_id: i64) -> Result<Vec<FileLock>, ErgataiError> {
         let conn = self.conn.lock();
 
         let mut stmt = conn
@@ -2125,7 +2125,7 @@ impl FileLockManager {
 
     /// Test helper: Set heartbeat to a past time for testing timeout scenarios
     #[cfg(test)]
-    pub fn set_heartbeat_past(&self, token_id: &str, seconds_ago: i64) -> Result<(), ErgataiError> {
+    pub fn set_heartbeat_past(&self, token_id: i64, seconds_ago: i64) -> Result<(), ErgataiError> {
         let conn = self.conn.lock();
 
         // Use strftime to format as RFC3339 (ISO 8601 with timezone)
@@ -2141,7 +2141,7 @@ impl FileLockManager {
     /// Get all file tokens for a given system token ID
     pub fn get_file_tokens_by_system_token(
         &self,
-        system_token_id: &str,
+        system_token_id: i64,
     ) -> Result<Vec<FileToken>, ErgataiError> {
         let conn = self.conn.lock();
 
@@ -2158,10 +2158,10 @@ impl FileLockManager {
         let tokens = stmt
             .query_map(params![system_token_id], |row| {
                 Ok(FileToken {
-                    id: TokenId::from_string(row.get::<_, String>(0)?),
+                    id: TokenId::from_i64(row.get::<_, i64>(0)?),
                     agent_id: row.get::<_, String>(1)?,
                     session_id: row.get::<_, String>(2)?,
-                    system_token_id: TokenId::from_string(row.get::<_, String>(3)?),
+                    system_token_id: TokenId::from_i64(row.get::<_, i64>(3)?),
                     scope: row.get::<_, String>(4)?,
                     mode: parse_file_mode(&row.get::<_, String>(5)?),
                     reason: row.get::<_, Option<String>>(6)?,
@@ -2244,7 +2244,7 @@ impl FileLockManager {
     }
 
     /// Mark a token as expired (for watchdog timeout handling).
-    pub fn expire_token(&self, token_id: &str) -> Result<(), ErgataiError> {
+    pub fn expire_token(&self, token_id: i64) -> Result<(), ErgataiError> {
         let conn = self.conn.lock();
 
         // Get the session_id before expiring so we can unregister the session
@@ -2297,10 +2297,10 @@ impl FileLockManager {
         let token = stmt
             .query_row(params![session_id], |row| {
                 Ok(FileToken {
-                    id: TokenId::from_string(row.get::<_, String>(0)?),
+                    id: TokenId::from_i64(row.get::<_, i64>(0)?),
                     agent_id: row.get::<_, String>(1)?,
                     session_id: row.get::<_, String>(2)?,
-                    system_token_id: TokenId::from_string(row.get::<_, String>(3)?),
+                    system_token_id: TokenId::from_i64(row.get::<_, i64>(3)?),
                     scope: row.get::<_, String>(4)?,
                     mode: parse_file_mode(&row.get::<_, String>(5)?),
                     reason: row.get::<_, Option<String>>(6)?,
@@ -2346,7 +2346,7 @@ impl FileLockManager {
         let token = stmt
             .query_row(params![session_id], |row| {
                 Ok(SystemToken {
-                    id: TokenId::from_string(row.get::<_, String>(0)?),
+                    id: TokenId::from_i64(row.get::<_, i64>(0)?),
                     agent_id: row.get::<_, String>(1)?,
                     session_id: row.get::<_, String>(2)?,
                     project_root: row.get::<_, String>(3)?,
@@ -2376,10 +2376,10 @@ impl FileLockManager {
                 heartbeat_at, status, priority
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
-                token.id.to_string(),
+                token.id.as_i64(),
                 token.agent_id,
                 token.session_id,
-                token.system_token_id.to_string(),
+                token.system_token_id.as_i64(),
                 token.scope,
                 format!("{:?}", token.mode),
                 token.reason,
@@ -2402,7 +2402,7 @@ impl FileLockManager {
     }
 
     /// Find an active FileToken by token_id.
-    pub fn find_active_file_token_by_id(&self, token_id: &str) -> Result<FileToken, ErgataiError> {
+    pub fn find_active_file_token_by_id(&self, token_id: i64) -> Result<FileToken, ErgataiError> {
         let conn = self.conn.lock();
 
         let mut stmt = conn
@@ -2418,10 +2418,10 @@ impl FileLockManager {
         let token = stmt
             .query_row(params![token_id], |row| {
                 Ok(FileToken {
-                    id: TokenId::from_string(row.get::<_, String>(0)?),
+                    id: TokenId::from_i64(row.get::<_, i64>(0)?),
                     agent_id: row.get::<_, String>(1)?,
                     session_id: row.get::<_, String>(2)?,
-                    system_token_id: TokenId::from_string(row.get::<_, String>(3)?),
+                    system_token_id: TokenId::from_i64(row.get::<_, i64>(3)?),
                     scope: row.get::<_, String>(4)?,
                     mode: parse_file_mode(&row.get::<_, String>(5)?),
                     reason: row.get::<_, Option<String>>(6)?,
@@ -2860,7 +2860,7 @@ fn parse_datetime(s: &str) -> DateTime<Utc> {
 /// Used by `get_token_by_session`, `get_active_tokens`, and `get_tokens_by_session`.
 fn parse_system_token_row(row: &rusqlite::Row) -> rusqlite::Result<SystemToken> {
     Ok(SystemToken {
-        id: TokenId::from_string(row.get(0)?),
+        id: TokenId::from_i64(row.get(0)?),
         agent_id: row.get(1)?,
         session_id: row.get(2)?,
         project_root: row.get(3)?,
@@ -2904,7 +2904,7 @@ fn parse_system_token_row(row: &rusqlite::Row) -> rusqlite::Result<SystemToken> 
 /// Used by both `get_locks_by_token` and `get_locks_by_session`.
 fn parse_file_lock_row(row: &rusqlite::Row) -> rusqlite::Result<FileLock> {
     Ok(FileLock {
-        id: row.get(0)?,
+        id: TokenId::from_i64(row.get(0)?),
         file_path: row.get(1)?,
         agent_id: row.get(2)?,
         session_id: row.get(3)?,
@@ -2913,7 +2913,7 @@ fn parse_file_lock_row(row: &rusqlite::Row) -> rusqlite::Result<FileLock> {
             _ => FileMode::Read,
         },
         scope: row.get(5)?,
-        token_id: TokenId::from_string(row.get(6)?),
+        token_id: TokenId::from_i64(row.get(6)?),
         reason: row.get(7)?,
         approved_by: row.get(8)?,
         created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(9)?)

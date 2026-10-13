@@ -140,19 +140,6 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/workspaces/{workspace_id}",
             delete(api::workspaces::delete_workspace),
         )
-        // Workspace Config（项目配置）
-        .route(
-            "/api/v1/workspaces/{workspace_id}/config",
-            get(api::workspaces::get_workspace_config),
-        )
-        .route(
-            "/api/v1/workspaces/{workspace_id}/config",
-            patch(api::workspaces::update_workspace_config),
-        )
-        .route(
-            "/api/v1/workspaces/{workspace_id}/config",
-            delete(api::workspaces::delete_workspace_config),
-        )
         .route(
             "/api/v1/terminal-sessions",
             get(api::terminal_sessions::list_sessions)
@@ -258,19 +245,6 @@ pub fn build_rest_app(state: AppState) -> Router {
         //     get(api::workspaces::managed_workspace_status),
         // )
         // ════════════════════════════════════════════════════════════════
-        // Message API（属于 Conversation）
-        // ════════════════════════════════════════════════════════════════
-        .route(
-            "/api/v1/messages",
-            get(api::messages::list_messages).post(api::messages::create_message),
-        )
-        .route(
-            "/api/v1/messages/{message_id}",
-            get(api::messages::get_message)
-                .patch(api::messages::update_message)
-                .delete(api::messages::delete_message),
-        )
-        // ════════════════════════════════════════════════════════════════
         // Agent API（批量查询 / 管理端点）
         // ════════════════════════════════════════════════════════════════
         .route("/api/v1/agents", get(api::agents::list_agents))
@@ -285,7 +259,7 @@ pub fn build_rest_app(state: AppState) -> Router {
         )
         .route("/api/v1/agents/{id}", delete(api::agents::kill_agent))
         .route(
-            "/api/v1/agents/{id}/message",
+            "/api/v1/agents/{id}/send",
             post(api::agents::send_message),
         )
         .route(
@@ -368,6 +342,15 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::agents::get_agent_exit_code),
         )
         .route("/api/v1/agents/{id}/pid", get(api::agents::get_agent_pid))
+        .route(
+            "/api/v1/agents/{id}/current-output",
+            get(api::agents::get_agent_current_output),
+        )
+        // Agent event stream (SSE)
+        .route(
+            "/api/v1/agents/{id}/events",
+            get(api::agents::stream_agent_events),
+        )
         // Permission requests (unified approval feed)
         .route(
             "/api/v1/permissions/pending",
@@ -388,15 +371,6 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/permissions/{id}/respond",
             post(api::permissions::respond_permission),
-        )
-        // Projects CRUD
-        .route("/api/v1/projects", get(api::projects::list_projects))
-        .route("/api/v1/projects", post(api::projects::create_project))
-        .route("/api/v1/projects/{id}", get(api::projects::get_project))
-        .route("/api/v1/projects/{id}", put(api::projects::update_project))
-        .route(
-            "/api/v1/projects/{id}",
-            delete(api::projects::delete_project),
         )
         // ════════════════════════════════════════════════════════════════
         // Chat API（属于 Workspace，1:N）
@@ -471,12 +445,11 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::locks::get_lock_contention),
         )
         // ════════════════════════════════════════════════════════════════
-        // Conversation API（属于 Collaboration Session，1:N）
+        // Conversation API (full CRUD + archive operations)
         // ════════════════════════════════════════════════════════════════
         .route(
             "/api/v1/conversations",
-            get(api::user_conversations::list_conversations)
-                .post(api::user_conversations::create_conversation),
+            get(api::user_conversations::list_conversations).post(api::user_conversations::create_conversation),
         )
         .route(
             "/api/v1/conversations/{conversation_id}",
@@ -484,42 +457,31 @@ pub fn build_rest_app(state: AppState) -> Router {
                 .patch(api::user_conversations::update_conversation)
                 .delete(api::user_conversations::delete_conversation),
         )
-        // Conversation Messages
+        .route(
+            "/api/v1/conversations/{conversation_id}/archive",
+            post(api::user_conversations::archive_conversation),
+        )
+        .route(
+            "/api/v1/conversations/{conversation_id}/unarchive",
+            post(api::user_conversations::unarchive_conversation),
+        )
+        // Conversation Messages (read-only)
         .route(
             "/api/v1/conversations/{conversation_id}/messages",
-            get(api::user_conversations::list_conversation_messages)
-                .post(api::user_conversations::append_conversation_message)
-                .put(api::user_conversations::replace_conversation_messages),
+            get(api::user_conversations::list_conversation_messages),
         )
         .route(
             "/api/v1/conversations/{conversation_id}/file-changes",
             get(api::user_conversations::list_conversation_file_changes),
         )
-        // Conversation Events SSE（替代旧的 /sse）
+        // Conversation Agent Outputs
         .route(
-            "/api/v1/conversations/{conversation_id}/events",
-            get(api::conversation_sse::stream_conversation_messages),
-        )
-        // ════════════════════════════════════════════════════════════════
-        // Agent API（1:1 绑定 Conversation，单数路径）
-        // ════════════════════════════════════════════════════════════════
-        .route(
-            "/api/v1/conversations/{conversation_id}/agent",
-            get(api::agents::get_conversation_agent)
-                .post(api::agents::create_conversation_agent)
-                .delete(api::agents::delete_conversation_agent),
+            "/api/v1/conversations/{conversation_id}/outputs",
+            get(api::user_conversations::list_conversation_outputs),
         )
         .route(
-            "/api/v1/conversations/{conversation_id}/agent/prompt",
-            post(api::agents::prompt_conversation_agent),
-        )
-        .route(
-            "/api/v1/conversations/{conversation_id}/agent/cancel",
-            post(api::agents::cancel_conversation_agent),
-        )
-        .route(
-            "/api/v1/conversations/{conversation_id}/agent/interrupt",
-            post(api::agents::interrupt_conversation_agent),
+            "/api/v1/conversations/{conversation_id}/outputs/{output_id}",
+            get(api::user_conversations::get_conversation_output),
         )
         .route(
             "/api/v1/activity/recent",
@@ -528,14 +490,6 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/activity/stream",
             get(api::activity_routes::stream_events),
-        )
-        .route(
-            "/api/v1/collab-runtime/interactions",
-            post(api::collab_runtime::submit_interaction),
-        )
-        .route(
-            "/api/v1/collab-runtime/stream",
-            get(api::collab_runtime::stream_events),
         )
         // ════════════════════════════════════════════════════════════════
         // Collaboration Session API（属于 Chat，1:N）
@@ -889,7 +843,10 @@ pub mod http_error {
 
     /// 404 Not Found with a client-facing message.
     pub fn not_found(resource: &str, id: &str) -> (StatusCode, String) {
-        (StatusCode::NOT_FOUND, format!("{} {} not found", resource, id))
+        (
+            StatusCode::NOT_FOUND,
+            format!("{} {} not found", resource, id),
+        )
     }
 
     /// 503 Service Unavailable (e.g., during initialization or overload).
@@ -1011,4 +968,3 @@ struct AgentSummary {
     source: String,
     available: bool,
 }
-

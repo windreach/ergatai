@@ -12,12 +12,13 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::services::lock_service;
 use crate::AppState;
 
 /// Response item for a single active file lock.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct LockInfo {
     pub id: String,
     pub file_path: String,
@@ -46,6 +47,15 @@ fn is_internal_path(path: &str) -> bool {
 ///
 /// Internal system files (`.git/`, `.ergatai/`) are filtered out to reduce
 /// noise from FileSystemWatcher auto-locks on git objects and database files.
+#[utoipa::path(
+    get,
+    path = "/api/v1/locks",
+    tag = "Locks",
+    responses(
+        (status = 200, description = "List of active file locks", body = Vec<LockInfo>),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn list_locks(State(_state): State<AppState>) -> impl IntoResponse {
     let locks = match lock_service::list_active_locks().await {
         Ok(locks) => locks,
@@ -59,7 +69,7 @@ pub async fn list_locks(State(_state): State<AppState>) -> impl IntoResponse {
         .into_iter()
         .filter(|l| !is_internal_path(&l.file_path))
         .map(|l| LockInfo {
-            id: l.id,
+            id: l.id.to_string(),
             file_path: l.file_path,
             agent_id: l.agent_id,
             session_id: l.session_id,
@@ -75,7 +85,7 @@ pub async fn list_locks(State(_state): State<AppState>) -> impl IntoResponse {
 }
 
 /// Query parameters for audit log endpoint.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct AuditQuery {
     pub agent_id: Option<String>,
     pub action: Option<String>,
@@ -93,6 +103,21 @@ fn default_audit_limit() -> usize {
 const MAX_AUDIT_LIMIT: usize = 1000;
 
 /// GET /api/v1/locks/audit — query audit log entries.
+#[utoipa::path(
+    get,
+    path = "/api/v1/locks/audit",
+    tag = "Locks",
+    params(
+        ("agent_id" = Option<String>, Query, description = "Filter by agent ID"),
+        ("action" = Option<String>, Query, description = "Filter by action type"),
+        ("file_path" = Option<String>, Query, description = "Filter by file path"),
+        ("limit" = usize, Query, description = "Maximum number of entries (default 50, max 1000)"),
+    ),
+    responses(
+        (status = 200, description = "Audit log entries"),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn list_audit(
     State(_state): State<AppState>,
     Query(query): Query<AuditQuery>,
@@ -115,7 +140,7 @@ pub async fn list_audit(
 }
 
 /// Response for lock contention monitoring
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct LockContentionInfo {
     pub file_path: String,
     pub current_holder: Option<String>,
@@ -125,6 +150,15 @@ pub struct LockContentionInfo {
 }
 
 /// GET /api/v1/locks/contention — get lock contention information
+#[utoipa::path(
+    get,
+    path = "/api/v1/locks/contention",
+    tag = "Locks",
+    responses(
+        (status = 200, description = "Lock contention information", body = Vec<LockContentionInfo>),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_lock_contention(State(_state): State<AppState>) -> impl IntoResponse {
     match lock_service::get_lock_contention().await {
         Ok(contentions) => {

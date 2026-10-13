@@ -1,6 +1,4 @@
-use axum::{http::StatusCode, response::IntoResponse, response::Response, Json};
-
-use crate::api::ApiError;
+use axum::response::{IntoResponse, Response};
 
 /// Validate a project ID.
 ///
@@ -33,13 +31,7 @@ pub fn is_valid_project_id(id: &str) -> bool {
 }
 
 pub fn invalid_project_id_response() -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ApiError {
-            error: "Invalid project ID".to_string(),
-        }),
-    )
-        .into_response()
+    crate::http_error::bad_request("Invalid project ID").into_response()
 }
 
 #[cfg(test)]

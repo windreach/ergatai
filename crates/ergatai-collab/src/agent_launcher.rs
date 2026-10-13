@@ -88,7 +88,7 @@ pub struct RunningAgent {
     /// Runtime agent ID where the agent is running
     pub pane_id: Option<String>,
     /// File access token ID (for file access control)
-    pub token_id: Option<String>,
+    pub token_id: Option<i64>,
 }
 
 /// Global registry of running agents.
@@ -341,14 +341,14 @@ impl AgentLauncher {
         // Also update heartbeat_at in the database so other Watchdog instances
         // (created by other DAG tasks sharing the same project) see the fresh timestamp.
         // mark_busy only updates in-memory busy_status which is per-Watchdog.
-        if let Err(e) = lock_manager.update_heartbeat(&system_token.id.to_string()) {
+        if let Err(e) = lock_manager.update_heartbeat(system_token.id.as_i64()) {
             tracing::warn!(
                 session_id = %session_id,
                 error = %e,
                 "Failed to update system token heartbeat — Watchdog may consider agent dead"
             );
         }
-        if let Err(e) = lock_manager.update_heartbeat(&file_token.id.to_string()) {
+        if let Err(e) = lock_manager.update_heartbeat(file_token.id.as_i64()) {
             tracing::warn!(
                 session_id = %session_id,
                 error = %e,
@@ -367,8 +367,8 @@ impl AgentLauncher {
         {
             let heartbeat_session = session_id.clone();
             let heartbeat_project = project_id.to_string();
-            let heartbeat_sys_token = system_token.id.to_string();
-            let heartbeat_file_token = file_token.id.to_string();
+            let heartbeat_sys_token = system_token.id.as_i64();
+            let heartbeat_file_token = file_token.id.as_i64();
             let cancel = tokio_util::sync::CancellationToken::new();
             let cancel_inner = cancel.clone();
             // Register the token so it can be canceled when the agent completes.
@@ -391,8 +391,8 @@ impl AgentLauncher {
                         Ok(lm) => lm,
                         Err(_) => break,
                     };
-                    let _ = lm.update_heartbeat(&heartbeat_sys_token);
-                    let _ = lm.update_heartbeat(&heartbeat_file_token);
+                    let _ = lm.update_heartbeat(heartbeat_sys_token);
+                    let _ = lm.update_heartbeat(heartbeat_file_token);
                     if let Ok(wd) = ergatai_lock::get_watchdog(&heartbeat_project).await {
                         let wd_guard = wd.write().await;
                         let _ = wd_guard.mark_busy(&heartbeat_session, 3600).await;
@@ -507,7 +507,7 @@ impl AgentLauncher {
             status: AgentSessionStatus::Running,
             lifecycle: None,
             pane_id,
-            token_id: Some(file_token.id.to_string()),
+            token_id: Some(file_token.id.as_i64()),
         };
 
         self.running_agents
@@ -1454,7 +1454,7 @@ identifiers, configuration values, etc.).
             if let Some(ref token_id) = agent.token_id {
                 match ergatai_lock::get_lock_manager(&agent.task_id).await {
                     Ok(lock_manager) => {
-                        if let Err(e) = lock_manager.expire_token(token_id) {
+                        if let Err(e) = lock_manager.expire_token(*token_id) {
                             tracing::warn!(
                                 agent_id = %agent_id,
                                 token_id = %token_id,
@@ -1481,7 +1481,7 @@ identifiers, configuration values, etc.).
     /// Called at the start of each new DAG run to prevent ghost agents
     /// from previous runs appearing in `get_all_status()` results.
     pub async fn clear_stale_agents(&self) -> ErgataiResult<()> {
-        let stale_agents: Vec<(String, String, Option<String>)> = {
+        let stale_agents: Vec<(String, String, Option<i64>)> = {
             let mut agents = self.running_agents.lock().await;
             let stale: Vec<_> = agents
                 .iter()
@@ -1489,7 +1489,7 @@ identifiers, configuration values, etc.).
                     a.status == AgentSessionStatus::Completed
                         || a.status == AgentSessionStatus::Failed
                 })
-                .map(|(id, a)| (id.clone(), a.task_id.clone(), a.token_id.clone()))
+                .map(|(id, a)| (id.clone(), a.task_id.clone(), a.token_id))
                 .collect();
 
             let mut result = Vec::with_capacity(stale.len());
@@ -1518,7 +1518,7 @@ identifiers, configuration values, etc.).
                 .list_agents()
                 .await
                 .iter()
-                .find(|info| info.task_id.as_deref() == Some(agent_id.as_str()))
+                .find(|info| info.task_id.as_deref() == Some(agent_id.as_ref()))
                 .map(|info| info.agent_id.clone());
 
             if let Some(runtime_id) = runtime_agent_id {
@@ -1542,7 +1542,7 @@ identifiers, configuration values, etc.).
             if let Some(ref token_id) = token_id {
                 match ergatai_lock::get_lock_manager(task_id).await {
                     Ok(lock_manager) => {
-                        if let Err(e) = lock_manager.expire_token(token_id) {
+                        if let Err(e) = lock_manager.expire_token(*token_id) {
                             tracing::warn!(
                                 agent_id = %agent_id,
                                 token_id = %token_id,

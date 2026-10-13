@@ -37,8 +37,22 @@ fn lock_user_data_db_for_tests() -> tokio::sync::MutexGuard<'static, ()> {
 }
 
 fn ensure_workspace_and_chat_exist(workspace_id: &str, chat_id: &str) {
+    // Parse string IDs to i64 for database storage
+    let workspace_id_i64 = workspace_id.parse::<i64>().unwrap_or_else(|_| {
+        // If not a valid i64, generate a deterministic one from the string
+        workspace_id
+            .bytes()
+            .fold(0i64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as i64))
+    });
+    let chat_id_i64 = chat_id.parse::<i64>().unwrap_or_else(|_| {
+        // If not a valid i64, generate a deterministic one from the string
+        chat_id
+            .bytes()
+            .fold(0i64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as i64))
+    });
+
     let _ = ergatai_api::user_data_db::workspaces::create(ergatai_api::user_data_db::Workspace {
-        workspace_id: workspace_id.to_string(),
+        workspace_id: workspace_id_i64,
         name: format!("Test Workspace {}", workspace_id),
         work_dir: format!("/tmp/{}", workspace_id),
         env: "{}".to_string(),
@@ -50,9 +64,9 @@ fn ensure_workspace_and_chat_exist(workspace_id: &str, chat_id: &str) {
         updated_at: 0,
     });
     let _ = ergatai_api::user_data_db::chats::create(ergatai_api::user_data_db::Chat {
-        chat_id: chat_id.to_string(),
-        workspace_id: workspace_id.to_string(),
-        name: format!("Test Chat {}", chat_id),
+        chat_id: chat_id_i64,
+        workspace_id: workspace_id_i64,
+        name: Some(format!("Test Chat {}", chat_id)),
         created_at: 0,
         updated_at: 0,
         archived_at: None,
@@ -455,7 +469,10 @@ async fn executing_user_message_hot_swaps_active_revision() {
 #[test]
 fn collaboration_interaction_routes_lightweight_and_plans() {
     let _database_guard = lock_user_data_db_for_tests();
-    ensure_workspace_and_chat_exist("workspace-interactions", &format_id(generate(), IdType::Chat));
+    ensure_workspace_and_chat_exist(
+        "workspace-interactions",
+        &format_id(generate(), IdType::Chat),
+    );
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id: format_id(generate(), IdType::Chat),
         workspace_id: "workspace-interactions".to_string(),

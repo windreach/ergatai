@@ -79,7 +79,7 @@ pub struct Watchdog {
     /// Configuration
     config: WatchdogConfig,
     /// Timeout state for each token (token_id → state)
-    timeout_states: Arc<Mutex<HashMap<String, TimeoutState>>>,
+    timeout_states: Arc<Mutex<HashMap<i64, TimeoutState>>>,
     /// Task-aware busy status (session_id → busy_until)
     busy_status: Arc<Mutex<HashMap<String, chrono::DateTime<Utc>>>>,
     /// Shutdown signal
@@ -210,7 +210,7 @@ impl Watchdog {
         lock_manager: &Arc<FileLockManager>,
         event_bus: &Option<EventBus>,
         config: &WatchdogConfig,
-        timeout_states: &Arc<Mutex<HashMap<String, TimeoutState>>>,
+        timeout_states: &Arc<Mutex<HashMap<i64, TimeoutState>>>,
         busy_status: &Arc<Mutex<HashMap<String, chrono::DateTime<Utc>>>>,
     ) -> ErgataiResult<()> {
         let now = Utc::now();
@@ -224,7 +224,7 @@ impl Watchdog {
         // Collect actions to apply after releasing locks to avoid triple-nested
         // locking (timeout_states → busy_status → conn inside reclaim).
         struct StateAction {
-            token_id: String,
+            token_id: i64,
             session_id: String,
             kind: StateActionKind,
         }
@@ -242,7 +242,7 @@ impl Watchdog {
             let mut actions = Vec::with_capacity(active_tokens.len());
 
             for token in &active_tokens {
-                let token_id = token.id.as_str().to_string();
+                let token_id = token.id.as_i64();
                 let session_id = token.session_id.clone();
 
                 // Check if session is busy
@@ -289,9 +289,7 @@ impl Watchdog {
 
                 // Check if timeout
                 if time_since_heartbeat > timeout_threshold {
-                    let state = states
-                        .entry(token_id.clone())
-                        .or_insert(TimeoutState::Normal);
+                    let state = states.entry(token_id).or_insert(TimeoutState::Normal);
 
                     match state {
                         TimeoutState::Normal => {
@@ -364,7 +362,7 @@ impl Watchdog {
             for action in &actions {
                 match &action.kind {
                     StateActionKind::SetState(new_state) => {
-                        states.insert(action.token_id.clone(), new_state.clone());
+                        states.insert(action.token_id, new_state.clone());
                     }
                     StateActionKind::RemoveState => {
                         states.remove(&action.token_id);
@@ -382,7 +380,7 @@ impl Watchdog {
                 if let Err(e) = Self::reclaim_locks_for_token(
                     lock_manager,
                     event_bus,
-                    &action.token_id,
+                    action.token_id,
                     &action.session_id,
                 )
                 .await
@@ -403,7 +401,7 @@ impl Watchdog {
     async fn reclaim_locks_for_token(
         lock_manager: &Arc<FileLockManager>,
         event_bus: &Option<EventBus>,
-        token_id: &str,
+        token_id: i64,
         session_id: &str,
     ) -> ErgataiResult<()> {
         // Get all file tokens for this system token
@@ -413,11 +411,11 @@ impl Watchdog {
 
         // Reclaim locks for each file token
         for file_token in &file_tokens {
-            let locks = lock_manager.get_locks_by_token(file_token.id.as_str())?;
+            let locks = lock_manager.get_locks_by_token(file_token.id.as_i64())?;
 
             info!(
                 token_id = token_id,
-                file_token_id = file_token.id.as_str(),
+                file_token_id = file_token.id.as_i64(),
                 session_id = session_id,
                 lock_count = locks.len(),
                 "Reclaiming locks for expired token"
@@ -428,10 +426,10 @@ impl Watchdog {
                 let file_path = &lock.file_path;
 
                 // Expire the lock
-                if let Err(e) = lock_manager.expire_lock(file_token.id.as_str(), file_path) {
+                if let Err(e) = lock_manager.expire_lock(file_token.id.as_i64(), file_path) {
                     error!(
                         token_id = token_id,
-                        file_token_id = file_token.id.as_str(),
+                        file_token_id = file_token.id.as_i64(),
                         file_path = file_path,
                         error = %e,
                         "Failed to release lock"
@@ -503,9 +501,9 @@ impl Watchdog {
         let token_count = tokens.len();
 
         // Collect token IDs to expire (release timeout_states lock before reclaiming)
-        let token_ids: Vec<String> = {
+        let token_ids: Vec<i64> = {
             let mut states = self.timeout_states.lock().await;
-            let ids: Vec<String> = tokens.iter().map(|t| t.id.as_str().to_string()).collect();
+            let ids: Vec<i64> = tokens.iter().map(|t| t.id.as_i64()).collect();
             for id in &ids {
                 states.remove(id);
             }
@@ -522,7 +520,7 @@ impl Watchdog {
         for lock in &locks {
             if let Err(e) = self
                 .lock_manager
-                .expire_lock(lock.token_id.as_str(), &lock.file_path)
+                .expire_lock(lock.token_id.as_i64(), &lock.file_path)
             {
                 error!(
                     session_id = session_id,
@@ -554,7 +552,7 @@ impl Watchdog {
 
         // Expire all system tokens for this session
         for token_id in &token_ids {
-            if let Err(e) = self.lock_manager.expire_token(token_id) {
+            if let Err(e) = self.lock_manager.expire_token(*token_id) {
                 error!(
                     token_id = token_id,
                     error = %e,
@@ -726,7 +724,7 @@ mod tests {
 
         // Manually set heartbeat to past to trigger timeout
         lock_manager
-            .set_heartbeat_past(sys_token.id.as_str(), 10)
+            .set_heartbeat_past(sys_token.id.as_i64(), 10)
             .unwrap();
 
         let watchdog = Watchdog::new(lock_manager.clone(), config);
@@ -748,7 +746,7 @@ mod tests {
             let states = timeout_states.lock().await;
             assert!(
                 matches!(
-                    states.get(sys_token.id.as_str()),
+                    states.get(&sys_token.id.as_i64()),
                     Some(TimeoutState::GracePeriod1 { .. })
                 ),
                 "Should be in GracePeriod1"
@@ -773,7 +771,7 @@ mod tests {
             let states = timeout_states.lock().await;
             assert!(
                 matches!(
-                    states.get(sys_token.id.as_str()),
+                    states.get(&sys_token.id.as_i64()),
                     Some(TimeoutState::GracePeriod2 { .. })
                 ),
                 "Should be in GracePeriod2"
@@ -797,7 +795,7 @@ mod tests {
         {
             let states = timeout_states.lock().await;
             assert!(
-                states.get(sys_token.id.as_str()).is_none(),
+                states.get(&sys_token.id.as_i64()).is_none(),
                 "State should be removed after reclaim"
             );
         }
@@ -827,7 +825,7 @@ mod tests {
 
         // Manually set heartbeat to past
         lock_manager
-            .set_heartbeat_past(sys_token.id.as_str(), 10)
+            .set_heartbeat_past(sys_token.id.as_i64(), 10)
             .unwrap();
 
         let watchdog = Watchdog::new(lock_manager.clone(), config);
@@ -848,14 +846,14 @@ mod tests {
         {
             let states = timeout_states.lock().await;
             assert!(matches!(
-                states.get(sys_token.id.as_str()),
+                states.get(&sys_token.id.as_i64()),
                 Some(TimeoutState::GracePeriod1 { .. })
             ));
         }
 
         // Update heartbeat to now (simulate heartbeat arriving)
         lock_manager
-            .update_heartbeat(sys_token.id.as_str())
+            .update_heartbeat(sys_token.id.as_i64())
             .unwrap();
 
         // Second check - should reset state (remove from timeout_states)
@@ -871,7 +869,7 @@ mod tests {
 
         let states = timeout_states.lock().await;
         assert!(
-            states.get(sys_token.id.as_str()).is_none(),
+            states.get(&sys_token.id.as_i64()).is_none(),
             "State should be removed after heartbeat"
         );
     }
@@ -900,7 +898,7 @@ mod tests {
 
         // Manually set heartbeat to past
         lock_manager
-            .set_heartbeat_past(sys_token.id.as_str(), 10)
+            .set_heartbeat_past(sys_token.id.as_i64(), 10)
             .unwrap();
 
         let watchdog = Watchdog::new(lock_manager.clone(), config);
@@ -934,7 +932,7 @@ mod tests {
 
         let states = timeout_states.lock().await;
         assert!(
-            states.get(sys_token.id.as_str()).is_none(),
+            states.get(&sys_token.id.as_i64()).is_none(),
             "State should be removed when session is marked busy"
         );
     }

@@ -2,12 +2,23 @@
 //!
 //! Tests the complete flow of:
 //! - Querying chat agents (GET /api/v1/chats/:chatId/agents)
-//! - Agent-to-agent message routing (POST /api/v1/agents/:agentId/message)
+//! - Agent-to-agent message routing (POST /api/v1/agents/:agentId/send)
 //! - Spawning new sessions (POST /api/v1/agents/:agentId/spawn-session)
 
 use ergatai_api::api::agents::{SpawnSessionRequest, SpawnSessionResponse};
-use ergatai_api::api::chats::ChatAgentResponse;
+use serde::Deserialize;
 use serde_json::json;
+
+/// Local mirror of the old ChatAgentResponse (removed from api::chats during refactoring).
+/// Used only in this test to verify response structure.
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+struct ChatAgentResponse {
+    agent_id: String,
+    command: String,
+    status: String,
+    bound_at: i64,
+}
 
 /// Test: Query chat agents endpoint
 #[tokio::test]
@@ -149,19 +160,19 @@ async fn test_agent_binding_persistence() {
     use ergatai_api::user_data_db::GroupAgentBinding;
 
     let binding = GroupAgentBinding {
-        workspace_id: "workspace-123".to_string(),
-        chat_id: "chat-456".to_string(),
-        agent_id: "agent-f".to_string(),
+        workspace_id: 123i64,
+        chat_id: 456i64,
+        agent_id: 789i64,
         agent_name: "codex".to_string(),
         agent_command: Some("codex".to_string()),
-        conversation_id: "subchat-789".to_string(),
+        conversation_id: 101112i64,
         created_at: 1234567890,
         updated_at: 1234567890,
     };
 
     // Verify binding structure
-    assert_eq!(binding.workspace_id, "workspace-123");
-    assert_eq!(binding.chat_id, "chat-456");
+    assert_eq!(binding.workspace_id, 123i64);
+    assert_eq!(binding.chat_id, 456i64);
     assert_eq!(binding.agent_command, Some("codex".to_string()));
 }
 

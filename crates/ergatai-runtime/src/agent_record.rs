@@ -4,6 +4,7 @@
 //! of agent information including lifecycle state, metadata, and audit trail.
 
 use chrono::{DateTime, Utc};
+use ergatai_error::ErgataiError;
 use serde::{Deserialize, Serialize};
 
 use crate::agent_lifecycle::AgentLifecycleState;
@@ -149,14 +150,14 @@ impl AgentRecord {
         new_state: AgentLifecycleState,
         reason: Option<String>,
         metadata: serde_json::Value,
-    ) -> Result<(), String> {
+    ) -> Result<(), ErgataiError> {
         // Validate transition: cannot transition from terminal state
         if self.state.is_terminal() {
-            return Err(format!(
+            return Err(ErgataiError::InvalidArgument(format!(
                 "Cannot transition from terminal state '{}' to '{}'",
                 self.state.state_name(),
                 new_state.state_name()
-            ));
+            )));
         }
 
         let from_state = self.state.state_name().to_string();
@@ -471,6 +472,7 @@ mod tests {
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
+            .to_string()
             .contains("Cannot transition from terminal state"));
     }
 }

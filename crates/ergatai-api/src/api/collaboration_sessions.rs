@@ -12,17 +12,14 @@ use axum::{
 use serde::Deserialize;
 use std::convert::Infallible;
 
-use crate::api::ApiError;
 use crate::services::collaboration_session::{
-    append_message, create_approval, create_plan_revision, create_session, decide_approval,
-    find_session_by_chat, get_plan_revision, get_session, list_events, list_plan_revisions,
-    transition_state, AppendSessionMessageRequest, ApprovalDecisionRequest,
-    CollaborationSessionError, CreateApprovalRequest, CreateCollaborationSessionRequest,
-    CreatePlanRevisionRequest, SessionStateTransitionRequest,
+    create_approval, create_plan_revision, create_session, decide_approval, find_session_by_chat,
+    get_plan_revision, get_session, list_events, list_plan_revisions, transition_state,
+    ApprovalDecisionRequest, CollaborationSessionError, CreateApprovalRequest,
+    CreateCollaborationSessionRequest, CreatePlanRevisionRequest, SessionStateTransitionRequest,
 };
 use crate::services::collaboration_session_dag::{
-    activate_plan_revision, cancel_session_execution, submit_session_interaction,
-    CollaborationSessionDagError,
+    activate_plan_revision, cancel_session_execution, CollaborationSessionDagError,
 };
 
 #[derive(Debug, Deserialize)]
@@ -49,47 +46,44 @@ fn response_from_dag_error(
         CollaborationSessionDagError::Session(session_error) => {
             response_from_error(session_error, operation)
         }
-        CollaborationSessionDagError::Conflict(message) => {
-            (StatusCode::CONFLICT, Json(ApiError { error: message })).into_response()
-        }
+        CollaborationSessionDagError::Conflict(message) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": message})),
+        )
+            .into_response(),
         CollaborationSessionDagError::Validation(message) => {
-            (StatusCode::BAD_REQUEST, Json(ApiError { error: message })).into_response()
+            crate::http_error::bad_request(message).into_response()
         }
         CollaborationSessionDagError::Execution(message) => {
-            tracing::error!(operation, error = %message, "Collaboration DAG execution failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError { error: message }),
-            )
-                .into_response()
+            crate::http_error::internal(message, operation).into_response()
         }
     }
 }
 
 fn response_from_error(error: CollaborationSessionError, operation: &'static str) -> Response {
-    let status = match &error {
-        CollaborationSessionError::NotFound(_) => StatusCode::NOT_FOUND,
-        CollaborationSessionError::Validation(_)
-        | CollaborationSessionError::Serialization(_)
-        | CollaborationSessionError::InvalidTransition { .. } => StatusCode::BAD_REQUEST,
-        CollaborationSessionError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    };
-    if matches!(error, CollaborationSessionError::Database(_)) {
-        tracing::error!(operation, error = %error, "Collaboration session operation failed");
+    match error {
+        CollaborationSessionError::NotFound(ref id) => {
+            crate::http_error::not_found("Collaboration session", id).into_response()
+        }
+        CollaborationSessionError::Validation(message) => {
+            crate::http_error::bad_request(message).into_response()
+        }
+        CollaborationSessionError::Serialization(err) => {
+            crate::http_error::bad_request(err.to_string()).into_response()
+        }
+        CollaborationSessionError::InvalidTransition { .. } => {
+            crate::http_error::bad_request(error.to_string()).into_response()
+        }
+        CollaborationSessionError::Database(err) => {
+            crate::http_error::internal(err, operation).into_response()
+        }
     }
-    (
-        status,
-        Json(ApiError {
-            error: error.to_string(),
-        }),
-    )
-        .into_response()
 }
 
-/// POST /api/v1/collaboration/sessions
+/// POST /api/v1/collaboration-sessions
 #[utoipa::path(
     post,
-    path = "/api/v1/collaboration/sessions",
+    path = "/api/v1/collaboration-sessions",
     tag = "Collaboration Sessions",
     request_body = CreateCollaborationSessionRequest,
     responses(
@@ -104,45 +98,10 @@ pub async fn create_collaboration_session(
     match tokio::task::spawn_blocking(move || create_session(request)).await {
         Ok(Ok(detail)) => (StatusCode::CREATED, Json(detail)).into_response(),
         Ok(Err(error)) => response_from_error(error, "create collaboration session"),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("Task join error: {error}"),
-            }),
-        )
-            .into_response(),
-    }
-}
-
-/// GET /api/v1/collaboration/sessions/by-chat/:chat_id
-#[utoipa::path(
-    get,
-    path = "/api/v1/collaboration/sessions/by-chat/{chat_id}",
-    tag = "Collaboration Sessions",
-    params(("chat_id" = String, Path, description = "Chat identifier")),
-    responses(
-        (status = 200, description = "Collaboration session", body = crate::services::collaboration_session::CollaborationSession),
-        (status = 404, description = "Session not found", body = crate::api::ApiError),
-    )
-)]
-pub async fn get_collaboration_session_by_chat(Path(chat_id): Path<String>) -> Response {
-    match tokio::task::spawn_blocking(move || find_session_by_chat(&chat_id)).await {
-        Ok(Ok(Some(session))) => (StatusCode::OK, Json(session)).into_response(),
-        Ok(Ok(None)) => (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Collaboration session not found".to_string(),
-            }),
-        )
-            .into_response(),
-        Ok(Err(error)) => response_from_error(error, "find collaboration session by chat"),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("Task join error: {error}"),
-            }),
-        )
-            .into_response(),
+        Err(error) => {
+            crate::http_error::internal(format!("Task join error: {}", error), "spawn_blocking")
+                .into_response()
+        }
     }
 }
 
@@ -153,29 +112,29 @@ pub async fn get_collaboration_session_by_chat(Path(chat_id): Path<String>) -> R
     tag = "Collaboration Sessions",
     params(("chat_id" = String, Path, description = "Chat identifier")),
     responses(
-        (status = 200, description = "List of collaboration sessions", body = Vec<crate::services::collaboration_session::CollaborationSession>),
-        (status = 500, description = "Internal error", body = crate::api::ApiError),
+        (status = 200, description = "Collaboration session", body = crate::services::collaboration_session::CollaborationSession),
+        (status = 404, description = "Session not found", body = crate::api::ApiError),
     )
 )]
-pub async fn list_collaboration_sessions_by_chat(Path(chat_id): Path<String>) -> Response {
-    use crate::services::collaboration_session::list_sessions_by_chat;
-    match tokio::task::spawn_blocking(move || list_sessions_by_chat(&chat_id)).await {
-        Ok(Ok(sessions)) => (StatusCode::OK, Json(sessions)).into_response(),
-        Ok(Err(error)) => response_from_error(error, "list collaboration sessions by chat"),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("Task join error: {error}"),
-            }),
-        )
-            .into_response(),
+pub async fn get_collaboration_session_by_chat(Path(chat_id): Path<String>) -> Response {
+    let chat_id_for_closure = chat_id.clone();
+    match tokio::task::spawn_blocking(move || find_session_by_chat(&chat_id_for_closure)).await {
+        Ok(Ok(Some(session))) => (StatusCode::OK, Json(session)).into_response(),
+        Ok(Ok(None)) => {
+            crate::http_error::not_found("Collaboration session for chat", &chat_id).into_response()
+        }
+        Ok(Err(error)) => response_from_error(error, "find collaboration session by chat"),
+        Err(error) => {
+            crate::http_error::internal(format!("Task join error: {}", error), "spawn_blocking")
+                .into_response()
+        }
     }
 }
 
-/// GET /api/v1/collaboration/sessions/:id
+/// GET /api/v1/collaboration-sessions/:id
 #[utoipa::path(
     get,
-    path = "/api/v1/collaboration/sessions/{id}",
+    path = "/api/v1/collaboration-sessions/{id}",
     tag = "Collaboration Sessions",
     params(("id" = String, Path, description = "Collaboration session identifier")),
     responses(
@@ -183,78 +142,21 @@ pub async fn list_collaboration_sessions_by_chat(Path(chat_id): Path<String>) ->
         (status = 404, description = "Session not found", body = crate::api::ApiError),
     )
 )]
-pub async fn get_collaboration_session(Path(session_id): Path<String>) -> Response {
-    match tokio::task::spawn_blocking(move || get_session(&session_id)).await {
+pub async fn get_collaboration_session(Path(collaboration_session_id): Path<String>) -> Response {
+    match tokio::task::spawn_blocking(move || get_session(&collaboration_session_id)).await {
         Ok(Ok(detail)) => (StatusCode::OK, Json(detail)).into_response(),
         Ok(Err(error)) => response_from_error(error, "get collaboration session"),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("Task join error: {error}"),
-            }),
-        )
-            .into_response(),
+        Err(error) => {
+            crate::http_error::internal(format!("Task join error: {}", error), "spawn_blocking")
+                .into_response()
+        }
     }
 }
 
-/// POST /api/v1/collaboration/sessions/:id/messages
+/// POST /api/v1/collaboration-sessions/:id/state
 #[utoipa::path(
     post,
-    path = "/api/v1/collaboration/sessions/{id}/messages",
-    tag = "Collaboration Sessions",
-    request_body = AppendSessionMessageRequest,
-    params(("id" = String, Path, description = "Collaboration session identifier")),
-    responses(
-        (status = 201, description = "Session message appended", body = crate::services::collaboration_session::CollaborationSessionDetail),
-        (status = 400, description = "Invalid request", body = crate::api::ApiError),
-        (status = 404, description = "Session not found", body = crate::api::ApiError),
-    )
-)]
-pub async fn append_collaboration_session_message(
-    Path(session_id): Path<String>,
-    Json(request): Json<AppendSessionMessageRequest>,
-) -> Response {
-    match tokio::task::spawn_blocking(move || append_message(&session_id, request)).await {
-        Ok(Ok(detail)) => (StatusCode::CREATED, Json(detail)).into_response(),
-        Ok(Err(error)) => response_from_error(error, "append collaboration session message"),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("Task join error: {error}"),
-            }),
-        )
-            .into_response(),
-    }
-}
-
-/// POST /api/v1/collaboration/sessions/:id/interactions
-#[utoipa::path(
-    post,
-    path = "/api/v1/collaboration/sessions/{id}/interactions",
-    tag = "Collaboration Sessions",
-    request_body = crate::services::collaboration_planner::SubmitSessionInteractionRequest,
-    params(("id" = String, Path, description = "Collaboration session identifier")),
-    responses(
-        (status = 201, description = "Interaction routed; a collaboration plan may also be activated", body = crate::services::collaboration_session_dag::SessionInteractionSubmitted),
-        (status = 400, description = "Invalid interaction or plan", body = crate::api::ApiError),
-        (status = 404, description = "Session not found", body = crate::api::ApiError),
-        (status = 409, description = "A session DAG is already running", body = crate::api::ApiError),
-    )
-)]
-pub async fn submit_collaboration_session_interaction(
-    Path(session_id): Path<String>,
-    Json(request): Json<crate::services::collaboration_planner::SubmitSessionInteractionRequest>,
-) -> Response {
-    match submit_session_interaction(&session_id, request).await {
-        Ok(result) => (StatusCode::CREATED, Json(result)).into_response(),
-        Err(error) => response_from_dag_error(error, "submit collaboration session interaction"),
-    }
-}
-
-/// POST /api/v1/collaboration/sessions/:id/state
-#[utoipa::path(
-    post,
-    path = "/api/v1/collaboration/sessions/{id}/state",
+    path = "/api/v1/collaboration-sessions/{id}/state",
     tag = "Collaboration Sessions",
     request_body = SessionStateTransitionRequest,
     params(("id" = String, Path, description = "Collaboration session identifier")),
@@ -265,26 +167,25 @@ pub async fn submit_collaboration_session_interaction(
     )
 )]
 pub async fn transition_collaboration_session_state(
-    Path(session_id): Path<String>,
+    Path(collaboration_session_id): Path<String>,
     Json(request): Json<SessionStateTransitionRequest>,
 ) -> Response {
-    match tokio::task::spawn_blocking(move || transition_state(&session_id, request)).await {
+    match tokio::task::spawn_blocking(move || transition_state(&collaboration_session_id, request))
+        .await
+    {
         Ok(Ok(detail)) => (StatusCode::OK, Json(detail)).into_response(),
         Ok(Err(error)) => response_from_error(error, "transition collaboration session state"),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("Task join error: {error}"),
-            }),
-        )
-            .into_response(),
+        Err(error) => {
+            crate::http_error::internal(format!("Task join error: {}", error), "spawn_blocking")
+                .into_response()
+        }
     }
 }
 
-/// GET /api/v1/collaboration/sessions/:id/events
+/// GET /api/v1/collaboration-sessions/:id/events
 #[utoipa::path(
     get,
-    path = "/api/v1/collaboration/sessions/{id}/events",
+    path = "/api/v1/collaboration-sessions/{id}/events",
     tag = "Collaboration Sessions",
     params(
         ("id" = String, Path, description = "Collaboration session identifier"),
@@ -297,32 +198,29 @@ pub async fn transition_collaboration_session_state(
     )
 )]
 pub async fn list_collaboration_session_events(
-    Path(session_id): Path<String>,
+    Path(collaboration_session_id): Path<String>,
     Query(query): Query<EventQuery>,
 ) -> Response {
     match tokio::task::spawn_blocking(move || {
         // Clamp limit to reasonable maximum to prevent memory exhaustion from malicious clients
         let limit = query.limit.unwrap_or(100).min(1000);
-        list_events(&session_id, query.after, limit)
+        list_events(&collaboration_session_id, query.after, limit)
     })
     .await
     {
         Ok(Ok(events)) => (StatusCode::OK, Json(events)).into_response(),
         Ok(Err(error)) => response_from_error(error, "list collaboration session events"),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("Task join error: {error}"),
-            }),
-        )
-            .into_response(),
+        Err(error) => {
+            crate::http_error::internal(format!("Task join error: {}", error), "spawn_blocking")
+                .into_response()
+        }
     }
 }
 
-/// GET /api/v1/collaboration/sessions/:session_id/stream
+/// GET /api/v1/collaboration-sessions/:session_id/stream
 #[utoipa::path(
     get,
-    path = "/api/v1/collaboration/sessions/{session_id}/stream",
+    path = "/api/v1/collaboration-sessions/{session_id}/stream",
     tag = "Collaboration Sessions",
     params(
         ("session_id" = String, Path, description = "Collaboration session identifier"),
@@ -335,30 +233,28 @@ pub async fn list_collaboration_session_events(
     )
 )]
 pub async fn stream_collaboration_session_events(
-    Path(session_id): Path<String>,
+    Path(collaboration_session_id): Path<String>,
     Query(query): Query<StreamEventQuery>,
 ) -> Response {
     // Validate session exists before starting the stream to prevent DoS via
     // unbounded polling on non-existent sessions.
-    let validate_session_id = session_id.clone();
+    let validate_session_id = collaboration_session_id.clone();
     match tokio::task::spawn_blocking(move || get_session(&validate_session_id)).await {
         Ok(Ok(_)) => { /* session exists, proceed */ }
         Ok(Err(error)) => {
             return response_from_error(error, "validate collaboration session for stream")
         }
         Err(error) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: format!("Task join error: {error}"),
-                }),
+            return crate::http_error::internal(
+                format!("Task join error: {}", error),
+                "spawn_blocking",
             )
-                .into_response()
+            .into_response()
         }
     }
 
     let after_sequence = query.after_sequence.unwrap_or(0).max(0);
-    let replay_session_id = session_id.clone();
+    let replay_session_id = collaboration_session_id.clone();
     let replay = match tokio::task::spawn_blocking(move || {
         list_events(&replay_session_id, Some(after_sequence), 500)
     })
@@ -367,13 +263,11 @@ pub async fn stream_collaboration_session_events(
         Ok(Ok(events)) => events,
         Ok(Err(error)) => return response_from_error(error, "replay collaboration session events"),
         Err(error) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: format!("Task join error: {error}"),
-                }),
+            return crate::http_error::internal(
+                format!("Task join error: {}", error),
+                "spawn_blocking",
             )
-                .into_response()
+            .into_response()
         }
     };
 
@@ -381,7 +275,7 @@ pub async fn stream_collaboration_session_events(
     // Lower values (e.g., 50ms) cause high CPU usage and DB contention under load.
     let poll_interval_ms = query.poll_interval_ms.unwrap_or(250).clamp(500, 5_000);
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(256);
-    let stream_session_id = session_id.clone();
+    let stream_session_id = collaboration_session_id.clone();
     tokio::spawn(async move {
         // 30-minute maximum stream lifetime to prevent unbounded resource consumption.
         // Clients should reconnect to continue receiving events.
@@ -468,10 +362,10 @@ pub async fn stream_collaboration_session_events(
         .into_response()
 }
 
-/// POST /api/v1/collaboration/sessions/:id/plans
+/// POST /api/v1/collaboration-sessions/:id/plans
 #[utoipa::path(
     post,
-    path = "/api/v1/collaboration/sessions/{id}/plans",
+    path = "/api/v1/collaboration-sessions/{id}/plans",
     tag = "Collaboration Sessions",
     request_body = CreatePlanRevisionRequest,
     params(("id" = String, Path, description = "Collaboration session identifier")),
@@ -482,26 +376,27 @@ pub async fn stream_collaboration_session_events(
     )
 )]
 pub async fn create_collaboration_session_plan(
-    Path(session_id): Path<String>,
+    Path(collaboration_session_id): Path<String>,
     Json(request): Json<CreatePlanRevisionRequest>,
 ) -> Response {
-    match tokio::task::spawn_blocking(move || create_plan_revision(&session_id, request)).await {
+    match tokio::task::spawn_blocking(move || {
+        create_plan_revision(&collaboration_session_id, request)
+    })
+    .await
+    {
         Ok(Ok(result)) => (StatusCode::CREATED, Json(result)).into_response(),
         Ok(Err(error)) => response_from_error(error, "create collaboration plan revision"),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("Task join error: {error}"),
-            }),
-        )
-            .into_response(),
+        Err(error) => {
+            crate::http_error::internal(format!("Task join error: {}", error), "spawn_blocking")
+                .into_response()
+        }
     }
 }
 
-/// GET /api/v1/collaboration/sessions/:id/plans
+/// GET /api/v1/collaboration-sessions/:id/plans
 #[utoipa::path(
     get,
-    path = "/api/v1/collaboration/sessions/{id}/plans",
+    path = "/api/v1/collaboration-sessions/{id}/plans",
     tag = "Collaboration Sessions",
     params(("id" = String, Path, description = "Collaboration session identifier")),
     responses(
@@ -509,24 +404,24 @@ pub async fn create_collaboration_session_plan(
         (status = 404, description = "Session not found", body = crate::api::ApiError),
     )
 )]
-pub async fn list_collaboration_session_plans(Path(session_id): Path<String>) -> Response {
-    match tokio::task::spawn_blocking(move || list_plan_revisions(&session_id)).await {
+pub async fn list_collaboration_session_plans(
+    Path(collaboration_session_id): Path<String>,
+) -> Response {
+    match tokio::task::spawn_blocking(move || list_plan_revisions(&collaboration_session_id)).await
+    {
         Ok(Ok(revisions)) => (StatusCode::OK, Json(revisions)).into_response(),
         Ok(Err(error)) => response_from_error(error, "list collaboration plan revisions"),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("Task join error: {error}"),
-            }),
-        )
-            .into_response(),
+        Err(error) => {
+            crate::http_error::internal(format!("Task join error: {}", error), "spawn_blocking")
+                .into_response()
+        }
     }
 }
 
-/// GET /api/v1/collaboration/sessions/:session_id/plans/:plan_revision_id
+/// GET /api/v1/collaboration-sessions/:session_id/plans/:plan_revision_id
 #[utoipa::path(
     get,
-    path = "/api/v1/collaboration/sessions/{session_id}/plans/{plan_revision_id}",
+    path = "/api/v1/collaboration-sessions/{session_id}/plans/{plan_revision_id}",
     tag = "Collaboration Sessions",
     params(
         ("session_id" = String, Path, description = "Collaboration session identifier"),
@@ -538,27 +433,26 @@ pub async fn list_collaboration_session_plans(Path(session_id): Path<String>) ->
     )
 )]
 pub async fn get_collaboration_session_plan(
-    Path((session_id, plan_revision_id)): Path<(String, String)>,
+    Path((collaboration_session_id, plan_revision_id)): Path<(String, String)>,
 ) -> Response {
-    match tokio::task::spawn_blocking(move || get_plan_revision(&session_id, &plan_revision_id))
-        .await
+    match tokio::task::spawn_blocking(move || {
+        get_plan_revision(&collaboration_session_id, &plan_revision_id)
+    })
+    .await
     {
         Ok(Ok(revision)) => (StatusCode::OK, Json(revision)).into_response(),
         Ok(Err(error)) => response_from_error(error, "get collaboration plan revision"),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("Task join error: {error}"),
-            }),
-        )
-            .into_response(),
+        Err(error) => {
+            crate::http_error::internal(format!("Task join error: {}", error), "spawn_blocking")
+                .into_response()
+        }
     }
 }
 
-/// POST /api/v1/collaboration/sessions/:session_id/plans/:plan_revision_id/execute
+/// POST /api/v1/collaboration-sessions/:session_id/plans/:plan_revision_id/execute
 #[utoipa::path(
     post,
-    path = "/api/v1/collaboration/sessions/{session_id}/plans/{plan_revision_id}/execute",
+    path = "/api/v1/collaboration-sessions/{session_id}/plans/{plan_revision_id}/execute",
     tag = "Collaboration Sessions",
     params(
         ("session_id" = String, Path, description = "Collaboration session identifier"),
@@ -572,18 +466,18 @@ pub async fn get_collaboration_session_plan(
     )
 )]
 pub async fn execute_collaboration_session_plan(
-    Path((session_id, plan_revision_id)): Path<(String, String)>,
+    Path((collaboration_session_id, plan_revision_id)): Path<(String, String)>,
 ) -> Response {
-    match activate_plan_revision(&session_id, &plan_revision_id).await {
+    match activate_plan_revision(&collaboration_session_id, &plan_revision_id).await {
         Ok(activation) => (StatusCode::ACCEPTED, Json(activation)).into_response(),
         Err(error) => response_from_dag_error(error, "execute collaboration plan revision"),
     }
 }
 
-/// POST /api/v1/collaboration/sessions/:id/approvals
+/// POST /api/v1/collaboration-sessions/:id/approvals
 #[utoipa::path(
     post,
-    path = "/api/v1/collaboration/sessions/{id}/approvals",
+    path = "/api/v1/collaboration-sessions/{id}/approvals",
     tag = "Collaboration Sessions",
     request_body = CreateApprovalRequest,
     params(("id" = String, Path, description = "Collaboration session identifier")),
@@ -594,26 +488,25 @@ pub async fn execute_collaboration_session_plan(
     )
 )]
 pub async fn create_collaboration_session_approval(
-    Path(session_id): Path<String>,
+    Path(collaboration_session_id): Path<String>,
     Json(request): Json<CreateApprovalRequest>,
 ) -> Response {
-    match tokio::task::spawn_blocking(move || create_approval(&session_id, request)).await {
+    match tokio::task::spawn_blocking(move || create_approval(&collaboration_session_id, request))
+        .await
+    {
         Ok(Ok(result)) => (StatusCode::CREATED, Json(result)).into_response(),
         Ok(Err(error)) => response_from_error(error, "create collaboration approval"),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("Task join error: {error}"),
-            }),
-        )
-            .into_response(),
+        Err(error) => {
+            crate::http_error::internal(format!("Task join error: {}", error), "spawn_blocking")
+                .into_response()
+        }
     }
 }
 
-/// POST /api/v1/collaboration/sessions/:session_id/approvals/:approval_id/decision
+/// POST /api/v1/collaboration-sessions/:session_id/approvals/:approval_id/decision
 #[utoipa::path(
     post,
-    path = "/api/v1/collaboration/sessions/{session_id}/approvals/{approval_id}/decision",
+    path = "/api/v1/collaboration-sessions/{session_id}/approvals/{approval_id}/decision",
     tag = "Collaboration Sessions",
     request_body = ApprovalDecisionRequest,
     params(
@@ -627,28 +520,27 @@ pub async fn create_collaboration_session_approval(
     )
 )]
 pub async fn decide_collaboration_session_approval(
-    Path((session_id, approval_id)): Path<(String, String)>,
+    Path((collaboration_session_id, approval_id)): Path<(String, String)>,
     Json(request): Json<ApprovalDecisionRequest>,
 ) -> Response {
-    match tokio::task::spawn_blocking(move || decide_approval(&session_id, &approval_id, request))
-        .await
+    match tokio::task::spawn_blocking(move || {
+        decide_approval(&collaboration_session_id, &approval_id, request)
+    })
+    .await
     {
         Ok(Ok(result)) => (StatusCode::OK, Json(result)).into_response(),
         Ok(Err(error)) => response_from_error(error, "decide collaboration approval"),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("Task join error: {error}"),
-            }),
-        )
-            .into_response(),
+        Err(error) => {
+            crate::http_error::internal(format!("Task join error: {}", error), "spawn_blocking")
+                .into_response()
+        }
     }
 }
 
-/// POST /api/v1/collaboration/sessions/:id/cancel
+/// POST /api/v1/collaboration-sessions/:id/cancel
 #[utoipa::path(
     post,
-    path = "/api/v1/collaboration/sessions/{id}/cancel",
+    path = "/api/v1/collaboration-sessions/{id}/cancel",
     tag = "Collaboration Sessions",
     params(("id" = String, Path, description = "Collaboration session identifier")),
     request_body = Option<String>,
@@ -659,11 +551,11 @@ pub async fn decide_collaboration_session_approval(
     )
 )]
 pub async fn cancel_collaboration_session(
-    Path(session_id): Path<String>,
+    Path(collaboration_session_id): Path<String>,
     reason: Option<Json<String>>,
 ) -> Response {
     let reason = reason.map(|Json(reason)| reason);
-    match cancel_session_execution(&session_id, reason).await {
+    match cancel_session_execution(&collaboration_session_id, reason).await {
         Ok(detail) => (StatusCode::OK, Json(detail)).into_response(),
         Err(error) => response_from_dag_error(error, "cancel collaboration session"),
     }
@@ -702,16 +594,7 @@ pub async fn list_collaboration_sessions(
 
     match result {
         Ok(sessions) => (StatusCode::OK, Json(sessions)).into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to list collaboration sessions");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "Failed to list collaboration sessions".to_string(),
-                }),
-            )
-                .into_response()
-        }
+        Err(e) => crate::http_error::internal(e, "list collaboration sessions").into_response(),
     }
 }
 
@@ -757,16 +640,10 @@ pub async fn patch_collaboration_session(
 
     match update_session(&collaboration_session_id, update_req).await {
         Ok(Some(detail)) => (StatusCode::OK, Json(detail)).into_response(),
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: format!(
-                    "Collaboration session {} not found",
-                    collaboration_session_id
-                ),
-            }),
-        )
-            .into_response(),
+        Ok(None) => {
+            crate::http_error::not_found("Collaboration session", &collaboration_session_id)
+                .into_response()
+        }
         Err(e) => response_from_error(e, "update collaboration session"),
     }
 }
@@ -790,16 +667,10 @@ pub async fn delete_collaboration_session(
 
     match delete_session(&collaboration_session_id).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: format!(
-                    "Collaboration session {} not found",
-                    collaboration_session_id
-                ),
-            }),
-        )
-            .into_response(),
+        Ok(false) => {
+            crate::http_error::not_found("Collaboration session", &collaboration_session_id)
+                .into_response()
+        }
         Err(e) => response_from_error(e, "delete collaboration session"),
     }
 }
@@ -883,4 +754,198 @@ pub async fn get_collaboration_session_progress(
     });
 
     (StatusCode::OK, Json(progress)).into_response()
+}
+
+/// GET /api/v1/collaboration-sessions/{session_id}/conversations
+/// 列出该 session 下的所有节点（Conversations）
+#[utoipa::path(
+    get,
+    path = "/api/v1/collaboration-sessions/{session_id}/conversations",
+    tag = "Collaboration Sessions",
+    params(("session_id" = String, Path, description = "Collaboration session ID")),
+    responses(
+        (status = 200, description = "List of conversations in the session", body = serde_json::Value),
+        (status = 404, description = "Session not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn list_session_conversations(Path(collaboration_session_id): Path<String>) -> Response {
+    // Parse session ID to i64
+    let session_id_i64 = match collaboration_session_id.parse::<i64>() {
+        Ok(id) => id,
+        Err(_) => {
+            return crate::http_error::bad_request(format!(
+                "Invalid collaboration session ID format: {}",
+                collaboration_session_id
+            ))
+            .into_response()
+        }
+    };
+
+    // 1. 验证 session 存在
+    let _session = match tokio::task::spawn_blocking({
+        let session_id = session_id_i64;
+        move || crate::user_data_db::collaboration_sessions::get(session_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(s))) => s,
+        Ok(Ok(None)) => {
+            return crate::http_error::not_found("Collaboration session", &collaboration_session_id)
+                .into_response()
+        }
+        Ok(Err(e)) => return crate::http_error::internal(e, "query session").into_response(),
+        Err(e) => return crate::http_error::internal(e, "task join error").into_response(),
+    };
+
+    // 2. 查询该 session 下的所有 conversations
+    let conversations = match tokio::task::spawn_blocking({
+        let session_id = session_id_i64;
+        move || crate::user_data_db::conversations::list_by_collaboration_session(session_id)
+    })
+    .await
+    {
+        Ok(Ok(convs)) => convs,
+        Ok(Err(e)) => return crate::http_error::internal(e, "list conversations").into_response(),
+        Err(e) => return crate::http_error::internal(e, "task join error").into_response(),
+    };
+
+    // 3. 查询每个 conversation 的 agent 信息
+    let registry = ergatai_core::unified_registry::unified_registry();
+    let mut nodes = Vec::new();
+
+    for conv in conversations {
+        let agent_info = registry
+            .get_by_conversation_id(&conv.conversation_id.to_string())
+            .await
+            .map(|a| {
+                serde_json::json!({
+                    "agent_id": a.agent_id,
+                    "state": format!("{:?}", a.state),
+                    "profile": a.profile,
+                })
+            });
+
+        nodes.push(serde_json::json!({
+            "conversation_id": conv.conversation_id,
+            "title": conv.name,
+            "status": conv.status,
+            "agent": agent_info,
+            "created_at": conv.created_at,
+            "updated_at": conv.updated_at,
+        }));
+    }
+
+    Json(serde_json::json!({
+        "session_id": collaboration_session_id,
+        "conversations": nodes,
+        "total": nodes.len()
+    }))
+    .into_response()
+}
+
+/// GET /api/v1/collaboration-sessions/{session_id}/conversations/{conversation_id}
+/// 查询单个节点
+#[utoipa::path(
+    get,
+    path = "/api/v1/collaboration-sessions/{session_id}/conversations/{conversation_id}",
+    tag = "Collaboration Sessions",
+    params(
+        ("session_id" = String, Path, description = "Collaboration session ID"),
+        ("conversation_id" = String, Path, description = "Conversation ID"),
+    ),
+    responses(
+        (status = 200, description = "Conversation details", body = serde_json::Value),
+        (status = 404, description = "Session or conversation not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn get_session_conversation(
+    Path((collaboration_session_id, conversation_id)): Path<(String, String)>,
+) -> Response {
+    // Parse IDs to i64
+    let session_id_i64 = match collaboration_session_id.parse::<i64>() {
+        Ok(id) => id,
+        Err(_) => {
+            return crate::http_error::bad_request(format!(
+                "Invalid collaboration session ID format: {}",
+                collaboration_session_id
+            ))
+            .into_response()
+        }
+    };
+    let conversation_id_i64 = match conversation_id.parse::<i64>() {
+        Ok(id) => id,
+        Err(_) => {
+            return crate::http_error::bad_request(format!(
+                "Invalid conversation ID format: {}",
+                conversation_id
+            ))
+            .into_response()
+        }
+    };
+
+    // 1. 验证 session 存在
+    let session_exists = match tokio::task::spawn_blocking({
+        let session_id = session_id_i64;
+        move || crate::user_data_db::collaboration_sessions::get(session_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(_))) => true,
+        Ok(Ok(None)) => false,
+        Ok(Err(e)) => return crate::http_error::internal(e, "query session").into_response(),
+        Err(e) => return crate::http_error::internal(e, "task join error").into_response(),
+    };
+
+    if !session_exists {
+        return crate::http_error::not_found("Collaboration session", &collaboration_session_id)
+            .into_response();
+    }
+
+    // 2. 查询 conversation
+    let conversation = match tokio::task::spawn_blocking({
+        let conversation_id = conversation_id_i64;
+        move || crate::user_data_db::conversations::get(conversation_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(conv))) => conv,
+        Ok(Ok(None)) => {
+            return crate::http_error::not_found("Conversation", &conversation_id).into_response()
+        }
+        Ok(Err(e)) => return crate::http_error::internal(e, "query conversation").into_response(),
+        Err(e) => return crate::http_error::internal(e, "task join error").into_response(),
+    };
+
+    // 3. 验证 conversation 属于该 session
+    if conversation.collaboration_session_id != session_id_i64 {
+        return crate::http_error::not_found("Conversation", &conversation_id).into_response();
+    }
+
+    // 4. 查询 agent 信息
+    let registry = ergatai_core::unified_registry::unified_registry();
+    let agent_info = registry
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map(|a| {
+            serde_json::json!({
+                "agent_id": a.agent_id,
+                "state": format!("{:?}", a.state),
+                "profile": a.profile,
+                "capabilities": a.capabilities,
+                "last_heartbeat": a.last_heartbeat,
+            })
+        });
+
+    Json(serde_json::json!({
+        "conversation_id": conversation.conversation_id,
+        "session_id": collaboration_session_id,
+        "title": conversation.name,
+        "status": conversation.status,
+        "agent": agent_info,
+        "created_at": conversation.created_at,
+        "updated_at": conversation.updated_at,
+    }))
+    .into_response()
 }

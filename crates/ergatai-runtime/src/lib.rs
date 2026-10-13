@@ -46,6 +46,7 @@ pub mod binary_detection;
 pub mod cgroups;
 pub mod dirs;
 pub mod mcp_over_acp;
+pub mod output_accumulator;
 pub mod permission;
 pub mod permission_service;
 pub mod profile_registry;
@@ -79,6 +80,12 @@ pub use backend::AcpBackendInterface;
 pub use backends::acp::{
     AcpBackend, AgentOutputEvent, ElicitationResponse, TrackedElicitation, TrackedPlan,
     TrackedPlanEntry, TrackedToolCall,
+};
+pub use output_accumulator::{
+    get_global_accumulator_registry, get_global_persist_callback, set_global_accumulator_registry,
+    set_global_persist_callback, AgentOutputData, AgentOutputSnapshot, OutputAccumulatorRegistry,
+    OutputMetadata, PersistCallback, TextChunk, ThinkingBlock, TokenUsage, ToolCallLocation,
+    ToolCallRecord, TurnAccumulator,
 };
 pub use output_publisher::{
     get_global_output_publisher, set_global_output_publisher, NoOpOutputPublisher, OutputPublisher,

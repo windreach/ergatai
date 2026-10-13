@@ -7,15 +7,15 @@
 //! - 级联删除（删除 Conversation 时级联删除 Agent 和 Message）
 
 use crate::user_data_db::{conversations, Conversation};
-use ergatai_core::id::{format as format_id, generate, IdType};
+use ergatai_core::id::generate;
 
 pub struct ConversationService;
 
 impl ConversationService {
     /// 创建 Conversation
     pub fn create_conversation(
-        collaboration_session_id: &str,
-        chat_id: &str,
+        collaboration_session_id: i64,
+        chat_id: i64,
         name: Option<String>,
         mode: String,
         participant_role: String,
@@ -31,9 +31,9 @@ impl ConversationService {
             .as_secs() as i64;
 
         let conversation = Conversation {
-            conversation_id: format_id(generate(), IdType::Conversation),
-            collaboration_session_id: collaboration_session_id.to_string(),
-            chat_id: chat_id.to_string(),
+            conversation_id: generate(),
+            collaboration_session_id,
+            chat_id,
             parent_id: None,
             name,
             mode,
@@ -48,21 +48,21 @@ impl ConversationService {
     }
 
     /// 获取 Conversation
-    pub fn get_conversation(conversation_id: &str) -> anyhow::Result<Option<Conversation>> {
+    pub fn get_conversation(conversation_id: i64) -> anyhow::Result<Option<Conversation>> {
         let conversation = conversations::get(conversation_id)?;
         Ok(conversation)
     }
 
     /// 列出 Conversation（通过 collaboration_session_id 过滤）
     pub fn list_conversations_by_session(
-        collaboration_session_id: &str,
+        collaboration_session_id: i64,
     ) -> anyhow::Result<Vec<Conversation>> {
         let conversations = conversations::list_by_collaboration_session(collaboration_session_id)?;
         Ok(conversations)
     }
 
     /// 列出 Conversation（通过 chat_id 过滤）
-    pub fn list_conversations_by_chat(chat_id: &str) -> anyhow::Result<Vec<Conversation>> {
+    pub fn list_conversations_by_chat(chat_id: i64) -> anyhow::Result<Vec<Conversation>> {
         let conversations = conversations::list_by_chat(chat_id)?;
         Ok(conversations)
     }
@@ -74,13 +74,13 @@ impl ConversationService {
     }
 
     /// 更新 Conversation 状态
-    pub fn update_status(_conversation_id: &str, _status: &str) -> anyhow::Result<bool> {
+    pub fn update_status(_conversation_id: i64, _status: &str) -> anyhow::Result<bool> {
         // TODO: 实现状态更新
         Ok(true)
     }
 
     /// 删除 Conversation（级联删除 Agent 和 Message）
-    pub fn delete_conversation(conversation_id: &str) -> anyhow::Result<()> {
+    pub fn delete_conversation(conversation_id: i64) -> anyhow::Result<()> {
         // TODO: 实现级联删除
         // 1. 删除该 conversation 下的所有 message
         // 2. 删除该 conversation 下的 agent（如果有）
@@ -90,14 +90,14 @@ impl ConversationService {
     }
 
     /// 列出子 Conversation
-    pub fn list_children(parent_id: &str) -> anyhow::Result<Vec<Conversation>> {
+    pub fn list_children(parent_id: i64) -> anyhow::Result<Vec<Conversation>> {
         let children = conversations::list_children(parent_id)?;
         Ok(children)
     }
 
     /// 创建子 Conversation
     pub fn create_child(
-        parent_id: &str,
+        parent_id: i64,
         name: Option<String>,
         mode: String,
     ) -> anyhow::Result<Conversation> {
@@ -111,10 +111,10 @@ impl ConversationService {
             .as_secs() as i64;
 
         let child = Conversation {
-            conversation_id: format_id(generate(), IdType::Conversation),
-            collaboration_session_id: parent.collaboration_session_id.clone(),
-            chat_id: parent.chat_id.clone(),
-            parent_id: Some(parent_id.to_string()),
+            conversation_id: generate(),
+            collaboration_session_id: parent.collaboration_session_id,
+            chat_id: parent.chat_id,
+            parent_id: Some(parent_id),
             name,
             mode,
             participant_role: "peer".to_string(),

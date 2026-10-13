@@ -10,16 +10,14 @@ use axum::{
         ws::{Message as WebSocketMessage, WebSocket, WebSocketUpgrade},
         Query, State,
     },
-    http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use futures::{SinkExt, StreamExt};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use crate::{AppState, ErrorResponse};
+use crate::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct TerminalQuery {
@@ -50,7 +48,7 @@ pub async fn create_terminal(
         Some(cwd) => match crate::validate_cwd_with_allowed_dirs(cwd, &state.allowed_dirs) {
             Ok(cwd) => cwd,
             Err(error) => {
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
+                return crate::http_error::bad_request(error).into_response();
             }
         },
         None => {
@@ -62,7 +60,7 @@ pub async fn create_terminal(
             ) {
                 Ok(validated) => validated,
                 Err(error) => {
-                    return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
+                    return crate::http_error::bad_request(error).into_response();
                 }
             }
         }

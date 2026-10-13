@@ -37,16 +37,20 @@ pub struct ErrorResponse {
 }
 
 fn managed_error(error: manager::WorkspaceManagerError, context: &'static str) -> Response {
-    let (status, message) = match error {
-        manager::WorkspaceManagerError::Validation(message) => (StatusCode::BAD_REQUEST, message),
-        manager::WorkspaceManagerError::NotFound(message) => (StatusCode::NOT_FOUND, message),
-        manager::WorkspaceManagerError::Conflict(message) => (StatusCode::CONFLICT, message),
-        manager::WorkspaceManagerError::Internal(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            crate::sanitize_error(&error, context),
-        ),
-    };
-    (status, Json(ErrorResponse { error: message })).into_response()
+    match error {
+        manager::WorkspaceManagerError::Validation(message) => {
+            crate::http_error::bad_request(message).into_response()
+        }
+        manager::WorkspaceManagerError::NotFound(message) => {
+            crate::http_error::not_found("Resource", &message).into_response()
+        }
+        manager::WorkspaceManagerError::Conflict(message) => {
+            (StatusCode::CONFLICT, Json(ErrorResponse { error: message })).into_response()
+        }
+        manager::WorkspaceManagerError::Internal(error) => {
+            crate::http_error::internal(error, context).into_response()
+        }
+    }
 }
 
 #[utoipa::path(
@@ -80,13 +84,7 @@ pub async fn list_workspaces(State(_state): State<AppState>) -> impl IntoRespons
         }
         // SECURITY (P1 #18): Redact internal error details (may contain
         // filesystem paths, DB connection info, backend names).
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "list_workspaces"),
-            }),
-        )
-            .into_response(),
+        Err(e) => crate::http_error::internal(e, "list_workspaces").into_response(),
     }
 }
 
@@ -112,13 +110,10 @@ pub async fn create_workspace(
     // (alphanumeric, `-`, `_`, `.`). Rejects path separators, `..`, and
     // control characters to prevent path-traversal / filesystem injection.
     if !crate::api::agents::is_valid_workspace_id(&req.id) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Workspace ID must contain only alphanumeric characters, hyphens, underscores, or dots".to_string(),
-            }),
+        return crate::http_error::bad_request(
+            "Workspace ID must contain only alphanumeric characters, hyphens, underscores, or dots",
         )
-            .into_response();
+        .into_response();
     }
 
     // SECURITY (P1 #15): Enforce a workspace cap to prevent a runaway client
@@ -130,26 +125,15 @@ pub async fn create_workspace(
         .unwrap_or(100);
     match runtime.backend().list_workspaces().await {
         Ok(list) if list.len() >= max_workspaces => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: format!(
-                        "Workspace limit reached ({}/{}). Delete a workspace or raise ERGATAI_MAX_WORKSPACES.",
-                        list.len(),
-                        max_workspaces
-                    ),
-                }),
-            )
+            return crate::http_error::unavailable(format!(
+                "Workspace limit reached ({}/{}). Delete a workspace or raise ERGATAI_MAX_WORKSPACES.",
+                list.len(),
+                max_workspaces
+            ))
                 .into_response();
         }
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: crate::sanitize_error(&e, "list_workspaces_for_cap_check"),
-                }),
-            )
-                .into_response();
+            return crate::http_error::internal(e, "list_workspaces_for_cap_check").into_response();
         }
         _ => {}
     }
@@ -163,20 +147,12 @@ pub async fn create_workspace(
 
     // Validate work_dir is non-empty
     if raw_work_dir.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Work directory cannot be empty".to_string(),
-            }),
-        )
-            .into_response();
+        return crate::http_error::bad_request("Work directory cannot be empty").into_response();
     }
 
     let work_dir = match crate::validate_cwd(&raw_work_dir) {
         Ok(p) => p,
-        Err(msg) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: msg })).into_response();
-        }
+        Err(msg) => return crate::http_error::bad_request(msg).into_response(),
     };
 
     let spec = WorkspaceSpec {
@@ -191,8 +167,10 @@ pub async fn create_workspace(
         Ok(handle) => {
             // Register the workspace with the permission handler for lock management
             if let Some(permission_handler) = crate::get_permission_handler() {
+                // Parse workspace ID from String to i64
+                let workspace_id_i64 = handle.id.parse::<i64>().unwrap_or(0);
                 permission_handler
-                    .register_workspace(&handle.id, work_dir)
+                    .register_workspace(workspace_id_i64, work_dir)
                     .await;
             }
 
@@ -210,13 +188,7 @@ pub async fn create_workspace(
         }
         // SECURITY (P1 #18): Redact internal error details (may contain
         // work_dir paths, backend state, OS error info).
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "create_workspace"),
-            }),
-        )
-            .into_response(),
+        Err(e) => crate::http_error::internal(e, "create_workspace").into_response(),
     }
 }
 
@@ -241,38 +213,18 @@ pub async fn delete_workspace(
     let workspaces = match runtime.backend().list_workspaces().await {
         Ok(w) => w,
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: crate::sanitize_error(&e, "list_workspaces_for_delete"),
-                }),
-            )
-                .into_response()
+            return crate::http_error::internal(e, "list_workspaces_for_delete").into_response()
         }
     };
 
     let workspace = match workspaces.into_iter().find(|w| w.id == id) {
         Some(w) => w,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: format!("Workspace {} not found", id),
-                }),
-            )
-                .into_response()
-        }
+        None => return crate::http_error::not_found("Workspace", &id).into_response(),
     };
 
     match runtime.backend().cleanup_workspace(&workspace).await {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "cleanup_workspace"),
-            }),
-        )
-            .into_response(),
+        Err(e) => crate::http_error::internal(e, "cleanup_workspace").into_response(),
     }
 }
 
@@ -747,34 +699,21 @@ pub struct WorkspaceDetailResponse {
     )
 )]
 pub async fn get_workspace(Path(workspace_id): Path<String>) -> impl IntoResponse {
-    let workspace_id_for_closure = workspace_id.clone();
-    match tokio::task::spawn_blocking(move || {
-        crate::user_data_db::workspaces::get(&workspace_id_for_closure)
-    })
-    .await
+    let workspace_id_i64 = match workspace_id.parse::<i64>() {
+        Ok(id) => id,
+        Err(_) => {
+            return crate::http_error::bad_request(format!(
+                "Invalid workspace ID format: {}",
+                workspace_id
+            ))
+            .into_response()
+        }
+    };
+    match crate::run_blocking(move || crate::user_data_db::workspaces::get(workspace_id_i64)).await
     {
-        Ok(Ok(Some(workspace))) => (StatusCode::OK, Json(workspace)).into_response(),
-        Ok(Ok(None)) => (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: format!("Workspace {} not found", workspace_id),
-            }),
-        )
-            .into_response(),
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "get_workspace"),
-            }),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Task join error: {}", e),
-            }),
-        )
-            .into_response(),
+        Ok(Some(workspace)) => (StatusCode::OK, Json(workspace)).into_response(),
+        Ok(None) => crate::http_error::not_found("Workspace", &workspace_id).into_response(),
+        Err(err) => crate::http_error::internal(err.1, "get_workspace").into_response(),
     }
 }
 
@@ -801,25 +740,31 @@ pub async fn update_workspace(
         Some(ref env) => match serde_json::to_string(env) {
             Ok(s) => Some(s),
             Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("Invalid env JSON: {}", e),
-                    }),
-                )
+                return crate::http_error::bad_request(format!("Invalid env JSON: {}", e))
                     .into_response();
             }
         },
         None => None,
     };
 
+    // Parse workspace ID to i64
+    let workspace_id_i64 = match workspace_id.parse::<i64>() {
+        Ok(id) => id,
+        Err(_) => {
+            return crate::http_error::bad_request(format!(
+                "Invalid workspace ID format: {}",
+                workspace_id
+            ))
+            .into_response()
+        }
+    };
+
     // Perform read-modify-write atomically inside a single spawn_blocking,
     // so no other request can interleave between the get and the update.
-    let workspace_id_for_update = workspace_id.clone();
     let name = req.name;
     let work_dir = req.work_dir;
     match tokio::task::spawn_blocking(move || {
-        let existing = crate::user_data_db::workspaces::get(&workspace_id_for_update)?;
+        let existing = crate::user_data_db::workspaces::get(workspace_id_i64)?;
         let mut existing = match existing {
             Some(w) => w,
             None => return Err(anyhow::anyhow!("__NOT_FOUND__")),
@@ -838,109 +783,27 @@ pub async fn update_workspace(
             .unwrap_or_default()
             .as_secs() as i64;
         crate::user_data_db::workspaces::update(existing)?;
-        crate::user_data_db::workspaces::get(&workspace_id_for_update)
+        Ok(crate::user_data_db::workspaces::get(workspace_id_i64)?)
     })
     .await
     {
         Ok(Ok(Some(workspace))) => (StatusCode::OK, Json(workspace)).into_response(),
-        Ok(Ok(None)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "Workspace disappeared after update".to_string(),
-            }),
-        )
-            .into_response(),
-        Ok(Err(e)) if e.to_string() == "__NOT_FOUND__" => (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: format!("Workspace {} not found", workspace_id),
-            }),
-        )
-            .into_response(),
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "update_workspace"),
-            }),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Task join error: {}", e),
-            }),
-        )
-            .into_response(),
+        Ok(Ok(None)) => {
+            crate::http_error::internal("Workspace disappeared after update", "update_workspace")
+                .into_response()
+        }
+        Ok(Err(e)) if e.to_string() == "__NOT_FOUND__" => {
+            crate::http_error::not_found("Workspace", &workspace_id).into_response()
+        }
+        Ok(Err(e)) => crate::http_error::internal(e, "update_workspace").into_response(),
+        Err(e) => {
+            crate::http_error::internal(format!("Task join error: {}", e), "update_workspace")
+                .into_response()
+        }
     }
 }
 
-/// GET /api/v1/workspaces/{workspace_id}/config
-///
-/// TODO: Workspace config is now part of the workspace object.
-/// This endpoint is temporarily stubbed.
-#[utoipa::path(
-    get,
-    path = "/api/v1/workspaces/{workspace_id}/config",
-    tag = "Workspaces",
-    responses(
-        (status = 501, description = "Config endpoint temporarily unavailable"),
-    )
-)]
-pub async fn get_workspace_config(Path(_workspace_id): Path<String>) -> impl IntoResponse {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ErrorResponse {
-            error: "Workspace config is now part of the workspace object".to_string(),
-        }),
-    )
-        .into_response()
-}
-
-/// PATCH /api/v1/workspaces/{workspace_id}/config
-///
-/// TODO: Workspace config is now part of the workspace object.
-/// This endpoint is temporarily stubbed.
-#[utoipa::path(
-    patch,
-    path = "/api/v1/workspaces/{workspace_id}/config",
-    tag = "Workspaces",
-    responses(
-        (status = 501, description = "Config endpoint temporarily unavailable"),
-    )
-)]
-pub async fn update_workspace_config(Path(_workspace_id): Path<String>) -> impl IntoResponse {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ErrorResponse {
-            error: "Workspace config is now part of the workspace object".to_string(),
-        }),
-    )
-        .into_response()
-}
-
-/// DELETE /api/v1/workspaces/{workspace_id}/config
-///
-/// TODO: Workspace config is now part of the workspace object.
-/// This endpoint is temporarily stubbed.
-#[utoipa::path(
-    delete,
-    path = "/api/v1/workspaces/{workspace_id}/config",
-    tag = "Workspaces",
-    responses(
-        (status = 501, description = "Config endpoint temporarily unavailable"),
-    )
-)]
-pub async fn delete_workspace_config(Path(_workspace_id): Path<String>) -> impl IntoResponse {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ErrorResponse {
-            error: "Workspace config is now part of the workspace object".to_string(),
-        }),
-    )
-        .into_response()
-}
-
-// ── Tests ──
+// ── Tests ──// ── Tests ──
 
 #[cfg(test)]
 mod tests {

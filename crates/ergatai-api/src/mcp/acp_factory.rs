@@ -259,7 +259,8 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
         params: SendMessageParams,
     ) -> Result<CallToolResult, ErrorData> {
         // Use shared helper to resolve target (prefers conversation_id, falls back to agent_id)
-        let (target_id, target_conversation_id) = params.resolve_target()?;
+        let (target_id, target_conversation_id_str) = params.resolve_target()?;
+        let target_conversation_id = target_conversation_id_str.and_then(|s| s.parse::<i64>().ok());
 
         let message = &params.message;
         let message_type = params.message_type.as_deref().unwrap_or("request");

@@ -5,13 +5,14 @@
 
 use axum::{extract::Path, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use ergatai_runtime::profile_registry::AgentRegistration;
 
 use crate::services::profile_service;
 
 /// Request to register a new agent profile
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterProfileRequest {
     pub name: String,
     pub command: String,
@@ -21,7 +22,7 @@ pub struct RegisterProfileRequest {
 }
 
 /// Response for a single agent profile
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ProfileResponse {
     pub id: String,
     pub name: String,
@@ -47,7 +48,7 @@ impl From<AgentRegistration> for ProfileResponse {
 }
 
 /// Response for listing agent profiles
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ListProfilesResponse {
     pub profiles: Vec<ProfileResponse>,
 }
@@ -55,7 +56,21 @@ pub struct ListProfilesResponse {
 /// Register a new agent profile
 ///
 /// POST /api/v1/agent-profiles
-pub async fn register_profile(Json(request): Json<RegisterProfileRequest>) -> impl IntoResponse {
+#[utoipa::path(
+    post,
+    path = "/api/v1/agent-profiles",
+    tag = "Agent Profiles",
+    request_body = RegisterProfileRequest,
+    responses(
+        (status = 201, description = "Agent profile registered successfully"),
+        (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 409, description = "Profile already exists", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn register_profile(
+    Json(request): Json<RegisterProfileRequest>,
+) -> axum::response::Response {
     // Capture the name before moving fields into the service call, so we can
     // reuse it in the success response without an extra clone.
     let profile_name = request.name.clone();
@@ -74,7 +89,8 @@ pub async fn register_profile(Json(request): Json<RegisterProfileRequest>) -> im
                 "status": "success",
                 "message": format!("Agent profile '{}' registered successfully", profile_name)
             })),
-        ),
+        )
+            .into_response(),
         Err(e) => {
             let err_text = e.to_string();
             // Classification based on error content — used to pick an HTTP
@@ -95,10 +111,7 @@ pub async fn register_profile(Json(request): Json<RegisterProfileRequest>) -> im
             } else {
                 // SECURITY (P1 #18): Redact internal DB/storage errors that
                 // may reveal SQLite file paths or constraint messages.
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    crate::sanitize_error(&e, "register_agent_profile"),
-                )
+                return crate::http_error::internal(e, "register_agent_profile").into_response();
             };
             (
                 status,
@@ -106,6 +119,7 @@ pub async fn register_profile(Json(request): Json<RegisterProfileRequest>) -> im
                     "error": message
                 })),
             )
+                .into_response()
         }
     }
 }
@@ -113,64 +127,82 @@ pub async fn register_profile(Json(request): Json<RegisterProfileRequest>) -> im
 /// List all registered agent profiles
 ///
 /// GET /api/v1/agent-profiles
-pub async fn list_profiles() -> impl IntoResponse {
+#[utoipa::path(
+    get,
+    path = "/api/v1/agent-profiles",
+    tag = "Agent Profiles",
+    responses(
+        (status = 200, description = "List of agent profiles", body = ListProfilesResponse),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn list_profiles() -> axum::response::Response {
     match profile_service::list_profiles().await {
         Ok(profiles) => {
             let response = ListProfilesResponse {
                 profiles: profiles.into_iter().map(ProfileResponse::from).collect(),
             };
             match serde_json::to_value(response) {
-                Ok(value) => (StatusCode::OK, Json(value)),
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "error": format!("Failed to serialize profiles: {}", e)
-                    })),
-                ),
+                Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+                Err(e) => crate::http_error::internal(
+                    format!("Failed to serialize profiles: {}", e),
+                    "list_profiles_serialize",
+                )
+                .into_response(),
             }
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": crate::sanitize_error(&e, "list_profiles")
-            })),
-        ),
+        Err(e) => crate::http_error::internal(e, "list_profiles").into_response(),
     }
 }
 
 /// Get a specific agent profile
 ///
 /// GET /api/v1/agent-profiles/:id
-pub async fn get_profile(Path(id): Path<String>) -> impl IntoResponse {
+#[utoipa::path(
+    get,
+    path = "/api/v1/agent-profiles/{id}",
+    tag = "Agent Profiles",
+    params(
+        ("id" = String, Path, description = "Agent profile ID"),
+    ),
+    responses(
+        (status = 200, description = "Agent profile details", body = ProfileResponse),
+        (status = 404, description = "Profile not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn get_profile(Path(id): Path<String>) -> axum::response::Response {
     match profile_service::get_profile(&id).await {
         Ok(Some(registration)) => match serde_json::to_value(ProfileResponse::from(registration)) {
-            Ok(value) => (StatusCode::OK, Json(value)),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": format!("Failed to serialize profile: {}", e)
-                })),
-            ),
+            Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+            Err(e) => crate::http_error::internal(
+                format!("Failed to serialize profile: {}", e),
+                "get_profile_serialize",
+            )
+            .into_response(),
         },
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": format!("Agent profile '{}' not found", id)
-            })),
-        ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": crate::sanitize_error(&e, "get_profile")
-            })),
-        ),
+        Ok(None) => crate::http_error::not_found("Agent profile", &id).into_response(),
+        Err(e) => crate::http_error::internal(e, "get_profile").into_response(),
     }
 }
 
 /// Delete an agent profile
 ///
 /// DELETE /api/v1/agent-profiles/:id
-pub async fn delete_profile(Path(id): Path<String>) -> impl IntoResponse {
+#[utoipa::path(
+    delete,
+    path = "/api/v1/agent-profiles/{id}",
+    tag = "Agent Profiles",
+    params(
+        ("id" = String, Path, description = "Agent profile ID"),
+    ),
+    responses(
+        (status = 200, description = "Agent profile deleted successfully"),
+        (status = 404, description = "Profile not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn delete_profile(Path(id): Path<String>) -> axum::response::Response {
     match profile_service::delete_profile(&id).await {
         Ok(true) => (
             StatusCode::OK,
@@ -178,24 +210,15 @@ pub async fn delete_profile(Path(id): Path<String>) -> impl IntoResponse {
                 "status": "success",
                 "message": format!("Agent profile '{}' deleted successfully", id)
             })),
-        ),
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": format!("Agent profile '{}' not found", id)
-            })),
-        ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": crate::sanitize_error(&e, "delete_profile")
-            })),
-        ),
+        )
+            .into_response(),
+        Ok(false) => crate::http_error::not_found("Agent profile", &id).into_response(),
+        Err(e) => crate::http_error::internal(e, "delete_profile").into_response(),
     }
 }
 
 /// Response for a profile with installation status
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ProfileWithStatusResponse {
     pub id: String,
     pub name: String,
@@ -223,7 +246,7 @@ impl From<ergatai_runtime::profile_registry::ProfileWithStatus> for ProfileWithS
 }
 
 /// Response for listing profiles with status
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ListProfilesWithStatusResponse {
     pub profiles: Vec<ProfileWithStatusResponse>,
 }
@@ -231,7 +254,16 @@ pub struct ListProfilesWithStatusResponse {
 /// List all agent profiles with installation status
 ///
 /// GET /api/v1/agent-profiles/with-status
-pub async fn list_with_status() -> impl IntoResponse {
+#[utoipa::path(
+    get,
+    path = "/api/v1/agent-profiles/with-status",
+    tag = "Agent Profiles",
+    responses(
+        (status = 200, description = "List of agent profiles with installation status", body = ListProfilesWithStatusResponse),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn list_with_status() -> axum::response::Response {
     match profile_service::list_profiles_with_status() {
         Ok(profiles) => {
             let response = ListProfilesWithStatusResponse {
@@ -241,28 +273,35 @@ pub async fn list_with_status() -> impl IntoResponse {
                     .collect(),
             };
             match serde_json::to_value(response) {
-                Ok(value) => (StatusCode::OK, Json(value)),
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "error": format!("Failed to serialize profiles: {}", e)
-                    })),
-                ),
+                Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+                Err(e) => crate::http_error::internal(
+                    format!("Failed to serialize profiles: {}", e),
+                    "list_with_status_serialize",
+                )
+                .into_response(),
             }
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": crate::sanitize_error(&e, "list_with_status")
-            })),
-        ),
+        Err(e) => crate::http_error::internal(e, "list_with_status").into_response(),
     }
 }
 
 /// Install an agent by profile ID (npm install -g)
 ///
 /// POST /api/v1/agent-profiles/:id/install
-pub async fn install_agent(Path(id): Path<String>) -> impl IntoResponse {
+#[utoipa::path(
+    post,
+    path = "/api/v1/agent-profiles/{id}/install",
+    tag = "Agent Profiles",
+    params(
+        ("id" = String, Path, description = "Agent profile ID"),
+    ),
+    responses(
+        (status = 200, description = "Agent installed successfully"),
+        (status = 400, description = "Invalid request or agent not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn install_agent(Path(id): Path<String>) -> axum::response::Response {
     match profile_service::install_agent(&id).await {
         Ok(output) => (
             StatusCode::OK,
@@ -271,7 +310,8 @@ pub async fn install_agent(Path(id): Path<String>) -> impl IntoResponse {
                 "message": format!("Agent '{}' installed successfully", id),
                 "output": output
             })),
-        ),
+        )
+            .into_response(),
         Err(e) => {
             let err_text = e.to_string();
             let is_user_error = err_text.contains("not found")
@@ -281,10 +321,7 @@ pub async fn install_agent(Path(id): Path<String>) -> impl IntoResponse {
             let (status, message) = if is_user_error {
                 (StatusCode::BAD_REQUEST, err_text)
             } else {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    crate::sanitize_error(&e, "install_agent"),
-                )
+                return crate::http_error::internal(e, "install_agent").into_response();
             };
             (
                 status,
@@ -292,6 +329,7 @@ pub async fn install_agent(Path(id): Path<String>) -> impl IntoResponse {
                     "error": message
                 })),
             )
+                .into_response()
         }
     }
 }
@@ -299,7 +337,20 @@ pub async fn install_agent(Path(id): Path<String>) -> impl IntoResponse {
 /// Uninstall an agent by profile ID (npm uninstall -g)
 ///
 /// DELETE /api/v1/agent-profiles/:id/uninstall
-pub async fn uninstall_agent(Path(id): Path<String>) -> impl IntoResponse {
+#[utoipa::path(
+    delete,
+    path = "/api/v1/agent-profiles/{id}/uninstall",
+    tag = "Agent Profiles",
+    params(
+        ("id" = String, Path, description = "Agent profile ID"),
+    ),
+    responses(
+        (status = 200, description = "Agent uninstalled successfully"),
+        (status = 400, description = "Invalid request or agent not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn uninstall_agent(Path(id): Path<String>) -> axum::response::Response {
     match profile_service::uninstall_agent(&id).await {
         Ok(output) => (
             StatusCode::OK,
@@ -308,7 +359,8 @@ pub async fn uninstall_agent(Path(id): Path<String>) -> impl IntoResponse {
                 "message": format!("Agent '{}' uninstalled successfully", id),
                 "output": output
             })),
-        ),
+        )
+            .into_response(),
         Err(e) => {
             let err_text = e.to_string();
             let is_user_error = err_text.contains("not found")
@@ -318,10 +370,7 @@ pub async fn uninstall_agent(Path(id): Path<String>) -> impl IntoResponse {
             let (status, message) = if is_user_error {
                 (StatusCode::BAD_REQUEST, err_text)
             } else {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    crate::sanitize_error(&e, "uninstall_agent"),
-                )
+                return crate::http_error::internal(e, "uninstall_agent").into_response();
             };
             (
                 status,
@@ -329,6 +378,7 @@ pub async fn uninstall_agent(Path(id): Path<String>) -> impl IntoResponse {
                     "error": message
                 })),
             )
+                .into_response()
         }
     }
 }

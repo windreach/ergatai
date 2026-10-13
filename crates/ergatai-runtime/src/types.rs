@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use ergatai_error::ErgataiError;
 use serde::{Deserialize, Serialize};
 
 /// An image attachment delivered with an agent prompt.
@@ -31,22 +32,22 @@ impl AgentImage {
     /// Returns `Err(reason)` if the base64 payload exceeds
     /// [`MAX_BASE64_SIZE`](Self::MAX_BASE64_SIZE) or the media type is not
     /// an allowed image format.
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), ErgataiError> {
         if self.base64_data.len() > Self::MAX_BASE64_SIZE {
-            return Err(format!(
+            return Err(ErgataiError::InvalidArgument(format!(
                 "Image too large: {} bytes (max: {} bytes)",
                 self.base64_data.len(),
                 Self::MAX_BASE64_SIZE
-            ));
+            )));
         }
 
         const ALLOWED_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
         if !ALLOWED_TYPES.contains(&self.media_type.as_str()) {
-            return Err(format!(
+            return Err(ErgataiError::InvalidArgument(format!(
                 "Unsupported image media type: '{}' (allowed: {})",
                 self.media_type,
                 ALLOWED_TYPES.join(", ")
-            ));
+            )));
         }
 
         Ok(())

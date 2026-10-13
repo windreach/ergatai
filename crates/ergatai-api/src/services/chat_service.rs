@@ -6,21 +6,21 @@
 //! - 级联删除（删除 Chat 时级联删除 CollaborationSession 和 Conversation）
 
 use crate::user_data_db::{chats, Chat};
-use ergatai_core::id::{format as format_id, generate, IdType};
+use ergatai_core::id::generate;
 
 pub struct ChatService;
 
 impl ChatService {
     /// 创建 Chat
-    pub fn create_chat(workspace_id: &str, name: Option<String>) -> anyhow::Result<Chat> {
+    pub fn create_chat(workspace_id: i64, name: Option<String>) -> anyhow::Result<Chat> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
 
         let chat = Chat {
-            chat_id: format_id(generate(), IdType::Chat),
-            workspace_id: workspace_id.to_string(),
+            chat_id: generate(),
+            workspace_id,
             name,
             created_at: now,
             updated_at: now,
@@ -32,19 +32,19 @@ impl ChatService {
     }
 
     /// 获取 Chat
-    pub fn get_chat(chat_id: &str) -> anyhow::Result<Option<Chat>> {
+    pub fn get_chat(chat_id: i64) -> anyhow::Result<Option<Chat>> {
         let chat = chats::get(chat_id)?;
         Ok(chat)
     }
 
     /// 列出 Chat（通过 workspace_id 过滤）
-    pub fn list_chats_by_workspace(workspace_id: &str) -> anyhow::Result<Vec<Chat>> {
+    pub fn list_chats_by_workspace(workspace_id: i64) -> anyhow::Result<Vec<Chat>> {
         let chats = chats::list(Some(workspace_id))?;
         Ok(chats)
     }
 
     /// 列出所有 Chat
-    pub fn list_chats(workspace_id: Option<&str>) -> anyhow::Result<Vec<Chat>> {
+    pub fn list_chats(workspace_id: Option<i64>) -> anyhow::Result<Vec<Chat>> {
         let chats = chats::list(workspace_id)?;
         Ok(chats)
     }
@@ -56,7 +56,7 @@ impl ChatService {
     }
 
     /// 删除 Chat（级联删除 CollaborationSession 和 Conversation）
-    pub fn delete_chat(chat_id: &str) -> anyhow::Result<()> {
+    pub fn delete_chat(chat_id: i64) -> anyhow::Result<()> {
         // TODO: 实现级联删除
         // 1. 删除该 chat 下的所有 collaboration_session
         // 2. 删除该 chat 下的所有 conversation
@@ -66,13 +66,13 @@ impl ChatService {
     }
 
     /// 归档 Chat
-    pub fn archive_chat(chat_id: &str) -> anyhow::Result<()> {
+    pub fn archive_chat(chat_id: i64) -> anyhow::Result<()> {
         chats::archive(chat_id)?;
         Ok(())
     }
 
     /// 取消归档 Chat
-    pub fn unarchive_chat(chat_id: &str) -> anyhow::Result<()> {
+    pub fn unarchive_chat(chat_id: i64) -> anyhow::Result<()> {
         chats::unarchive(chat_id)?;
         Ok(())
     }

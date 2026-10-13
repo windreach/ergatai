@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -8,11 +8,12 @@ use ergatai_runtime::suspend_store::SuspendReason;
 use ergatai_runtime::{ResourceLimits, WorkspaceSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use tokio::sync::Mutex;
 use utoipa::ToSchema;
 
-use ergatai_core::id::{format as format_id, generate, IdType};
+use ergatai_core::id::{format as format_id, generate, parse_to_i64, IdType};
 
 use crate::messaging::{get_message_sender, SendMessageResult, SendRequest};
 use crate::AppState;
@@ -479,9 +480,14 @@ pub(crate) fn is_valid_workspace_id(id: &str) -> bool {
 async fn workspace_resource_limits(
     workspace_id: &str,
 ) -> Result<ResourceLimits, (StatusCode, String)> {
-    let workspace_id_for_get = workspace_id.to_string();
+    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Invalid workspace ID format: {}", workspace_id),
+        )
+    })?;
     let workspace = match tokio::task::spawn_blocking(move || {
-        crate::user_data_db::workspaces::get(&workspace_id_for_get)
+        crate::user_data_db::workspaces::get(workspace_id_i64)
     })
     .await
     {
@@ -690,9 +696,20 @@ pub async fn spawn_agent(
     let mut spawn_chat_id: Option<String> = None;
 
     if let Some(conversation_id) = req.conversation_id.as_deref() {
-        let conversation_id_for_get = conversation_id.to_string();
+        let conversation_id_i64 = match parse_to_i64(conversation_id) {
+            Some(id) => id,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Invalid conversation ID format: {}", conversation_id),
+                    }),
+                )
+                    .into_response()
+            }
+        };
         match tokio::task::spawn_blocking(move || {
-            crate::user_data_db::conversations::get(&conversation_id_for_get)
+            crate::user_data_db::conversations::get(conversation_id_i64)
         })
         .await
         {
@@ -700,8 +717,10 @@ pub async fn spawn_agent(
                 spawn_chat_id = Some(
                     conversation
                         .parent_id
-                        .clone()
-                        .unwrap_or_else(|| conversation.conversation_id.clone()),
+                        .map(|id| format_id(id, IdType::Chat))
+                        .unwrap_or_else(|| {
+                            format_id(conversation.conversation_id, IdType::Conversation)
+                        }),
                 );
             }
             Ok(Ok(None)) => {
@@ -733,9 +752,22 @@ pub async fn spawn_agent(
             }
         }
 
-        let conversation_id_for_resolve = conversation_id.to_string();
-        let resolved_workspace_id = match tokio::task::spawn_blocking(move || {
-            crate::user_data_db::conversations::resolve_workspace_id(&conversation_id_for_resolve)
+        let conversation_id_i64_for_resolve = match parse_to_i64(conversation_id) {
+            Some(id) => id,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Invalid conversation ID format: {}", conversation_id),
+                    }),
+                )
+                    .into_response()
+            }
+        };
+        let resolved_workspace_id_i64 = match tokio::task::spawn_blocking(move || {
+            crate::user_data_db::conversations::resolve_workspace_id(
+                conversation_id_i64_for_resolve,
+            )
         })
         .await
         {
@@ -769,8 +801,9 @@ pub async fn spawn_agent(
             }
         };
 
+        let resolved_workspace_id_str = format_id(resolved_workspace_id_i64, IdType::Workspace);
         if let Some(requested_workspace_id) = &workspace_id {
-            if requested_workspace_id != &resolved_workspace_id {
+            if requested_workspace_id != &resolved_workspace_id_str {
                 return (
                     StatusCode::CONFLICT,
                     Json(ErrorResponse {
@@ -781,9 +814,8 @@ pub async fn spawn_agent(
             }
         }
 
-        let resolved_workspace_id_for_get = resolved_workspace_id.clone();
         let workspace = match tokio::task::spawn_blocking(move || {
-            crate::user_data_db::workspaces::get(&resolved_workspace_id_for_get)
+            crate::user_data_db::workspaces::get(resolved_workspace_id_i64)
         })
         .await
         {
@@ -817,9 +849,22 @@ pub async fn spawn_agent(
             }
         };
 
-        let conversation_id_for_context = conversation_id.to_string();
+        let conversation_id_i64_for_context = match parse_to_i64(conversation_id) {
+            Some(id) => id,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Invalid conversation ID format: {}", conversation_id),
+                    }),
+                )
+                    .into_response()
+            }
+        };
         let execution_context = match tokio::task::spawn_blocking(move || {
-            crate::user_data_db::conversation_execution_contexts::get(&conversation_id_for_context)
+            crate::user_data_db::conversation_execution_contexts::get(
+                conversation_id_i64_for_context,
+            )
         })
         .await
         {
@@ -852,7 +897,7 @@ pub async fn spawn_agent(
         env = serde_json::from_str::<HashMap<String, String>>(&workspace.env)
             .map(Some)
             .unwrap_or(None);
-        workspace_id = Some(resolved_workspace_id);
+        workspace_id = Some(resolved_workspace_id_str);
     }
 
     let workspace_id = workspace_id.expect("workspace_id is checked above");
@@ -1010,6 +1055,17 @@ pub async fn kill_agent(
 ///
 /// Does NOT stop the agent — only cancels the in-flight prompt. The agent
 /// will return a response with `stop_reason = "cancelled"`.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agents/{id}/cancel",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Prompt cancelled"),
+        (status = 404, description = "Agent not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn cancel_prompt(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -1033,7 +1089,7 @@ pub async fn cancel_prompt(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/agents/{id}/message",
+    path = "/api/v1/agents/{id}/send",
     tag = "Agents",
     params(("id" = String, Path, description = "Agent ID")),
     request_body = SendMessageRequest,
@@ -1143,13 +1199,27 @@ pub async fn send_message(
 
         let chat_id = {
             let requested_conversation_id = requested_conversation_id.clone();
+            let requested_conversation_id_i64 = match parse_to_i64(&requested_conversation_id) {
+                Some(id) => id,
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({
+                            "status": "error",
+                            "message": format!("Invalid conversation ID format: {}", requested_conversation_id),
+                        })),
+                    )
+                        .into_response()
+                }
+            };
             match tokio::task::spawn_blocking(move || -> Result<String, String> {
                 if let Ok(Some(conversation)) =
-                    crate::user_data_db::conversations::get(&requested_conversation_id)
+                    crate::user_data_db::conversations::get(requested_conversation_id_i64)
                 {
-                    return Ok(conversation
+                    let chat_id_i64 = conversation
                         .parent_id
-                        .unwrap_or(conversation.conversation_id));
+                        .unwrap_or(conversation.conversation_id);
+                    return Ok(format_id(chat_id_i64, IdType::Chat));
                 }
                 Err("Conversation not found for agent-to-agent routing".to_string())
             })
@@ -1184,9 +1254,21 @@ pub async fn send_message(
 
         if !force_new {
             // Try to find an existing agent with the target command bound to this chat
-            let chat_id_for_list = chat_id.clone();
+            let chat_id_i64_for_list = match parse_to_i64(&chat_id) {
+                Some(id) => id,
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({
+                            "status": "error",
+                            "message": format!("Invalid chat ID format: {}", chat_id),
+                        })),
+                    )
+                        .into_response()
+                }
+            };
             let bindings_result = match tokio::task::spawn_blocking(move || {
-                crate::user_data_db::group_agent_bindings::list(&chat_id_for_list)
+                crate::user_data_db::group_agent_bindings::list(chat_id_i64_for_list)
             })
             .await
             {
@@ -1197,16 +1279,18 @@ pub async fn send_message(
             if let Some(bindings) = bindings_result {
                 for binding in bindings {
                     if binding.agent_command.as_deref() == Some(target_command) {
+                        // Convert agent_id from i64 to string for get_agent_info
+                        let agent_id_str = format_id(binding.agent_id, IdType::Agent);
                         // Check if this agent is alive
                         if let Some(target_info) =
-                            crate::services::agent_service::get_agent_info(&binding.agent_id).await
+                            crate::services::agent_service::get_agent_info(&agent_id_str).await
                         {
                             if target_info.lifecycle.is_alive() {
                                 // Route to this existing agent's own conversation.
-                                let target_conversation_id = binding.conversation_id.clone();
+                                let target_conversation_id = binding.conversation_id;
                                 let send_req = SendRequest {
                                     from: req.from.unwrap_or_else(|| id.clone()),
-                                    to: binding.agent_id.clone(),
+                                    to: format_id(binding.agent_id, IdType::Agent),
                                     target_conversation_id: None, // REST API uses agent-centric routing
                                     message: req.message,
                                     message_type: req
@@ -1258,12 +1342,21 @@ pub async fn send_message(
                                 }
                             } else {
                                 // Agent is dead - clean up stale binding
-                                let chat_id_for_delete = chat_id.clone();
-                                let agent_id_for_delete = binding.agent_id.clone();
+                                let chat_id_i64_for_delete = match parse_to_i64(&chat_id) {
+                                    Some(id) => id,
+                                    None => {
+                                        tracing::warn!(
+                                            chat_id = %chat_id,
+                                            "Invalid chat ID format, skipping binding cleanup"
+                                        );
+                                        continue;
+                                    }
+                                };
+                                let agent_id_for_delete = binding.agent_id;
                                 if let Err(e) = tokio::task::spawn_blocking(move || {
                                     crate::user_data_db::group_agent_bindings::delete(
-                                        &chat_id_for_delete,
-                                        &agent_id_for_delete,
+                                        chat_id_i64_for_delete,
+                                        agent_id_for_delete,
                                     )
                                 })
                                 .await
@@ -1277,12 +1370,21 @@ pub async fn send_message(
                             }
                         } else {
                             // Agent not found - clean up stale binding
-                            let chat_id_for_delete = chat_id.clone();
-                            let agent_id_for_delete = binding.agent_id.clone();
+                            let chat_id_i64_for_delete = match parse_to_i64(&chat_id) {
+                                Some(id) => id,
+                                None => {
+                                    tracing::warn!(
+                                        chat_id = %chat_id,
+                                        "Invalid chat ID format, skipping binding cleanup"
+                                    );
+                                    continue;
+                                }
+                            };
+                            let agent_id_for_delete = binding.agent_id;
                             if let Err(e) = tokio::task::spawn_blocking(move || {
                                 crate::user_data_db::group_agent_bindings::delete(
-                                    &chat_id_for_delete,
-                                    &agent_id_for_delete,
+                                    chat_id_i64_for_delete,
+                                    agent_id_for_delete,
                                 )
                             })
                             .await
@@ -1420,25 +1522,49 @@ pub async fn send_message(
 
                 // Bind the new agent to its own conversation below the chat.
                 let now = chrono::Utc::now().timestamp();
-                let chat_id_for_conversation = chat_id.clone();
+                let chat_id_i64 = match parse_to_i64(&chat_id) {
+                    Some(id) => id,
+                    None => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({
+                                "status": "error",
+                                "message": format!("Invalid chat ID format: {}", chat_id),
+                            })),
+                        )
+                            .into_response()
+                    }
+                };
                 let agent_command_for_name = target_command.clone();
-                let conversation_id_for_create = agent_conversation_id.clone();
+                let conversation_id_i64_for_create = match parse_to_i64(&agent_conversation_id) {
+                    Some(id) => id,
+                    None => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({
+                                "status": "error",
+                                "message": format!("Invalid conversation ID format: {}", agent_conversation_id),
+                            })),
+                        )
+                            .into_response()
+                    }
+                };
+                let chat_id_i64_for_parent = chat_id_i64;
                 let create_conversation =
-                    tokio::task::spawn_blocking(move || -> Result<String, rusqlite::Error> {
+                    tokio::task::spawn_blocking(move || -> Result<i64, rusqlite::Error> {
                         let Some(root_conversation) =
-                            crate::user_data_db::conversations::get(&chat_id_for_conversation)?
+                            crate::user_data_db::conversations::get(chat_id_i64_for_parent)?
                         else {
                             return Err(rusqlite::Error::QueryReturnedNoRows);
                         };
 
                         crate::user_data_db::conversations::create(
                             crate::user_data_db::Conversation {
-                                conversation_id: conversation_id_for_create.clone(),
+                                conversation_id: conversation_id_i64_for_create,
                                 collaboration_session_id: root_conversation
-                                    .collaboration_session_id
-                                    .clone(),
-                                chat_id: root_conversation.chat_id.clone(),
-                                parent_id: Some(chat_id_for_conversation),
+                                    .collaboration_session_id,
+                                chat_id: root_conversation.chat_id,
+                                parent_id: Some(chat_id_i64_for_parent),
                                 name: Some(agent_command_for_name),
                                 mode: "agent".to_string(),
                                 participant_role: "peer".to_string(),
@@ -1447,12 +1573,14 @@ pub async fn send_message(
                                 updated_at: now,
                             },
                         )?;
-                        Ok(conversation_id_for_create)
+                        Ok(conversation_id_i64_for_create)
                     })
                     .await;
 
                 let agent_conversation_id = match create_conversation {
-                    Ok(Ok(conversation_id)) => conversation_id,
+                    Ok(Ok(conversation_id_i64)) => {
+                        format_id(conversation_id_i64, IdType::Conversation)
+                    }
                     Ok(Err(error)) => {
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1475,13 +1603,66 @@ pub async fn send_message(
                     }
                 };
 
+                let workspace_id_i64 = match parse_to_i64(&sender_info.workspace_id) {
+                    Some(id) => id,
+                    None => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({
+                                "status": "error",
+                                "message": format!("Invalid workspace ID format: {}", sender_info.workspace_id),
+                            })),
+                        )
+                            .into_response()
+                    }
+                };
+                let chat_id_i64 = match parse_to_i64(&chat_id) {
+                    Some(id) => id,
+                    None => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({
+                                "status": "error",
+                                "message": format!("Invalid chat ID format: {}", chat_id),
+                            })),
+                        )
+                            .into_response()
+                    }
+                };
+                let new_agent_id_i64 = match parse_to_i64(&new_agent_id) {
+                    Some(id) => id,
+                    None => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({
+                                "status": "error",
+                                "message": format!("Invalid agent ID format: {}", new_agent_id),
+                            })),
+                        )
+                            .into_response()
+                    }
+                };
+                let agent_conversation_id_i64 = match parse_to_i64(&agent_conversation_id) {
+                    Some(id) => id,
+                    None => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({
+                                "status": "error",
+                                "message": format!("Invalid conversation ID format: {}", agent_conversation_id),
+                            })),
+                        )
+                            .into_response()
+                    }
+                };
+
                 let binding = crate::user_data_db::GroupAgentBinding {
-                    workspace_id: sender_info.workspace_id.clone(),
-                    chat_id: chat_id.clone(),
-                    agent_id: new_agent_id.clone(),
+                    workspace_id: workspace_id_i64,
+                    chat_id: chat_id_i64,
+                    agent_id: new_agent_id_i64,
                     agent_name: target_command.clone(),
                     agent_command: Some(target_command.clone()),
-                    conversation_id: agent_conversation_id.clone(),
+                    conversation_id: agent_conversation_id_i64,
                     created_at: now,
                     updated_at: now,
                 };
@@ -1502,12 +1683,11 @@ pub async fn send_message(
                     crate::services::agent_service::get_agent_session_id(&new_agent_id)
                         .await
                         .unwrap_or_default();
-                let conversation_id_for_agent_session = agent_conversation_id.clone();
-                let agent_session_id = format_id(generate(), IdType::Session);
+                let agent_session_id_i64 = generate();
                 if let Err(error) = tokio::task::spawn_blocking(move || {
                     crate::user_data_db::agent_sessions::upsert(crate::user_data_db::AgentSession {
-                        agent_session_id,
-                        conversation_id: conversation_id_for_agent_session,
+                        agent_session_id: agent_session_id_i64,
+                        conversation_id: agent_conversation_id_i64,
                         acp_session_id: Some(session_id),
                         mode: "agent".to_string(),
                         created_at: now,
@@ -1520,22 +1700,34 @@ pub async fn send_message(
                 }
 
                 // Register the conversation in the collaboration session.
-                let chat_id_for_participant = chat_id.clone();
+                let chat_id_i64 = match parse_to_i64(&chat_id) {
+                    Some(id) => id,
+                    None => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse {
+                                error: format!("Invalid chat ID format: {}", chat_id),
+                            }),
+                        )
+                            .into_response();
+                    }
+                };
+
                 let session_for_participant = tokio::task::spawn_blocking(move || {
                     crate::services::collaboration_session::find_session_by_chat(
-                        &chat_id_for_participant,
+                        &chat_id_i64.to_string(),
                     )
                 })
                 .await;
                 let new_agent_id_for_participant = new_agent_id.clone();
                 match session_for_participant {
                     Ok(Ok(Some(session))) => {
-                        let participant_conversation_id = agent_conversation_id.clone();
+                        let participant_conversation_id = agent_conversation_id_i64;
                         if let Err(error) = tokio::task::spawn_blocking(move || {
                             crate::services::collaboration_session::upsert_participant(
                                 &session.collaboration_session_id,
                                 crate::services::collaboration_session::ParticipantInput {
-                                    conversation_id: participant_conversation_id,
+                                    conversation_id: participant_conversation_id.to_string(),
                                     agent_id: new_agent_id_for_participant,
                                     role: "peer".to_string(),
                                     status: "ready".to_string(),
@@ -1566,7 +1758,7 @@ pub async fn send_message(
                     message: req.message,
                     message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
                     correlation_id: req.correlation_id,
-                    conversation_id: Some(agent_conversation_id),
+                    conversation_id: Some(agent_conversation_id_i64),
                 };
 
                 return match sender.send(send_req).await {
@@ -1625,7 +1817,7 @@ pub async fn send_message(
         message: req.message,
         message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
         correlation_id: req.correlation_id,
-        conversation_id: req.conversation_id,
+        conversation_id: req.conversation_id.and_then(|s| s.parse::<i64>().ok()),
     };
 
     match sender.send(send_req).await {
@@ -1663,7 +1855,7 @@ pub async fn send_message(
 }
 
 /// Request type for POST /api/v1/agents/:agent_id/spawn-session
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SpawnSessionRequest {
     /// Target agent command to spawn (e.g., "claude", "codex")
     pub target_command: String,
@@ -1679,7 +1871,7 @@ pub struct SpawnSessionRequest {
 }
 
 /// Response type for POST /api/v1/agents/:agent_id/spawn-session
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SpawnSessionResponse {
     pub new_session_id: String,
     pub new_agent_id: String,
@@ -1689,6 +1881,20 @@ pub struct SpawnSessionResponse {
 /// POST /api/v1/agents/:agent_id/spawn-session
 /// Explicitly spawn a new agent session from an existing agent.
 /// Used for context overflow, task separation, or explicit user requests.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agents/{id}/spawn-session",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Parent agent ID")),
+    request_body = SpawnSessionRequest,
+    responses(
+        (status = 201, description = "New session spawned", body = SpawnSessionResponse),
+        (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 403, description = "Command not allowed", body = crate::api::ApiError),
+        (status = 404, description = "Parent agent not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn spawn_session(
     State(state): State<AppState>,
     Path(parent_agent_id): Path<String>,
@@ -1873,19 +2079,19 @@ pub async fn spawn_session(
 
 // ── ACP Monitoring Endpoints ──
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AgentThoughtsResponse {
     pub agent_id: String,
     pub thoughts: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AgentToolCallsResponse {
     pub agent_id: String,
     pub tool_calls: Vec<ToolCallInfo>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ToolCallInfo {
     /// ACP tool call ID.
     pub id: String,
@@ -1920,7 +2126,7 @@ fn truncate_json(value: &serde_json::Value, max_chars: usize) -> String {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AgentUsageResponse {
     pub agent_id: String,
     pub input_tokens: usize,
@@ -1929,6 +2135,17 @@ pub struct AgentUsageResponse {
 }
 
 /// Get captured thoughts for an agent (if capture_thoughts was enabled).
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/thoughts",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Agent thoughts", body = AgentThoughtsResponse),
+        (status = 400, description = "Bad request", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_agent_thoughts(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -1953,6 +2170,17 @@ pub async fn get_agent_thoughts(
 }
 
 /// Get recent tool calls for an agent (last 100).
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/tool-calls",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Agent tool calls", body = AgentToolCallsResponse),
+        (status = 404, description = "Agent not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_agent_tool_calls(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -2015,21 +2243,21 @@ pub async fn get_agent_tool_calls(
 }
 
 /// Response for `GET /api/v1/agents/:id/plan`.
-#[derive(Serialize)]
-struct AgentPlanResponse {
+#[derive(Serialize, ToSchema)]
+pub struct AgentPlanResponse {
     agent_id: String,
     plan: Option<PlanInfo>,
 }
 
 /// Execution plan info for an agent.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct PlanInfo {
     entries: Vec<PlanEntryInfo>,
     last_updated: String,
 }
 
 /// A single plan entry.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct PlanEntryInfo {
     content: String,
     priority: String,
@@ -2037,6 +2265,17 @@ struct PlanEntryInfo {
 }
 
 /// Get the current execution plan for an agent.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/plan",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Agent execution plan", body = AgentPlanResponse),
+        (status = 400, description = "Bad request", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_agent_plan(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -2084,14 +2323,14 @@ pub async fn get_agent_plan(
 }
 
 /// Response for `GET /api/v1/agents/:id/elicitations`.
-#[derive(Serialize)]
-struct AgentElicitationsResponse {
+#[derive(Serialize, ToSchema)]
+pub struct AgentElicitationsResponse {
     agent_id: String,
     elicitations: Vec<ElicitationInfo>,
 }
 
 /// Elicitation info (agent request for user input).
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct ElicitationInfo {
     elicitation_id: String,
     message: String,
@@ -2102,14 +2341,14 @@ struct ElicitationInfo {
 }
 
 /// Agent available commands response.
-#[derive(Serialize)]
-struct AgentAvailableCommandsResponse {
+#[derive(Serialize, ToSchema)]
+pub struct AgentAvailableCommandsResponse {
     agent_id: String,
     commands: Vec<AvailableCommandInfo>,
 }
 
 /// Available command info.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct AvailableCommandInfo {
     name: String,
     description: String,
@@ -2117,7 +2356,7 @@ struct AvailableCommandInfo {
 }
 
 /// Request to execute a slash command on an agent.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ExecuteCommandRequest {
     /// The slash command to execute (e.g. "/model").
     pub command: String,
@@ -2131,7 +2370,7 @@ fn default_command_timeout() -> u64 {
 }
 
 /// Response from executing a slash command.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ExecuteCommandResponse {
     /// Raw output text from the agent.
     pub output: String,
@@ -2141,14 +2380,14 @@ pub struct ExecuteCommandResponse {
 }
 
 /// Response from listing sessions.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ListSessionsResponse {
     /// List of sessions.
     pub sessions: Vec<SessionInfoResponse>,
 }
 
 /// Session information.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SessionInfoResponse {
     /// Unique session identifier.
     pub session_id: String,
@@ -2164,8 +2403,8 @@ pub struct SessionInfoResponse {
 }
 
 /// Agent config options response.
-#[derive(Serialize)]
-struct AgentConfigOptionsResponse {
+#[derive(Serialize, ToSchema)]
+pub struct AgentConfigOptionsResponse {
     agent_id: String,
     config_options: Vec<ConfigOptionInfo>,
 }
@@ -2182,6 +2421,17 @@ pub struct ConfigOptionInfo {
 }
 
 /// Get recent elicitation requests for an agent.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/elicitations",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Agent elicitations", body = AgentElicitationsResponse),
+        (status = 404, description = "Agent not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_agent_elicitations(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -2230,6 +2480,17 @@ pub async fn get_agent_elicitations(
 }
 
 /// Get available slash commands reported by the agent.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/commands",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Available commands", body = AgentAvailableCommandsResponse),
+        (status = 404, description = "Agent not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_agent_available_commands(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -2275,6 +2536,18 @@ pub async fn get_agent_available_commands(
 ///
 /// Sends the command as a prompt via ACP, waits for the agent to finish,
 /// and returns the captured output with optional parsed data.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agents/{id}/execute-command",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    request_body = ExecuteCommandRequest,
+    responses(
+        (status = 200, description = "Command output", body = ExecuteCommandResponse),
+        (status = 400, description = "Bad request", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn execute_agent_command(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -2302,6 +2575,17 @@ pub async fn execute_agent_command(
 }
 
 /// List available ACP sessions for an agent.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/sessions",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "List of sessions", body = ListSessionsResponse),
+        (status = 400, description = "Bad request", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn list_agent_sessions(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -2332,6 +2616,17 @@ pub async fn list_agent_sessions(
 }
 
 /// Create a new ACP session for an agent.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agents/{id}/sessions",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 201, description = "Session created", body = SessionInfoResponse),
+        (status = 400, description = "Bad request", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn create_agent_session(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -2357,6 +2652,20 @@ pub async fn create_agent_session(
 }
 
 /// Load an existing ACP session for an agent.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agents/{id}/sessions/{session_id}",
+    tag = "Agents",
+    params(
+        ("id" = String, Path, description = "Agent ID"),
+        ("session_id" = String, Path, description = "Session ID"),
+    ),
+    responses(
+        (status = 200, description = "Session loaded"),
+        (status = 400, description = "Bad request", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn load_agent_session(
     State(_state): State<AppState>,
     Path((id, session_id)): Path<(String, String)>,
@@ -2374,6 +2683,20 @@ pub async fn load_agent_session(
 }
 
 /// Delete an ACP session for an agent.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/agents/{id}/sessions/{session_id}",
+    tag = "Agents",
+    params(
+        ("id" = String, Path, description = "Agent ID"),
+        ("session_id" = String, Path, description = "Session ID"),
+    ),
+    responses(
+        (status = 200, description = "Session deleted"),
+        (status = 400, description = "Bad request", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn delete_agent_session(
     State(_state): State<AppState>,
     Path((id, session_id)): Path<(String, String)>,
@@ -2456,6 +2779,17 @@ fn parse_model_output(output: &str) -> Option<serde_json::Value> {
 }
 
 /// Get configuration options reported by the agent.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/config-options",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Agent config options", body = AgentConfigOptionsResponse),
+        (status = 404, description = "Agent not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_agent_config_options(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -2506,7 +2840,7 @@ pub async fn get_agent_config_options(
 }
 
 /// Request body for responding to an elicitation.
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct RespondToElicitationRequest {
     /// The action: "accept", "decline", or "cancel".
     pub action: String,
@@ -2515,6 +2849,21 @@ pub struct RespondToElicitationRequest {
 }
 
 /// Respond to a pending elicitation request from an agent.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agents/{id}/elicitations/{elicitation_id}/respond",
+    tag = "Agents",
+    params(
+        ("id" = String, Path, description = "Agent ID"),
+        ("elicitation_id" = String, Path, description = "Elicitation ID"),
+    ),
+    request_body = RespondToElicitationRequest,
+    responses(
+        (status = 200, description = "Elicitation responded"),
+        (status = 404, description = "Elicitation not found or already responded", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn respond_to_elicitation(
     State(_state): State<AppState>,
     Path((_agent_id, elicitation_id)): Path<(String, String)>,
@@ -2553,6 +2902,17 @@ pub async fn respond_to_elicitation(
 }
 
 /// Get token usage statistics for an agent.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/usage",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Agent usage statistics", body = AgentUsageResponse),
+        (status = 404, description = "Agent not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_agent_usage(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -2587,13 +2947,24 @@ pub async fn get_agent_usage(
 }
 
 /// Response for agent output endpoint.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AgentOutputResponse {
     pub agent_id: String,
     pub output: String,
 }
 
 /// Get captured output for an agent (non-destructive read).
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/output",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Agent output", body = AgentOutputResponse),
+        (status = 404, description = "Agent not found or has no output", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_agent_output(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -2626,7 +2997,7 @@ pub async fn get_agent_output(
 }
 
 /// Response for agent last structured activity age endpoint.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AgentLastActivityResponse {
     pub agent_id: String,
     /// Seconds since the agent's last structured activity event.
@@ -2634,6 +3005,17 @@ pub struct AgentLastActivityResponse {
 }
 
 /// Get the time elapsed since the agent's last structured activity.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/last-activity",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Last activity age", body = AgentLastActivityResponse),
+        (status = 404, description = "Agent not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_agent_last_activity(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -2666,7 +3048,7 @@ pub async fn get_agent_last_activity(
 }
 
 /// Response for agent exit code endpoint.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AgentExitCodeResponse {
     pub agent_id: String,
     /// `null` if still running, `0` for normal exit, non-zero for error.
@@ -2675,6 +3057,17 @@ pub struct AgentExitCodeResponse {
 }
 
 /// Get the exit code from the agent's connection task.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/exit-code",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Agent exit code", body = AgentExitCodeResponse),
+        (status = 404, description = "Agent not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_agent_exit_code(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -2708,13 +3101,24 @@ pub async fn get_agent_exit_code(
 }
 
 /// Response for agent PID endpoint.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AgentPidResponse {
     pub agent_id: String,
     pub pid: u32,
 }
 
 /// Get the PID of an agent's process.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/pid",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Agent PID", body = AgentPidResponse),
+        (status = 404, description = "Agent not found or PID not available", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_agent_pid(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -2739,6 +3143,122 @@ pub async fn get_agent_pid(
         )
             .into_response(),
     }
+}
+
+/// GET /api/v1/agents/{id}/current-output
+///
+/// Get the current in-progress agent output snapshot (from accumulator, not yet persisted)
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/current-output",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Current output snapshot", body = CurrentOutputResponse),
+        (status = 404, description = "Agent not found or no active output"),
+        (status = 500, description = "Internal server error"),
+    )
+)]
+pub async fn get_agent_current_output(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    // Get agent info to find conversation_id
+    let agent_id_for_lookup = id.clone();
+    let agent_info =
+        match crate::services::agent_service::get_agent_info(&agent_id_for_lookup).await {
+            Some(info) => info,
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("Agent {} not found", id),
+                    }),
+                )
+                    .into_response()
+            }
+        };
+
+    // Get conversation_id from agent info
+    let conversation_id = match agent_info.conversation_id.clone() {
+        Some(conv_id) => conv_id,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("Agent {} has no associated conversation", id),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    // Get current output snapshot from accumulator registry
+    let ctx = crate::context::get_app_context();
+    let accumulator = ctx.accumulator_registry.get(&conversation_id).await;
+
+    match accumulator {
+        Some(acc) => {
+            let acc_guard = acc.lock().await;
+            let snapshot = acc_guard.snapshot();
+            drop(acc_guard);
+
+            // Serialize the typed fields to JSON
+            let thinking_json = serde_json::to_value(&snapshot.thinking)
+                .unwrap_or(serde_json::Value::Array(vec![]));
+            let tool_calls_json = serde_json::to_value(&snapshot.tool_calls)
+                .unwrap_or(serde_json::Value::Array(vec![]));
+            let text_chunks_json = serde_json::to_value(&snapshot.text_chunks)
+                .unwrap_or(serde_json::Value::Array(vec![]));
+            let metadata_json =
+                serde_json::to_value(&snapshot.metadata).unwrap_or(serde_json::Value::Null);
+
+            let response = CurrentOutputResponse {
+                conversation_id: snapshot.conversation_id,
+                sequence: snapshot.sequence,
+                thinking: thinking_json.as_array().cloned().unwrap_or_default(),
+                tool_calls: tool_calls_json.as_array().cloned().unwrap_or_default(),
+                text_chunks: text_chunks_json.as_array().cloned().unwrap_or_default(),
+                final_text: snapshot.final_text,
+                metadata: metadata_json,
+                elapsed_ms: snapshot.elapsed_ms,
+            };
+
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        None => {
+            // No active accumulator - return empty snapshot
+            let response = CurrentOutputResponse {
+                conversation_id,
+                sequence: 0,
+                thinking: Vec::new(),
+                tool_calls: Vec::new(),
+                text_chunks: Vec::new(),
+                final_text: String::new(),
+                metadata: serde_json::Value::Null,
+                elapsed_ms: 0,
+            };
+
+            (StatusCode::OK, Json(response)).into_response()
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentOutputResponse {
+    pub conversation_id: String,
+    pub sequence: i64,
+    #[schema(value_type = Vec<Object>)]
+    pub thinking: Vec<serde_json::Value>,
+    #[schema(value_type = Vec<Object>)]
+    pub tool_calls: Vec<serde_json::Value>,
+    #[schema(value_type = Vec<Object>)]
+    pub text_chunks: Vec<serde_json::Value>,
+    pub final_text: String,
+    #[schema(value_type = Object)]
+    pub metadata: serde_json::Value,
+    pub elapsed_ms: u64,
 }
 
 // ── Prompt & SSE streaming ──
@@ -2825,9 +3345,20 @@ pub async fn prompt_agent(
     let prompt_id = format_id(generate(), IdType::Session);
 
     if let Some(conversation_id) = body.conversation_id.as_deref() {
-        let conversation_id_for_get = conversation_id.to_string();
+        let conversation_id_i64 = match parse_to_i64(conversation_id) {
+            Some(id) => id,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Invalid conversation ID format: {}", conversation_id),
+                    }),
+                )
+                    .into_response()
+            }
+        };
         let conversation = match tokio::task::spawn_blocking(move || {
-            crate::user_data_db::conversations::get(&conversation_id_for_get)
+            crate::user_data_db::conversations::get(conversation_id_i64)
         })
         .await
         {
@@ -2861,9 +3392,22 @@ pub async fn prompt_agent(
             }
         };
 
-        let conversation_id_for_resolve = conversation_id.to_string();
-        let workspace_id = match tokio::task::spawn_blocking(move || {
-            crate::user_data_db::conversations::resolve_workspace_id(&conversation_id_for_resolve)
+        let conversation_id_i64_for_resolve = match parse_to_i64(conversation_id) {
+            Some(id) => id,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Invalid conversation ID format: {}", conversation_id),
+                    }),
+                )
+                    .into_response()
+            }
+        };
+        let workspace_id_i64 = match tokio::task::spawn_blocking(move || {
+            crate::user_data_db::conversations::resolve_workspace_id(
+                conversation_id_i64_for_resolve,
+            )
         })
         .await
         {
@@ -2900,10 +3444,11 @@ pub async fn prompt_agent(
             }
         };
 
+        let workspace_id_str = format_id(workspace_id_i64, IdType::Workspace);
         let agent_info = crate::services::agent_service::get_agent_info(&runtime_id).await;
         let agent_profile = agent_info.as_ref().and_then(|info| info.profile.clone());
         if let Some(info) = &agent_info {
-            if info.workspace_id != workspace_id {
+            if info.workspace_id != workspace_id_str {
                 return (
                     StatusCode::CONFLICT,
                     Json(ErrorResponse {
@@ -3111,13 +3656,13 @@ pub async fn prompt_agent(
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as i64;
-            let conversation_id_for_upsert = conversation_id.to_string();
             let conversation_mode = conversation.mode.clone();
-            let agent_session_id = format_id(generate(), IdType::Session);
+            let agent_session_id = generate();
+            let conversation_id_for_session = conversation.conversation_id;
             if let Err(e) = tokio::task::spawn_blocking(move || {
                 crate::user_data_db::agent_sessions::upsert(crate::user_data_db::AgentSession {
                     agent_session_id,
-                    conversation_id: conversation_id_for_upsert,
+                    conversation_id: conversation_id_for_session,
                     acp_session_id: Some(session_id),
                     mode: conversation_mode,
                     created_at: now,
@@ -3128,7 +3673,7 @@ pub async fn prompt_agent(
             {
                 tracing::warn!(
                     error = %e,
-                    conversation_id = %conversation_id,
+                    conversation_id = %conversation.conversation_id,
                     "Prompt dispatched but failed to persist agent session"
                 );
             }
@@ -3138,14 +3683,14 @@ pub async fn prompt_agent(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        let root_conversation_id = conversation
+        let root_conversation_id_i64 = conversation
             .parent_id
-            .clone()
-            .unwrap_or_else(|| conversation.conversation_id.clone());
+            .unwrap_or(conversation.conversation_id);
+        let runtime_id_i64 = parse_to_i64(&runtime_id).unwrap_or(0);
         let binding = crate::user_data_db::GroupAgentBinding {
-            workspace_id,
-            chat_id: root_conversation_id,
-            agent_id: runtime_id.clone(),
+            workspace_id: workspace_id_i64,
+            chat_id: root_conversation_id_i64,
+            agent_id: runtime_id_i64,
             agent_name: agent_name.clone(),
             agent_command: agent_profile,
             conversation_id: conversation.conversation_id,
@@ -3198,15 +3743,29 @@ pub async fn prompt_agent(
 
 // ── Suspend/Resume API ──
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, ToSchema)]
 pub struct SuspendRequest {
     #[serde(default)]
+    #[schema(value_type = String)]
     pub reason: SuspendReason,
 }
 
 /// POST /api/v1/agents/{id}/suspend
 ///
 /// Suspend an agent, saving its state and stopping the process.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agents/{id}/suspend",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    request_body = SuspendRequest,
+    responses(
+        (status = 200, description = "Agent suspended"),
+        (status = 400, description = "Bad request", body = crate::api::ApiError),
+        (status = 404, description = "Agent not found", body = crate::api::ApiError),
+        (status = 503, description = "Service unavailable", body = crate::api::ApiError),
+    )
+)]
 pub async fn suspend_agent(
     State(_state): State<AppState>,
     Path(agent_id): Path<String>,
@@ -3250,6 +3809,17 @@ pub async fn suspend_agent(
 /// POST /api/v1/agents/{id}/resume
 ///
 /// Resume a suspended agent, restoring it with a new agent ID.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agents/{id}/resume",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Suspended agent ID")),
+    responses(
+        (status = 200, description = "Agent resumed"),
+        (status = 404, description = "Suspended agent not found", body = crate::api::ApiError),
+        (status = 503, description = "Service unavailable", body = crate::api::ApiError),
+    )
+)]
 pub async fn resume_agent(
     State(_state): State<AppState>,
     Path(suspended_id): Path<String>,
@@ -3291,6 +3861,16 @@ pub async fn resume_agent(
 /// GET /api/v1/agents/suspended
 ///
 /// List all suspended agents.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/suspended",
+    tag = "Agents",
+    responses(
+        (status = 200, description = "List of suspended agents"),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+        (status = 503, description = "Service unavailable", body = crate::api::ApiError),
+    )
+)]
 pub async fn list_suspended_agents(State(_state): State<AppState>) -> impl IntoResponse {
     let ctx = match crate::context::try_get_app_context() {
         Some(ctx) => ctx,
@@ -3329,155 +3909,262 @@ pub async fn list_suspended_agents(State(_state): State<AppState>) -> impl IntoR
 // Conversation Agent API（1:1 绑定）
 // ════════════════════════════════════════════════════════════════════════
 
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct CreateConversationAgentRequest {
-    pub profile_name: String,
-    #[serde(default)]
-    pub cwd: Option<String>,
+// ── SSE connection limiter ─────────────────────────────────────────────
+//
+// SECURITY: Cap the number of concurrent agent SSE connections to prevent
+// resource exhaustion. Default: 100 concurrent connections. Override with
+// ERGATAI_MAX_AGENT_SSE_CONNECTIONS.
+
+static AGENT_SSE_CONNECTION_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+fn max_agent_sse_connections() -> usize {
+    std::env::var("ERGATAI_MAX_AGENT_SSE_CONNECTIONS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(100)
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct PromptConversationAgentRequest {
-    pub content: String,
-    #[serde(default)]
-    pub interrupt: bool,
-    #[serde(default)]
-    pub images: Vec<String>,
-}
+/// RAII guard that decrements the SSE connection count on drop.
+struct AgentSseConnectionGuard;
 
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct InterruptConversationAgentRequest {
-    pub content: String,
-}
-
-/// GET /api/v1/conversations/{conversation_id}/agent
-pub async fn get_conversation_agent(Path(conversation_id): Path<String>) -> impl IntoResponse {
-    // Get agent session for this conversation
-    let conv_id_for_closure = conversation_id.clone();
-    let conv_id_for_error = conversation_id.clone();
-    match tokio::task::spawn_blocking(move || {
-        crate::user_data_db::agent_sessions::get(&conv_id_for_closure)
-    })
-    .await
-    {
-        Ok(Ok(Some(session))) => (StatusCode::OK, Json(session)).into_response(),
-        Ok(Ok(None)) => (
-            StatusCode::NOT_FOUND,
-            Json(crate::api::ApiError {
-                error: format!("No agent bound to conversation {}", conv_id_for_error),
-            }),
-        )
-            .into_response(),
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(crate::api::ApiError {
-                error: crate::sanitize_error(&e, "get_conversation_agent"),
-            }),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(crate::api::ApiError {
-                error: format!("Task join error: {}", e),
-            }),
-        )
-            .into_response(),
+impl Drop for AgentSseConnectionGuard {
+    fn drop(&mut self) {
+        let prev = AGENT_SSE_CONNECTION_COUNT.fetch_sub(1, Ordering::SeqCst);
+        // Use saturating_sub to prevent underflow panic in case of bugs
+        tracing::debug!(
+            remaining = prev.saturating_sub(1),
+            "Agent SSE connection closed"
+        );
     }
 }
 
-/// POST /api/v1/conversations/{conversation_id}/agent
-pub async fn create_conversation_agent(
-    Path(_conversation_id): Path<String>,
-    Json(_req): Json<CreateConversationAgentRequest>,
-) -> impl IntoResponse {
-    // TODO: Implement agent creation and binding
-    // This requires integration with the agent runtime
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(crate::api::ApiError {
-            error: "Agent creation not yet implemented".to_string(),
-        }),
-    )
-        .into_response()
+/// Query parameters for agent SSE endpoint
+#[derive(Debug, Deserialize)]
+pub struct AgentSseQuery {
+    /// Replay events after this sequence number (exclusive)
+    #[serde(default)]
+    pub after_sequence: Option<i64>,
 }
 
-/// DELETE /api/v1/conversations/{conversation_id}/agent
-pub async fn delete_conversation_agent(Path(conversation_id): Path<String>) -> impl IntoResponse {
-    // Remove agent binding
-    let conv_id_for_closure = conversation_id.clone();
-    match tokio::task::spawn_blocking(move || {
-        crate::user_data_db::agent_sessions::delete(&conv_id_for_closure)
-    })
-    .await
-    {
-        Ok(Ok(true)) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Ok(false)) => (
+/// GET /api/v1/agents/{agent_id}/events — SSE stream of agent-specific events
+///
+/// Streams real-time events for a specific agent including:
+/// - Agent lifecycle events (state changes)
+/// - Agent messages (sent/received)
+/// - Lock events (acquired/released)
+/// - DAG node events (complete/failed/warned/escalated)
+///
+/// The stream filters the global activity feed to only include events
+/// relevant to the specified agent_id.
+///
+/// Query parameters:
+/// - `after_sequence`: Replay events after this sequence number (for resumption)
+///
+/// SECURITY: Rejects with 503 when the connection cap is reached.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/events",
+    tag = "Agents",
+    params(
+        ("id" = String, Path, description = "Agent ID"),
+        ("after_sequence" = Option<i64>, Query, description = "Replay events after this sequence number"),
+    ),
+    responses(
+        (status = 200, description = "SSE event stream"),
+        (status = 404, description = "Agent not found", body = crate::api::ApiError),
+        (status = 503, description = "Connection limit reached", body = crate::api::ApiError),
+    )
+)]
+pub async fn stream_agent_events(
+    State(_state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Query(params): Query<AgentSseQuery>,
+) -> impl IntoResponse {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use futures::stream::{self, Stream, StreamExt};
+    use std::convert::Infallible;
+
+    // Enforce SSE connection cap
+    let max = max_agent_sse_connections();
+    loop {
+        let current = AGENT_SSE_CONNECTION_COUNT.load(Ordering::SeqCst);
+        if current >= max {
+            return crate::http_error::unavailable(format!(
+                "Agent SSE connection limit reached ({}/{}). Close an existing connection or raise ERGATAI_MAX_AGENT_SSE_CONNECTIONS.",
+                current, max
+            ))
+                .into_response();
+        }
+        match AGENT_SSE_CONNECTION_COUNT.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => {
+                tracing::debug!(
+                    active = current + 1,
+                    max = max,
+                    agent_id = %agent_id,
+                    "Agent SSE connection opened"
+                );
+                break;
+            }
+            Err(_) => {
+                // Yield to prevent CPU spin loop under high contention
+                tokio::task::yield_now().await;
+                continue;
+            }
+        }
+    }
+
+    let _guard = AgentSseConnectionGuard;
+
+    // Validate agent exists
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    let agent_id_for_check = agent_id.clone();
+    if runtime.get_agent(&agent_id_for_check).await.is_none() {
+        return (
             StatusCode::NOT_FOUND,
             Json(crate::api::ApiError {
-                error: format!("No agent bound to conversation {}", conversation_id),
+                error: format!("Agent {} not found", agent_id),
             }),
         )
-            .into_response(),
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(crate::api::ApiError {
-                error: crate::sanitize_error(&e, "delete_conversation_agent"),
-            }),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(crate::api::ApiError {
-                error: format!("Task join error: {}", e),
-            }),
-        )
-            .into_response(),
+            .into_response();
     }
-}
 
-/// POST /api/v1/conversations/{conversation_id}/agent/prompt
-pub async fn prompt_conversation_agent(
-    Path(_conversation_id): Path<String>,
-    Json(_req): Json<PromptConversationAgentRequest>,
-) -> impl IntoResponse {
-    // TODO: Implement prompt sending
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(crate::api::ApiError {
-            error: "Agent prompt not yet implemented".to_string(),
-        }),
-    )
+    let feed = match crate::api::activity::get_activity_feed() {
+        Some(feed) => feed,
+        None => {
+            // Return empty stream if feed not initialized
+            let empty_stream: std::pin::Pin<
+                Box<dyn Stream<Item = Result<Event, Infallible>> + Send>,
+            > = Box::pin(stream::empty());
+
+            // Use configurable keep-alive interval (default: 15s)
+            let keep_alive_secs = std::env::var("ERGATAI_SSE_KEEP_ALIVE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(15);
+
+            return Sse::new(empty_stream)
+                .keep_alive(
+                    KeepAlive::new().interval(std::time::Duration::from_secs(keep_alive_secs)),
+                )
+                .into_response();
+        }
+    };
+
+    let receiver = feed.subscribe();
+    let agent_id_for_filter = agent_id.clone();
+
+    // Get recent events first, filtered by agent_id
+    // Note: after_sequence parameter is accepted but not used yet, as ActivityEntry
+    // doesn't have sequence numbers. This is a placeholder for future implementation.
+    let _after_sequence = params.after_sequence.unwrap_or(0);
+    let recent = feed.recent(50).await;
+    let recent_events: Vec<Result<Event, Infallible>> = recent
+        .into_iter()
+        .rev()
+        .filter(|entry| {
+            // Filter by agent_id
+            event_matches_agent(&entry.event, &agent_id_for_filter)
+        })
+        .filter_map(|entry| {
+            serde_json::to_string(&entry)
+                .ok()
+                .map(|json| Ok(Event::default().data(json)))
+        })
+        .collect();
+
+    // Create a stream for new events, filtered by agent_id
+    let agent_id_for_stream = agent_id.clone();
+    let new_events_stream = stream::unfold(receiver, move |mut rx| {
+        let agent_id_filter = agent_id_for_stream.clone();
+        async move {
+            loop {
+                match rx.recv().await {
+                    Ok(entry) => {
+                        if event_matches_agent(&entry.event, &agent_id_filter) {
+                            if let Ok(json) = serde_json::to_string(&entry) {
+                                return Some((Ok(Event::default().data(json)), rx));
+                            }
+                        }
+                        // Skip events not matching this agent
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        return None;
+                    }
+                }
+            }
+        }
+    });
+
+    let combined: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
+        Box::pin(stream::iter(recent_events).chain(new_events_stream));
+
+    // Use configurable keep-alive interval (default: 15s)
+    let keep_alive_secs = std::env::var("ERGATAI_SSE_KEEP_ALIVE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(15);
+
+    Sse::new(combined)
+        .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(keep_alive_secs)))
         .into_response()
 }
 
-/// POST /api/v1/conversations/{conversation_id}/agent/cancel
-pub async fn cancel_conversation_agent(Path(_conversation_id): Path<String>) -> impl IntoResponse {
-    // TODO: Implement agent cancellation
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(crate::api::ApiError {
-            error: "Agent cancel not yet implemented".to_string(),
-        }),
-    )
-        .into_response()
-}
-
-/// POST /api/v1/conversations/{conversation_id}/agent/interrupt
-pub async fn interrupt_conversation_agent(
-    Path(_conversation_id): Path<String>,
-    Json(_req): Json<InterruptConversationAgentRequest>,
-) -> impl IntoResponse {
-    // TODO: Implement agent interrupt
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(crate::api::ApiError {
-            error: "Agent interrupt not yet implemented".to_string(),
-        }),
-    )
-        .into_response()
+/// Check if an activity event is relevant to a specific agent
+fn event_matches_agent(event: &crate::api::activity::ActivityEvent, agent_id: &str) -> bool {
+    use crate::api::activity::ActivityEvent;
+    match event {
+        ActivityEvent::AgentMessage {
+            from_agent,
+            to_agent,
+            ..
+        } => from_agent == agent_id || to_agent == agent_id,
+        ActivityEvent::AgentLifecycle {
+            agent_id: evt_agent_id,
+            ..
+        } => evt_agent_id == agent_id,
+        ActivityEvent::LockAcquired {
+            agent_id: evt_agent_id,
+            ..
+        } => evt_agent_id == agent_id,
+        ActivityEvent::LockReleased {
+            agent_id: evt_agent_id,
+            ..
+        } => evt_agent_id == agent_id,
+        ActivityEvent::DagNodeComplete {
+            agent_id: evt_agent_id,
+            ..
+        } => evt_agent_id == agent_id,
+        ActivityEvent::DagNodeFailed {
+            agent_id: evt_agent_id,
+            ..
+        } => evt_agent_id == agent_id,
+        ActivityEvent::DagNodeWarned { .. } => false, // DAG-level events, not agent-specific
+        ActivityEvent::DagNodeEscalated { .. } => false, // DAG-level events, not agent-specific
+        ActivityEvent::DagComplete { .. } => false,   // DAG-level events, not agent-specific
+    }
 }
 
 /// GET /api/v1/agents/{agent_id}
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{agent_id}",
+    tag = "Agents",
+    params(("agent_id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Agent info", body = AgentInfoResponse),
+        (status = 404, description = "Agent not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_agent(
     Path(agent_id): Path<String>,
     State(_state): State<AppState>,

@@ -44,6 +44,23 @@ use agent_client_protocol::{
     UntypedMessage,
 };
 
+/// Persist agent output to database via global callback.
+///
+/// This function is called when a prompt completes and the accumulated output
+/// needs to be persisted. It uses the global persistence callback set by ergatai-api.
+async fn persist_agent_output(
+    conversation_id: String,
+    output_data: crate::output_accumulator::AgentOutputData,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(callback) = crate::get_global_persist_callback() {
+        callback(conversation_id, output_data).await
+    } else {
+        // No callback set - this is OK during testing or when persistence is disabled
+        debug!("No persistence callback set, skipping agent output persistence");
+        Ok(())
+    }
+}
+
 /// Maximum size (in bytes) of recent thinking to retain per agent.
 /// Prevents unbounded memory growth from long-running thinking blocks.
 const RECENT_THINKING_MAX_BYTES: usize = 16 * 1024; // 16 KB
@@ -251,23 +268,37 @@ impl JsonRpcNotification for ExtendedSessionNotification {}
 /// Helper function to send an event to output publisher (NATS).
 /// Broadcast channel has been removed - all output goes through NATS for unified routing.
 ///
+/// # Retry Behavior
+/// Publishing is attempted once without retry. Retries are intentionally avoided because:
+/// 1. This function is called from async contexts, and blocking with sleep() would block
+///    the tokio worker thread, causing thread pool exhaustion under load.
+/// 2. Output publishing failures are logged at error level and don't affect agent operation.
+/// 3. The retry overhead (blocking) is worse than occasional publish failures.
+///
 /// # Fallback Behavior
-/// If the global output publisher is not initialized, events are logged at debug level.
+/// If the global output publisher is not initialized, events are logged at warn level.
 /// This prevents silent data loss during initialization or in test environments.
 fn send_output_event(conversation_id: &str, event: AgentOutputEvent) {
     // Get global output publisher (set during initialization)
     if let Some(publisher) = crate::output_publisher::get_global_output_publisher() {
-        if let Err(e) = publisher.publish(conversation_id, event) {
-            tracing::warn!(
-                conversation_id = %conversation_id,
-                error = %e,
-                "Failed to publish agent output event"
-            );
+        // Try to publish once. We don't retry here because:
+        // 1. This function is called from async contexts, and blocking with std::thread::sleep()
+        //    would block the tokio worker thread, causing thread pool exhaustion under load.
+        // 2. Output publishing failures are logged and don't affect the main agent operation.
+        // 3. The retry overhead (blocking) is worse than occasional publish failures.
+        match publisher.publish(conversation_id, event.clone()) {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::error!(
+                    conversation_id = %conversation_id,
+                    error = ?e,
+                    "Failed to publish agent output event"
+                );
+            }
         }
     } else {
-        // Fallback: log at debug level when publisher is not available.
-        // This can happen during initialization or in test environments.
-        tracing::debug!(
+        // Publisher not initialized — log at warn level to make data loss visible
+        tracing::warn!(
             conversation_id = %conversation_id,
             event_type = %std::any::type_name_of_val(&event),
             "Output publisher not initialized - event logged but not published"
@@ -297,6 +328,8 @@ async fn handle_standard_session_notification(
     title_no_change_count: &AtomicUsize,
     config_opts: &RwLock<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>,
     available_cmds: &RwLock<Vec<agent_client_protocol::schema::v1::AvailableCommand>>,
+    accumulator_registry: Option<&Arc<crate::output_accumulator::OutputAccumulatorRegistry>>,
+    current_sequence: i64,
 ) {
     *last_activity.write() = Instant::now();
     match &notification.update {
@@ -312,7 +345,21 @@ async fn handle_standard_session_notification(
                     debug!(text_len = text.len(), "ACP agent message chunk");
                 }
                 out.append(text.as_bytes());
-                send_output_event(conversation_id, AgentOutputEvent::Text { delta: text });
+                send_output_event(
+                    conversation_id,
+                    AgentOutputEvent::Text {
+                        delta: text.clone(),
+                    },
+                );
+
+                // Accumulate to turn accumulator
+                if let Some(registry) = accumulator_registry {
+                    let acc = registry
+                        .get_or_create(conversation_id, current_sequence)
+                        .await;
+                    let mut acc_guard = acc.lock().await;
+                    acc_guard.accumulate_text(&text);
+                }
             }
         }
         SessionUpdate::AgentThoughtChunk(chunk) => {
@@ -331,7 +378,21 @@ async fn handle_standard_session_notification(
                         thinking.push_str(&text);
                     }
                 }
-                send_output_event(conversation_id, AgentOutputEvent::Thinking { delta: text });
+                send_output_event(
+                    conversation_id,
+                    AgentOutputEvent::Thinking {
+                        delta: text.clone(),
+                    },
+                );
+
+                // Accumulate thinking to turn accumulator
+                if let Some(registry) = accumulator_registry {
+                    let acc = registry
+                        .get_or_create(conversation_id, current_sequence)
+                        .await;
+                    let mut acc_guard = acc.lock().await;
+                    acc_guard.accumulate_thinking(&text);
+                }
             }
         }
         SessionUpdate::UsageUpdate(usage_update) => {
@@ -380,6 +441,29 @@ async fn handle_standard_session_notification(
                     locations: tc.locations.clone(),
                 },
             );
+
+            // Accumulate tool call start to turn accumulator
+            if let Some(registry) = accumulator_registry {
+                let acc = registry
+                    .get_or_create(conversation_id, current_sequence)
+                    .await;
+                let mut acc_guard = acc.lock().await;
+                let locations = tc
+                    .locations
+                    .iter()
+                    .map(|loc| crate::output_accumulator::ToolCallLocation {
+                        path: loc.path.to_string_lossy().to_string(),
+                        line: loc.line.map(|l| l as u64),
+                    })
+                    .collect();
+                acc_guard.record_tool_call_start(
+                    tc.tool_call_id.to_string(),
+                    tc.title.clone(),
+                    Some(format!("{:?}", tc.kind)),
+                    tc.raw_input.clone().unwrap_or(serde_json::Value::Null),
+                    locations,
+                );
+            }
         }
         SessionUpdate::ToolCallUpdate(update) => {
             debug!(
@@ -454,22 +538,53 @@ async fn handle_standard_session_notification(
                             id: update.tool_call_id.to_string(),
                             name: update.fields.title.clone().unwrap_or_default(),
                             input: raw_input,
-                            output: raw_output,
+                            output: raw_output.clone(),
                             locations,
                         },
                     );
+
+                    // Accumulate tool call completion to turn accumulator
+                    if let Some(registry) = accumulator_registry {
+                        let acc = registry
+                            .get_or_create(conversation_id, current_sequence)
+                            .await;
+                        let mut acc_guard = acc.lock().await;
+                        let status = "completed".to_string();
+                        acc_guard.record_tool_call_update(
+                            &update.tool_call_id.to_string(),
+                            raw_output,
+                            status,
+                            None,
+                        );
+                    }
                 } else {
+                    let error_msg = update
+                        .fields
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| "tool call failed".to_string());
                     send_output_event(
                         conversation_id,
                         AgentOutputEvent::ToolCallError {
                             id: update.tool_call_id.to_string(),
-                            error: update
-                                .fields
-                                .title
-                                .clone()
-                                .unwrap_or_else(|| "tool call failed".to_string()),
+                            error: error_msg.clone(),
                         },
                     );
+
+                    // Accumulate tool call error to turn accumulator
+                    if let Some(registry) = accumulator_registry {
+                        let acc = registry
+                            .get_or_create(conversation_id, current_sequence)
+                            .await;
+                        let mut acc_guard = acc.lock().await;
+                        let status = "failed".to_string();
+                        acc_guard.record_tool_call_update(
+                            &update.tool_call_id.to_string(),
+                            None,
+                            status,
+                            Some(error_msg),
+                        );
+                    }
                 }
             }
         }
@@ -483,19 +598,34 @@ async fn handle_standard_session_notification(
         }
         SessionUpdate::SessionInfoUpdate(info) => {
             if let Some(new_title) = info.title.value() {
-                let mut title_lock = session_title.write();
-                if title_lock.as_deref() != Some(new_title.as_str()) {
-                    debug!(agent_id = agent_id, title = %new_title, "ACP session title updated");
-                    *title_lock = Some(new_title.clone());
-                    title_no_change_count.store(0, Ordering::Relaxed);
-                    send_output_event(
-                        conversation_id,
-                        AgentOutputEvent::SessionTitleUpdate {
-                            title: new_title.clone(),
-                        },
-                    );
-                } else {
-                    title_no_change_count.fetch_add(1, Ordering::Relaxed);
+                let should_accumulate = {
+                    let mut title_lock = session_title.write();
+                    if title_lock.as_deref() != Some(new_title.as_str()) {
+                        debug!(agent_id = agent_id, title = %new_title, "ACP session title updated");
+                        *title_lock = Some(new_title.clone());
+                        title_no_change_count.store(0, Ordering::Relaxed);
+                        send_output_event(
+                            conversation_id,
+                            AgentOutputEvent::SessionTitleUpdate {
+                                title: new_title.clone(),
+                            },
+                        );
+                        true
+                    } else {
+                        title_no_change_count.fetch_add(1, Ordering::Relaxed);
+                        false
+                    }
+                }; // title_lock is dropped here
+
+                // Accumulate session title to turn accumulator (after releasing lock)
+                if should_accumulate {
+                    if let Some(registry) = accumulator_registry {
+                        let acc = registry
+                            .get_or_create(conversation_id, current_sequence)
+                            .await;
+                        let mut acc_guard = acc.lock().await;
+                        acc_guard.set_session_title(new_title.clone());
+                    }
                 }
             } else if info.title.is_null() {
                 let mut title_lock = session_title.write();
@@ -2332,6 +2462,13 @@ impl AcpBackendInterface for AcpBackend {
         let task_max_auto_continues = self.max_auto_continues;
         let task_pending_elicitations = self.pending_elicitations.clone();
         let task_current_message_id: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+
+        // Get accumulator registry from global accessor (if available)
+        let task_accumulator_registry = crate::get_global_accumulator_registry().cloned();
+
+        // Track turn sequence for accumulator (incremented with each prompt)
+        let task_turn_sequence = Arc::new(std::sync::atomic::AtomicI64::new(0));
+
         let cwd = handle
             .metadata
             .get("work_dir")
@@ -2484,10 +2621,13 @@ impl AcpBackendInterface for AcpBackend {
                         let notify_title_no_change = task_session_title_no_change_count.clone();
                         let notify_config_options = task_config_options.clone();
                         let notify_available_commands = task_available_commands.clone();
+                        let notify_accumulator_registry = task_accumulator_registry.clone();
+                        let notify_turn_sequence = task_turn_sequence.clone();
                         async move |notification: ExtendedSessionNotification, _cx| {
                             // Handle extended session notifications (including subagent events)
                             match notification {
                                 ExtendedSessionNotification::Standard(std_notif) => {
+                                    let current_seq = notify_turn_sequence.load(std::sync::atomic::Ordering::Relaxed);
                                     handle_standard_session_notification(
                                         *std_notif, &out, &thoughts, &notify_recent_thinking, &tool_calls, &usage,
                                         capture_thoughts, &last_activity,
@@ -2495,6 +2635,8 @@ impl AcpBackendInterface for AcpBackend {
                                         &notify_plan, &notify_text_output_seen,
                                         &notify_session_title, &notify_title_no_change,
                                         &notify_config_options, &notify_available_commands,
+                                        notify_accumulator_registry.as_ref(),
+                                        current_seq,
                                     ).await;
                                 }
                                 ExtendedSessionNotification::SubagentSpawned(event) => {
@@ -2886,6 +3028,8 @@ impl AcpBackendInterface for AcpBackend {
                                 // The agent will process it after the current prompt completes
                                 task_text_output_seen.store(false, Ordering::Relaxed);
                                 task_recent_thinking.lock().clear();
+                                // Increment turn sequence for accumulator tracking
+                                task_turn_sequence.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                 let prompt_started_at = Instant::now();
 
                                 let mut content = if message.is_empty() {
@@ -2928,8 +3072,32 @@ impl AcpBackendInterface for AcpBackend {
                                         *task_stop_reason.write() = Some(sr.clone());
                                         send_output_event(
                                             &connection_conversation_id,
-                                            AgentOutputEvent::Done { stop_reason: sr },
+                                            AgentOutputEvent::Done { stop_reason: sr.clone() },
                                         );
+
+                                        // Flush accumulator and persist output
+                                        if let Some(ref registry) = task_accumulator_registry {
+                                            let conv_id = connection_conversation_id.clone();
+                                            let registry_clone = registry.clone();
+                                            tokio::spawn(async move {
+                                                if let Some(output_data) = registry_clone.flush(&conv_id).await {
+                                                    // Set stop reason in metadata
+                                                    let mut data = output_data;
+                                                    if let Some(ref mut metadata_str) = data.metadata {
+                                                        if let Ok(mut metadata) = serde_json::from_str::<serde_json::Value>(metadata_str) {
+                                                            metadata["stop_reason"] = serde_json::Value::String(sr.clone());
+                                                            *metadata_str = serde_json::to_string(&metadata).unwrap_or_default();
+                                                        }
+                                                    }
+
+                                                    // Persist asynchronously (will be implemented in ergatai-api)
+                                                    if let Err(e) = persist_agent_output(conv_id, data).await {
+                                                        tracing::error!(error = %e, "Failed to persist agent output");
+                                                    }
+                                                }
+                                            });
+                                        }
+
                                         let _ = response_tx.send(Ok(()));
                                     }
                                     Err(e) => {
@@ -2948,6 +3116,8 @@ impl AcpBackendInterface for AcpBackend {
                                 // New prompt turn — reset the thinking
                                 // accumulator so it only covers this turn.
                                 task_recent_thinking.lock().clear();
+                                // Increment turn sequence for accumulator tracking
+                                task_turn_sequence.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                 let prompt_started_at = Instant::now();
                                 info!(
                                     agent_id = %connection_agent_id,
@@ -2997,9 +3167,34 @@ impl AcpBackendInterface for AcpBackend {
                                         send_output_event(
                                             &connection_conversation_id,
                                             AgentOutputEvent::Done {
-                                                stop_reason: sr,
+                                                stop_reason: sr.clone(),
                                             },
                                         );
+
+                                        // Flush accumulator and persist output
+                                        if let Some(ref registry) = task_accumulator_registry {
+                                            let conv_id = connection_conversation_id.clone();
+                                            let registry_clone = registry.clone();
+                                            let sr_clone = sr.clone();
+                                            tokio::spawn(async move {
+                                                if let Some(output_data) = registry_clone.flush(&conv_id).await {
+                                                    // Set stop reason in metadata
+                                                    let mut data = output_data;
+                                                    if let Some(ref mut metadata_str) = data.metadata {
+                                                        if let Ok(mut metadata) = serde_json::from_str::<serde_json::Value>(metadata_str) {
+                                                            metadata["stop_reason"] = serde_json::Value::String(sr_clone);
+                                                            *metadata_str = serde_json::to_string(&metadata).unwrap_or_default();
+                                                        }
+                                                    }
+
+                                                    // Persist asynchronously (will be implemented in ergatai-api)
+                                                    if let Err(e) = persist_agent_output(conv_id, data).await {
+                                                        tracing::error!(error = %e, "Failed to persist agent output");
+                                                    }
+                                                }
+                                            });
+                                        }
+
                                         let _ = response_tx.send(Ok(()));
                                     }
                                     Err(e) => {
@@ -3019,6 +3214,8 @@ impl AcpBackendInterface for AcpBackend {
                                 // New prompt turn — reset the thinking
                                 // accumulator so it only covers this turn.
                                 task_recent_thinking.lock().clear();
+                                // Increment turn sequence for accumulator tracking
+                                task_turn_sequence.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                 let prompt_started_at = Instant::now();
                                 info!(
                                     agent_id = %connection_agent_id,
@@ -3072,6 +3269,31 @@ impl AcpBackendInterface for AcpBackend {
                                             &connection_conversation_id,
                                             AgentOutputEvent::Done { stop_reason: sr.clone() },
                                         );
+
+                                        // Flush accumulator and persist output
+                                        if let Some(ref registry) = task_accumulator_registry {
+                                            let conv_id = connection_conversation_id.clone();
+                                            let registry_clone = registry.clone();
+                                            let sr_clone = sr.clone();
+                                            tokio::spawn(async move {
+                                                if let Some(output_data) = registry_clone.flush(&conv_id).await {
+                                                    // Set stop reason in metadata
+                                                    let mut data = output_data;
+                                                    if let Some(ref mut metadata_str) = data.metadata {
+                                                        if let Ok(mut metadata) = serde_json::from_str::<serde_json::Value>(metadata_str) {
+                                                            metadata["stop_reason"] = serde_json::Value::String(sr_clone);
+                                                            *metadata_str = serde_json::to_string(&metadata).unwrap_or_default();
+                                                        }
+                                                    }
+
+                                                    // Persist asynchronously (will be implemented in ergatai-api)
+                                                    if let Err(e) = persist_agent_output(conv_id, data).await {
+                                                        tracing::error!(error = %e, "Failed to persist agent output");
+                                                    }
+                                                }
+                                            });
+                                        }
+
                                         let _ = response_tx.send(Ok(()));
 
                                         // Auto-continue on max_tokens / max_turn_requests

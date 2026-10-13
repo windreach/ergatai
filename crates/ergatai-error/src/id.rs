@@ -329,6 +329,74 @@ pub fn parse(formatted: &str) -> Option<(IdType, u64, u64, u64)> {
     Some((id_type, timestamp, instance, sequence))
 }
 
+/// Parse a formatted ID string back to raw i64.
+///
+/// This is the reverse of `format()`. It extracts the timestamp, instance, and sequence
+/// from the formatted string and reconstructs the original 64-bit snowflake ID.
+///
+/// # Arguments
+///
+/// * `formatted` - Formatted ID string (e.g., "msg_1727568000000_001_0001")
+///
+/// # Returns
+///
+/// `Some(i64)` if parsing succeeds, `None` otherwise.
+///
+/// # Example
+///
+/// ```rust
+/// use ergatai_error::id::{generate, format, parse_to_i64, IdType};
+///
+/// let original_id = generate();
+/// let formatted = format(original_id, IdType::Workspace);
+/// let parsed_id = parse_to_i64(&formatted).expect("Failed to parse");
+/// assert_eq!(original_id, parsed_id);
+/// ```
+pub fn parse_to_i64(formatted: &str) -> Option<i64> {
+    let (_id_type, timestamp, instance, sequence) = parse(formatted)?;
+
+    // Validate ranges
+    if timestamp > 0x1FF_FFFF_FFFF {
+        return None; // 41 bits max
+    }
+    if instance > 0x3FF {
+        return None; // 10 bits max
+    }
+    if sequence > 0xFFF {
+        return None; // 12 bits max
+    }
+
+    // Reconstruct the raw 64-bit snowflake ID
+    // Layout: | 1 bit sign (0) | 41 bit timestamp | 10 bit instance | 12 bit sequence |
+    let raw = (timestamp << 22) | (instance << 12) | sequence;
+
+    Some(raw as i64)
+}
+
+/// Validate that a string is a properly formatted ID.
+///
+/// # Arguments
+///
+/// * `formatted` - The string to validate
+///
+/// # Returns
+///
+/// `true` if the string is a valid formatted ID, `false` otherwise.
+///
+/// # Example
+///
+/// ```rust
+/// use ergatai_error::id::{generate, format, is_valid_formatted_id, IdType};
+///
+/// let id = generate();
+/// let formatted = format(id, IdType::Message);
+/// assert!(is_valid_formatted_id(&formatted));
+/// assert!(!is_valid_formatted_id("invalid"));
+/// ```
+pub fn is_valid_formatted_id(formatted: &str) -> bool {
+    parse(formatted).is_some()
+}
+
 /// Extract timestamp from ID.
 ///
 /// # Arguments
@@ -488,5 +556,60 @@ mod tests {
             .collect::<std::collections::HashSet<_>>()
             .len();
         assert_eq!(unique_count, all_ids.len(), "All IDs should be unique");
+    }
+
+    #[test]
+    fn test_parse_to_i64_roundtrip() {
+        init(1);
+        // Test all ID types
+        let test_cases = vec![
+            (IdType::Message, "msg"),
+            (IdType::Conversation, "conv"),
+            (IdType::Chat, "chat"),
+            (IdType::Workspace, "ws"),
+            (IdType::Session, "sess"),
+            (IdType::Agent, "agent"),
+            (IdType::Lock, "lock"),
+            (IdType::Dag, "dag"),
+            (IdType::Task, "task"),
+        ];
+
+        for (id_type, _prefix) in test_cases {
+            let original_id = generate();
+            let formatted = format(original_id, id_type);
+            let parsed = parse_to_i64(&formatted).expect("Failed to parse");
+            assert_eq!(original_id, parsed, "Roundtrip failed for {:?}", id_type);
+        }
+    }
+
+    #[test]
+    fn test_parse_to_i64_invalid() {
+        assert_eq!(parse_to_i64("invalid"), None);
+        assert_eq!(parse_to_i64(""), None);
+        assert_eq!(parse_to_i64("ws_invalid_001_0001"), None);
+        assert_eq!(parse_to_i64("ws_123_001"), None); // Missing parts
+        assert_eq!(parse_to_i64("unknown_123_001_0001"), None); // Unknown type
+    }
+
+    #[test]
+    fn test_parse_to_i64_out_of_range() {
+        // Test timestamp overflow (41 bits max = 0x1FF_FFFF_FFFF)
+        assert_eq!(parse_to_i64("ws_99999999999999_001_0001"), None);
+        // Test instance overflow (10 bits max = 0x3FF = 1023)
+        assert_eq!(parse_to_i64("ws_123_9999_0001"), None);
+        // Test sequence overflow (12 bits max = 0xFFF = 4095)
+        assert_eq!(parse_to_i64("ws_123_001_99999"), None);
+    }
+
+    #[test]
+    fn test_is_valid_formatted_id() {
+        init(1);
+        let id = generate();
+        let formatted = format(id, IdType::Message);
+
+        assert!(is_valid_formatted_id(&formatted));
+        assert!(!is_valid_formatted_id("invalid"));
+        assert!(!is_valid_formatted_id(""));
+        assert!(!is_valid_formatted_id("msg_123_001")); // Incomplete
     }
 }

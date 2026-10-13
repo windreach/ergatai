@@ -222,6 +222,7 @@ ERGATAI_API_URL=http://localhost:3000      # CLI 连接的 API 地址
 ERGATAI_API_TOKEN=xxx                      # API 认证 token
 ERGATAI_SSE_KEEP_ALIVE=15                 # SSE keep-alive 间隔 (秒)
 ERGATAI_BACKPRESSURE_THRESHOLD=1000       # NATS 背压阈值
+ERGATAI_AGENT_OUTPUT_TTL_DAYS=30          # agent 输出保留天数 (默认 30, 后台每日清理)
 ```
 
 ### API 服务器参数
@@ -254,7 +255,7 @@ DELETE /api/v1/workspaces/:id        删除 workspace
 GET  /api/v1/agents                  列出所有 agent
 POST /api/v1/agents                  启动新 agent
 DELETE /api/v1/agents/:id            停止 agent
-POST /api/v1/agents/:id/message      向 agent 发消息 (经 MessageSender 路由: 速率限制 + 对话防护 + MeshPolicy + NATS 发布)
+POST /api/v1/agents/:id/send         向 agent 发消息 (经 MessageSender 路由: 速率限制 + 对话防护 + MeshPolicy + NATS 发布)
 POST /api/v1/agents/:id/prompt       向 agent 发送 prompt (支持 interrupt: true 在安全点插入)
 
 # 系统状态
@@ -275,6 +276,14 @@ GET  /api/v1/locks/contention        锁竞争状态
 GET  /api/v1/conversations           列出对话
 GET  /api/v1/conversations/:id       对话详情
 GET  /api/v1/stats/message-types     消息类型统计
+
+# Agent Outputs (agent 完整输出)
+GET  /api/v1/conversations/:id/outputs              列出 agent 输出（thinking、tool calls、完整响应）
+GET  /api/v1/conversations/:id/outputs/:output_id   获取单个 agent 输出详情
+GET  /api/v1/agents/:id/current-output              获取 agent 当前 turn 的实时输出快照
+
+# Agent Outputs 环境变量
+ERGATAI_AGENT_OUTPUT_TTL_DAYS=30                    agent 输出保留天数（默认 30 天）
 
 # Activity (实时活动流)
 GET  /api/v1/activity/recent         最近活动事件
@@ -394,6 +403,9 @@ Agent 通过 MCP 协议 (JSON-RPC over Streamable HTTP, protocol 2025-06-18) 调
 | `UnifiedAgentRegistry` | `core/unified_registry.rs` | 统一 agent 注册表 (合并三个子系统) |
 | `LockManager` | `lock/lock_manager.rs` | 文件锁管理 (SQLite WAL) |
 | `SystemToken` / `FileToken` | `lock/token.rs` | 双层 token (准入 + 操作权限) |
+| `AgentOutput` | `user_data_db.rs` | Agent 完整输出记录 (thinking、tool calls、final text、metadata) |
+| `TurnAccumulator` | `runtime/output_accumulator.rs` | 单个 turn 的输出累积器 |
+| `OutputAccumulatorRegistry` | `runtime/output_accumulator.rs` | 管理所有活跃 conversation 的累积器 |
 
 ---
 
@@ -556,6 +568,7 @@ ergatai.
 ├── agent.message.{agent_id}        agent 间消息 (JetStream, 持久化)
 ├── agent.receipt.{agent_id}        已读回执 (JetStream, 持久化)
 ├── agent.request_timeout.{agent_id} 请求超时通知 (JetStream, 持久化)
+├── agent.output.{conversation_id}  agent 完整输出事件 (thinking、tool calls)
 ├── task.submit.{agent}             DagScheduler → TaskScheduler
 ├── task.complete.{task_id}         任务完成通知
 ├── dag.node_complete.{node}        DAG 节点完成

@@ -8,7 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use ergatai_core::id::{format as format_id, generate, IdType};
+use ergatai_core::id::{format as format_id, generate, parse_to_i64, IdType};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -16,38 +16,11 @@ use crate::user_data_db::{self, Conversation};
 use crate::AppState;
 
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct CreateConversationRequest {
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub mode: Option<String>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateConversationRequest {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
     pub mode: Option<String>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct AppendConversationMessageRequest {
-    pub role: String,
-    #[serde(default)]
-    #[schema(value_type = Vec<Object>, nullable = true)]
-    pub parts: Option<serde_json::Value>,
-    #[serde(default)]
-    pub text: Option<String>,
-    #[serde(default)]
-    #[schema(value_type = Object, nullable = true)]
-    pub metadata: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct ReplaceConversationMessagesRequest {
-    #[schema(value_type = Vec<Object>)]
-    pub messages: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -71,8 +44,8 @@ fn now_unix_seconds() -> i64 {
         .as_secs() as i64
 }
 
-fn conversation_id() -> String {
-    format_id(generate(), IdType::Conversation)
+fn conversation_id() -> i64 {
+    generate()
 }
 
 fn db_error(operation: &'static str, error: rusqlite::Error) -> Response {
@@ -290,222 +263,6 @@ fn calculate_conversation_file_changes(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/workspaces/{workspace_id}/conversations",
-    tag = "Conversations",
-    params(("workspace_id" = String, Path, description = "Persistent workspace ID")),
-    responses(
-        (status = 200, description = "Root conversations", body = Vec<crate::user_data_db::Conversation>),
-        (status = 404, description = "Workspace not found"),
-        (status = 500, description = "Internal server error"),
-    )
-)]
-pub async fn list_workspace_conversations(
-    State(_state): State<AppState>,
-    Path(workspace_id): Path<String>,
-) -> impl IntoResponse {
-    // Validate workspace_id is non-empty
-    if workspace_id.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Workspace ID cannot be empty".to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    // Validate workspace exists
-    let workspace_id_for_check = workspace_id.clone();
-    match tokio::task::spawn_blocking(move || {
-        user_data_db::workspaces::get(&workspace_id_for_check)
-    })
-    .await
-    {
-        Ok(Ok(Some(_workspace))) => {}
-        Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
-        Ok(Err(error)) => return db_error("Failed to load workspace", error),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
-    }
-
-    let workspace_id_for_list = workspace_id.clone();
-    match tokio::task::spawn_blocking(move || {
-        user_data_db::conversations::list_roots(None, Some(&workspace_id_for_list))
-    })
-    .await
-    {
-        Ok(Ok(conversations)) => (StatusCode::OK, Json(conversations)).into_response(),
-        Ok(Err(error)) => db_error("Failed to list conversations", error),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Task join error: {}", e),
-            }),
-        )
-            .into_response(),
-    }
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/workspaces/{workspace_id}/conversations",
-    tag = "Conversations",
-    params(("workspace_id" = String, Path, description = "Persistent workspace ID")),
-    request_body = CreateConversationRequest,
-    responses(
-        (status = 201, description = "Conversation created", body = crate::user_data_db::Conversation),
-        (status = 404, description = "Workspace not found"),
-        (status = 500, description = "Internal server error"),
-    )
-)]
-pub async fn create_workspace_conversation(
-    State(_state): State<AppState>,
-    Path(workspace_id): Path<String>,
-    Json(request): Json<CreateConversationRequest>,
-) -> impl IntoResponse {
-    // Validate workspace_id is non-empty
-    if workspace_id.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Workspace ID cannot be empty".to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    let workspace_id_for_get = workspace_id.clone();
-    let _workspace = match tokio::task::spawn_blocking(move || {
-        user_data_db::workspaces::get(&workspace_id_for_get)
-    })
-    .await
-    {
-        Ok(Ok(Some(workspace))) => workspace,
-        Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
-        Ok(Err(error)) => return db_error("Failed to load workspace", error),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
-    };
-
-    let now = now_unix_seconds();
-    let workspace_id_for_conv = workspace_id.clone();
-
-    // Create or get chat for this workspace
-    let chat = match tokio::task::spawn_blocking(move || {
-        let chats = user_data_db::chats::list(Some(&workspace_id_for_conv))?;
-        if let Some(chat) = chats.into_iter().next() {
-            Ok(chat)
-        } else {
-            // Create a default chat for this workspace
-            let chat_id = format_id(generate(), IdType::Chat);
-            user_data_db::chats::create(user_data_db::Chat {
-                chat_id: chat_id.clone(),
-                workspace_id: workspace_id_for_conv.clone(),
-                name: Some("Default Chat".to_string()),
-                created_at: now,
-                updated_at: now,
-                archived_at: None,
-            })
-        }
-    })
-    .await
-    {
-        Ok(Ok(chat)) => chat,
-        Ok(Err(error)) => return db_error("Failed to create/get chat", error),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
-    };
-
-    // Create or get collaboration session for this chat
-    let chat_id_for_closure = chat.chat_id.clone();
-    let workspace_id_for_session = chat.workspace_id.clone();
-    let chat_id_for_session = chat.chat_id.clone();
-    let session = match tokio::task::spawn_blocking(move || {
-        let sessions = user_data_db::collaboration_sessions::list(Some(&chat_id_for_closure))?;
-        if let Some(session) = sessions.into_iter().next() {
-            Ok(session)
-        } else {
-            // Create a default collaboration session
-            let session_id = format_id(generate(), IdType::Session);
-            user_data_db::collaboration_sessions::create(user_data_db::CollaborationSession {
-                collaboration_session_id: session_id.clone(),
-                chat_id: chat_id_for_closure.clone(),
-                workspace_id: workspace_id_for_session.clone(),
-                mode: "supervisor".to_string(),
-                state: "idle".to_string(),
-                goal: None,
-                active_plan_revision: None,
-                created_at: now,
-                updated_at: now,
-            })
-        }
-    })
-    .await
-    {
-        Ok(Ok(session)) => session,
-        Ok(Err(error)) => return db_error("Failed to create/get collaboration session", error),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
-    };
-
-    let conversation = Conversation {
-        conversation_id: conversation_id(),
-        collaboration_session_id: session.collaboration_session_id,
-        chat_id: chat_id_for_session,
-        parent_id: None,
-        name: request.name,
-        mode: request.mode.unwrap_or_else(|| "agent".to_string()),
-        participant_role: "peer".to_string(),
-        status: "ready".to_string(),
-        created_at: now,
-        updated_at: now,
-    };
-
-    match tokio::task::spawn_blocking(move || user_data_db::conversations::create(conversation))
-        .await
-    {
-        Ok(Ok(conversation)) => (StatusCode::CREATED, Json(conversation)).into_response(),
-        Ok(Err(error)) => db_error("Failed to create conversation", error),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Task join error: {}", e),
-            }),
-        )
-            .into_response(),
-    }
-}
-
-#[utoipa::path(
-    get,
     path = "/api/v1/conversations/{id}",
     tag = "Conversations",
     params(("id" = String, Path, description = "Conversation ID")),
@@ -529,8 +286,20 @@ pub async fn get_conversation(
             .into_response();
     }
 
-    let id_for_get = id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get)).await {
+    let id_i64 = match parse_to_i64(&id) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid ID format: {}", id),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(id_i64)).await {
         Ok(Ok(Some(conversation))) => (StatusCode::OK, Json(conversation)).into_response(),
         Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
         Ok(Err(error)) => db_error("Failed to load conversation", error),
@@ -571,11 +340,21 @@ pub async fn update_conversation(
             .into_response();
     }
 
-    let id_for_get = id.clone();
+    let id_i64 = match parse_to_i64(&id) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid ID format: {}", id),
+                }),
+            )
+                .into_response();
+        }
+    };
+
     let existing =
-        match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get))
-            .await
-        {
+        match tokio::task::spawn_blocking(move || user_data_db::conversations::get(id_i64)).await {
             Ok(Ok(Some(existing))) => existing,
             Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
             Ok(Err(error)) => return db_error("Failed to load conversation", error),
@@ -613,7 +392,20 @@ pub async fn update_conversation(
     }
 
     let id_for_reload = id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_reload))
+    let id_for_reload_i64 = match parse_to_i64(&id_for_reload) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid ID format: {}", id_for_reload),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(id_for_reload_i64))
         .await
     {
         Ok(Ok(Some(conversation))) => (StatusCode::OK, Json(conversation)).into_response(),
@@ -654,9 +446,21 @@ pub async fn archive_conversation(
             .into_response();
     }
 
-    let id_for_archive = id.clone();
+    let id_i64 = match parse_to_i64(&id) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid ID format: {}", id),
+                }),
+            )
+                .into_response();
+        }
+    };
+
     match tokio::task::spawn_blocking(move || {
-        user_data_db::conversations::archive(&id_for_archive, now_unix_seconds())
+        user_data_db::conversations::archive(id_i64, now_unix_seconds())
     })
     .await
     {
@@ -674,7 +478,22 @@ pub async fn archive_conversation(
     }
 
     let id_for_get = id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get)).await {
+    let id_for_get_i64 = match parse_to_i64(&id_for_get) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid ID format: {}", id_for_get),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(id_for_get_i64))
+        .await
+    {
         Ok(Ok(Some(conversation))) => (StatusCode::OK, Json(conversation)).into_response(),
         Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
         Ok(Err(error)) => db_error("Failed to load conversation", error),
@@ -713,9 +532,21 @@ pub async fn unarchive_conversation(
             .into_response();
     }
 
-    let id_for_unarchive = id.clone();
+    let id_i64 = match parse_to_i64(&id) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid ID format: {}", id),
+                }),
+            )
+                .into_response();
+        }
+    };
+
     match tokio::task::spawn_blocking(move || {
-        user_data_db::conversations::unarchive(&id_for_unarchive, now_unix_seconds())
+        user_data_db::conversations::unarchive(id_i64, now_unix_seconds())
     })
     .await
     {
@@ -733,7 +564,22 @@ pub async fn unarchive_conversation(
     }
 
     let id_for_get = id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get)).await {
+    let id_for_get_i64 = match parse_to_i64(&id_for_get) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid ID format: {}", id_for_get),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(id_for_get_i64))
+        .await
+    {
         Ok(Ok(Some(conversation))) => (StatusCode::OK, Json(conversation)).into_response(),
         Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
         Ok(Err(error)) => db_error("Failed to load conversation", error),
@@ -771,130 +617,22 @@ pub async fn delete_conversation(
             .into_response();
     }
 
-    let id_for_delete = id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::conversations::delete(&id_for_delete))
-        .await
-    {
-        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Err(error)) => db_error("Failed to delete conversation", error),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Task join error: {}", e),
-            }),
-        )
-            .into_response(),
-    }
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/v1/conversations/{id}/children",
-    tag = "Conversations",
-    params(("id" = String, Path, description = "Parent conversation ID")),
-    responses(
-        (status = 200, description = "Child conversations", body = Vec<crate::user_data_db::Conversation>),
-        (status = 500, description = "Internal server error"),
-    )
-)]
-pub async fn list_child_conversations(
-    State(_state): State<AppState>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    if id.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Conversation ID cannot be empty".to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    let id_for_children = id.clone();
-    match tokio::task::spawn_blocking(move || {
-        user_data_db::conversations::list_children(&id_for_children)
-    })
-    .await
-    {
-        Ok(Ok(conversations)) => (StatusCode::OK, Json(conversations)).into_response(),
-        Ok(Err(error)) => db_error("Failed to list child conversations", error),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Task join error: {}", e),
-            }),
-        )
-            .into_response(),
-    }
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/conversations/{id}/children",
-    tag = "Conversations",
-    params(("id" = String, Path, description = "Parent conversation ID")),
-    request_body = CreateConversationRequest,
-    responses(
-        (status = 201, description = "Child conversation created", body = crate::user_data_db::Conversation),
-        (status = 404, description = "Parent conversation not found"),
-        (status = 500, description = "Internal server error"),
-    )
-)]
-pub async fn create_child_conversation(
-    State(_state): State<AppState>,
-    Path(id): Path<String>,
-    Json(request): Json<CreateConversationRequest>,
-) -> impl IntoResponse {
-    // Validate parent ID is non-empty
-    if id.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Parent conversation ID cannot be empty".to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    let id_for_get = id.clone();
-    let parent =
-        match tokio::task::spawn_blocking(move || user_data_db::conversations::get(&id_for_get))
-            .await
-        {
-            Ok(Ok(Some(parent))) => parent,
-            Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
-            Ok(Err(error)) => return db_error("Failed to load parent conversation", error),
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("Task join error: {}", e),
-                    }),
-                )
-                    .into_response()
-            }
-        };
-
-    let now = now_unix_seconds();
-    let conversation = Conversation {
-        conversation_id: conversation_id(),
-        collaboration_session_id: parent.collaboration_session_id.clone(),
-        chat_id: parent.chat_id.clone(),
-        parent_id: Some(parent.conversation_id.clone()),
-        name: request.name,
-        mode: request.mode.unwrap_or_else(|| "agent".to_string()),
-        participant_role: "peer".to_string(),
-        status: "ready".to_string(),
-        created_at: now,
-        updated_at: now,
+    let id_i64 = match parse_to_i64(&id) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid ID format: {}", id),
+                }),
+            )
+                .into_response();
+        }
     };
 
-    match tokio::task::spawn_blocking(move || user_data_db::conversations::create(conversation))
-        .await
-    {
-        Ok(Ok(conversation)) => (StatusCode::CREATED, Json(conversation)).into_response(),
-        Ok(Err(error)) => db_error("Failed to create conversation", error),
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::delete(id_i64)).await {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(error)) => db_error("Failed to delete conversation", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -929,8 +667,20 @@ pub async fn list_conversation_messages(
             .into_response();
     }
 
-    let id_for_list = id.clone();
-    match tokio::task::spawn_blocking(move || user_data_db::messages::list(&id_for_list)).await {
+    let id_i64 = match parse_to_i64(&id) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid ID format: {}", id),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match tokio::task::spawn_blocking(move || user_data_db::messages::list(id_i64)).await {
         Ok(Ok(messages)) => (StatusCode::OK, Json(messages)).into_response(),
         Ok(Err(error)) => db_error("Failed to list messages", error),
         Err(e) => (
@@ -968,21 +718,33 @@ pub async fn list_conversation_file_changes(
             .into_response();
     }
 
-    let id_for_changes = id.clone();
+    let id_i64 = match parse_to_i64(&id) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid ID format: {}", id),
+                }),
+            )
+                .into_response();
+        }
+    };
+
     match tokio::task::spawn_blocking(move || {
-        let Some(conversation) = user_data_db::conversations::get(&id_for_changes)? else {
+        let Some(conversation) = user_data_db::conversations::get(id_i64)? else {
             return Ok(None);
         };
 
-        let context = user_data_db::conversation_execution_contexts::get(&id_for_changes)?;
-        let project_path = user_data_db::chats::get(&conversation.chat_id)?
+        let context = user_data_db::conversation_execution_contexts::get(id_i64)?;
+        let project_path = user_data_db::chats::get(conversation.chat_id)?
             .and_then(|chat| {
-                user_data_db::workspaces::get(&chat.workspace_id)
+                user_data_db::workspaces::get(chat.workspace_id)
                     .ok()
                     .flatten()
             })
             .map(|workspace| workspace.work_dir);
-        let messages = user_data_db::messages::list(&id_for_changes)?;
+        let messages = user_data_db::messages::list(id_i64)?;
         let worktree_path = context.and_then(|context| context.worktree_path);
 
         Ok(Some(calculate_conversation_file_changes(
@@ -1013,8 +775,8 @@ mod conversation_file_change_tests {
 
     fn message(role: &str, parts: serde_json::Value) -> Message {
         Message {
-            message_id: format!("msg_{}", role),
-            conversation_id: "conversation_test".to_owned(),
+            message_id: 12345,
+            conversation_id: 67890,
             sequence: 0,
             role: role.to_owned(),
             parts: parts.to_string(),
@@ -1320,176 +1082,6 @@ mod conversation_file_change_tests {
     }
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v1/conversations/{id}/messages",
-    tag = "Conversations",
-    params(("id" = String, Path, description = "Conversation ID")),
-    request_body = AppendConversationMessageRequest,
-    responses(
-        (status = 201, description = "Message appended", body = crate::user_data_db::Message),
-        (status = 400, description = "Invalid message"),
-        (status = 500, description = "Internal server error"),
-    )
-)]
-pub async fn append_conversation_message(
-    State(_state): State<AppState>,
-    Path(id): Path<String>,
-    Json(request): Json<AppendConversationMessageRequest>,
-) -> impl IntoResponse {
-    if id.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Conversation ID cannot be empty".to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    // Validate role against allowed values
-    if !matches!(request.role.as_str(), "user" | "assistant" | "system") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Role must be one of: user, assistant, system".to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    let (parts, metadata) = match (request.parts, request.text) {
-        (Some(parts), _) => (parts, request.metadata.unwrap_or(serde_json::Value::Null)),
-        (None, Some(text)) => (
-            serde_json::json!([{ "type": "text", "text": text }]),
-            request.metadata.unwrap_or(serde_json::Value::Null),
-        ),
-        (None, None) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Message must contain either text or parts".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    let id_for_append = id.clone();
-    let role = request.role.clone();
-    match tokio::task::spawn_blocking(move || {
-        user_data_db::messages::append(&id_for_append, &role, parts, metadata)
-    })
-    .await
-    {
-        Ok(Ok(message)) => (StatusCode::CREATED, Json(message)).into_response(),
-        Ok(Err(error)) => db_error("Failed to append message", error),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Task join error: {}", e),
-            }),
-        )
-            .into_response(),
-    }
-}
-
-#[utoipa::path(
-    put,
-    path = "/api/v1/conversations/{id}/messages",
-    tag = "Conversations",
-    params(("id" = String, Path, description = "Conversation ID")),
-    request_body = ReplaceConversationMessagesRequest,
-    responses(
-        (status = 200, description = "Messages replaced", body = Vec<crate::user_data_db::Message>),
-        (status = 400, description = "Invalid messages"),
-        (status = 404, description = "Conversation not found"),
-        (status = 500, description = "Internal server error"),
-    )
-)]
-pub async fn replace_conversation_messages(
-    State(_state): State<AppState>,
-    Path(id): Path<String>,
-    Json(request): Json<ReplaceConversationMessagesRequest>,
-) -> impl IntoResponse {
-    if id.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Conversation ID cannot be empty".to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    let id_for_get = id.clone();
-    match tokio::task::spawn_blocking(move || crate::user_data_db::conversations::get(&id_for_get))
-        .await
-    {
-        Ok(Ok(Some(_conversation))) => {}
-        Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
-        Ok(Err(error)) => return db_error("Failed to load conversation", error),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
-    }
-
-    let messages = match serde_json::to_string(&request.messages) {
-        Ok(messages) => messages,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Messages must be serializable".to_string(),
-                }),
-            )
-                .into_response()
-        }
-    };
-
-    let now = now_unix_seconds();
-    let id_for_replace = id.clone();
-    let messages_for_replace = messages.clone();
-    match tokio::task::spawn_blocking(move || {
-        crate::user_data_db::messages::replace_legacy(&id_for_replace, &messages_for_replace, now)
-    })
-    .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => return db_error("Failed to replace messages", error),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Task join error: {}", e),
-                }),
-            )
-                .into_response()
-        }
-    }
-
-    let id_for_list = id.clone();
-    match tokio::task::spawn_blocking(move || crate::user_data_db::messages::list(&id_for_list))
-        .await
-    {
-        Ok(Ok(messages)) => (StatusCode::OK, Json(messages)).into_response(),
-        Ok(Err(error)) => db_error("Failed to list messages", error),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Task join error: {}", e),
-            }),
-        )
-            .into_response(),
-    }
-}
-
 // ════════════════════════════════════════════════════════════════════════
 // Conversation API（新版扁平化路由）
 // ════════════════════════════════════════════════════════════════════════
@@ -1510,12 +1102,42 @@ pub struct CreateConversationRequestNew {
 }
 
 /// GET /api/v1/conversations
+///
+/// List conversations by collaboration_session_id or chat_id
+#[utoipa::path(
+    get,
+    path = "/api/v1/conversations",
+    tag = "Conversations",
+    params(
+        ("collaboration_session_id" = Option<String>, Query, description = "Filter by collaboration session ID"),
+        ("chat_id" = Option<String>, Query, description = "Filter by chat ID"),
+    ),
+    responses(
+        (status = 200, description = "Conversations list", body = Vec<Conversation>),
+        (status = 400, description = "Missing required query parameter"),
+        (status = 500, description = "Internal server error"),
+    )
+)]
 pub async fn list_conversations(Query(query): Query<ListConversationsQuery>) -> impl IntoResponse {
     let conversations = if let Some(collaboration_session_id) = query.collaboration_session_id {
+        let session_id_i64 = match parse_to_i64(&collaboration_session_id) {
+            Some(id) => id,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "Invalid collaboration_session_id format: {}",
+                            collaboration_session_id
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
         match tokio::task::spawn_blocking(move || {
-            crate::user_data_db::conversations::list_by_collaboration_session(
-                &collaboration_session_id,
-            )
+            crate::user_data_db::conversations::list_by_collaboration_session(session_id_i64)
         })
         .await
         {
@@ -1540,8 +1162,21 @@ pub async fn list_conversations(Query(query): Query<ListConversationsQuery>) -> 
             }
         }
     } else if let Some(chat_id) = query.chat_id {
+        let chat_id_i64 = match parse_to_i64(&chat_id) {
+            Some(id) => id,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Invalid chat_id format: {}", chat_id),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
         match tokio::task::spawn_blocking(move || {
-            crate::user_data_db::conversations::list_by_chat(&chat_id)
+            crate::user_data_db::conversations::list_by_chat(chat_id_i64)
         })
         .await
         {
@@ -1578,9 +1213,255 @@ pub async fn list_conversations(Query(query): Query<ListConversationsQuery>) -> 
     (StatusCode::OK, Json(conversations)).into_response()
 }
 
+/// GET /api/v1/conversations/{conversation_id}/outputs
+///
+/// Lists all agent output records for this conversation (thinking, tool calls, final responses)
+#[utoipa::path(
+    get,
+    path = "/api/v1/conversations/{conversation_id}/outputs",
+    tag = "Conversations",
+    params(
+        ("conversation_id" = String, Path, description = "Conversation ID"),
+        ("limit" = Option<i64>, Query, description = "Maximum number of results"),
+        ("offset" = Option<i64>, Query, description = "Offset for pagination"),
+    ),
+    responses(
+        (status = 200, description = "Agent outputs list", body = Vec<AgentOutputResponse>),
+        (status = 404, description = "Conversation not found"),
+        (status = 500, description = "Internal server error"),
+    )
+)]
+pub async fn list_conversation_outputs(
+    State(_state): State<AppState>,
+    Path(conversation_id): Path<String>,
+    Query(params): Query<OutputListQuery>,
+) -> impl IntoResponse {
+    if conversation_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Conversation ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let conv_id_i64 = match parse_to_i64(&conversation_id) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid conversation ID format: {}", conversation_id),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Validate conversation exists
+    match tokio::task::spawn_blocking(move || user_data_db::conversations::get(conv_id_i64)).await {
+        Ok(Ok(Some(_conversation))) => {}
+        Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => return db_error("Failed to load conversation", error),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Task join error: {}", e),
+                }),
+            )
+                .into_response()
+        }
+    }
+
+    let conv_id_for_list = conversation_id.clone();
+    let conv_id_i64 = match parse_to_i64(&conv_id_for_list) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid conversation ID format: {}", conv_id_for_list),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let limit = params.limit;
+    let offset = params.offset;
+    match tokio::task::spawn_blocking(move || {
+        user_data_db::agent_outputs::list_by_conversation(conv_id_i64, limit, offset)
+    })
+    .await
+    {
+        Ok(Ok(outputs)) => {
+            let responses: Vec<AgentOutputResponse> =
+                outputs.into_iter().map(AgentOutputResponse::from).collect();
+            (StatusCode::OK, Json(responses)).into_response()
+        }
+        Ok(Err(error)) => db_error("Failed to list agent outputs", error),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/v1/conversations/{conversation_id}/outputs/{output_id}
+///
+/// Get detailed information about a specific agent output
+#[utoipa::path(
+    get,
+    path = "/api/v1/conversations/{conversation_id}/outputs/{output_id}",
+    tag = "Conversations",
+    params(
+        ("conversation_id" = String, Path, description = "Conversation ID"),
+        ("output_id" = String, Path, description = "Agent Output ID"),
+    ),
+    responses(
+        (status = 200, description = "Agent output detail", body = AgentOutputResponse),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal server error"),
+    )
+)]
+pub async fn get_conversation_output(
+    State(_state): State<AppState>,
+    Path((conversation_id, output_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if conversation_id.is_empty() || output_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Conversation ID and Output ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let output_id_i64 = match parse_to_i64(&output_id) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid output ID format: {}", output_id),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let conversation_id_i64 = match parse_to_i64(&conversation_id) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid conversation ID format: {}", conversation_id),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match tokio::task::spawn_blocking(move || {
+        let output = user_data_db::agent_outputs::get(output_id_i64)?;
+        // Verify the output belongs to the specified conversation
+        if let Some(ref out) = output {
+            if out.conversation_id != conversation_id_i64 {
+                return Ok(None);
+            }
+        }
+        Ok(output)
+    })
+    .await
+    {
+        Ok(Ok(Some(output))) => {
+            let response = AgentOutputResponse::from(output);
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => db_error("Failed to get agent output", error),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct OutputListQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentOutputResponse {
+    pub id: String,
+    pub conversation_id: String,
+    pub message_id: Option<String>,
+    pub sequence: i64,
+    pub role: String,
+    #[schema(value_type = Option<Object>, nullable = true)]
+    pub thinking: Option<serde_json::Value>,
+    #[schema(value_type = Option<Object>, nullable = true)]
+    pub tool_calls: Option<serde_json::Value>,
+    #[schema(value_type = Option<Object>, nullable = true)]
+    pub text_chunks: Option<serde_json::Value>,
+    pub final_text: Option<String>,
+    #[schema(value_type = Option<Object>, nullable = true)]
+    pub metadata: Option<serde_json::Value>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl From<user_data_db::AgentOutput> for AgentOutputResponse {
+    fn from(output: user_data_db::AgentOutput) -> Self {
+        Self {
+            id: output.id.to_string(),
+            conversation_id: format_id(output.conversation_id, IdType::Conversation),
+            message_id: output.message_id.map(|id| format_id(id, IdType::Message)),
+            sequence: output.sequence,
+            role: output.role,
+            thinking: output.thinking.and_then(|s| serde_json::from_str(&s).ok()),
+            tool_calls: output
+                .tool_calls
+                .and_then(|s| serde_json::from_str(&s).ok()),
+            text_chunks: output
+                .text_chunks
+                .and_then(|s| serde_json::from_str(&s).ok()),
+            final_text: output.final_text,
+            metadata: output.metadata.and_then(|s| serde_json::from_str(&s).ok()),
+            created_at: output.created_at,
+            updated_at: output.updated_at,
+        }
+    }
+}
+
 /// POST /api/v1/conversations
 ///
 /// Create a new conversation. Requires either `collaboration_session_id` or `chat_id`.
+#[utoipa::path(
+    post,
+    path = "/api/v1/conversations",
+    tag = "Conversations",
+    request_body = CreateConversationRequestNew,
+    responses(
+        (status = 201, description = "Conversation created", body = Conversation),
+        (status = 400, description = "Invalid request"),
+        (status = 404, description = "Collaboration session or chat not found"),
+        (status = 500, description = "Internal server error"),
+    )
+)]
 pub async fn create_conversation(
     Json(req): Json<CreateConversationRequestNew>,
 ) -> impl IntoResponse {
@@ -1601,10 +1482,22 @@ pub async fn create_conversation(
     // Resolve collaboration_session_id and chat_id
     let (collaboration_session_id, chat_id) = if let Some(session_id) = req.collaboration_session_id
     {
+        let session_id_i64 = match parse_to_i64(&session_id) {
+            Some(id) => id,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Invalid collaboration_session_id format: {}", session_id),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
         // Validate collaboration session exists
-        let session_id_for_lookup = session_id.clone();
         match tokio::task::spawn_blocking(move || {
-            crate::user_data_db::collaboration_sessions::get(&session_id_for_lookup)
+            crate::user_data_db::collaboration_sessions::get(session_id_i64)
         })
         .await
         {
@@ -1630,24 +1523,36 @@ pub async fn create_conversation(
             }
         }
     } else if let Some(chat_id) = req.chat_id {
+        let chat_id_i64 = match parse_to_i64(&chat_id) {
+            Some(id) => id,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Invalid chat_id format: {}", chat_id),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
         // Validate chat exists and get its collaboration session
-        let chat_id_for_lookup = chat_id.clone();
         match tokio::task::spawn_blocking(move || {
-            let chat = crate::user_data_db::chats::get(&chat_id_for_lookup)?;
+            let chat = crate::user_data_db::chats::get(chat_id_i64)?;
             if let Some(chat) = chat {
                 // Get or create collaboration session for this chat
                 let sessions =
-                    crate::user_data_db::collaboration_sessions::list(Some(&chat_id_for_lookup))?;
+                    crate::user_data_db::collaboration_sessions::list(Some(chat_id_i64))?;
                 let session = if let Some(s) = sessions.into_iter().next() {
                     s
                 } else {
                     // Create default collaboration session
-                    let session_id = format_id(generate(), IdType::Session);
+                    let session_id = generate();
                     crate::user_data_db::collaboration_sessions::create(
                         crate::user_data_db::CollaborationSession {
-                            collaboration_session_id: session_id.clone(),
-                            chat_id: chat_id_for_lookup.clone(),
-                            workspace_id: chat.workspace_id.clone(),
+                            collaboration_session_id: session_id,
+                            chat_id: chat_id_i64,
+                            workspace_id: chat.workspace_id,
                             mode: "supervisor".to_string(),
                             state: "idle".to_string(),
                             goal: None,

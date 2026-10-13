@@ -15,6 +15,7 @@ use axum::{
 use futures::stream::Stream;
 use serde::Deserialize;
 use std::convert::Infallible;
+use utoipa::ToSchema;
 
 use ergatai_runtime::permission_service::{
     get_permission_mode, global_permission_service, set_permission_mode, PermissionDecisionKind,
@@ -25,12 +26,29 @@ use ergatai_runtime::ElicitationResponse;
 use crate::{services::agent_service, AppState};
 
 /// GET /api/v1/permissions/pending — snapshot of all pending requests.
+#[utoipa::path(
+    get,
+    path = "/api/v1/permissions/pending",
+    tag = "Permissions",
+    responses(
+        (status = 200, description = "List pending permission requests"),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn list_pending() -> impl IntoResponse {
     let requests = global_permission_service().pending().await;
     Json(serde_json::json!({ "requests": requests }))
 }
 
 /// GET /api/v1/permissions/stream — SSE feed of permission lifecycle events.
+#[utoipa::path(
+    get,
+    path = "/api/v1/permissions/stream",
+    tag = "Permissions",
+    responses(
+        (status = 200, description = "SSE stream"),
+    )
+)]
 pub async fn stream_permissions() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let receiver = global_permission_service().subscribe();
     let stream = futures::stream::unfold(receiver, |mut receiver| async move {
@@ -68,7 +86,7 @@ pub async fn stream_permissions() -> Sse<impl Stream<Item = Result<Event, Infall
 }
 
 /// Body for POST /api/v1/permissions/:id/respond.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RespondPermissionBody {
     /// One of: allow_once, allow_always, reject_once, reject_always.
     pub decision: String,
@@ -78,63 +96,85 @@ pub struct RespondPermissionBody {
 }
 
 /// GET /api/v1/permissions/mode — current frontend permission mode.
+#[utoipa::path(
+    get,
+    path = "/api/v1/permissions/mode",
+    tag = "Permissions",
+    responses(
+        (status = 200, description = "Current permission mode"),
+    )
+)]
 pub async fn get_mode() -> impl IntoResponse {
     Json(serde_json::json!({ "mode": get_permission_mode() }))
 }
 
 /// Body for POST /api/v1/permissions/mode.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SetModeBody {
     /// One of: ask, auto, full_access.
     pub mode: String,
 }
 
 /// POST /api/v1/permissions/mode — switch the frontend permission mode.
+#[utoipa::path(
+    post,
+    path = "/api/v1/permissions/mode",
+    tag = "Permissions",
+    request_body = SetModeBody,
+    responses(
+        (status = 200, description = "Mode updated successfully"),
+        (status = 400, description = "Invalid mode", body = crate::api::ApiError),
+    )
+)]
 pub async fn set_mode(Json(body): Json<SetModeBody>) -> Response {
     let mode = match body.mode.as_str() {
         "ask" => PermissionMode::Ask,
         "auto" => PermissionMode::Auto,
         "full_access" => PermissionMode::FullAccess,
-        _ => return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Invalid mode '{}'. Expected ask, auto, or full_access", body.mode)
-            })),
-        )
-            .into_response(),
+        _ => {
+            return crate::http_error::bad_request(format!(
+                "Invalid mode '{}'. Expected ask, auto, or full_access",
+                body.mode
+            ))
+            .into_response()
+        }
     };
     set_permission_mode(mode);
     Json(serde_json::json!({ "success": true, "mode": mode })).into_response()
 }
 
 /// POST /api/v1/permissions/:id/respond — apply a user decision.
+#[utoipa::path(
+    post,
+    path = "/api/v1/permissions/{id}/respond",
+    tag = "Permissions",
+    request_body = RespondPermissionBody,
+    params(
+        ("id" = String, Path, description = "Permission request ID"),
+    ),
+    responses(
+        (status = 200, description = "Decision applied successfully"),
+        (status = 400, description = "Invalid decision", body = crate::api::ApiError),
+        (status = 404, description = "Permission request not found", body = crate::api::ApiError),
+        (status = 409, description = "Permission already resolved", body = crate::api::ApiError),
+    )
+)]
 pub async fn respond_permission(
     State(_state): State<AppState>,
     Path(request_id): Path<String>,
     Json(body): Json<RespondPermissionBody>,
 ) -> Response {
     let Some(decision) = PermissionDecisionKind::parse(&body.decision) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!(
-                    "Invalid decision '{}'. Expected allow_once, allow_always, reject_once, or reject_always",
-                    body.decision
-                )
-            })),
-        )
+        return crate::http_error::bad_request(format!(
+            "Invalid decision '{}'. Expected allow_once, allow_always, reject_once, or reject_always",
+            body.decision
+        ))
             .into_response();
     };
 
     let service = global_permission_service();
     let Some(request) = service.get(&request_id).await else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": format!("Permission request {} not found", request_id)
-            })),
-        )
-            .into_response();
+        return crate::http_error::not_found("Permission request", &request_id).into_response();
     };
 
     match request.source {
@@ -166,13 +206,9 @@ pub async fn respond_permission(
                     })),
                 )
                     .into_response(),
-                Err(error) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "error": crate::sanitize_error(&error, "respond_to_elicitation")
-                    })),
-                )
-                    .into_response(),
+                Err(error) => {
+                    crate::http_error::internal(error, "respond_to_elicitation").into_response()
+                }
             }
         }
         PermissionSource::Acp | PermissionSource::LaunchGate => {
@@ -193,7 +229,7 @@ pub async fn respond_permission(
                 }
                 Err(error) => (
                     StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({ "error": error })),
+                    Json(serde_json::json!({ "error": error.to_string() })),
                 )
                     .into_response(),
             }

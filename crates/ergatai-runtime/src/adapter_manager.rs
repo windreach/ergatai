@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use chrono::Utc;
+use ergatai_error::ErgataiError;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
@@ -130,7 +131,7 @@ async fn run_startup_check(db_path: String, managed: PathBuf) {
 
 /// One check-and-maybe-update round. All failures return `Err` and leave
 /// the current release untouched.
-async fn update_cycle(db_path: &Path, managed: &Path) -> Result<(), String> {
+async fn update_cycle(db_path: &Path, managed: &Path) -> Result<(), ErgataiError> {
     let staging = managed.join(STAGING_DIR);
     acquire_staging(&staging)?;
     let result = build_and_activate(db_path, managed, &staging).await;
@@ -139,7 +140,11 @@ async fn update_cycle(db_path: &Path, managed: &Path) -> Result<(), String> {
     result
 }
 
-async fn build_and_activate(db_path: &Path, managed: &Path, staging: &Path) -> Result<(), String> {
+async fn build_and_activate(
+    db_path: &Path,
+    managed: &Path,
+    staging: &Path,
+) -> Result<(), ErgataiError> {
     let current = current_release_dir(managed);
     let current_manifest = current
         .as_ref()
@@ -149,9 +154,9 @@ async fn build_and_activate(db_path: &Path, managed: &Path, staging: &Path) -> R
     // Check npm registry for latest versions
     let mut upstream = BTreeMap::new();
     for adapter in MANAGED_ADAPTERS {
-        let version = npm_latest_version(adapter.npm_package)
-            .await
-            .map_err(|error| format!("npm view {} failed: {}", adapter.npm_package, error))?;
+        let version = npm_latest_version(adapter.npm_package).await.map_err(|e| {
+            ErgataiError::internal(format!("npm view {} failed: {}", adapter.npm_package, e))
+        })?;
         upstream.insert(adapter.npm_package.to_string(), version);
     }
 
@@ -191,7 +196,7 @@ async fn build_and_activate(db_path: &Path, managed: &Path, staging: &Path) -> R
 
     // Install every managed adapter into staging
     std::fs::create_dir_all(staging)
-        .map_err(|error| format!("Failed to create staging dir: {}", error))?;
+        .map_err(|e| ErgataiError::internal(format!("Failed to create staging dir: {}", e)))?;
 
     let mut built = ReleaseManifest::default();
     for adapter in MANAGED_ADAPTERS {
@@ -208,10 +213,11 @@ async fn build_and_activate(db_path: &Path, managed: &Path, staging: &Path) -> R
     let release_id = format_release_id(&built);
     let releases_dir = managed.join(RELEASES_DIR);
     std::fs::create_dir_all(&releases_dir)
-        .map_err(|error| format!("Failed to create releases dir: {}", error))?;
+        .map_err(|e| ErgataiError::internal(format!("Failed to create releases dir: {}", e)))?;
     let release_dir = releases_dir.join(&release_id);
-    std::fs::rename(staging, &release_dir)
-        .map_err(|error| format!("Failed to promote staging to release: {}", error))?;
+    std::fs::rename(staging, &release_dir).map_err(|e| {
+        ErgataiError::internal(format!("Failed to promote staging to release: {}", e))
+    })?;
 
     write_current_pointer(managed, &release_id)?;
     refresh_profile_rows(db_path, &release_dir)?;
@@ -227,9 +233,10 @@ async fn build_and_activate(db_path: &Path, managed: &Path, staging: &Path) -> R
 /// Point managed profile rows at the given release. Rows with custom
 /// (user-modified) commands are left untouched; missing rows are created so
 /// fresh installs work out of the box.
-pub fn refresh_profile_rows(db_path: &Path, release_dir: &Path) -> Result<(), String> {
-    let conn = Connection::open(db_path)
-        .map_err(|error| format!("Failed to open profile registry database: {}", error))?;
+pub fn refresh_profile_rows(db_path: &Path, release_dir: &Path) -> Result<(), ErgataiError> {
+    let conn = Connection::open(db_path).map_err(|e| {
+        ErgataiError::internal(format!("Failed to open profile registry database: {}", e))
+    })?;
 
     for adapter in MANAGED_ADAPTERS {
         // Use npm's standard .bin/ directory (automatically created from package.json's "bin" field)
@@ -254,7 +261,7 @@ pub fn refresh_profile_rows(db_path: &Path, release_dir: &Path) -> Result<(), St
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|error| format!("Failed to read profile row: {}", error))?;
+            .map_err(|e| ErgataiError::internal(format!("Failed to read profile row: {}", e)))?;
 
         match existing {
             Some(current_command) if command_matches_managed_pattern(&current_command) => {
@@ -262,7 +269,9 @@ pub fn refresh_profile_rows(db_path: &Path, release_dir: &Path) -> Result<(), St
                     "UPDATE agent_registrations SET command = ?1 WHERE id = ?2",
                     params![command, adapter.profile_id],
                 )
-                .map_err(|error| format!("Failed to update profile row: {}", error))?;
+                .map_err(|e| {
+                    ErgataiError::internal(format!("Failed to update profile row: {}", e))
+                })?;
                 info!(
                     profile = adapter.profile_id,
                     command = %command,
@@ -283,7 +292,9 @@ pub fn refresh_profile_rows(db_path: &Path, release_dir: &Path) -> Result<(), St
                      VALUES (?1, ?1, ?2, 'acp', NULL, NULL, ?3)",
                     params![adapter.profile_id, command, Utc::now().to_rfc3339()],
                 )
-                .map_err(|error| format!("Failed to insert profile row: {}", error))?;
+                .map_err(|e| {
+                    ErgataiError::internal(format!("Failed to insert profile row: {}", e))
+                })?;
                 info!(
                     profile = adapter.profile_id,
                     "Registered managed adapter profile"
@@ -319,28 +330,28 @@ fn current_release_dir(managed: &Path) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
-fn write_current_pointer(managed: &Path, release_id: &str) -> Result<(), String> {
+fn write_current_pointer(managed: &Path, release_id: &str) -> Result<(), ErgataiError> {
     std::fs::create_dir_all(managed)
-        .map_err(|error| format!("Failed to create managed dir: {}", error))?;
+        .map_err(|e| ErgataiError::internal(format!("Failed to create managed dir: {}", e)))?;
     let tmp = managed.join(format!(".current.{}.tmp", std::process::id()));
     std::fs::write(&tmp, release_id)
-        .map_err(|error| format!("Failed to write pointer file: {}", error))?;
+        .map_err(|e| ErgataiError::internal(format!("Failed to write pointer file: {}", e)))?;
     std::fs::rename(&tmp, managed.join(CURRENT_POINTER))
-        .map_err(|error| format!("Failed to flip current pointer: {}", error))
+        .map_err(|e| ErgataiError::internal(format!("Failed to flip current pointer: {}", e)))
 }
 
-fn read_manifest(release_dir: &Path) -> Result<ReleaseManifest, String> {
+fn read_manifest(release_dir: &Path) -> Result<ReleaseManifest, ErgataiError> {
     let raw = std::fs::read_to_string(release_dir.join(MANIFEST_FILE))
-        .map_err(|error| format!("Failed to read release manifest: {}", error))?;
+        .map_err(|e| ErgataiError::internal(format!("Failed to read release manifest: {}", e)))?;
     serde_json::from_str(&raw)
-        .map_err(|error| format!("Failed to parse release manifest: {}", error))
+        .map_err(|e| ErgataiError::internal(format!("Failed to parse release manifest: {}", e)))
 }
 
-fn write_manifest(dir: &Path, manifest: &ReleaseManifest) -> Result<(), String> {
+fn write_manifest(dir: &Path, manifest: &ReleaseManifest) -> Result<(), ErgataiError> {
     let raw = serde_json::to_string_pretty(manifest)
-        .map_err(|error| format!("Failed to serialize manifest: {}", error))?;
+        .map_err(|e| ErgataiError::internal(format!("Failed to serialize manifest: {}", e)))?;
     std::fs::write(dir.join(MANIFEST_FILE), raw)
-        .map_err(|error| format!("Failed to write manifest: {}", error))
+        .map_err(|e| ErgataiError::internal(format!("Failed to write manifest: {}", e)))
 }
 
 fn format_release_id(manifest: &ReleaseManifest) -> String {
@@ -357,7 +368,7 @@ fn format_release_id(manifest: &ReleaseManifest) -> String {
 /// Delete every release except the current one. Runs at startup: the
 /// previous release (kept after an in-session switch) is retired only at
 /// the NEXT desktop startup, never at switch time.
-fn retire_old_releases(managed: &Path) -> Result<(), String> {
+fn retire_old_releases(managed: &Path) -> Result<(), ErgataiError> {
     let releases_dir = managed.join(RELEASES_DIR);
     let Ok(entries) = std::fs::read_dir(&releases_dir) else {
         return Ok(());
@@ -387,7 +398,7 @@ fn retire_old_releases(managed: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn acquire_staging(staging: &Path) -> Result<(), String> {
+fn acquire_staging(staging: &Path) -> Result<(), ErgataiError> {
     // Create staging directory. If it already exists and is not stale, another process
     // is building adapters concurrently — skip this cycle to avoid conflicts.
     // The `created` flag tracks whether we need to initialize package.json.
@@ -397,11 +408,13 @@ fn acquire_staging(staging: &Path) -> Result<(), String> {
             warn!("Reclaiming stale adapter staging directory");
             let _ = std::fs::remove_dir_all(staging);
             std::fs::create_dir(staging)
-                .map_err(|error| format!("Failed to reclaim staging: {}", error))?;
+                .map_err(|e| ErgataiError::internal(format!("Failed to reclaim staging: {}", e)))?;
             true
         }
         Err(_) => {
-            return Err("another process is building adapters; skipping this cycle".to_string())
+            return Err(ErgataiError::internal(
+                "another process is building adapters; skipping this cycle",
+            ))
         }
     };
 
@@ -415,7 +428,9 @@ fn acquire_staging(staging: &Path) -> Result<(), String> {
             &package_json,
             r#"{"name":"ergatai-adapter-staging","version":"1.0.0","private":true}"#,
         )
-        .map_err(|error| format!("Failed to create staging package.json: {}", error))?;
+        .map_err(|e| {
+            ErgataiError::internal(format!("Failed to create staging package.json: {}", e))
+        })?;
         debug!("Created staging package.json to isolate npm install");
     }
 
@@ -434,63 +449,71 @@ fn staging_is_stale(staging: &Path) -> bool {
 
 /// Gate a staging install before it can go live: the binary must exist, be non-empty,
 /// and pass `node --check` (a broken install must never replace a working release).
-async fn verify_adapter(release_dir: &Path, adapter: &ManagedAdapter) -> Result<(), String> {
+async fn verify_adapter(release_dir: &Path, adapter: &ManagedAdapter) -> Result<(), ErgataiError> {
     // Check the .bin/ executable (npm standard)
     let bin_path = release_dir
         .join("node_modules")
         .join(".bin")
         .join(adapter.bin_name);
-    let metadata = std::fs::metadata(&bin_path).map_err(|error| {
-        format!(
+    let metadata = std::fs::metadata(&bin_path).map_err(|e| {
+        ErgataiError::internal(format!(
             "Binary missing for {} ({}): {}",
             adapter.bin_name,
             bin_path.display(),
-            error
-        )
+            e
+        ))
     })?;
     if metadata.len() == 0 {
-        return Err(format!("Binary is empty for {}", adapter.bin_name));
+        return Err(ErgataiError::internal(format!(
+            "Binary is empty for {}",
+            adapter.bin_name
+        )));
     }
 
     // The .bin/ file is a symlink to the actual JS file, so we need to resolve it for node --check.
     // This is safe: the symlink is created by npm during installation, and we verify the target exists
     // via the metadata check above.
-    let real_path = std::fs::read_link(&bin_path)
-        .map_err(|error| format!("Failed to read symlink {}: {}", bin_path.display(), error))?;
+    let real_path = std::fs::read_link(&bin_path).map_err(|e| {
+        ErgataiError::internal(format!(
+            "Failed to read symlink {}: {}",
+            bin_path.display(),
+            e
+        ))
+    })?;
     let dist_path = if real_path.is_absolute() {
         real_path.to_string_lossy().to_string()
     } else {
         // Relative symlink, resolve relative to .bin/ directory
         let bin_dir = bin_path.parent().ok_or_else(|| {
-            format!(
+            ErgataiError::internal(format!(
                 "Binary path has no parent directory: {}",
                 bin_path.display()
-            )
+            ))
         })?;
         bin_dir.join(&real_path).to_string_lossy().to_string()
     };
 
     // Validate that the resolved symlink target stays within the release directory.
     // A malicious npm package could create a symlink pointing outside (e.g. to /etc/passwd).
-    let canonical_dist = std::fs::canonicalize(&dist_path).map_err(|error| {
-        format!(
+    let canonical_dist = std::fs::canonicalize(&dist_path).map_err(|e| {
+        ErgataiError::internal(format!(
             "Failed to canonicalize symlink target {}: {}",
-            dist_path, error
-        )
+            dist_path, e
+        ))
     })?;
-    let canonical_release = std::fs::canonicalize(release_dir).map_err(|error| {
-        format!(
+    let canonical_release = std::fs::canonicalize(release_dir).map_err(|e| {
+        ErgataiError::internal(format!(
             "Failed to canonicalize release directory {}: {}",
             release_dir.display(),
-            error
-        )
+            e
+        ))
     })?;
     if !canonical_dist.starts_with(&canonical_release) {
-        return Err(format!(
+        return Err(ErgataiError::internal(format!(
             "Symlink target {} escapes release directory {}",
             dist_path,
             release_dir.display()
-        ));
+        )));
     }
 
     // Use tokio::process::Command instead of spawn_blocking + std::process::Command.
@@ -524,21 +547,24 @@ async fn verify_adapter(release_dir: &Path, adapter: &ManagedAdapter) -> Result<
         });
 
     if !success {
-        return Err(format!("node --check failed for {}", adapter.npm_package));
+        return Err(ErgataiError::internal(format!(
+            "node --check failed for {}",
+            adapter.npm_package
+        )));
     }
     Ok(())
 }
 
 // ── subprocess helpers ───────────────────────────────────────────────
 
-async fn npm_latest_version(package: &str) -> Result<String, String> {
+async fn npm_latest_version(package: &str) -> Result<String, ErgataiError> {
     let mut cmd = Command::new("npm");
     cmd.args(["view", package, "version"]);
     let output = run_command(cmd, LS_REMOTE_TIMEOUT).await?;
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-async fn npm_install_package(dest: &Path, package: &str) -> Result<(), String> {
+async fn npm_install_package(dest: &Path, package: &str) -> Result<(), ErgataiError> {
     let mut cmd = Command::new("npm");
     cmd.args([
         "install",
@@ -555,19 +581,24 @@ async fn npm_install_package(dest: &Path, package: &str) -> Result<(), String> {
 async fn run_command(
     mut command: Command,
     timeout: Duration,
-) -> Result<std::process::Output, String> {
+) -> Result<std::process::Output, ErgataiError> {
     let description = format!("{:?}", command.as_std());
     let output = tokio::time::timeout(timeout, command.kill_on_drop(true).output())
         .await
-        .map_err(|_| format!("{} timed out after {:?}", description, timeout))?
-        .map_err(|error| format!("{} failed to run: {}", description, error))?;
+        .map_err(|_| {
+            ErgataiError::internal(format!("{} timed out after {:?}", description, timeout))
+        })?
+        .map_err(|e| ErgataiError::internal(format!("{} failed to run: {}", description, e)))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let tail: String = stderr
             .chars()
             .skip(stderr.len().saturating_sub(300))
             .collect();
-        return Err(format!("{} failed: {}", description, tail));
+        return Err(ErgataiError::internal(format!(
+            "{} failed: {}",
+            description, tail
+        )));
     }
     Ok(output)
 }

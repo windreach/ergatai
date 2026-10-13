@@ -594,8 +594,33 @@ async fn async_main(args: Args) -> Result<()> {
                 ergatai_api::user_data_db::get_user_data_db(),
             )
             .with_collab_runtime(collab_runtime_manager.clone());
+
+            // Get accumulator registry before moving app_context
+            let accumulator_registry = app_context.accumulator_registry.clone();
+
             ergatai_api::context::init_app_context(app_context);
             tracing::info!("✅ AppContext initialized");
+
+            // Initialize global accumulator registry and persistence callback
+            ergatai_runtime::set_global_accumulator_registry(accumulator_registry);
+            let persist_callback: ergatai_runtime::PersistCallback =
+                Box::new(|conv_id, output_data| {
+                    Box::pin(async move {
+                        // Parse conversation_id from String to i64
+                        let conv_id_i64 = conv_id.parse::<i64>().unwrap_or(0);
+                        ergatai_api::services::agent_output_persistence::persist_agent_output(
+                            conv_id_i64,
+                            output_data,
+                        )
+                        .await
+                    })
+                });
+            ergatai_runtime::set_global_persist_callback(persist_callback);
+            tracing::info!("✅ Global accumulator registry and persistence callback initialized");
+
+            // Spawn agent output TTL cleanup task (bounds storage growth).
+            // Runs daily; failures are logged but do not affect the main service.
+            let _cleanup_handle = ergatai_api::services::agent_output_cleanup::spawn_cleanup_task();
 
             // Register existing workspaces with the permission handler so file access control
             // works after server restart. Without this, pre-existing workspaces would have no
@@ -611,7 +636,7 @@ async fn async_main(args: Args) -> Result<()> {
                         let ws_count = workspaces.len();
                         for ws in workspaces {
                             permission_handler
-                                .register_workspace(&ws.workspace_id, ws.work_dir.into())
+                                .register_workspace(ws.workspace_id, ws.work_dir.into())
                                 .await;
                         }
                         tracing::info!(

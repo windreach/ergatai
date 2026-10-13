@@ -2,7 +2,6 @@
 
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
     response::{
         sse::{Event, Sse},
         IntoResponse,
@@ -13,6 +12,7 @@ use futures::stream::{self, Stream, StreamExt};
 use serde::Deserialize;
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use utoipa::ToSchema;
 
 use crate::api::activity::{get_activity_feed, ActivityEntry};
 use crate::AppState;
@@ -44,7 +44,7 @@ impl Drop for SseConnectionGuard {
 }
 
 /// Query parameters for recent events endpoint
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RecentQuery {
     #[serde(default = "default_limit")]
     pub limit: usize,
@@ -58,6 +58,18 @@ fn default_limit() -> usize {
 const MAX_RECENT_LIMIT: usize = 1000;
 
 /// GET /api/v1/activity/recent — get recent activity events
+#[utoipa::path(
+    get,
+    path = "/api/v1/activity/recent",
+    tag = "Activity",
+    params(
+        ("limit" = usize, Query, description = "Maximum number of events (default 50, max 1000)"),
+    ),
+    responses(
+        (status = 200, description = "Recent activity events"),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn get_recent_events(
     State(_state): State<AppState>,
     Query(params): Query<RecentQuery>,
@@ -80,6 +92,15 @@ pub async fn get_recent_events(
 /// (`ERGATAI_MAX_SSE_CONNECTIONS`, default 100) is reached. Each accepted
 /// connection increments an atomic counter that is decremented when the
 /// client disconnects (via the RAII `SseConnectionGuard`).
+#[utoipa::path(
+    get,
+    path = "/api/v1/activity/stream",
+    tag = "Activity",
+    responses(
+        (status = 200, description = "SSE stream"),
+        (status = 503, description = "Connection limit reached", body = crate::api::ApiError),
+    )
+)]
 pub async fn stream_events(State(_state): State<AppState>) -> impl IntoResponse {
     // Enforce SSE connection cap with a CAS loop to avoid the TOCTOU race
     // inherent in fetch_add + check + fetch_sub: under contention, N concurrent
@@ -89,15 +110,10 @@ pub async fn stream_events(State(_state): State<AppState>) -> impl IntoResponse 
     loop {
         let current = SSE_CONNECTION_COUNT.load(Ordering::SeqCst);
         if current >= max {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({
-                    "error": format!(
-                        "SSE connection limit reached ({}/{}). Close an existing connection or raise ERGATAI_MAX_SSE_CONNECTIONS.",
-                        current, max
-                    )
-                })),
-            )
+            return crate::http_error::unavailable(format!(
+                "SSE connection limit reached ({}/{}). Close an existing connection or raise ERGATAI_MAX_SSE_CONNECTIONS.",
+                current, max
+            ))
                 .into_response();
         }
         match SSE_CONNECTION_COUNT.compare_exchange_weak(

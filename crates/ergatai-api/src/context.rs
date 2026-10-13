@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use ergatai_nats::NatsConnection;
-use ergatai_runtime::AgentRuntime;
+use ergatai_runtime::{AgentRuntime, OutputAccumulatorRegistry};
 use rusqlite::Connection;
 
 use crate::services::collab_runtime::CollabRuntimeManager;
@@ -50,6 +50,9 @@ pub struct AppContext {
     /// Optional implicit collaboration runtime sidecar. This remains `None`
     /// when the server is started without `--collab-runtime-program`.
     pub collab_runtime: Option<Arc<CollabRuntimeManager>>,
+
+    /// Output accumulator registry for tracking agent turn outputs.
+    pub accumulator_registry: Arc<OutputAccumulatorRegistry>,
 }
 
 impl AppContext {
@@ -66,6 +69,7 @@ impl AppContext {
             nats_connection,
             user_data_db,
             collab_runtime: None,
+            accumulator_registry: Arc::new(OutputAccumulatorRegistry::new()),
         }
     }
 
@@ -92,6 +96,7 @@ impl AppContext {
             nats_connection: None,
             user_data_db: db,
             collab_runtime: None,
+            accumulator_registry: Arc::new(OutputAccumulatorRegistry::new()),
         }
     }
 }

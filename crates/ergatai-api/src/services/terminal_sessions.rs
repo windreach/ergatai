@@ -519,8 +519,8 @@ fn status_name(status: TerminalSessionStatus) -> &'static str {
 
 fn metadata_to_record(metadata: &TerminalSession) -> TerminalSessionRecord {
     TerminalSessionRecord {
-        session_id: metadata.session_id.clone(),
-        workspace_id: metadata.workspace_id.clone(),
+        session_id: metadata.session_id.parse::<i64>().unwrap_or(0),
+        workspace_id: metadata.workspace_id.parse::<i64>().unwrap_or(0),
         user_id: metadata.user_id.clone(),
         profile: profile_name(metadata.profile).to_string(),
         transport: transport_name(metadata.transport).to_string(),
@@ -528,7 +528,10 @@ fn metadata_to_record(metadata: &TerminalSession) -> TerminalSessionRecord {
         cwd: metadata.cwd.clone(),
         pid: metadata.pid.map(i64::from),
         exit_code: metadata.exit_code,
-        agent_session_id: metadata.agent_session_id.clone(),
+        agent_session_id: metadata
+            .agent_session_id
+            .as_ref()
+            .and_then(|s| s.parse::<i64>().ok()),
         last_sequence: metadata.last_sequence as i64,
         recoverable: metadata.recoverable,
         created_at_ms: metadata.created_at_ms as i64,
@@ -581,8 +584,8 @@ fn record_to_metadata(
     };
 
     Ok(TerminalSession {
-        session_id: record.session_id,
-        workspace_id: record.workspace_id,
+        session_id: record.session_id.to_string(),
+        workspace_id: record.workspace_id.to_string(),
         user_id: record.user_id,
         profile,
         transport,
@@ -590,7 +593,7 @@ fn record_to_metadata(
         cwd: record.cwd,
         pid: record.pid.map(|pid| pid as u32),
         exit_code: record.exit_code,
-        agent_session_id: record.agent_session_id,
+        agent_session_id: record.agent_session_id.map(|id| id.to_string()),
         last_sequence: record.last_sequence.max(0) as u64,
         recoverable: record.recoverable,
         created_at_ms: record.created_at_ms.max(0) as u64,
@@ -991,6 +994,10 @@ pub async fn list_sessions(
     }
 
     workspace_root(workspace_id, user_id).await?;
+    let workspace_id_i64 = workspace_id.parse::<i64>().map_err(|_| {
+        TerminalSessionError::Validation(format!("Invalid workspace_id format: {}", workspace_id))
+    })?;
+
     let live_sessions: Vec<TerminalSession> = {
         let processes = sessions().lock().await;
         processes
@@ -1001,7 +1008,7 @@ pub async fn list_sessions(
             .map(|process| process.metadata.clone())
             .collect()
     };
-    let records = terminal_session_store::list(workspace_id, user_id)
+    let records = terminal_session_store::list(workspace_id_i64, user_id)
         .map_err(|error| TerminalSessionError::ProcessFailed(error.to_string()))?;
 
     let mut sessions = Vec::with_capacity(records.len());
@@ -1009,7 +1016,7 @@ pub async fn list_sessions(
     for record in records {
         if let Some(index) = pending_live
             .iter()
-            .position(|metadata| metadata.session_id == record.session_id)
+            .position(|metadata| metadata.session_id == record.session_id.to_string())
         {
             let metadata = pending_live.remove(index);
             persist_metadata(&metadata);
@@ -1380,8 +1387,8 @@ mod tests {
     #[test]
     fn terminal_metadata_round_trips_recovery_fields() {
         let metadata = TerminalSession {
-            session_id: "session-1".to_string(),
-            workspace_id: "workspace".to_string(),
+            session_id: "12345".to_string(),
+            workspace_id: "67890".to_string(),
             user_id: "local".to_string(),
             profile: TerminalProfile::AgentObservation,
             transport: TerminalTransport::Pty,
@@ -1389,7 +1396,7 @@ mod tests {
             cwd: "/tmp".to_string(),
             pid: Some(4321),
             exit_code: None,
-            agent_session_id: Some("agent-session".to_string()),
+            agent_session_id: Some("11111".to_string()),
             last_sequence: 18,
             recoverable: true,
             created_at_ms: 123,

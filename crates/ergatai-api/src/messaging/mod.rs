@@ -88,7 +88,7 @@ pub struct SendRequest {
     /// When present, the system uses `ergatai.conversation.message.{conversation_id}` subject
     /// instead of `ergatai.agent.message.{agent_id}`.
     /// This is the new preferred routing; `to` is kept for backward compatibility.
-    pub target_conversation_id: Option<String>,
+    pub target_conversation_id: Option<i64>,
     /// Message content.
     pub message: String,
     /// Message type: "request", "response", or "broadcast".
@@ -103,7 +103,7 @@ pub struct SendRequest {
     /// - For `"broadcast"` messages: ignored.
     pub correlation_id: Option<String>,
     /// Optional UI thread to persist/render this external message.
-    pub conversation_id: Option<String>,
+    pub conversation_id: Option<i64>,
 }
 
 /// Context retained while waiting for an agent's response.
@@ -266,7 +266,9 @@ impl MessageSender {
                     .try_auto_resume_suspended_agent(
                         &runtime,
                         &req.to,
-                        req.conversation_id.as_deref(),
+                        req.conversation_id
+                            .map(|id| format_id(id, IdType::Conversation))
+                            .as_deref(),
                     )
                     .await
                 {
@@ -309,11 +311,11 @@ impl MessageSender {
         let resolved_req = SendRequest {
             from: resolved_sender_id.clone(),
             to: resolved_target_id.clone(),
-            target_conversation_id: req.target_conversation_id.clone(), // Pass through Conversation ID
+            target_conversation_id: req.target_conversation_id, // Pass through Conversation ID
             message: req.message.clone(),
             message_type: req.message_type.clone(),
             correlation_id: req.correlation_id.clone(),
-            conversation_id: req.conversation_id.clone(),
+            conversation_id: req.conversation_id,
         };
 
         // ── Step 2: Admission control (AFTER agent resolution) ──
@@ -353,7 +355,7 @@ impl MessageSender {
             None
         };
 
-        let mut target_conversation_id = req.conversation_id.clone();
+        let mut target_conversation_id = req.conversation_id;
         if target_conversation_id.is_none() {
             let ensured_conversation_id = self
                 .ensure_target_conversation(&resolved_sender_id, &resolved_target_id, &req.to)
@@ -373,7 +375,17 @@ impl MessageSender {
                 // Wrap synchronous DB call in spawn_blocking to avoid blocking async runtime
                 let candidate = candidate.to_string();
                 match tokio::task::spawn_blocking(move || {
-                    user_data_db::group_agent_bindings::find_conversation_id(&candidate)
+                    // Try to parse the candidate as a formatted ID to get i64
+                    let agent_id =
+                        ergatai_error::id::parse_to_i64(&candidate).unwrap_or_else(|| {
+                            // Fallback: extract numeric part from simple IDs like "ws1-agent-1"
+                            candidate
+                                .split('-')
+                                .next_back()
+                                .and_then(|s| s.parse::<i64>().ok())
+                                .unwrap_or(0)
+                        });
+                    user_data_db::group_agent_bindings::find_conversation_id(agent_id)
                 })
                 .await
                 {
@@ -452,7 +464,9 @@ impl MessageSender {
                 // Message type for proper classification on the receiving end
                 message_type: req.message_type.clone(),
                 // Conversation ID for direct delivery (bypasses agent_id intermediary)
-                target_conversation_id: resolved_req.target_conversation_id.clone(),
+                target_conversation_id: resolved_req
+                    .target_conversation_id
+                    .map(|id| format_id(id, IdType::Conversation)),
                 // Images (empty for agent-to-agent messages, used for user messages)
                 images: vec![],
             };
@@ -552,12 +566,12 @@ impl MessageSender {
 
                 // Persist message AFTER successful delivery. The conversation helper
                 // owns writes to the normalized `messages` table.
-                if let Some(conversation_id) = target_conversation_id.clone() {
+                if let Some(conversation_id) = target_conversation_id {
                     let message = req.message.clone();
                     let from = req.from.clone();
                     let sender_name = sender_display.clone();
                     let message_type = req.message_type.clone();
-                    let conversation_id_for_persist = conversation_id.clone();
+                    let conversation_id_for_persist = conversation_id;
                     // Wrap synchronous DB call in spawn_blocking
                     let append_result = tokio::task::spawn_blocking(move || {
                         let role = agent_message_role(&message_type);
@@ -568,7 +582,7 @@ impl MessageSender {
                             "messageType": message_type,
                         });
                         user_data_db::messages::append(
-                            &conversation_id_for_persist,
+                            conversation_id_for_persist,
                             role,
                             serde_json::json!([{ "type": "text", "text": message }]),
                             metadata,
@@ -618,10 +632,18 @@ impl MessageSender {
         sender_id: &str,
         target_id: &str,
         target_label: &str,
-    ) -> Option<String> {
+    ) -> Option<i64> {
         let sender_id = sender_id.to_string();
         let seed_conversation_id = match tokio::task::spawn_blocking(move || {
-            user_data_db::group_agent_bindings::find_conversation_id(&sender_id)
+            // Convert string agent ID to i64
+            let agent_id = ergatai_error::id::parse_to_i64(&sender_id).unwrap_or_else(|| {
+                sender_id
+                    .split('-')
+                    .next_back()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(0)
+            });
+            user_data_db::group_agent_bindings::find_conversation_id(agent_id)
         })
         .await
         {
@@ -638,22 +660,27 @@ impl MessageSender {
         };
 
         let target_id = target_id.to_string();
-        let target_id_for_lookup = target_id.clone();
+        // Convert target_id to i64 for comparison
+        let target_id_i64 = ergatai_error::id::parse_to_i64(&target_id).unwrap_or_else(|| {
+            target_id
+                .split('-')
+                .next_back()
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0)
+        });
         let context = tokio::task::spawn_blocking(move || -> Result<_, String> {
-            let seed_conversation = user_data_db::conversations::get(&seed_conversation_id)
+            let seed_conversation = user_data_db::conversations::get(seed_conversation_id)
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| "Sender conversation not found".to_string())?;
-            let chat_id = seed_conversation
-                .parent_id
-                .unwrap_or_else(|| seed_conversation_id.clone());
-            let root_conversation = user_data_db::conversations::get(&chat_id)
+            let chat_id = seed_conversation.parent_id.unwrap_or(seed_conversation_id);
+            let root_conversation = user_data_db::conversations::get(chat_id)
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| "Chat conversation not found".to_string())?;
 
-            let existing = user_data_db::group_agent_bindings::list(&chat_id)
+            let existing = user_data_db::group_agent_bindings::list(chat_id)
                 .map_err(|error| error.to_string())?
                 .into_iter()
-                .find(|binding| binding.agent_id == target_id_for_lookup)
+                .find(|binding| binding.agent_id == target_id_i64)
                 .map(|binding| binding.conversation_id);
 
             Ok((chat_id, root_conversation, existing))
@@ -684,33 +711,32 @@ impl MessageSender {
                 .handle
                 .metadata
                 .get("conversation_id")
-                .cloned()
-                .unwrap_or_else(|| format_id(generate(), IdType::Conversation)),
+                .and_then(|s| ergatai_error::id::parse_to_i64(s))
+                .unwrap_or_else(generate),
             None => {
                 tracing::warn!(
                     target_agent = %target_id,
                     "Failed to get target agent info, generating new conversation_id"
                 );
-                format_id(generate(), IdType::Conversation)
+                generate()
             }
         };
         let timestamp = chrono::Utc::now().timestamp();
-        let conversation_id_for_db = conversation_id.clone();
-        let chat_id_for_conversation = chat_id.clone();
-        let chat_id_for_binding = chat_id.clone();
-        let root_conversation_for_db = root_conversation.clone();
-        let target_id_for_db = target_id.clone();
+        let chat_id_for_conversation = chat_id;
+        let chat_id_for_binding = chat_id;
+        let root_conversation_for_db = root_conversation;
+        let target_id_i64_for_db = target_id_i64;
         let target_label_for_conversation = target_label.to_string();
         let target_label_for_agent_name = target_label.to_string();
         let target_label_for_agent_command = target_label.to_string();
-        let conversation_id_for_create = conversation_id_for_db.clone();
-        let conversation_id_for_binding = conversation_id_for_db.clone();
-        let conversation_id_for_agent_session = conversation_id_for_db.clone();
+        let conversation_id_for_create = conversation_id;
+        let conversation_id_for_binding = conversation_id;
+        let conversation_id_for_agent_session = conversation_id;
         let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
             user_data_db::conversations::create(user_data_db::Conversation {
                 conversation_id: conversation_id_for_create,
-                collaboration_session_id: root_conversation_for_db.collaboration_session_id.clone(),
-                chat_id: root_conversation_for_db.chat_id.clone(),
+                collaboration_session_id: root_conversation_for_db.collaboration_session_id,
+                chat_id: root_conversation_for_db.chat_id,
                 parent_id: Some(chat_id_for_conversation),
                 name: Some(target_label_for_conversation),
                 mode: "agent".to_string(),
@@ -722,9 +748,9 @@ impl MessageSender {
             .map_err(|error| error.to_string())?;
 
             user_data_db::group_agent_bindings::upsert(user_data_db::GroupAgentBinding {
-                workspace_id: root_conversation_for_db.chat_id.clone(),
+                workspace_id: root_conversation_for_db.chat_id,
                 chat_id: chat_id_for_binding,
-                agent_id: target_id_for_db,
+                agent_id: target_id_i64_for_db,
                 agent_name: target_label_for_agent_name,
                 agent_command: Some(target_label_for_agent_command),
                 conversation_id: conversation_id_for_binding,
@@ -734,7 +760,7 @@ impl MessageSender {
             .map_err(|error| error.to_string())?;
 
             user_data_db::agent_sessions::upsert(user_data_db::AgentSession {
-                agent_session_id: format_id(generate(), IdType::Session),
+                agent_session_id: generate(),
                 conversation_id: conversation_id_for_agent_session,
                 acp_session_id: None,
                 mode: "agent".to_string(),
@@ -760,18 +786,21 @@ impl MessageSender {
         }
 
         if let Ok(Ok(Some(session))) = tokio::task::spawn_blocking(move || {
-            crate::services::collaboration_session::find_session_by_chat(&chat_id)
+            crate::services::collaboration_session::find_session_by_chat(&chat_id.to_string())
         })
         .await
         {
-            let participant_conversation_id = conversation_id.clone();
-            let participant_agent_id = target_id.clone();
+            let participant_conversation_id = conversation_id;
+            let participant_agent_id = target_id_i64;
             if let Err(error) = tokio::task::spawn_blocking(move || {
                 crate::services::collaboration_session::upsert_participant(
                     &session.collaboration_session_id,
                     crate::services::collaboration_session::ParticipantInput {
-                        conversation_id: participant_conversation_id,
-                        agent_id: participant_agent_id,
+                        conversation_id: format_id(
+                            participant_conversation_id,
+                            IdType::Conversation,
+                        ),
+                        agent_id: format_id(participant_agent_id, IdType::Agent),
                         role: "peer".to_string(),
                         status: "ready".to_string(),
                     },
@@ -1417,8 +1446,8 @@ pub async fn publish_to_conversation_subject_with_message(
         return;
     };
 
-    let conversation_id_for_log = persisted_msg.conversation_id.clone();
-    let msg_id_for_log = persisted_msg.message_id.clone();
+    let conversation_id_for_log = format_id(persisted_msg.conversation_id, IdType::Conversation);
+    let msg_id_for_log = format_id(persisted_msg.message_id, IdType::Message);
 
     // Extract text content from parts to ensure consistency
     let content = extract_text_from_parts(&persisted_msg.parts);
@@ -1427,8 +1456,8 @@ pub async fn publish_to_conversation_subject_with_message(
     tokio::spawn(async move {
         let bus = ergatai_nats::EventBus::new(conn);
         let payload = ergatai_nats::ConversationMessagePayload {
-            conversation_id: persisted_msg.conversation_id,
-            message_id: persisted_msg.message_id,
+            conversation_id: format_id(persisted_msg.conversation_id, IdType::Conversation),
+            message_id: format_id(persisted_msg.message_id, IdType::Message),
             role: persisted_msg.role,
             content,
             parts: Some(

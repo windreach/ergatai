@@ -12,11 +12,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use chrono::{DateTime, Utc};
+use ergatai_error::ErgataiError;
+use ergatai_runtime::{AgentLifecycleState, AgentRecord};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::debug;
-
-use ergatai_runtime::{AgentLifecycleState, AgentRecord};
 
 /// Global unified registry instance.
 static UNIFIED_REGISTRY: OnceLock<UnifiedAgentRegistry> = OnceLock::new();
@@ -219,14 +219,14 @@ impl UnifiedAgentRegistry {
         &self,
         agent_id: &str,
         new_state: AgentLifecycleState,
-    ) -> Result<(), String> {
+    ) -> Result<(), ErgataiError> {
         // Capture event data under write lock, then release lock before publishing
         // to avoid holding the write lock during async I/O operations.
         let event_payload = {
             let mut agents = self.agents.write().await;
-            let record = agents
-                .get_mut(agent_id)
-                .ok_or_else(|| format!("Agent {} not found", agent_id))?;
+            let record = agents.get_mut(agent_id).ok_or_else(|| {
+                ErgataiError::AgentNotFound(format!("Agent {} not found", agent_id))
+            })?;
 
             let old_state = record.state.state_name().to_string();
 
@@ -273,13 +273,17 @@ impl UnifiedAgentRegistry {
 
     /// Set or update the MCP agent ID binding for an agent.
     /// Removes any previous MCP ID binding for this agent.
-    pub async fn set_mcp_agent_id(&self, agent_id: &str, mcp_id: String) -> Result<(), String> {
+    pub async fn set_mcp_agent_id(
+        &self,
+        agent_id: &str,
+        mcp_id: String,
+    ) -> Result<(), ErgataiError> {
         let mut agents = self.agents.write().await;
         let mut mcp_index = self.mcp_id_to_agent_id.write().await;
 
         let record = agents
             .get_mut(agent_id)
-            .ok_or_else(|| format!("Agent {} not found", agent_id))?;
+            .ok_or_else(|| ErgataiError::AgentNotFound(format!("Agent {} not found", agent_id)))?;
 
         // Remove old MCP ID binding if any
         if let Some(ref old_mcp) = record.mcp_agent_id {
@@ -294,11 +298,11 @@ impl UnifiedAgentRegistry {
     }
 
     /// Update the last heartbeat timestamp for an agent.
-    pub async fn update_heartbeat(&self, agent_id: &str) -> Result<(), String> {
+    pub async fn update_heartbeat(&self, agent_id: &str) -> Result<(), ErgataiError> {
         let mut agents = self.agents.write().await;
         let record = agents
             .get_mut(agent_id)
-            .ok_or_else(|| format!("Agent {} not found", agent_id))?;
+            .ok_or_else(|| ErgataiError::AgentNotFound(format!("Agent {} not found", agent_id)))?;
         record.last_heartbeat = chrono::Utc::now();
         debug!(agent_id = %agent_id, "Updated heartbeat");
         Ok(())

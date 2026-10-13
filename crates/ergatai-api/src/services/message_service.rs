@@ -13,7 +13,7 @@ pub struct MessageService;
 impl MessageService {
     /// 创建 Message
     pub fn create_message(
-        conversation_id: &str,
+        conversation_id: i64,
         role: &str,
         content: &str,
         metadata: Option<serde_json::Value>,
@@ -38,30 +38,28 @@ impl MessageService {
     }
 
     /// 列出 Message（通过 conversation_id 过滤）
-    pub fn list_messages_by_conversation(
-        conversation_id: &str,
-    ) -> anyhow::Result<Vec<Message>> {
+    pub fn list_messages_by_conversation(conversation_id: i64) -> anyhow::Result<Vec<Message>> {
         let messages = messages::list(conversation_id)?;
         Ok(messages)
     }
 
     /// 列出 Message（通过 collaboration_session_id 过滤）
     pub fn list_messages_by_collaboration_session(
-        collaboration_session_id: &str,
+        collaboration_session_id: i64,
     ) -> anyhow::Result<Vec<Message>> {
         let messages = messages::list_by_collaboration_session(collaboration_session_id)?;
         Ok(messages)
     }
 
     /// 列出 Message（通过 chat_id 过滤）
-    pub fn list_messages_by_chat(chat_id: &str) -> anyhow::Result<Vec<Message>> {
+    pub fn list_messages_by_chat(chat_id: i64) -> anyhow::Result<Vec<Message>> {
         let messages = messages::list_by_chat(chat_id)?;
         Ok(messages)
     }
 
     /// 列出 Message（after_sequence 之后的）
     pub fn list_messages_after_sequence(
-        conversation_id: &str,
+        conversation_id: i64,
         after_sequence: i64,
     ) -> anyhow::Result<Vec<Message>> {
         let messages = messages::list_after_sequence(conversation_id, after_sequence)?;
@@ -69,7 +67,7 @@ impl MessageService {
     }
 
     /// 获取最后一个 Message
-    pub fn get_last_message(conversation_id: &str) -> anyhow::Result<Option<Message>> {
+    pub fn get_last_message(conversation_id: i64) -> anyhow::Result<Option<Message>> {
         let message = messages::get_last(conversation_id)?;
         Ok(message)
     }
@@ -88,7 +86,7 @@ impl MessageService {
 
     /// 替换历史消息（用于同步）
     pub fn replace_legacy_messages(
-        conversation_id: &str,
+        conversation_id: i64,
         messages_json: &str,
         updated_at: i64,
     ) -> anyhow::Result<()> {
@@ -97,7 +95,7 @@ impl MessageService {
     }
 
     /// 序列化消息为旧格式
-    pub fn serialize_legacy(conversation_id: &str) -> anyhow::Result<String> {
+    pub fn serialize_legacy(conversation_id: i64) -> anyhow::Result<String> {
         let serialized = messages::serialize_legacy(conversation_id)?;
         Ok(serialized)
     }

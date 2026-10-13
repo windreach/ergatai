@@ -149,7 +149,7 @@ impl ErgataiClient {
 
     pub async fn send_message(&self, id: &str, message: &str) -> Result<()> {
         let encoded_id = Self::encode_path_segment(id);
-        let url = format!("{}/api/v1/agents/{}/message", self.base_url, encoded_id);
+        let url = format!("{}/api/v1/agents/{}/send", self.base_url, encoded_id);
         let body = SendMessageRequest {
             message: message.to_string(),
             correlation_id: None,
@@ -207,7 +207,6 @@ impl ErgataiClient {
 
         Ok(response.json().await?)
     }
-
 
     pub async fn list_profiles(&self) -> Result<ListProfilesResponse> {
         let url = format!("{}/api/v1/agent-profiles", self.base_url);
@@ -498,8 +497,8 @@ mod tests {
     fn test_send_message_url_building() {
         let client = ErgataiClient::new("http://localhost:3000", None);
         let id = "agent-789";
-        let url = format!("{}/api/v1/agents/{}/message", client.base_url, id);
-        assert_eq!(url, "http://localhost:3000/api/v1/agents/agent-789/message");
+        let url = format!("{}/api/v1/agents/{}/send", client.base_url, id);
+        assert_eq!(url, "http://localhost:3000/api/v1/agents/agent-789/send");
     }
 
     #[test]

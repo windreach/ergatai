@@ -3,6 +3,7 @@
 //! Detects sensitive files and directories that require ADMIN permission.
 //! System defaults + project-level configuration.
 
+use ergatai_error::ErgataiError;
 use glob::Pattern;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -17,25 +18,25 @@ use std::sync::LazyLock;
 ///
 /// # Returns
 /// `Ok(())` if the path is safe (not a symlink), `Err` with description if it's a symlink.
-pub fn check_symlink(path: &Path) -> Result<(), String> {
+pub fn check_symlink(path: &Path) -> Result<(), ErgataiError> {
     match path.symlink_metadata() {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() {
-                Err(format!(
+                Err(ErgataiError::PermissionDenied(format!(
                     "Symbolic link not allowed: {}. Symlinks can bypass path validation.",
                     path.display()
-                ))
+                )))
             } else {
                 Ok(())
             }
         }
         Err(e) => {
             // If we can't read metadata, treat as error
-            Err(format!(
+            Err(ErgataiError::IoError(std::io::Error::other(format!(
                 "Cannot read metadata for {}: {}",
                 path.display(),
                 e
-            ))
+            ))))
         }
     }
 }

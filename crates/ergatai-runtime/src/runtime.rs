@@ -879,9 +879,12 @@ impl AgentRuntime {
         self.registry.remove(agent_id).await;
 
         // 9. Abort the monitor task if it exists
-        if let Some(handle) = self.monitor_handles.lock().map_err(|e| {
-            ErgataiError::internal(format!("monitor_handles lock poisoned: {}", e))
-        })?.remove(agent_id) {
+        if let Some(handle) = self
+            .monitor_handles
+            .lock()
+            .map_err(|e| ErgataiError::internal(format!("monitor_handles lock poisoned: {}", e)))?
+            .remove(agent_id)
+        {
             handle.abort();
         }
 
@@ -919,10 +922,7 @@ impl AgentRuntime {
     pub async fn resume_agent(&self, suspended_id: &str) -> ErgataiResult<String> {
         // H3 FIX: Validate suspended record exists BEFORE acquiring per-agent lock
         // to prevent memory leak from creating locks for non-existent agents
-        let suspended_exists = self
-            .suspend_store
-            .load_suspended(suspended_id)?
-            .is_some();
+        let suspended_exists = self.suspend_store.load_suspended(suspended_id)?.is_some();
         if !suspended_exists {
             return Err(ErgataiError::NotFound(format!(
                 "Suspended agent '{}' not found",

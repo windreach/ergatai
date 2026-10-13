@@ -30,12 +30,7 @@ pub async fn list_mailboxes(
     let manager = match get_mailbox_manager() {
         Some(m) => m,
         None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "MailboxManager not initialized"
-                })),
-            )
+            return crate::http_error::internal("MailboxManager not initialized", "mailbox_operation")
                 .into_response();
         }
     };
@@ -60,12 +55,7 @@ pub async fn get_mailbox_summary(
     let manager = match get_mailbox_manager() {
         Some(m) => m,
         None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "MailboxManager not initialized"
-                })),
-            )
+            return crate::http_error::internal("MailboxManager not initialized", "mailbox_operation")
                 .into_response();
         }
     };
@@ -82,12 +72,7 @@ pub async fn get_agent_mailbox(
     let manager = match get_mailbox_manager() {
         Some(m) => m,
         None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "MailboxManager not initialized"
-                })),
-            )
+            return crate::http_error::internal("MailboxManager not initialized", "mailbox_operation")
                 .into_response();
         }
     };
@@ -113,12 +98,7 @@ pub async fn clear_agent_mailbox(
     let manager = match get_mailbox_manager() {
         Some(m) => m,
         None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "MailboxManager not initialized"
-                })),
-            )
+            return crate::http_error::internal("MailboxManager not initialized", "mailbox_operation")
                 .into_response();
         }
     };

@@ -10,12 +10,13 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info};
+use utoipa::ToSchema;
 
 use ergatai_core::id::{format as format_id, generate, IdType};
 use ergatai_nats::events::AgentMessagePayload;
 
 /// Activity event types
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ActivityEvent {
     AgentMessage {
@@ -65,7 +66,7 @@ pub enum ActivityEvent {
 }
 
 /// Activity event with metadata
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ActivityEntry {
     pub id: String,
     pub timestamp: DateTime<Utc>,

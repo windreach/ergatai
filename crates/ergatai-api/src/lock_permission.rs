@@ -64,10 +64,11 @@ impl LockPermissionHandler {
     }
 
     /// Register a workspace with its work_dir for lock manager initialization
-    pub async fn register_workspace(&self, workspace_id: &str, work_dir: PathBuf) {
+    pub async fn register_workspace(&self, workspace_id: i64, work_dir: PathBuf) {
+        let workspace_id_str = workspace_id.to_string();
         let mut workspaces = self.workspaces.write().await;
         debug!(workspace_id = workspace_id, work_dir = %work_dir.display(), "Registered workspace for lock management");
-        workspaces.insert(workspace_id.to_string(), WorkspaceInfo { work_dir });
+        workspaces.insert(workspace_id_str, WorkspaceInfo { work_dir });
     }
 
     /// Unregister a workspace when it's deleted (prevents memory leak in long-running processes)
@@ -363,21 +364,21 @@ mod tests {
         let handler = LockPermissionHandler::new();
         let work_dir = PathBuf::from("/tmp/test-workspace");
 
-        // 注册工作区
-        handler.register_workspace("ws1", work_dir.clone()).await;
+        // 注册工作区 (使用 i64 ID)
+        handler.register_workspace(1i64, work_dir.clone()).await;
 
-        // 验证工作区已注册
+        // 验证工作区已注册 (内部存储为 String)
         let workspaces = handler.workspaces.read().await;
-        assert!(workspaces.contains_key("ws1"));
-        assert_eq!(workspaces.get("ws1").unwrap().work_dir, work_dir);
+        assert!(workspaces.contains_key("1"));
+        assert_eq!(workspaces.get("1").unwrap().work_dir, work_dir);
         drop(workspaces);
 
         // 注销工作区
-        handler.unregister_workspace("ws1").await;
+        handler.unregister_workspace("1").await;
 
         // 验证工作区已移除
         let workspaces = handler.workspaces.read().await;
-        assert!(!workspaces.contains_key("ws1"));
+        assert!(!workspaces.contains_key("1"));
     }
 
     #[tokio::test]
@@ -385,7 +386,7 @@ mod tests {
         let handler = LockPermissionHandler::new();
 
         // 注销不存在的工作区不应该 panic
-        handler.unregister_workspace("nonexistent").await;
+        handler.unregister_workspace("999999").await;
     }
 
     #[tokio::test]
@@ -393,53 +394,53 @@ mod tests {
         let handler = LockPermissionHandler::new();
         let work_dir = PathBuf::from("/tmp/test-workspace");
 
-        // 注册工作区
-        handler.register_workspace("ws1", work_dir).await;
+        // 注册工作区 (使用 i64 ID)
+        handler.register_workspace(1i64, work_dir).await;
 
         // 触发初始化锁的创建（通过 get_lock_manager_for_workspace）
         // 注意：由于 ergatai_lock 未初始化，这会返回 None，但会创建初始化锁
-        let _ = handler.get_lock_manager_for_workspace("ws1").await;
+        let _ = handler.get_lock_manager_for_workspace("1").await;
 
         // 验证初始化锁已创建
         let init_locks = handler.initialization_locks.lock().await;
-        assert!(init_locks.contains_key("ws1"));
+        assert!(init_locks.contains_key("1"));
         drop(init_locks);
 
         // 注销工作区
-        handler.unregister_workspace("ws1").await;
+        handler.unregister_workspace("1").await;
 
         // 验证初始化锁也已清理
         let init_locks = handler.initialization_locks.lock().await;
-        assert!(!init_locks.contains_key("ws1"));
+        assert!(!init_locks.contains_key("1"));
     }
 
     #[tokio::test]
     async fn test_multiple_workspace_isolation() {
         let handler = LockPermissionHandler::new();
 
-        // 注册多个工作区
+        // 注册多个工作区 (使用 i64 ID)
         handler
-            .register_workspace("ws1", PathBuf::from("/tmp/ws1"))
+            .register_workspace(1i64, PathBuf::from("/tmp/ws1"))
             .await;
         handler
-            .register_workspace("ws2", PathBuf::from("/tmp/ws2"))
+            .register_workspace(2i64, PathBuf::from("/tmp/ws2"))
             .await;
 
-        // 验证工作区已注册
+        // 验证工作区已注册 (内部存储为 String)
         {
             let workspaces = handler.workspaces.read().await;
-            assert!(workspaces.contains_key("ws1"));
-            assert!(workspaces.contains_key("ws2"));
+            assert!(workspaces.contains_key("1"));
+            assert!(workspaces.contains_key("2"));
         }
 
         // 注销一个工作区
-        handler.unregister_workspace("ws1").await;
+        handler.unregister_workspace("1").await;
 
         // 验证只移除了指定的工作区
         {
             let workspaces = handler.workspaces.read().await;
-            assert!(!workspaces.contains_key("ws1"));
-            assert!(workspaces.contains_key("ws2"));
+            assert!(!workspaces.contains_key("1"));
+            assert!(workspaces.contains_key("2"));
         }
     }
 

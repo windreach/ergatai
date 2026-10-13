@@ -493,7 +493,18 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
     // ── User message persistence and SSE streaming ──
     // If this is a user message, persist it to SQLite and publish to conversation subject
     if from == "user" {
-        let conversation_id_for_persist = conversation_id.clone();
+        let conversation_id_i64 = match conversation_id.parse::<i64>() {
+            Ok(id) => id,
+            Err(_) => {
+                error!(
+                    message_id = %payload.message_id,
+                    conversation_id = %conversation_id,
+                    "Invalid conversation ID format, cannot persist message"
+                );
+                let _ = msg.ack().await;
+                return;
+            }
+        };
         let message_content = payload.content.clone();
         let message_id_for_persist = payload.message_id.clone();
 
@@ -513,7 +524,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
         // Persist user message to SQLite
         let append_result = tokio::task::spawn_blocking(move || {
             crate::user_data_db::messages::append(
-                &conversation_id_for_persist,
+                conversation_id_i64,
                 "user",
                 serde_json::Value::Array(parts),
                 serde_json::json!({ "source": "user" }),
@@ -609,7 +620,18 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
             // ── Agent message persistence and SSE streaming ──
             // If this is an agent message (not from user), persist it to SQLite and publish to SSE
             if from != "user" {
-                let conversation_id_for_persist = conversation_id.clone();
+                let conversation_id_i64 = match conversation_id.parse::<i64>() {
+                    Ok(id) => id,
+                    Err(_) => {
+                        error!(
+                            message_id = %payload.message_id,
+                            conversation_id = %conversation_id,
+                            "Invalid conversation ID format, cannot persist agent message"
+                        );
+                        let _ = msg.ack().await;
+                        return;
+                    }
+                };
                 let message_content = payload.content.clone();
                 let message_id_for_persist = payload.message_id.clone();
                 let from_agent = from.to_string();
@@ -631,7 +653,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                         "messageType": message_type,
                     });
                     crate::user_data_db::messages::append(
-                        &conversation_id_for_persist,
+                        conversation_id_i64,
                         role,
                         serde_json::json!([{ "type": "text", "text": message_content }]),
                         metadata,
@@ -641,6 +663,28 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
 
                 match append_result {
                     Ok(Ok(persisted_msg)) => {
+                        // Associate message_id with the latest agent_output for this conversation
+                        let conv_id_i64 = conversation_id_i64;
+                        let msg_id_for_output = persisted_msg.message_id;
+                        if let Ok(Ok(Some(output))) = tokio::task::spawn_blocking(move || {
+                            crate::user_data_db::agent_outputs::get_latest_by_conversation(
+                                conv_id_i64,
+                            )
+                        })
+                        .await
+                        {
+                            if output.message_id.is_none() {
+                                let output_id = output.id;
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    crate::user_data_db::agent_outputs::update_message_id(
+                                        output_id,
+                                        msg_id_for_output,
+                                    )
+                                })
+                                .await;
+                            }
+                        }
+
                         // Publish to conversation subject for SSE streaming
                         crate::messaging::publish_to_conversation_subject_with_message(
                             persisted_msg,

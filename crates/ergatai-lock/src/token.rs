@@ -20,27 +20,38 @@
 //! compatibility but should not be used in new code.
 
 use chrono::{DateTime, Utc};
-use ergatai_error::id::{format as id_format, generate, IdType};
+use ergatai_error::id::{format as id_format, generate, parse_to_i64, IdType};
 use serde::{Deserialize, Serialize};
 
 /// Unique identifier for a token.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TokenId(String);
+pub struct TokenId(i64);
 
 impl TokenId {
     /// Generate a new random token ID.
     pub fn new() -> Self {
-        Self(id_format(generate(), IdType::Session))
+        Self(generate())
     }
 
-    /// Create from existing string.
-    pub fn from_string(s: String) -> Self {
-        Self(s)
+    /// Create from an i64 value.
+    pub fn from_i64(id: i64) -> Self {
+        Self(id)
     }
 
-    /// Get the string representation.
-    pub fn as_str(&self) -> &str {
-        &self.0
+    /// Create from a formatted string (e.g., "sess_...").
+    /// Returns `None` if the string is not a valid formatted ID.
+    pub fn from_string(s: &str) -> Option<Self> {
+        parse_to_i64(s).map(Self)
+    }
+
+    /// Get the raw i64 value.
+    pub fn as_i64(&self) -> i64 {
+        self.0
+    }
+
+    /// Get the formatted string representation (e.g., "sess_...").
+    pub fn to_formatted_string(&self) -> String {
+        id_format(self.0, IdType::Session)
     }
 }
 
@@ -52,7 +63,7 @@ impl Default for TokenId {
 
 impl std::fmt::Display for TokenId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.to_formatted_string())
     }
 }
 
@@ -350,7 +361,7 @@ impl std::fmt::Display for TokenStatus {
 #[derive(Debug, Clone)]
 pub struct FileLock {
     /// Unique lock identifier.
-    pub id: String,
+    pub id: TokenId,
     /// File path (absolute).
     pub file_path: String,
     /// Agent identifier.
@@ -488,9 +499,22 @@ mod tests {
 
     #[test]
     fn test_token_id_from_string_and_as_str() {
-        let id = TokenId::from_string("custom-id-123".to_string());
-        assert_eq!(id.as_str(), "custom-id-123");
-        assert_eq!(id.to_string(), "custom-id-123");
+        // Test with i64-based TokenId
+        let id = TokenId::from_i64(123456789);
+        assert_eq!(id.as_i64(), 123456789);
+        // to_formatted_string should produce a formatted string
+        let formatted = id.to_formatted_string();
+        assert!(formatted.starts_with("sess_"));
+        assert_eq!(id.to_string(), formatted);
+
+        // Test from_string with a valid formatted string
+        let parsed = TokenId::from_string(&formatted);
+        assert!(parsed.is_some());
+        assert_eq!(parsed.unwrap().as_i64(), 123456789);
+
+        // Test from_string with an invalid string
+        let invalid = TokenId::from_string("invalid-id");
+        assert!(invalid.is_none());
     }
 
     #[test]
@@ -502,9 +526,9 @@ mod tests {
 
     #[test]
     fn test_token_id_equality() {
-        let a = TokenId::from_string("same".to_string());
-        let b = TokenId::from_string("same".to_string());
-        let c = TokenId::from_string("different".to_string());
+        let a = TokenId::from_i64(100);
+        let b = TokenId::from_i64(100);
+        let c = TokenId::from_i64(200);
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
@@ -795,10 +819,10 @@ mod tests {
     #[test]
     fn test_token_id_display_and_as_str() {
         let id = TokenId::new();
-        let s = id.as_str();
-        assert!(!s.is_empty());
-        // Display trait should also produce the same string
-        assert_eq!(format!("{}", id), s);
+        let formatted = id.to_formatted_string();
+        assert!(!formatted.is_empty());
+        // Display trait should also produce the formatted string
+        assert_eq!(format!("{}", id), formatted);
     }
 
     #[test]
@@ -806,10 +830,7 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for _ in 0..1000 {
             let id = TokenId::new();
-            assert!(
-                seen.insert(id.as_str().to_string()),
-                "duplicate TokenId generated"
-            );
+            assert!(seen.insert(id.as_i64()), "duplicate TokenId generated");
         }
     }
 

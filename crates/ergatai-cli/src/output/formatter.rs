@@ -1,6 +1,5 @@
 use crate::client::http::{
-    AgentInfoResponse, LockContentionResponse,
-    LockInfoResponse, StatusResponse, WorkspaceResponse,
+    AgentInfoResponse, LockContentionResponse, LockInfoResponse, StatusResponse, WorkspaceResponse,
 };
 
 fn truncate_str(s: &str, max_len: usize) -> String {

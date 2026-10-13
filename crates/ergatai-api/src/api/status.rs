@@ -1,15 +1,27 @@
 use axum::{extract::State, response::IntoResponse, Json};
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::{nats, services::agent_service, AppState};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct StatusResponse {
     pub nats_initialized: bool,
     pub nats_port: Option<u16>,
     pub active_agents: usize,
 }
 
+/// GET /api/v1/status
+///
+/// Returns system runtime status: NATS initialization state, port, and active agent count.
+#[utoipa::path(
+    get,
+    path = "/api/v1/status",
+    tag = "Status",
+    responses(
+        (status = 200, description = "System status", body = StatusResponse),
+    )
+)]
 pub async fn get_status(State(_state): State<AppState>) -> impl IntoResponse {
     let runtime = crate::context::get_app_context().agent_runtime.clone();
 
@@ -25,7 +37,7 @@ pub async fn get_status(State(_state): State<AppState>) -> impl IntoResponse {
     })
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct BackendConfigResponse {
     pub auto_continue: bool,
     pub max_auto_continues: usize,
@@ -33,6 +45,17 @@ pub struct BackendConfigResponse {
     pub session_persistence_enabled: bool,
 }
 
+/// GET /api/v1/system/config
+///
+/// Returns backend feature flags: auto-continue, MCP-over-ACP, and session persistence.
+#[utoipa::path(
+    get,
+    path = "/api/v1/system/config",
+    tag = "Status",
+    responses(
+        (status = 200, description = "Backend configuration", body = BackendConfigResponse),
+    )
+)]
 pub async fn get_backend_config(State(_state): State<AppState>) -> impl IntoResponse {
     let auto_continue = agent_service::get_backend_auto_continue()
         .await
