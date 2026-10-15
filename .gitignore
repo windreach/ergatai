@@ -80,3 +80,9 @@ lcov.info
 
 # Frontend (separate repository)
 frontend/
+
+# Test artifacts and generated files
+.schemathesis/
+openapi.json
+CODE_REVIEW_SUMMARY.md
+scripts/run-api-tests.sh
