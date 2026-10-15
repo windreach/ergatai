@@ -37,6 +37,38 @@ pub struct ConversationFileChange {
     pub deletions: u64,
 }
 
+// Response DTO with formatted IDs
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ConversationResponse {
+    pub id: String,
+    pub collaboration_session_id: String,
+    pub chat_id: String,
+    pub parent_id: Option<String>,
+    pub name: Option<String>,
+    pub mode: String,
+    pub participant_role: String,
+    pub status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl From<Conversation> for ConversationResponse {
+    fn from(c: Conversation) -> Self {
+        Self {
+            id: format_id(c.conversation_id, IdType::Conversation),
+            collaboration_session_id: format_id(c.collaboration_session_id, IdType::Session),
+            chat_id: format_id(c.chat_id, IdType::Chat),
+            parent_id: c.parent_id.map(|id| format_id(id, IdType::Conversation)),
+            name: c.name,
+            mode: c.mode,
+            participant_role: c.participant_role,
+            status: c.status,
+            created_at: c.created_at,
+            updated_at: c.updated_at,
+        }
+    }
+}
+
 fn now_unix_seconds() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -300,7 +332,10 @@ pub async fn get_conversation(
     };
 
     match tokio::task::spawn_blocking(move || user_data_db::conversations::get(id_i64)).await {
-        Ok(Ok(Some(conversation))) => (StatusCode::OK, Json(conversation)).into_response(),
+        Ok(Ok(Some(conversation))) => {
+            let response = ConversationResponse::from(conversation);
+            (StatusCode::OK, Json(response)).into_response()
+        }
         Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
         Ok(Err(error)) => db_error("Failed to load conversation", error),
         Err(e) => (
@@ -1210,7 +1245,11 @@ pub async fn list_conversations(Query(query): Query<ListConversationsQuery>) -> 
             .into_response();
     };
 
-    (StatusCode::OK, Json(conversations)).into_response()
+    let responses: Vec<ConversationResponse> = conversations
+        .into_iter()
+        .map(ConversationResponse::from)
+        .collect();
+    (StatusCode::OK, Json(responses)).into_response()
 }
 
 /// GET /api/v1/conversations/{conversation_id}/outputs
@@ -1610,7 +1649,10 @@ pub async fn create_conversation(
     match tokio::task::spawn_blocking(move || user_data_db::conversations::create(conversation))
         .await
     {
-        Ok(Ok(created)) => (StatusCode::CREATED, Json(created)).into_response(),
+        Ok(Ok(created)) => {
+            let response = ConversationResponse::from(created);
+            (StatusCode::CREATED, Json(response)).into_response()
+        }
         Ok(Err(error)) => db_error("Failed to create conversation", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

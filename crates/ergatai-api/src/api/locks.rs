@@ -43,6 +43,13 @@ fn is_internal_path(path: &str) -> bool {
         || path == ".ergatai"
 }
 
+/// Query parameters for lock endpoints.
+#[derive(Debug, Deserialize)]
+pub struct LockQueryParams {
+    /// Workspace ID (optional, defaults to "default")
+    pub workspace_id: Option<String>,
+}
+
 /// GET /api/v1/locks — list all active file locks.
 ///
 /// Internal system files (`.git/`, `.ergatai/`) are filtered out to reduce
@@ -56,8 +63,17 @@ fn is_internal_path(path: &str) -> bool {
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
-pub async fn list_locks(State(_state): State<AppState>) -> impl IntoResponse {
-    let locks = match lock_service::list_active_locks().await {
+pub async fn list_locks(
+    State(_state): State<AppState>,
+    Query(params): Query<LockQueryParams>,
+) -> impl IntoResponse {
+    // Convert workspace_id from formatted string to Snowflake ID string
+    let project_id = params
+        .workspace_id
+        .as_ref()
+        .and_then(|ws_id| ergatai_error::id::parse_to_i64(ws_id).map(|id| id.to_string()));
+
+    let locks = match lock_service::list_active_locks(project_id.as_deref()).await {
         Ok(locks) => locks,
         Err(e) => {
             tracing::debug!(error = %e, "File lock manager not initialized");
@@ -87,6 +103,7 @@ pub async fn list_locks(State(_state): State<AppState>) -> impl IntoResponse {
 /// Query parameters for audit log endpoint.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct AuditQuery {
+    pub workspace_id: Option<String>,
     pub agent_id: Option<String>,
     pub action: Option<String>,
     pub file_path: Option<String>,
@@ -123,7 +140,15 @@ pub async fn list_audit(
     Query(query): Query<AuditQuery>,
 ) -> impl IntoResponse {
     let limit = query.limit.min(MAX_AUDIT_LIMIT);
+
+    // Convert workspace_id from formatted string to Snowflake ID string
+    let project_id = query
+        .workspace_id
+        .as_ref()
+        .and_then(|ws_id| ergatai_error::id::parse_to_i64(ws_id).map(|id| id.to_string()));
+
     match lock_service::query_audit(
+        project_id.as_deref(),
         query.agent_id.as_deref(),
         query.action.as_deref(),
         query.file_path.as_deref(),
@@ -159,8 +184,17 @@ pub struct LockContentionInfo {
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
-pub async fn get_lock_contention(State(_state): State<AppState>) -> impl IntoResponse {
-    match lock_service::get_lock_contention().await {
+pub async fn get_lock_contention(
+    State(_state): State<AppState>,
+    Query(params): Query<LockQueryParams>,
+) -> impl IntoResponse {
+    // Convert workspace_id from formatted string to Snowflake ID string
+    let project_id = params
+        .workspace_id
+        .as_ref()
+        .and_then(|ws_id| ergatai_error::id::parse_to_i64(ws_id).map(|id| id.to_string()));
+
+    match lock_service::get_lock_contention(project_id.as_deref()).await {
         Ok(contentions) => {
             let infos: Vec<LockContentionInfo> = contentions
                 .into_iter()

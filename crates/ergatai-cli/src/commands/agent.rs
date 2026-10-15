@@ -52,8 +52,12 @@ pub async fn handle(action: AgentAction, api_url: &str, token: Option<&str>) -> 
             client.kill_agent(&id).await?;
             println!("Stopped agent: {}", id);
         }
-        AgentAction::Message { id, message } => {
-            client.send_message(&id, &message).await?;
+        AgentAction::Message {
+            id,
+            message,
+            conversation_id,
+        } => {
+            client.send_message(&id, &message, conversation_id).await?;
             println!("Message sent to agent: {}", id);
         }
         AgentAction::Register {

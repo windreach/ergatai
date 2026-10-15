@@ -315,7 +315,7 @@ impl OutputAccumulatorRegistry {
         if let Some(accumulator) = accumulators.remove(conversation_id) {
             let mut acc = accumulator.lock().await;
             let sequence = acc.sequence;
-            let conv_id_i64 = conversation_id.parse::<i64>().unwrap_or(0);
+            let conv_id_i64 = ergatai_error::id::parse_to_i64(conversation_id).unwrap_or(0);
             let data = std::mem::replace(&mut *acc, TurnAccumulator::new(conv_id_i64, sequence));
             Some(data.into_output_data())
         } else {

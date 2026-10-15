@@ -577,9 +577,9 @@ pub async fn patch_chat(
     Json(req): Json<PatchChatRequest>,
 ) -> impl IntoResponse {
     // Get existing chat
-    let chat_id_for_get = match chat_id.parse::<i64>() {
-        Ok(id) => id,
-        Err(_) => {
+    let chat_id_for_get = match parse_to_i64(&chat_id) {
+        Some(id) => id,
+        None => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
@@ -604,9 +604,9 @@ pub async fn patch_chat(
             match tokio::task::spawn_blocking(move || user_data_db::chats::update(updated)).await {
                 Ok(Ok(())) => {
                     // Fetch updated chat
-                    let chat_id_for_refetch = match chat_id.parse::<i64>() {
-                        Ok(id) => id,
-                        Err(_) => {
+                    let chat_id_for_refetch = match parse_to_i64(&chat_id) {
+                        Some(id) => id,
+                        None => {
                             return (
                                 StatusCode::BAD_REQUEST,
                                 Json(ErrorResponse {
@@ -622,7 +622,8 @@ pub async fn patch_chat(
                     .await
                     {
                         Ok(Ok(Some(updated_chat))) => {
-                            (StatusCode::OK, Json(updated_chat)).into_response()
+                            let response = chat_to_response(updated_chat);
+                            (StatusCode::OK, Json(response)).into_response()
                         }
                         Ok(Ok(None)) => (
                             StatusCode::NOT_FOUND,

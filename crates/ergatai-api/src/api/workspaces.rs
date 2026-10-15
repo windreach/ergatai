@@ -17,7 +17,9 @@ use crate::{
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateWorkspaceRequest {
-    pub id: String,
+    /// Optional workspace ID (auto-generated snowflake ID if omitted).
+    /// Must be a valid snowflake format (e.g., "ws_1727568000000_001_0001") if provided.
+    pub id: Option<String>,
     pub work_dir: Option<String>,
     pub env: Option<HashMap<String, String>>,
 }
@@ -106,15 +108,37 @@ pub async fn create_workspace(
 ) -> impl IntoResponse {
     let runtime = crate::context::get_app_context().agent_runtime.clone();
 
-    // Validate workspace ID is non-empty and contains only safe characters
-    // (alphanumeric, `-`, `_`, `.`). Rejects path separators, `..`, and
-    // control characters to prevent path-traversal / filesystem injection.
-    if !crate::api::agents::is_valid_workspace_id(&req.id) {
-        return crate::http_error::bad_request(
-            "Workspace ID must contain only alphanumeric characters, hyphens, underscores, or dots",
-        )
-        .into_response();
-    }
+    // Resolve workspace ID: auto-generate snowflake ID if not provided,
+    // or validate that the user-provided ID is a valid snowflake format.
+    let workspace_id = match req.id {
+        Some(id) => {
+            // Validate workspace ID is non-empty and contains only safe characters
+            // (alphanumeric, `-`, `_`, `.`). Rejects path separators, `..`, and
+            // control characters to prevent path-traversal / filesystem injection.
+            if !crate::api::agents::is_valid_workspace_id(&id) {
+                return crate::http_error::bad_request(
+                    "Workspace ID must contain only alphanumeric characters, hyphens, underscores, or dots",
+                )
+                .into_response();
+            }
+            // Validate it's a valid snowflake format (parseable to i64)
+            if ergatai_error::id::parse_to_i64(&id).is_none() {
+                return crate::http_error::bad_request(
+                    "Workspace ID must be a valid snowflake format (e.g., ws_1727568000000_001_0001). Omit 'id' to auto-generate.",
+                )
+                .into_response();
+            }
+            id
+        }
+        None => {
+            // Auto-generate a snowflake workspace ID
+            let raw_id = ergatai_error::id::generate();
+            ergatai_error::id::format(raw_id, ergatai_error::id::IdType::Workspace)
+        }
+    };
+
+    let workspace_id_i64 = ergatai_error::id::parse_to_i64(&workspace_id)
+        .expect("workspace ID was validated to be a valid snowflake format");
 
     // SECURITY (P1 #15): Enforce a workspace cap to prevent a runaway client
     // from exhausting host resources (memory, file descriptors, NATS subjects).
@@ -155,8 +179,11 @@ pub async fn create_workspace(
         Err(msg) => return crate::http_error::bad_request(msg).into_response(),
     };
 
+    let env_json = serde_json::to_string(&env).unwrap_or_else(|_| "{}".to_string());
+    let work_dir_str = work_dir.to_string_lossy().into_owned();
+
     let spec = WorkspaceSpec {
-        id: req.id,
+        id: workspace_id.clone(),
         work_dir: work_dir.clone(),
         env,
         resources: ResourceLimits::default(),
@@ -167,11 +194,44 @@ pub async fn create_workspace(
         Ok(handle) => {
             // Register the workspace with the permission handler for lock management
             if let Some(permission_handler) = crate::get_permission_handler() {
-                // Parse workspace ID from String to i64
-                let workspace_id_i64 = handle.id.parse::<i64>().unwrap_or(0);
                 permission_handler
-                    .register_workspace(workspace_id_i64, work_dir)
+                    .register_workspace(workspace_id_i64, work_dir.clone())
                     .await;
+            }
+
+            // Store workspace in user_data_db so that workspace_resource_limits()
+            // can find it when agents are started in this workspace.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let db_record = crate::user_data_db::Workspace {
+                workspace_id: workspace_id_i64,
+                name: workspace_id.clone(),
+                work_dir: work_dir_str,
+                env: env_json,
+                resources: "{}".to_string(),
+                config: "{}".to_string(),
+                collaboration_mode: "peer".to_string(),
+                status: "active".to_string(),
+                created_at: now,
+                updated_at: now,
+            };
+            match crate::run_blocking(move || crate::user_data_db::workspaces::create(db_record))
+                .await
+            {
+                Ok(_) => {}
+                Err((status, msg)) => {
+                    tracing::error!(
+                        workspace_id = %workspace_id,
+                        status = %status,
+                        error = %msg,
+                        "Failed to store workspace in user_data_db after backend create"
+                    );
+                    // Backend workspace was created but DB write failed.
+                    // Return success anyway since the workspace is functional,
+                    // but log the error for debugging.
+                }
             }
 
             let capture_thoughts = agent_service::get_workspace_capture_thoughts(&handle.id)
@@ -232,7 +292,8 @@ pub async fn delete_workspace(
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct PersistentWorkspaceRequest {
-    pub id: String,
+    /// Optional workspace ID (auto-generated snowflake ID if omitted).
+    pub id: Option<String>,
     pub name: Option<String>,
     pub work_dir: String,
     pub env: Option<String>,
@@ -319,15 +380,22 @@ pub async fn list_persistent_workspaces(
 pub async fn create_persistent_workspace(
     Json(req): Json<PersistentWorkspaceRequest>,
 ) -> impl IntoResponse {
-    // Validate workspace ID contains only safe characters
-    if !crate::api::agents::is_valid_workspace_id(&req.id) {
-        return managed_error(
-            manager::WorkspaceManagerError::Validation(
-                "Workspace ID contains invalid characters".to_string(),
-            ),
-            "create_persistent_workspace",
-        );
-    }
+    // Resolve workspace ID: auto-generate snowflake ID if not provided
+    let workspace_id = match req.id {
+        Some(id) => {
+            // Validate workspace ID contains only safe characters
+            if !crate::api::agents::is_valid_workspace_id(&id) {
+                return managed_error(
+                    manager::WorkspaceManagerError::Validation(
+                        "Workspace ID contains invalid characters".to_string(),
+                    ),
+                    "create_persistent_workspace",
+                );
+            }
+            Some(id)
+        }
+        None => None, // Will be auto-generated by the manager
+    };
 
     // Validate work_dir is not empty/whitespace
     if req.work_dir.trim().is_empty() {
@@ -369,7 +437,7 @@ pub async fn create_persistent_workspace(
     };
 
     let request = manager::CreateManagedWorkspaceRequest {
-        id: Some(req.id),
+        id: workspace_id,
         name: req.name,
         work_dir: req.work_dir,
         env,
@@ -419,8 +487,8 @@ pub async fn update_persistent_workspace(
     Path(id): Path<String>,
     Json(req): Json<PersistentWorkspaceRequest>,
 ) -> impl IntoResponse {
-    // Validate workspace ID contains only safe characters
-    if !crate::api::agents::is_valid_workspace_id(&req.id) {
+    // Validate workspace ID from path contains only safe characters
+    if !crate::api::agents::is_valid_workspace_id(&id) {
         return managed_error(
             manager::WorkspaceManagerError::Validation(
                 "Workspace ID contains invalid characters".to_string(),
@@ -699,9 +767,9 @@ pub struct WorkspaceDetailResponse {
     )
 )]
 pub async fn get_workspace(Path(workspace_id): Path<String>) -> impl IntoResponse {
-    let workspace_id_i64 = match workspace_id.parse::<i64>() {
-        Ok(id) => id,
-        Err(_) => {
+    let workspace_id_i64 = match ergatai_error::id::parse_to_i64(&workspace_id) {
+        Some(id) => id,
+        None => {
             return crate::http_error::bad_request(format!(
                 "Invalid workspace ID format: {}",
                 workspace_id
@@ -748,9 +816,9 @@ pub async fn update_workspace(
     };
 
     // Parse workspace ID to i64
-    let workspace_id_i64 = match workspace_id.parse::<i64>() {
-        Ok(id) => id,
-        Err(_) => {
+    let workspace_id_i64 = match ergatai_error::id::parse_to_i64(&workspace_id) {
+        Some(id) => id,
+        None => {
             return crate::http_error::bad_request(format!(
                 "Invalid workspace ID format: {}",
                 workspace_id
@@ -815,7 +883,7 @@ mod tests {
     #[test]
     fn test_create_workspace_request_id_only() {
         let req: CreateWorkspaceRequest = serde_json::from_value(json!({"id": "ws-1"})).unwrap();
-        assert_eq!(req.id, "ws-1");
+        assert_eq!(req.id.as_deref(), Some("ws-1"));
         assert!(req.work_dir.is_none());
         assert!(req.env.is_none());
     }
@@ -828,23 +896,25 @@ mod tests {
             "env": {"LANG": "en_US.UTF-8"}
         }))
         .unwrap();
-        assert_eq!(req.id, "ws-2");
+        assert_eq!(req.id.as_deref(), Some("ws-2"));
         assert_eq!(req.work_dir.as_deref(), Some("/home/user/project"));
         let env = req.env.unwrap();
         assert_eq!(env.get("LANG").unwrap(), "en_US.UTF-8");
     }
 
     #[test]
-    fn test_create_workspace_request_missing_id_fails() {
-        let result: Result<CreateWorkspaceRequest, _> =
-            serde_json::from_value(json!({"work_dir": "/tmp"}));
-        assert!(result.is_err());
+    fn test_create_workspace_request_missing_id_succeeds() {
+        // id is now optional — auto-generated at API level
+        let req: CreateWorkspaceRequest =
+            serde_json::from_value(json!({"work_dir": "/tmp"})).unwrap();
+        assert!(req.id.is_none());
+        assert_eq!(req.work_dir.as_deref(), Some("/tmp"));
     }
 
     #[test]
     fn test_create_workspace_request_empty_id() {
         let req: CreateWorkspaceRequest = serde_json::from_value(json!({"id": ""})).unwrap();
-        assert_eq!(req.id, "");
+        assert_eq!(req.id.as_deref(), Some(""));
     }
 
     #[test]
@@ -916,7 +986,7 @@ mod tests {
             "env": null
         });
         let req: CreateWorkspaceRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(req.id, "ws-new");
+        assert_eq!(req.id.as_deref(), Some("ws-new"));
         assert!(req.work_dir.is_none());
         assert!(req.env.is_none());
     }
@@ -929,7 +999,7 @@ mod tests {
             "env": {"KEY": "value"}
         });
         let req: CreateWorkspaceRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(req.id, "ws-full");
+        assert_eq!(req.id.as_deref(), Some("ws-full"));
         assert_eq!(req.work_dir, Some("/path/to/work".to_string()));
         assert_eq!(
             req.env.as_ref().unwrap().get("KEY"),
@@ -971,14 +1041,14 @@ mod tests {
     fn test_create_workspace_request_with_unicode_id() {
         let req: CreateWorkspaceRequest =
             serde_json::from_value(json!({"id": "workspace-日本語"})).unwrap();
-        assert_eq!(req.id, "workspace-日本語");
+        assert_eq!(req.id.as_deref(), Some("workspace-日本語"));
     }
 
     #[test]
     fn test_create_workspace_request_with_special_chars_in_id() {
         let req: CreateWorkspaceRequest =
             serde_json::from_value(json!({"id": "ws_123-test"})).unwrap();
-        assert_eq!(req.id, "ws_123-test");
+        assert_eq!(req.id.as_deref(), Some("ws_123-test"));
     }
 
     #[test]

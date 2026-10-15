@@ -603,18 +603,29 @@ async fn async_main(args: Args) -> Result<()> {
 
             // Initialize global accumulator registry and persistence callback
             ergatai_runtime::set_global_accumulator_registry(accumulator_registry);
-            let persist_callback: ergatai_runtime::PersistCallback =
-                Box::new(|conv_id, output_data| {
+            let persist_callback: ergatai_runtime::PersistCallback = Box::new(
+                |conv_id, output_data| {
                     Box::pin(async move {
-                        // Parse conversation_id from String to i64
-                        let conv_id_i64 = conv_id.parse::<i64>().unwrap_or(0);
+                        tracing::info!(conversation_id = %conv_id, "Persist callback invoked");
+                        // Parse conversation_id from formatted String to i64
+                        let conv_id_i64 = match ergatai_error::id::parse_to_i64(&conv_id) {
+                            Some(id) => {
+                                tracing::info!(conversation_id = %conv_id, parsed_id = id, "Successfully parsed conversation_id");
+                                id
+                            }
+                            None => {
+                                tracing::warn!(conversation_id = %conv_id, "Failed to parse conversation_id to i64");
+                                0
+                            }
+                        };
                         ergatai_api::services::agent_output_persistence::persist_agent_output(
                             conv_id_i64,
                             output_data,
                         )
                         .await
                     })
-                });
+                },
+            );
             ergatai_runtime::set_global_persist_callback(persist_callback);
             tracing::info!("✅ Global accumulator registry and persistence callback initialized");
 

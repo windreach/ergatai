@@ -118,6 +118,9 @@ enum AgentAction {
         id: String,
         /// Message text
         message: String,
+        /// Conversation ID (optional, for conversation-centric routing)
+        #[arg(long)]
+        conversation_id: Option<String>,
     },
     /// Register a new agent profile (interactive if arguments omitted)
     Register {

@@ -75,6 +75,9 @@ fn get_db_path() -> PathBuf {
 /// This function drops all existing tables and recreates them with the new schema.
 /// WARNING: This will delete all existing data!
 fn initialize_tables(conn: &Connection) -> Result<()> {
+    // Disable foreign key constraints during table recreation to allow dropping tables with dependencies
+    conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
+
     // Drop all existing tables (in reverse dependency order)
     // NOTE: We do NOT drop agent_outputs here to prevent data loss on reinitialization.
     // The agent_outputs table is created with CREATE TABLE IF NOT EXISTS below.
@@ -144,6 +147,22 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_collaboration_sessions_chat_id ON collaboration_sessions(chat_id);
         CREATE INDEX IF NOT EXISTS idx_collaboration_sessions_workspace_id ON collaboration_sessions(workspace_id);
+
+        CREATE TABLE IF NOT EXISTS collaboration_session_participants (
+            id TEXT PRIMARY KEY,
+            session_id INTEGER NOT NULL,
+            conversation_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'peer',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES collaboration_sessions(collaboration_session_id) ON DELETE CASCADE,
+            UNIQUE (session_id, conversation_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_collaboration_session_participants_session_id ON collaboration_session_participants(session_id);
+        CREATE INDEX IF NOT EXISTS idx_collaboration_session_participants_conversation_id ON collaboration_session_participants(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_collaboration_session_participants_agent_id ON collaboration_session_participants(agent_id);
 
         CREATE TABLE IF NOT EXISTS conversations (
             conversation_id INTEGER PRIMARY KEY,
@@ -303,6 +322,9 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_agent_outputs_sequence ON agent_outputs(conversation_id, sequence);
         "#,
     )?;
+
+    // Re-enable foreign key constraints after table recreation
+    conn.execute_batch("PRAGMA foreign_keys=ON;")?;
 
     Ok(())
 }

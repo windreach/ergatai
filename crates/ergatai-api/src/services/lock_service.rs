@@ -14,8 +14,8 @@ use ergatai_lock::{get_lock_manager, AuditEntry, FileLock, FileLockManager};
 ///
 /// 返回当前所有活跃的锁（包括内部系统文件的锁）。
 /// 过滤内部路径的逻辑放在 handler 层。
-pub async fn list_active_locks() -> Result<Vec<FileLock>> {
-    let manager = get_default_manager().await?;
+pub async fn list_active_locks(project_id: Option<&str>) -> Result<Vec<FileLock>> {
+    let manager = get_manager(project_id).await?;
     tokio::task::spawn_blocking(move || {
         manager
             .get_all_active_locks()
@@ -33,12 +33,13 @@ pub async fn list_active_locks() -> Result<Vec<FileLock>> {
 /// * `file_path` - 按文件路径过滤（可选）
 /// * `limit` - 返回的最大条目数
 pub async fn query_audit(
+    project_id: Option<&str>,
     agent_id: Option<&str>,
     action: Option<&str>,
     file_path: Option<&str>,
     limit: usize,
 ) -> Result<Vec<AuditEntry>> {
-    let manager = get_default_manager().await?;
+    let manager = get_manager(project_id).await?;
     let audit = manager.audit_manager();
     let agent_id = agent_id.map(|s| s.to_string());
     let action = action.map(|s| s.to_string());
@@ -72,8 +73,8 @@ pub struct LockContentionInfo {
 ///
 /// 分析当前活跃锁，找出存在多个 agent 争用的文件。
 /// 返回的每个条目包含当前持有者、等待者列表、等待时间和冲突次数。
-pub async fn get_lock_contention() -> Result<Vec<LockContentionInfo>> {
-    let locks = list_active_locks().await?;
+pub async fn get_lock_contention(project_id: Option<&str>) -> Result<Vec<LockContentionInfo>> {
+    let locks = list_active_locks(project_id).await?;
 
     // 按 file_path 分组
     let mut file_map: std::collections::HashMap<String, Vec<FileLock>> =
@@ -124,12 +125,24 @@ pub async fn get_lock_contention() -> Result<Vec<LockContentionInfo>> {
     Ok(contentions)
 }
 
-/// 获取默认的 LockManager 实例。
+/// 获取指定 project 的 LockManager 实例。
+///
+/// # Arguments
+/// * `project_id` - project/workspace ID (如果为 None，尝试使用 "default")
+async fn get_manager(project_id: Option<&str>) -> Result<Arc<FileLockManager>> {
+    let pid = project_id.unwrap_or("default");
+    get_lock_manager(pid)
+        .await
+        .with_context(|| format!("File lock manager not initialized for project: {}", pid))
+}
+
+/// 获取默认的 LockManager 实例（向后兼容）。
 ///
 /// 内部统一调用 `get_lock_manager("default")`，
 /// 失败时返回带上下文的错误。
+///
+/// 注意：多 workspace 场景下应使用 `get_manager(Some(workspace_id))`
+#[allow(dead_code)]
 async fn get_default_manager() -> Result<Arc<FileLockManager>> {
-    get_lock_manager("default")
-        .await
-        .context("File lock manager not initialized")
+    get_manager(None).await
 }

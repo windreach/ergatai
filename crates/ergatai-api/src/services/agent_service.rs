@@ -32,32 +32,12 @@ static PROMPT_QUEUE_STATE: OnceLock<PromptQueueState> = OnceLock::new();
 /// prompt dispatch point so SSE stream consumers can attribute output events
 /// to the conversation that produced them — an agent is just a launch
 /// configuration; the conversation is the unit of execution.
-static CURRENT_PROMPT_CONVERSATION: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-
-fn current_prompt_conversation_state() -> &'static Mutex<HashMap<String, String>> {
-    CURRENT_PROMPT_CONVERSATION.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
 pub fn set_current_prompt_conversation(agent_id: &str, conversation_id: Option<String>) {
-    let Ok(mut map) = current_prompt_conversation_state().lock() else {
-        return;
-    };
-    match conversation_id {
-        Some(id) => {
-            map.insert(agent_id.to_string(), id);
-        }
-        None => {
-            map.remove(agent_id);
-        }
-    }
+    ergatai_runtime::set_current_prompt_conversation(agent_id, conversation_id);
 }
 
 pub fn get_current_prompt_conversation(agent_id: &str) -> Option<String> {
-    current_prompt_conversation_state()
-        .lock()
-        .ok()?
-        .get(agent_id)
-        .cloned()
+    ergatai_runtime::get_current_prompt_conversation(agent_id)
 }
 
 fn prompt_queue_state() -> &'static PromptQueueState {

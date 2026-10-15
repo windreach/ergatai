@@ -147,12 +147,18 @@ impl ErgataiClient {
         Ok(())
     }
 
-    pub async fn send_message(&self, id: &str, message: &str) -> Result<()> {
+    pub async fn send_message(
+        &self,
+        id: &str,
+        message: &str,
+        conversation_id: Option<String>,
+    ) -> Result<()> {
         let encoded_id = Self::encode_path_segment(id);
         let url = format!("{}/api/v1/agents/{}/send", self.base_url, encoded_id);
         let body = SendMessageRequest {
             message: message.to_string(),
             correlation_id: None,
+            conversation_id,
         };
         let req = self.client.post(&url).json(&body);
         let req = self.add_auth(req);
@@ -401,6 +407,8 @@ struct SendMessageRequest {
     /// Correlation ID for response tracking. Omitted when None.
     #[serde(skip_serializing_if = "Option::is_none")]
     correlation_id: Option<String>,
+    /// Conversation ID for message routing. Required for conversation-centric delivery.
+    conversation_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -563,6 +571,7 @@ mod tests {
         let req = SendMessageRequest {
             message: "hello world".to_string(),
             correlation_id: None,
+            conversation_id: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert_eq!(json, r#"{"message":"hello world"}"#);

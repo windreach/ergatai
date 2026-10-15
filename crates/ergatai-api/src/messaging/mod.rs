@@ -63,6 +63,34 @@ fn configured_agent_request_timeout_ms() -> u64 {
     }
 }
 
+/// Parse an agent ID string to i64.
+///
+/// Tries to parse as a formatted Snowflake ID first (e.g., "agent_123_001_0001"),
+/// then falls back to extracting the numeric part from simple IDs like "ws1-agent-1".
+/// Returns 0 if parsing fails completely (with warning log).
+///
+/// This is a transitional helper for the TEXT→INTEGER migration, supporting both
+/// the new formatted IDs and legacy simple IDs during the transition period.
+fn parse_agent_id_to_i64(id_str: &str) -> i64 {
+    ergatai_error::id::parse_to_i64(id_str).unwrap_or_else(|| {
+        // Fallback: extract numeric part from simple IDs like "ws1-agent-1"
+        let fallback = id_str
+            .split('-')
+            .next_back()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+
+        if fallback == 0 {
+            tracing::warn!(
+                agent_id = id_str,
+                "Failed to parse agent ID to i64, using 0 as fallback. This may cause routing issues."
+            );
+        }
+
+        fallback
+    })
+}
+
 /// Result of a message send operation.
 #[derive(Debug)]
 pub enum SendMessageResult {
@@ -357,9 +385,11 @@ impl MessageSender {
 
         let mut target_conversation_id = req.conversation_id;
         if target_conversation_id.is_none() {
+            info!(sender = %resolved_sender_id, target = %resolved_target_id, "Calling ensure_target_conversation");
             let ensured_conversation_id = self
                 .ensure_target_conversation(&resolved_sender_id, &resolved_target_id, &req.to)
                 .await;
+            info!(ensured = ?ensured_conversation_id, "ensure_target_conversation returned");
             if ensured_conversation_id.is_some() {
                 target_conversation_id = ensured_conversation_id;
             }
@@ -375,16 +405,7 @@ impl MessageSender {
                 // Wrap synchronous DB call in spawn_blocking to avoid blocking async runtime
                 let candidate = candidate.to_string();
                 match tokio::task::spawn_blocking(move || {
-                    // Try to parse the candidate as a formatted ID to get i64
-                    let agent_id =
-                        ergatai_error::id::parse_to_i64(&candidate).unwrap_or_else(|| {
-                            // Fallback: extract numeric part from simple IDs like "ws1-agent-1"
-                            candidate
-                                .split('-')
-                                .next_back()
-                                .and_then(|s| s.parse::<i64>().ok())
-                                .unwrap_or(0)
-                        });
+                    let agent_id = parse_agent_id_to_i64(&candidate);
                     user_data_db::group_agent_bindings::find_conversation_id(agent_id)
                 })
                 .await
@@ -464,8 +485,7 @@ impl MessageSender {
                 // Message type for proper classification on the receiving end
                 message_type: req.message_type.clone(),
                 // Conversation ID for direct delivery (bypasses agent_id intermediary)
-                target_conversation_id: resolved_req
-                    .target_conversation_id
+                target_conversation_id: target_conversation_id
                     .map(|id| format_id(id, IdType::Conversation)),
                 // Images (empty for agent-to-agent messages, used for user messages)
                 images: vec![],
@@ -633,80 +653,218 @@ impl MessageSender {
         target_id: &str,
         target_label: &str,
     ) -> Option<i64> {
-        let sender_id = sender_id.to_string();
-        let seed_conversation_id = match tokio::task::spawn_blocking(move || {
-            // Convert string agent ID to i64
-            let agent_id = ergatai_error::id::parse_to_i64(&sender_id).unwrap_or_else(|| {
-                sender_id
-                    .split('-')
-                    .next_back()
-                    .and_then(|s| s.parse::<i64>().ok())
-                    .unwrap_or(0)
-            });
-            user_data_db::group_agent_bindings::find_conversation_id(agent_id)
-        })
-        .await
-        {
-            Ok(Ok(Some(conversation_id))) => conversation_id,
-            Ok(Ok(None)) => return None,
-            Ok(Err(error)) => {
-                warn!(error = %error, "Failed to resolve sender conversation for agent target");
-                return None;
+        // Check if sender is a system sender (api, user, system)
+        // System senders don't have their own conversations, so we skip seed lookup
+        const SYSTEM_SENDERS: &[&str] = &["api", "user", "system"];
+        let is_system_sender = SYSTEM_SENDERS.contains(&sender_id);
+        let target_id_i64 = parse_agent_id_to_i64(target_id);
+
+        let (_seed_conversation_id, chat_id, root_conversation) = if is_system_sender {
+            // For system senders, we need to find or create a chat context for the target agent
+            // Try to find target agent's existing conversation first
+            let _target_id_for_lookup = target_id.to_string();
+
+            let existing_conversation = match tokio::task::spawn_blocking(move || {
+                user_data_db::group_agent_bindings::find_conversation_id(target_id_i64)
+            })
+            .await
+            {
+                Ok(Ok(Some(conv_id))) => {
+                    // Found existing conversation, load it
+                    match tokio::task::spawn_blocking(move || {
+                        user_data_db::conversations::get(conv_id)
+                    })
+                    .await
+                    {
+                        Ok(Ok(Some(conv))) => {
+                            let chat_id = conv.parent_id.unwrap_or(conv.conversation_id);
+                            match tokio::task::spawn_blocking(move || {
+                                user_data_db::conversations::get(chat_id)
+                            })
+                            .await
+                            {
+                                Ok(Ok(Some(root_conv))) => {
+                                    Some((conv.conversation_id, chat_id, root_conv))
+                                }
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+
+            if let Some((seed_conv_id, chat_id, root_conv)) = existing_conversation {
+                (seed_conv_id, chat_id, root_conv)
+            } else {
+                // No existing conversation, create a minimal chat context
+                // Use target agent's workspace to create a chat
+                let runtime = crate::context::get_app_context().agent_runtime.clone();
+                let target_id_for_workspace = target_id.to_string();
+
+                info!(target_agent = %target_id, "No existing conversation, creating new chat context");
+
+                let (workspace_id, _work_dir) = match runtime
+                    .get_agent(&target_id_for_workspace)
+                    .await
+                {
+                    Some(agent_info) => {
+                        let ws_id = agent_info.handle.workspace.id.clone();
+                        let work_dir = agent_info
+                            .handle
+                            .workspace
+                            .metadata
+                            .get("work_dir")
+                            .cloned()
+                            .unwrap_or_default();
+                        info!(workspace = %ws_id, "Got agent workspace");
+                        (ws_id, work_dir)
+                    }
+                    None => {
+                        warn!(target_agent = %target_id, "Failed to get target agent info for workspace");
+                        return None;
+                    }
+                };
+
+                let workspace_id_i64 = parse_agent_id_to_i64(&workspace_id);
+                let timestamp = chrono::Utc::now().timestamp();
+
+                // Create a chat and root conversation for this agent
+                let chat_id = ergatai_error::id::generate();
+                let root_conv_id = ergatai_error::id::generate();
+                let target_label_for_closure = target_label.to_string();
+
+                match tokio::task::spawn_blocking(move || -> Result<_, String> {
+                    // Create chat record first (required by foreign key)
+                    user_data_db::chats::create(user_data_db::Chat {
+                        chat_id,
+                        workspace_id: workspace_id_i64,
+                        name: Some(format!("Chat for {}", target_label_for_closure)),
+                        created_at: timestamp,
+                        updated_at: timestamp,
+                        archived_at: None,
+                    })
+                    .map_err(|e| e.to_string())?;
+
+                    // Create collaboration session (references chat)
+                    let collab_session_id = ergatai_error::id::generate();
+                    user_data_db::collaboration_sessions::create(
+                        user_data_db::CollaborationSession {
+                            collaboration_session_id: collab_session_id,
+                            chat_id,
+                            workspace_id: workspace_id_i64,
+                            mode: "supervisor".to_string(),
+                            state: "idle".to_string(),
+                            goal: None,
+                            active_plan_revision: None,
+                            created_at: timestamp,
+                            updated_at: timestamp,
+                        },
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                    // Create root conversation
+                    user_data_db::conversations::create(user_data_db::Conversation {
+                        conversation_id: root_conv_id,
+                        collaboration_session_id: collab_session_id,
+                        chat_id,
+                        parent_id: None,
+                        name: Some(format!(
+                            "Root conversation for {}",
+                            target_label_for_closure
+                        )),
+                        mode: "agent".to_string(),
+                        participant_role: "peer".to_string(),
+                        status: "ready".to_string(),
+                        created_at: timestamp,
+                        updated_at: timestamp,
+                    })
+                    .map_err(|e| e.to_string())?;
+
+                    user_data_db::conversations::get(root_conv_id).map_err(|e| e.to_string())
+                })
+                .await
+                {
+                    Ok(Ok(Some(root_conv))) => (root_conv_id, chat_id, root_conv),
+                    Ok(Ok(None)) => {
+                        warn!("Failed to load created root conversation");
+                        return None;
+                    }
+                    Ok(Err(error)) => {
+                        warn!(error = %error, "Failed to create chat context for system sender");
+                        return None;
+                    }
+                    Err(error) => {
+                        warn!(error = %error, "Failed to create chat context task");
+                        return None;
+                    }
+                }
             }
-            Err(error) => {
-                warn!(error = %error, "Failed to resolve sender conversation task");
-                return None;
+        } else {
+            // Original logic for non-system senders
+            let sender_id = sender_id.to_string();
+            let seed_conversation_id = match tokio::task::spawn_blocking(move || {
+                let agent_id = parse_agent_id_to_i64(&sender_id);
+                user_data_db::group_agent_bindings::find_conversation_id(agent_id)
+            })
+            .await
+            {
+                Ok(Ok(Some(conversation_id))) => conversation_id,
+                Ok(Ok(None)) => return None,
+                Ok(Err(error)) => {
+                    warn!(error = %error, "Failed to resolve sender conversation for agent target");
+                    return None;
+                }
+                Err(error) => {
+                    warn!(error = %error, "Failed to resolve sender conversation task");
+                    return None;
+                }
+            };
+
+            let _target_id = target_id.to_string();
+            let context = tokio::task::spawn_blocking(move || -> Result<_, String> {
+                let seed_conversation = user_data_db::conversations::get(seed_conversation_id)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "Sender conversation not found".to_string())?;
+                let chat_id = seed_conversation.parent_id.unwrap_or(seed_conversation_id);
+                let root_conversation = user_data_db::conversations::get(chat_id)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "Chat conversation not found".to_string())?;
+
+                let existing = user_data_db::group_agent_bindings::list(chat_id)
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .find(|binding| binding.agent_id == target_id_i64)
+                    .map(|binding| binding.conversation_id);
+
+                Ok((chat_id, root_conversation, existing))
+            })
+            .await;
+
+            let (chat_id, root_conversation, existing_conversation_id) = match context {
+                Ok(Ok(context)) => context,
+                Ok(Err(error)) => {
+                    warn!(error = %error, "Failed to resolve agent target chat");
+                    return None;
+                }
+                Err(error) => {
+                    warn!(error = %error, "Failed to resolve agent target chat task");
+                    return None;
+                }
+            };
+
+            if let Some(conversation_id) = existing_conversation_id {
+                return Some(conversation_id);
             }
+
+            (seed_conversation_id, chat_id, root_conversation)
         };
-
-        let target_id = target_id.to_string();
-        // Convert target_id to i64 for comparison
-        let target_id_i64 = ergatai_error::id::parse_to_i64(&target_id).unwrap_or_else(|| {
-            target_id
-                .split('-')
-                .next_back()
-                .and_then(|s| s.parse::<i64>().ok())
-                .unwrap_or(0)
-        });
-        let context = tokio::task::spawn_blocking(move || -> Result<_, String> {
-            let seed_conversation = user_data_db::conversations::get(seed_conversation_id)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| "Sender conversation not found".to_string())?;
-            let chat_id = seed_conversation.parent_id.unwrap_or(seed_conversation_id);
-            let root_conversation = user_data_db::conversations::get(chat_id)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| "Chat conversation not found".to_string())?;
-
-            let existing = user_data_db::group_agent_bindings::list(chat_id)
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .find(|binding| binding.agent_id == target_id_i64)
-                .map(|binding| binding.conversation_id);
-
-            Ok((chat_id, root_conversation, existing))
-        })
-        .await;
-
-        let (chat_id, root_conversation, existing_conversation_id) = match context {
-            Ok(Ok(context)) => context,
-            Ok(Err(error)) => {
-                warn!(error = %error, "Failed to resolve agent target chat");
-                return None;
-            }
-            Err(error) => {
-                warn!(error = %error, "Failed to resolve agent target chat task");
-                return None;
-            }
-        };
-
-        if let Some(conversation_id) = existing_conversation_id {
-            return Some(conversation_id);
-        }
 
         // Get conversation_id from target agent's metadata to ensure consistency
         // between database conversation ID and NATS routing ID
         let runtime = crate::context::get_app_context().agent_runtime.clone();
-        let conversation_id = match runtime.get_agent(&target_id).await {
+        let conversation_id = match runtime.get_agent(target_id).await {
             Some(agent_info) => agent_info
                 .handle
                 .metadata
@@ -722,10 +880,10 @@ impl MessageSender {
             }
         };
         let timestamp = chrono::Utc::now().timestamp();
-        let chat_id_for_conversation = chat_id;
+        let _chat_id_for_conversation = chat_id;
         let chat_id_for_binding = chat_id;
         let root_conversation_for_db = root_conversation;
-        let target_id_i64_for_db = target_id_i64;
+        let target_id_i64_for_db = parse_agent_id_to_i64(target_id);
         let target_label_for_conversation = target_label.to_string();
         let target_label_for_agent_name = target_label.to_string();
         let target_label_for_agent_command = target_label.to_string();
@@ -737,7 +895,7 @@ impl MessageSender {
                 conversation_id: conversation_id_for_create,
                 collaboration_session_id: root_conversation_for_db.collaboration_session_id,
                 chat_id: root_conversation_for_db.chat_id,
-                parent_id: Some(chat_id_for_conversation),
+                parent_id: Some(root_conversation_for_db.conversation_id),
                 name: Some(target_label_for_conversation),
                 mode: "agent".to_string(),
                 participant_role: "peer".to_string(),

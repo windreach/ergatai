@@ -672,12 +672,13 @@ use ergatai_error::{ErgataiError, ErgataiResult};
 async fn register_system_token_for_acp_session(
     agent_id: &str,
     session_id: &str,
+    workspace_id: &str,
     project_root: &str,
 ) -> ErgataiResult<()> {
     use ergatai_lock::token::SystemToken;
 
-    // Get the lock manager for the default project
-    let lock_manager = ergatai_lock::get_lock_manager("default").await?;
+    // Get the lock manager for this workspace
+    let lock_manager = ergatai_lock::get_lock_manager(workspace_id).await?;
 
     // Create a SystemToken with reasonable defaults
     // TTL: 1 hour, heartbeat interval: 30 seconds
@@ -1111,6 +1112,7 @@ enum AcpCommand {
     QueuePrompt {
         message: String,
         images: Vec<crate::types::AgentImage>,
+        conversation_id: Option<String>,
         response_tx: oneshot::Sender<ErgataiResult<()>>,
     },
     /// Insert a message at the next safe point (after thinking/tool completion).
@@ -1368,6 +1370,9 @@ struct WorkspaceEntry {
     env: HashMap<String, String>,
     /// Whether to capture agent thoughts.
     capture_thoughts: bool,
+    /// Working directory for this workspace (needed by list_workspaces
+    /// to populate metadata for terminal session resolution).
+    work_dir: std::path::PathBuf,
 }
 
 // ── AcpBackend ──
@@ -2238,6 +2243,7 @@ impl AcpBackendInterface for AcpBackend {
             agent_ids: Vec::new(),
             env: spec.env.clone(),
             capture_thoughts: spec.capture_thoughts,
+            work_dir: spec.work_dir.clone(),
         };
 
         self.workspaces.write().insert(workspace_id.clone(), entry);
@@ -3111,7 +3117,7 @@ impl AcpBackendInterface for AcpBackend {
                                 // Clear the current message ID
                                 *task_current_message_id.write() = None;
                             }
-                            Some(AcpCommand::QueuePrompt { message, images, response_tx }) => {
+                            Some(AcpCommand::QueuePrompt { message, images, conversation_id: cmd_conversation_id, response_tx }) => {
                                 task_text_output_seen.store(false, Ordering::Relaxed);
                                 // New prompt turn — reset the thinking
                                 // accumulator so it only covers this turn.
@@ -3173,11 +3179,14 @@ impl AcpBackendInterface for AcpBackend {
 
                                         // Flush accumulator and persist output
                                         if let Some(ref registry) = task_accumulator_registry {
-                                            let conv_id = connection_conversation_id.clone();
+                                            // Use connection_conversation_id for flush (matches accumulation key)
+                                            let flush_conv_id = connection_conversation_id.clone();
+                                            // Use cmd_conversation_id for persist if available (the real conversation ID)
+                                            let persist_conv_id = cmd_conversation_id.clone().unwrap_or_else(|| connection_conversation_id.clone());
                                             let registry_clone = registry.clone();
                                             let sr_clone = sr.clone();
                                             tokio::spawn(async move {
-                                                if let Some(output_data) = registry_clone.flush(&conv_id).await {
+                                                if let Some(output_data) = registry_clone.flush(&flush_conv_id).await {
                                                     // Set stop reason in metadata
                                                     let mut data = output_data;
                                                     if let Some(ref mut metadata_str) = data.metadata {
@@ -3186,9 +3195,11 @@ impl AcpBackendInterface for AcpBackend {
                                                             *metadata_str = serde_json::to_string(&metadata).unwrap_or_default();
                                                         }
                                                     }
+                                                    // Override conversation_id with the real one for persistence
+                                                    data.conversation_id = ergatai_error::id::parse_to_i64(&persist_conv_id).unwrap_or(0);
 
-                                                    // Persist asynchronously (will be implemented in ergatai-api)
-                                                    if let Err(e) = persist_agent_output(conv_id, data).await {
+                                                    // Persist asynchronously
+                                                    if let Err(e) = persist_agent_output(persist_conv_id, data).await {
                                                         tracing::error!(error = %e, "Failed to persist agent output");
                                                     }
                                                 }
@@ -3272,7 +3283,9 @@ impl AcpBackendInterface for AcpBackend {
 
                                         // Flush accumulator and persist output
                                         if let Some(ref registry) = task_accumulator_registry {
-                                            let conv_id = connection_conversation_id.clone();
+                                            // Retrieve conversation_id from global state (set by API layer)
+                                            let conv_id = crate::get_current_prompt_conversation(&connection_agent_id)
+                                                .unwrap_or_else(|| connection_conversation_id.clone());
                                             let registry_clone = registry.clone();
                                             let sr_clone = sr.clone();
                                             tokio::spawn(async move {
@@ -3592,9 +3605,15 @@ impl AcpBackendInterface for AcpBackend {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
 
+            // Convert formatted workspace ID to Snowflake ID for lock manager lookup
+            let workspace_id_snowflake = ergatai_error::id::parse_to_i64(&handle.id)
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| handle.id.clone());
+
             if let Err(e) = register_system_token_for_acp_session(
                 &agent_id,
                 &sid.to_string(),
+                &workspace_id_snowflake, // Use Snowflake ID
                 &cwd_for_token.to_string_lossy(),
             )
             .await
@@ -3728,10 +3747,14 @@ impl AcpBackendInterface for AcpBackend {
         };
 
         let (response_tx, response_rx) = oneshot::channel();
+        // Retrieve the conversation_id from global state (set by the API layer)
+        let conversation_id = crate::get_current_prompt_conversation(&handle.agent_id);
+        debug!(agent_id = %handle.agent_id, conversation_id = ?conversation_id, "Retrieved conversation_id for prompt");
         command_tx
             .send(AcpCommand::QueuePrompt {
                 message: message.to_string(),
                 images: images.to_vec(),
+                conversation_id,
                 response_tx,
             })
             .await
@@ -3926,9 +3949,11 @@ impl AcpBackendInterface for AcpBackend {
         Ok(workspaces
             .values()
             .map(|ws| {
-                let metadata = HashMap::new();
-                // Note: work_dir is not stored in WorkspaceEntry anymore;
-                // it's carried in the WorkspaceHandle returned by create_workspace().
+                let mut metadata = HashMap::new();
+                metadata.insert(
+                    "work_dir".to_string(),
+                    ws.work_dir.to_string_lossy().to_string(),
+                );
                 WorkspaceHandle {
                     id: ws.id.clone(),
                     backend: self.name().to_string(),

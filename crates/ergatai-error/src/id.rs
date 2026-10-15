@@ -173,6 +173,15 @@ impl IdType {
 /// init(1);
 /// ```
 pub fn init(instance_id: u16) {
+    // Warn if instance_id exceeds 10-bit range (max 1023) and will be truncated
+    if instance_id > 0x3FF {
+        tracing::warn!(
+            instance_id,
+            masked_value = instance_id & 0x3FF,
+            "instance_id exceeds 10 bits (max 1023), truncating to {} bits",
+            (instance_id & 0x3FF)
+        );
+    }
     // Set-once: compare_exchange succeeds only on the first call (when value is still u16::MAX).
     // Subsequent calls are no-ops, preventing post-init mutation.
     let _ = MACHINE_ID.compare_exchange(
@@ -202,9 +211,8 @@ const MAX_GENERATE_RETRIES: u32 = 100;
 /// # Retry behavior
 ///
 /// Transient failures (clock rollback, sequence exhaustion) are handled with
-/// non-blocking retries using `std::thread::yield_now()`. The function retries
-/// up to `MAX_GENERATE_RETRIES` times before panicking. In practice, transient
-/// failures resolve within 1-2 retries.
+/// microsecond sleeps. The function retries up to `MAX_GENERATE_RETRIES` times
+/// before panicking. In practice, transient failures resolve within 1-2 retries.
 ///
 /// # Panics
 ///
@@ -223,8 +231,10 @@ const MAX_GENERATE_RETRIES: u32 = 100;
 ///
 /// # Async safety
 ///
-/// This function is safe to call from async contexts. It uses non-blocking
-/// `yield_now()` instead of `sleep()` to avoid blocking the executor thread.
+/// This function is safe to call from async contexts when wrapped in `spawn_blocking`.
+/// It uses `std::thread::sleep` for backoff, which blocks the current thread but
+/// not the async executor (when called from spawn_blocking). Direct calls from
+/// async code will block the executor thread.
 ///
 /// # Example
 ///
@@ -240,8 +250,7 @@ pub fn generate() -> i64 {
             Ok(snowflake) => return snowflake.into_i64(),
             Err(err) => {
                 // Transient errors: clock rollback or sequence exhaustion.
-                // Use non-blocking yield instead of sleep to avoid blocking async executors.
-                // This allows other tasks to run while we wait for the next millisecond.
+                // Use sleep for backoff (safe when called from spawn_blocking).
                 if attempt < MAX_GENERATE_RETRIES - 1 {
                     tracing::warn!(
                         attempt = attempt + 1,
@@ -249,12 +258,18 @@ pub fn generate() -> i64 {
                         error = %err,
                         "Snowflake ID generation failed, retrying"
                     );
-                    // Yield to allow other tasks to run (non-blocking)
-                    std::thread::yield_now();
+                    // Small sleep to back off (100 microseconds, exponential backoff could be added)
+                    std::thread::sleep(std::time::Duration::from_micros(100));
                 }
             }
         }
     }
+    // Log at ERROR level before panicking for better observability
+    tracing::error!(
+        retries = MAX_GENERATE_RETRIES,
+        "Critical: Failed to generate snowflake ID after {} retries",
+        MAX_GENERATE_RETRIES
+    );
     panic!(
         "Failed to generate snowflake ID after {} retries",
         MAX_GENERATE_RETRIES
@@ -270,7 +285,8 @@ pub fn generate() -> i64 {
 ///
 /// # Returns
 ///
-/// Formatted string: `{type}_{timestamp}_{instance}_{sequence}`
+/// Formatted string: `{type}_{timestamp}_{instance}_{sequence}`.
+/// Returns fallback format if ID is invalid (negative/sign bit set).
 ///
 /// # Example
 ///
@@ -282,18 +298,26 @@ pub fn generate() -> i64 {
 /// // Output: "msg_1727568000000_000_0001"
 /// ```
 pub fn format(id: i64, id_type: IdType) -> String {
-    let snowflake = ErgataiSnowflake::from_raw(id as u64).expect("Invalid snowflake ID");
-    let timestamp = snowflake.timestamp_raw();
-    let instance = snowflake.machine_id();
-    let sequence = snowflake.sequence_number();
+    match ErgataiSnowflake::from_raw(id as u64) {
+        Ok(snowflake) => {
+            let timestamp = snowflake.timestamp_raw();
+            let instance = snowflake.machine_id();
+            let sequence = snowflake.sequence_number();
 
-    format!(
-        "{}_{}_{:03}_{:04}",
-        id_type.prefix(),
-        timestamp,
-        instance,
-        sequence
-    )
+            format!(
+                "{}_{}_{:03}_{:04}",
+                id_type.prefix(),
+                timestamp,
+                instance,
+                sequence
+            )
+        }
+        Err(_) => {
+            // Invalid ID (sign bit set) - return fallback format
+            tracing::warn!(id, id_type = ?id_type, "Invalid snowflake ID, using fallback format");
+            format!("{}_invalid_0_0", id_type.prefix())
+        }
+    }
 }
 
 /// Parse a formatted ID string back to components.
@@ -366,9 +390,76 @@ pub fn parse_to_i64(formatted: &str) -> Option<i64> {
         return None; // 12 bits max
     }
 
-    // Reconstruct the raw 64-bit snowflake ID
+    // Reconstruct the raw 64-bit snowflake ID using checked arithmetic for consistency
     // Layout: | 1 bit sign (0) | 41 bit timestamp | 10 bit instance | 12 bit sequence |
-    let raw = (timestamp << 22) | (instance << 12) | sequence;
+    let raw = (timestamp << 22)
+        .checked_add(instance << 12)
+        .and_then(|v| v.checked_add(sequence))?;
+
+    // Ensure the result fits in i64 (positive values only)
+    if raw > i64::MAX as u64 {
+        return None;
+    }
+
+    Some(raw as i64)
+}
+
+/// Parse a formatted ID string back to raw i64 with type validation.
+///
+/// This is a type-safe variant of `parse_to_i64()` that validates the ID type prefix
+/// matches the expected type. Use this when you need to ensure type safety at parse time.
+///
+/// # Arguments
+///
+/// * `formatted` - Formatted ID string (e.g., "msg_1727568000000_001_0001")
+/// * `expected_type` - The expected ID type
+///
+/// # Returns
+///
+/// `Some(i64)` if parsing succeeds AND the type matches, `None` otherwise.
+///
+/// # Example
+///
+/// ```rust
+/// use ergatai_error::id::{generate, format, parse_to_i64_with_type, IdType};
+///
+/// let original_id = generate();
+/// let formatted = format(original_id, IdType::Workspace);
+/// let parsed_id = parse_to_i64_with_type(&formatted, IdType::Workspace).expect("Failed to parse");
+/// assert_eq!(original_id, parsed_id);
+///
+/// // Type mismatch returns None
+/// assert!(parse_to_i64_with_type(&formatted, IdType::Message).is_none());
+/// ```
+pub fn parse_to_i64_with_type(formatted: &str, expected_type: IdType) -> Option<i64> {
+    let (id_type, timestamp, instance, sequence) = parse(formatted)?;
+
+    // Validate type matches
+    if id_type != expected_type {
+        return None;
+    }
+
+    // Validate ranges
+    if timestamp > 0x1FF_FFFF_FFFF {
+        return None; // 41 bits max
+    }
+    if instance > 0x3FF {
+        return None; // 10 bits max
+    }
+    if sequence > 0xFFF {
+        return None; // 12 bits max
+    }
+
+    // Reconstruct the raw 64-bit snowflake ID using checked arithmetic
+    // Bit layout: [timestamp:41][instance:10][sequence:12]
+    let raw = (timestamp << 22)
+        .checked_add(instance << 12)
+        .and_then(|v| v.checked_add(sequence))?;
+
+    // Ensure the result fits in i64 (positive values only)
+    if raw > i64::MAX as u64 {
+        return None;
+    }
 
     Some(raw as i64)
 }
@@ -405,10 +496,15 @@ pub fn is_valid_formatted_id(formatted: &str) -> bool {
 ///
 /// # Returns
 ///
-/// Timestamp in milliseconds since Twitter epoch
+/// Timestamp in milliseconds since Twitter epoch, or 0 if ID is invalid
 pub fn extract_timestamp(id: i64) -> u64 {
-    let snowflake = ErgataiSnowflake::from_raw(id as u64).expect("Invalid snowflake ID");
-    snowflake.timestamp_raw()
+    match ErgataiSnowflake::from_raw(id as u64) {
+        Ok(snowflake) => snowflake.timestamp_raw(),
+        Err(_) => {
+            tracing::warn!(id, "Invalid snowflake ID, returning 0 for timestamp");
+            0
+        }
+    }
 }
 
 /// Extract instance ID from ID.
@@ -419,10 +515,15 @@ pub fn extract_timestamp(id: i64) -> u64 {
 ///
 /// # Returns
 ///
-/// Instance ID (0-1023)
+/// Instance ID (0-1023), or 0 if ID is invalid
 pub fn extract_instance(id: i64) -> u64 {
-    let snowflake = ErgataiSnowflake::from_raw(id as u64).expect("Invalid snowflake ID");
-    snowflake.machine_id()
+    match ErgataiSnowflake::from_raw(id as u64) {
+        Ok(snowflake) => snowflake.machine_id(),
+        Err(_) => {
+            tracing::warn!(id, "Invalid snowflake ID, returning 0 for instance");
+            0
+        }
+    }
 }
 
 /// Extract sequence number from ID.
@@ -433,10 +534,15 @@ pub fn extract_instance(id: i64) -> u64 {
 ///
 /// # Returns
 ///
-/// Sequence number (0-4095)
+/// Sequence number (0-4095), or 0 if ID is invalid
 pub fn extract_sequence(id: i64) -> u64 {
-    let snowflake = ErgataiSnowflake::from_raw(id as u64).expect("Invalid snowflake ID");
-    snowflake.sequence_number()
+    match ErgataiSnowflake::from_raw(id as u64) {
+        Ok(snowflake) => snowflake.sequence_number(),
+        Err(_) => {
+            tracing::warn!(id, "Invalid snowflake ID, returning 0 for sequence");
+            0
+        }
+    }
 }
 
 #[cfg(test)]
@@ -611,5 +717,46 @@ mod tests {
         assert!(!is_valid_formatted_id("invalid"));
         assert!(!is_valid_formatted_id(""));
         assert!(!is_valid_formatted_id("msg_123_001")); // Incomplete
+    }
+
+    #[test]
+    fn test_parse_to_i64_with_type() {
+        init(1);
+        let original_id = generate();
+
+        // Test with matching type - should succeed
+        let formatted_ws = format(original_id, IdType::Workspace);
+        let parsed_ws =
+            parse_to_i64_with_type(&formatted_ws, IdType::Workspace).expect("Failed to parse");
+        assert_eq!(original_id, parsed_ws);
+
+        // Test with mismatched type - should return None
+        assert!(parse_to_i64_with_type(&formatted_ws, IdType::Message).is_none());
+        assert!(parse_to_i64_with_type(&formatted_ws, IdType::Conversation).is_none());
+
+        // Test with invalid format - should return None
+        assert!(parse_to_i64_with_type("invalid", IdType::Workspace).is_none());
+        assert!(parse_to_i64_with_type("ws_123_001", IdType::Workspace).is_none()); // Incomplete
+
+        // Test all ID types
+        let test_cases = vec![
+            IdType::Message,
+            IdType::Conversation,
+            IdType::Chat,
+            IdType::Workspace,
+            IdType::Session,
+            IdType::Agent,
+            IdType::Lock,
+            IdType::Dag,
+            IdType::Task,
+        ];
+
+        for id_type in test_cases {
+            let id = generate();
+            let formatted = format(id, id_type);
+            let parsed =
+                parse_to_i64_with_type(&formatted, id_type).expect("Failed to parse matching type");
+            assert_eq!(id, parsed, "Roundtrip failed for {:?}", id_type);
+        }
     }
 }

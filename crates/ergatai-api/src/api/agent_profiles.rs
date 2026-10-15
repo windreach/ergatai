@@ -71,9 +71,9 @@ pub struct ListProfilesResponse {
 pub async fn register_profile(
     Json(request): Json<RegisterProfileRequest>,
 ) -> axum::response::Response {
-    // Capture the name before moving fields into the service call, so we can
-    // reuse it in the success response without an extra clone.
+    // Bind name once to avoid redundant clones in success path
     let profile_name = request.name.clone();
+
     match profile_service::register_profile(
         request.name,
         request.command,
@@ -83,14 +83,53 @@ pub async fn register_profile(
     )
     .await
     {
-        Ok(()) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!({
-                "status": "success",
-                "message": format!("Agent profile '{}' registered successfully", profile_name)
-            })),
-        )
-            .into_response(),
+        Ok(()) => {
+            // Fetch the newly registered profile to return its complete info (including auto-generated id)
+            match profile_service::get_profile_by_name(&profile_name).await {
+                Ok(Some(registration)) => {
+                    let profile_response = ProfileResponse::from(registration);
+                    match serde_json::to_value(profile_response) {
+                        Ok(value) => (StatusCode::CREATED, Json(value)).into_response(),
+                        Err(_) => {
+                            // Serialization failed - return minimal success response
+                            (
+                                StatusCode::CREATED,
+                                Json(serde_json::json!({
+                                    "status": "success",
+                                    "message": format!("Agent profile '{}' registered successfully", profile_name),
+                                    "name": profile_name
+                                })),
+                            )
+                                .into_response()
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Profile was registered but can't be fetched - return minimal success response
+                    (
+                        StatusCode::CREATED,
+                        Json(serde_json::json!({
+                            "status": "success",
+                            "message": format!("Agent profile '{}' registered successfully", profile_name),
+                            "name": profile_name
+                        })),
+                    )
+                        .into_response()
+                }
+                Err(_) => {
+                    // Fetch failed but registration succeeded - return minimal success response
+                    (
+                        StatusCode::CREATED,
+                        Json(serde_json::json!({
+                            "status": "success",
+                            "message": format!("Agent profile '{}' registered successfully", profile_name),
+                            "name": profile_name
+                        })),
+                    )
+                        .into_response()
+                }
+            }
+        }
         Err(e) => {
             let err_text = e.to_string();
             // Classification based on error content — used to pick an HTTP

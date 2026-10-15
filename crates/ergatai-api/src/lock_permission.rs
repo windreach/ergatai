@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use agent_client_protocol::schema::v1::{PermissionOptionKind, RequestPermissionRequest, ToolKind};
 use ergatai_runtime::permission::{PermissionDecision, PermissionHandler};
@@ -68,7 +68,29 @@ impl LockPermissionHandler {
         let workspace_id_str = workspace_id.to_string();
         let mut workspaces = self.workspaces.write().await;
         debug!(workspace_id = workspace_id, work_dir = %work_dir.display(), "Registered workspace for lock management");
-        workspaces.insert(workspace_id_str, WorkspaceInfo { work_dir });
+        workspaces.insert(
+            workspace_id_str.clone(),
+            WorkspaceInfo {
+                work_dir: work_dir.clone(),
+            },
+        );
+
+        // Initialize lock manager for this workspace eagerly
+        // This ensures locks are available when agents request permissions
+        drop(workspaces); // Release write lock before calling init_file_access
+        match ergatai_lock::init_file_access(&workspace_id_str, &work_dir).await {
+            Ok(()) => {
+                info!(workspace_id = workspace_id_str, work_dir = %work_dir.display(), "Initialized lock manager for workspace");
+            }
+            Err(e) => {
+                warn!(
+                    workspace_id = workspace_id_str,
+                    work_dir = %work_dir.display(),
+                    error = %e,
+                    "Failed to initialize lock manager for workspace (will retry on demand)"
+                );
+            }
+        }
     }
 
     /// Unregister a workspace when it's deleted (prevents memory leak in long-running processes)

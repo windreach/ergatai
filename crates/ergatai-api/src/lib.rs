@@ -173,10 +173,6 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/terminal-sessions/{id}/audit",
             get(api::terminal_sessions::list_audit),
         )
-        .route(
-            "/api/v1/workspaces/{workspace_id}",
-            delete(api::workspaces::delete_workspace),
-        )
         // Persistent workspace routes
         .route(
             "/api/v1/workspaces/persistent",
@@ -250,7 +246,7 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route("/api/v1/agents", get(api::agents::list_agents))
         .route("/api/v1/agents", post(api::agents::spawn_agent))
         .route(
-            "/api/v1/agents/{agent_id}",
+            "/api/v1/agents/{id}",
             get(api::agents::get_agent),
         )
         .route(

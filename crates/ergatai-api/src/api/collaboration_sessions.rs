@@ -770,10 +770,10 @@ pub async fn get_collaboration_session_progress(
     )
 )]
 pub async fn list_session_conversations(Path(collaboration_session_id): Path<String>) -> Response {
-    // Parse session ID to i64
-    let session_id_i64 = match collaboration_session_id.parse::<i64>() {
-        Ok(id) => id,
-        Err(_) => {
+    // Parse session ID to i64 using parse_to_i64 for formatted IDs
+    let session_id_i64 = match ergatai_error::id::parse_to_i64(&collaboration_session_id) {
+        Some(id) => id,
+        None => {
             return crate::http_error::bad_request(format!(
                 "Invalid collaboration session ID format: {}",
                 collaboration_session_id
@@ -863,10 +863,10 @@ pub async fn list_session_conversations(Path(collaboration_session_id): Path<Str
 pub async fn get_session_conversation(
     Path((collaboration_session_id, conversation_id)): Path<(String, String)>,
 ) -> Response {
-    // Parse IDs to i64
-    let session_id_i64 = match collaboration_session_id.parse::<i64>() {
-        Ok(id) => id,
-        Err(_) => {
+    // Parse IDs to i64 using parse_to_i64 for formatted IDs
+    let session_id_i64 = match ergatai_error::id::parse_to_i64(&collaboration_session_id) {
+        Some(id) => id,
+        None => {
             return crate::http_error::bad_request(format!(
                 "Invalid collaboration session ID format: {}",
                 collaboration_session_id
@@ -874,9 +874,9 @@ pub async fn get_session_conversation(
             .into_response()
         }
     };
-    let conversation_id_i64 = match conversation_id.parse::<i64>() {
-        Ok(id) => id,
-        Err(_) => {
+    let conversation_id_i64 = match ergatai_error::id::parse_to_i64(&conversation_id) {
+        Some(id) => id,
+        None => {
             return crate::http_error::bad_request(format!(
                 "Invalid conversation ID format: {}",
                 conversation_id

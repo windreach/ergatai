@@ -82,7 +82,7 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
 // ── create_workspace ─────────────────────────────────────────────────
 
 #[tokio::test]
-async fn create_workspace_missing_fields_returns_422() {
+async fn create_workspace_empty_body_auto_generates_id() {
     let app = build_rest_app(test_state());
 
     let response = app
@@ -97,8 +97,24 @@ async fn create_workspace_missing_fields_returns_422() {
         .await
         .unwrap();
 
-    // Missing required "id" field → 422 Unprocessable Entity (axum JSON extractor)
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    // With auto-generated IDs, empty body is now accepted (no longer 422).
+    // The handler auto-generates an ID when `id` is not provided.
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "empty body should be accepted and workspace created"
+    );
+
+    // Verify the response contains a valid workspace with generated ID
+    let body = body_json(response).await;
+    assert!(
+        body.get("id").is_some(),
+        "response should contain auto-generated workspace ID"
+    );
+    assert!(
+        body.get("id").unwrap().is_string(),
+        "workspace ID should be a string"
+    );
 }
 
 #[tokio::test]

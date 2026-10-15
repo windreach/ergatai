@@ -81,6 +81,39 @@ pub use backends::acp::{
     AcpBackend, AgentOutputEvent, ElicitationResponse, TrackedElicitation, TrackedPlan,
     TrackedPlanEntry, TrackedToolCall,
 };
+
+// Global conversation tracking for current prompt
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+static CURRENT_PROMPT_CONVERSATION: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+fn current_prompt_conversation_state() -> &'static Mutex<HashMap<String, String>> {
+    CURRENT_PROMPT_CONVERSATION.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn set_current_prompt_conversation(agent_id: &str, conversation_id: Option<String>) {
+    let Ok(mut map) = current_prompt_conversation_state().lock() else {
+        return;
+    };
+    match conversation_id {
+        Some(id) => {
+            map.insert(agent_id.to_string(), id);
+        }
+        None => {
+            map.remove(agent_id);
+        }
+    }
+}
+
+pub fn get_current_prompt_conversation(agent_id: &str) -> Option<String> {
+    current_prompt_conversation_state()
+        .lock()
+        .ok()?
+        .get(agent_id)
+        .cloned()
+}
+
 pub use output_accumulator::{
     get_global_accumulator_registry, get_global_persist_callback, set_global_accumulator_registry,
     set_global_persist_callback, AgentOutputData, AgentOutputSnapshot, OutputAccumulatorRegistry,

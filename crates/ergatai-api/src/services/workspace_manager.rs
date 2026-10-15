@@ -1,6 +1,6 @@
 //! Workspace-first management service.
 
-use ergatai_core::id::generate;
+use ergatai_core::id::{format as format_id, generate, parse_to_i64, IdType};
 use ergatai_runtime::ResourceLimits;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -147,7 +147,7 @@ pub async fn to_managed(workspace: Workspace) -> Result<ManagedWorkspace, Worksp
     validate_resource_json(&workspace.resources)?;
 
     Ok(ManagedWorkspace {
-        workspace_id: workspace.workspace_id.to_string(),
+        workspace_id: format_id(workspace.workspace_id, IdType::Workspace),
         name: workspace.name,
         work_dir: workspace.work_dir,
         env: workspace.env,
@@ -187,7 +187,7 @@ pub async fn list(
 }
 
 pub async fn get(workspace_id: &str) -> Result<ManagedWorkspace, WorkspaceManagerError> {
-    let id_i64 = workspace_id.parse::<i64>().map_err(|_| {
+    let id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
     let workspace = tokio::task::spawn_blocking(move || workspaces::get(id_i64))
@@ -204,9 +204,12 @@ pub async fn create(
     let workspace_id = request
         .id
         .filter(|id| !id.is_empty())
-        .map(|id| id.parse::<i64>())
-        .transpose()
-        .map_err(|_| WorkspaceManagerError::Validation("Invalid workspace ID format".to_string()))?
+        .map(|id| {
+            parse_to_i64(&id).ok_or_else(|| {
+                WorkspaceManagerError::Validation("Invalid workspace ID format".to_string())
+            })
+        })
+        .transpose()?
         .unwrap_or_else(generate);
     let id_check = workspace_id;
     let exists = tokio::task::spawn_blocking(move || workspaces::get(id_check))
@@ -251,14 +254,14 @@ pub async fn create(
         .await
         .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
         .map_err(WorkspaceManagerError::from)?;
-    get(&workspace.workspace_id.to_string()).await
+    get(&format_id(workspace.workspace_id, IdType::Workspace)).await
 }
 
 pub async fn update(
     workspace_id: &str,
     request: UpdateManagedWorkspaceRequest,
 ) -> Result<ManagedWorkspace, WorkspaceManagerError> {
-    let id_i64 = workspace_id.parse::<i64>().map_err(|_| {
+    let id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
     let existing = tokio::task::spawn_blocking(move || workspaces::get(id_i64))
@@ -324,7 +327,7 @@ pub async fn set_status(
             status
         )));
     }
-    let id_i64 = workspace_id.parse::<i64>().map_err(|_| {
+    let id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
     let status_owned = status.to_string();
@@ -348,7 +351,7 @@ pub async fn status(workspace_id: &str) -> Result<WorkspaceStatus, WorkspaceMana
         .iter()
         .filter(|agent| agent.workspace_id == workspace_id && agent.lifecycle.is_alive())
         .count();
-    let workspace_id_i64 = workspace.workspace_id.parse::<i64>().map_err(|_| {
+    let workspace_id_i64 = parse_to_i64(&workspace.workspace_id).ok_or_else(|| {
         WorkspaceManagerError::Internal(anyhow::anyhow!(
             "Invalid workspace ID format: {}",
             workspace.workspace_id
@@ -397,7 +400,7 @@ pub async fn delete(workspace_id: &str, force: bool) -> Result<(), WorkspaceMana
     // (unless force=true). These guards protect in-progress user work from accidental destruction.
     if !force {
         // Check for active (non-archived) chats
-        let workspace_id_i64 = workspace_id.parse::<i64>().map_err(|_| {
+        let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
             WorkspaceManagerError::NotFound(format!(
                 "Invalid workspace ID format: {}",
                 workspace_id
@@ -437,7 +440,7 @@ pub async fn delete(workspace_id: &str, force: bool) -> Result<(), WorkspaceMana
         permission_handler.unregister_workspace(workspace_id).await;
     }
 
-    let workspace_id_i64 = workspace_id.parse::<i64>().map_err(|_| {
+    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
     tokio::task::spawn_blocking(move || workspaces::delete(workspace_id_i64))

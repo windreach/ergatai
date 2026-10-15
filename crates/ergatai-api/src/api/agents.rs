@@ -1291,7 +1291,7 @@ pub async fn send_message(
                                 let send_req = SendRequest {
                                     from: req.from.unwrap_or_else(|| id.clone()),
                                     to: format_id(binding.agent_id, IdType::Agent),
-                                    target_conversation_id: None, // REST API uses agent-centric routing
+                                    target_conversation_id: Some(target_conversation_id), // Use conversation-centric routing
                                     message: req.message,
                                     message_type: req
                                         .message_type
@@ -1754,7 +1754,7 @@ pub async fn send_message(
                 let send_req = SendRequest {
                     from: req.from.unwrap_or_else(|| id.clone()),
                     to: new_agent_id.clone(),
-                    target_conversation_id: None, // REST API uses agent-centric routing
+                    target_conversation_id: Some(agent_conversation_id_i64), // Use conversation-centric routing
                     message: req.message,
                     message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
                     correlation_id: req.correlation_id,
@@ -1810,14 +1810,18 @@ pub async fn send_message(
     }
 
     // Normal message sending (no agent-to-agent routing)
+    let conversation_id_i64 = req
+        .conversation_id
+        .as_ref()
+        .and_then(|s| ergatai_error::id::parse_to_i64(s));
     let send_req = SendRequest {
         from: req.from.unwrap_or_else(|| "api".to_string()),
         to: id.clone(),
-        target_conversation_id: None, // REST API uses agent-centric routing
+        target_conversation_id: conversation_id_i64, // Use conversation-centric routing
         message: req.message,
         message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
         correlation_id: req.correlation_id,
-        conversation_id: req.conversation_id.and_then(|s| s.parse::<i64>().ok()),
+        conversation_id: conversation_id_i64,
     };
 
     match sender.send(send_req).await {
@@ -3716,18 +3720,60 @@ pub async fn prompt_agent(
         )
             .into_response()
     } else {
-        // No conversation_id — use direct inject (legacy path, no persistence).
+        // No conversation_id — auto-create one for persistence
+        let agent_info = crate::services::agent_service::get_agent_info(&runtime_id).await;
+
+        let conversation_id_i64 = generate();
+        let conversation_id_str = format_id(conversation_id_i64, IdType::Conversation);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let agent_name = agent_info
+            .as_ref()
+            .map(|info| info.agent_id.clone())
+            .unwrap_or_else(|| runtime_id.clone());
+
+        let conv = crate::user_data_db::Conversation {
+            conversation_id: conversation_id_i64,
+            collaboration_session_id: 0,
+            chat_id: 0,
+            parent_id: None,
+            name: Some(format!("Auto-generated for agent {}", agent_name)),
+            mode: "agent".to_string(),
+            participant_role: "assistant".to_string(),
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+
+        if let Err(e) =
+            tokio::task::spawn_blocking(move || crate::user_data_db::conversations::create(conv))
+                .await
+        {
+            tracing::warn!(
+                error = %e,
+                conversation_id = %conversation_id_str,
+                "Failed to create auto-generated conversation (may already exist)"
+            );
+        }
+
         match crate::services::agent_service::prompt_agent_with_images(
             &runtime_id,
             &body.message,
             body.images,
-            None,
+            Some(conversation_id_str.clone()),
         )
         .await
         {
             Ok(()) => (
                 StatusCode::ACCEPTED,
-                Json(serde_json::json!({ "status": "queued", "prompt_id": prompt_id })),
+                Json(serde_json::json!({
+                    "status": "queued",
+                    "prompt_id": prompt_id,
+                    "conversationId": conversation_id_str
+                })),
             )
                 .into_response(),
             Err(e) => (

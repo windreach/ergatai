@@ -436,7 +436,7 @@ async fn try_pre_lock_files(
     // The legacy `-agent-` substring parsing no longer works because agent_id
     // now uses snowflake format `agent_{snowflake}` (see acp.rs).
     let runtime = get_agent_runtime();
-    let workspace_id = match runtime.get_agent(agent_id).await {
+    let workspace_id_formatted = match runtime.get_agent(agent_id).await {
         Some(info) => info.workspace_id,
         None => {
             tracing::warn!(
@@ -447,6 +447,13 @@ async fn try_pre_lock_files(
         }
     };
 
+    // Convert formatted workspace ID to Snowflake ID for lock manager lookup.
+    // The lock manager is initialized with Snowflake IDs, but AgentInfo stores
+    // the formatted ID (e.g., "ws_503168454928_000_0000").
+    let workspace_id = ergatai_error::id::parse_to_i64(&workspace_id_formatted)
+        .map(|id| id.to_string())
+        .unwrap_or(workspace_id_formatted.clone());
+
     // Resolve the lock manager for this workspace. Failure means the lock
     // subsystem is not initialized for this project — degrade gracefully
     // rather than blocking all edits.
@@ -456,6 +463,7 @@ async fn try_pre_lock_files(
             tracing::info!(
                 agent_id = %agent_id,
                 workspace_id = %workspace_id,
+                workspace_id_formatted = %workspace_id_formatted,
                 error = %e,
                 "try_pre_lock_files: lock manager unavailable, degrading to no-op"
             );
@@ -469,15 +477,21 @@ async fn try_pre_lock_files(
     let project_root = lock_mgr.project_root();
     for path in &paths_to_lock {
         let path_buf = std::path::Path::new(path);
+        // If path is relative, join it with project_root first
+        let absolute_path_buf = if path_buf.is_absolute() {
+            path_buf.to_path_buf()
+        } else {
+            project_root.join(path_buf)
+        };
         // Canonicalize the path to resolve any .. or symlinks
-        let canonical_path = match path_buf.canonicalize() {
+        let canonical_path = match absolute_path_buf.canonicalize() {
             Ok(p) => p,
             Err(_) => {
                 // If canonicalization fails (e.g., file doesn't exist yet), try to
                 // canonicalize the parent directory and append the filename
-                if let Some(parent) = path_buf.parent() {
+                if let Some(parent) = absolute_path_buf.parent() {
                     if let Ok(canonical_parent) = parent.canonicalize() {
-                        if let Some(filename) = path_buf.file_name() {
+                        if let Some(filename) = absolute_path_buf.file_name() {
                             canonical_parent.join(filename)
                         } else {
                             // Cannot determine canonical path, reject to be safe
