@@ -1252,7 +1252,8 @@ pub fn create_approval(
     }
 
     let timestamp = now();
-    let approval_id = format_id(generate(), IdType::Permission);
+    let approval_id_raw = generate();
+    let approval_id = format_id(approval_id_raw, IdType::Permission);
     let transaction = connection.transaction()?;
     transaction.execute(
         &format!(
@@ -1260,7 +1261,7 @@ pub fn create_approval(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
         ),
         params![
-            approval_id,
+            approval_id_raw,
             session_id_i64,
             request
                 .plan_revision_id
@@ -1305,12 +1306,18 @@ pub fn create_approval(
 }
 
 fn get_approval(approval_id: &str) -> Result<CollaborationApproval, CollaborationSessionError> {
+    let approval_id_i64 = parse_to_i64(approval_id).ok_or_else(|| {
+        CollaborationSessionError::Validation(format!(
+            "Invalid approval_id format: {}",
+            approval_id
+        ))
+    })?;
     lock_db!(connection);
     let mut statement = connection.prepare(&format!(
         "SELECT {APPROVAL_COLUMNS} FROM collaboration_approvals WHERE id = ?1"
     ))?;
     statement
-        .query_row(params![approval_id], |row| {
+        .query_row(params![approval_id_i64], |row| {
             approval_from_row(row)
                 .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))
         })
@@ -1325,6 +1332,12 @@ pub fn decide_approval(
     let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
         CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
     })?;
+    let approval_id_i64 = parse_to_i64(approval_id).ok_or_else(|| {
+        CollaborationSessionError::Validation(format!(
+            "Invalid approval_id format: {}",
+            approval_id
+        ))
+    })?;
     lock_db!(mut connection);
     let current = get_session_with_connection(&connection, session_id)?.ok_or_else(|| {
         CollaborationSessionError::NotFound("Collaboration session not found".to_string())
@@ -1334,7 +1347,7 @@ pub fn decide_approval(
             "SELECT {APPROVAL_COLUMNS} FROM collaboration_approvals WHERE id = ?1 AND session_id = ?2"
         ))?;
         statement
-            .query_row(params![approval_id, session_id_i64], |row| {
+            .query_row(params![approval_id_i64, session_id_i64], |row| {
                 approval_from_row(row)
                     .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))
             })
@@ -1369,7 +1382,7 @@ pub fn decide_approval(
             request.decided_by,
             serde_json::to_string(&request.decision_payload)?,
             timestamp,
-            approval_id,
+            approval_id_i64,
             session_id_i64,
         ],
     )?;

@@ -5,11 +5,12 @@
 //! - GET /api/v1/agents/{id}/mailbox — get mailbox for specific agent
 //! - DELETE /api/v1/agents/{id}/mailbox — clear mailbox for agent
 
+use crate::Json;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    
 };
 use serde::Serialize;
 

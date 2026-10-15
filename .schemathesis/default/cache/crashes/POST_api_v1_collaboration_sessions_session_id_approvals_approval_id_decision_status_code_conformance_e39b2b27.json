@@ -1,0 +1,99 @@
+{
+  "operation": "POST /api/v1/collaboration-sessions/{session_id}/approvals/{approval_id}/decision",
+  "method": "POST",
+  "path_template": "/api/v1/collaboration-sessions/{session_id}/approvals/{approval_id}/decision",
+  "fingerprint": "e39b2b27",
+  "case_id": "dpZ4Si",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/collaboration-sessions/0/approvals/0/decision",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions/0/approvals/0/decision",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions/{session_id}/approvals/{approval_id}/decision",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "dpZ4Si",
+        "Content-Length": "0"
+      },
+      "response": {
+        "status_code": 415,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8",
+          "access-control-allow-origin": "*",
+          "content-length": "54",
+          "date": "Thu, 15 Oct 2026 10:41:46 GMT"
+        },
+        "body": "Expected request with `Content-Type: application/json`"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 415\nDocumented: 200, 400, 404"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 6.5300009737256914e-06,
+          "mode": "negative"
+        },
+        "components": {
+          "PATH": "positive",
+          "BODY": "negative"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Missing request body",
+            "location": null,
+            "parameter": null,
+            "parameter_location": "BODY",
+            "scenario": "missing_parameter"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [
+          [
+            "path",
+            "session_id"
+          ],
+          [
+            "path",
+            "approval_id"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "PATH": {
+            "session_id": "0",
+            "approval_id": "0"
+          }
+        }
+      },
+      "path": "/api/v1/collaboration-sessions/{session_id}/approvals/{approval_id}/decision",
+      "path_parameters": {
+        "session_id": "[Filtered]",
+        "approval_id": "0"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

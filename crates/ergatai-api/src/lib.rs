@@ -13,7 +13,7 @@ use axum::{
     middleware::{self, Next},
     response::IntoResponse,
     routing::{delete, get, patch, post, put},
-    Json, Router,
+    Router,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -33,6 +33,127 @@ pub mod messaging;
 pub mod services;
 
 pub mod user_data_db;
+
+// ── Custom JSON extractor ────────────────────────────────────────────
+
+/// Custom JSON extractor that returns JSON error responses instead of plain text.
+///
+/// Wraps `axum::Json` and implements `From<JsonRejection>` to ensure all JSON
+/// parsing errors return `application/json` Content-Type with a structured error
+/// response, matching the API's error response format.
+///
+/// Usage: Replace `Json<T>` with `crate::Json<T>` in handler signatures.
+pub struct Json<T>(pub T);
+
+impl<T, S> axum::extract::FromRequest<S> for Json<T>
+where
+    T: serde::de::DeserializeOwned + Send + Sync,
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, axum::Json<serde_json::Value>);
+
+    async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, Self::Rejection> {
+        <axum::Json<T> as axum::extract::FromRequest<S>>::from_request(req, state)
+            .await
+            .map(|axum::Json(value)| Json(value))
+            .map_err(|rejection| {
+                let message = match rejection {
+                    axum::extract::rejection::JsonRejection::JsonDataError(e) => {
+                        format!("Invalid JSON data: {}", e.body_text())
+                    }
+                    axum::extract::rejection::JsonRejection::JsonSyntaxError(e) => {
+                        format!(
+                            "Failed to parse the request body as JSON: {}",
+                            e.body_text()
+                        )
+                    }
+                    axum::extract::rejection::JsonRejection::MissingJsonContentType(e) => {
+                        e.body_text()
+                    }
+                    _ => "Unknown JSON extraction error".to_string(),
+                };
+                crate::http_error::bad_request(message)
+            })
+    }
+}
+
+impl<T> std::ops::Deref for Json<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> serde::Serialize for Json<T>
+where
+    T: serde::Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+// ── Custom JSON Query Extractor ──────────────────────────────────────
+
+/// Custom Query extractor that returns JSON error responses instead of plain text.
+///
+/// Wraps `axum::extract::Query` and ensures all query parameter parsing errors
+/// return `application/json` Content-Type with a structured error response.
+///
+/// Usage: Replace `Query<T>` with `crate::JsonQuery<T>` in handler signatures.
+pub struct JsonQuery<T>(pub T);
+
+impl<T, S> axum::extract::FromRequestParts<S> for JsonQuery<T>
+where
+    T: serde::de::DeserializeOwned + Send + Sync,
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, axum::Json<serde_json::Value>);
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        // Reject requests with empty query parameter names (e.g., `?=value`)
+        if let Some(query_str) = parts.uri.query() {
+            if query_str.split('&').any(|pair| pair.starts_with('=')) {
+                return Err(crate::http_error::bad_request(
+                    "Invalid query parameter: empty parameter name",
+                ));
+            }
+        }
+        <axum::extract::Query<T> as axum::extract::FromRequestParts<S>>::from_request_parts(
+            parts, state,
+        )
+        .await
+        .map(|axum::extract::Query(value)| JsonQuery(value))
+        .map_err(|rejection| {
+            let message = format!("Invalid query parameters: {}", rejection.body_text());
+            crate::http_error::bad_request(message)
+        })
+    }
+}
+
+impl<T> std::ops::Deref for JsonQuery<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> IntoResponse for Json<T>
+where
+    T: serde::Serialize,
+{
+    fn into_response(self) -> axum::response::Response {
+        axum::Json(self.0).into_response()
+    }
+}
 
 // ── AppState ─────────────────────────────────────────────────────────
 
@@ -139,6 +260,23 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/workspaces/{workspace_id}",
             delete(api::workspaces::delete_workspace),
+        )
+        // Workspace lifecycle management
+        .route(
+            "/api/v1/workspaces/{workspace_id}/stop",
+            post(api::workspaces::stop_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/{workspace_id}/start",
+            post(api::workspaces::start_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/{workspace_id}/archive",
+            post(api::workspaces::archive_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/{workspace_id}/restore",
+            post(api::workspaces::restore_workspace),
         )
         .route(
             "/api/v1/terminal-sessions",
@@ -392,6 +530,20 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/worktrees/registered",
             get(api::chats::lookup_registered_worktree),
+        )
+        .route(
+            "/api/v1/chats/lookup-worktree",
+            get(api::chats::lookup_registered_worktree),
+        )
+        .route(
+            "/api/v1/chats/lookup-worktree",
+            axum::routing::options(|| async {
+                axum::response::Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Allow", "GET,HEAD")
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            }),
         )
         .route(
             "/api/v1/chats/{chat_id}/agents",
@@ -822,32 +974,55 @@ pub fn sanitize_error(err: &dyn std::fmt::Display, context: &str) -> String {
 /// repeated `(StatusCode, String)` construction across API handlers.
 pub mod http_error {
     use axum::http::StatusCode;
+    use axum::Json;
+    use serde_json::json;
 
     /// 500 Internal Server Error with sanitized message.
     /// Logs the full error at ERROR level, returns generic message to client.
-    pub fn internal<E: std::fmt::Display>(err: E, context: &str) -> (StatusCode, String) {
+    pub fn internal<E: std::fmt::Display>(
+        err: E,
+        context: &str,
+    ) -> (StatusCode, Json<serde_json::Value>) {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            crate::sanitize_error(&err, context),
+            Json(json!({ "error": crate::sanitize_error(&err, context) })),
         )
     }
 
     /// 400 Bad Request with a client-facing message.
-    pub fn bad_request(message: impl Into<String>) -> (StatusCode, String) {
-        (StatusCode::BAD_REQUEST, message.into())
+    pub fn bad_request(message: impl Into<String>) -> (StatusCode, Json<serde_json::Value>) {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": message.into() })),
+        )
     }
 
     /// 404 Not Found with a client-facing message.
-    pub fn not_found(resource: &str, id: &str) -> (StatusCode, String) {
+    pub fn not_found(resource: &str, id: &str) -> (StatusCode, Json<serde_json::Value>) {
         (
             StatusCode::NOT_FOUND,
-            format!("{} {} not found", resource, id),
+            Json(json!({ "error": format!("{} {} not found", resource, id) })),
         )
     }
 
     /// 503 Service Unavailable (e.g., during initialization or overload).
-    pub fn unavailable(message: impl Into<String>) -> (StatusCode, String) {
-        (StatusCode::SERVICE_UNAVAILABLE, message.into())
+    pub fn unavailable(message: impl Into<String>) -> (StatusCode, Json<serde_json::Value>) {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": message.into() })),
+        )
+    }
+
+    /// Parse a Snowflake ID string, returning 404 if invalid.
+    ///
+    /// This is used for RESTful APIs where an invalid ID format should be treated
+    /// as "resource not found" rather than "bad request", since from the client's
+    /// perspective both mean "I can't access this resource".
+    pub fn parse_id_or_not_found(
+        id_str: &str,
+        resource: &str,
+    ) -> Result<i64, (StatusCode, Json<serde_json::Value>)> {
+        ergatai_error::id::parse_to_i64(id_str).ok_or_else(|| not_found(resource, id_str))
     }
 }
 
@@ -862,9 +1037,9 @@ pub mod http_error {
 /// }
 /// ```
 ///
-/// Converts both the blocking error and JoinError into a single `Result<T, (StatusCode, String)>`
+/// Converts both the blocking error and JoinError into a single `Result<T, (StatusCode, Json<serde_json::Value>)>`
 /// suitable for direct use in API handlers.
-pub async fn run_blocking<F, T, E>(f: F) -> Result<T, (StatusCode, String)>
+pub async fn run_blocking<F, T, E>(f: F) -> Result<T, (StatusCode, axum::Json<serde_json::Value>)>
 where
     F: FnOnce() -> std::result::Result<T, E> + Send + 'static,
     T: Send + 'static,

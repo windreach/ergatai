@@ -1,0 +1,89 @@
+{
+  "operation": "POST /api/v1/agent-profiles",
+  "method": "POST",
+  "path_template": "/api/v1/agent-profiles",
+  "fingerprint": "f5a4a6b0",
+  "case_id": "8jWDbX",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d '{\"agent_type\": \"\", \"avatar_url\": \"\", \"command\": \"\", \"name\": \"\", \"package_name\": null}' http://localhost:3000/api/v1/agent-profiles",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/agent-profiles",
+      "url_template": "http://localhost:3000/api/v1/agent-profiles",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "8jWDbX",
+        "Content-Type": "application/json",
+        "Content-Length": "85"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "86",
+          "date": "Thu, 15 Oct 2026 13:36:46 GMT"
+        },
+        "body": "{\"error\":\"Failed to register profile: Invalid argument: Profile name cannot be empty\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "positive_data_acceptance",
+          "status": "failure",
+          "message": "API rejected schema-compliant request\n\nValid data should have been accepted\nExpected: 2xx, 3xx, 401, 403, 404, 409, 429, 5xx"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 5.076899833511561e-05,
+          "mode": "positive"
+        },
+        "components": {
+          "BODY": "positive"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Object with valid 'package_name' value: Value null value",
+            "location": null,
+            "parameter": "application/json",
+            "parameter_location": "BODY",
+            "scenario": "valid_object"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/agent-profiles",
+      "path_parameters": {},
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": {
+          "agent_type": "",
+          "avatar_url": "",
+          "command": "",
+          "name": "",
+          "package_name": null
+        }
+      },
+      "media_type": "application/json",
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

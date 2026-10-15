@@ -1,13 +1,14 @@
 //! HTTP handlers for authoritative collaboration sessions.
 
+use crate::Json;
+use crate::JsonQuery;
 use axum::{
-    extract::{Path, Query},
+    extract::Path,
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    Json,
 };
 use serde::Deserialize;
 use std::convert::Infallible;
@@ -114,7 +115,7 @@ pub async fn create_collaboration_session(
     responses(
         (status = 200, description = "Collaboration session", body = crate::services::collaboration_session::CollaborationSession),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn get_collaboration_session_by_chat(Path(chat_id): Path<String>) -> Response {
     let chat_id_for_closure = chat_id.clone();
@@ -134,13 +135,13 @@ pub async fn get_collaboration_session_by_chat(Path(chat_id): Path<String>) -> R
 /// GET /api/v1/collaboration-sessions/:id
 #[utoipa::path(
     get,
-    path = "/api/v1/collaboration-sessions/{id}",
+    path = "/api/v1/collaboration-sessions/{collaboration_session_id}",
     tag = "Collaboration Sessions",
-    params(("id" = String, Path, description = "Collaboration session identifier")),
+    params(("collaboration_session_id" = String, Path, description = "Collaboration session identifier")),
     responses(
         (status = 200, description = "Collaboration session detail", body = crate::services::collaboration_session::CollaborationSessionDetail),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn get_collaboration_session(Path(collaboration_session_id): Path<String>) -> Response {
     match tokio::task::spawn_blocking(move || get_session(&collaboration_session_id)).await {
@@ -195,11 +196,11 @@ pub async fn transition_collaboration_session_state(
     responses(
         (status = 200, description = "Shared context events", body = Vec<crate::services::collaboration_session::CollaborationContextEvent>),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn list_collaboration_session_events(
     Path(collaboration_session_id): Path<String>,
-    Query(query): Query<EventQuery>,
+    JsonQuery(query): JsonQuery<EventQuery>,
 ) -> Response {
     match tokio::task::spawn_blocking(move || {
         // Clamp limit to reasonable maximum to prevent memory exhaustion from malicious clients
@@ -230,11 +231,11 @@ pub async fn list_collaboration_session_events(
     responses(
         (status = 200, description = "Server-sent shared context event stream"),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn stream_collaboration_session_events(
     Path(collaboration_session_id): Path<String>,
-    Query(query): Query<StreamEventQuery>,
+    JsonQuery(query): JsonQuery<StreamEventQuery>,
 ) -> Response {
     // Validate session exists before starting the stream to prevent DoS via
     // unbounded polling on non-existent sessions.
@@ -402,7 +403,7 @@ pub async fn create_collaboration_session_plan(
     responses(
         (status = 200, description = "Plan revisions", body = Vec<crate::services::collaboration_session::CollaborationPlanRevision>),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn list_collaboration_session_plans(
     Path(collaboration_session_id): Path<String>,
@@ -430,7 +431,7 @@ pub async fn list_collaboration_session_plans(
     responses(
         (status = 200, description = "Plan revision", body = crate::services::collaboration_session::CollaborationPlanRevision),
         (status = 404, description = "Plan revision not found", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn get_collaboration_session_plan(
     Path((collaboration_session_id, plan_revision_id)): Path<(String, String)>,
@@ -552,9 +553,9 @@ pub async fn decide_collaboration_session_approval(
 )]
 pub async fn cancel_collaboration_session(
     Path(collaboration_session_id): Path<String>,
-    reason: Option<Json<String>>,
+    reason: Option<axum::Json<String>>,
 ) -> Response {
-    let reason = reason.map(|Json(reason)| reason);
+    let reason = reason.map(|axum::Json(reason)| reason);
     match cancel_session_execution(&collaboration_session_id, reason).await {
         Ok(detail) => (StatusCode::OK, Json(detail)).into_response(),
         Err(error) => response_from_dag_error(error, "cancel collaboration session"),
@@ -579,10 +580,10 @@ pub struct ListCollaborationSessionsQuery {
     responses(
         (status = 200, description = "List collaboration sessions", body = Vec<crate::services::collaboration_session::CollaborationSessionDetail>),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn list_collaboration_sessions(
-    Query(query): Query<ListCollaborationSessionsQuery>,
+    JsonQuery(query): JsonQuery<ListCollaborationSessionsQuery>,
 ) -> Response {
     use crate::services::collaboration_session::list_sessions;
 
@@ -658,7 +659,7 @@ pub async fn patch_collaboration_session(
         (status = 204, description = "Session deleted"),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn delete_collaboration_session(
     Path(collaboration_session_id): Path<String>,
@@ -684,7 +685,7 @@ pub async fn delete_collaboration_session(
     responses(
         (status = 200, description = "Session status", body = serde_json::Value),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn get_collaboration_session_status(
     Path(collaboration_session_id): Path<String>,
@@ -716,7 +717,7 @@ pub async fn get_collaboration_session_status(
     responses(
         (status = 200, description = "Session progress", body = serde_json::Value),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn get_collaboration_session_progress(
     Path(collaboration_session_id): Path<String>,
@@ -767,19 +768,16 @@ pub async fn get_collaboration_session_progress(
         (status = 200, description = "List of conversations in the session", body = serde_json::Value),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn list_session_conversations(Path(collaboration_session_id): Path<String>) -> Response {
-    // Parse session ID to i64 using parse_to_i64 for formatted IDs
-    let session_id_i64 = match ergatai_error::id::parse_to_i64(&collaboration_session_id) {
-        Some(id) => id,
-        None => {
-            return crate::http_error::bad_request(format!(
-                "Invalid collaboration session ID format: {}",
-                collaboration_session_id
-            ))
-            .into_response()
-        }
+    // Parse session ID to i64, return 404 if invalid format (consistent with other endpoints)
+    let session_id_i64 = match crate::http_error::parse_id_or_not_found(
+        &collaboration_session_id,
+        "CollaborationSession",
+    ) {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
 
     // 1. 验证 session 存在
@@ -858,32 +856,24 @@ pub async fn list_session_conversations(Path(collaboration_session_id): Path<Str
         (status = 200, description = "Conversation details", body = serde_json::Value),
         (status = 404, description = "Session or conversation not found", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn get_session_conversation(
     Path((collaboration_session_id, conversation_id)): Path<(String, String)>,
 ) -> Response {
-    // Parse IDs to i64 using parse_to_i64 for formatted IDs
-    let session_id_i64 = match ergatai_error::id::parse_to_i64(&collaboration_session_id) {
-        Some(id) => id,
-        None => {
-            return crate::http_error::bad_request(format!(
-                "Invalid collaboration session ID format: {}",
-                collaboration_session_id
-            ))
-            .into_response()
-        }
+    // Parse IDs to i64, return 404 if invalid format (consistent with other endpoints)
+    let session_id_i64 = match crate::http_error::parse_id_or_not_found(
+        &collaboration_session_id,
+        "CollaborationSession",
+    ) {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
-    let conversation_id_i64 = match ergatai_error::id::parse_to_i64(&conversation_id) {
-        Some(id) => id,
-        None => {
-            return crate::http_error::bad_request(format!(
-                "Invalid conversation ID format: {}",
-                conversation_id
-            ))
-            .into_response()
-        }
-    };
+    let conversation_id_i64 =
+        match crate::http_error::parse_id_or_not_found(&conversation_id, "Conversation") {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
 
     // 1. 验证 session 存在
     let session_exists = match tokio::task::spawn_blocking({

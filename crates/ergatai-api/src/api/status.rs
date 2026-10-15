@@ -1,4 +1,5 @@
-use axum::{extract::State, response::IntoResponse, Json};
+use crate::Json;
+use axum::{extract::State, response::IntoResponse};
 use serde::Serialize;
 use utoipa::ToSchema;
 

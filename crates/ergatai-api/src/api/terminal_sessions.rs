@@ -1,11 +1,12 @@
+use crate::Json;
+use crate::JsonQuery;
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    Json,
 };
 use futures::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -119,7 +120,7 @@ pub async fn create_session(
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
     )
 )]
-pub async fn list_sessions(Query(query): Query<TerminalSessionListQuery>) -> Response {
+pub async fn list_sessions(JsonQuery(query): JsonQuery<TerminalSessionListQuery>) -> Response {
     match terminal_sessions::list_sessions(&query.workspace_id, &query.user_id).await {
         Ok(sessions) => (
             StatusCode::OK,
@@ -138,7 +139,7 @@ pub async fn list_sessions(Query(query): Query<TerminalSessionListQuery>) -> Res
     responses(
         (status = 200, description = "Terminal session", body = TerminalSessionResponse),
         (status = 404, description = "Not found", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn get_session(Path(session_id): Path<String>) -> Response {
     match terminal_sessions::get_session(&session_id).await {
@@ -221,7 +222,7 @@ pub async fn signal_session(
     responses(
         (status = 200, description = "Terminate requested", body = TerminalSessionResponse),
         (status = 404, description = "Not found", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn terminate_session(Path(session_id): Path<String>) -> Response {
     match terminal_sessions::terminate_session(&session_id).await {
@@ -238,11 +239,14 @@ pub async fn terminate_session(Path(session_id): Path<String>) -> Response {
         ("id" = String, Path, description = "Terminal session identifier"),
         ("after" = Option<u64>, Query, description = "Last successfully received sequence"),
     ),
-    responses((status = 200, description = "Terminal output stream"))
+    responses(
+        (status = 200, description = "Terminal output stream"),
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),
+    )
 )]
 pub async fn stream_session(
     Path(session_id): Path<String>,
-    Query(query): Query<TerminalStreamQuery>,
+    JsonQuery(query): JsonQuery<TerminalStreamQuery>,
 ) -> Response {
     let subscription = match terminal_sessions::subscribe(&session_id, query.after).await {
         Ok(result) => result,
@@ -279,7 +283,7 @@ pub async fn stream_session(
     responses(
         (status = 200, description = "Terminal audit events", body = TerminalAuditResponse),
         (status = 404, description = "Terminal session not found", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn list_audit(Path(session_id): Path<String>) -> Response {
     match terminal_sessions::list_audit(&session_id).await {

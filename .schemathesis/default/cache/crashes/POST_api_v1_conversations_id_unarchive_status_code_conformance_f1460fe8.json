@@ -1,0 +1,92 @@
+{
+  "operation": "POST /api/v1/conversations/{id}/unarchive",
+  "method": "POST",
+  "path_template": "/api/v1/conversations/{id}/unarchive",
+  "fingerprint": "f1460fe8",
+  "case_id": "Il8YKa",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/conversations/0/unarchive",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/conversations/0/unarchive",
+      "url_template": "http://localhost:3000/api/v1/conversations/{id}/unarchive",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "Il8YKa",
+        "Content-Length": "0"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "32",
+          "date": "Thu, 15 Oct 2026 10:25:20 GMT"
+        },
+        "body": "{\"error\":\"Invalid ID format: 0\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 400\nDocumented: 200, 404, 500"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 5.495100049301982e-05,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Default positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "scenario": "default_positive_test"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [
+          [
+            "path",
+            "id"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "PATH": {
+            "id": "0"
+          }
+        }
+      },
+      "path": "/api/v1/conversations/{id}/unarchive",
+      "path_parameters": {
+        "id": "0"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

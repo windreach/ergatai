@@ -1,0 +1,94 @@
+{
+  "operation": "GET /api/v1/collaboration-sessions/{id}",
+  "method": "GET",
+  "path_template": "/api/v1/collaboration-sessions/{id}",
+  "fingerprint": "6408906f",
+  "case_id": "bGNjbB",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/collaboration-sessions/hermes",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions/hermes",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions/{id}",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "bGNjbB"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "45",
+          "date": "Thu, 15 Oct 2026 10:42:17 GMT"
+        },
+        "body": "{\"error\":\"Invalid session_id format: hermes\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "positive_data_acceptance",
+          "status": "failure",
+          "message": "API rejected schema-compliant request\n\nValid data should have been accepted\nExpected: 2xx, 3xx, 401, 403, 404, 409, 429, 5xx"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.001422147999619483,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive"
+        },
+        "phase": {
+          "name": "fuzzing",
+          "data": {
+            "type": "FuzzingPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [
+          {
+            "path": [
+              "id"
+            ],
+            "type_token": "string",
+            "format_token": null,
+            "pattern_hash": null,
+            "normalized_name": "id",
+            "value": "hermes",
+            "source_operation": "GET /api/v1/agent-profiles"
+          }
+        ],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/collaboration-sessions/{id}",
+      "path_parameters": {
+        "id": "hermes"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

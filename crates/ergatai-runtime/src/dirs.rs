@@ -184,6 +184,14 @@ pub fn ensure_project_data_dir() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::OnceLock;
+
+    // Mutex to serialize tests that modify environment variables
+    static ENV_MUTEX: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+
+    fn env_mutex() -> &'static std::sync::Mutex<()> {
+        ENV_MUTEX.get_or_init(|| std::sync::Mutex::new(()))
+    }
 
     #[test]
     fn test_project_data_dir() {
@@ -193,6 +201,7 @@ mod tests {
 
     #[test]
     fn test_user_data_dir_with_env() {
+        let _guard = env_mutex().lock().unwrap();
         // WARNING: std::env::set_var/remove_var are not thread-safe.
         // These tests should be run with `cargo test -- --test-threads=1` to avoid
         // race conditions when multiple tests modify environment variables concurrently.
@@ -205,6 +214,7 @@ mod tests {
 
     #[test]
     fn test_user_data_dir_without_env() {
+        let _guard = env_mutex().lock().unwrap();
         std::env::remove_var("ERGATAI_USER_DATA_DIR");
         let dir = user_data_dir();
         // Should be platform-specific or fallback to ~/.ergatai

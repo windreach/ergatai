@@ -1,0 +1,81 @@
+{
+  "operation": "POST /api/v1/conversations",
+  "method": "POST",
+  "path_template": "/api/v1/conversations",
+  "fingerprint": "2348e450",
+  "case_id": "6njOFE",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/conversations",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/conversations",
+      "url_template": "http://localhost:3000/api/v1/conversations",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "6njOFE",
+        "Content-Length": "0"
+      },
+      "response": {
+        "status_code": 415,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8",
+          "access-control-allow-origin": "*",
+          "content-length": "54",
+          "date": "Thu, 15 Oct 2026 10:41:46 GMT"
+        },
+        "body": "Expected request with `Content-Type: application/json`"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 415\nDocumented: 201, 400, 404, 500"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 2.7280002541374415e-06,
+          "mode": "negative"
+        },
+        "components": {
+          "BODY": "negative"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Missing request body",
+            "location": null,
+            "parameter": null,
+            "parameter_location": "BODY",
+            "scenario": "missing_parameter"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/conversations",
+      "path_parameters": {},
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

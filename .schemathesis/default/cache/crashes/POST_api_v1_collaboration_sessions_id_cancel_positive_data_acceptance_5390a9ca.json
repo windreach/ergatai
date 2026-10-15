@@ -1,0 +1,86 @@
+{
+  "operation": "POST /api/v1/collaboration-sessions/{id}/cancel",
+  "method": "POST",
+  "path_template": "/api/v1/collaboration-sessions/{id}/cancel",
+  "fingerprint": "5390a9ca",
+  "case_id": "lLduLb",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d '\"Ac\"' http://localhost:3000/api/v1/collaboration-sessions/chat_5702362543542_26_15593007/cancel",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions/chat_5702362543542_26_15593007/cancel",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions/{id}/cancel",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "lLduLb",
+        "Content-Type": "application/json",
+        "Content-Length": "4"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "69",
+          "date": "Thu, 15 Oct 2026 13:39:43 GMT"
+        },
+        "body": "{\"error\":\"Invalid session_id format: chat_5702362543542_26_15593007\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "positive_data_acceptance",
+          "status": "failure",
+          "message": "API rejected schema-compliant request\n\nValid data should have been accepted\nExpected: 2xx, 3xx, 401, 403, 404, 409, 429, 5xx"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.031572748001053696,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive",
+          "BODY": "positive"
+        },
+        "phase": {
+          "name": "fuzzing",
+          "data": {
+            "type": "FuzzingPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/collaboration-sessions/{id}/cancel",
+      "path_parameters": {
+        "id": "chat_5702362543542_26_15593007"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": "Ac"
+      },
+      "media_type": "application/json",
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

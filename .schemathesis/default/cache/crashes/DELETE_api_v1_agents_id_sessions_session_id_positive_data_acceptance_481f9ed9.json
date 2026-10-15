@@ -1,0 +1,106 @@
+{
+  "operation": "DELETE /api/v1/agents/{id}/sessions/{session_id}",
+  "method": "DELETE",
+  "path_template": "/api/v1/agents/{id}/sessions/{session_id}",
+  "fingerprint": "481f9ed9",
+  "case_id": "aYqurw",
+  "code_sample": "curl -X DELETE -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/agents/agent_0_0_0/sessions/chat_0_0_0",
+  "sequence": [
+    {
+      "method": "DELETE",
+      "url": "http://localhost:3000/api/v1/agents/agent_0_0_0/sessions/chat_0_0_0",
+      "url_template": "http://localhost:3000/api/v1/agents/{id}/sessions/{session_id}",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "aYqurw",
+        "Content-Length": "0"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "47",
+          "date": "Thu, 15 Oct 2026 13:37:52 GMT"
+        },
+        "body": "{\"error\":\"Internal error (monitoring_handler)\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "positive_data_acceptance",
+          "status": "failure",
+          "message": "API rejected schema-compliant request\n\nValid data should have been accepted\nExpected: 2xx, 3xx, 401, 403, 404, 409, 429, 5xx"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.00018342300245421939,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Default positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "scenario": "default_positive_test"
+          }
+        },
+        "pool_draws": [
+          {
+            "location": "path",
+            "parameter_name": "id",
+            "resource_name": "AgentOutputResponse",
+            "resource_field": "id",
+            "source_operation": "GET /api/v1/agents/{id}/plan",
+            "source_status": 200,
+            "source_identity": null,
+            "source_input": true,
+            "source_query": null
+          }
+        ],
+        "pool_misses": [
+          [
+            "path",
+            "session_id"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "PATH": {
+            "id": "agent_0_0_0",
+            "session_id": "chat_0_0_0"
+          }
+        }
+      },
+      "path": "/api/v1/agents/{id}/sessions/{session_id}",
+      "path_parameters": {
+        "id": "agent_0_0_0",
+        "session_id": "[Filtered]"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

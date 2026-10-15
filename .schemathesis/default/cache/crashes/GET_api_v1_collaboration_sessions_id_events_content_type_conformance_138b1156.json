@@ -1,0 +1,97 @@
+{
+  "operation": "GET /api/v1/collaboration-sessions/{id}/events",
+  "method": "GET",
+  "path_template": "/api/v1/collaboration-sessions/{id}/events",
+  "fingerprint": "138b1156",
+  "case_id": "L16vsg",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' 'http://localhost:3000/api/v1/collaboration-sessions/0/events?limit=-1'",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions/0/events?limit=-1",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions/{id}/events",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "L16vsg"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8",
+          "access-control-allow-origin": "*",
+          "content-length": "72",
+          "date": "Thu, 15 Oct 2026 10:41:46 GMT"
+        },
+        "body": "Failed to deserialize query string: limit: invalid digit found in string"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "content_type_conformance",
+          "status": "failure",
+          "message": "Undocumented Content-Type\n\nReceived: text/plain; charset=utf-8\nDocumented: application/json"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 2.246000076411292e-05,
+          "mode": "negative"
+        },
+        "components": {
+          "PATH": "positive",
+          "QUERY": "negative"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "limit: Value smaller than minimum",
+            "location": null,
+            "parameter": "limit",
+            "parameter_location": "QUERY",
+            "scenario": "value_below_minimum"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [
+          [
+            "path",
+            "id"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "PATH": {
+            "id": "0"
+          },
+          "QUERY": {
+            "limit": -1
+          }
+        }
+      },
+      "path": "/api/v1/collaboration-sessions/{id}/events",
+      "path_parameters": {
+        "id": "0"
+      },
+      "query": {
+        "limit": "-1"
+      },
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "operation": "GET /api/v1/workspaces/persistent",
+  "method": "GET",
+  "path_template": "/api/v1/workspaces/persistent",
+  "fingerprint": "6424a26a",
+  "case_id": "cKGW7M",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' 'http://localhost:3000/api/v1/workspaces/persistent?collaboration_mode=%F0%9D%93%A3%F0%9D%93%B1%F0%9D%93%AE+%F0%9D%93%BA%F0%9D%93%BE%F0%9D%93%B2%F0%9D%93%AC%F0%9D%93%B4+%F0%9D%93%AB%F0%9D%93%BB%F0%9D%93%B8%F0%9D%94%80%F0%9D%93%B7+%F0%9D%93%AF%F0%9D%93%B8%F0%9D%94%81+%F0%9D%93%B3%F0%9D%93%BE%F0%9D%93%B6%F0%9D%93%B9%F0%9D%93%BC+%F0%9D%93%B8%F0%9D%93%BF%F0%9D%93%AE%F0%9D%93%BB+%F0%9D%93%BD%F0%9D%93%B1%F0%9D%93%AE+%F0%9D%93%B5%F0%9D%93%AA%F0%9D%94%83%F0%9D%94%82+%F0%9D%93%AD%F0%9D%93%B8%F0%9D%93%B0&=2.220446049250313e-16&=%17%F3%86%AA%86%F0%B5%8D%AF%C2%A8%F2%B4%95%8A%C2%93%C3%AE&=false'",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/workspaces/persistent?collaboration_mode=%F0%9D%93%A3%F0%9D%93%B1%F0%9D%93%AE+%F0%9D%93%BA%F0%9D%93%BE%F0%9D%93%B2%F0%9D%93%AC%F0%9D%93%B4+%F0%9D%93%AB%F0%9D%93%BB%F0%9D%93%B8%F0%9D%94%80%F0%9D%93%B7+%F0%9D%93%AF%F0%9D%93%B8%F0%9D%94%81+%F0%9D%93%B3%F0%9D%93%BE%F0%9D%93%B6%F0%9D%93%B9%F0%9D%93%BC+%F0%9D%93%B8%F0%9D%93%BF%F0%9D%93%AE%F0%9D%93%BB+%F0%9D%93%BD%F0%9D%93%B1%F0%9D%93%AE+%F0%9D%93%B5%F0%9D%93%AA%F0%9D%94%83%F0%9D%94%82+%F0%9D%93%AD%F0%9D%93%B8%F0%9D%93%B0&=2.220446049250313e-16&=%17%F3%86%AA%86%F0%B5%8D%AF%C2%A8%F2%B4%95%8A%C2%93%C3%AE&=false",
+      "url_template": "http://localhost:3000/api/v1/workspaces/persistent",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "cKGW7M"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "188",
+          "date": "Thu, 15 Oct 2026 10:35:21 GMT"
+        },
+        "body": "{\"error\":\"Invalid collaboration_mode: \ud835\udce3\ud835\udcf1\ud835\udcee \ud835\udcfa\ud835\udcfe\ud835\udcf2\ud835\udcec\ud835\udcf4 \ud835\udceb\ud835\udcfb\ud835\udcf8\ud835\udd00\ud835\udcf7 \ud835\udcef\ud835\udcf8\ud835\udd01 \ud835\udcf3\ud835\udcfe\ud835\udcf6\ud835\udcf9\ud835\udcfc \ud835\udcf8\ud835\udcff\ud835\udcee\ud835\udcfb \ud835\udcfd\ud835\udcf1\ud835\udcee \ud835\udcf5\ud835\udcea\ud835\udd03\ud835\udd02 \ud835\udced\ud835\udcf8\ud835\udcf0\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 400\nDocumented: 200, 500"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.006374710001182393,
+          "mode": "negative"
+        },
+        "components": {
+          "QUERY": "negative"
+        },
+        "phase": {
+          "name": "fuzzing",
+          "data": {
+            "type": "FuzzingPhaseData",
+            "description": "violates `additionalProperties`",
+            "location": null,
+            "parameter": null,
+            "parameter_location": "QUERY",
+            "mutations": [
+              {
+                "path": [],
+                "parameter_location": "query",
+                "schema_pointer": "",
+                "channel": "schema",
+                "operator": "negate_constraints",
+                "keywords": [
+                  "additionalProperties"
+                ],
+                "parameter": null,
+                "original_value": null,
+                "new_value": null
+              }
+            ]
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/workspaces/persistent",
+      "path_parameters": {},
+      "query": {
+        "collaboration_mode": "\ud835\udce3\ud835\udcf1\ud835\udcee \ud835\udcfa\ud835\udcfe\ud835\udcf2\ud835\udcec\ud835\udcf4 \ud835\udceb\ud835\udcfb\ud835\udcf8\ud835\udd00\ud835\udcf7 \ud835\udcef\ud835\udcf8\ud835\udd01 \ud835\udcf3\ud835\udcfe\ud835\udcf6\ud835\udcf9\ud835\udcfc \ud835\udcf8\ud835\udcff\ud835\udcee\ud835\udcfb \ud835\udcfd\ud835\udcf1\ud835\udcee \ud835\udcf5\ud835\udcea\ud835\udd03\ud835\udd02 \ud835\udced\ud835\udcf8\ud835\udcf0",
+        "": [
+          2.220446049250313e-16,
+          "\u0017\udada\ude86\ud894\udf6f\u00a8\uda91\udd4a\u0093\u00ee",
+          "false"
+        ]
+      },
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

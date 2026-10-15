@@ -1,0 +1,159 @@
+{
+  "operation": "POST /api/v1/workspaces/persistent",
+  "method": "POST",
+  "path_template": "/api/v1/workspaces/persistent",
+  "fingerprint": "3159cf96",
+  "case_id": "KAJ2Rq",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d '{\"\\n6\": -99999999, \"R\": {}, \"\\\"\\u0082&\\u00dc\\u00a1b\": \"/\\u008fO1Q\\u00ac\\ud8db\\ude66W\", \"\\u00af\\udb49\\udc72\\udbef\\udd74\\u00ec\\ud8c4\\uddd9\": [[], {\"\\u00b1\": -99999999, \"\\u00bdU[pw\": null}, false], \"\\n\\u00b9\\u00e8fB\\ud813\\udd49\": [], \"resources\": \"{}\", \"config\": \"{}\", \"id\": \"ws_503229273875_000_0000\", \"collaboration_mode\": null, \"name\": \"ws_503229273853_000_0000\", \"env\": \"{\\\"\\\":\\\"\\\"}\", \"work_dir\": \"\\u0095\\u009c\\n\"}' http://localhost:3000/api/v1/workspaces/persistent",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/workspaces/persistent",
+      "url_template": "http://localhost:3000/api/v1/workspaces/persistent",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "KAJ2Rq",
+        "Content-Type": "application/json",
+        "Content-Length": "415"
+      },
+      "response": {
+        "status_code": 409,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "56",
+          "date": "Thu, 15 Oct 2026 12:27:17 GMT"
+        },
+        "body": "{\"error\":\"Workspace 2110696556331008000 already exists\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 409\nDocumented: 201, 400, 500"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.0050131190000684,
+          "mode": "positive"
+        },
+        "components": {
+          "BODY": "positive"
+        },
+        "phase": {
+          "name": "fuzzing",
+          "data": {
+            "type": "FuzzingPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [
+          {
+            "path": [
+              "config"
+            ],
+            "type_token": "string",
+            "format_token": null,
+            "pattern_hash": null,
+            "normalized_name": "config",
+            "value": "{}",
+            "source_operation": "GET /api/v1/workspaces/managed"
+          },
+          {
+            "path": [
+              "env"
+            ],
+            "type_token": "string",
+            "format_token": null,
+            "pattern_hash": null,
+            "normalized_name": "env",
+            "value": "{\"\":\"\"}",
+            "source_operation": "POST /api/v1/workspaces/managed"
+          },
+          {
+            "path": [
+              "id"
+            ],
+            "type_token": "string",
+            "format_token": null,
+            "pattern_hash": null,
+            "normalized_name": "id",
+            "value": "ws_503229273875_000_0000",
+            "source_operation": "GET /api/v1/workspaces/persistent"
+          },
+          {
+            "path": [
+              "name"
+            ],
+            "type_token": "string",
+            "format_token": null,
+            "pattern_hash": null,
+            "normalized_name": "name",
+            "value": "ws_503229273853_000_0000",
+            "source_operation": "GET /api/v1/workspaces/managed"
+          },
+          {
+            "path": [
+              "resources"
+            ],
+            "type_token": "string",
+            "format_token": null,
+            "pattern_hash": null,
+            "normalized_name": "resources",
+            "value": "{}",
+            "source_operation": "GET /api/v1/workspaces/managed"
+          }
+        ],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/workspaces/persistent",
+      "path_parameters": {},
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": {
+          "\n6": -99999999,
+          "R": {},
+          "\"\u0082&\u00dc\u00a1b": "/\u008fO1Q\u00ac\ud8db\ude66W",
+          "\u00af\udb49\udc72\udbef\udd74\u00ec\ud8c4\uddd9": [
+            [],
+            {
+              "\u00b1": -99999999,
+              "\u00bdU[pw": null
+            },
+            false
+          ],
+          "\n\u00b9\u00e8fB\ud813\udd49": [],
+          "resources": "{}",
+          "config": "{}",
+          "id": "ws_503229273875_000_0000",
+          "collaboration_mode": null,
+          "name": "ws_503229273853_000_0000",
+          "env": "{\"\":\"\"}",
+          "work_dir": "\u0095\u009c\n"
+        }
+      },
+      "media_type": "application/json",
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

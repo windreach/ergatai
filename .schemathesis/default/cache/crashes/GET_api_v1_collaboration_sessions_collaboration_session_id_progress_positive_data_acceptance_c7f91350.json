@@ -1,0 +1,82 @@
+{
+  "operation": "GET /api/v1/collaboration-sessions/{collaboration_session_id}/progress",
+  "method": "GET",
+  "path_template": "/api/v1/collaboration-sessions/{collaboration_session_id}/progress",
+  "fingerprint": "c7f91350",
+  "case_id": "s3XSH9",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/collaboration-sessions/chat_0_0501_71909919407286/progress",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions/chat_0_0501_71909919407286/progress",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions/{collaboration_session_id}/progress",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "s3XSH9"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "65",
+          "date": "Thu, 15 Oct 2026 13:39:57 GMT"
+        },
+        "body": "{\"error\":\"Invalid session_id format: chat_0_0501_71909919407286\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "positive_data_acceptance",
+          "status": "failure",
+          "message": "API rejected schema-compliant request\n\nValid data should have been accepted\nExpected: 2xx, 3xx, 401, 403, 404, 409, 429, 5xx"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.0016304969976772554,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive"
+        },
+        "phase": {
+          "name": "fuzzing",
+          "data": {
+            "type": "FuzzingPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/collaboration-sessions/{collaboration_session_id}/progress",
+      "path_parameters": {
+        "collaboration_session_id": "[Filtered]"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

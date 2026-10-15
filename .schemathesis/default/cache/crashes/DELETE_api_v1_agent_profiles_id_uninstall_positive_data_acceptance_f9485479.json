@@ -1,0 +1,92 @@
+{
+  "operation": "DELETE /api/v1/agent-profiles/{id}/uninstall",
+  "method": "DELETE",
+  "path_template": "/api/v1/agent-profiles/{id}/uninstall",
+  "fingerprint": "f9485479",
+  "case_id": "fXlE2P",
+  "code_sample": "curl -X DELETE -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/agent-profiles/profile_0/uninstall",
+  "sequence": [
+    {
+      "method": "DELETE",
+      "url": "http://localhost:3000/api/v1/agent-profiles/profile_0/uninstall",
+      "url_template": "http://localhost:3000/api/v1/agent-profiles/{id}/uninstall",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "fXlE2P",
+        "Content-Length": "0"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "86",
+          "date": "Thu, 15 Oct 2026 13:37:49 GMT"
+        },
+        "body": "{\"error\":\"Failed to uninstall agent: Invalid argument: Profile 'profile_0' not found\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "positive_data_acceptance",
+          "status": "failure",
+          "message": "API rejected schema-compliant request\n\nValid data should have been accepted\nExpected: 2xx, 3xx, 401, 403, 404, 409, 429, 5xx"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 6.135199873824604e-05,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Default positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "scenario": "default_positive_test"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [
+          [
+            "path",
+            "id"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "PATH": {
+            "id": "profile_0"
+          }
+        }
+      },
+      "path": "/api/v1/agent-profiles/{id}/uninstall",
+      "path_parameters": {
+        "id": "profile_0"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

@@ -250,10 +250,12 @@ async fn list_workspaces_returns_200_with_array() {
 async fn delete_workspace_nonexistent_returns_404_or_500() {
     let app = build_rest_app(test_state());
 
+    // Use a valid Snowflake ID format that doesn't exist in the database
+    let nonexistent_id = format_id(generate(), IdType::Workspace);
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/workspaces/nonexistent-ws-id")
+                .uri(format!("/api/v1/workspaces/{}", nonexistent_id))
                 .method(Method::DELETE)
                 .body(Body::empty())
                 .unwrap(),

@@ -5,7 +5,7 @@
 //! # 行为
 //!
 //! * 启动时记录 TTL 配置。
-//! * 每隔 [`CLEANUP_INTERVAL_SECS`] 秒执行一次清理。
+//! * 每隔 86,400 秒（每天一次）执行一次清理。
 //! * 清理失败只记录警告，不会让主服务崩溃。
 //! * 没有删除任何记录时不输出 info 日志（避免噪音）。
 
@@ -82,9 +82,18 @@ fn get_ttl_days() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::OnceLock;
+
+    // OnceLock to serialize tests that modify environment variables
+    static ENV_MUTEX: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+
+    fn env_mutex() -> &'static std::sync::Mutex<()> {
+        ENV_MUTEX.get_or_init(|| std::sync::Mutex::new(()))
+    }
 
     #[test]
     fn get_ttl_days_default() {
+        let _guard = env_mutex().lock().unwrap();
         // Remove the env var to exercise default path.
         std::env::remove_var("ERGATAI_AGENT_OUTPUT_TTL_DAYS");
         assert_eq!(get_ttl_days(), DEFAULT_TTL_DAYS);
@@ -92,6 +101,7 @@ mod tests {
 
     #[test]
     fn get_ttl_days_invalid_falls_back() {
+        let _guard = env_mutex().lock().unwrap();
         std::env::set_var("ERGATAI_AGENT_OUTPUT_TTL_DAYS", "not-a-number");
         assert_eq!(get_ttl_days(), DEFAULT_TTL_DAYS);
         std::env::remove_var("ERGATAI_AGENT_OUTPUT_TTL_DAYS");
@@ -99,6 +109,7 @@ mod tests {
 
     #[test]
     fn get_ttl_days_zero_falls_back() {
+        let _guard = env_mutex().lock().unwrap();
         std::env::set_var("ERGATAI_AGENT_OUTPUT_TTL_DAYS", "0");
         assert_eq!(get_ttl_days(), DEFAULT_TTL_DAYS);
         std::env::remove_var("ERGATAI_AGENT_OUTPUT_TTL_DAYS");
@@ -106,6 +117,7 @@ mod tests {
 
     #[test]
     fn get_ttl_days_valid() {
+        let _guard = env_mutex().lock().unwrap();
         std::env::set_var("ERGATAI_AGENT_OUTPUT_TTL_DAYS", "7");
         assert_eq!(get_ttl_days(), 7);
         std::env::remove_var("ERGATAI_AGENT_OUTPUT_TTL_DAYS");

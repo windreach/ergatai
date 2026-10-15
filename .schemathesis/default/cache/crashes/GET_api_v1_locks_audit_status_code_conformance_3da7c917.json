@@ -1,0 +1,88 @@
+{
+  "operation": "GET /api/v1/locks/audit",
+  "method": "GET",
+  "path_template": "/api/v1/locks/audit",
+  "fingerprint": "3da7c917",
+  "case_id": "PONsDE",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' 'http://localhost:3000/api/v1/locks/audit?file_path=&limit=-1'",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/locks/audit?file_path=&limit=-1",
+      "url_template": "http://localhost:3000/api/v1/locks/audit",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "PONsDE"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8",
+          "access-control-allow-origin": "*",
+          "content-length": "72",
+          "date": "Thu, 15 Oct 2026 10:25:20 GMT"
+        },
+        "body": "Failed to deserialize query string: limit: invalid digit found in string"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 400\nDocumented: 200, 500"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 1.6791000234661624e-05,
+          "mode": "negative"
+        },
+        "components": {
+          "QUERY": "negative"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "limit: Value smaller than minimum",
+            "location": null,
+            "parameter": "limit",
+            "parameter_location": "QUERY",
+            "scenario": "value_below_minimum"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "QUERY": {
+            "file_path": "",
+            "limit": -1
+          }
+        }
+      },
+      "path": "/api/v1/locks/audit",
+      "path_parameters": {},
+      "query": {
+        "file_path": "",
+        "limit": "-1"
+      },
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

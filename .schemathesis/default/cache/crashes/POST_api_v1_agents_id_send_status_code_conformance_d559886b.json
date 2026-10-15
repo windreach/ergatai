@@ -1,0 +1,123 @@
+{
+  "operation": "POST /api/v1/agents/{id}/send",
+  "method": "POST",
+  "path_template": "/api/v1/agents/{id}/send",
+  "fingerprint": "d559886b",
+  "case_id": "tTvE3q",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d '{\"message\": \"Agent profile '\"'\"'auggie'\"'\"' deleted successfully\"}' http://localhost:3000/api/v1/agents/0/send",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/agents/0/send",
+      "url_template": "http://localhost:3000/api/v1/agents/{id}/send",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "tTvE3q",
+        "Content-Type": "application/json",
+        "Content-Length": "58"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "137",
+          "date": "Thu, 15 Oct 2026 10:42:17 GMT"
+        },
+        "body": "{\"status\":\"rejected\",\"reason\":\"Agent 0 not found. Agent must connect via MCP or be running as an ACP agent. or be a valid profile name.\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 400\nDocumented: 200, 404, 500"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.003387040000234265,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive",
+          "BODY": "positive"
+        },
+        "phase": {
+          "name": "fuzzing",
+          "data": {
+            "type": "FuzzingPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [
+          {
+            "location": "path",
+            "parameter_name": "id",
+            "resource_name": "AgentOutputResponse",
+            "resource_field": "id",
+            "source_operation": "GET /api/v1/agents/{id}/plan",
+            "source_status": 200,
+            "source_identity": null,
+            "source_input": true,
+            "source_query": null
+          }
+        ],
+        "pool_misses": [],
+        "semantic_draws": [
+          {
+            "path": [
+              "id"
+            ],
+            "type_token": "string",
+            "format_token": null,
+            "pattern_hash": null,
+            "normalized_name": "id",
+            "value": "hermes",
+            "source_operation": "GET /api/v1/agent-profiles"
+          },
+          {
+            "path": [
+              "message"
+            ],
+            "type_token": "string",
+            "format_token": null,
+            "pattern_hash": null,
+            "normalized_name": "message",
+            "value": "Agent profile 'auggie' deleted successfully",
+            "source_operation": "DELETE /api/v1/agent-profiles/{id}"
+          }
+        ],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/agents/{id}/send",
+      "path_parameters": {
+        "id": "0"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": {
+          "message": "Agent profile 'auggie' deleted successfully"
+        }
+      },
+      "media_type": "application/json",
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

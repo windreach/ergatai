@@ -1,0 +1,110 @@
+{
+  "operation": "POST /api/v1/agents/{id}/send",
+  "method": "POST",
+  "path_template": "/api/v1/agents/{id}/send",
+  "fingerprint": "f399d90d",
+  "case_id": "94ToJ6",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d '{\"\\u00cf;\\u0000\": {\"\\ud8f3\\udc2e\\u0003F\\u000f\\u0097\\u00cd\": [null, -245923]}, \"\": -5.960464477539063e-08, \"correlation_id\": null, \"message\": \"\\udaf0\\ude8c\\u00e3\\uda56\\udc3e\\u0092\", \"message_type\": null, \"force_new_session\": \"[Filtered]\"}' http://localhost:3000/api/v1/agents/agent_0_0_0/send",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/agents/agent_0_0_0/send",
+      "url_template": "http://localhost:3000/api/v1/agents/{id}/send",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "94ToJ6",
+        "Content-Type": "application/json",
+        "Content-Length": "230"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "147",
+          "date": "Thu, 15 Oct 2026 13:40:29 GMT"
+        },
+        "body": "{\"status\":\"rejected\",\"reason\":\"Agent agent_0_0_0 not found. Agent must connect via MCP or be running as an ACP agent. or be a valid profile name.\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "response_schema_conformance",
+          "status": "failure",
+          "message": "Response violates schema\n\n\"error\" is a required property\n\nValidated against the response schema for status code 400.\n\nSchema:\n\n    {\n        \"required\": [\n            \"error\"\n        ],\n        \"type\": \"object\",\n        \"properties\": {\n            \"error\": {\n                \"type\": \"string\"\n            }\n        }\n    }\n\nValue:\n\n    {\n        \"reason\": \"Agent agent_0_0_0 not found. Agent must connect via MCP or be ...\n        \"status\": \"rejected\"\n    }"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.012796451002941467,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive",
+          "BODY": "positive"
+        },
+        "phase": {
+          "name": "fuzzing",
+          "data": {
+            "type": "FuzzingPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [
+          {
+            "location": "path",
+            "parameter_name": "id",
+            "resource_name": "AgentOutputResponse",
+            "resource_field": "id",
+            "source_operation": "GET /api/v1/agents/{id}/plan",
+            "source_status": 200,
+            "source_identity": null,
+            "source_input": true,
+            "source_query": null
+          }
+        ],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/agents/{id}/send",
+      "path_parameters": {
+        "id": "agent_0_0_0"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": {
+          "\u00cf;\u0000": {
+            "\ud8f3\udc2e\u0003F\u000f\u0097\u00cd": [
+              null,
+              -245923
+            ]
+          },
+          "": -5.960464477539063e-08,
+          "correlation_id": null,
+          "message": "\udaf0\ude8c\u00e3\uda56\udc3e\u0092",
+          "message_type": null,
+          "force_new_session": "[Filtered]"
+        }
+      },
+      "media_type": "application/json",
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

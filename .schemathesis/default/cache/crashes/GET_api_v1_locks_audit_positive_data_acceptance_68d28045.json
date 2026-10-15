@@ -1,0 +1,151 @@
+{
+  "operation": "GET /api/v1/locks/audit",
+  "method": "GET",
+  "path_template": "/api/v1/locks/audit",
+  "fingerprint": "68d28045",
+  "case_id": "1h8mEn",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/agents\ncurl -X GET -H 'Authorization: [Filtered]' 'http://localhost:3000/api/v1/locks/audit?agent_id=%F0%A8%BE%95%C3%81%C3%B3%C2%9F%F1%BB%9C%94%C2%B4&limit=239994292396557481628980011545395200&action=%C2%B5%F2%A0%A4%B2%2F'",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/agents",
+      "url_template": "http://localhost:3000/api/v1/agents",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "ET8qEb"
+      },
+      "response": {
+        "status_code": 200,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "2",
+          "date": "Thu, 15 Oct 2026 12:31:35 GMT"
+        },
+        "body": "[]"
+      },
+      "link": null,
+      "checks": [],
+      "meta": {
+        "generation": {
+          "time": 0.00013075300012133084,
+          "mode": "positive"
+        },
+        "components": {},
+        "phase": {
+          "name": "stateful",
+          "data": {
+            "type": "StatefulPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/agents",
+      "path_parameters": {},
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    },
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/locks/audit?agent_id=%F0%A8%BE%95%C3%81%C3%B3%C2%9F%F1%BB%9C%94%C2%B4&limit=239994292396557481628980011545395200&action=%C2%B5%F2%A0%A4%B2%2F",
+      "url_template": "http://localhost:3000/api/v1/locks/audit",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "1h8mEn"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "119",
+          "date": "Thu, 15 Oct 2026 12:31:35 GMT"
+        },
+        "body": "{\"error\":\"Invalid query parameters: Failed to deserialize query string: limit: number too large to fit in target type\"}"
+      },
+      "link": {
+        "operationId": "GET /api/v1/agents -> [200] GetAgentInfoResponse -> GET /api/v1/locks/audit",
+        "parameters": {
+          "query.agent_id": "$response.body#/*/agent_id"
+        }
+      },
+      "checks": [
+        {
+          "name": "positive_data_acceptance",
+          "status": "failure",
+          "message": "API rejected schema-compliant request\n\nValid data should have been accepted\nExpected: 2xx, 3xx, 401, 403, 404, 409, 429, 5xx"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.0021632460011460353,
+          "mode": "positive"
+        },
+        "components": {
+          "QUERY": "positive"
+        },
+        "phase": {
+          "name": "stateful",
+          "data": {
+            "type": "StatefulPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/locks/audit",
+      "path_parameters": {},
+      "query": {
+        "agent_id": "\ud863\udf95\u00c1\u00f3\u009f\ud9ad\udf14\u00b4",
+        "limit": 239994292396557481628980011545395200,
+        "action": "\u00b5\uda42\udd32/"
+      },
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": 0,
+      "auth_identity": null
+    }
+  ]
+}

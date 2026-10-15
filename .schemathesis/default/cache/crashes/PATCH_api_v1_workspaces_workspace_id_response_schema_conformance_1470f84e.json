@@ -1,0 +1,162 @@
+{
+  "operation": "PATCH /api/v1/workspaces/{workspace_id}",
+  "method": "PATCH",
+  "path_template": "/api/v1/workspaces/{workspace_id}",
+  "fingerprint": "1470f84e",
+  "case_id": "ktBGBK",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/workspaces\ncurl -X PATCH -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d '{\"\": true, \"__main__\": [], \"\\u00b2\\udaf6\\udee4\\ud984\\udc08\\u00ff\\u00c3\": {}, \"\\u0099\\u00d10\\u00fc8\\ud9f0\\uddcb\\u0086\\u0080\": [-1.9884943632498188e+16, null, \"b\\u00d4\\u009e\\u0000\\u009b\\u00b9\\u00cc\\u00a2\\u00d8\"], \"name\": \"__main__\"}' http://localhost:3000/api/v1/workspaces/ws_503225965238_000_0000",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/workspaces",
+      "url_template": "http://localhost:3000/api/v1/workspaces",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "MwYrWU"
+      },
+      "response": {
+        "status_code": 200,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "255",
+          "date": "Thu, 15 Oct 2026 10:42:20 GMT"
+        },
+        "body": "[{\"id\":\"ws_503225965211_000_0000\",\"backend\":\"acp\",\"metadata\":{\"work_dir\":\"/home/yubing/code/ergatai\"},\"capture_thoughts\":false},{\"id\":\"ws_503225965238_000_0000\",\"backend\":\"acp\",\"metadata\":{\"work_dir\":\"/home/yubing/code/ergatai\"},\"capture_thoughts\":false}]"
+      },
+      "link": null,
+      "checks": [],
+      "meta": {
+        "generation": {
+          "time": 0.00010228999963146634,
+          "mode": "positive"
+        },
+        "components": {},
+        "phase": {
+          "name": "stateful",
+          "data": {
+            "type": "StatefulPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/workspaces",
+      "path_parameters": {},
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    },
+    {
+      "method": "PATCH",
+      "url": "http://localhost:3000/api/v1/workspaces/ws_503225965238_000_0000",
+      "url_template": "http://localhost:3000/api/v1/workspaces/{workspace_id}",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "ktBGBK",
+        "Content-Type": "application/json",
+        "Content-Length": "230"
+      },
+      "response": {
+        "status_code": 200,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "229",
+          "date": "Thu, 15 Oct 2026 10:42:20 GMT"
+        },
+        "body": "{\"workspace_id\":2110682678901604352,\"name\":\"__main__\",\"work_dir\":\"/home/yubing/code/ergatai\",\"env\":\"{}\",\"resources\":\"{}\",\"config\":\"{}\",\"collaboration_mode\":\"peer\",\"status\":\"active\",\"created_at\":1792060939,\"updated_at\":1792060940}"
+      },
+      "link": {
+        "operationId": "GET /api/v1/workspaces -> [200] PatchWorkspaceResponse -> PATCH /api/v1/workspaces/{workspace_id}",
+        "parameters": {
+          "path.workspace_id": "$response.body#/*/id"
+        }
+      },
+      "checks": [
+        {
+          "name": "response_schema_conformance",
+          "status": "failure",
+          "message": "Response violates schema\n\n\"{}\" is not of type \"object\"\n\nValidated against the response schema for status code 200.\n\nSchema at /properties/env:\n\n    {\n        \"type\": \"object\",\n        \"additionalProperties\": {\n            \"type\": \"string\"\n        },\n        \"propertyNames\": {\n            \"type\": \"string\"\n        }\n    }\n\nValue:\n\n    \"{}\""
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.004841436999413418,
+          "mode": "positive"
+        },
+        "components": {
+          "BODY": "positive"
+        },
+        "phase": {
+          "name": "stateful",
+          "data": {
+            "type": "StatefulPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/workspaces/{workspace_id}",
+      "path_parameters": {
+        "workspace_id": "ws_503225965238_000_0000"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": {
+          "": true,
+          "__main__": [],
+          "\u00b2\udaf6\udee4\ud984\udc08\u00ff\u00c3": {},
+          "\u0099\u00d10\u00fc8\ud9f0\uddcb\u0086\u0080": [
+            -1.9884943632498188e+16,
+            null,
+            "b\u00d4\u009e\u0000\u009b\u00b9\u00cc\u00a2\u00d8"
+          ],
+          "name": "__main__"
+        }
+      },
+      "media_type": "application/json",
+      "parent_index": 0,
+      "auth_identity": null
+    }
+  ]
+}

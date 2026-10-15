@@ -44,23 +44,6 @@ use agent_client_protocol::{
     UntypedMessage,
 };
 
-/// Persist agent output to database via global callback.
-///
-/// This function is called when a prompt completes and the accumulated output
-/// needs to be persisted. It uses the global persistence callback set by ergatai-api.
-async fn persist_agent_output(
-    conversation_id: String,
-    output_data: crate::output_accumulator::AgentOutputData,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if let Some(callback) = crate::get_global_persist_callback() {
-        callback(conversation_id, output_data).await
-    } else {
-        // No callback set - this is OK during testing or when persistence is disabled
-        debug!("No persistence callback set, skipping agent output persistence");
-        Ok(())
-    }
-}
-
 /// Maximum size (in bytes) of recent thinking to retain per agent.
 /// Prevents unbounded memory growth from long-running thinking blocks.
 const RECENT_THINKING_MAX_BYTES: usize = 16 * 1024; // 16 KB
@@ -265,43 +248,42 @@ impl JsonRpcMessage for ExtendedSessionNotification {
 
 impl JsonRpcNotification for ExtendedSessionNotification {}
 
+/// Helper function to get event type name for logging
+fn event_type_name(event: &AgentOutputEvent) -> &'static str {
+    match event {
+        AgentOutputEvent::Text { .. } => "Text",
+        AgentOutputEvent::Thinking { .. } => "Thinking",
+        AgentOutputEvent::ToolCallStart { .. } => "ToolCallStart",
+        AgentOutputEvent::ToolCallInput { .. } => "ToolCallInput",
+        AgentOutputEvent::ToolCallComplete { .. } => "ToolCallComplete",
+        AgentOutputEvent::ToolCallError { .. } => "ToolCallError",
+        AgentOutputEvent::SessionTitleUpdate { .. } => "SessionTitleUpdate",
+        AgentOutputEvent::SubagentSpawned { .. } => "SubagentSpawned",
+        AgentOutputEvent::SubagentStateUpdate { .. } => "SubagentStateUpdate",
+        AgentOutputEvent::Done { .. } => "Done",
+        AgentOutputEvent::Error { .. } => "Error",
+        _ => "Unknown",
+    }
+}
+
 /// Helper function to send an event to output publisher (NATS).
 /// Broadcast channel has been removed - all output goes through NATS for unified routing.
-///
-/// # Retry Behavior
-/// Publishing is attempted once without retry. Retries are intentionally avoided because:
-/// 1. This function is called from async contexts, and blocking with sleep() would block
-///    the tokio worker thread, causing thread pool exhaustion under load.
-/// 2. Output publishing failures are logged at error level and don't affect agent operation.
-/// 3. The retry overhead (blocking) is worse than occasional publish failures.
-///
-/// # Fallback Behavior
-/// If the global output publisher is not initialized, events are logged at warn level.
-/// This prevents silent data loss during initialization or in test environments.
 fn send_output_event(conversation_id: &str, event: AgentOutputEvent) {
     // Get global output publisher (set during initialization)
     if let Some(publisher) = crate::output_publisher::get_global_output_publisher() {
-        // Try to publish once. We don't retry here because:
-        // 1. This function is called from async contexts, and blocking with std::thread::sleep()
-        //    would block the tokio worker thread, causing thread pool exhaustion under load.
-        // 2. Output publishing failures are logged and don't affect the main agent operation.
-        // 3. The retry overhead (blocking) is worse than occasional publish failures.
-        match publisher.publish(conversation_id, event.clone()) {
-            Ok(()) => {}
-            Err(e) => {
-                tracing::error!(
-                    conversation_id = %conversation_id,
-                    error = ?e,
-                    "Failed to publish agent output event"
-                );
-            }
+        if let Err(e) = publisher.publish(conversation_id, event) {
+            tracing::warn!(
+                conversation_id = %conversation_id,
+                error = %e,
+                "Failed to publish agent output event"
+            );
         }
     } else {
-        // Publisher not initialized — log at warn level to make data loss visible
-        tracing::warn!(
+        // Log error when publisher is not set - makes the failure visible
+        tracing::error!(
             conversation_id = %conversation_id,
-            event_type = %std::any::type_name_of_val(&event),
-            "Output publisher not initialized - event logged but not published"
+            event_type = %event_type_name(&event),
+            "Output publisher not set - event dropped"
         );
     }
 }
@@ -328,13 +310,15 @@ async fn handle_standard_session_notification(
     title_no_change_count: &AtomicUsize,
     config_opts: &RwLock<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>,
     available_cmds: &RwLock<Vec<agent_client_protocol::schema::v1::AvailableCommand>>,
-    accumulator_registry: Option<&Arc<crate::output_accumulator::OutputAccumulatorRegistry>>,
-    current_sequence: i64,
+    in_thinking: &std::sync::atomic::AtomicBool,
+    in_tool_call: &std::sync::atomic::AtomicBool,
 ) {
     *last_activity.write() = Instant::now();
     match &notification.update {
         SessionUpdate::AgentMessageChunk(chunk) => {
             if let Some(text) = extract_text_from_chunk(chunk) {
+                // Clear thinking flag - thinking has ended, now in text output mode (safe to interrupt)
+                in_thinking.store(false, Ordering::SeqCst);
                 if !text_output_seen.swap(true, Ordering::Relaxed) {
                     info!(
                         agent_id = %agent_id,
@@ -345,26 +329,14 @@ async fn handle_standard_session_notification(
                     debug!(text_len = text.len(), "ACP agent message chunk");
                 }
                 out.append(text.as_bytes());
-                send_output_event(
-                    conversation_id,
-                    AgentOutputEvent::Text {
-                        delta: text.clone(),
-                    },
-                );
-
-                // Accumulate to turn accumulator
-                if let Some(registry) = accumulator_registry {
-                    let acc = registry
-                        .get_or_create(conversation_id, current_sequence)
-                        .await;
-                    let mut acc_guard = acc.lock().await;
-                    acc_guard.accumulate_text(&text);
-                }
+                send_output_event(conversation_id, AgentOutputEvent::Text { delta: text });
             }
         }
         SessionUpdate::AgentThoughtChunk(chunk) => {
             if let Some(text) = extract_text_from_chunk(chunk) {
                 debug!(text_len = text.len(), "ACP agent thought chunk");
+                // Mark that we're in thinking mode (not safe to interrupt)
+                in_thinking.store(true, Ordering::SeqCst);
                 if capture_thoughts {
                     thoughts.append(format!("[thinking] {}\n", text).as_bytes());
                 }
@@ -378,21 +350,7 @@ async fn handle_standard_session_notification(
                         thinking.push_str(&text);
                     }
                 }
-                send_output_event(
-                    conversation_id,
-                    AgentOutputEvent::Thinking {
-                        delta: text.clone(),
-                    },
-                );
-
-                // Accumulate thinking to turn accumulator
-                if let Some(registry) = accumulator_registry {
-                    let acc = registry
-                        .get_or_create(conversation_id, current_sequence)
-                        .await;
-                    let mut acc_guard = acc.lock().await;
-                    acc_guard.accumulate_thinking(&text);
-                }
+                send_output_event(conversation_id, AgentOutputEvent::Thinking { delta: text });
             }
         }
         SessionUpdate::UsageUpdate(usage_update) => {
@@ -410,6 +368,8 @@ async fn handle_standard_session_notification(
                 kind = ?tc.kind,
                 "ACP tool call started"
             );
+            // Mark that we're in tool call mode (not safe to interrupt)
+            in_tool_call.store(true, Ordering::SeqCst);
 
             // Renew locks for write operations
             if matches!(tc.kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move) {
@@ -441,29 +401,6 @@ async fn handle_standard_session_notification(
                     locations: tc.locations.clone(),
                 },
             );
-
-            // Accumulate tool call start to turn accumulator
-            if let Some(registry) = accumulator_registry {
-                let acc = registry
-                    .get_or_create(conversation_id, current_sequence)
-                    .await;
-                let mut acc_guard = acc.lock().await;
-                let locations = tc
-                    .locations
-                    .iter()
-                    .map(|loc| crate::output_accumulator::ToolCallLocation {
-                        path: loc.path.to_string_lossy().to_string(),
-                        line: loc.line.map(|l| l as u64),
-                    })
-                    .collect();
-                acc_guard.record_tool_call_start(
-                    tc.tool_call_id.to_string(),
-                    tc.title.clone(),
-                    Some(format!("{:?}", tc.kind)),
-                    tc.raw_input.clone().unwrap_or(serde_json::Value::Null),
-                    locations,
-                );
-            }
         }
         SessionUpdate::ToolCallUpdate(update) => {
             debug!(
@@ -476,6 +413,12 @@ async fn handle_standard_session_notification(
             );
             let is_complete = matches!(update.fields.status, Some(ToolCallStatus::Completed));
             let is_error = matches!(update.fields.status, Some(ToolCallStatus::Failed));
+
+            // Clear tool call flag when tool completes or fails (safe to interrupt again)
+            if is_complete || is_error {
+                in_tool_call.store(false, Ordering::SeqCst);
+            }
+
             tool_calls.apply_update(update);
 
             if is_complete || is_error {
@@ -538,53 +481,22 @@ async fn handle_standard_session_notification(
                             id: update.tool_call_id.to_string(),
                             name: update.fields.title.clone().unwrap_or_default(),
                             input: raw_input,
-                            output: raw_output.clone(),
+                            output: raw_output,
                             locations,
                         },
                     );
-
-                    // Accumulate tool call completion to turn accumulator
-                    if let Some(registry) = accumulator_registry {
-                        let acc = registry
-                            .get_or_create(conversation_id, current_sequence)
-                            .await;
-                        let mut acc_guard = acc.lock().await;
-                        let status = "completed".to_string();
-                        acc_guard.record_tool_call_update(
-                            &update.tool_call_id.to_string(),
-                            raw_output,
-                            status,
-                            None,
-                        );
-                    }
                 } else {
-                    let error_msg = update
-                        .fields
-                        .title
-                        .clone()
-                        .unwrap_or_else(|| "tool call failed".to_string());
                     send_output_event(
                         conversation_id,
                         AgentOutputEvent::ToolCallError {
                             id: update.tool_call_id.to_string(),
-                            error: error_msg.clone(),
+                            error: update
+                                .fields
+                                .title
+                                .clone()
+                                .unwrap_or_else(|| "tool call failed".to_string()),
                         },
                     );
-
-                    // Accumulate tool call error to turn accumulator
-                    if let Some(registry) = accumulator_registry {
-                        let acc = registry
-                            .get_or_create(conversation_id, current_sequence)
-                            .await;
-                        let mut acc_guard = acc.lock().await;
-                        let status = "failed".to_string();
-                        acc_guard.record_tool_call_update(
-                            &update.tool_call_id.to_string(),
-                            None,
-                            status,
-                            Some(error_msg),
-                        );
-                    }
                 }
             }
         }
@@ -598,34 +510,19 @@ async fn handle_standard_session_notification(
         }
         SessionUpdate::SessionInfoUpdate(info) => {
             if let Some(new_title) = info.title.value() {
-                let should_accumulate = {
-                    let mut title_lock = session_title.write();
-                    if title_lock.as_deref() != Some(new_title.as_str()) {
-                        debug!(agent_id = agent_id, title = %new_title, "ACP session title updated");
-                        *title_lock = Some(new_title.clone());
-                        title_no_change_count.store(0, Ordering::Relaxed);
-                        send_output_event(
-                            conversation_id,
-                            AgentOutputEvent::SessionTitleUpdate {
-                                title: new_title.clone(),
-                            },
-                        );
-                        true
-                    } else {
-                        title_no_change_count.fetch_add(1, Ordering::Relaxed);
-                        false
-                    }
-                }; // title_lock is dropped here
-
-                // Accumulate session title to turn accumulator (after releasing lock)
-                if should_accumulate {
-                    if let Some(registry) = accumulator_registry {
-                        let acc = registry
-                            .get_or_create(conversation_id, current_sequence)
-                            .await;
-                        let mut acc_guard = acc.lock().await;
-                        acc_guard.set_session_title(new_title.clone());
-                    }
+                let mut title_lock = session_title.write();
+                if title_lock.as_deref() != Some(new_title.as_str()) {
+                    debug!(agent_id = agent_id, title = %new_title, "ACP session title updated");
+                    *title_lock = Some(new_title.clone());
+                    title_no_change_count.store(0, Ordering::Relaxed);
+                    send_output_event(
+                        conversation_id,
+                        AgentOutputEvent::SessionTitleUpdate {
+                            title: new_title.clone(),
+                        },
+                    );
+                } else {
+                    title_no_change_count.fetch_add(1, Ordering::Relaxed);
                 }
             } else if info.title.is_null() {
                 let mut title_lock = session_title.write();
@@ -1112,7 +1009,6 @@ enum AcpCommand {
     QueuePrompt {
         message: String,
         images: Vec<crate::types::AgentImage>,
-        conversation_id: Option<String>,
         response_tx: oneshot::Sender<ErgataiResult<()>>,
     },
     /// Insert a message at the next safe point (after thinking/tool completion).
@@ -1365,14 +1261,13 @@ struct AcpAgentEntry {
 /// Logical workspace (no physical resources, just metadata).
 struct WorkspaceEntry {
     id: String,
+    /// Working directory for this workspace.
+    work_dir: std::path::PathBuf,
     agent_ids: Vec<String>,
     /// Environment variables to pass to agents in this workspace.
     env: HashMap<String, String>,
     /// Whether to capture agent thoughts.
     capture_thoughts: bool,
-    /// Working directory for this workspace (needed by list_workspaces
-    /// to populate metadata for terminal session resolution).
-    work_dir: std::path::PathBuf,
 }
 
 // ── AcpBackend ──
@@ -2240,10 +2135,10 @@ impl AcpBackendInterface for AcpBackend {
         // Create workspace entry with env vars and thought capture config.
         let entry = WorkspaceEntry {
             id: spec.id.clone(),
+            work_dir: spec.work_dir.clone(),
             agent_ids: Vec::new(),
             env: spec.env.clone(),
             capture_thoughts: spec.capture_thoughts,
-            work_dir: spec.work_dir.clone(),
         };
 
         self.workspaces.write().insert(workspace_id.clone(), entry);
@@ -2459,7 +2354,7 @@ impl AcpBackendInterface for AcpBackend {
             .metadata
             .get("conversation_id")
             .cloned()
-            .unwrap_or_else(|| format!("auto-{}", agent_id));
+            .unwrap_or_else(|| agent_id.clone());
         let task_workspace_id = handle.id.clone();
         let task_dead_agents = self.dead_agents.clone();
         let task_permission_handler = self.permission_handler.clone();
@@ -2468,13 +2363,11 @@ impl AcpBackendInterface for AcpBackend {
         let task_max_auto_continues = self.max_auto_continues;
         let task_pending_elicitations = self.pending_elicitations.clone();
         let task_current_message_id: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
-
-        // Get accumulator registry from global accessor (if available)
-        let task_accumulator_registry = crate::get_global_accumulator_registry().cloned();
-
-        // Track turn sequence for accumulator (incremented with each prompt)
-        let task_turn_sequence = Arc::new(std::sync::atomic::AtomicI64::new(0));
-
+        let task_paused_task: Arc<RwLock<Option<PausedTask>>> = Arc::new(RwLock::new(None));
+        let task_in_thinking: Arc<std::sync::atomic::AtomicBool> =
+            Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_in_tool_call: Arc<std::sync::atomic::AtomicBool> =
+            Arc::new(std::sync::atomic::AtomicBool::new(false));
         let cwd = handle
             .metadata
             .get("work_dir")
@@ -2627,13 +2520,12 @@ impl AcpBackendInterface for AcpBackend {
                         let notify_title_no_change = task_session_title_no_change_count.clone();
                         let notify_config_options = task_config_options.clone();
                         let notify_available_commands = task_available_commands.clone();
-                        let notify_accumulator_registry = task_accumulator_registry.clone();
-                        let notify_turn_sequence = task_turn_sequence.clone();
+                        let notify_in_thinking = task_in_thinking.clone();
+                        let notify_in_tool_call = task_in_tool_call.clone();
                         async move |notification: ExtendedSessionNotification, _cx| {
                             // Handle extended session notifications (including subagent events)
                             match notification {
                                 ExtendedSessionNotification::Standard(std_notif) => {
-                                    let current_seq = notify_turn_sequence.load(std::sync::atomic::Ordering::Relaxed);
                                     handle_standard_session_notification(
                                         *std_notif, &out, &thoughts, &notify_recent_thinking, &tool_calls, &usage,
                                         capture_thoughts, &last_activity,
@@ -2641,8 +2533,7 @@ impl AcpBackendInterface for AcpBackend {
                                         &notify_plan, &notify_text_output_seen,
                                         &notify_session_title, &notify_title_no_change,
                                         &notify_config_options, &notify_available_commands,
-                                        notify_accumulator_registry.as_ref(),
-                                        current_seq,
+                                        &notify_in_thinking, &notify_in_tool_call,
                                     ).await;
                                 }
                                 ExtendedSessionNotification::SubagentSpawned(event) => {
@@ -3017,14 +2908,53 @@ impl AcpBackendInterface for AcpBackend {
                                 message_id,
                                 response_tx,
                             }) => {
-                                // M1 NOTE: The comment below says "queued" but the interrupt is actually sent immediately.
-                                // TODO: Implement proper interrupt queueing via PendingInterrupt structure if needed.
-                                // For now, the interrupt is processed at the next safe point by the ACP protocol itself.
+                                // Interrupt message: wait for safe point before processing
                                 info!(
                                     agent_id = %connection_agent_id,
                                     message_id = %message_id,
                                     message_bytes = message.len(),
-                                    "Interrupt prompt sent (not queued - processed at next safe point by ACP)"
+                                    "Interrupt message received, waiting for safe point"
+                                );
+
+                                // Wait for safe point (not in thinking or tool call)
+                                let timeout = std::time::Duration::from_secs(30);
+                                let start = std::time::Instant::now();
+
+                                loop {
+                                    let in_thinking = task_in_thinking.load(std::sync::atomic::Ordering::SeqCst);
+                                    let in_tool_call = task_in_tool_call.load(std::sync::atomic::Ordering::SeqCst);
+
+                                    if !in_thinking && !in_tool_call {
+                                        info!(
+                                            agent_id = %connection_agent_id,
+                                            "Safe point reached"
+                                        );
+                                        break; // Safe point reached
+                                    }
+
+                                    if start.elapsed() > timeout {
+                                        warn!(
+                                            agent_id = %connection_agent_id,
+                                            "Interrupt timeout - forcing interrupt"
+                                        );
+                                        break; // Timeout - force interrupt
+                                    }
+
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                }
+
+                                // Create PausedTask for current work
+                                let paused_task = PausedTask {
+                                    message_id: task_current_message_id.read().clone(),
+                                    paused_at: std::time::Instant::now(),
+                                    resumed: false,
+                                };
+                                *task_paused_task.write() = Some(paused_task);
+
+                                info!(
+                                    agent_id = %connection_agent_id,
+                                    message_id = %message_id,
+                                    "PausedTask created for interrupted work"
                                 );
 
                                 // Store the current message ID being processed (for pause tracking)
@@ -3034,8 +2964,6 @@ impl AcpBackendInterface for AcpBackend {
                                 // The agent will process it after the current prompt completes
                                 task_text_output_seen.store(false, Ordering::Relaxed);
                                 task_recent_thinking.lock().clear();
-                                // Increment turn sequence for accumulator tracking
-                                task_turn_sequence.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                 let prompt_started_at = Instant::now();
 
                                 let mut content = if message.is_empty() {
@@ -3078,32 +3006,8 @@ impl AcpBackendInterface for AcpBackend {
                                         *task_stop_reason.write() = Some(sr.clone());
                                         send_output_event(
                                             &connection_conversation_id,
-                                            AgentOutputEvent::Done { stop_reason: sr.clone() },
+                                            AgentOutputEvent::Done { stop_reason: sr },
                                         );
-
-                                        // Flush accumulator and persist output
-                                        if let Some(ref registry) = task_accumulator_registry {
-                                            let conv_id = connection_conversation_id.clone();
-                                            let registry_clone = registry.clone();
-                                            tokio::spawn(async move {
-                                                if let Some(output_data) = registry_clone.flush(&conv_id).await {
-                                                    // Set stop reason in metadata
-                                                    let mut data = output_data;
-                                                    if let Some(ref mut metadata_str) = data.metadata {
-                                                        if let Ok(mut metadata) = serde_json::from_str::<serde_json::Value>(metadata_str) {
-                                                            metadata["stop_reason"] = serde_json::Value::String(sr.clone());
-                                                            *metadata_str = serde_json::to_string(&metadata).unwrap_or_default();
-                                                        }
-                                                    }
-
-                                                    // Persist asynchronously (will be implemented in ergatai-api)
-                                                    if let Err(e) = persist_agent_output(conv_id, data).await {
-                                                        tracing::error!(error = %e, "Failed to persist agent output");
-                                                    }
-                                                }
-                                            });
-                                        }
-
                                         let _ = response_tx.send(Ok(()));
                                     }
                                     Err(e) => {
@@ -3114,16 +3018,15 @@ impl AcpBackendInterface for AcpBackend {
                                     }
                                 }
 
-                                // Clear the current message ID
+                                // Clear the current message ID and paused task
                                 *task_current_message_id.write() = None;
+                                *task_paused_task.write() = None;
                             }
-                            Some(AcpCommand::QueuePrompt { message, images, conversation_id: cmd_conversation_id, response_tx }) => {
+                            Some(AcpCommand::QueuePrompt { message, images, response_tx }) => {
                                 task_text_output_seen.store(false, Ordering::Relaxed);
                                 // New prompt turn — reset the thinking
                                 // accumulator so it only covers this turn.
                                 task_recent_thinking.lock().clear();
-                                // Increment turn sequence for accumulator tracking
-                                task_turn_sequence.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                 let prompt_started_at = Instant::now();
                                 info!(
                                     agent_id = %connection_agent_id,
@@ -3173,39 +3076,9 @@ impl AcpBackendInterface for AcpBackend {
                                         send_output_event(
                                             &connection_conversation_id,
                                             AgentOutputEvent::Done {
-                                                stop_reason: sr.clone(),
+                                                stop_reason: sr,
                                             },
                                         );
-
-                                        // Flush accumulator and persist output
-                                        if let Some(ref registry) = task_accumulator_registry {
-                                            // Use connection_conversation_id for flush (matches accumulation key)
-                                            let flush_conv_id = connection_conversation_id.clone();
-                                            // Use cmd_conversation_id for persist if available (the real conversation ID)
-                                            let persist_conv_id = cmd_conversation_id.clone().unwrap_or_else(|| connection_conversation_id.clone());
-                                            let registry_clone = registry.clone();
-                                            let sr_clone = sr.clone();
-                                            tokio::spawn(async move {
-                                                if let Some(output_data) = registry_clone.flush(&flush_conv_id).await {
-                                                    // Set stop reason in metadata
-                                                    let mut data = output_data;
-                                                    if let Some(ref mut metadata_str) = data.metadata {
-                                                        if let Ok(mut metadata) = serde_json::from_str::<serde_json::Value>(metadata_str) {
-                                                            metadata["stop_reason"] = serde_json::Value::String(sr_clone);
-                                                            *metadata_str = serde_json::to_string(&metadata).unwrap_or_default();
-                                                        }
-                                                    }
-                                                    // Override conversation_id with the real one for persistence
-                                                    data.conversation_id = ergatai_error::id::parse_to_i64(&persist_conv_id).unwrap_or(0);
-
-                                                    // Persist asynchronously
-                                                    if let Err(e) = persist_agent_output(persist_conv_id, data).await {
-                                                        tracing::error!(error = %e, "Failed to persist agent output");
-                                                    }
-                                                }
-                                            });
-                                        }
-
                                         let _ = response_tx.send(Ok(()));
                                     }
                                     Err(e) => {
@@ -3225,8 +3098,6 @@ impl AcpBackendInterface for AcpBackend {
                                 // New prompt turn — reset the thinking
                                 // accumulator so it only covers this turn.
                                 task_recent_thinking.lock().clear();
-                                // Increment turn sequence for accumulator tracking
-                                task_turn_sequence.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                 let prompt_started_at = Instant::now();
                                 info!(
                                     agent_id = %connection_agent_id,
@@ -3280,33 +3151,6 @@ impl AcpBackendInterface for AcpBackend {
                                             &connection_conversation_id,
                                             AgentOutputEvent::Done { stop_reason: sr.clone() },
                                         );
-
-                                        // Flush accumulator and persist output
-                                        if let Some(ref registry) = task_accumulator_registry {
-                                            // Retrieve conversation_id from global state (set by API layer)
-                                            let conv_id = crate::get_current_prompt_conversation(&connection_agent_id)
-                                                .unwrap_or_else(|| connection_conversation_id.clone());
-                                            let registry_clone = registry.clone();
-                                            let sr_clone = sr.clone();
-                                            tokio::spawn(async move {
-                                                if let Some(output_data) = registry_clone.flush(&conv_id).await {
-                                                    // Set stop reason in metadata
-                                                    let mut data = output_data;
-                                                    if let Some(ref mut metadata_str) = data.metadata {
-                                                        if let Ok(mut metadata) = serde_json::from_str::<serde_json::Value>(metadata_str) {
-                                                            metadata["stop_reason"] = serde_json::Value::String(sr_clone);
-                                                            *metadata_str = serde_json::to_string(&metadata).unwrap_or_default();
-                                                        }
-                                                    }
-
-                                                    // Persist asynchronously (will be implemented in ergatai-api)
-                                                    if let Err(e) = persist_agent_output(conv_id, data).await {
-                                                        tracing::error!(error = %e, "Failed to persist agent output");
-                                                    }
-                                                }
-                                            });
-                                        }
-
                                         let _ = response_tx.send(Ok(()));
 
                                         // Auto-continue on max_tokens / max_turn_requests
@@ -3605,15 +3449,10 @@ impl AcpBackendInterface for AcpBackend {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
 
-            // Convert formatted workspace ID to Snowflake ID for lock manager lookup
-            let workspace_id_snowflake = ergatai_error::id::parse_to_i64(&handle.id)
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| handle.id.clone());
-
             if let Err(e) = register_system_token_for_acp_session(
                 &agent_id,
                 &sid.to_string(),
-                &workspace_id_snowflake, // Use Snowflake ID
+                &handle.id,
                 &cwd_for_token.to_string_lossy(),
             )
             .await
@@ -3747,14 +3586,10 @@ impl AcpBackendInterface for AcpBackend {
         };
 
         let (response_tx, response_rx) = oneshot::channel();
-        // Retrieve the conversation_id from global state (set by the API layer)
-        let conversation_id = crate::get_current_prompt_conversation(&handle.agent_id);
-        debug!(agent_id = %handle.agent_id, conversation_id = ?conversation_id, "Retrieved conversation_id for prompt");
         command_tx
             .send(AcpCommand::QueuePrompt {
                 message: message.to_string(),
                 images: images.to_vec(),
-                conversation_id,
                 response_tx,
             })
             .await
@@ -3950,9 +3785,10 @@ impl AcpBackendInterface for AcpBackend {
             .values()
             .map(|ws| {
                 let mut metadata = HashMap::new();
+                // Include work_dir in metadata for terminal sessions and other consumers.
                 metadata.insert(
                     "work_dir".to_string(),
-                    ws.work_dir.to_string_lossy().to_string(),
+                    ws.work_dir.to_string_lossy().into_owned(),
                 );
                 WorkspaceHandle {
                     id: ws.id.clone(),

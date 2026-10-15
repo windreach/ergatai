@@ -8,7 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use ergatai_core::id::{format as format_id, generate, parse_to_i64, IdType};
+use ergatai_core::id::{format as format_id, generate, IdType};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -318,17 +318,9 @@ pub async fn get_conversation(
             .into_response();
     }
 
-    let id_i64 = match parse_to_i64(&id) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid ID format: {}", id),
-                }),
-            )
-                .into_response();
-        }
+    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Conversation") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
 
     match tokio::task::spawn_blocking(move || user_data_db::conversations::get(id_i64)).await {
@@ -375,17 +367,9 @@ pub async fn update_conversation(
             .into_response();
     }
 
-    let id_i64 = match parse_to_i64(&id) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid ID format: {}", id),
-                }),
-            )
-                .into_response();
-        }
+    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Conversation") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
 
     let existing =
@@ -427,18 +411,11 @@ pub async fn update_conversation(
     }
 
     let id_for_reload = id.clone();
-    let id_for_reload_i64 = match parse_to_i64(&id_for_reload) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid ID format: {}", id_for_reload),
-                }),
-            )
-                .into_response();
-        }
-    };
+    let id_for_reload_i64 =
+        match crate::http_error::parse_id_or_not_found(&id_for_reload, "Conversation") {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
 
     match tokio::task::spawn_blocking(move || user_data_db::conversations::get(id_for_reload_i64))
         .await
@@ -481,17 +458,9 @@ pub async fn archive_conversation(
             .into_response();
     }
 
-    let id_i64 = match parse_to_i64(&id) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid ID format: {}", id),
-                }),
-            )
-                .into_response();
-        }
+    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Conversation") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
 
     match tokio::task::spawn_blocking(move || {
@@ -513,17 +482,10 @@ pub async fn archive_conversation(
     }
 
     let id_for_get = id.clone();
-    let id_for_get_i64 = match parse_to_i64(&id_for_get) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid ID format: {}", id_for_get),
-                }),
-            )
-                .into_response();
-        }
+    let id_for_get_i64 = match crate::http_error::parse_id_or_not_found(&id_for_get, "Conversation")
+    {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
 
     match tokio::task::spawn_blocking(move || user_data_db::conversations::get(id_for_get_i64))
@@ -567,17 +529,9 @@ pub async fn unarchive_conversation(
             .into_response();
     }
 
-    let id_i64 = match parse_to_i64(&id) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid ID format: {}", id),
-                }),
-            )
-                .into_response();
-        }
+    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Conversation") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
 
     match tokio::task::spawn_blocking(move || {
@@ -599,17 +553,10 @@ pub async fn unarchive_conversation(
     }
 
     let id_for_get = id.clone();
-    let id_for_get_i64 = match parse_to_i64(&id_for_get) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid ID format: {}", id_for_get),
-                }),
-            )
-                .into_response();
-        }
+    let id_for_get_i64 = match crate::http_error::parse_id_or_not_found(&id_for_get, "Conversation")
+    {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
 
     match tokio::task::spawn_blocking(move || user_data_db::conversations::get(id_for_get_i64))
@@ -652,17 +599,9 @@ pub async fn delete_conversation(
             .into_response();
     }
 
-    let id_i64 = match parse_to_i64(&id) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid ID format: {}", id),
-                }),
-            )
-                .into_response();
-        }
+    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Conversation") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
 
     match tokio::task::spawn_blocking(move || user_data_db::conversations::delete(id_i64)).await {
@@ -702,17 +641,9 @@ pub async fn list_conversation_messages(
             .into_response();
     }
 
-    let id_i64 = match parse_to_i64(&id) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid ID format: {}", id),
-                }),
-            )
-                .into_response();
-        }
+    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Conversation") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
 
     match tokio::task::spawn_blocking(move || user_data_db::messages::list(id_i64)).await {
@@ -753,17 +684,9 @@ pub async fn list_conversation_file_changes(
             .into_response();
     }
 
-    let id_i64 = match parse_to_i64(&id) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid ID format: {}", id),
-                }),
-            )
-                .into_response();
-        }
+    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Conversation") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
 
     match tokio::task::spawn_blocking(move || {
@@ -1155,20 +1078,12 @@ pub struct CreateConversationRequestNew {
 )]
 pub async fn list_conversations(Query(query): Query<ListConversationsQuery>) -> impl IntoResponse {
     let conversations = if let Some(collaboration_session_id) = query.collaboration_session_id {
-        let session_id_i64 = match parse_to_i64(&collaboration_session_id) {
-            Some(id) => id,
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!(
-                            "Invalid collaboration_session_id format: {}",
-                            collaboration_session_id
-                        ),
-                    }),
-                )
-                    .into_response();
-            }
+        let session_id_i64 = match crate::http_error::parse_id_or_not_found(
+            &collaboration_session_id,
+            "CollaborationSession",
+        ) {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
         };
 
         match tokio::task::spawn_blocking(move || {
@@ -1197,17 +1112,9 @@ pub async fn list_conversations(Query(query): Query<ListConversationsQuery>) -> 
             }
         }
     } else if let Some(chat_id) = query.chat_id {
-        let chat_id_i64 = match parse_to_i64(&chat_id) {
-            Some(id) => id,
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("Invalid chat_id format: {}", chat_id),
-                    }),
-                )
-                    .into_response();
-            }
+        let chat_id_i64 = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
         };
 
         match tokio::task::spawn_blocking(move || {
@@ -1285,18 +1192,11 @@ pub async fn list_conversation_outputs(
             .into_response();
     }
 
-    let conv_id_i64 = match parse_to_i64(&conversation_id) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid conversation ID format: {}", conversation_id),
-                }),
-            )
-                .into_response();
-        }
-    };
+    let conv_id_i64 =
+        match crate::http_error::parse_id_or_not_found(&conversation_id, "Conversation") {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
 
     // Validate conversation exists
     match tokio::task::spawn_blocking(move || user_data_db::conversations::get(conv_id_i64)).await {
@@ -1315,18 +1215,11 @@ pub async fn list_conversation_outputs(
     }
 
     let conv_id_for_list = conversation_id.clone();
-    let conv_id_i64 = match parse_to_i64(&conv_id_for_list) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid conversation ID format: {}", conv_id_for_list),
-                }),
-            )
-                .into_response();
-        }
-    };
+    let conv_id_i64 =
+        match crate::http_error::parse_id_or_not_found(&conv_id_for_list, "Conversation") {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
 
     let limit = params.limit;
     let offset = params.offset;
@@ -1382,31 +1275,16 @@ pub async fn get_conversation_output(
             .into_response();
     }
 
-    let output_id_i64 = match parse_to_i64(&output_id) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid output ID format: {}", output_id),
-                }),
-            )
-                .into_response();
-        }
+    let output_id_i64 = match crate::http_error::parse_id_or_not_found(&output_id, "Output") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
 
-    let conversation_id_i64 = match parse_to_i64(&conversation_id) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid conversation ID format: {}", conversation_id),
-                }),
-            )
-                .into_response();
-        }
-    };
+    let conversation_id_i64 =
+        match crate::http_error::parse_id_or_not_found(&conversation_id, "Conversation") {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
 
     match tokio::task::spawn_blocking(move || {
         let output = user_data_db::agent_outputs::get(output_id_i64)?;
@@ -1521,18 +1399,11 @@ pub async fn create_conversation(
     // Resolve collaboration_session_id and chat_id
     let (collaboration_session_id, chat_id) = if let Some(session_id) = req.collaboration_session_id
     {
-        let session_id_i64 = match parse_to_i64(&session_id) {
-            Some(id) => id,
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("Invalid collaboration_session_id format: {}", session_id),
-                    }),
-                )
-                    .into_response();
-            }
-        };
+        let session_id_i64 =
+            match crate::http_error::parse_id_or_not_found(&session_id, "CollaborationSession") {
+                Ok(id) => id,
+                Err((status, json)) => return (status, json).into_response(),
+            };
 
         // Validate collaboration session exists
         match tokio::task::spawn_blocking(move || {
@@ -1562,17 +1433,9 @@ pub async fn create_conversation(
             }
         }
     } else if let Some(chat_id) = req.chat_id {
-        let chat_id_i64 = match parse_to_i64(&chat_id) {
-            Some(id) => id,
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("Invalid chat_id format: {}", chat_id),
-                    }),
-                )
-                    .into_response();
-            }
+        let chat_id_i64 = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
         };
 
         // Validate chat exists and get its collaboration session

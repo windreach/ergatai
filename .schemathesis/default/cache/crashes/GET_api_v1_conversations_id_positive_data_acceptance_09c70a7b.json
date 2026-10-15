@@ -1,0 +1,82 @@
+{
+  "operation": "GET /api/v1/conversations/{id}",
+  "method": "GET",
+  "path_template": "/api/v1/conversations/{id}",
+  "fingerprint": "09c70a7b",
+  "case_id": "gS30xp",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/conversations/conv_0_072995910_73",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/conversations/conv_0_072995910_73",
+      "url_template": "http://localhost:3000/api/v1/conversations/{id}",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "gS30xp"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "50",
+          "date": "Thu, 15 Oct 2026 13:42:01 GMT"
+        },
+        "body": "{\"error\":\"Invalid ID format: conv_0_072995910_73\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "positive_data_acceptance",
+          "status": "failure",
+          "message": "API rejected schema-compliant request\n\nValid data should have been accepted\nExpected: 2xx, 3xx, 401, 403, 404, 409, 429, 5xx"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.0029653290002897847,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive"
+        },
+        "phase": {
+          "name": "fuzzing",
+          "data": {
+            "type": "FuzzingPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/conversations/{id}",
+      "path_parameters": {
+        "id": "conv_0_072995910_73"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

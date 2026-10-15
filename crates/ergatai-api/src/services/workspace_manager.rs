@@ -450,6 +450,200 @@ pub async fn delete(workspace_id: &str, force: bool) -> Result<(), WorkspaceMana
     Ok(())
 }
 
+/// 停止 workspace（停止所有 agent，保留数据）
+pub async fn stop_workspace(workspace_id: &str) -> Result<Workspace, WorkspaceManagerError> {
+    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+        WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
+    })?;
+
+    // 1. 检查 workspace 存在且状态为 active
+    let workspace = tokio::task::spawn_blocking(move || workspaces::get(workspace_id_i64))
+        .await
+        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+        .map_err(WorkspaceManagerError::from)?
+        .ok_or_else(|| WorkspaceManagerError::NotFound(workspace_id.to_string()))?;
+
+    if workspace.status == "archived" {
+        return Err(WorkspaceManagerError::Conflict(
+            "Cannot stop archived workspace; restore it first".to_string(),
+        ));
+    }
+    if workspace.status == "stopped" {
+        return Err(WorkspaceManagerError::Conflict(
+            "Workspace already stopped".to_string(),
+        ));
+    }
+
+    // 2. 停止所有活跃 agent
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    let active_agents: Vec<_> = runtime
+        .list_agents()
+        .await
+        .into_iter()
+        .filter(|agent| agent.workspace_id == workspace_id && agent.lifecycle.is_alive())
+        .collect();
+
+    for agent in active_agents {
+        let _ = runtime.stop_agent(&agent.agent_id).await;
+    }
+
+    // 3. 清理运行时 workspace
+    if let Ok(workspaces) = runtime.backend().list_workspaces().await {
+        if let Some(ws) = workspaces.into_iter().find(|w| w.id == workspace_id) {
+            if let Err(e) = runtime.backend().cleanup_workspace(&ws).await {
+                tracing::warn!(error = %e, "Failed to cleanup runtime workspace");
+            }
+        }
+    }
+
+    // 4. 更新数据库状态为 stopped
+    let mut updated_workspace = workspace.clone();
+    updated_workspace.status = "stopped".to_string();
+    updated_workspace.updated_at = now();
+
+    let workspace_for_update = updated_workspace.clone();
+    tokio::task::spawn_blocking(move || workspaces::update(workspace_for_update))
+        .await
+        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+        .map_err(WorkspaceManagerError::from)?;
+
+    Ok(updated_workspace)
+}
+
+/// 启动 workspace（从 stopped 状态恢复）
+pub async fn start_workspace(workspace_id: &str) -> Result<Workspace, WorkspaceManagerError> {
+    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+        WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
+    })?;
+
+    // 1. 检查 workspace 存在且状态为 stopped
+    let workspace = tokio::task::spawn_blocking(move || workspaces::get(workspace_id_i64))
+        .await
+        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+        .map_err(WorkspaceManagerError::from)?
+        .ok_or_else(|| WorkspaceManagerError::NotFound(workspace_id.to_string()))?;
+
+    if workspace.status == "archived" {
+        return Err(WorkspaceManagerError::Conflict(
+            "Cannot start archived workspace; restore it first".to_string(),
+        ));
+    }
+    if workspace.status == "active" {
+        return Err(WorkspaceManagerError::Conflict(
+            "Workspace already active".to_string(),
+        ));
+    }
+
+    // 2. 更新数据库状态为 active
+    let mut updated_workspace = workspace.clone();
+    updated_workspace.status = "active".to_string();
+    updated_workspace.updated_at = now();
+
+    let workspace_for_update = updated_workspace.clone();
+    tokio::task::spawn_blocking(move || workspaces::update(workspace_for_update))
+        .await
+        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+        .map_err(WorkspaceManagerError::from)?;
+
+    Ok(updated_workspace)
+}
+
+/// 归档 workspace（软删除，停止所有 agent）
+pub async fn archive_workspace(workspace_id: &str) -> Result<Workspace, WorkspaceManagerError> {
+    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+        WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
+    })?;
+
+    // 1. 检查 workspace 存在
+    let workspace = tokio::task::spawn_blocking(move || workspaces::get(workspace_id_i64))
+        .await
+        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+        .map_err(WorkspaceManagerError::from)?
+        .ok_or_else(|| WorkspaceManagerError::NotFound(workspace_id.to_string()))?;
+
+    if workspace.status == "archived" {
+        return Err(WorkspaceManagerError::Conflict(
+            "Workspace already archived".to_string(),
+        ));
+    }
+
+    // 2. 检查是否有活跃 agent
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    let active_agents: Vec<_> = runtime
+        .list_agents()
+        .await
+        .into_iter()
+        .filter(|agent| agent.workspace_id == workspace_id && agent.lifecycle.is_alive())
+        .collect();
+
+    if !active_agents.is_empty() {
+        return Err(WorkspaceManagerError::Conflict(format!(
+            "Workspace has {} active agent(s); stop them or use DELETE with force",
+            active_agents.len()
+        )));
+    }
+
+    // 3. 清理运行时 workspace
+    if let Ok(workspaces) = runtime.backend().list_workspaces().await {
+        if let Some(ws) = workspaces.into_iter().find(|w| w.id == workspace_id) {
+            if let Err(e) = runtime.backend().cleanup_workspace(&ws).await {
+                tracing::warn!(error = %e, "Failed to cleanup runtime workspace");
+            }
+        }
+    }
+
+    // 4. 从权限处理器注销
+    if let Some(permission_handler) = crate::get_permission_handler() {
+        permission_handler.unregister_workspace(workspace_id).await;
+    }
+
+    // 5. 更新数据库状态为 archived
+    let mut updated_workspace = workspace.clone();
+    updated_workspace.status = "archived".to_string();
+    updated_workspace.updated_at = now();
+
+    let workspace_for_update = updated_workspace.clone();
+    tokio::task::spawn_blocking(move || workspaces::update(workspace_for_update))
+        .await
+        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+        .map_err(WorkspaceManagerError::from)?;
+
+    Ok(updated_workspace)
+}
+
+/// 从归档恢复 workspace
+pub async fn restore_workspace(workspace_id: &str) -> Result<Workspace, WorkspaceManagerError> {
+    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+        WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
+    })?;
+
+    // 1. 检查 workspace 存在且状态为 archived
+    let workspace = tokio::task::spawn_blocking(move || workspaces::get(workspace_id_i64))
+        .await
+        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+        .map_err(WorkspaceManagerError::from)?
+        .ok_or_else(|| WorkspaceManagerError::NotFound(workspace_id.to_string()))?;
+
+    if workspace.status != "archived" {
+        return Err(WorkspaceManagerError::Conflict(
+            "Workspace not archived".to_string(),
+        ));
+    }
+
+    // 2. 更新数据库状态为 active
+    let mut updated_workspace = workspace.clone();
+    updated_workspace.status = "active".to_string();
+    updated_workspace.updated_at = now();
+
+    let workspace_for_update = updated_workspace.clone();
+    tokio::task::spawn_blocking(move || workspaces::update(workspace_for_update))
+        .await
+        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+        .map_err(WorkspaceManagerError::from)?;
+
+    Ok(updated_workspace)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

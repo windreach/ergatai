@@ -1,0 +1,99 @@
+{
+  "operation": "POST /api/v1/agents/{id}/elicitations/{elicitation_id}/respond",
+  "method": "POST",
+  "path_template": "/api/v1/agents/{id}/elicitations/{elicitation_id}/respond",
+  "fingerprint": "370bce5d",
+  "case_id": "qvHWmz",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/agents/agent_0_0_0/elicitations/elic_0/respond",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/agents/agent_0_0_0/elicitations/elic_0/respond",
+      "url_template": "http://localhost:3000/api/v1/agents/{id}/elicitations/{elicitation_id}/respond",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "qvHWmz",
+        "Content-Length": "0"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "66",
+          "date": "Thu, 15 Oct 2026 13:37:47 GMT"
+        },
+        "body": "{\"error\":\"Expected request with `Content-Type: application/json`\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 400\nDocumented: 200, 404, 500"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 7.981001544976607e-06,
+          "mode": "negative"
+        },
+        "components": {
+          "PATH": "positive",
+          "BODY": "negative"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Missing request body",
+            "location": null,
+            "parameter": null,
+            "parameter_location": "BODY",
+            "scenario": "missing_parameter"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [
+          [
+            "path",
+            "id"
+          ],
+          [
+            "path",
+            "elicitation_id"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "PATH": {
+            "id": "agent_0_0_0",
+            "elicitation_id": "elic_0"
+          }
+        }
+      },
+      "path": "/api/v1/agents/{id}/elicitations/{elicitation_id}/respond",
+      "path_parameters": {
+        "id": "agent_0_0_0",
+        "elicitation_id": "elic_0"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

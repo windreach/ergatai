@@ -1269,13 +1269,10 @@ async fn runtime_launch_agent_sets_correct_agent_info_fields() {
     // task_id initially None, mcp_agent_id auto-generated
     assert!(info.task_id.is_none());
     assert!(info.mcp_agent_id.is_some());
-    // mcp_agent_id format: "acp-{workspace_id}-{agent_id}"
+    // mcp_agent_id format: "mcp_{snowflake_id}" extracted from agent_id
     assert!(
-        info.mcp_agent_id
-            .as_ref()
-            .unwrap()
-            .starts_with("acp-ws-fields-agent_"),
-        "mcp_agent_id should be auto-generated with workspace_id and agent_id"
+        info.mcp_agent_id.as_ref().unwrap().starts_with("mcp_"),
+        "mcp_agent_id should be auto-generated with mcp_ prefix"
     );
 
     // state_history is empty for freshly launched agent
@@ -1328,11 +1325,11 @@ async fn runtime_try_bind_mcp_agent_to_unbound_runtime_agent() {
     // ACP agents now have auto-generated MCP bindings
     let mcp_id = runtime.get_mcp_agent_id(&agent_id).await;
     assert!(mcp_id.is_some());
-    // mcp_agent_id format: "acp-{workspace_id}-{agent_id}"
+    // mcp_agent_id format: "mcp_{snowflake_id}" extracted from agent_id
     let mcp_id_str = mcp_id.as_ref().unwrap();
     assert!(
-        mcp_id_str.starts_with("acp-ws-mcp-agent_"),
-        "mcp_agent_id should be auto-generated with workspace_id and agent_id"
+        mcp_id_str.starts_with("mcp_"),
+        "mcp_agent_id should be auto-generated with mcp_ prefix"
     );
 
     // Manual binding with a different MCP ID should work (for MCP agents connecting via HTTP)

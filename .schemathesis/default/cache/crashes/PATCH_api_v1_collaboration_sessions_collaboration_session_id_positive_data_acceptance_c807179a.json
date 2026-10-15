@@ -1,0 +1,105 @@
+{
+  "operation": "PATCH /api/v1/collaboration-sessions/{collaboration_session_id}",
+  "method": "PATCH",
+  "path_template": "/api/v1/collaboration-sessions/{collaboration_session_id}",
+  "fingerprint": "c807179a",
+  "case_id": "VWQ6Wn",
+  "code_sample": "curl -X PATCH -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d '{\"\\u169b\\u1684\\u1693\\u1690\\u168b\\u1692\\u1684\\u1680\\u1691\\u1684\\u1682\\u1691\\u168f\\u1685\\u169c\": {\":\\u00c3\": []}, \"__main__\": {\"\\u00d2\\ud885\\udff1VH\": [18446744073709551615, \"\"]}, \"\": [[], [2.312911683846448e+16, null, -201], false]}' http://localhost:3000/api/v1/collaboration-sessions/chat_2_56552_03",
+  "sequence": [
+    {
+      "method": "PATCH",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions/chat_2_56552_03",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions/{collaboration_session_id}",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "VWQ6Wn",
+        "Content-Type": "application/json",
+        "Content-Length": "231"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "54",
+          "date": "Thu, 15 Oct 2026 13:42:23 GMT"
+        },
+        "body": "{\"error\":\"Invalid session_id format: chat_2_56552_03\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "positive_data_acceptance",
+          "status": "failure",
+          "message": "API rejected schema-compliant request\n\nValid data should have been accepted\nExpected: 2xx, 3xx, 401, 403, 404, 409, 429, 5xx\nHint: The request body contains 3 additional properties not defined in the schema (``, `__main__`, `\u169b\u1684\u1693\u1690\u168b\u1692\u1684\u1680\u1691\u1684\u1682\u1691\u168f\u1685\u169c`). The server appears to reject properties the schema allows. Declare `additionalProperties: false` if extras are not accepted, or make the server ignore unknown fields."
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.006367003999912413,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive",
+          "BODY": "positive"
+        },
+        "phase": {
+          "name": "fuzzing",
+          "data": {
+            "type": "FuzzingPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/collaboration-sessions/{collaboration_session_id}",
+      "path_parameters": {
+        "collaboration_session_id": "[Filtered]"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": {
+          "\u169b\u1684\u1693\u1690\u168b\u1692\u1684\u1680\u1691\u1684\u1682\u1691\u168f\u1685\u169c": {
+            ":\u00c3": []
+          },
+          "__main__": {
+            "\u00d2\ud885\udff1VH": [
+              18446744073709551615,
+              ""
+            ]
+          },
+          "": [
+            [],
+            [
+              2.312911683846448e+16,
+              null,
+              -201
+            ],
+            false
+          ]
+        }
+      },
+      "media_type": "application/json",
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

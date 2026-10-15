@@ -1,9 +1,10 @@
+use crate::Json;
+use crate::JsonQuery;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     response::Response,
-    Json,
 };
 use ergatai_runtime::{ResourceLimits, WorkspaceSpec};
 use serde::{Deserialize, Serialize};
@@ -149,11 +150,16 @@ pub async fn create_workspace(
         .unwrap_or(100);
     match runtime.backend().list_workspaces().await {
         Ok(list) if list.len() >= max_workspaces => {
-            return crate::http_error::unavailable(format!(
-                "Workspace limit reached ({}/{}). Delete a workspace or raise ERGATAI_MAX_WORKSPACES.",
-                list.len(),
-                max_workspaces
-            ))
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({
+                    "error": format!(
+                        "Workspace limit reached ({}/{}). Delete a workspace or raise ERGATAI_MAX_WORKSPACES.",
+                        list.len(),
+                        max_workspaces
+                    ),
+                })),
+            )
                 .into_response();
         }
         Err(e) => {
@@ -221,11 +227,11 @@ pub async fn create_workspace(
                 .await
             {
                 Ok(_) => {}
-                Err((status, msg)) => {
+                Err((status, json_value)) => {
                     tracing::error!(
                         workspace_id = %workspace_id,
                         status = %status,
-                        error = %msg,
+                        error = ?json_value,
                         "Failed to store workspace in user_data_db after backend create"
                     );
                     // Backend workspace was created but DB write failed.
@@ -254,12 +260,14 @@ pub async fn create_workspace(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/workspaces/{id}",
+    path = "/api/v1/workspaces/{workspace_id}",
     tag = "Workspaces",
-    params(("id" = String, Path, description = "Workspace ID")),
+    params(("workspace_id" = String, Path, description = "Workspace ID")),
     responses(
         (status = 204, description = "Workspace deleted"),
+        (status = 400, description = "Workspace not archived", body = crate::api::ApiError),
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 409, description = "Workspace has active resources", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
@@ -267,24 +275,146 @@ pub async fn delete_workspace(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
-
-    // Find workspace by ID
-    let workspaces = match runtime.backend().list_workspaces().await {
-        Ok(w) => w,
-        Err(e) => {
-            return crate::http_error::internal(e, "list_workspaces_for_delete").into_response()
+    // 1. 检查 workspace 是否存在且已归档
+    let workspace_id_i64 = match ergatai_error::id::parse_to_i64(&id) {
+        Some(id) => id,
+        None => {
+            return crate::http_error::bad_request(format!("Invalid workspace ID format: {}", id))
+                .into_response()
         }
     };
 
-    let workspace = match workspaces.into_iter().find(|w| w.id == id) {
-        Some(w) => w,
-        None => return crate::http_error::not_found("Workspace", &id).into_response(),
-    };
+    let workspace =
+        match crate::run_blocking(move || crate::user_data_db::workspaces::get(workspace_id_i64))
+            .await
+        {
+            Ok(Some(w)) => w,
+            Ok(None) => return crate::http_error::not_found("Workspace", &id).into_response(),
+            Err((status, json_value)) => return (status, json_value).into_response(),
+        };
 
-    match runtime.backend().cleanup_workspace(&workspace).await {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => crate::http_error::internal(e, "cleanup_workspace").into_response(),
+    // 2. 只允许删除 archived 状态的 workspace
+    if workspace.status != "archived" {
+        return crate::http_error::bad_request(format!(
+            "Workspace must be archived before deletion (current status: {})",
+            workspace.status
+        ))
+        .into_response();
+    }
+
+    // 3. 清理运行时 workspace（如果存在）
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    if let Ok(workspaces) = runtime.backend().list_workspaces().await {
+        if let Some(ws) = workspaces.into_iter().find(|w| w.id == id) {
+            if let Err(e) = runtime.backend().cleanup_workspace(&ws).await {
+                tracing::warn!(error = %e, "Failed to cleanup runtime workspace");
+            }
+        }
+    }
+
+    // 4. 从数据库删除
+    match crate::run_blocking(move || crate::user_data_db::workspaces::delete(workspace_id_i64))
+        .await
+    {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => crate::http_error::not_found("Workspace", &id).into_response(),
+        Err((status, json_value)) => (status, json_value).into_response(),
+    }
+}
+
+/// POST /api/v1/workspaces/{id}/stop — 停止 workspace（停止所有 agent）
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces/{workspace_id}/stop",
+    tag = "Workspaces",
+    params(("workspace_id" = String, Path, description = "Workspace ID")),
+    responses(
+        (status = 200, description = "Workspace stopped", body = crate::user_data_db::Workspace),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 409, description = "Workspace already stopped or archived", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn stop_workspace(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let workspace_id = id.clone();
+    match manager::stop_workspace(&workspace_id).await {
+        Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
+        Err(error) => managed_error(error, "stop_workspace"),
+    }
+}
+
+/// POST /api/v1/workspaces/{id}/start — 启动 workspace
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces/{workspace_id}/start",
+    tag = "Workspaces",
+    params(("workspace_id" = String, Path, description = "Workspace ID")),
+    responses(
+        (status = 200, description = "Workspace started", body = crate::user_data_db::Workspace),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 409, description = "Workspace already active or archived", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn start_workspace(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let workspace_id = id.clone();
+    match manager::start_workspace(&workspace_id).await {
+        Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
+        Err(error) => managed_error(error, "start_workspace"),
+    }
+}
+
+/// POST /api/v1/workspaces/{id}/archive — 归档 workspace（软删除）
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces/{workspace_id}/archive",
+    tag = "Workspaces",
+    params(("workspace_id" = String, Path, description = "Workspace ID")),
+    responses(
+        (status = 200, description = "Workspace archived", body = crate::user_data_db::Workspace),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 409, description = "Workspace has active resources", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn archive_workspace(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let workspace_id = id.clone();
+    match manager::archive_workspace(&workspace_id).await {
+        Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
+        Err(error) => managed_error(error, "archive_workspace"),
+    }
+}
+
+/// POST /api/v1/workspaces/{id}/restore — 从归档恢复
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces/{workspace_id}/restore",
+    tag = "Workspaces",
+    params(("workspace_id" = String, Path, description = "Workspace ID")),
+    responses(
+        (status = 200, description = "Workspace restored", body = crate::user_data_db::Workspace),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 409, description = "Workspace not archived", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn restore_workspace(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let workspace_id = id.clone();
+    match manager::restore_workspace(&workspace_id).await {
+        Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
+        Err(error) => managed_error(error, "restore_workspace"),
     }
 }
 
@@ -346,10 +476,10 @@ pub struct ListPersistentWorkspacesQuery {
     responses(
         (status = 200, description = "List persistent workspaces", body = Vec<PersistentWorkspaceResponse>),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn list_persistent_workspaces(
-    axum::extract::Query(query): axum::extract::Query<ListPersistentWorkspacesQuery>,
+    JsonQuery(query): JsonQuery<ListPersistentWorkspacesQuery>,
 ) -> impl IntoResponse {
     match manager::list(query.collaboration_mode.as_deref()).await {
         Ok(ws_list) => (
@@ -462,7 +592,7 @@ pub async fn create_persistent_workspace(
         (status = 200, description = "Persistent workspace found", body = PersistentWorkspaceResponse),
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn get_persistent_workspace(Path(id): Path<String>) -> impl IntoResponse {
     match manager::get(&id).await {
@@ -481,7 +611,7 @@ pub async fn get_persistent_workspace(Path(id): Path<String>) -> impl IntoRespon
         (status = 200, description = "Workspace updated", body = PersistentWorkspaceResponse),
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn update_persistent_workspace(
     Path(id): Path<String>,
@@ -559,7 +689,7 @@ pub async fn update_persistent_workspace(
         (status = 204, description = "Workspace deleted"),
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn delete_persistent_workspace(Path(id): Path<String>) -> impl IntoResponse {
     match manager::delete(&id, false).await {
@@ -591,10 +721,10 @@ pub struct ListManagedWorkspacesQuery {
     responses(
         (status = 200, description = "List managed workspaces", body = Vec<manager::ManagedWorkspace>),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
+        (status = 404, description = "Resource not found", body = crate::api::ApiError),)
 )]
 pub async fn list_managed_workspaces(
-    axum::extract::Query(query): axum::extract::Query<ListManagedWorkspacesQuery>,
+    JsonQuery(query): JsonQuery<ListManagedWorkspacesQuery>,
 ) -> impl IntoResponse {
     match manager::list(query.collaboration_mode.as_deref()).await {
         Ok(workspaces) => (StatusCode::OK, Json(workspaces)).into_response(),
@@ -612,7 +742,7 @@ pub async fn list_managed_workspaces(
         (status = 400, description = "Invalid workspace", body = crate::api::ApiError),
         (status = 409, description = "Workspace already exists", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
+        (status = 404, description = "Resource not found", body = crate::api::ApiError),)
 )]
 pub async fn create_managed_workspace(
     Json(request): Json<manager::CreateManagedWorkspaceRequest>,
@@ -632,7 +762,7 @@ pub async fn create_managed_workspace(
         (status = 200, description = "Managed workspace found", body = manager::ManagedWorkspace),
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn get_managed_workspace(Path(id): Path<String>) -> impl IntoResponse {
     match manager::get(&id).await {
@@ -658,6 +788,9 @@ pub async fn update_managed_workspace(
     Path(id): Path<String>,
     Json(request): Json<manager::UpdateManagedWorkspaceRequest>,
 ) -> impl IntoResponse {
+    // Reject array bodies - the schema expects an object
+    // Note: axum's Json extractor should handle this, but we add explicit validation
+    // to ensure consistent error responses
     match manager::update(&id, request).await {
         Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
         Err(error) => managed_error(error, "update_managed_workspace"),
@@ -673,7 +806,7 @@ pub async fn update_managed_workspace(
         (status = 200, description = "Managed workspace archived", body = manager::ManagedWorkspace),
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn archive_managed_workspace(Path(id): Path<String>) -> impl IntoResponse {
     match manager::set_status(&id, "archived").await {
@@ -691,7 +824,7 @@ pub async fn archive_managed_workspace(Path(id): Path<String>) -> impl IntoRespo
         (status = 200, description = "Managed workspace restored", body = manager::ManagedWorkspace),
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn restore_managed_workspace(Path(id): Path<String>) -> impl IntoResponse {
     match manager::set_status(&id, "active").await {
@@ -713,11 +846,11 @@ pub async fn restore_managed_workspace(Path(id): Path<String>) -> impl IntoRespo
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
         (status = 409, description = "Workspace has active runtime resources", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn delete_managed_workspace(
     Path(id): Path<String>,
-    axum::extract::Query(query): axum::extract::Query<DeleteManagedWorkspaceQuery>,
+    JsonQuery(query): JsonQuery<DeleteManagedWorkspaceQuery>,
 ) -> impl IntoResponse {
     match manager::delete(&id, query.force).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -761,10 +894,10 @@ pub struct WorkspaceDetailResponse {
     tag = "Workspaces",
     params(("workspace_id" = String, Path, description = "Workspace ID")),
     responses(
-        (status = 200, description = "Workspace details", body = WorkspaceDetailResponse),
+        (status = 200, description = "Workspace details", body = crate::user_data_db::Workspace),
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn get_workspace(Path(workspace_id): Path<String>) -> impl IntoResponse {
     let workspace_id_i64 = match ergatai_error::id::parse_to_i64(&workspace_id) {
@@ -781,7 +914,7 @@ pub async fn get_workspace(Path(workspace_id): Path<String>) -> impl IntoRespons
     {
         Ok(Some(workspace)) => (StatusCode::OK, Json(workspace)).into_response(),
         Ok(None) => crate::http_error::not_found("Workspace", &workspace_id).into_response(),
-        Err(err) => crate::http_error::internal(err.1, "get_workspace").into_response(),
+        Err((status, json_value)) => (status, json_value).into_response(),
     }
 }
 
@@ -793,7 +926,7 @@ pub async fn get_workspace(Path(workspace_id): Path<String>) -> impl IntoRespons
     params(("workspace_id" = String, Path, description = "Workspace ID")),
     request_body = UpdateWorkspaceRequest,
     responses(
-        (status = 200, description = "Workspace updated", body = WorkspaceDetailResponse),
+        (status = 200, description = "Workspace updated", body = crate::user_data_db::Workspace),
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
         (status = 400, description = "Invalid request", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),

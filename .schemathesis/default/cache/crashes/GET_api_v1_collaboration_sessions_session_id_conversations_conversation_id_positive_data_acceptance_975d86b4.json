@@ -1,0 +1,83 @@
+{
+  "operation": "GET /api/v1/collaboration-sessions/{session_id}/conversations/{conversation_id}",
+  "method": "GET",
+  "path_template": "/api/v1/collaboration-sessions/{session_id}/conversations/{conversation_id}",
+  "fingerprint": "975d86b4",
+  "case_id": "YFRqXj",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/collaboration-sessions/chat_0109_163801_43660983895/conversations/conv_0_0_0",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions/chat_0109_163801_43660983895/conversations/conv_0_0_0",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions/{session_id}/conversations/{conversation_id}",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "YFRqXj"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "81",
+          "date": "Thu, 15 Oct 2026 13:41:47 GMT"
+        },
+        "body": "{\"error\":\"Invalid collaboration session ID format: chat_0109_163801_43660983895\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "positive_data_acceptance",
+          "status": "failure",
+          "message": "API rejected schema-compliant request\n\nValid data should have been accepted\nExpected: 2xx, 3xx, 401, 403, 404, 409, 429, 5xx"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.00581605200204649,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive"
+        },
+        "phase": {
+          "name": "fuzzing",
+          "data": {
+            "type": "FuzzingPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/collaboration-sessions/{session_id}/conversations/{conversation_id}",
+      "path_parameters": {
+        "session_id": "[Filtered]",
+        "conversation_id": "conv_0_0_0"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

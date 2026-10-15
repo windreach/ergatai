@@ -1,0 +1,100 @@
+{
+  "operation": "POST /api/v1/collaboration-sessions/{id}/approvals",
+  "method": "POST",
+  "path_template": "/api/v1/collaboration-sessions/{id}/approvals",
+  "fingerprint": "6f04679a",
+  "case_id": "C5rUoR",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d '{\"kind\": \"\"}' http://localhost:3000/api/v1/collaboration-sessions/model/approvals",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions/model/approvals",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions/{id}/approvals",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "C5rUoR",
+        "Content-Type": "application/json",
+        "Content-Length": "12"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8",
+          "access-control-allow-origin": "*",
+          "content-length": "32",
+          "date": "Thu, 15 Oct 2026 10:25:51 GMT"
+        },
+        "body": "Invalid session_id format: model"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "content_type_conformance",
+          "status": "failure",
+          "message": "Undocumented Content-Type\n\nReceived: text/plain; charset=utf-8\nDocumented: application/json"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.003134009999484988,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive",
+          "BODY": "positive"
+        },
+        "phase": {
+          "name": "fuzzing",
+          "data": {
+            "type": "FuzzingPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [
+          {
+            "path": [
+              "id"
+            ],
+            "type_token": "string",
+            "format_token": null,
+            "pattern_hash": null,
+            "normalized_name": "id",
+            "value": "model",
+            "source_operation": "GET /api/v1/agents"
+          }
+        ],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/collaboration-sessions/{id}/approvals",
+      "path_parameters": {
+        "id": "model"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": {
+          "kind": ""
+        }
+      },
+      "media_type": "application/json",
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

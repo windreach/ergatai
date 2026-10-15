@@ -3,7 +3,8 @@
 //! 业务逻辑已迁移到 `crate::services::profile_service`，handler 只负责
 //! HTTP 请求解析、响应格式化和错误状态码映射。
 
-use axum::{extract::Path, http::StatusCode, response::IntoResponse, Json};
+use crate::Json;
+use axum::{extract::Path, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -336,7 +337,8 @@ pub async fn list_with_status() -> axum::response::Response {
     ),
     responses(
         (status = 200, description = "Agent installed successfully"),
-        (status = 400, description = "Invalid request or agent not found", body = crate::api::ApiError),
+        (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 404, description = "Profile not found", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
@@ -353,15 +355,16 @@ pub async fn install_agent(Path(id): Path<String>) -> axum::response::Response {
             .into_response(),
         Err(e) => {
             let err_text = e.to_string();
-            let is_user_error = err_text.contains("not found")
-                || err_text.contains("no package_name")
-                || err_text.contains("cannot be empty");
 
-            let (status, message) = if is_user_error {
+            // 区分"资源不存在"（404）和"请求无效"（400）
+            let (status, message) = if err_text.contains("not found") {
+                (StatusCode::NOT_FOUND, err_text)
+            } else if err_text.contains("no package_name") || err_text.contains("cannot be empty") {
                 (StatusCode::BAD_REQUEST, err_text)
             } else {
                 return crate::http_error::internal(e, "install_agent").into_response();
             };
+
             (
                 status,
                 Json(serde_json::json!({
@@ -385,7 +388,8 @@ pub async fn install_agent(Path(id): Path<String>) -> axum::response::Response {
     ),
     responses(
         (status = 200, description = "Agent uninstalled successfully"),
-        (status = 400, description = "Invalid request or agent not found", body = crate::api::ApiError),
+        (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 404, description = "Profile not found", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
@@ -402,15 +406,16 @@ pub async fn uninstall_agent(Path(id): Path<String>) -> axum::response::Response
             .into_response(),
         Err(e) => {
             let err_text = e.to_string();
-            let is_user_error = err_text.contains("not found")
-                || err_text.contains("no package_name")
-                || err_text.contains("cannot be empty");
 
-            let (status, message) = if is_user_error {
+            // 区分"资源不存在"（404）和"请求无效"（400）
+            let (status, message) = if err_text.contains("not found") {
+                (StatusCode::NOT_FOUND, err_text)
+            } else if err_text.contains("no package_name") || err_text.contains("cannot be empty") {
                 (StatusCode::BAD_REQUEST, err_text)
             } else {
                 return crate::http_error::internal(e, "uninstall_agent").into_response();
             };
+
             (
                 status,
                 Json(serde_json::json!({

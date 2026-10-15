@@ -1,0 +1,104 @@
+{
+  "operation": "DELETE /api/v1/workspaces/managed/{id}",
+  "method": "DELETE",
+  "path_template": "/api/v1/workspaces/managed/{id}",
+  "fingerprint": "cd822312",
+  "case_id": "OePZE4",
+  "code_sample": "curl -X DELETE -H 'Authorization: [Filtered]' 'http://localhost:3000/api/v1/workspaces/managed/0?force=null&force=null'",
+  "sequence": [
+    {
+      "method": "DELETE",
+      "url": "http://localhost:3000/api/v1/workspaces/managed/0?force=null&force=null",
+      "url_template": "http://localhost:3000/api/v1/workspaces/managed/{id}",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "OePZE4",
+        "Content-Length": "0"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8",
+          "access-control-allow-origin": "*",
+          "content-length": "84",
+          "date": "Thu, 15 Oct 2026 10:25:19 GMT"
+        },
+        "body": "Failed to deserialize query string: force: provided string was not `true` or `false`"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 400\nDocumented: 204, 404, 409, 500"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 1.3658000170835294e-05,
+          "mode": "negative"
+        },
+        "components": {
+          "PATH": "positive",
+          "QUERY": "negative"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Incorrect type",
+            "location": "/type",
+            "parameter": "force",
+            "parameter_location": "QUERY",
+            "scenario": "incorrect_type"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [
+          [
+            "path",
+            "id"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "PATH": {
+            "id": "0"
+          },
+          "QUERY": {
+            "force": [
+              "null",
+              "null"
+            ]
+          }
+        }
+      },
+      "path": "/api/v1/workspaces/managed/{id}",
+      "path_parameters": {
+        "id": "0"
+      },
+      "query": {
+        "force": [
+          "null",
+          "null"
+        ]
+      },
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

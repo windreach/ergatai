@@ -1,0 +1,91 @@
+{
+  "operation": "GET /api/v1/conversations",
+  "method": "GET",
+  "path_template": "/api/v1/conversations",
+  "fingerprint": "d0ff4f5e",
+  "case_id": "OvHGNT",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' 'http://localhost:3000/api/v1/conversations?collaboration_session_id=%5BFiltered%5D'",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/conversations?collaboration_session_id=%5BFiltered%5D",
+      "url_template": "http://localhost:3000/api/v1/conversations",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "OvHGNT"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "53",
+          "date": "Thu, 15 Oct 2026 13:37:49 GMT"
+        },
+        "body": "{\"error\":\"Invalid collaboration_session_id format: \"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "positive_data_acceptance",
+          "status": "failure",
+          "message": "API rejected schema-compliant request\n\nValid data should have been accepted\nExpected: 2xx, 3xx, 401, 403, 404, 409, 429, 5xx"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 6.369999027810991e-06,
+          "mode": "positive"
+        },
+        "components": {
+          "QUERY": "positive"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "All required properties and optional 'collaboration_session_id'",
+            "location": null,
+            "parameter": null,
+            "parameter_location": "QUERY",
+            "scenario": "object_required_and_optional"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [
+          [
+            "query",
+            "collaboration_session_id"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "QUERY": {
+            "collaboration_session_id": ""
+          }
+        }
+      },
+      "path": "/api/v1/conversations",
+      "path_parameters": {},
+      "query": {
+        "collaboration_session_id": "[Filtered]"
+      },
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

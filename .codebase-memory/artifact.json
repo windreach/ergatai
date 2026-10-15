@@ -1,11 +1,11 @@
 {
     "schema_version": 2,
-    "commit": "6ed5eba32b88187f8e8b328729cff8265bbdeb5d",
-    "indexed_at": "2026-10-13T16:49:29Z",
-    "project": "ergatai",
-    "nodes": 8607,
-    "edges": 44680,
-    "original_size": 24576000,
-    "compressed_size": 4200626,
-    "compression_level": 9
+    "commit": "523affa0b752a72a29732223535205478b8ef4ed",
+    "indexed_at": "2026-10-15T14:08:19Z",
+    "project": "home-yubing-code-ergatai",
+    "nodes": 21211,
+    "edges": 58312,
+    "original_size": 60751872,
+    "compressed_size": 7436198,
+    "compression_level": 3
 }

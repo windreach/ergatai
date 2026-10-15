@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     Json,
 };
 use ergatai_runtime::suspend_store::SuspendReason;
@@ -21,6 +21,34 @@ use crate::AppState;
 /// Cache for adapter version checks (per-process, one-time check per adapter).
 /// Each adapter is checked only once per process lifetime.
 static ADAPTER_CHECK_CACHE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+/// Validate agent ID format and return appropriate error response if invalid.
+/// Returns None if the ID is valid.
+fn validate_agent_id(id: &str) -> Option<Response> {
+    if !crate::api::validation::is_valid_agent_id(id) {
+        return Some(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid agent ID format: {}", id),
+                }),
+            )
+                .into_response(),
+        );
+    }
+    None
+}
+
+/// Create a 500 Internal Server Error response for monitoring_handler errors.
+fn monitoring_handler_error(e: &dyn std::fmt::Display) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse {
+            error: crate::sanitize_error(e, "monitoring_handler"),
+        }),
+    )
+        .into_response()
+}
 
 /// Check if an adapter needs version update (cached per-process).
 /// Returns immediately, spawns background task if update needed.
@@ -464,17 +492,14 @@ fn matches_pattern(command: &str, pattern: &str) -> bool {
     }
 }
 
-/// Validate that a workspace_id contains only safe characters.
+/// Validate that a workspace_id is a valid Snowflake format ID.
 ///
+/// Expected format: `ws_{timestamp}_{instance}_{sequence}`
 /// SECURITY: rejects empty IDs, path separators, `..` components, control
 /// characters, and any non-ASCII symbol. Prevents path-traversal and
 /// filesystem-namespace injection via the workspace creation API.
 pub(crate) fn is_valid_workspace_id(id: &str) -> bool {
-    if id.is_empty() || id.contains("..") || id == "." {
-        return false;
-    }
-    id.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    crate::api::validation::is_valid_ws_id(id)
 }
 
 async fn workspace_resource_limits(
@@ -482,8 +507,8 @@ async fn workspace_resource_limits(
 ) -> Result<ResourceLimits, (StatusCode, String)> {
     let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
         (
-            StatusCode::BAD_REQUEST,
-            format!("Invalid workspace ID format: {}", workspace_id),
+            StatusCode::NOT_FOUND,
+            format!("Workspace not found: {}", workspace_id),
         )
     })?;
     let workspace = match tokio::task::spawn_blocking(move || {
@@ -696,18 +721,11 @@ pub async fn spawn_agent(
     let mut spawn_chat_id: Option<String> = None;
 
     if let Some(conversation_id) = req.conversation_id.as_deref() {
-        let conversation_id_i64 = match parse_to_i64(conversation_id) {
-            Some(id) => id,
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("Invalid conversation ID format: {}", conversation_id),
-                    }),
-                )
-                    .into_response()
-            }
-        };
+        let conversation_id_i64 =
+            match crate::http_error::parse_id_or_not_found(conversation_id, "Conversation") {
+                Ok(id) => id,
+                Err((status, json)) => return (status, json).into_response(),
+            };
         match tokio::task::spawn_blocking(move || {
             crate::user_data_db::conversations::get(conversation_id_i64)
         })
@@ -752,18 +770,11 @@ pub async fn spawn_agent(
             }
         }
 
-        let conversation_id_i64_for_resolve = match parse_to_i64(conversation_id) {
-            Some(id) => id,
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("Invalid conversation ID format: {}", conversation_id),
-                    }),
-                )
-                    .into_response()
-            }
-        };
+        let conversation_id_i64_for_resolve =
+            match crate::http_error::parse_id_or_not_found(conversation_id, "Conversation") {
+                Ok(id) => id,
+                Err((status, json)) => return (status, json).into_response(),
+            };
         let resolved_workspace_id_i64 = match tokio::task::spawn_blocking(move || {
             crate::user_data_db::conversations::resolve_workspace_id(
                 conversation_id_i64_for_resolve,
@@ -849,18 +860,11 @@ pub async fn spawn_agent(
             }
         };
 
-        let conversation_id_i64_for_context = match parse_to_i64(conversation_id) {
-            Some(id) => id,
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("Invalid conversation ID format: {}", conversation_id),
-                    }),
-                )
-                    .into_response()
-            }
-        };
+        let conversation_id_i64_for_context =
+            match crate::http_error::parse_id_or_not_found(conversation_id, "Conversation") {
+                Ok(id) => id,
+                Err((status, json)) => return (status, json).into_response(),
+            };
         let execution_context = match tokio::task::spawn_blocking(move || {
             crate::user_data_db::conversation_execution_contexts::get(
                 conversation_id_i64_for_context,
@@ -1199,18 +1203,12 @@ pub async fn send_message(
 
         let chat_id = {
             let requested_conversation_id = requested_conversation_id.clone();
-            let requested_conversation_id_i64 = match parse_to_i64(&requested_conversation_id) {
-                Some(id) => id,
-                None => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({
-                            "status": "error",
-                            "message": format!("Invalid conversation ID format: {}", requested_conversation_id),
-                        })),
-                    )
-                        .into_response()
-                }
+            let requested_conversation_id_i64 = match crate::http_error::parse_id_or_not_found(
+                &requested_conversation_id,
+                "Conversation",
+            ) {
+                Ok(id) => id,
+                Err((status, json)) => return (status, json).into_response(),
             };
             match tokio::task::spawn_blocking(move || -> Result<String, String> {
                 if let Ok(Some(conversation)) =
@@ -1254,19 +1252,11 @@ pub async fn send_message(
 
         if !force_new {
             // Try to find an existing agent with the target command bound to this chat
-            let chat_id_i64_for_list = match parse_to_i64(&chat_id) {
-                Some(id) => id,
-                None => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({
-                            "status": "error",
-                            "message": format!("Invalid chat ID format: {}", chat_id),
-                        })),
-                    )
-                        .into_response()
-                }
-            };
+            let chat_id_i64_for_list =
+                match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+                    Ok(id) => id,
+                    Err((status, json)) => return (status, json).into_response(),
+                };
             let bindings_result = match tokio::task::spawn_blocking(move || {
                 crate::user_data_db::group_agent_bindings::list(chat_id_i64_for_list)
             })
@@ -1291,13 +1281,15 @@ pub async fn send_message(
                                 let send_req = SendRequest {
                                     from: req.from.unwrap_or_else(|| id.clone()),
                                     to: format_id(binding.agent_id, IdType::Agent),
-                                    target_conversation_id: Some(target_conversation_id), // Use conversation-centric routing
+                                    target_conversation_id: Some(
+                                        target_conversation_id.to_string(),
+                                    ), // Use conversation-centric routing
                                     message: req.message,
                                     message_type: req
                                         .message_type
                                         .unwrap_or_else(|| "request".to_string()),
                                     correlation_id: req.correlation_id,
-                                    conversation_id: Some(target_conversation_id),
+                                    conversation_id: Some(target_conversation_id.to_string()),
                                 };
 
                                 match sender.send(send_req).await {
@@ -1522,32 +1514,17 @@ pub async fn send_message(
 
                 // Bind the new agent to its own conversation below the chat.
                 let now = chrono::Utc::now().timestamp();
-                let chat_id_i64 = match parse_to_i64(&chat_id) {
-                    Some(id) => id,
-                    None => {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(serde_json::json!({
-                                "status": "error",
-                                "message": format!("Invalid chat ID format: {}", chat_id),
-                            })),
-                        )
-                            .into_response()
-                    }
+                let chat_id_i64 = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+                    Ok(id) => id,
+                    Err((status, json)) => return (status, json).into_response(),
                 };
                 let agent_command_for_name = target_command.clone();
-                let conversation_id_i64_for_create = match parse_to_i64(&agent_conversation_id) {
-                    Some(id) => id,
-                    None => {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(serde_json::json!({
-                                "status": "error",
-                                "message": format!("Invalid conversation ID format: {}", agent_conversation_id),
-                            })),
-                        )
-                            .into_response()
-                    }
+                let conversation_id_i64_for_create = match crate::http_error::parse_id_or_not_found(
+                    &agent_conversation_id,
+                    "Conversation",
+                ) {
+                    Ok(id) => id,
+                    Err((status, json)) => return (status, json).into_response(),
                 };
                 let chat_id_i64_for_parent = chat_id_i64;
                 let create_conversation =
@@ -1603,57 +1580,28 @@ pub async fn send_message(
                     }
                 };
 
-                let workspace_id_i64 = match parse_to_i64(&sender_info.workspace_id) {
-                    Some(id) => id,
-                    None => {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(serde_json::json!({
-                                "status": "error",
-                                "message": format!("Invalid workspace ID format: {}", sender_info.workspace_id),
-                            })),
-                        )
-                            .into_response()
-                    }
+                let workspace_id_i64 = match crate::http_error::parse_id_or_not_found(
+                    &sender_info.workspace_id,
+                    "Workspace",
+                ) {
+                    Ok(id) => id,
+                    Err((status, json)) => return (status, json).into_response(),
                 };
-                let chat_id_i64 = match parse_to_i64(&chat_id) {
-                    Some(id) => id,
-                    None => {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(serde_json::json!({
-                                "status": "error",
-                                "message": format!("Invalid chat ID format: {}", chat_id),
-                            })),
-                        )
-                            .into_response()
-                    }
+                let chat_id_i64 = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+                    Ok(id) => id,
+                    Err((status, json)) => return (status, json).into_response(),
                 };
-                let new_agent_id_i64 = match parse_to_i64(&new_agent_id) {
-                    Some(id) => id,
-                    None => {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(serde_json::json!({
-                                "status": "error",
-                                "message": format!("Invalid agent ID format: {}", new_agent_id),
-                            })),
-                        )
-                            .into_response()
-                    }
-                };
-                let agent_conversation_id_i64 = match parse_to_i64(&agent_conversation_id) {
-                    Some(id) => id,
-                    None => {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(serde_json::json!({
-                                "status": "error",
-                                "message": format!("Invalid conversation ID format: {}", agent_conversation_id),
-                            })),
-                        )
-                            .into_response()
-                    }
+                let new_agent_id_i64 =
+                    match crate::http_error::parse_id_or_not_found(&new_agent_id, "Agent") {
+                        Ok(id) => id,
+                        Err((status, json)) => return (status, json).into_response(),
+                    };
+                let agent_conversation_id_i64 = match crate::http_error::parse_id_or_not_found(
+                    &agent_conversation_id,
+                    "Conversation",
+                ) {
+                    Ok(id) => id,
+                    Err((status, json)) => return (status, json).into_response(),
                 };
 
                 let binding = crate::user_data_db::GroupAgentBinding {
@@ -1700,17 +1648,9 @@ pub async fn send_message(
                 }
 
                 // Register the conversation in the collaboration session.
-                let chat_id_i64 = match parse_to_i64(&chat_id) {
-                    Some(id) => id,
-                    None => {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(ErrorResponse {
-                                error: format!("Invalid chat ID format: {}", chat_id),
-                            }),
-                        )
-                            .into_response();
-                    }
+                let chat_id_i64 = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+                    Ok(id) => id,
+                    Err((status, json)) => return (status, json).into_response(),
                 };
 
                 let session_for_participant = tokio::task::spawn_blocking(move || {
@@ -1754,11 +1694,11 @@ pub async fn send_message(
                 let send_req = SendRequest {
                     from: req.from.unwrap_or_else(|| id.clone()),
                     to: new_agent_id.clone(),
-                    target_conversation_id: Some(agent_conversation_id_i64), // Use conversation-centric routing
+                    target_conversation_id: Some(agent_conversation_id_i64.to_string()), // Use conversation-centric routing
                     message: req.message,
                     message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
                     correlation_id: req.correlation_id,
-                    conversation_id: Some(agent_conversation_id_i64),
+                    conversation_id: Some(agent_conversation_id_i64.to_string()),
                 };
 
                 return match sender.send(send_req).await {
@@ -1789,8 +1729,7 @@ pub async fn send_message(
                     SendMessageResult::Rejected { reason } => (
                         StatusCode::BAD_REQUEST,
                         Json(serde_json::json!({
-                            "status": "rejected",
-                            "reason": reason,
+                            "error": reason,
                         })),
                     )
                         .into_response(),
@@ -1817,11 +1756,11 @@ pub async fn send_message(
     let send_req = SendRequest {
         from: req.from.unwrap_or_else(|| "api".to_string()),
         to: id.clone(),
-        target_conversation_id: conversation_id_i64, // Use conversation-centric routing
+        target_conversation_id: conversation_id_i64.map(|id| id.to_string()), // Use conversation-centric routing
         message: req.message,
         message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
         correlation_id: req.correlation_id,
-        conversation_id: conversation_id_i64,
+        conversation_id: conversation_id_i64.map(|id| id.to_string()),
     };
 
     match sender.send(send_req).await {
@@ -1850,8 +1789,7 @@ pub async fn send_message(
         SendMessageResult::Rejected { reason } => (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "status": "rejected",
-                "reason": reason,
+                "error": reason,
             })),
         )
             .into_response(),
@@ -2189,6 +2127,9 @@ pub async fn get_agent_tool_calls(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
     let result = crate::services::agent_service::get_agent_tool_calls(&id).await;
     match result {
         Ok(Some(calls)) => {
@@ -2236,13 +2177,7 @@ pub async fn get_agent_tool_calls(
             }),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "monitoring_handler"),
-            }),
-        )
-            .into_response(),
+        Err(e) => monitoring_handler_error(&e),
     }
 }
 
@@ -2284,6 +2219,9 @@ pub async fn get_agent_plan(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
     match crate::services::agent_service::get_agent_plan(&id).await {
         Ok(Some(tracked)) => {
             let elapsed = tracked.last_updated.elapsed();
@@ -2316,13 +2254,7 @@ pub async fn get_agent_plan(
             }),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "monitoring_handler"),
-            }),
-        )
-            .into_response(),
+        Err(e) => monitoring_handler_error(&e),
     }
 }
 
@@ -2473,13 +2405,7 @@ pub async fn get_agent_elicitations(
             }),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "monitoring_handler"),
-            }),
-        )
-            .into_response(),
+        Err(e) => monitoring_handler_error(&e),
     }
 }
 
@@ -2499,6 +2425,9 @@ pub async fn get_agent_available_commands(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
     let result = crate::services::agent_service::get_agent_available_commands(&id).await;
     match result {
         Ok(Some(cmds)) => {
@@ -2526,13 +2455,7 @@ pub async fn get_agent_available_commands(
             }),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "monitoring_handler"),
-            }),
-        )
-            .into_response(),
+        Err(e) => monitoring_handler_error(&e),
     }
 }
 
@@ -2557,6 +2480,9 @@ pub async fn execute_agent_command(
     Path(id): Path<String>,
     Json(req): Json<ExecuteCommandRequest>,
 ) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
     match crate::services::agent_service::execute_agent_command(&id, &req.command, req.timeout_secs)
         .await
     {
@@ -2568,13 +2494,7 @@ pub async fn execute_agent_command(
             )
                 .into_response()
         }
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "monitoring_handler"),
-            }),
-        )
-            .into_response(),
+        Err(e) => monitoring_handler_error(&e),
     }
 }
 
@@ -2594,6 +2514,9 @@ pub async fn list_agent_sessions(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
     match crate::services::agent_service::list_agent_sessions(&id).await {
         Ok(sessions) => {
             let response = ListSessionsResponse {
@@ -2609,13 +2532,7 @@ pub async fn list_agent_sessions(
             };
             (StatusCode::OK, Json(response)).into_response()
         }
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "monitoring_handler"),
-            }),
-        )
-            .into_response(),
+        Err(e) => monitoring_handler_error(&e),
     }
 }
 
@@ -2635,6 +2552,9 @@ pub async fn create_agent_session(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
     match crate::services::agent_service::create_agent_session(&id).await {
         Ok(session) => {
             let response = SessionInfoResponse {
@@ -2645,13 +2565,7 @@ pub async fn create_agent_session(
             };
             (StatusCode::CREATED, Json(response)).into_response()
         }
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "monitoring_handler"),
-            }),
-        )
-            .into_response(),
+        Err(e) => monitoring_handler_error(&e),
     }
 }
 
@@ -2674,15 +2588,12 @@ pub async fn load_agent_session(
     State(_state): State<AppState>,
     Path((id, session_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
     match crate::services::agent_service::load_agent_session(&id, &session_id).await {
         Ok(()) => StatusCode::OK.into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "monitoring_handler"),
-            }),
-        )
-            .into_response(),
+        Err(e) => monitoring_handler_error(&e),
     }
 }
 
@@ -2705,15 +2616,12 @@ pub async fn delete_agent_session(
     State(_state): State<AppState>,
     Path((id, session_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
     match crate::services::agent_service::delete_agent_session(&id, &session_id).await {
         Ok(()) => StatusCode::OK.into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "monitoring_handler"),
-            }),
-        )
-            .into_response(),
+        Err(e) => monitoring_handler_error(&e),
     }
 }
 
@@ -2798,6 +2706,9 @@ pub async fn get_agent_config_options(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
     let result = crate::services::agent_service::get_agent_config_options(&id).await;
     match result {
         Ok(Some(opts)) => {
@@ -2833,13 +2744,7 @@ pub async fn get_agent_config_options(
             }),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "monitoring_handler"),
-            }),
-        )
-            .into_response(),
+        Err(e) => monitoring_handler_error(&e),
     }
 }
 
@@ -2921,6 +2826,9 @@ pub async fn get_agent_usage(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
     let result = crate::services::agent_service::get_agent_usage(&id).await;
     match result {
         Ok(Some((input_tokens, output_tokens))) => (
@@ -2940,13 +2848,7 @@ pub async fn get_agent_usage(
             }),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "monitoring_handler"),
-            }),
-        )
-            .into_response(),
+        Err(e) => monitoring_handler_error(&e),
     }
 }
 
@@ -2973,6 +2875,9 @@ pub async fn get_agent_output(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
     let result = crate::services::agent_service::get_agent_output(&id).await;
     match result {
         Ok(Some(output)) => (
@@ -2990,13 +2895,7 @@ pub async fn get_agent_output(
             }),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "monitoring_handler"),
-            }),
-        )
-            .into_response(),
+        Err(e) => monitoring_handler_error(&e),
     }
 }
 
@@ -3024,6 +2923,9 @@ pub async fn get_agent_last_activity(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
     let result = crate::services::agent_service::get_agent_last_activity_age(&id).await;
     match result {
         Ok(Some(duration)) => (
@@ -3041,13 +2943,7 @@ pub async fn get_agent_last_activity(
             }),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "monitoring_handler"),
-            }),
-        )
-            .into_response(),
+        Err(e) => monitoring_handler_error(&e),
     }
 }
 
@@ -3076,6 +2972,9 @@ pub async fn get_agent_exit_code(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
     let result = crate::services::agent_service::get_agent_exit_code(&id).await;
     match result {
         Ok(Some(exit_code)) => (
@@ -3094,13 +2993,7 @@ pub async fn get_agent_exit_code(
             }),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "monitoring_handler"),
-            }),
-        )
-            .into_response(),
+        Err(e) => monitoring_handler_error(&e),
     }
 }
 
@@ -3127,6 +3020,9 @@ pub async fn get_agent_pid(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
     let result = crate::services::agent_service::get_agent_pid(&id).await;
     match result {
         Ok(Some(pid)) => {
@@ -3139,13 +3035,7 @@ pub async fn get_agent_pid(
             }),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "monitoring_handler"),
-            }),
-        )
-            .into_response(),
+        Err(e) => monitoring_handler_error(&e),
     }
 }
 
@@ -3349,18 +3239,11 @@ pub async fn prompt_agent(
     let prompt_id = format_id(generate(), IdType::Session);
 
     if let Some(conversation_id) = body.conversation_id.as_deref() {
-        let conversation_id_i64 = match parse_to_i64(conversation_id) {
-            Some(id) => id,
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("Invalid conversation ID format: {}", conversation_id),
-                    }),
-                )
-                    .into_response()
-            }
-        };
+        let conversation_id_i64 =
+            match crate::http_error::parse_id_or_not_found(conversation_id, "Conversation") {
+                Ok(id) => id,
+                Err((status, json)) => return (status, json).into_response(),
+            };
         let conversation = match tokio::task::spawn_blocking(move || {
             crate::user_data_db::conversations::get(conversation_id_i64)
         })
@@ -3396,18 +3279,11 @@ pub async fn prompt_agent(
             }
         };
 
-        let conversation_id_i64_for_resolve = match parse_to_i64(conversation_id) {
-            Some(id) => id,
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("Invalid conversation ID format: {}", conversation_id),
-                    }),
-                )
-                    .into_response()
-            }
-        };
+        let conversation_id_i64_for_resolve =
+            match crate::http_error::parse_id_or_not_found(conversation_id, "Conversation") {
+                Ok(id) => id,
+                Err((status, json)) => return (status, json).into_response(),
+            };
         let workspace_id_i64 = match tokio::task::spawn_blocking(move || {
             crate::user_data_db::conversations::resolve_workspace_id(
                 conversation_id_i64_for_resolve,

@@ -1,0 +1,106 @@
+{
+  "operation": "POST /api/v1/conversations",
+  "method": "POST",
+  "path_template": "/api/v1/conversations",
+  "fingerprint": "bf7d6a59",
+  "case_id": "X8pS6a",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d '{\"chat_id\": \"chat_0_0_0\", \"collaboration_session_id\": \"[Filtered]\", \"mode\": \"\", \"name\": \"\", \"participant_role\": null}' http://localhost:3000/api/v1/conversations",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/conversations",
+      "url_template": "http://localhost:3000/api/v1/conversations",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "X8pS6a",
+        "Content-Type": "application/json",
+        "Content-Length": "107"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "53",
+          "date": "Thu, 15 Oct 2026 13:37:48 GMT"
+        },
+        "body": "{\"error\":\"Invalid collaboration_session_id format: \"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "positive_data_acceptance",
+          "status": "failure",
+          "message": "API rejected schema-compliant request\n\nValid data should have been accepted\nExpected: 2xx, 3xx, 401, 403, 404, 409, 429, 5xx"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 2.4631997803226113e-05,
+          "mode": "positive"
+        },
+        "components": {
+          "BODY": "positive"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Object with valid 'participant_role' value: Value null value",
+            "location": null,
+            "parameter": "application/json",
+            "parameter_location": "BODY",
+            "scenario": "valid_object"
+          }
+        },
+        "pool_draws": [
+          {
+            "location": "body",
+            "parameter_name": "chat_id",
+            "resource_name": "Chat",
+            "resource_field": "chat_id",
+            "source_operation": "POST /api/v1/chats/{id}/archive",
+            "source_status": 204,
+            "source_identity": null,
+            "source_input": true,
+            "source_query": null
+          }
+        ],
+        "pool_misses": [
+          [
+            "body",
+            "collaboration_session_id"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/conversations",
+      "path_parameters": {},
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": {
+          "chat_id": "chat_0_0_0",
+          "collaboration_session_id": "[Filtered]",
+          "mode": "",
+          "name": "",
+          "participant_role": null
+        }
+      },
+      "media_type": "application/json",
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

@@ -171,35 +171,6 @@ impl StateGuard {
         self.completed = true;
         // Drop without spawning cleanup task
     }
-
-    /// Transition agent state to Running.
-    async fn transition_to_running(registry: &AgentRegistry, agent_id: &str) {
-        let now = chrono::Utc::now();
-        let mut guard = registry.write().await;
-        if let Some(info) = guard.get_mut(agent_id) {
-            info.lifecycle = AgentLifecycleState::Running {
-                task_id: None,
-                started_at: now,
-                last_heartbeat: now,
-            };
-            info.last_heartbeat = now;
-            info.state_changed_at = now;
-        }
-    }
-
-    /// Transition agent state to Idle.
-    async fn transition_to_idle(registry: &AgentRegistry, agent_id: &str) {
-        let now = chrono::Utc::now();
-        let mut guard = registry.write().await;
-        if let Some(info) = guard.get_mut(agent_id) {
-            info.lifecycle = AgentLifecycleState::Idle {
-                ready_since: now,
-                capabilities: Vec::new(),
-            };
-            info.last_heartbeat = now;
-            info.state_changed_at = now;
-        }
-    }
 }
 
 impl Drop for StateGuard {
@@ -213,49 +184,50 @@ impl Drop for StateGuard {
                 agent_id = %agent_id,
                 "StateGuard dropped without completion — spawning cleanup task to restore Idle state"
             );
-            // Check if tokio runtime is available (may not be during shutdown)
-            let handle = match tokio::runtime::Handle::try_current() {
-                Ok(h) => h,
-                Err(_) => {
-                    tracing::error!(
-                        agent_id = %agent_id,
-                        "Cannot spawn cleanup task: no tokio runtime available (runtime may be shutting down)"
-                    );
-                    return;
-                }
-            };
-
-            handle.spawn(async move {
-                // Note: Can't use StateGuard::transition_to_idle() here because Drop
-                // is synchronous. Inline the state transition logic.
-                // Use timeout to prevent infinite wait if registry lock is poisoned/deadlocked
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    async {
-                        let now = chrono::Utc::now();
-                        let mut guard = registry.write().await;
-                        if let Some(info) = guard.get_mut(&agent_id) {
-                            info.lifecycle = AgentLifecycleState::Idle {
-                                ready_since: now,
-                                capabilities: Vec::new(),
-                            };
-                            info.last_heartbeat = now;
-                            info.state_changed_at = now;
-                        }
-                    },
-                )
-                .await
-                {
-                    Ok(_) => {}
-                    Err(_) => {
-                        tracing::error!(
-                            agent_id = %agent_id,
-                            "StateGuard cleanup timed out after 5s — registry lock may be deadlocked"
-                        );
-                    }
+            tokio::spawn(async move {
+                let now = chrono::Utc::now();
+                let mut guard = registry.write().await;
+                if let Some(info) = guard.get_mut(&agent_id) {
+                    info.lifecycle = AgentLifecycleState::Idle {
+                        ready_since: now,
+                        capabilities: Vec::new(),
+                    };
+                    info.last_heartbeat = now;
+                    info.state_changed_at = now;
                 }
             });
         }
+    }
+}
+
+// ── State Transition Helpers ──
+
+/// Helper: Transition agent state from Idle to Running
+async fn transition_to_running(registry: &AgentRegistry, agent_id: &str) {
+    let now = chrono::Utc::now();
+    let mut reg_guard = registry.write().await;
+    if let Some(info) = reg_guard.get_mut(agent_id) {
+        info.lifecycle = crate::agent_lifecycle::AgentLifecycleState::Running {
+            task_id: None,
+            started_at: now,
+            last_heartbeat: now,
+        };
+        info.last_heartbeat = now;
+        info.state_changed_at = now;
+    }
+}
+
+/// Helper: Transition agent state from Running to Idle
+async fn transition_to_idle(registry: &AgentRegistry, agent_id: &str) {
+    let now = chrono::Utc::now();
+    let mut reg_guard = registry.write().await;
+    if let Some(info) = reg_guard.get_mut(agent_id) {
+        info.lifecycle = crate::agent_lifecycle::AgentLifecycleState::Idle {
+            ready_since: now,
+            capabilities: Vec::new(),
+        };
+        info.last_heartbeat = now;
+        info.state_changed_at = now;
     }
 }
 
@@ -598,25 +570,16 @@ impl AgentRuntime {
             .await
             .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", runtime_id)))?;
 
-        // H4 NOTE: The registry lock is released between get() and transition_to_running().
-        // During this window, other threads may observe inconsistent state. However, StateGuard
-        // guarantees eventual consistency: if this task panics or is cancelled, the Drop impl
-        // spawns a cleanup task that restores Idle state. This is acceptable because:
-        // 1. The window is very small (microseconds)
-        // 2. StateGuard provides a safety net for panic/cancellation
-        // 3. The alternative (holding lock across await) would deadlock on backend.inject_message()
-
         // Transition: Idle → Running (agent is now processing a message)
         // Create guard BEFORE transition to ensure cleanup on panic/cancellation
         let state_guard = StateGuard::new(self.registry.clone(), runtime_id.clone());
-        StateGuard::transition_to_running(&self.registry, &runtime_id).await;
+        transition_to_running(&self.registry, &runtime_id).await;
 
         // Deliver via backend injection (synchronous wait for prompt completion)
         let result = self.backend.inject_message(&info.handle, message).await;
 
         // Transition: Running → Idle (agent finished processing, back to idle)
-        // Do this regardless of success/failure
-        StateGuard::transition_to_idle(&self.registry, &runtime_id).await;
+        transition_to_idle(&self.registry, &runtime_id).await;
 
         // Mark guard as completed to prevent cleanup task from running
         state_guard.complete();
@@ -650,18 +613,16 @@ impl AgentRuntime {
             "Injecting message directly to Cov (bypassed agent_id lookup)"
         );
 
-        // H4 NOTE: See inject_message() for explanation of lock release window and StateGuard safety.
-
         // Transition: Idle → Running (agent is now processing a message)
         // Create guard BEFORE transition to ensure cleanup on panic/cancellation
         let state_guard = StateGuard::new(self.registry.clone(), info.agent_id.clone());
-        StateGuard::transition_to_running(&self.registry, &info.agent_id).await;
+        transition_to_running(&self.registry, &info.agent_id).await;
 
         // Deliver via backend injection (synchronous wait for prompt completion)
         let result = self.backend.inject_message(&info.handle, message).await;
 
         // Transition: Running → Idle (agent finished processing, back to idle)
-        StateGuard::transition_to_idle(&self.registry, &info.agent_id).await;
+        transition_to_idle(&self.registry, &info.agent_id).await;
 
         // Mark guard as completed to prevent cleanup task from running
         state_guard.complete();
@@ -691,12 +652,10 @@ impl AgentRuntime {
             "Injecting message with images directly to Cov"
         );
 
-        // H4 NOTE: See inject_message() for explanation of lock release window and StateGuard safety.
-
         // Transition: Idle → Running (agent is now processing a message)
         // Create guard BEFORE transition to ensure cleanup on panic/cancellation
         let state_guard = StateGuard::new(self.registry.clone(), info.agent_id.clone());
-        StateGuard::transition_to_running(&self.registry, &info.agent_id).await;
+        transition_to_running(&self.registry, &info.agent_id).await;
 
         // Deliver via backend injection (synchronous wait for prompt completion)
         let result = self
@@ -705,7 +664,7 @@ impl AgentRuntime {
             .await;
 
         // Transition: Running → Idle (agent finished processing, back to idle)
-        StateGuard::transition_to_idle(&self.registry, &info.agent_id).await;
+        transition_to_idle(&self.registry, &info.agent_id).await;
 
         // Mark guard as completed to prevent cleanup task from running
         state_guard.complete();
@@ -731,24 +690,10 @@ impl AgentRuntime {
             .await
             .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", runtime_id)))?;
 
-        // H4 NOTE: See inject_message() for explanation of lock release window and StateGuard safety.
-
         // Transition: Idle → Running (agent is now processing a message)
         // Create guard BEFORE transition to ensure cleanup on panic/cancellation
         let state_guard = StateGuard::new(self.registry.clone(), runtime_id.clone());
-        let now = chrono::Utc::now();
-        {
-            let mut reg_guard = self.registry.write().await;
-            if let Some(info) = reg_guard.get_mut(&runtime_id) {
-                info.lifecycle = crate::agent_lifecycle::AgentLifecycleState::Running {
-                    task_id: None,
-                    started_at: now,
-                    last_heartbeat: now,
-                };
-                info.last_heartbeat = now;
-                info.state_changed_at = now;
-            }
-        }
+        transition_to_running(&self.registry, &runtime_id).await;
 
         // Deliver via backend injection (synchronous wait for prompt completion)
         let result = self
@@ -757,7 +702,7 @@ impl AgentRuntime {
             .await;
 
         // Transition: Running → Idle (agent finished processing, back to idle)
-        StateGuard::transition_to_idle(&self.registry, &runtime_id).await;
+        transition_to_idle(&self.registry, &runtime_id).await;
 
         // Mark guard as completed to prevent cleanup task from running
         state_guard.complete();
@@ -872,13 +817,11 @@ impl AgentRuntime {
         // 6. Save to suspend store
         self.suspend_store.save_suspended(&record)?;
 
-        // 7. Update lifecycle state to Suspended (before removal to maintain consistency)
-        self.set_agent_lifecycle(agent_id, target_state).await?;
-
-        // 8. Remove from registry FIRST (prevents new messages from being sent)
+        // 7. Remove from registry FIRST (prevents new messages from being sent)
         self.registry.remove(agent_id).await;
 
-        // 9. Abort the monitor task if it exists
+        // 8. Abort the monitor task if it exists
+        // M3 FIX: Use map_err instead of unwrap() to handle lock poisoning
         if let Some(handle) = self
             .monitor_handles
             .lock()
@@ -887,6 +830,9 @@ impl AgentRuntime {
         {
             handle.abort();
         }
+
+        // 9. Update lifecycle state to Suspended
+        self.set_agent_lifecycle(agent_id, target_state).await?;
 
         // 10. Kill the agent process (after removal to prevent message race)
         self.backend.kill_agent(&agent.handle).await?;
@@ -2165,7 +2111,15 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::OnceLock;
     use std::time::Duration;
+
+    // Mutex to serialize tests that modify environment variables
+    static ENV_MUTEX: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+
+    fn env_mutex() -> &'static std::sync::Mutex<()> {
+        ENV_MUTEX.get_or_init(|| std::sync::Mutex::new(()))
+    }
 
     /// Mock backend that tracks calls and doesn't spawn processes.
     struct MockBackend {
@@ -2700,6 +2654,7 @@ mod tests {
 
     #[test]
     fn test_read_api_token_from_env() {
+        let _guard = env_mutex().lock().unwrap();
         // Save original value
         let original = std::env::var("ERGATAI_API_TOKEN").ok();
 
@@ -2717,6 +2672,7 @@ mod tests {
 
     #[test]
     fn test_read_api_token_from_env_trimmed() {
+        let _guard = env_mutex().lock().unwrap();
         let original = std::env::var("ERGATAI_API_TOKEN").ok();
 
         std::env::set_var("ERGATAI_API_TOKEN", "  test-token  ");

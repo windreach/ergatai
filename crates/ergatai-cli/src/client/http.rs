@@ -408,6 +408,7 @@ struct SendMessageRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     correlation_id: Option<String>,
     /// Conversation ID for message routing. Required for conversation-centric delivery.
+    #[serde(skip_serializing_if = "Option::is_none")]
     conversation_id: Option<String>,
 }
 

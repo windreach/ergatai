@@ -1,0 +1,91 @@
+{
+  "operation": "GET /api/v1/collaboration-sessions/by-chat/{chat_id}",
+  "method": "GET",
+  "path_template": "/api/v1/collaboration-sessions/by-chat/{chat_id}",
+  "fingerprint": "392ab312",
+  "case_id": "Wfz0rn",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/collaboration-sessions/by-chat/0",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions/by-chat/0",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions/by-chat/{chat_id}",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "Wfz0rn"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8",
+          "access-control-allow-origin": "*",
+          "content-length": "25",
+          "date": "Thu, 15 Oct 2026 10:25:19 GMT"
+        },
+        "body": "Invalid chat_id format: 0"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 400\nDocumented: 200, 404"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 5.692599916073959e-05,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Default positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "scenario": "default_positive_test"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [
+          [
+            "path",
+            "chat_id"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "PATH": {
+            "chat_id": "0"
+          }
+        }
+      },
+      "path": "/api/v1/collaboration-sessions/by-chat/{chat_id}",
+      "path_parameters": {
+        "chat_id": "0"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

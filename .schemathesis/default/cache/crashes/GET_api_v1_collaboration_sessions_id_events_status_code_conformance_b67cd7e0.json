@@ -1,0 +1,99 @@
+{
+  "operation": "GET /api/v1/collaboration-sessions/{id}/events",
+  "method": "GET",
+  "path_template": "/api/v1/collaboration-sessions/{id}/events",
+  "fingerprint": "b67cd7e0",
+  "case_id": "5LiboV",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' 'http://localhost:3000/api/v1/collaboration-sessions/0/events?limit=0&x-schemathesis-unknown-property=42'",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions/0/events?limit=0&x-schemathesis-unknown-property=42",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions/{id}/events",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "5LiboV"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8",
+          "access-control-allow-origin": "*",
+          "content-length": "28",
+          "date": "Thu, 15 Oct 2026 10:25:20 GMT"
+        },
+        "body": "Invalid session_id format: 0"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 400\nDocumented: 200, 404"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 2.7378000595490448e-05,
+          "mode": "negative"
+        },
+        "components": {
+          "PATH": "positive",
+          "QUERY": "negative"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Object with unexpected properties",
+            "location": null,
+            "parameter": null,
+            "parameter_location": "QUERY",
+            "scenario": "object_unexpected_properties"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [
+          [
+            "path",
+            "id"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "PATH": {
+            "id": "0"
+          },
+          "QUERY": {
+            "limit": 0,
+            "x-schemathesis-unknown-property": 42
+          }
+        }
+      },
+      "path": "/api/v1/collaboration-sessions/{id}/events",
+      "path_parameters": {
+        "id": "0"
+      },
+      "query": {
+        "limit": "0",
+        "x-schemathesis-unknown-property": "42"
+      },
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

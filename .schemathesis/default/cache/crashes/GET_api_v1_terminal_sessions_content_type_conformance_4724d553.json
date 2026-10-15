@@ -1,0 +1,91 @@
+{
+  "operation": "GET /api/v1/terminal-sessions",
+  "method": "GET",
+  "path_template": "/api/v1/terminal-sessions",
+  "fingerprint": "4724d553",
+  "case_id": "9baQ7S",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' 'http://localhost:3000/api/v1/terminal-sessions?user_id='",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/terminal-sessions?user_id=",
+      "url_template": "http://localhost:3000/api/v1/terminal-sessions",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "9baQ7S"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8",
+          "access-control-allow-origin": "*",
+          "content-length": "64",
+          "date": "Thu, 15 Oct 2026 10:41:46 GMT"
+        },
+        "body": "Failed to deserialize query string: missing field `workspace_id`"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "content_type_conformance",
+          "status": "failure",
+          "message": "Undocumented Content-Type\n\nReceived: text/plain; charset=utf-8\nDocumented: application/json"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 4.663299841922708e-05,
+          "mode": "positive"
+        },
+        "components": {
+          "QUERY": "positive"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Default positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "scenario": "default_positive_test"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [
+          [
+            "query",
+            "user_id"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "QUERY": {
+            "user_id": ""
+          }
+        }
+      },
+      "path": "/api/v1/terminal-sessions",
+      "path_parameters": {},
+      "query": {
+        "user_id": ""
+      },
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

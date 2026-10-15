@@ -1,0 +1,91 @@
+{
+  "operation": "GET /api/v1/collaboration-sessions/{collaboration_session_id}/progress",
+  "method": "GET",
+  "path_template": "/api/v1/collaboration-sessions/{collaboration_session_id}/progress",
+  "fingerprint": "cdd955dd",
+  "case_id": "Otz2Mn",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/collaboration-sessions/0/progress",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions/0/progress",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions/{collaboration_session_id}/progress",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "Otz2Mn"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8",
+          "access-control-allow-origin": "*",
+          "content-length": "28",
+          "date": "Thu, 15 Oct 2026 10:25:20 GMT"
+        },
+        "body": "Invalid session_id format: 0"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 400\nDocumented: 200, 404"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 4.9229998694499955e-05,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Default positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "scenario": "default_positive_test"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [
+          [
+            "path",
+            "collaboration_session_id"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "PATH": {
+            "collaboration_session_id": "0"
+          }
+        }
+      },
+      "path": "/api/v1/collaboration-sessions/{collaboration_session_id}/progress",
+      "path_parameters": {
+        "collaboration_session_id": "[Filtered]"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

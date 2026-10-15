@@ -1,0 +1,100 @@
+{
+  "operation": "GET /api/v1/locks/audit",
+  "method": "GET",
+  "path_template": "/api/v1/locks/audit",
+  "fingerprint": "d039531e",
+  "case_id": "sMANxy",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' 'http://localhost:3000/api/v1/locks/audit?agent_id=L%C3%88%C3%82%C2%BE%C2%ADc'",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/locks/audit?agent_id=L%C3%88%C3%82%C2%BE%C2%ADc",
+      "url_template": "http://localhost:3000/api/v1/locks/audit",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "sMANxy"
+      },
+      "response": {
+        "status_code": 200,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "2",
+          "date": "Thu, 15 Oct 2026 13:42:07 GMT"
+        },
+        "body": "[]"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "negative_data_rejection",
+          "status": "failure",
+          "message": "API accepted schema-violating request\n\nInvalid data should have been rejected\nExpected: 400, 401, 403, 404, 405, 406, 409, 415, 422, 428, 429, 5xx\nInvalid component: parameter `limit` in query - violates `additionalProperties`, `required` (was limit)"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.0039150039992819075,
+          "mode": "negative"
+        },
+        "components": {
+          "QUERY": "negative"
+        },
+        "phase": {
+          "name": "fuzzing",
+          "data": {
+            "type": "FuzzingPhaseData",
+            "description": "violates `additionalProperties`, `required` (was limit)",
+            "location": null,
+            "parameter": "limit",
+            "parameter_location": "QUERY",
+            "mutations": [
+              {
+                "path": [],
+                "parameter_location": "query",
+                "schema_pointer": "",
+                "channel": "schema",
+                "operator": "negate_constraints",
+                "keywords": [
+                  "additionalProperties",
+                  "required"
+                ],
+                "parameter": "limit",
+                "original_value": [
+                  "limit"
+                ],
+                "new_value": null
+              }
+            ]
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/locks/audit",
+      "path_parameters": {},
+      "query": {
+        "agent_id": "L\u00c8\u00c2\u00be\u00adc",
+        "__main__": []
+      },
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

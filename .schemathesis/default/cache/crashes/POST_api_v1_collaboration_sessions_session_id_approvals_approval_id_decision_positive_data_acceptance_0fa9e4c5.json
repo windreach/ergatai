@@ -1,0 +1,94 @@
+{
+  "operation": "POST /api/v1/collaboration-sessions/{session_id}/approvals/{approval_id}/decision",
+  "method": "POST",
+  "path_template": "/api/v1/collaboration-sessions/{session_id}/approvals/{approval_id}/decision",
+  "fingerprint": "0fa9e4c5",
+  "case_id": "SrJ7E0",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d '{\"\\u00ee\": {\"[\": {\"C\": true}}, \"decision\": \"approve\"}' http://localhost:3000/api/v1/collaboration-sessions/chat_76_21065725892_222/approvals/37867/decision",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions/chat_76_21065725892_222/approvals/37867/decision",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions/{session_id}/approvals/{approval_id}/decision",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "SrJ7E0",
+        "Content-Type": "application/json",
+        "Content-Length": "53"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "62",
+          "date": "Thu, 15 Oct 2026 13:40:51 GMT"
+        },
+        "body": "{\"error\":\"Invalid session_id format: chat_76_21065725892_222\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "positive_data_acceptance",
+          "status": "failure",
+          "message": "API rejected schema-compliant request\n\nValid data should have been accepted\nExpected: 2xx, 3xx, 401, 403, 404, 409, 429, 5xx\nHint: The request body contains 1 additional property not defined in the schema (`\u00ee`). The server appears to reject properties the schema allows. Declare `additionalProperties: false` if extras are not accepted, or make the server ignore unknown fields."
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.006735156999639003,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive",
+          "BODY": "positive"
+        },
+        "phase": {
+          "name": "fuzzing",
+          "data": {
+            "type": "FuzzingPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/collaboration-sessions/{session_id}/approvals/{approval_id}/decision",
+      "path_parameters": {
+        "approval_id": "37867",
+        "session_id": "[Filtered]"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": {
+          "\u00ee": {
+            "[": {
+              "C": true
+            }
+          },
+          "decision": "approve"
+        }
+      },
+      "media_type": "application/json",
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

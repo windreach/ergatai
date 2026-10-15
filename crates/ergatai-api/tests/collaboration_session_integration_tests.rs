@@ -36,23 +36,9 @@ fn lock_user_data_db_for_tests() -> tokio::sync::MutexGuard<'static, ()> {
     guard
 }
 
-fn ensure_workspace_and_chat_exist(workspace_id: &str, chat_id: &str) {
-    // Parse string IDs to i64 for database storage
-    let workspace_id_i64 = workspace_id.parse::<i64>().unwrap_or_else(|_| {
-        // If not a valid i64, generate a deterministic one from the string
-        workspace_id
-            .bytes()
-            .fold(0i64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as i64))
-    });
-    let chat_id_i64 = chat_id.parse::<i64>().unwrap_or_else(|_| {
-        // If not a valid i64, generate a deterministic one from the string
-        chat_id
-            .bytes()
-            .fold(0i64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as i64))
-    });
-
+fn ensure_workspace_and_chat_exist(workspace_id: i64, chat_id: i64) {
     let _ = ergatai_api::user_data_db::workspaces::create(ergatai_api::user_data_db::Workspace {
-        workspace_id: workspace_id_i64,
+        workspace_id,
         name: format!("Test Workspace {}", workspace_id),
         work_dir: format!("/tmp/{}", workspace_id),
         env: "{}".to_string(),
@@ -64,8 +50,8 @@ fn ensure_workspace_and_chat_exist(workspace_id: &str, chat_id: &str) {
         updated_at: 0,
     });
     let _ = ergatai_api::user_data_db::chats::create(ergatai_api::user_data_db::Chat {
-        chat_id: chat_id_i64,
-        workspace_id: workspace_id_i64,
+        chat_id,
+        workspace_id,
         name: Some(format!("Test Chat {}", chat_id)),
         created_at: 0,
         updated_at: 0,
@@ -90,13 +76,15 @@ async fn lock_user_data_db_for_tests_async() -> tokio::sync::MutexGuard<'static,
 #[test]
 fn recovery_queries_track_active_sessions_plans_and_approvals() {
     let _database_guard = lock_user_data_db_for_tests();
-    let workspace_id = "workspace-recovery".to_string();
-    let chat_id = format_id(generate(), IdType::Chat);
-    ensure_workspace_and_chat_exist(&workspace_id, &chat_id);
+    let workspace_id_raw = generate();
+    let chat_id_raw = generate();
+    let workspace_id = format_id(workspace_id_raw, IdType::Workspace);
+    let chat_id = format_id(chat_id_raw, IdType::Chat);
+    ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
 
     let created = create_session(CreateCollaborationSessionRequest {
-        chat_id,
-        workspace_id,
+        chat_id: chat_id.clone(),
+        workspace_id: workspace_id.clone(),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Recover after restart".to_string()),
         participants: vec![ParticipantInput {
@@ -185,9 +173,12 @@ async fn concurrent_session_dag_registries_stay_isolated() {
     let _database_guard = lock_user_data_db_for_tests_async().await;
 
     let make_active_session = |agent_id: &'static str| async move {
+        let workspace_id_raw = generate();
+        let chat_id_raw = generate();
+        ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
         let created = create_session(CreateCollaborationSessionRequest {
-            chat_id: format_id(generate(), IdType::Chat),
-            workspace_id: "workspace-concurrent".to_string(),
+            chat_id: format_id(chat_id_raw, IdType::Chat),
+            workspace_id: format_id(workspace_id_raw, IdType::Workspace),
             mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
             goal: Some("Execute concurrent session DAGs".to_string()),
             participants: vec![ParticipantInput {
@@ -293,9 +284,12 @@ async fn concurrent_session_dag_registries_stay_isolated() {
 #[tokio::test]
 async fn inactive_session_plan_is_not_recovered() {
     let _database_guard = lock_user_data_db_for_tests_async().await;
+    let workspace_id_raw = generate();
+    let chat_id_raw = generate();
+    ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
     let created = create_session(CreateCollaborationSessionRequest {
-        chat_id: format_id(generate(), IdType::Chat),
-        workspace_id: "workspace-recovery".to_string(),
+        chat_id: format_id(chat_id_raw, IdType::Chat),
+        workspace_id: format_id(workspace_id_raw, IdType::Workspace),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Do not recover inactive plan".to_string()),
         participants: vec![ParticipantInput {
@@ -337,9 +331,12 @@ async fn inactive_session_plan_is_not_recovered() {
 async fn executing_user_message_hot_swaps_active_revision() {
     let _database_guard = lock_user_data_db_for_tests_async().await;
     ergatai_api::app_state_with_token(None);
+    let workspace_id_raw = generate();
+    let chat_id_raw = generate();
+    ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
     let created = create_session(CreateCollaborationSessionRequest {
-        chat_id: format_id(generate(), IdType::Chat),
-        workspace_id: "workspace-hot-swap".to_string(),
+        chat_id: format_id(chat_id_raw, IdType::Chat),
+        workspace_id: format_id(workspace_id_raw, IdType::Workspace),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Hot-swap the active plan".to_string()),
         participants: vec![ParticipantInput {
@@ -469,13 +466,14 @@ async fn executing_user_message_hot_swaps_active_revision() {
 #[test]
 fn collaboration_interaction_routes_lightweight_and_plans() {
     let _database_guard = lock_user_data_db_for_tests();
-    ensure_workspace_and_chat_exist(
-        "workspace-interactions",
-        &format_id(generate(), IdType::Chat),
-    );
+    let workspace_id_raw = generate();
+    let chat_id_raw = generate();
+    ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
+    let chat_id = format_id(chat_id_raw, IdType::Chat);
+    let workspace_id = format_id(workspace_id_raw, IdType::Workspace);
     let created = create_session(CreateCollaborationSessionRequest {
-        chat_id: format_id(generate(), IdType::Chat),
-        workspace_id: "workspace-interactions".to_string(),
+        chat_id: chat_id.clone(),
+        workspace_id: workspace_id.clone(),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Route interactions".to_string()),
         participants: vec![
@@ -552,9 +550,12 @@ fn collaboration_interaction_routes_lightweight_and_plans() {
 #[tokio::test]
 async fn collaboration_session_stream_replays_requested_events() {
     let _database_guard = lock_user_data_db_for_tests_async().await;
+    let workspace_id_raw = generate();
+    let chat_id_raw = generate();
+    ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
     let created = create_session(CreateCollaborationSessionRequest {
-        chat_id: format_id(generate(), IdType::Chat),
-        workspace_id: "workspace-stream".to_string(),
+        chat_id: format_id(chat_id_raw, IdType::Chat),
+        workspace_id: format_id(workspace_id_raw, IdType::Workspace),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Stream replay".to_string()),
         participants: vec![ParticipantInput {
@@ -568,7 +569,7 @@ async fn collaboration_session_stream_replays_requested_events() {
 
     let response = ergatai_api::api::collaboration_sessions::stream_collaboration_session_events(
         axum::extract::Path(created.session.collaboration_session_id.clone()),
-        axum::extract::Query(ergatai_api::api::collaboration_sessions::StreamEventQuery {
+        ergatai_api::JsonQuery(ergatai_api::api::collaboration_sessions::StreamEventQuery {
             after_sequence: Some(0),
             poll_interval_ms: Some(50),
         }),
@@ -583,7 +584,7 @@ async fn collaboration_session_stream_replays_requested_events() {
 
     let response = ergatai_api::api::collaboration_sessions::stream_collaboration_session_events(
         axum::extract::Path(created.session.collaboration_session_id),
-        axum::extract::Query(ergatai_api::api::collaboration_sessions::StreamEventQuery {
+        ergatai_api::JsonQuery(ergatai_api::api::collaboration_sessions::StreamEventQuery {
             after_sequence: Some(1),
             poll_interval_ms: Some(50),
         }),
@@ -595,12 +596,14 @@ async fn collaboration_session_stream_replays_requested_events() {
 #[test]
 fn collaboration_session_persists_context_plans_and_approvals() {
     let _database_guard = lock_user_data_db_for_tests();
-    ensure_workspace_and_chat_exist("workspace-recovery", &format_id(generate(), IdType::Chat));
-    let chat_id = format_id(generate(), IdType::Chat);
+    let workspace_id_raw = generate();
+    let chat_id_raw = generate();
+    ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
+    let chat_id = format_id(chat_id_raw, IdType::Chat);
 
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id: chat_id.clone(),
-        workspace_id: "workspace-1".to_string(),
+        workspace_id: format_id(workspace_id_raw, IdType::Workspace),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Supervisor,
         goal: Some("Fix the failing test".to_string()),
         participants: vec![ParticipantInput {
@@ -721,9 +724,12 @@ fn collaboration_session_persists_context_plans_and_approvals() {
 #[tokio::test]
 async fn approval_rejection_and_cancellation_cancel_pending_work() {
     let _database_guard = lock_user_data_db_for_tests_async().await;
+    let workspace_id_raw = generate();
+    let chat_id_raw = generate();
+    ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
     let created = create_session(CreateCollaborationSessionRequest {
-        chat_id: format_id(generate(), IdType::Chat),
-        workspace_id: "workspace-lifecycle".to_string(),
+        chat_id: format_id(chat_id_raw, IdType::Chat),
+        workspace_id: format_id(workspace_id_raw, IdType::Workspace),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Cancel rejected and pending work".to_string()),
         participants: vec![ParticipantInput {
@@ -860,10 +866,14 @@ async fn approval_rejection_and_cancellation_cancel_pending_work() {
 #[test]
 fn plan_revision_preserves_completed_outputs() {
     let _database_guard = lock_user_data_db_for_tests();
-    ensure_workspace_and_chat_exist("workspace-recovery", &format_id(generate(), IdType::Chat));
+    let workspace_id_raw = generate();
+    let chat_id_raw = generate();
+    ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
+    let chat_id = format_id(chat_id_raw, IdType::Chat);
+    let workspace_id = format_id(workspace_id_raw, IdType::Workspace);
     let created = create_session(CreateCollaborationSessionRequest {
-        chat_id: format_id(generate(), IdType::Chat),
-        workspace_id: "workspace-preserve".to_string(),
+        chat_id: chat_id.clone(),
+        workspace_id: workspace_id.clone(),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Preserve outputs across revisions".to_string()),
         participants: vec![ParticipantInput {
@@ -932,6 +942,6 @@ fn plan_revision_preserves_completed_outputs() {
     assert_eq!(preserved[0]["summary"], "Work completed");
     assert_eq!(
         second.plan_revision.dag_snapshot["workspace_id"],
-        "workspace-preserve"
+        workspace_id.clone()
     );
 }

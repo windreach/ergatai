@@ -1,0 +1,147 @@
+{
+  "operation": "PUT /api/v1/workspaces/persistent/{id}",
+  "method": "PUT",
+  "path_template": "/api/v1/workspaces/persistent/{id}",
+  "fingerprint": "21455f6e",
+  "case_id": "t41BnN",
+  "code_sample": "curl -X PUT -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d '{\"config\": true, \"resources\": false, \"work_dir\": \">\\u0017\\u00ee\\u000f\\u0004\\udb1a\\udc2dU\\u00c6\\u0091\\u00d7I\\u001b\"}' http://localhost:3000/api/v1/workspaces/persistent/ws_503224053776_000_0000",
+  "sequence": [
+    {
+      "method": "PUT",
+      "url": "http://localhost:3000/api/v1/workspaces/persistent/ws_503224053776_000_0000",
+      "url_template": "http://localhost:3000/api/v1/workspaces/persistent/{id}",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "t41BnN",
+        "Content-Type": "application/json",
+        "Content-Length": "115"
+      },
+      "response": {
+        "status_code": 422,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8",
+          "access-control-allow-origin": "*",
+          "content-length": "133",
+          "date": "Thu, 15 Oct 2026 10:16:28 GMT"
+        },
+        "body": "Failed to deserialize the JSON body into the target type: config: invalid type: boolean `true`, expected a string at line 1 column 15"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 422\nDocumented: 200, 404, 500"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.006642280999585637,
+          "mode": "negative"
+        },
+        "components": {
+          "PATH": "positive",
+          "BODY": "negative"
+        },
+        "phase": {
+          "name": "fuzzing",
+          "data": {
+            "type": "FuzzingPhaseData",
+            "description": "- violates `type` at /properties/resources (was null | string, became boolean)\n- violates `type` at /properties/config (was null | string, became boolean)",
+            "location": null,
+            "parameter": null,
+            "parameter_location": "BODY",
+            "mutations": [
+              {
+                "path": [
+                  "resources"
+                ],
+                "parameter_location": "body",
+                "schema_pointer": "/properties/resources",
+                "channel": "schema",
+                "operator": "change_type",
+                "keywords": [
+                  "type"
+                ],
+                "parameter": "resources",
+                "original_value": "null | string",
+                "new_value": "boolean"
+              },
+              {
+                "path": [
+                  "config"
+                ],
+                "parameter_location": "body",
+                "schema_pointer": "/properties/config",
+                "channel": "schema",
+                "operator": "change_type",
+                "keywords": [
+                  "type"
+                ],
+                "parameter": "config",
+                "original_value": "null | string",
+                "new_value": "boolean"
+              }
+            ]
+          }
+        },
+        "pool_draws": [
+          {
+            "location": "path",
+            "parameter_name": "id",
+            "resource_name": "PersistentWorkspaceResponse",
+            "resource_field": "id",
+            "source_operation": "GET /api/v1/workspaces/persistent",
+            "source_status": 200,
+            "source_identity": null,
+            "source_input": false,
+            "source_query": {
+              "collaboration_mode": ""
+            }
+          }
+        ],
+        "pool_misses": [],
+        "semantic_draws": [
+          {
+            "path": [
+              "id"
+            ],
+            "type_token": "string",
+            "format_token": null,
+            "pattern_hash": null,
+            "normalized_name": "id",
+            "value": "model",
+            "source_operation": "GET /api/v1/agents"
+          }
+        ],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/workspaces/persistent/{id}",
+      "path_parameters": {
+        "id": "ws_503224053776_000_0000"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": {
+          "config": true,
+          "resources": false,
+          "work_dir": ">\u0017\u00ee\u000f\u0004\udb1a\udc2dU\u00c6\u0091\u00d7I\u001b"
+        }
+      },
+      "media_type": "application/json",
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

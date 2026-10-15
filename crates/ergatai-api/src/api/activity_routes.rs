@@ -1,12 +1,13 @@
 //! Activity feed API endpoints — SSE stream and REST recent events
 
+use crate::Json;
+use crate::JsonQuery;
 use axum::{
-    extract::{Query, State},
+    extract::State,
     response::{
         sse::{Event, Sse},
         IntoResponse,
     },
-    Json,
 };
 use futures::stream::{self, Stream, StreamExt};
 use serde::Deserialize;
@@ -63,7 +64,7 @@ const MAX_RECENT_LIMIT: usize = 1000;
     path = "/api/v1/activity/recent",
     tag = "Activity",
     params(
-        ("limit" = usize, Query, description = "Maximum number of events (default 50, max 1000)"),
+        ("limit" = Option<usize>, Query, description = "Maximum number of events (default 50, max 1000)"),
     ),
     responses(
         (status = 200, description = "Recent activity events"),
@@ -72,7 +73,7 @@ const MAX_RECENT_LIMIT: usize = 1000;
 )]
 pub async fn get_recent_events(
     State(_state): State<AppState>,
-    Query(params): Query<RecentQuery>,
+    JsonQuery(params): JsonQuery<RecentQuery>,
 ) -> impl IntoResponse {
     let feed = match get_activity_feed() {
         Some(feed) => feed,

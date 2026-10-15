@@ -1,0 +1,91 @@
+{
+  "operation": "GET /api/v1/chats/{chat_id}/agents",
+  "method": "GET",
+  "path_template": "/api/v1/chats/{chat_id}/agents",
+  "fingerprint": "4207e036",
+  "case_id": "oF31sD",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/chats/%C2%B6%0C%F0%A9%83%85%F2%90%97%BE%C3%B6%C2%B7%17%C3%94%F1%A3%81%A6%F1%B2%B2%9E%C3%94%C3%96%06%0A0/agents",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/chats/%C2%B6%0C%F0%A9%83%85%F2%90%97%BE%C3%B6%C2%B7%17%C3%94%F1%A3%81%A6%F1%B2%B2%9E%C3%94%C3%96%06%0A0/agents",
+      "url_template": "http://localhost:3000/api/v1/chats/{chat_id}/agents",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "oF31sD"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "81",
+          "date": "Thu, 15 Oct 2026 12:27:00 GMT"
+        },
+        "body": "{\"error\":\"Invalid chat ID format: \u00b6\\f\ud864\udcc5\uda01\uddfe\u00f6\u00b7\\u0017\u00d4\ud94c\udc66\ud98b\udc9e\u00d4\u00d6\\u0006\\n0\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 400\nDocumented: 200, 500"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 4.047499896842055e-05,
+          "mode": "negative"
+        },
+        "components": {
+          "PATH": "negative"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Value not matching the '^\\S+$' pattern",
+            "location": "/pattern",
+            "parameter": "chat_id",
+            "parameter_location": "PATH",
+            "scenario": "invalid_pattern"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [
+          [
+            "path",
+            "chat_id"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "PATH": {
+            "chat_id": "\u00b6\f\ud864\udcc5\uda01\uddfe\u00f6\u00b7\u0017\u00d4\ud94c\udc66\ud98b\udc9e\u00d4\u00d6\u0006\n0"
+          }
+        }
+      },
+      "path": "/api/v1/chats/{chat_id}/agents",
+      "path_parameters": {
+        "chat_id": "%C2%B6%0C%F0%A9%83%85%F2%90%97%BE%C3%B6%C2%B7%17%C3%94%F1%A3%81%A6%F1%B2%B2%9E%C3%94%C3%96%06%0A0"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

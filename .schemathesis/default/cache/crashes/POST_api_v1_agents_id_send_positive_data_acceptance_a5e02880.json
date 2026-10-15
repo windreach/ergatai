@@ -1,0 +1,116 @@
+{
+  "operation": "POST /api/v1/agents/{id}/send",
+  "method": "POST",
+  "path_template": "/api/v1/agents/{id}/send",
+  "fingerprint": "a5e02880",
+  "case_id": "Ec61oG",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d '{\"conversation_id\": \"\", \"correlation_id\": \"\", \"force_new_session\": \"[Filtered]\", \"from\": \"\", \"message\": \"\", \"message_type\": \"\", \"sender_agent_name\": \"\", \"target_agent_command\": null}' http://localhost:3000/api/v1/agents/agent_0_0_0/send",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/agents/agent_0_0_0/send",
+      "url_template": "http://localhost:3000/api/v1/agents/{id}/send",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "Ec61oG",
+        "Content-Type": "application/json",
+        "Content-Length": "175"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "35",
+          "date": "Thu, 15 Oct 2026 13:37:49 GMT"
+        },
+        "body": "{\"error\":\"Message cannot be empty\"}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "positive_data_acceptance",
+          "status": "failure",
+          "message": "API rejected schema-compliant request\n\nValid data should have been accepted\nExpected: 2xx, 3xx, 401, 403, 404, 409, 429, 5xx"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 3.4535001759650186e-05,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive",
+          "BODY": "positive"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Object with valid 'target_agent_command' value: Value null value",
+            "location": null,
+            "parameter": "application/json",
+            "parameter_location": "BODY",
+            "scenario": "valid_object"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [
+          [
+            "path",
+            "id"
+          ],
+          [
+            "body",
+            "conversation_id"
+          ],
+          [
+            "body",
+            "correlation_id"
+          ],
+          [
+            "body",
+            "sender_agent_name"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "PATH": {
+            "id": "agent_0_0_0"
+          }
+        }
+      },
+      "path": "/api/v1/agents/{id}/send",
+      "path_parameters": {
+        "id": "agent_0_0_0"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": {
+          "conversation_id": "",
+          "correlation_id": "",
+          "force_new_session": "[Filtered]",
+          "from": "",
+          "message": "",
+          "message_type": "",
+          "sender_agent_name": "",
+          "target_agent_command": null
+        }
+      },
+      "media_type": "application/json",
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

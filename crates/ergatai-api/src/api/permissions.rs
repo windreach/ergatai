@@ -3,6 +3,7 @@
 //! Backs the frontend permission approval dialog: pending list, real-time
 //! SSE feed, and decision handling.
 
+use crate::Json;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -10,7 +11,6 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    Json,
 };
 use futures::stream::Stream;
 use serde::Deserialize;
@@ -102,7 +102,7 @@ pub struct RespondPermissionBody {
     tag = "Permissions",
     responses(
         (status = 200, description = "Current permission mode"),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn get_mode() -> impl IntoResponse {
     Json(serde_json::json!({ "mode": get_permission_mode() }))

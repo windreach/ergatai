@@ -1,0 +1,234 @@
+{
+  "operation": "GET /api/v1/workspaces/{workspace_id}",
+  "method": "GET",
+  "path_template": "/api/v1/workspaces/{workspace_id}",
+  "fingerprint": "ba8ac95c",
+  "case_id": "mtM74T",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d '{\"id\": \"ws_503227599195_000_0000\"}' http://localhost:3000/api/v1/workspaces\ncurl -X DELETE -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/workspaces/ws_503227599195_000_0000\ncurl -X GET -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/workspaces/ws_503227599195_000_0000",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/workspaces",
+      "url_template": "http://localhost:3000/api/v1/workspaces",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "3EMIow",
+        "Content-Type": "application/json",
+        "Content-Length": "34"
+      },
+      "response": {
+        "status_code": 201,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "126",
+          "date": "Thu, 15 Oct 2026 11:36:23 GMT"
+        },
+        "body": "{\"id\":\"ws_503227599195_000_0000\",\"backend\":\"acp\",\"metadata\":{\"work_dir\":\"/home/yubing/code/ergatai\"},\"capture_thoughts\":false}"
+      },
+      "link": null,
+      "checks": [],
+      "meta": {
+        "generation": {
+          "time": 0.003194519002136076,
+          "mode": "positive"
+        },
+        "components": {
+          "BODY": "positive"
+        },
+        "phase": {
+          "name": "stateful",
+          "data": {
+            "type": "StatefulPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [
+          {
+            "location": "body",
+            "parameter_name": "id",
+            "resource_name": "Workspace",
+            "resource_field": "workspace_id",
+            "source_operation": "GET /api/v1/workspaces/{workspace_id}",
+            "source_status": 200,
+            "source_identity": null,
+            "source_input": false,
+            "source_query": null
+          }
+        ],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/workspaces",
+      "path_parameters": {},
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": {
+          "id": "ws_503227599195_000_0000"
+        }
+      },
+      "media_type": "application/json",
+      "parent_index": null,
+      "auth_identity": null
+    },
+    {
+      "method": "DELETE",
+      "url": "http://localhost:3000/api/v1/workspaces/ws_503227599195_000_0000",
+      "url_template": "http://localhost:3000/api/v1/workspaces/{workspace_id}",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "UNhXTZ",
+        "Content-Length": "0"
+      },
+      "response": {
+        "status_code": 204,
+        "headers": {
+          "access-control-allow-origin": "*",
+          "date": "Thu, 15 Oct 2026 11:36:23 GMT"
+        },
+        "body": ""
+      },
+      "link": {
+        "operationId": "POST /api/v1/workspaces -> [201] DeleteWorkspace -> DELETE /api/v1/workspaces/{workspace_id}",
+        "parameters": {
+          "path.workspace_id": "$request.body#/id"
+        }
+      },
+      "checks": [],
+      "meta": {
+        "generation": {
+          "time": 0.00023003699971013702,
+          "mode": "positive"
+        },
+        "components": {},
+        "phase": {
+          "name": "stateful",
+          "data": {
+            "type": "StatefulPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/workspaces/{workspace_id}",
+      "path_parameters": {
+        "workspace_id": "ws_503227599195_000_0000"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": 0,
+      "auth_identity": null
+    },
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/workspaces/ws_503227599195_000_0000",
+      "url_template": "http://localhost:3000/api/v1/workspaces/{workspace_id}",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "mtM74T"
+      },
+      "response": {
+        "status_code": 200,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "495",
+          "date": "Thu, 15 Oct 2026 11:36:23 GMT"
+        },
+        "body": "{\"workspace_id\":2110689532213985280,\"name\":\"ws_503228956558_000_0000\",\"work_dir\":\"v\ud84d\udd81\udac1\udce3\u00cf\",\"env\":\"{\\\"O\u00cc\u00c7m\u00fb\u009d\udb93\udf38\u00c5\\\":\\\"\udbb7\udf6b\ud99d\uddfb\u0082\ud813\uded9\u00bb\\\",\\\"\u0090\\\\u001c\u00bd\udb8f\udfae\ud8ca\udfdd\u00eb\udbbe\udf61\\\":\\\"\\\\n\udb2f\udea8\u00b5{<\ud8c7\udef6zP\u00da\\\",\\\"\u00d9\\\\u00138\udac6\udeaa\u00d0\u00be\ud91c\udcf9?8\u00b8\\\\b\u00ad\\\\u001e\u00cc\\\":\\\"t\\\",\\\"\u00fd\u008d\\\":\\\"\ud87e\udfdd\u00d7\u00c7P\u00bd\ud9cf\ude2d8_\u00a0\u0228\uda5c\udde1\u00e7\u00e8\ud82d\udc10\udbfc\udcdb\ud926\udf8e\u00b3D\u0081\\\",\\\"\u009cG9\udb47\ude29\u00e6\ud9e8\udc05\u009c\\\":\\\"\uda99\ude5e\u00c9\ud926\udcfb=q\u00fcG\u00eb\u00802\u0084A\ud876\ude70\u00e3g\\\"}\",\"resources\":\"{}\",\"config\":\"{}\",\"collaboration_mode\":\"peer\",\"status\":\"archived\",\"created_at\":1792062573,\"updated_at\":1792064167}"
+      },
+      "link": {
+        "operationId": "POST /api/v1/workspaces -> [201] GetWorkspace_0 -> GET /api/v1/workspaces/{workspace_id}",
+        "parameters": {
+          "path.workspace_id": "$request.body#/id"
+        }
+      },
+      "checks": [
+        {
+          "name": "use_after_free",
+          "status": "failure",
+          "message": "Use after free\n\nThe API did not return a `HTTP 404 Not Found` response (got `HTTP 200 OK`) for a resource that was previously deleted.\n\nThe resource was deleted with `DELETE /api/v1/workspaces/ws_503227599195_000_0000`"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.000308623999444535,
+          "mode": "positive"
+        },
+        "components": {},
+        "phase": {
+          "name": "stateful",
+          "data": {
+            "type": "StatefulPhaseData",
+            "description": "Positive test case",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "mutations": []
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/workspaces/{workspace_id}",
+      "path_parameters": {
+        "workspace_id": "ws_503227599195_000_0000"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": 0,
+      "auth_identity": null
+    }
+  ]
+}

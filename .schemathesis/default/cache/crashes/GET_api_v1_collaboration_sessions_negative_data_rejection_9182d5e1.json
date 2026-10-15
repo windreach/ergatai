@@ -1,0 +1,86 @@
+{
+  "operation": "GET /api/v1/collaboration-sessions",
+  "method": "GET",
+  "path_template": "/api/v1/collaboration-sessions",
+  "fingerprint": "9182d5e1",
+  "case_id": "exMSUR",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/collaboration-sessions",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "exMSUR"
+      },
+      "response": {
+        "status_code": 200,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "2",
+          "date": "Thu, 15 Oct 2026 13:37:47 GMT"
+        },
+        "body": "[]"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "negative_data_rejection",
+          "status": "failure",
+          "message": "API accepted schema-violating request\n\nInvalid data should have been rejected\nExpected: 400, 401, 403, 404, 405, 406, 409, 415, 422, 428, 429, 5xx\nInvalid component: parameter `chat_id` in path - value not matching the '^chat_\\d+_\\d+_\\d+$' pattern"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.007178821000707103,
+          "mode": "negative"
+        },
+        "components": {
+          "PATH": "negative"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Value not matching the '^chat_\\d+_\\d+_\\d+$' pattern",
+            "location": "/pattern",
+            "parameter": "chat_id",
+            "parameter_location": "PATH",
+            "scenario": "invalid_pattern"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "PATH": {
+            "chat_id": "\u0084"
+          }
+        }
+      },
+      "path": "/api/v1/collaboration-sessions",
+      "path_parameters": {
+        "chat_id": "%C2%84"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

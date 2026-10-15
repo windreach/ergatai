@@ -8,7 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use ergatai_core::id::{format as format_id, generate, parse_to_i64, IdType};
+use ergatai_core::id::{format as format_id, generate, IdType};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
@@ -91,15 +91,9 @@ pub async fn list_chats(
     Query(params): Query<ListChatsParams>,
 ) -> impl IntoResponse {
     let workspace_id_i64 = match params.workspace_id.as_deref() {
-        Some(ws_id) => match parse_to_i64(ws_id) {
-            Some(id) => Some(id),
-            None => {
-                return crate::http_error::bad_request(format!(
-                    "Invalid workspace ID format: {}",
-                    ws_id
-                ))
-                .into_response()
-            }
+        Some(ws_id) => match crate::http_error::parse_id_or_not_found(ws_id, "Workspace") {
+            Ok(id) => Some(id),
+            Err((status, json)) => return (status, json).into_response(),
         },
         None => None,
     };
@@ -135,16 +129,11 @@ pub async fn create_chat(
         return crate::http_error::bad_request("Workspace ID cannot be empty").into_response();
     }
 
-    let workspace_id_i64 = match parse_to_i64(&req.workspace_id) {
-        Some(id) => id,
-        None => {
-            return crate::http_error::bad_request(format!(
-                "Invalid workspace ID format: {}",
-                req.workspace_id
-            ))
-            .into_response()
-        }
-    };
+    let workspace_id_i64 =
+        match crate::http_error::parse_id_or_not_found(&req.workspace_id, "Workspace") {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
     let workspace_id_for_check = workspace_id_i64;
     match tokio::task::spawn_blocking(move || user_data_db::workspaces::get(workspace_id_for_check))
         .await
@@ -170,16 +159,11 @@ pub async fn create_chat(
         .unwrap()
         .as_secs() as i64;
 
-    let workspace_id_i64_for_create = match parse_to_i64(&req.workspace_id) {
-        Some(id) => id,
-        None => {
-            return crate::http_error::bad_request(format!(
-                "Invalid workspace ID format: {}",
-                req.workspace_id
-            ))
-            .into_response()
-        }
-    };
+    let workspace_id_i64_for_create =
+        match crate::http_error::parse_id_or_not_found(&req.workspace_id, "Workspace") {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
 
     let chat = Chat {
         chat_id: generate(),
@@ -215,12 +199,9 @@ pub async fn create_chat(
     )
 )]
 pub async fn get_chat(State(_state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
-    let id_i64 = match parse_to_i64(&id) {
-        Some(id) => id,
-        None => {
-            return crate::http_error::bad_request(format!("Invalid chat ID format: {}", id))
-                .into_response()
-        }
+    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Chat") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
     match tokio::task::spawn_blocking(move || user_data_db::chats::get(id_i64)).await {
         Ok(Ok(Some(chat))) => {
@@ -250,12 +231,9 @@ pub async fn archive_chat(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let id_i64 = match parse_to_i64(&id) {
-        Some(id) => id,
-        None => {
-            return crate::http_error::bad_request(format!("Invalid chat ID format: {}", id))
-                .into_response()
-        }
+    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Chat") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
     match tokio::task::spawn_blocking(move || user_data_db::chats::archive(id_i64)).await {
         Ok(Ok(_)) => StatusCode::NO_CONTENT.into_response(),
@@ -281,12 +259,9 @@ pub async fn unarchive_chat(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let id_i64 = match parse_to_i64(&id) {
-        Some(id) => id,
-        None => {
-            return crate::http_error::bad_request(format!("Invalid chat ID format: {}", id))
-                .into_response()
-        }
+    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Chat") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
     match tokio::task::spawn_blocking(move || user_data_db::chats::unarchive(id_i64)).await {
         Ok(Ok(_)) => StatusCode::NO_CONTENT.into_response(),
@@ -312,12 +287,9 @@ pub async fn delete_chat(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let id_i64 = match parse_to_i64(&id) {
-        Some(id) => id,
-        None => {
-            return crate::http_error::bad_request(format!("Invalid chat ID format: {}", id))
-                .into_response()
-        }
+    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Chat") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
     match tokio::task::spawn_blocking(move || user_data_db::chats::delete(id_i64)).await {
         Ok(Ok(_)) => StatusCode::NO_CONTENT.into_response(),
@@ -372,12 +344,9 @@ pub async fn list_chat_agents(
     Path(chat_id): Path<String>,
 ) -> Response {
     // 1. 查询该 chat 下所有 conversations
-    let chat_id_i64 = match parse_to_i64(&chat_id) {
-        Some(id) => id,
-        None => {
-            return crate::http_error::bad_request(format!("Invalid chat ID format: {}", chat_id))
-                .into_response()
-        }
+    let chat_id_i64 = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
     let conversations = match tokio::task::spawn_blocking({
         move || crate::user_data_db::conversations::list_by_chat(chat_id_i64)
@@ -443,12 +412,9 @@ pub async fn get_agent_graph(
     Path(chat_id): Path<String>,
 ) -> Response {
     // 1. 查询该 chat 下所有 conversations
-    let chat_id_i64 = match parse_to_i64(&chat_id) {
-        Some(id) => id,
-        None => {
-            return crate::http_error::bad_request(format!("Invalid chat ID format: {}", chat_id))
-                .into_response()
-        }
+    let chat_id_i64 = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
     let conversations = match tokio::task::spawn_blocking({
         move || crate::user_data_db::conversations::list_by_chat(chat_id_i64)
@@ -577,17 +543,9 @@ pub async fn patch_chat(
     Json(req): Json<PatchChatRequest>,
 ) -> impl IntoResponse {
     // Get existing chat
-    let chat_id_for_get = match parse_to_i64(&chat_id) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid chat ID format: {}", chat_id),
-                }),
-            )
-                .into_response();
-        }
+    let chat_id_for_get = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
     match tokio::task::spawn_blocking(move || user_data_db::chats::get(chat_id_for_get)).await {
         Ok(Ok(Some(chat))) => {
@@ -604,18 +562,11 @@ pub async fn patch_chat(
             match tokio::task::spawn_blocking(move || user_data_db::chats::update(updated)).await {
                 Ok(Ok(())) => {
                     // Fetch updated chat
-                    let chat_id_for_refetch = match parse_to_i64(&chat_id) {
-                        Some(id) => id,
-                        None => {
-                            return (
-                                StatusCode::BAD_REQUEST,
-                                Json(ErrorResponse {
-                                    error: format!("Invalid chat ID format: {}", chat_id),
-                                }),
-                            )
-                                .into_response();
-                        }
-                    };
+                    let chat_id_for_refetch =
+                        match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+                            Ok(id) => id,
+                            Err((status, json)) => return (status, json).into_response(),
+                        };
                     match tokio::task::spawn_blocking(move || {
                         user_data_db::chats::get(chat_id_for_refetch)
                     })

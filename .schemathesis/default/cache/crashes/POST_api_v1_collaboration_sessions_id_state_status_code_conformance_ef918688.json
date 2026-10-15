@@ -1,0 +1,136 @@
+{
+  "operation": "POST /api/v1/collaboration-sessions/{id}/state",
+  "method": "POST",
+  "path_template": "/api/v1/collaboration-sessions/{id}/state",
+  "fingerprint": "ef918688",
+  "case_id": "dXAlAq",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d '{\"\\u00e9\\u00ed\\u00e3_\\u009b\\u0000W\\u2b0f\\u00e2,\\ud902\\udc48#z\\ud827\\udd74\\u0098r\": {\"\\u00d6\": 37527536, \"\": {\"\\ud829\\udec8\\u0011F\": null, \"*\\u00e8\": 6.704870734763417e+16, \"\\uda0d\\udfc7\\u001a0\\u001c\\u00cbVO\\uda4c\\udebe\\t\\ud877\\udd16\": \"\\ud83d\\udc74\\u00b6\\u0086b%\\u00e3\\u008b\\u009d\"}, \"\\u00e28\": {}}, \"\\u0004\\u0097\\uda23\\udc96\\u0093\\u00b5\\u00f1\\ud860\\udfe6O\\u00e1\\u00ef\\u0097\": [], \"reason\": null}' http://localhost:3000/api/v1/collaboration-sessions/ws_503224184159_000_0000/state",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions/ws_503224184159_000_0000/state",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions/{id}/state",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "dXAlAq",
+        "Content-Type": "application/json",
+        "Content-Length": "396"
+      },
+      "response": {
+        "status_code": 422,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8",
+          "access-control-allow-origin": "*",
+          "content-length": "100",
+          "date": "Thu, 15 Oct 2026 10:14:04 GMT"
+        },
+        "body": "Failed to deserialize the JSON body into the target type: missing field `state` at line 1 column 396"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 422\nDocumented: 200, 400, 404"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.006638897999437177,
+          "mode": "negative"
+        },
+        "components": {
+          "PATH": "positive",
+          "BODY": "negative"
+        },
+        "phase": {
+          "name": "stateful",
+          "data": {
+            "type": "StatefulPhaseData",
+            "description": "violates `required` at /$ref/schema000452 (was \"executing\")",
+            "location": "/$ref/schema000452",
+            "parameter": null,
+            "parameter_location": "BODY",
+            "mutations": [
+              {
+                "path": [],
+                "parameter_location": "body",
+                "schema_pointer": "/$ref/schema000452",
+                "channel": "value",
+                "operator": "value_violator",
+                "keywords": [
+                  "required"
+                ],
+                "parameter": null,
+                "original_value": "executing",
+                "new_value": {
+                  "\u00e9\u00ed\u00e3_\u009b\u0000W\u2b0f\u00e2,\ud902\udc48#z\ud827\udd74\u0098r": {
+                    "\u00d6": 37527536,
+                    "": {
+                      "\ud829\udec8\u0011F": null,
+                      "*\u00e8": 6.704870734763417e+16,
+                      "\uda0d\udfc7\u001a0\u001c\u00cbVO\uda4c\udebe\t\ud877\udd16": "\ud83d\udc74\u00b6\u0086b%\u00e3\u008b\u009d"
+                    },
+                    "\u00e28": {}
+                  },
+                  "\u0004\u0097\uda23\udc96\u0093\u00b5\u00f1\ud860\udfe6O\u00e1\u00ef\u0097": [],
+                  "reason": null
+                }
+              }
+            ]
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [
+          {
+            "path": [
+              "id"
+            ],
+            "type_token": "string",
+            "format_token": null,
+            "pattern_hash": null,
+            "normalized_name": "id",
+            "value": "ws_503224184159_000_0000",
+            "source_operation": "GET /api/v1/workspaces/persistent"
+          }
+        ],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/collaboration-sessions/{id}/state",
+      "path_parameters": {
+        "id": "ws_503224184159_000_0000"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": {
+          "\u00e9\u00ed\u00e3_\u009b\u0000W\u2b0f\u00e2,\ud902\udc48#z\ud827\udd74\u0098r": {
+            "\u00d6": 37527536,
+            "": {
+              "\ud829\udec8\u0011F": null,
+              "*\u00e8": 6.704870734763417e+16,
+              "\uda0d\udfc7\u001a0\u001c\u00cbVO\uda4c\udebe\t\ud877\udd16": "\ud83d\udc74\u00b6\u0086b%\u00e3\u008b\u009d"
+            },
+            "\u00e28": {}
+          },
+          "\u0004\u0097\uda23\udc96\u0093\u00b5\u00f1\ud860\udfe6O\u00e1\u00ef\u0097": [],
+          "reason": null
+        }
+      },
+      "media_type": "application/json",
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

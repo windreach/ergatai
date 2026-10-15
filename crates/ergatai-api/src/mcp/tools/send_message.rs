@@ -51,7 +51,7 @@ pub(crate) async fn handle(
     let send_req = crate::messaging::SendRequest {
         from: from_agent.clone(),
         to: target_id.to_string(),
-        target_conversation_id,
+        target_conversation_id: target_conversation_id.map(|id| id.to_string()),
         message: message.to_string(),
         message_type: message_type.to_string(),
         correlation_id,

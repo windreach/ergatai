@@ -3,10 +3,10 @@
 //! Provides read-only access to the ConversationManager for the dashboard.
 //! Data comes from the in-memory ConversationManager (via MessageSender).
 
+use crate::Json;
 use axum::{
     extract::{Path, State},
     response::IntoResponse,
-    Json,
 };
 use serde::Serialize;
 

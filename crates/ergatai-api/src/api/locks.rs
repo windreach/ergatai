@@ -6,11 +6,9 @@
 //! 业务逻辑已迁移到 `crate::services::lock_service`，handler 只负责
 //! HTTP 请求解析和响应格式化。
 
-use axum::{
-    extract::{Query, State},
-    response::IntoResponse,
-    Json,
-};
+use crate::Json;
+use crate::JsonQuery;
+use axum::{extract::State, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -65,7 +63,7 @@ pub struct LockQueryParams {
 )]
 pub async fn list_locks(
     State(_state): State<AppState>,
-    Query(params): Query<LockQueryParams>,
+    JsonQuery(params): JsonQuery<LockQueryParams>,
 ) -> impl IntoResponse {
     // Convert workspace_id from formatted string to Snowflake ID string
     let project_id = params
@@ -102,6 +100,7 @@ pub async fn list_locks(
 
 /// Query parameters for audit log endpoint.
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AuditQuery {
     pub workspace_id: Option<String>,
     pub agent_id: Option<String>,
@@ -133,11 +132,11 @@ const MAX_AUDIT_LIMIT: usize = 1000;
     responses(
         (status = 200, description = "Audit log entries"),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn list_audit(
     State(_state): State<AppState>,
-    Query(query): Query<AuditQuery>,
+    JsonQuery(query): JsonQuery<AuditQuery>,
 ) -> impl IntoResponse {
     let limit = query.limit.min(MAX_AUDIT_LIMIT);
 
@@ -186,7 +185,7 @@ pub struct LockContentionInfo {
 )]
 pub async fn get_lock_contention(
     State(_state): State<AppState>,
-    Query(params): Query<LockQueryParams>,
+    JsonQuery(params): JsonQuery<LockQueryParams>,
 ) -> impl IntoResponse {
     // Convert workspace_id from formatted string to Snowflake ID string
     let project_id = params

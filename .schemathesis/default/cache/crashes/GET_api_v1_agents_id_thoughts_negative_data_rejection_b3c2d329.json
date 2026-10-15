@@ -1,0 +1,86 @@
+{
+  "operation": "GET /api/v1/agents/{id}/thoughts",
+  "method": "GET",
+  "path_template": "/api/v1/agents/{id}/thoughts",
+  "fingerprint": "b3c2d329",
+  "case_id": "zzLvPw",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' http://localhost:3000/api/v1/agents/null%2Cnull/thoughts",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/agents/null%2Cnull/thoughts",
+      "url_template": "http://localhost:3000/api/v1/agents/{id}/thoughts",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "zzLvPw"
+      },
+      "response": {
+        "status_code": 200,
+        "headers": {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "content-length": "40",
+          "date": "Thu, 15 Oct 2026 13:37:50 GMT"
+        },
+        "body": "{\"agent_id\":\"null,null\",\"thoughts\":null}"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "negative_data_rejection",
+          "status": "failure",
+          "message": "API accepted schema-violating request\n\nInvalid data should have been rejected\nExpected: 400, 401, 403, 404, 405, 406, 409, 415, 422, 428, 429, 5xx\nInvalid component: parameter `id` in path - incorrect type"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 1.2726999557344243e-05,
+          "mode": "negative"
+        },
+        "components": {
+          "PATH": "negative"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Incorrect type",
+            "location": "/type",
+            "parameter": "id",
+            "parameter_location": "PATH",
+            "scenario": "incorrect_type"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "PATH": {
+            "id": "null,null"
+          }
+        }
+      },
+      "path": "/api/v1/agents/{id}/thoughts",
+      "path_parameters": {
+        "id": "null%2Cnull"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

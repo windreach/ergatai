@@ -1,0 +1,101 @@
+{
+  "operation": "POST /api/v1/collaboration-sessions/{session_id}/approvals/{approval_id}/decision",
+  "method": "POST",
+  "path_template": "/api/v1/collaboration-sessions/{session_id}/approvals/{approval_id}/decision",
+  "fingerprint": "e3ca11fe",
+  "case_id": "un7Bg2",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d 2.6598213374016515e-89 http://localhost:3000/api/v1/collaboration-sessions/%F3%84%AB%A9%02/approvals/%5Cn/decision",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions/%F3%84%AB%A9%02/approvals/%5Cn/decision",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions/{session_id}/approvals/{approval_id}/decision",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "un7Bg2",
+        "Content-Type": "application/json",
+        "Content-Length": "22"
+      },
+      "response": {
+        "status_code": 422,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8",
+          "access-control-allow-origin": "*",
+          "content-length": "171",
+          "date": "Thu, 15 Oct 2026 10:35:31 GMT"
+        },
+        "body": "Failed to deserialize the JSON body into the target type: invalid type: floating point `2.659821337401652e-89`, expected struct ApprovalDecisionRequest at line 1 column 22"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 422\nDocumented: 200, 400, 404"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.0042179449992545415,
+          "mode": "negative"
+        },
+        "components": {
+          "PATH": "positive",
+          "BODY": "negative"
+        },
+        "phase": {
+          "name": "stateful",
+          "data": {
+            "type": "StatefulPhaseData",
+            "description": "violates `type` (was object, became number)",
+            "location": null,
+            "parameter": null,
+            "parameter_location": "BODY",
+            "mutations": [
+              {
+                "path": [],
+                "parameter_location": "body",
+                "schema_pointer": "",
+                "channel": "schema",
+                "operator": "change_type",
+                "keywords": [
+                  "type"
+                ],
+                "parameter": null,
+                "original_value": "object",
+                "new_value": "number"
+              }
+            ]
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/collaboration-sessions/{session_id}/approvals/{approval_id}/decision",
+      "path_parameters": {
+        "session_id": "[Filtered]",
+        "approval_id": "%5Cn"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": 2.6598213374016515e-89
+      },
+      "media_type": "application/json",
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

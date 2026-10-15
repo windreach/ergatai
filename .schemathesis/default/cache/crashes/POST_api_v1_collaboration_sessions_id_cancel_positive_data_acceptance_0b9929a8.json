@@ -1,0 +1,95 @@
+{
+  "operation": "POST /api/v1/collaboration-sessions/{id}/cancel",
+  "method": "POST",
+  "path_template": "/api/v1/collaboration-sessions/{id}/cancel",
+  "fingerprint": "0b9929a8",
+  "case_id": "7DqP4g",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d null http://localhost:3000/api/v1/collaboration-sessions/chat_0_0_0/cancel",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions/chat_0_0_0/cancel",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions/{id}/cancel",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "7DqP4g",
+        "Content-Type": "application/json",
+        "Content-Length": "4"
+      },
+      "response": {
+        "status_code": 422,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8",
+          "access-control-allow-origin": "*",
+          "content-length": "114",
+          "date": "Thu, 15 Oct 2026 13:37:48 GMT"
+        },
+        "body": "Failed to deserialize the JSON body into the target type: invalid type: null, expected a string at line 1 column 4"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "positive_data_acceptance",
+          "status": "failure",
+          "message": "API rejected schema-compliant request\n\nValid data should have been accepted\nExpected: 2xx, 3xx, 401, 403, 404, 409, 429, 5xx"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 2.2026997612556443e-05,
+          "mode": "positive"
+        },
+        "components": {
+          "PATH": "positive",
+          "BODY": "positive"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Value null value",
+            "location": null,
+            "parameter": "application/json",
+            "parameter_location": "BODY",
+            "scenario": "null_value"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [
+          [
+            "path",
+            "id"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "PATH": {
+            "id": "chat_0_0_0"
+          }
+        }
+      },
+      "path": "/api/v1/collaboration-sessions/{id}/cancel",
+      "path_parameters": {
+        "id": "chat_0_0_0"
+      },
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": null
+      },
+      "media_type": "application/json",
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

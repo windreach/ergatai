@@ -1,0 +1,97 @@
+{
+  "operation": "GET /api/v1/collaboration-sessions/{session_id}/stream",
+  "method": "GET",
+  "path_template": "/api/v1/collaboration-sessions/{session_id}/stream",
+  "fingerprint": "713ba943",
+  "case_id": "Uw3qHy",
+  "code_sample": "curl -X GET -H 'Authorization: [Filtered]' 'http://localhost:3000/api/v1/collaboration-sessions/0/stream?poll_interval_ms=-1'",
+  "sequence": [
+    {
+      "method": "GET",
+      "url": "http://localhost:3000/api/v1/collaboration-sessions/0/stream?poll_interval_ms=-1",
+      "url_template": "http://localhost:3000/api/v1/collaboration-sessions/{session_id}/stream",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "Uw3qHy"
+      },
+      "response": {
+        "status_code": 400,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8",
+          "access-control-allow-origin": "*",
+          "content-length": "83",
+          "date": "Thu, 15 Oct 2026 10:41:46 GMT"
+        },
+        "body": "Failed to deserialize query string: poll_interval_ms: invalid digit found in string"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "content_type_conformance",
+          "status": "failure",
+          "message": "Undocumented Content-Type\n\nReceived: text/plain; charset=utf-8\nDocumented: application/json"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 2.2952001017984003e-05,
+          "mode": "negative"
+        },
+        "components": {
+          "PATH": "positive",
+          "QUERY": "negative"
+        },
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "poll_interval_ms: Value smaller than minimum",
+            "location": null,
+            "parameter": "poll_interval_ms",
+            "parameter_location": "QUERY",
+            "scenario": "value_below_minimum"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [
+          [
+            "path",
+            "session_id"
+          ]
+        ],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {
+          "PATH": {
+            "session_id": "0"
+          },
+          "QUERY": {
+            "poll_interval_ms": -1
+          }
+        }
+      },
+      "path": "/api/v1/collaboration-sessions/{session_id}/stream",
+      "path_parameters": {
+        "session_id": "[Filtered]"
+      },
+      "query": {
+        "poll_interval_ms": "-1"
+      },
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

@@ -1,0 +1,118 @@
+{
+  "operation": "POST /api/v1/workspaces/persistent",
+  "method": "POST",
+  "path_template": "/api/v1/workspaces/persistent",
+  "fingerprint": "3238915c",
+  "case_id": "XsdBlw",
+  "code_sample": "curl -X POST -H 'Authorization: [Filtered]' -H 'Content-Type: application/json' -d '{\"resources\": -4800, \"work_dir\": 36394022906254415888384, \"name\": null}' http://localhost:3000/api/v1/workspaces/persistent",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://localhost:3000/api/v1/workspaces/persistent",
+      "url_template": "http://localhost:3000/api/v1/workspaces/persistent",
+      "headers": {
+        "User-Agent": "schemathesis/4.31.1",
+        "Accept-Encoding": "gzip, deflate, zstd",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": "[Filtered]",
+        "X-Schemathesis-TestCaseId": "XsdBlw",
+        "Content-Type": "application/json",
+        "Content-Length": "71"
+      },
+      "response": {
+        "status_code": 422,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8",
+          "access-control-allow-origin": "*",
+          "content-length": "137",
+          "date": "Thu, 15 Oct 2026 10:42:21 GMT"
+        },
+        "body": "Failed to deserialize the JSON body into the target type: resources: invalid type: integer `-4800`, expected a string at line 1 column 19"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "status_code_conformance",
+          "status": "failure",
+          "message": "Undocumented HTTP status code\n\nReceived: 422\nDocumented: 201, 400, 500"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 0.006562128999576089,
+          "mode": "negative"
+        },
+        "components": {
+          "BODY": "negative"
+        },
+        "phase": {
+          "name": "stateful",
+          "data": {
+            "type": "StatefulPhaseData",
+            "description": "- violates `type` at /properties/work_dir (was string, became integer)\n- violates `type` at /properties/resources (was null | string, became integer)",
+            "location": null,
+            "parameter": null,
+            "parameter_location": "BODY",
+            "mutations": [
+              {
+                "path": [
+                  "work_dir"
+                ],
+                "parameter_location": "body",
+                "schema_pointer": "/properties/work_dir",
+                "channel": "schema",
+                "operator": "change_type",
+                "keywords": [
+                  "type"
+                ],
+                "parameter": "work_dir",
+                "original_value": "string",
+                "new_value": "integer"
+              },
+              {
+                "path": [
+                  "resources"
+                ],
+                "parameter_location": "body",
+                "schema_pointer": "/properties/resources",
+                "channel": "schema",
+                "operator": "change_type",
+                "keywords": [
+                  "type"
+                ],
+                "parameter": "resources",
+                "original_value": "null | string",
+                "new_value": "integer"
+              }
+            ]
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/v1/workspaces/persistent",
+      "path_parameters": {},
+      "query": {},
+      "case_headers": {
+        "Authorization": "[Filtered]"
+      },
+      "cookies": {},
+      "case_body": {
+        "encoding": "json",
+        "value": {
+          "resources": -4800,
+          "work_dir": 36394022906254415888384,
+          "name": null
+        }
+      },
+      "media_type": "application/json",
+      "parent_index": null,
+      "auth_identity": null
+    }
+  ]
+}

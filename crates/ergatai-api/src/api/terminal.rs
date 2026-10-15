@@ -1,5 +1,6 @@
 //! Interactive terminal sessions backed by a native PTY.
 
+use crate::JsonQuery;
 use std::{
     io::{Read, Write},
     sync::{Arc, Mutex},
@@ -41,7 +42,7 @@ enum TerminalClientMessage {
 /// GET /api/v1/terminals/ws — create a PTY session and attach it to a WebSocket.
 pub async fn create_terminal(
     State(state): State<AppState>,
-    Query(query): Query<TerminalQuery>,
+    JsonQuery(query): JsonQuery<TerminalQuery>,
     websocket: WebSocketUpgrade,
 ) -> Response {
     let cwd = match query.cwd.as_deref() {
