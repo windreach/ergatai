@@ -85,4 +85,3 @@ frontend/
 .schemathesis/
 openapi.json
 CODE_REVIEW_SUMMARY.md
-scripts/run-api-tests.sh
