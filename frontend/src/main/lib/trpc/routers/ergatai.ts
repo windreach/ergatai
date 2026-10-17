@@ -184,8 +184,7 @@ type Project = {
 type Chat = {
   id: string
   name: string | null
-  projectId: string
-  workspaceId: string | null
+  workspaceId: string
   collaborationMode: string
   createdAt: Date
   updatedAt: Date
@@ -199,7 +198,6 @@ type Chat = {
 
 type Workspace = {
   id: string
-  projectId: string
   name: string | null
   workDir: string
   env: Record<string, string>      // 解析后的 JSON
@@ -207,6 +205,7 @@ type Workspace = {
   captureThoughts: boolean
   collaborationMode: string
   status: string
+  defaultProjectId: string | null  // 默认展示的项目 ID
   projects: WorkspaceProject[]
   createdAt: Date
   updatedAt: Date
@@ -312,7 +311,6 @@ function mapChat(chat: BackendChat): Chat {
   return {
     id: chat.id,
     name: chat.name,
-    projectId: "",
     workspaceId: chat.workspace_id,
     collaborationMode: "supervisor",
     createdAt: new Date(chat.created_at * 1000),
@@ -329,7 +327,6 @@ function mapChat(chat: BackendChat): Chat {
 function mapWorkspace(workspace: BackendWorkspace): Workspace {
   return {
     id: String(workspace.workspace_id),
-    projectId: "",
     name: workspace.name,
     workDir: workspace.work_dir,
     env: JSON.parse(workspace.env || "{}"),
@@ -337,6 +334,9 @@ function mapWorkspace(workspace: BackendWorkspace): Workspace {
     captureThoughts: false,
     collaborationMode: workspace.collaboration_mode,
     status: workspace.status,
+    defaultProjectId: workspace.default_project_id
+      ? String(workspace.default_project_id)
+      : null,
     projects: [],
     createdAt: new Date(workspace.created_at * 1000),
     updatedAt: new Date(workspace.updated_at * 1000),
@@ -347,19 +347,38 @@ function mapWorkspaceProject(project: BackendWorkspaceProject): WorkspaceProject
   return {
     workspaceId: project.workspace_id,
     projectId: project.project_id,
-    projectName: project.project_name,
-    projectPath: project.project_path,
-    isDefault: project.is_default,
-    status: project.status,
-    settingsJson: project.settings_json,
+    projectName: project.name,
+    projectPath: project.path,
+    isDefault: false, // Backend no longer has is_default field
+    status: "active", // Backend no longer has status field, default to active
+    settingsJson: "{}", // Backend no longer has settings_json field
     createdAt: new Date(project.created_at * 1000),
     updatedAt: new Date(project.updated_at * 1000),
   }
 }
 
-function mapManagedWorkspace(workspace: BackendManagedWorkspace): Workspace {
+/** Map BackendWorkspaceProject to standalone Project type (for aggregated project views) */
+function mapWorkspaceProjectToProject(project: BackendWorkspaceProject): Project {
   return {
-    ...mapWorkspace(workspace),
+    id: project.project_id,
+    name: project.name,
+    path: project.path,
+    createdAt: new Date(project.created_at * 1000),
+    updatedAt: new Date(project.updated_at * 1000),
+    gitRemoteUrl: project.git_remote_url,
+    gitProvider: project.git_provider,
+    gitOwner: project.git_owner,
+    gitRepo: project.git_repo,
+    iconPath: project.icon_path,
+  }
+}
+
+function mapManagedWorkspace(workspace: BackendManagedWorkspace): Workspace {
+  const base = mapWorkspace(workspace as unknown as BackendWorkspace)
+  return {
+    ...base,
+    // BackendManagedWorkspace uses string workspace_id, handle default_project_id accordingly
+    defaultProjectId: workspace.default_project_id ?? null,
     projects: workspace.projects.map(mapWorkspaceProject),
   }
 }
@@ -892,141 +911,6 @@ export const ergataiRouter = router({
       })
     }),
 
-  /** List persistent workspaces */
-  listPersistentWorkspaces: publicProcedure
-    .input(
-      z.object({
-        projectId: projectIdSchema.optional(),
-        collaborationMode: z.enum(["supervisor", "group"]).optional(),
-      }),
-    )
-    .query(async ({ input }) => {
-      const searchParams = new URLSearchParams()
-      if (input.projectId) searchParams.set("project_id", input.projectId)
-      if (input.collaborationMode) {
-        searchParams.set("collaboration_mode", input.collaborationMode)
-      }
-      const query = searchParams.size > 0 ? `?${searchParams.toString()}` : ""
-      const workspaces = await ergataiFetch<BackendWorkspace[]>(
-        `/api/v1/workspaces/persistent${query}`,
-      )
-      const filteredWorkspaces = input.collaborationMode
-        ? workspaces.filter(
-            (workspace) =>
-              workspace.collaboration_mode === input.collaborationMode,
-          )
-        : workspaces
-      return filteredWorkspaces.map(mapWorkspace)
-    }),
-
-  /** Get any workspace by ID (generic endpoint) */
-  getWorkspace: publicProcedure
-    .input(z.object({
-      workspaceId: z.string(),
-    }))
-    .query(async ({ input }) => {
-      const workspace = await ergataiFetch<BackendWorkspace>(
-        `/api/v1/workspaces/${encodeURIComponent(input.workspaceId)}`,
-      )
-      return mapWorkspace(workspace)
-    }),
-
-  /** Get a persistent workspace by ID */
-  getPersistentWorkspace: publicProcedure
-    .input(
-      z.object({
-        id: z.string(),
-      }),
-    )
-    .query(async ({ input }) => {
-      const workspace = await ergataiFetch<BackendWorkspace>(
-        `/api/v1/workspaces/persistent/${encodeURIComponent(input.id)}`,
-      )
-      return mapWorkspace(workspace)
-    }),
-
-  /** Create a persistent workspace */
-  createPersistentWorkspace: publicProcedure
-    .input(
-      z.object({
-        id: z.string().optional(),
-        projectId: projectIdSchema,
-        name: z.string().optional(),
-        workDir: z.string(),
-        env: z.record(z.string()).optional(),
-        resources: z.record(z.any()).optional(),
-        captureThoughts: z.boolean().optional(),
-        collaborationMode: z.enum(["supervisor", "group"]).optional(),
-      }),
-    )
-    .mutation(async ({ input }) => {
-      console.log("[ergatai.createPersistentWorkspace] Creating workspace with input:", input)
-      const workspace = await ergataiFetch<BackendWorkspace>(
-        "/api/v1/workspaces/persistent",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            id: createSnowflakeId("ws"),
-            project_id: input.projectId,
-            name: input.name,
-            work_dir: input.workDir,
-            env: JSON.stringify(input.env || {}),
-            resources: JSON.stringify(input.resources || {}),
-            capture_thoughts: input.captureThoughts ?? false,
-            collaboration_mode: input.collaborationMode ?? "supervisor",
-          }),
-        },
-      )
-      console.log("[ergatai.createPersistentWorkspace] Created workspace:", workspace)
-      return mapWorkspace(workspace)
-    }),
-
-  /** Update a persistent workspace */
-  updatePersistentWorkspace: publicProcedure
-    .input(
-      z.object({
-        id: z.string(),
-        projectId: projectIdSchema,
-        name: z.string().optional(),
-        workDir: z.string(),
-        env: z.record(z.string()).optional(),
-        resources: z.record(z.any()).optional(),
-        captureThoughts: z.boolean().optional(),
-      }),
-    )
-    .mutation(async ({ input }) => {
-      const workspace = await ergataiFetch<BackendWorkspace>(
-        `/api/v1/workspaces/persistent/${encodeURIComponent(input.id)}`,
-        {
-          method: "PUT",
-          body: JSON.stringify({
-            id: input.id,
-            project_id: input.projectId,
-            name: input.name,
-            work_dir: input.workDir,
-            env: JSON.stringify(input.env || {}),
-            resources: JSON.stringify(input.resources || {}),
-            capture_thoughts: input.captureThoughts ?? false,
-          }),
-        },
-      )
-      return mapWorkspace(workspace)
-    }),
-
-  /** Delete a persistent workspace */
-  deletePersistentWorkspace: publicProcedure
-    .input(
-      z.object({
-        id: z.string(),
-      }),
-    )
-    .mutation(async ({ input }) => {
-      await ergataiFetch(
-        `/api/v1/workspaces/persistent/${encodeURIComponent(input.id)}`,
-        { method: "DELETE" },
-      )
-    }),
-
   /** List managed workspaces */
   listManagedWorkspaces: publicProcedure
     .input(
@@ -1145,6 +1029,27 @@ export const ergataiRouter = router({
             capture_thoughts: input.captureThoughts,
             status: input.status,
             default_project_id: input.defaultProjectId,
+          }),
+        },
+      )
+      return mapManagedWorkspace(workspace)
+    }),
+
+  /** Set the default project for a workspace (shown on workspace open) */
+  setDefaultProject: publicProcedure
+    .input(
+      z.object({
+        workspaceId: z.string(),
+        projectId: z.string().nullable(), // null to clear
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const workspace = await ergataiFetch<BackendManagedWorkspace>(
+        `/api/v1/workspaces/managed/${encodeURIComponent(input.workspaceId)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            default_project_id: input.projectId,
           }),
         },
       )
@@ -1422,31 +1327,58 @@ export const ergataiRouter = router({
     }),
 
   // ── Projects Endpoints ──────────────────────────────────────────────────
+  // Note: Backend projects are workspace-scoped. These endpoints aggregate
+  // across all managed workspaces to provide a "standalone" project view.
 
-  /** List all projects */
+  /** List all projects (aggregated from all managed workspaces) */
   listProjects: publicProcedure.query(async (): Promise<Project[]> => {
-    return []
+    try {
+      // Get all managed workspaces
+      const workspaces = await ergataiFetch<BackendManagedWorkspace[]>(
+        `/api/v1/workspaces/managed`,
+      )
+      // Aggregate projects from all workspaces
+      const allProjects: Project[] = []
+      for (const ws of workspaces) {
+        const projects = await ergataiFetch<BackendWorkspaceProject[]>(
+          `/api/v1/workspaces/managed/${encodeURIComponent(ws.workspace_id)}/projects`,
+        )
+        for (const p of projects) {
+          allProjects.push(mapWorkspaceProjectToProject(p))
+        }
+      }
+      return allProjects
+    } catch (error) {
+      console.error("[Projects] Failed to list projects:", error)
+      return []
+    }
   }),
 
-  /** Get a project by ID */
+  /** Get a project by ID (searches across all workspaces) */
   getProject: publicProcedure
     .input(z.object({ id: projectIdSchema }))
-    .query(async ({ input }) => {
-      return {
-        id: input.id,
-        name: "Mock Project",
-        path: "/mock/path",
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        gitRemoteUrl: null,
-        gitProvider: null,
-        gitOwner: null,
-        gitRepo: null,
-        iconPath: null,
+    .query(async ({ input }): Promise<Project | null> => {
+      try {
+        const workspaces = await ergataiFetch<BackendManagedWorkspace[]>(
+          `/api/v1/workspaces/managed`,
+        )
+        for (const ws of workspaces) {
+          const projects = await ergataiFetch<BackendWorkspaceProject[]>(
+            `/api/v1/workspaces/managed/${encodeURIComponent(ws.workspace_id)}/projects`,
+          )
+          const found = projects.find((p) => p.project_id === input.id)
+          if (found) {
+            return mapWorkspaceProjectToProject(found)
+          }
+        }
+        return null
+      } catch (error) {
+        console.error("[Projects] Failed to get project:", error)
+        return null
       }
     }),
 
-  /** Create a new project */
+  /** Create a new project (registers to first available or default workspace) */
   createProject: publicProcedure
     .input(
       z.object({
@@ -1459,19 +1391,52 @@ export const ergataiRouter = router({
         iconPath: z.string().nullish(),
       }),
     )
-    .mutation(async ({ input }) => {
-      return {
-        id: `mock-project-${Date.now()}`,
-        name: input.name,
-        path: input.path,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        gitRemoteUrl: input.gitRemoteUrl || null,
-        gitProvider: input.gitProvider || null,
-        gitOwner: input.gitOwner || null,
-        gitRepo: input.gitRepo || null,
-        iconPath: input.iconPath || null,
+    .mutation(async ({ input }): Promise<Project> => {
+      // Get or find a default workspace to register the project to
+      let workspaceId: string | null = null
+      try {
+        const workspaces = await ergataiFetch<BackendManagedWorkspace[]>(
+          `/api/v1/workspaces/managed`,
+        )
+        // Use first active workspace, or create a default one
+        if (workspaces.length > 0) {
+          workspaceId = workspaces[0]!.workspace_id.toString()
+        } else {
+          // Create a default workspace
+          const newWs = await ergataiFetch<BackendManagedWorkspace>(
+            `/api/v1/workspaces/managed`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                name: "Default Workspace",
+                work_dir: input.path,
+              }),
+            },
+          )
+          workspaceId = newWs.workspace_id.toString()
+        }
+      } catch (error) {
+        console.error("[Projects] Failed to get/create workspace:", error)
+        throw new Error("Failed to get workspace for project")
       }
+
+      // Register the project to the workspace
+      const project = await ergataiFetch<BackendWorkspaceProject>(
+        `/api/v1/workspaces/managed/${encodeURIComponent(workspaceId)}/projects`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name: input.name,
+            path: input.path,
+            git_remote_url: input.gitRemoteUrl,
+            git_provider: input.gitProvider,
+            git_owner: input.gitOwner,
+            git_repo: input.gitRepo,
+            icon_path: input.iconPath,
+          }),
+        },
+      )
+      return mapWorkspaceProjectToProject(project)
     }),
 
   /** Update a project */
@@ -1480,6 +1445,7 @@ export const ergataiRouter = router({
       z.object({
         id: projectIdSchema,
         name: z.string().optional(),
+        path: z.string().optional(),
         gitRemoteUrl: z.string().nullish(),
         gitProvider: z.string().nullish(),
         gitOwner: z.string().nullish(),
@@ -1487,26 +1453,74 @@ export const ergataiRouter = router({
         iconPath: z.string().nullish(),
       }),
     )
-    .mutation(async ({ input }) => {
-      return {
-        id: input.id,
-        name: input.name || "Unknown",
-        path: "/mock/path",
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        gitRemoteUrl: input.gitRemoteUrl ?? null,
-        gitProvider: input.gitProvider ?? null,
-        gitOwner: input.gitOwner ?? null,
-        gitRepo: input.gitRepo ?? null,
-        iconPath: input.iconPath ?? null,
+    .mutation(async ({ input }): Promise<Project | null> => {
+      try {
+        // Find which workspace contains this project
+        const workspaces = await ergataiFetch<BackendManagedWorkspace[]>(
+          `/api/v1/workspaces/managed`,
+        )
+        for (const ws of workspaces) {
+          const wsId = ws.workspace_id.toString()
+          const projects = await ergataiFetch<BackendWorkspaceProject[]>(
+            `/api/v1/workspaces/managed/${encodeURIComponent(wsId)}/projects`,
+          )
+          const found = projects.find((p) => p.project_id === input.id)
+          if (found) {
+            // Build update payload (only include fields that are explicitly provided)
+            const updatePayload: Record<string, unknown> = {}
+            if (input.name !== undefined) updatePayload.name = input.name
+            if (input.path !== undefined) updatePayload.path = input.path
+            // Git fields: use undefined to skip, null to clear, string to set
+            if (input.gitRemoteUrl !== undefined) updatePayload.git_remote_url = input.gitRemoteUrl
+            if (input.gitProvider !== undefined) updatePayload.git_provider = input.gitProvider
+            if (input.gitOwner !== undefined) updatePayload.git_owner = input.gitOwner
+            if (input.gitRepo !== undefined) updatePayload.git_repo = input.gitRepo
+            if (input.iconPath !== undefined) updatePayload.icon_path = input.iconPath
+
+            const updated = await ergataiFetch<BackendWorkspaceProject>(
+              `/api/v1/workspaces/managed/${encodeURIComponent(wsId)}/projects/${encodeURIComponent(input.id)}`,
+              {
+                method: "PATCH",
+                body: JSON.stringify(updatePayload),
+              },
+            )
+            return mapWorkspaceProjectToProject(updated)
+          }
+        }
+        return null
+      } catch (error) {
+        console.error("[Projects] Failed to update project:", error)
+        return null
       }
     }),
 
-  /** Delete a project */
+  /** Delete a project (finds workspace and removes) */
   deleteProject: publicProcedure
     .input(z.object({ id: projectIdSchema }))
-    .mutation(async ({ input }) => {
-      return { success: true }
+    .mutation(async ({ input }): Promise<{ success: boolean }> => {
+      try {
+        const workspaces = await ergataiFetch<BackendManagedWorkspace[]>(
+          `/api/v1/workspaces/managed`,
+        )
+        for (const ws of workspaces) {
+          const wsId = ws.workspace_id.toString()
+          const projects = await ergataiFetch<BackendWorkspaceProject[]>(
+            `/api/v1/workspaces/managed/${encodeURIComponent(wsId)}/projects`,
+          )
+          const found = projects.find((p) => p.project_id === input.id)
+          if (found) {
+            await ergataiFetch(
+              `/api/v1/workspaces/managed/${encodeURIComponent(wsId)}/projects/${encodeURIComponent(input.id)}`,
+              { method: "DELETE" },
+            )
+            return { success: true }
+          }
+        }
+        return { success: false }
+      } catch (error) {
+        console.error("[Projects] Failed to delete project:", error)
+        return { success: false }
+      }
     }),
 
   // ── Chats Endpoints ─────────────────────────────────────────────────────
@@ -1683,7 +1697,7 @@ export const ergataiRouter = router({
           new_session_id: string
           new_agent_id: string
           message: string
-        }>(`/api/v1/agents/${input.agentId}/spawn-session`, {
+        }>(`/api/v1/agents/${input.agentId}/fork`, {
           method: "POST",
           body: JSON.stringify({
             target_command: input.targetCommand,
@@ -2054,11 +2068,11 @@ export const ergataiRouter = router({
       }
     }),
 
-  /** Get agent output (historical) */
+  /** Get agent historical output (persisted) */
   getAgentOutput: publicProcedure
     .input(z.object({ agentId: z.string() }))
     .query(async ({ input }) => {
-      return ergataiFetch(`/api/v1/agents/${input.agentId}/output`)
+      return ergataiFetch(`/api/v1/agents/${input.agentId}/outputs/history`)
     }),
 
   /** Get age of the agent's last structured activity */
@@ -2515,11 +2529,11 @@ export const ergataiRouter = router({
     return ergataiFetch("/api/v1/agents/suspended")
   }),
 
-  /** Get agent current output (real-time) */
+  /** Get agent current output (real-time accumulator) */
   getAgentCurrentOutput: publicProcedure
     .input(z.object({ agentId: z.string() }))
     .query(async ({ input }) => {
-      return ergataiFetch(`/api/v1/agents/${input.agentId}/current-output`)
+      return ergataiFetch(`/api/v1/agents/${input.agentId}/outputs/current`)
     }),
 
   /** Get agent events stream */
@@ -2555,7 +2569,7 @@ export const ergataiRouter = router({
   spawnNewAgentSession: publicProcedure
     .input(z.object({ agentId: z.string() }))
     .mutation(async ({ input }) => {
-      return ergataiFetch(`/api/v1/agents/${input.agentId}/spawn-session`, {
+      return ergataiFetch(`/api/v1/agents/${input.agentId}/fork`, {
         method: "POST",
       })
     }),

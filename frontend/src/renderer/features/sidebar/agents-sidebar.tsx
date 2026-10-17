@@ -1707,7 +1707,7 @@ export function AgentsSidebar({
           createdAt: chat.createdAt,
           updatedAt: chat.updatedAt,
           archivedAt: chat.archivedAt,
-          projectId: chat.projectId,
+          projectId: null,
           workspaceId: chat.workspaceId,
           worktreePath: chat.worktreePath,
           branch: chat.branch,
@@ -2365,8 +2365,8 @@ export function AgentsSidebar({
 
     // Sync selectedProject with the chosen workspace
     const ws = workspaces?.find((w) => w.id === workspaceId)
-    if (ws?.projectId && projectsMap.has(ws.projectId)) {
-      const proj = projectsMap.get(ws.projectId)
+    if (ws?.defaultProjectId && projectsMap.has(ws.defaultProjectId)) {
+      const proj = projectsMap.get(ws.defaultProjectId)
       if (proj && proj.id !== selectedProject?.id) {
         setSelectedProject({
           id: proj.id,

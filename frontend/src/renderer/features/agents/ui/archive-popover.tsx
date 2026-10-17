@@ -290,7 +290,7 @@ export const ArchivePopover = memo(function ArchivePopover({ trigger }: ArchiveP
       id: chat.id,
       name: chat.name,
       branch: chat.branch,
-      projectId: chat.projectId,
+      projectId: null,
       repository: null,
       gitOwner: null,
       gitProvider: null,

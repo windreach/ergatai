@@ -22,23 +22,27 @@ export type BackendWorkspace = {
   config: string        // JSON string
   collaboration_mode: string
   status: string
+  default_project_id: number | null
   created_at: number    // Unix timestamp (seconds)
   updated_at: number    // Unix timestamp (seconds)
 }
 
 /**
  * Workspace project with denormalized project details.
- * Note: This corresponds to backend's ManagedWorkspaceProject,
- * which includes project_name and project_path via JOIN query.
+ * Note: This corresponds to backend's Project struct returned by
+ * workspace project endpoints.
  */
 export type BackendWorkspaceProject = {
   workspace_id: string
   project_id: string
-  project_name: string
-  project_path: string
-  is_default: boolean
-  status: string
-  settings_json: string
+  name: string
+  path: string
+  description: string | null
+  git_remote_url: string | null
+  git_provider: string | null
+  git_owner: string | null
+  git_repo: string | null
+  icon_path: string | null
   created_at: number
   updated_at: number
 }
@@ -52,6 +56,7 @@ export type BackendManagedWorkspace = {
   config: string
   collaboration_mode: string
   status: string
+  default_project_id: string | null
   created_at: number
   updated_at: number
   projects: BackendWorkspaceProject[]
@@ -282,75 +287,6 @@ export async function getRegisteredWorktree(
   })
   promise.catch(() => registeredWorktreeCache.delete(path))
   return promise
-}
-
-// ── Persistent Workspace APIs ──
-
-export async function listPersistentWorkspaces(
-  projectId?: string,
-): Promise<BackendWorkspace[]> {
-  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""
-  return ergataiFetch<BackendWorkspace[]>(`/api/v1/workspaces/persistent${query}`)
-}
-
-export async function getPersistentWorkspace(
-  id: string,
-): Promise<BackendWorkspace | null> {
-  try {
-    return await ergataiFetch<BackendWorkspace>(
-      `/api/v1/workspaces/persistent/${encodeURIComponent(id)}`,
-    )
-  } catch (error) {
-    if (isErgataiApiError(error) && error.status === 404) {
-      return null
-    }
-    throw error
-  }
-}
-
-export async function createPersistentWorkspace(
-  workspace: {
-    work_dir: string
-    env?: Record<string, string>
-    resources?: Record<string, unknown>
-  },
-): Promise<BackendWorkspace> {
-  return ergataiFetch<BackendWorkspace>("/api/v1/workspaces/persistent", {
-    method: "POST",
-    body: JSON.stringify({
-      work_dir: workspace.work_dir,
-      env: JSON.stringify(workspace.env || {}),
-      resources: JSON.stringify(workspace.resources || {}),
-    }),
-  })
-}
-
-export async function updatePersistentWorkspace(
-  id: string,
-  workspace: {
-    work_dir: string
-    env?: Record<string, string>
-    resources?: Record<string, unknown>
-  },
-): Promise<BackendWorkspace> {
-  return ergataiFetch<BackendWorkspace>(
-    `/api/v1/workspaces/persistent/${encodeURIComponent(id)}`,
-    {
-      method: "PUT",
-      body: JSON.stringify({
-        work_dir: workspace.work_dir,
-        env: JSON.stringify(workspace.env || {}),
-        resources: JSON.stringify(workspace.resources || {}),
-      }),
-    },
-  )
-}
-
-export async function deletePersistentWorkspace(id: string): Promise<void> {
-  await ergataiFetch(
-    `/api/v1/workspaces/persistent/${encodeURIComponent(id)}`,
-    { method: "DELETE" },
-  )
 }
 
 // ── Conversation APIs ──

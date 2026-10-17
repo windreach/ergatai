@@ -44,7 +44,7 @@ type BackendChatRow = {
 type KanbanChatRow = {
   id: string
   name: string | null
-  projectId: string
+  projectId: string | null
   branch: string | null
   createdAt: Date
   updatedAt: Date | null
@@ -153,7 +153,7 @@ export function KanbanView() {
       merged.set(chat.id, {
         id: chat.id,
         name: chat.name,
-        projectId: chat.projectId,
+        projectId: null,
         branch: chat.branch,
         createdAt: chat.createdAt,
         updatedAt: chat.updatedAt,
@@ -166,7 +166,7 @@ export function KanbanView() {
       merged.set(chat.id, {
         id: chat.id,
         name: chat.name,
-        projectId: chat.projectId,
+        projectId: null,
         branch: chat.branch,
         createdAt: chat.createdAt,
         updatedAt: chat.updatedAt,
@@ -321,7 +321,7 @@ export function KanbanView() {
     // Add workspaces
     if (chats) {
       for (const chat of chats) {
-        const project = projectsMap.get(chat.projectId)
+        const project = chat.projectId ? projectsMap.get(chat.projectId) : null
 
         const status = deriveWorkspaceStatus(chat.id, {
           workspacesLoading,

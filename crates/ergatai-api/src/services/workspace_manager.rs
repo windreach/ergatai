@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use utoipa::ToSchema;
 
-use crate::user_data_db::{workspaces, Workspace};
+use crate::user_data_db::{projects, workspaces, Project as DbProject, Workspace};
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ManagedWorkspace {
@@ -18,6 +18,7 @@ pub struct ManagedWorkspace {
     pub config: String,
     pub collaboration_mode: String,
     pub status: String,
+    pub default_project_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -38,6 +39,8 @@ pub struct CreateManagedWorkspaceRequest {
     pub config: Option<String>,
     #[serde(default)]
     pub collaboration_mode: Option<crate::services::collaboration_session::CollaborationMode>,
+    #[serde(default)]
+    pub default_project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, ToSchema)]
@@ -54,6 +57,8 @@ pub struct UpdateManagedWorkspaceRequest {
     pub config: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
+    #[serde(default)]
+    pub default_project_id: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -66,6 +71,56 @@ pub struct WorkspaceStatus {
     pub chat_count: usize,
     pub active_chat_count: usize,
     pub healthy: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Project {
+    pub project_id: String,
+    pub workspace_id: String,
+    pub name: String,
+    pub path: String,
+    pub description: Option<String>,
+    pub git_remote_url: Option<String>,
+    pub git_provider: Option<String>,
+    pub git_owner: Option<String>,
+    pub git_repo: Option<String>,
+    pub icon_path: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct RegisterWorkspaceProjectRequest {
+    #[schema(min_length = 1)]
+    pub name: String,
+    #[schema(min_length = 1)]
+    pub path: String,
+    pub description: Option<String>,
+    pub git_remote_url: Option<String>,
+    pub git_provider: Option<String>,
+    pub git_owner: Option<String>,
+    pub git_repo: Option<String>,
+    pub icon_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct UpdateWorkspaceProjectRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub description: Option<Option<String>>,
+    #[serde(default)]
+    pub git_remote_url: Option<Option<String>>,
+    #[serde(default)]
+    pub git_provider: Option<Option<String>>,
+    #[serde(default)]
+    pub git_owner: Option<Option<String>>,
+    #[serde(default)]
+    pub git_repo: Option<Option<String>>,
+    #[serde(default)]
+    pub icon_path: Option<Option<String>>,
 }
 
 #[derive(Debug)]
@@ -171,6 +226,9 @@ pub async fn to_managed(workspace: Workspace) -> Result<ManagedWorkspace, Worksp
         config: workspace.config,
         collaboration_mode: workspace.collaboration_mode,
         status: workspace.status,
+        default_project_id: workspace
+            .default_project_id
+            .map(|id| format_id(id, IdType::Workspace)),
         created_at: workspace.created_at,
         updated_at: workspace.updated_at,
     })
@@ -257,6 +315,21 @@ pub async fn create(
     let collaboration_mode = request
         .collaboration_mode
         .unwrap_or(crate::services::collaboration_session::CollaborationMode::Supervisor);
+
+    // Validate default_project_id if provided
+    let default_project_id = match request.default_project_id {
+        None => None,
+        Some(id_str) => {
+            let id_i64 = parse_to_i64(&id_str).ok_or_else(|| {
+                WorkspaceManagerError::Validation(format!(
+                    "Invalid default_project_id format: {}",
+                    id_str
+                ))
+            })?;
+            Some(id_i64)
+        }
+    };
+
     let timestamp = now();
     let workspace = Workspace {
         workspace_id,
@@ -267,6 +340,7 @@ pub async fn create(
         config,
         collaboration_mode: collaboration_mode.as_str().to_string(),
         status: "active".to_string(),
+        default_project_id,
         created_at: timestamp,
         updated_at: timestamp,
     };
@@ -318,6 +392,25 @@ pub async fn update(
             status
         )));
     }
+
+    // Update default_project_id if provided
+    let default_project_id = if let Some(project_id_opt) = request.default_project_id {
+        match project_id_opt {
+            None => None, // Set to null
+            Some(id_str) => {
+                let id_i64 = parse_to_i64(&id_str).ok_or_else(|| {
+                    WorkspaceManagerError::Validation(format!(
+                        "Invalid default_project_id format: {}",
+                        id_str
+                    ))
+                })?;
+                Some(id_i64)
+            }
+        }
+    } else {
+        existing.default_project_id
+    };
+
     let updated = Workspace {
         workspace_id: existing.workspace_id,
         name: request.name.clone().unwrap_or(existing.name.clone()),
@@ -327,6 +420,7 @@ pub async fn update(
         config,
         collaboration_mode: existing.collaboration_mode,
         status,
+        default_project_id,
         created_at: existing.created_at,
         updated_at: now(),
     };
@@ -663,6 +757,222 @@ pub async fn restore_workspace(workspace_id: &str) -> Result<Workspace, Workspac
         .map_err(WorkspaceManagerError::from)?;
 
     Ok(updated_workspace)
+}
+
+// ── Project Management ──
+
+/// List all projects in a workspace
+pub fn list_projects(workspace_id: &str) -> Result<Vec<Project>, WorkspaceManagerError> {
+    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+        WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
+    })?;
+
+    // Check workspace exists
+    let _ws = workspaces::get(workspace_id_i64)
+        .map_err(WorkspaceManagerError::from)?
+        .ok_or_else(|| WorkspaceManagerError::NotFound(workspace_id.to_string()))?;
+
+    // List projects from database
+    let db_projects = projects::list(workspace_id_i64).map_err(WorkspaceManagerError::from)?;
+
+    // Convert to Project type
+    Ok(db_projects
+        .into_iter()
+        .map(|p| Project {
+            project_id: format_id(p.project_id, IdType::Workspace),
+            workspace_id: format_id(p.workspace_id, IdType::Workspace),
+            name: p.name,
+            path: p.path,
+            description: p.description,
+            git_remote_url: p.git_remote_url,
+            git_provider: p.git_provider,
+            git_owner: p.git_owner,
+            git_repo: p.git_repo,
+            icon_path: p.icon_path,
+            created_at: p.created_at,
+            updated_at: p.updated_at,
+        })
+        .collect())
+}
+
+/// Register a new project in a workspace
+pub fn register_project(
+    workspace_id: &str,
+    request: RegisterWorkspaceProjectRequest,
+) -> Result<Project, WorkspaceManagerError> {
+    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+        WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
+    })?;
+
+    // Check workspace exists
+    let _ws = workspaces::get(workspace_id_i64)
+        .map_err(WorkspaceManagerError::from)?
+        .ok_or_else(|| WorkspaceManagerError::NotFound(workspace_id.to_string()))?;
+
+    // Validate project path
+    let canonical_path = canonical_path(&request.path)?;
+
+    // Create project in database
+    let now = now();
+    let project_id = generate();
+    let db_project = DbProject {
+        project_id,
+        workspace_id: workspace_id_i64,
+        name: request.name.clone(),
+        path: canonical_path,
+        description: request.description.clone(),
+        git_remote_url: request.git_remote_url.clone(),
+        git_provider: request.git_provider.clone(),
+        git_owner: request.git_owner.clone(),
+        git_repo: request.git_repo.clone(),
+        icon_path: request.icon_path.clone(),
+        created_at: now,
+        updated_at: now,
+    };
+
+    let created = projects::create(db_project).map_err(WorkspaceManagerError::from)?;
+
+    // Convert to Project type
+    Ok(Project {
+        project_id: format_id(created.project_id, IdType::Workspace),
+        workspace_id: format_id(created.workspace_id, IdType::Workspace),
+        name: created.name,
+        path: created.path,
+        description: created.description,
+        git_remote_url: created.git_remote_url,
+        git_provider: created.git_provider,
+        git_owner: created.git_owner,
+        git_repo: created.git_repo,
+        icon_path: created.icon_path,
+        created_at: created.created_at,
+        updated_at: created.updated_at,
+    })
+}
+
+/// Remove a project from a workspace
+pub fn remove_project(workspace_id: &str, project_id: &str) -> Result<(), WorkspaceManagerError> {
+    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+        WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
+    })?;
+
+    let project_id_i64 = parse_to_i64(project_id).ok_or_else(|| {
+        WorkspaceManagerError::NotFound(format!("Invalid project ID format: {}", project_id))
+    })?;
+
+    // Check workspace exists
+    let _ws = workspaces::get(workspace_id_i64)
+        .map_err(WorkspaceManagerError::from)?
+        .ok_or_else(|| WorkspaceManagerError::NotFound(workspace_id.to_string()))?;
+
+    // Check project exists
+    let project = projects::get(project_id_i64)
+        .map_err(WorkspaceManagerError::from)?
+        .ok_or_else(|| WorkspaceManagerError::NotFound(project_id.to_string()))?;
+
+    // Verify project belongs to workspace
+    if project.workspace_id != workspace_id_i64 {
+        return Err(WorkspaceManagerError::Validation(
+            "Project does not belong to this workspace".to_string(),
+        ));
+    }
+
+    // Delete project from database
+    projects::delete(project_id_i64).map_err(WorkspaceManagerError::from)?;
+
+    Ok(())
+}
+
+/// Update a project in a workspace
+pub fn update_project(
+    workspace_id: &str,
+    project_id: &str,
+    request: UpdateWorkspaceProjectRequest,
+) -> Result<Project, WorkspaceManagerError> {
+    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+        WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
+    })?;
+
+    let project_id_i64 = parse_to_i64(project_id).ok_or_else(|| {
+        WorkspaceManagerError::NotFound(format!("Invalid project ID format: {}", project_id))
+    })?;
+
+    // Check workspace exists
+    let _ws = workspaces::get(workspace_id_i64)
+        .map_err(WorkspaceManagerError::from)?
+        .ok_or_else(|| WorkspaceManagerError::NotFound(workspace_id.to_string()))?;
+
+    // Get existing project
+    let mut project = projects::get(project_id_i64)
+        .map_err(WorkspaceManagerError::from)?
+        .ok_or_else(|| WorkspaceManagerError::NotFound(project_id.to_string()))?;
+
+    // Verify project belongs to workspace
+    if project.workspace_id != workspace_id_i64 {
+        return Err(WorkspaceManagerError::Validation(
+            "Project does not belong to this workspace".to_string(),
+        ));
+    }
+
+    // Update fields if provided
+    if let Some(name) = request.name {
+        if name.trim().is_empty() {
+            return Err(WorkspaceManagerError::Validation(
+                "Project name cannot be empty".to_string(),
+            ));
+        }
+        project.name = name;
+    }
+
+    if let Some(path) = request.path {
+        let canonical_path = canonical_path(&path)?;
+        project.path = canonical_path;
+    }
+
+    if let Some(description) = request.description {
+        project.description = description;
+    }
+
+    if let Some(git_remote_url) = request.git_remote_url {
+        project.git_remote_url = git_remote_url;
+    }
+
+    if let Some(git_provider) = request.git_provider {
+        project.git_provider = git_provider;
+    }
+
+    if let Some(git_owner) = request.git_owner {
+        project.git_owner = git_owner;
+    }
+
+    if let Some(git_repo) = request.git_repo {
+        project.git_repo = git_repo;
+    }
+
+    if let Some(icon_path) = request.icon_path {
+        project.icon_path = icon_path;
+    }
+
+    // Update timestamp
+    project.updated_at = now();
+
+    // Save to database
+    projects::update(project.clone()).map_err(WorkspaceManagerError::from)?;
+
+    // Convert to Project type
+    Ok(Project {
+        project_id: format_id(project.project_id, IdType::Workspace),
+        workspace_id: format_id(project.workspace_id, IdType::Workspace),
+        name: project.name,
+        path: project.path,
+        description: project.description,
+        git_remote_url: project.git_remote_url,
+        git_provider: project.git_provider,
+        git_owner: project.git_owner,
+        git_repo: project.git_repo,
+        icon_path: project.icon_path,
+        created_at: project.created_at,
+        updated_at: project.updated_at,
+    })
 }
 
 #[cfg(test)]

@@ -15,7 +15,7 @@ interface AgentsQuickSwitchDialogProps {
     meta: any
     sandbox_id: string | null
     updated_at: Date
-    projectId: string
+    projectId: string | null
   }>
   selectedIndex: number
   projectsMap: Map<string, { gitOwner?: string | null; gitProvider?: string | null; gitRepo?: string | null; name: string }>
@@ -67,7 +67,7 @@ export function AgentsQuickSwitchDialog({
                     {chats.map((chat, index) => {
                       const isSelected = index === selectedIndex
                       const isLoading = loadingChatIds.has(chat.id)
-                      const project = projectsMap.get(chat.projectId)
+                      const project = chat.projectId ? projectsMap.get(chat.projectId) : null
 
                       return (
                         <AgentChatCard

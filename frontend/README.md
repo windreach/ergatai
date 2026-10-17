@@ -39,7 +39,7 @@ By the Ergatai team
 
 Run agents locally, in worktrees, in background - without touching main branch.
 
-![Worktree Demo](assets/worktree.gif)
+![Worktree Demo](docs/assets/worktree.gif)
 
 - **Git Worktree Isolation** - Each chat session runs in its own isolated worktree
 - **Background Execution** - Run agents in background while you continue working
@@ -53,7 +53,7 @@ Run agents locally, in worktrees, in background - without touching main branch.
 
 Cursor-like UI with diff previews, built-in git client, and the ability to see changes before they land.
 
-![Cursor UI Demo](assets/cursor-ui.gif)
+![Cursor UI Demo](docs/assets/cursor-ui.gif)
 
 - **Diff Previews** - See exactly what changes the agent is making in real-time
 - **Built-in Git Client** - Stage, commit, push to GitHub, and manage branches without leaving the app
@@ -72,7 +72,7 @@ Cursor-like UI with diff previews, built-in git client, and the ability to see c
 
 The agent asks clarifying questions, builds structured plans, and shows clean markdown preview - all before execution.
 
-![Plan Mode Demo](assets/plan-mode.gif)
+![Plan Mode Demo](docs/assets/plan-mode.gif)
 
 - **Clarifying Questions** - The agent asks what it needs to know before starting
 - **Structured Plans** - See step-by-step breakdown of what will happen

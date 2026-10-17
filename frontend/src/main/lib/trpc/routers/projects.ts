@@ -89,6 +89,10 @@ export const projectsRouter = router({
         gitRepo: gitInfo.repo,
       })
 
+      if (!updatedProject) {
+        throw new Error("Failed to update project")
+      }
+
       // Track project opened
       trackProjectOpened({
         id: updatedProject.id,

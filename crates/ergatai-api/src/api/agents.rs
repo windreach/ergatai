@@ -40,18 +40,21 @@ fn validate_agent_id(id: &str) -> Option<Response> {
     None
 }
 
-/// Create a 500 Internal Server Error response for monitoring_handler errors.
+/// Create an error response for monitoring_handler errors.
+/// Returns 404 for "not found" errors, 500 for all others.
 fn monitoring_handler_error(e: &dyn std::fmt::Display) -> Response {
     let error_msg = e.to_string();
-    // If the error message contains "not found" related keywords, return 404
-    if error_msg.contains("not found") || error_msg.contains("does not exist") {
+    let is_not_found = ["not found", "does not exist", "no such"]
+        .iter()
+        .any(|&pattern| error_msg.to_lowercase().contains(pattern));
+
+    if is_not_found {
         (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse { error: error_msg }),
         )
             .into_response()
     } else {
-        // Otherwise return 500
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -358,8 +361,6 @@ pub struct AgentInfoResponse {
     pub work_dir: String,
     /// Lifecycle state name (lowercase, e.g., "running", "idle", "processing")
     pub state: String,
-    /// Detailed lifecycle state from the unified state machine
-    pub lifecycle_state: String,
     pub task_id: Option<String>,
     pub mcp_agent_id: Option<String>,
     pub is_alive: bool,
@@ -448,8 +449,7 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
                 agent_id: a.agent_id,
                 workspace_id: a.workspace_id,
                 work_dir: a.work_dir,
-                state: a.state.clone(),
-                lifecycle_state: a.state,
+                state: a.state,
                 task_id: a.task_id,
                 mcp_agent_id: a.mcp_agent_id,
                 is_alive: a.is_alive,
@@ -1845,7 +1845,7 @@ pub struct SpawnSessionResponse {
 /// Used for context overflow, task separation, or explicit user requests.
 #[utoipa::path(
     post,
-    path = "/api/v1/agents/{id}/spawn-session",
+    path = "/api/v1/agents/{id}/fork",
     tag = "Agents",
     params(("id" = String, Path, description = "Parent agent ID")),
     request_body = SpawnSessionRequest,
@@ -2886,7 +2886,7 @@ pub struct AgentOutputResponse {
 /// Get captured output for an agent (non-destructive read).
 #[utoipa::path(
     get,
-    path = "/api/v1/agents/{id}/output",
+    path = "/api/v1/agents/{id}/outputs/history",
     tag = "Agents",
     params(("id" = String, Path, description = "Agent ID")),
     responses(
@@ -3063,12 +3063,12 @@ pub async fn get_agent_pid(
     }
 }
 
-/// GET /api/v1/agents/{id}/current-output
+/// GET /api/v1/agents/{id}/outputs/current
 ///
 /// Get the current in-progress agent output snapshot (from accumulator, not yet persisted)
 #[utoipa::path(
     get,
-    path = "/api/v1/agents/{id}/current-output",
+    path = "/api/v1/agents/{id}/outputs/current",
     tag = "Agents",
     params(("id" = String, Path, description = "Agent ID")),
     responses(
@@ -3232,11 +3232,11 @@ pub async fn prompt_agent(
     Path(id): Path<String>,
     Json(body): Json<PromptAgentRequest>,
 ) -> impl IntoResponse {
-    // Filter out empty placeholder objects before validation
+    // Filter out empty placeholder objects (both fields empty)
     let valid_images: Vec<_> = body
         .images
         .iter()
-        .filter(|img| !(img.base64_data.trim().is_empty() && img.media_type.trim().is_empty()))
+        .filter(|img| !img.base64_data.trim().is_empty() || !img.media_type.trim().is_empty())
         .collect();
 
     // Validate image attachments before any processing to prevent
@@ -4245,7 +4245,6 @@ mod tests {
             workspace_id: "ws-1".to_string(),
             work_dir: "/workspace/ws-1".to_string(),
             state: "running".to_string(),
-            lifecycle_state: "running".to_string(),
             task_id: None,
             mcp_agent_id: None,
             is_alive: true,
@@ -4268,7 +4267,6 @@ mod tests {
         assert_eq!(json["workspace_id"], "ws-1");
         // Fixed: state is now lowercase
         assert_eq!(json["state"], "running");
-        assert_eq!(json["lifecycle_state"], "running");
         assert_eq!(json["is_alive"], true);
         assert_eq!(json["created_at"], "2026-01-01T00:00:00Z");
         assert_eq!(json["session_title"], "Refactoring auth module");
@@ -4321,7 +4319,6 @@ mod tests {
             workspace_id: "ws-1".to_string(),
             work_dir: "/workspace".to_string(),
             state: "running".to_string(),
-            lifecycle_state: "running".to_string(),
             task_id: Some("task-123".to_string()),
             mcp_agent_id: Some("mcp-1".to_string()),
             is_alive: true,
@@ -4354,7 +4351,6 @@ mod tests {
             workspace_id: "ws-1".to_string(),
             work_dir: "/workspace".to_string(),
             state: "terminated".to_string(),
-            lifecycle_state: "terminated".to_string(),
             task_id: None,
             mcp_agent_id: None,
             is_alive: false,

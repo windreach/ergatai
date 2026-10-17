@@ -213,7 +213,7 @@ export function AgentsContent() {
         branch: chat.branch,
         updatedAt: chat.updatedAt,
         createdAt: chat.createdAt,
-        projectId: chat.projectId,
+        projectId: null,
         worktreePath: chat.worktreePath,
         updated_at: chat.updatedAt ?? chat.createdAt ?? new Date(0),
         sandbox_id: null,

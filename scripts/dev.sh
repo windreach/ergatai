@@ -1,28 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-FRONTEND_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-BACKEND_DIR="${ERGATAI_BACKEND_DIR:-"$FRONTEND_DIR/../ergatai"}"
+# Development script - starts both backend and frontend
+# Usage: ./scripts/dev.sh
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+FRONTEND_DIR="$ROOT_DIR/frontend"
 API_HOST="${ERGATAI_API_HOST:-127.0.0.1}"
 API_PORT="${ERGATAI_API_PORT:-3000}"
 API_URL="http://${API_HOST}:${API_PORT}"
 
 export ERGATAI_API_URL="$API_URL"
 
-if [ ! -d "$BACKEND_DIR/crates" ]; then
-  echo "Backend not found at $BACKEND_DIR"
-  echo "Set ERGATAI_BACKEND_DIR=/path/to/ergatai or place it next to ergatai-ui."
-  exit 1
-fi
-
-# 日志目录和文件
-LOG_DIR="$FRONTEND_DIR/logs"
+# Log directory
+LOG_DIR="$ROOT_DIR/logs"
 mkdir -p "$LOG_DIR"
 
 BACKEND_LOG="$LOG_DIR/backend.log"
 FRONTEND_LOG="$LOG_DIR/frontend.log"
 
-# 删除上次的日志文件，避免日志爆炸
+# Clean up old logs
 rm -f "$BACKEND_LOG" "$FRONTEND_LOG"
 
 cleanup() {
@@ -39,8 +37,8 @@ cleanup() {
 trap cleanup EXIT
 
 echo "── Starting backend (ergatai-api) ──"
-cd "$BACKEND_DIR"
-# 重定向到日志文件（在另一个终端用 tail -f 查看）
+cd "$ROOT_DIR"
+# Redirect to log file (view with tail -f in another terminal)
 RUST_LOG=debug cargo run -p ergatai-api -- --host "$API_HOST" --port "$API_PORT" >> "$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
 
@@ -66,7 +64,7 @@ if [[ "$backend_ready" != true ]]; then
   exit 1
 fi
 
-echo "── Starting frontend (ergatai-ui) ──"
+echo "── Starting frontend (Electron dev) ──"
 cd "$FRONTEND_DIR"
 bun run dev:frontend >> "$FRONTEND_LOG" 2>&1 &
 FRONTEND_PID=$!

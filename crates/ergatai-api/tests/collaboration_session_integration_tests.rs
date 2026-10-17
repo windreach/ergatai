@@ -46,6 +46,7 @@ fn ensure_workspace_and_chat_exist(workspace_id: i64, chat_id: i64) {
         config: "{}".to_string(),
         collaboration_mode: "none".to_string(),
         status: "active".to_string(),
+        default_project_id: None,
         created_at: 0,
         updated_at: 0,
     });

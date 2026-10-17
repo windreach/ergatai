@@ -69,6 +69,7 @@ function AppContent() {
     })
   }, [])
 
+  const utils = trpc.useUtils()
   const { data: projects, isLoading: isLoadingProjects } =
     trpc.projects.list.useQuery(undefined, { staleTime: Infinity })
 
@@ -106,6 +107,7 @@ function AppContent() {
           { path: defaultPath, name: "Default Workspace" },
           {
             onSuccess: (project) => {
+              utils.projects.list.invalidate()
               setSelectedProject({
                 id: project.id,
                 name: project.name,
@@ -115,7 +117,9 @@ function AppContent() {
                 gitOwner: project.gitOwner,
                 gitRepo: project.gitRepo,
               })
-              setIsAutoCreatingProject(false)
+              // Don't reset isAutoCreatingProject here; wait until validatedProject
+              // becomes non-null (i.e. the query has refetched and includes the new project).
+              // Resetting too early causes a race that re-triggers the creation effect.
             },
             onError: () => {
               setIsAutoCreatingProject(false)
@@ -127,6 +131,14 @@ function AppContent() {
       createDefaultProject()
     }
   }, [validatedProject, isLoadingProjects, isAutoCreatingProject])
+
+  // Reset the auto-creating flag once the projects list has caught up
+  // and validatedProject becomes non-null.
+  useEffect(() => {
+    if (validatedProject && isAutoCreatingProject) {
+      setIsAutoCreatingProject(false)
+    }
+  }, [validatedProject, isAutoCreatingProject])
 
   return <AgentsLayout />
 }

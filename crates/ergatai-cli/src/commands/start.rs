@@ -95,7 +95,10 @@ pub async fn handle(
         .create_workspace(&workspace_id, effective_work_dir.as_deref())
         .await
         .context("Failed to create workspace")?;
-    println!("✓ Workspace ready: {} (id: {})", agent_name, workspace.id);
+    println!(
+        "✓ Workspace ready: {} (id: {})",
+        agent_name, workspace.workspace_id
+    );
 
     // Step 2: Spawn agent (use absolute path as command, pass work_dir).
     // Always call spawn — the backend verifies the PTY process state and will

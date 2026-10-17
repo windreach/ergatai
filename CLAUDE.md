@@ -246,10 +246,14 @@ GET  /health                         存活检查
 GET  /ready                          就绪检查
 GET  /metrics                        Prometheus 指标
 
-# Workspace 管理
-GET  /api/v1/workspaces              列出所有 workspace
-POST /api/v1/workspaces              创建 workspace
-DELETE /api/v1/workspaces/:id        删除 workspace
+# Workspace 管理 (Managed Workspaces)
+GET  /api/v1/workspaces/managed              列出所有 workspace
+POST /api/v1/workspaces/managed              创建 workspace
+GET  /api/v1/workspaces/managed/:id          获取 workspace 详情
+PATCH /api/v1/workspaces/managed/:id         更新 workspace
+DELETE /api/v1/workspaces/managed/:id        删除 workspace
+POST /api/v1/workspaces/managed/:id/archive  归档 workspace
+POST /api/v1/workspaces/managed/:id/restore  恢复 workspace
 
 # Agent 管理
 GET  /api/v1/agents                  列出所有 agent

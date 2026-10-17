@@ -18,17 +18,20 @@ pub fn format_workspaces_table(workspaces: &[WorkspaceResponse]) {
         return;
     }
 
-    println!("{:<40} {:<15} METADATA", "ID", "BACKEND");
-    println!("{}", "-".repeat(70));
+    println!(
+        "{:<40} {:<20} {:<30} {:<10}",
+        "ID", "NAME", "WORK DIR", "STATUS"
+    );
+    println!("{}", "-".repeat(100));
 
     for w in workspaces {
-        let metadata = if w.metadata.is_empty() {
-            "{}".to_string()
-        } else {
-            format!("{:?}", w.metadata)
-        };
-        let id_display = truncate_str(&w.id, 40);
-        println!("{:<40} {:<15} {}", id_display, w.backend, metadata);
+        let id_display = truncate_str(&w.workspace_id, 40);
+        let name_display = truncate_str(&w.name, 20);
+        let work_dir_display = truncate_str(&w.work_dir, 30);
+        println!(
+            "{:<40} {:<20} {:<30} {:<10}",
+            id_display, name_display, work_dir_display, w.status
+        );
     }
 }
 
@@ -173,14 +176,19 @@ mod tests {
     use super::*;
     use crate::client::http::{AgentInfoResponse, StatusResponse, WorkspaceResponse};
     use ergatai_error::id::{format as format_id, generate, IdType};
-    use std::collections::HashMap;
 
-    fn make_workspace(id: &str, backend: &str) -> WorkspaceResponse {
+    fn make_workspace(id: &str, name: &str) -> WorkspaceResponse {
         WorkspaceResponse {
-            id: id.to_string(),
-            backend: backend.to_string(),
-            metadata: HashMap::new(),
-            capture_thoughts: None,
+            workspace_id: id.to_string(),
+            name: name.to_string(),
+            work_dir: format!("/workspace/{}", id),
+            env: "{}".to_string(),
+            resources: "{}".to_string(),
+            config: "{}".to_string(),
+            collaboration_mode: "peer".to_string(),
+            status: "active".to_string(),
+            created_at: 1234567890,
+            updated_at: 1234567890,
         }
     }
 
@@ -191,7 +199,6 @@ mod tests {
             workspace_id: workspace_id.to_string(),
             work_dir: format!("/workspace/{}", workspace_id),
             state: state.to_string(),
-            lifecycle_state: state.to_string(),
             task_id: None,
             mcp_agent_id: None,
             is_alive: state == "running" || state == "idle" || state == "processing",
@@ -218,24 +225,23 @@ mod tests {
 
     #[test]
     fn test_format_workspaces_table_single() {
-        let workspaces = vec![make_workspace("ws-1", "local")];
+        let workspaces = vec![make_workspace("ws-1", "workspace-1")];
         format_workspaces_table(&workspaces);
     }
 
     #[test]
     fn test_format_workspaces_table_multiple() {
         let workspaces = vec![
-            make_workspace("ws-1", "local"),
-            make_workspace("ws-2", "remote"),
-            make_workspace("ws-3", "docker"),
+            make_workspace("ws-1", "workspace-1"),
+            make_workspace("ws-2", "workspace-2"),
+            make_workspace("ws-3", "workspace-3"),
         ];
         format_workspaces_table(&workspaces);
     }
 
     #[test]
     fn test_format_workspaces_table_with_metadata() {
-        let mut ws = make_workspace("ws-meta", "local");
-        ws.metadata.insert("key".to_string(), "value".to_string());
+        let ws = make_workspace("ws-meta", "meta-workspace");
         format_workspaces_table(&[ws]);
     }
 
@@ -281,9 +287,9 @@ mod tests {
     }
 
     #[test]
-    fn test_workspace_metadata_empty_shows_empty_braces() {
-        let ws = make_workspace("ws-empty-meta", "local");
-        assert!(ws.metadata.is_empty());
+    fn test_workspace_empty_env_shows_empty_braces() {
+        let ws = make_workspace("ws-empty-meta", "empty-workspace");
+        assert_eq!(ws.env, "{}");
         format_workspaces_table(&[ws]);
     }
 
@@ -295,7 +301,6 @@ mod tests {
             workspace_id: "test-ws".to_string(),
             work_dir: "/workspace/test-ws".to_string(),
             state: "running".to_string(),
-            lifecycle_state: "running".to_string(),
             task_id: None,
             mcp_agent_id: None,
             is_alive: true,
@@ -320,7 +325,7 @@ mod tests {
     fn test_format_workspaces_table_long_ids() {
         let workspaces = vec![make_workspace(
             "very-long-workspace-identifier-that-exceeds-column-width",
-            "local-backend-type",
+            "very-long-workspace-name-that-exceeds-column-width",
         )];
         format_workspaces_table(&workspaces);
     }

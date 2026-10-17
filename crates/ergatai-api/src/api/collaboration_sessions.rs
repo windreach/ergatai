@@ -14,10 +14,10 @@ use serde::Deserialize;
 use std::convert::Infallible;
 
 use crate::services::collaboration_session::{
-    create_approval, create_plan_revision, create_session, decide_approval, find_session_by_chat,
-    get_plan_revision, get_session, list_events, list_plan_revisions, transition_state,
-    ApprovalDecisionRequest, CollaborationSessionError, CreateApprovalRequest,
-    CreateCollaborationSessionRequest, CreatePlanRevisionRequest, SessionStateTransitionRequest,
+    create_approval, create_plan_revision, create_session, decide_approval, get_plan_revision,
+    get_session, list_events, list_plan_revisions, transition_state, ApprovalDecisionRequest,
+    CollaborationSessionError, CreateApprovalRequest, CreateCollaborationSessionRequest,
+    CreatePlanRevisionRequest, SessionStateTransitionRequest,
 };
 use crate::services::collaboration_session_dag::{
     activate_plan_revision, cancel_session_execution, CollaborationSessionDagError,
@@ -100,36 +100,6 @@ pub async fn create_collaboration_session(
     match tokio::task::spawn_blocking(move || create_session(request)).await {
         Ok(Ok(detail)) => (StatusCode::CREATED, Json(detail)).into_response(),
         Ok(Err(error)) => response_from_error(error, "create collaboration session"),
-        Err(error) => {
-            crate::http_error::internal(format!("Task join error: {}", error), "spawn_blocking")
-                .into_response()
-        }
-    }
-}
-
-/// GET /api/v1/collaboration-sessions/by-chat/:chat_id
-#[utoipa::path(
-    get,
-    path = "/api/v1/collaboration-sessions/by-chat/{chat_id}",
-    tag = "Collaboration Sessions",
-    params(("chat_id" = String, Path, description = "Chat identifier")),
-    responses(
-        (status = 200, description = "Collaboration session", body = crate::services::collaboration_session::CollaborationSession),
-        (status = 404, description = "Session not found", body = crate::api::ApiError),
-        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
-        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
-)]
-pub async fn get_collaboration_session_by_chat(Path(chat_id): Path<String>) -> Response {
-    let chat_id_for_closure = chat_id.clone();
-    match tokio::task::spawn_blocking(move || find_session_by_chat(&chat_id_for_closure)).await {
-        Ok(Ok(Some(session))) => (StatusCode::OK, Json(session)).into_response(),
-        Ok(Ok(None)) => {
-            crate::http_error::not_found("Collaboration session for chat", &chat_id.to_string())
-                .into_response()
-        }
-        Ok(Err(error)) => {
-            crate::http_error::internal(error, "find session by chat").into_response()
-        }
         Err(error) => {
             crate::http_error::internal(format!("Task join error: {}", error), "spawn_blocking")
                 .into_response()

@@ -2,7 +2,6 @@ use anyhow::Result;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::time::Duration;
 
 /// Default request timeout for CLI client (30 seconds)
@@ -42,7 +41,7 @@ impl ErgataiClient {
     }
 
     pub async fn list_workspaces(&self) -> Result<Vec<WorkspaceResponse>> {
-        let url = format!("{}/api/v1/workspaces", self.base_url);
+        let url = format!("{}/api/v1/workspaces/managed", self.base_url);
         let req = self.client.get(&url);
         let req = self.add_auth(req);
         let response = req.send().await?;
@@ -60,10 +59,10 @@ impl ErgataiClient {
         id: &str,
         work_dir: Option<&str>,
     ) -> Result<WorkspaceResponse> {
-        let url = format!("{}/api/v1/workspaces", self.base_url);
+        let url = format!("{}/api/v1/workspaces/managed", self.base_url);
         let body = CreateWorkspaceRequest {
-            id: id.to_string(),
-            work_dir: work_dir.map(|s| s.to_string()),
+            id: Some(id.to_string()),
+            work_dir: work_dir.unwrap_or(".").to_string(),
         };
         let req = self.client.post(&url).json(&body);
         let req = self.add_auth(req);
@@ -79,7 +78,7 @@ impl ErgataiClient {
 
     pub async fn delete_workspace(&self, id: &str) -> Result<()> {
         let encoded_id = Self::encode_path_segment(id);
-        let url = format!("{}/api/v1/workspaces/{}", self.base_url, encoded_id);
+        let url = format!("{}/api/v1/workspaces/managed/{}", self.base_url, encoded_id);
         let req = self.client.delete(&url);
         let req = self.add_auth(req);
         let response = req.send().await?;
@@ -269,13 +268,18 @@ impl ErgataiClient {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct WorkspaceResponse {
-    pub id: String,
-    pub backend: String,
-    pub metadata: HashMap<String, String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub capture_thoughts: Option<bool>,
+    pub workspace_id: String,
+    pub name: String,
+    pub work_dir: String,
+    pub env: String,
+    pub resources: String,
+    pub config: String,
+    pub collaboration_mode: String,
+    pub status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 /// Configuration option info (matches API's ConfigOptionInfo).
@@ -303,9 +307,6 @@ pub struct AgentInfoResponse {
     #[allow(dead_code)]
     pub work_dir: String,
     pub state: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub lifecycle_state: String,
     #[serde(default)]
     pub task_id: Option<String>,
     #[serde(default)]
@@ -389,8 +390,8 @@ pub struct LockContentionResponse {
 
 #[derive(Debug, Serialize)]
 struct CreateWorkspaceRequest {
-    id: String,
-    work_dir: Option<String>,
+    id: Option<String>,
+    work_dir: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -520,8 +521,8 @@ mod tests {
     #[test]
     fn test_create_workspace_request_serialization() {
         let req = CreateWorkspaceRequest {
-            id: "ws-1".to_string(),
-            work_dir: Some("/tmp/work".to_string()),
+            id: Some("ws-1".to_string()),
+            work_dir: "/tmp/work".to_string(),
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"id\":\"ws-1\""));
@@ -529,15 +530,15 @@ mod tests {
     }
 
     #[test]
-    fn test_create_workspace_request_no_work_dir() {
+    fn test_create_workspace_request_no_id() {
         let req = CreateWorkspaceRequest {
-            id: "ws-2".to_string(),
-            work_dir: None,
+            id: None,
+            work_dir: "/tmp/work".to_string(),
         };
         let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"id\":\"ws-2\""));
         // None is serialized as null by default (no skip_serializing_if)
-        assert!(json.contains("\"work_dir\":null"));
+        assert!(json.contains("\"id\":null"));
+        assert!(json.contains("\"work_dir\":\"/tmp/work\""));
     }
 
     #[test]
@@ -580,11 +581,12 @@ mod tests {
 
     #[test]
     fn test_workspace_response_deserialization() {
-        let json = r#"{"id":"ws-1","backend":"local","metadata":{"key":"value"}}"#;
+        let json = r#"{"workspace_id":"ws-1","name":"test","work_dir":"/tmp","env":"{}","resources":"{}","config":"{}","collaboration_mode":"peer","status":"active","created_at":1234567890,"updated_at":1234567890}"#;
         let resp: WorkspaceResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.id, "ws-1");
-        assert_eq!(resp.backend, "local");
-        assert_eq!(resp.metadata.get("key").unwrap(), "value");
+        assert_eq!(resp.workspace_id, "ws-1");
+        assert_eq!(resp.name, "test");
+        assert_eq!(resp.work_dir, "/tmp");
+        assert_eq!(resp.status, "active");
     }
 
     #[test]
@@ -637,9 +639,11 @@ mod tests {
 
     #[test]
     fn test_workspace_response_empty_metadata() {
-        let json = r#"{"id":"ws-1","backend":"local","metadata":{}}"#;
+        let json = r#"{"workspace_id":"ws-1","name":"test","work_dir":"/tmp","env":"{}","resources":"{}","config":"{}","collaboration_mode":"peer","status":"active","created_at":1234567890,"updated_at":1234567890}"#;
         let resp: WorkspaceResponse = serde_json::from_str(json).unwrap();
-        assert!(resp.metadata.is_empty());
+        assert_eq!(resp.workspace_id, "ws-1");
+        assert_eq!(resp.env, "{}");
+        assert_eq!(resp.resources, "{}");
     }
 
     #[test]

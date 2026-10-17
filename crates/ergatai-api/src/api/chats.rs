@@ -29,19 +29,6 @@ pub struct CreateChatRequest {
     pub workspace_id: String,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct WorktreeLookupParams {
-    #[serde(default)]
-    #[schema(default = "")]
-    pub path: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct RegisteredWorktreeResponse {
-    pub chat: Option<ChatResponse>,
-    pub project_path: Option<String>,
-}
-
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ChatResponse {
     pub id: String,
@@ -301,37 +288,6 @@ pub async fn delete_chat(
         Ok(Err(error)) => db_error("Failed to delete chat", error),
         Err(e) => crate::http_error::internal(e, "delete_chat_join").into_response(),
     }
-}
-
-/// GET /api/v1/worktrees/registered?path=...
-/// GET /api/v1/chats/lookup-worktree
-///
-/// Resolve a filesystem path against backend-registered chats and projects.
-/// TODO: This endpoint is temporarily stubbed since worktree tracking has been removed.
-#[utoipa::path(
-    get,
-    path = "/api/v1/chats/lookup-worktree",
-    tag = "Chats",
-    responses(
-        (status = 200, description = "Worktree lookup result"),
-        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
-        (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
-)]
-pub async fn lookup_registered_worktree(
-    State(_state): State<AppState>,
-    Query(_params): Query<WorktreeLookupParams>,
-) -> impl IntoResponse {
-    // TODO: Worktree tracking has been removed from the schema.
-    // This endpoint is temporarily stubbed.
-    (
-        StatusCode::OK,
-        Json(RegisteredWorktreeResponse {
-            chat: None,
-            project_path: None,
-        }),
-    )
-        .into_response()
 }
 
 /// GET /api/v1/chats/{chat_id}/agents — 列出该 chat 下所有运行中的 agent

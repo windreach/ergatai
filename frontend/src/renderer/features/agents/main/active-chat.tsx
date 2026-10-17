@@ -3158,7 +3158,7 @@ export function ChatView({
                             workspaceBranch={agentChat?.branch ?? null}
                             workspaceRepoName={(agentChat as any)?.project?.gitRepo || (agentChat as any)?.project?.name || null}
                             workspaceId={agentChat?.workspaceId ?? null}
-                            projectId={agentChat?.projectId ?? null}
+                            projectId={null}
                           />
                         </div>
                       )
@@ -3209,7 +3209,7 @@ export function ChatView({
                                 workspaceBranch={agentChat?.branch ?? null}
                                 workspaceRepoName={(agentChat as any)?.project?.gitRepo || (agentChat as any)?.project?.name || null}
                                 workspaceId={agentChat?.workspaceId ?? null}
-                                projectId={agentChat?.projectId ?? null}
+                                projectId={null}
                               />
                             </div>
                           )
@@ -3273,7 +3273,7 @@ export function ChatView({
                       workspaceBranch={agentChat?.branch ?? null}
                       workspaceRepoName={(agentChat as any)?.project?.gitRepo || (agentChat as any)?.project?.name || null}
                       workspaceId={agentChat?.workspaceId ?? null}
-                      projectId={agentChat?.projectId ?? null}
+                      projectId={null}
                     />
                   </div>
                 )

@@ -83,6 +83,7 @@ pub async fn persist_agent_output(
                     config: "{}".to_string(),
                     collaboration_mode: "mesh".to_string(),
                     status: "active".to_string(),
+                    default_project_id: None,
                     created_at: now,
                     updated_at: now,
                 };

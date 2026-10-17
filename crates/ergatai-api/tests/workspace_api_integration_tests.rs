@@ -1,8 +1,8 @@
-//! Integration tests for create_workspace and workspace API handlers.
+//! Integration tests for managed workspace API handlers.
 //!
 //! Uses tower::ServiceExt::oneshot to send HTTP requests to the REST router
 //! without starting a real server. Tests cover request validation, auth
-//! middleware, list/create/delete workspace endpoints.
+//! middleware, list/create/delete managed workspace endpoints.
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
@@ -79,40 +79,40 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&body_bytes).expect("parse JSON body")
 }
 
-// ── create_workspace ─────────────────────────────────────────────────
+// ── create_managed_workspace ─────────────────────────────────────────────────
 
 #[tokio::test]
-async fn create_workspace_empty_body_auto_generates_id() {
+async fn create_managed_workspace_auto_generates_id() {
     let app = build_rest_app(test_state());
 
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/workspaces")
+                .uri("/api/v1/workspaces/managed")
                 .method(Method::POST)
                 .header("content-type", "application/json")
-                .body(Body::from(json!({}).to_string()))
+                .body(Body::from(json!({"work_dir": "/tmp/test"}).to_string()))
                 .unwrap(),
         )
         .await
         .unwrap();
 
-    // With auto-generated IDs, empty body is now accepted (no longer 422).
+    // With auto-generated IDs, workspace should be created when only work_dir is provided.
     // The handler auto-generates an ID when `id` is not provided.
     assert_eq!(
         response.status(),
         StatusCode::CREATED,
-        "empty body should be accepted and workspace created"
+        "workspace should be created with auto-generated ID"
     );
 
     // Verify the response contains a valid workspace with generated ID
     let body = body_json(response).await;
     assert!(
-        body.get("id").is_some(),
+        body.get("workspace_id").is_some(),
         "response should contain auto-generated workspace ID"
     );
     assert!(
-        body.get("id").unwrap().is_string(),
+        body.get("workspace_id").unwrap().is_string(),
         "workspace ID should be a string"
     );
 }
@@ -124,7 +124,7 @@ async fn create_workspace_malformed_json_returns_4xx() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/workspaces")
+                .uri("/api/v1/workspaces/managed")
                 .method(Method::POST)
                 .header("content-type", "application/json")
                 .body(Body::from("not json"))
@@ -143,7 +143,7 @@ async fn create_workspace_malformed_json_returns_4xx() {
 }
 
 #[tokio::test]
-async fn create_workspace_with_valid_id_returns_created_or_bad_request() {
+async fn create_managed_workspace_with_valid_id_returns_created() {
     let app = build_rest_app(test_state());
     let ws_id = format_id(generate(), IdType::Workspace);
     let guard = WorkspaceCleanupGuard {
@@ -153,12 +153,13 @@ async fn create_workspace_with_valid_id_returns_created_or_bad_request() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/workspaces")
+                .uri("/api/v1/workspaces/managed")
                 .method(Method::POST)
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
                         "id": ws_id,
+                        "name": "test-workspace",
                         "work_dir": std::env::temp_dir().to_string_lossy().to_string()
                     })
                     .to_string(),
@@ -168,26 +169,21 @@ async fn create_workspace_with_valid_id_returns_created_or_bad_request() {
         .await
         .unwrap();
 
-    // Should be 201 (created) if backend is available, or 400 if backend fails
-    assert!(
-        response.status() == StatusCode::CREATED || response.status() == StatusCode::BAD_REQUEST,
-        "unexpected status: {}",
-        response.status()
+    // Should be 201 (created)
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "workspace should be created successfully"
     );
 
     let body = body_json(response).await;
-    if body.get("id").is_some() {
-        assert_eq!(body["id"], ws_id);
-    }
-    if body.get("error").is_some() {
-        assert!(!body["error"].as_str().unwrap().is_empty());
-    }
+    assert_eq!(body["workspace_id"], ws_id, "workspace ID should match");
 
     drop(guard); // ensure cleanup runs
 }
 
 #[tokio::test]
-async fn create_workspace_with_env() {
+async fn create_managed_workspace_with_env() {
     let app = build_rest_app(test_state());
     let ws_id = format_id(generate(), IdType::Workspace);
     let guard = WorkspaceCleanupGuard {
@@ -197,12 +193,14 @@ async fn create_workspace_with_env() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/workspaces")
+                .uri("/api/v1/workspaces/managed")
                 .method(Method::POST)
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
                         "id": ws_id,
+                        "name": "test-workspace",
+                        "work_dir": std::env::temp_dir().to_string_lossy().to_string(),
                         "env": {"LANG": "en_US.UTF-8"}
                     })
                     .to_string(),
@@ -212,25 +210,25 @@ async fn create_workspace_with_env() {
         .await
         .unwrap();
 
-    assert!(
-        response.status() == StatusCode::CREATED || response.status() == StatusCode::BAD_REQUEST,
-        "unexpected status: {}",
-        response.status()
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "workspace should be created with env vars"
     );
 
     drop(guard); // ensure cleanup runs
 }
 
-// ── list_workspaces ──────────────────────────────────────────────────
+// ── list_managed_workspaces ──────────────────────────────────────────────
 
 #[tokio::test]
-async fn list_workspaces_returns_200_with_array() {
+async fn list_managed_workspaces_returns_200_with_array() {
     let app = build_rest_app(test_state());
 
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/workspaces")
+                .uri("/api/v1/workspaces/managed")
                 .method(Method::GET)
                 .body(Body::empty())
                 .unwrap(),
@@ -244,10 +242,10 @@ async fn list_workspaces_returns_200_with_array() {
     assert!(body.is_array(), "response should be a JSON array");
 }
 
-// ── delete_workspace ─────────────────────────────────────────────────
+// ── delete_managed_workspace ─────────────────────────────────────────────
 
 #[tokio::test]
-async fn delete_workspace_nonexistent_returns_404_or_500() {
+async fn delete_managed_workspace_nonexistent_returns_404() {
     let app = build_rest_app(test_state());
 
     // Use a valid Snowflake ID format that doesn't exist in the database
@@ -255,7 +253,7 @@ async fn delete_workspace_nonexistent_returns_404_or_500() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri(format!("/api/v1/workspaces/{}", nonexistent_id))
+                .uri(format!("/api/v1/workspaces/managed/{}", nonexistent_id))
                 .method(Method::DELETE)
                 .body(Body::empty())
                 .unwrap(),
@@ -263,11 +261,10 @@ async fn delete_workspace_nonexistent_returns_404_or_500() {
         .await
         .unwrap();
 
-    assert!(
-        response.status() == StatusCode::NOT_FOUND
-            || response.status() == StatusCode::INTERNAL_SERVER_ERROR,
-        "unexpected status: {}",
-        response.status()
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "deleting nonexistent workspace should return 404"
     );
 
     let body = body_json(response).await;
@@ -283,7 +280,7 @@ async fn auth_middleware_rejects_without_token() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/workspaces")
+                .uri("/api/v1/workspaces/managed")
                 .method(Method::GET)
                 .body(Body::empty())
                 .unwrap(),
@@ -304,7 +301,7 @@ async fn auth_middleware_rejects_wrong_token() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/workspaces")
+                .uri("/api/v1/workspaces/managed")
                 .method(Method::GET)
                 .header("authorization", "Bearer wrong-token")
                 .body(Body::empty())
@@ -323,7 +320,7 @@ async fn auth_middleware_allows_correct_token() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/workspaces")
+                .uri("/api/v1/workspaces/managed")
                 .method(Method::GET)
                 .header("authorization", "Bearer secret123")
                 .body(Body::empty())
@@ -364,7 +361,7 @@ async fn auth_middleware_no_token_configured_allows_all() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/workspaces")
+                .uri("/api/v1/workspaces/managed")
                 .method(Method::GET)
                 .body(Body::empty())
                 .unwrap(),

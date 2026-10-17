@@ -113,8 +113,10 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             config TEXT DEFAULT '{}',
             collaboration_mode TEXT NOT NULL DEFAULT 'supervisor',
             status TEXT NOT NULL DEFAULT 'active',
+            default_project_id INTEGER,
             created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (default_project_id) REFERENCES projects(project_id) ON DELETE SET NULL
         );
 
         CREATE TABLE IF NOT EXISTS chats (
@@ -127,6 +129,23 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_chats_workspace_id ON chats(workspace_id);
+
+        CREATE TABLE IF NOT EXISTS projects (
+            project_id INTEGER PRIMARY KEY,
+            workspace_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            path TEXT NOT NULL,
+            description TEXT,
+            git_remote_url TEXT,
+            git_provider TEXT,
+            git_owner TEXT,
+            git_repo TEXT,
+            icon_path TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_projects_workspace_id ON projects(workspace_id);
 
         CREATE TABLE IF NOT EXISTS collaboration_sessions (
             collaboration_session_id INTEGER PRIMARY KEY,
@@ -346,6 +365,7 @@ pub struct Workspace {
     pub config: String,
     pub collaboration_mode: String,
     pub status: String,
+    pub default_project_id: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -358,6 +378,22 @@ pub struct Chat {
     pub created_at: i64,
     pub updated_at: i64,
     pub archived_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Project {
+    pub project_id: i64,
+    pub workspace_id: i64,
+    pub name: String,
+    pub path: String,
+    pub description: Option<String>,
+    pub git_remote_url: Option<String>,
+    pub git_provider: Option<String>,
+    pub git_owner: Option<String>,
+    pub git_repo: Option<String>,
+    pub icon_path: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -457,8 +493,8 @@ pub mod workspaces {
         let conn = db.lock().unwrap();
 
         conn.execute(
-            "INSERT INTO workspaces (workspace_id, name, work_dir, env, resources, config, collaboration_mode, status, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO workspaces (workspace_id, name, work_dir, env, resources, config, collaboration_mode, status, default_project_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 workspace.workspace_id,
                 workspace.name,
@@ -468,6 +504,7 @@ pub mod workspaces {
                 workspace.config,
                 workspace.collaboration_mode,
                 workspace.status,
+                workspace.default_project_id,
                 workspace.created_at,
                 workspace.updated_at,
             ],
@@ -481,7 +518,7 @@ pub mod workspaces {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT workspace_id, name, work_dir, env, resources, config, collaboration_mode, status, created_at, updated_at
+            "SELECT workspace_id, name, work_dir, env, resources, config, collaboration_mode, status, default_project_id, created_at, updated_at
              FROM workspaces
              WHERE ?1 IS NULL OR collaboration_mode = ?1
              ORDER BY created_at DESC",
@@ -496,8 +533,9 @@ pub mod workspaces {
                 config: row.get(5)?,
                 collaboration_mode: row.get(6)?,
                 status: row.get(7)?,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
+                default_project_id: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
             })
         })?;
         workspaces.collect()
@@ -508,7 +546,7 @@ pub mod workspaces {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT workspace_id, name, work_dir, env, resources, config, collaboration_mode, status, created_at, updated_at
+            "SELECT workspace_id, name, work_dir, env, resources, config, collaboration_mode, status, default_project_id, created_at, updated_at
              FROM workspaces WHERE workspace_id = ?1"
         )?;
 
@@ -522,8 +560,9 @@ pub mod workspaces {
                 config: row.get(5)?,
                 collaboration_mode: row.get(6)?,
                 status: row.get(7)?,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
+                default_project_id: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
             })
         })?;
 
@@ -541,8 +580,8 @@ pub mod workspaces {
         conn.execute(
             "UPDATE workspaces
              SET name = ?1, work_dir = ?2, env = ?3, resources = ?4, config = ?5,
-                 collaboration_mode = ?6, status = ?7, updated_at = ?8
-             WHERE workspace_id = ?9",
+                 collaboration_mode = ?6, status = ?7, default_project_id = ?8, updated_at = ?9
+             WHERE workspace_id = ?10",
             params![
                 workspace.name,
                 workspace.work_dir,
@@ -551,6 +590,7 @@ pub mod workspaces {
                 workspace.config,
                 workspace.collaboration_mode,
                 workspace.status,
+                workspace.default_project_id,
                 workspace.updated_at,
                 workspace.workspace_id,
             ],
@@ -577,6 +617,145 @@ pub mod workspaces {
             params![workspace_id, status],
         )?;
         Ok(count > 0)
+    }
+}
+
+pub mod projects {
+    use super::*;
+
+    pub fn create(project: Project) -> Result<Project> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO projects (project_id, workspace_id, name, path, description, git_remote_url, git_provider, git_owner, git_repo, icon_path, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                project.project_id,
+                project.workspace_id,
+                project.name,
+                project.path,
+                project.description,
+                project.git_remote_url,
+                project.git_provider,
+                project.git_owner,
+                project.git_repo,
+                project.icon_path,
+                project.created_at,
+                project.updated_at,
+            ],
+        )?;
+
+        Ok(project)
+    }
+
+    pub fn list(workspace_id: i64) -> Result<Vec<Project>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT project_id, workspace_id, name, path, description, git_remote_url, git_provider, git_owner, git_repo, icon_path, created_at, updated_at
+             FROM projects
+             WHERE workspace_id = ?1
+             ORDER BY created_at DESC",
+        )?;
+        let projects = stmt.query_map(params![workspace_id], |row| {
+            Ok(Project {
+                project_id: row.get(0)?,
+                workspace_id: row.get(1)?,
+                name: row.get(2)?,
+                path: row.get(3)?,
+                description: row.get(4)?,
+                git_remote_url: row.get(5)?,
+                git_provider: row.get(6)?,
+                git_owner: row.get(7)?,
+                git_repo: row.get(8)?,
+                icon_path: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        })?;
+        projects.collect()
+    }
+
+    pub fn get(project_id: i64) -> Result<Option<Project>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT project_id, workspace_id, name, path, description, git_remote_url, git_provider, git_owner, git_repo, icon_path, created_at, updated_at
+             FROM projects WHERE project_id = ?1"
+        )?;
+
+        let mut rows = stmt.query_map(params![project_id], |row| {
+            Ok(Project {
+                project_id: row.get(0)?,
+                workspace_id: row.get(1)?,
+                name: row.get(2)?,
+                path: row.get(3)?,
+                description: row.get(4)?,
+                git_remote_url: row.get(5)?,
+                git_provider: row.get(6)?,
+                git_owner: row.get(7)?,
+                git_repo: row.get(8)?,
+                icon_path: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(project)) => Ok(Some(project)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    pub fn update(project: Project) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "UPDATE projects
+             SET name = ?1, path = ?2, description = ?3, git_remote_url = ?4,
+                 git_provider = ?5, git_owner = ?6, git_repo = ?7, icon_path = ?8,
+                 updated_at = ?9
+             WHERE project_id = ?10",
+            params![
+                project.name,
+                project.path,
+                project.description,
+                project.git_remote_url,
+                project.git_provider,
+                project.git_owner,
+                project.git_repo,
+                project.icon_path,
+                project.updated_at,
+                project.project_id,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn delete(project_id: i64) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let count = conn.execute(
+            "DELETE FROM projects WHERE project_id = ?1",
+            params![project_id],
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn delete_by_workspace(workspace_id: i64) -> Result<u64> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let count = conn.execute(
+            "DELETE FROM projects WHERE workspace_id = ?1",
+            params![workspace_id],
+        )?;
+        Ok(count as u64)
     }
 }
 
@@ -2310,6 +2489,7 @@ mod tests {
             config: "{}".to_string(),
             collaboration_mode: "supervisor".to_string(),
             status: "active".to_string(),
+            default_project_id: None,
             created_at: 1234567890,
             updated_at: 1234567890,
         };
@@ -2346,6 +2526,7 @@ mod tests {
             config: "{}".to_string(),
             collaboration_mode: "supervisor".to_string(),
             status: "active".to_string(),
+            default_project_id: None,
             created_at: 1000,
             updated_at: 1000,
         })
@@ -2447,6 +2628,7 @@ mod tests {
             config: "{}".to_string(),
             collaboration_mode: "supervisor".to_string(),
             status: "active".to_string(),
+            default_project_id: None,
             created_at: 1000,
             updated_at: 1000,
         })
@@ -2543,6 +2725,7 @@ mod tests {
             config: "{}".to_string(),
             collaboration_mode: "supervisor".to_string(),
             status: "active".to_string(),
+            default_project_id: None,
             created_at: 1000,
             updated_at: 1000,
         })

@@ -66,8 +66,7 @@ async function resolveChatWorkspace(
 ): Promise<string> {
   if (workspaceId) return workspaceId
 
-  const workspaces = await trpcClient.listPersistentWorkspaces({
-    projectId,
+  const workspaces = await trpcClient.listManagedWorkspaces({
     collaborationMode,
   })
   const existingWorkspace = workspaces.find(
@@ -75,9 +74,9 @@ async function resolveChatWorkspace(
   )
   if (existingWorkspace) return existingWorkspace.id
 
-  const createdWorkspace = await trpcClient.createPersistentWorkspace({
-    projectId,
+  const createdWorkspace = await trpcClient.createManagedWorkspace({
     workDir,
+    projectId,
     collaborationMode,
   })
   return createdWorkspace.id
@@ -295,13 +294,9 @@ export const chatsRouter = router({
       if (!chat) return null
 
       const chatConversations = await listConversationsForChat(chat)
-      // Backend no longer provides project endpoint
-      // Use mock project for backward compatibility
-      const project = {
-        id: chat.projectId,
-        path: "/mock/path",
-        name: "Mock Project",
-      }
+      // Chat belongs to workspace, project is determined by workspace's defaultProjectId
+      // For now, return null project - UI should use workspace context
+      const project = null
 
       // Fetch messages for each conversation
       const conversationsWithMessages = await Promise.all(
@@ -580,16 +575,12 @@ export const chatsRouter = router({
 
       // Optionally delete worktree in background (don't await)
       if (input.deleteWorktree && chat?.worktreePath && chat?.branch) {
-        // Backend no longer provides project endpoint
-        // Use mock project for backward compatibility
-        const project = {
-          id: chat.projectId,
-          path: "/mock/path",
-          name: "Mock Project",
-        }
+        // Get workspace to find the main repo path (work_dir)
+        const workspace = await trpcClient.getManagedWorkspace({ id: chat.workspaceId })
+        const mainRepoPath = workspace?.workDir
 
-        if (project) {
-          removeWorktree(project.path, chat.worktreePath).then(async (worktreeResult) => {
+        if (mainRepoPath) {
+          removeWorktree(mainRepoPath, chat.worktreePath).then(async (worktreeResult) => {
             if (worktreeResult.success) {
               console.log(
                 `[chats.archive] Deleted worktree for workspace ${input.id}`,
@@ -671,15 +662,11 @@ export const chatsRouter = router({
 
       // Cleanup worktree if it was created (has branch = was a real worktree, not just project path)
       if (chat?.worktreePath && chat?.branch) {
-        // Backend no longer provides project endpoint
-        // Use mock project for backward compatibility
-        const project = {
-          id: chat.projectId,
-          path: "/mock/path",
-          name: "Mock Project",
-        }
-        if (project) {
-          const result = await removeWorktree(project.path, chat.worktreePath)
+        // Get workspace to find the main repo path (work_dir)
+        const workspace = await trpcClient.getManagedWorkspace({ id: chat.workspaceId })
+        const mainRepoPath = workspace?.workDir
+        if (mainRepoPath) {
+          const result = await removeWorktree(mainRepoPath, chat.worktreePath)
           if (!result.success) {
             console.warn(`[Worktree] Cleanup failed: ${result.error}`)
           }
@@ -723,12 +710,7 @@ export const chatsRouter = router({
       const chat = await findChatForConversation(conversation)
       if (!chat) return null
       // Backend no longer provides project endpoint
-      // Use mock project for backward compatibility
-      const project = {
-        id: chat.projectId,
-        path: "/mock/path",
-        name: "Mock Project",
-      }
+      const project = null
       const messages = await listConversationMessages(conversation.id)
       return {
         ...mapBackendConversation(conversation),
@@ -1725,12 +1707,7 @@ export const chatsRouter = router({
       }
 
       // Backend no longer provides project endpoint
-      // Use mock project for backward compatibility
-      const project = {
-        id: chat.projectId,
-        path: "/mock/path",
-        name: "Mock Project",
-      }
+      const project = null
 
       const allChatConversations = await listConversationsForChat(chat)
       let chatConversations
@@ -1806,13 +1783,7 @@ export const chatsRouter = router({
                 baseBranch: chat.baseBranch,
                 prUrl: chat.prUrl,
               },
-              project: project
-                ? {
-                    id: project.id,
-                    name: project.name,
-                    path: project.path,
-                  }
-                : null,
+              project: null,
               conversations: allMessages,
             },
             null,
@@ -1826,9 +1797,6 @@ export const chatsRouter = router({
         // plain text format
         let text = `# ${chat.name || "Untitled Chat"}\n`
         text += `exported: ${new Date().toISOString()}\n`
-        if (project) {
-          text += `project: ${project.name}\n`
-        }
         text += `\n---\n\n`
 
         for (const conversationData of allMessages) {
@@ -1861,9 +1829,6 @@ export const chatsRouter = router({
       // markdown format (default)
       let markdown = `# ${chat.name || "Untitled Chat"}\n\n`
       markdown += `**Exported:** ${new Date().toISOString()}\n\n`
-      if (project) {
-        markdown += `**Project:** ${project.name}\n\n`
-      }
       if (chat.branch) {
         markdown += `**Branch:** \`${chat.branch}\`\n\n`
       }

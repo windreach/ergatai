@@ -34,6 +34,7 @@ impl WorkspaceService {
             config: config.unwrap_or_else(|| "{}".to_string()),
             collaboration_mode,
             status: "active".to_string(),
+            default_project_id: None,
             created_at: now,
             updated_at: now,
         };

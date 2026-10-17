@@ -1,39 +1,9 @@
 use crate::Json;
 use crate::JsonQuery;
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    response::Response,
-};
-use ergatai_runtime::{ResourceLimits, WorkspaceSpec};
+use axum::{extract::Path, http::StatusCode, response::IntoResponse, response::Response};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use utoipa::ToSchema;
 
-use crate::{
-    services::{agent_service, workspace_manager as manager},
-    AppState,
-};
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct CreateWorkspaceRequest {
-    /// Optional workspace ID (auto-generated snowflake ID if omitted).
-    /// Must be a valid snowflake format (e.g., "ws_1727568000000_001_0001") if provided.
-    #[schema(pattern = "^ws_[0-9]+_[0-9]{1,3}_[0-9]{1,4}$", min_length = 1)]
-    pub id: Option<String>,
-    pub work_dir: Option<String>,
-    pub env: Option<HashMap<String, String>>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct WorkspaceResponse {
-    pub id: String,
-    pub backend: String,
-    pub metadata: HashMap<String, String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub capture_thoughts: Option<bool>,
-}
+use crate::services::workspace_manager as manager;
 
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
@@ -54,686 +24,6 @@ fn managed_error(error: manager::WorkspaceManagerError, context: &'static str) -
         manager::WorkspaceManagerError::Internal(error) => {
             crate::http_error::internal(error, context).into_response()
         }
-    }
-}
-
-#[utoipa::path(
-        get,
-        path = "/api/v1/workspaces",
-        tag = "Workspaces",
-        responses(
-            (status = 200, description = "List workspaces", body = Vec<WorkspaceResponse>),
-            (status = 500, description = "Internal server error", body = crate::api::ApiError),
-        )
-    )]
-pub async fn list_workspaces(State(_state): State<AppState>) -> impl IntoResponse {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
-    match runtime.backend().list_workspaces().await {
-        Ok(workspaces) => {
-            let response: Vec<WorkspaceResponse> =
-                futures::future::join_all(workspaces.into_iter().map(|w| async move {
-                    let capture_thoughts = agent_service::get_workspace_capture_thoughts(&w.id)
-                        .await
-                        .ok()
-                        .flatten();
-                    WorkspaceResponse {
-                        id: w.id,
-                        backend: w.backend,
-                        metadata: w.metadata,
-                        capture_thoughts,
-                    }
-                }))
-                .await;
-            (StatusCode::OK, Json(response)).into_response()
-        }
-        // SECURITY (P1 #18): Redact internal error details (may contain
-        // filesystem paths, DB connection info, backend names).
-        Err(e) => crate::http_error::internal(e, "list_workspaces").into_response(),
-    }
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/workspaces",
-    tag = "Workspaces",
-    request_body = CreateWorkspaceRequest,
-    responses(
-        (status = 201, description = "Workspace created", body = WorkspaceResponse),
-        (status = 400, description = "Invalid workspace", body = crate::api::ApiError),
-        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
-        (status = 415, description = "Unsupported Media Type", body = crate::api::ApiError),
-        (status = 503, description = "Workspace limit reached", body = crate::api::ApiError),
-        (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
-)]
-pub async fn create_workspace(
-    State(state): State<AppState>,
-    Json(req): Json<CreateWorkspaceRequest>,
-) -> impl IntoResponse {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
-
-    // Resolve workspace ID: auto-generate snowflake ID if not provided,
-    // or validate that the user-provided ID is a valid snowflake format.
-    let workspace_id = match req.id {
-        None => {
-            let raw_id = ergatai_error::id::generate();
-            ergatai_error::id::format(raw_id, ergatai_error::id::IdType::Workspace)
-        }
-        Some(id)
-            if crate::api::agents::is_valid_workspace_id(&id)
-                && ergatai_error::id::parse_to_i64(&id).is_some() =>
-        {
-            id
-        }
-        Some(id)
-            if !id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')) =>
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "Invalid workspace ID format: contains invalid characters" })),
-            )
-                .into_response();
-        }
-        Some(id) => {
-            // ID has valid characters but is not a valid snowflake format
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": format!("Invalid workspace ID format: '{}' is not a valid snowflake ID. Omit 'id' to auto-generate.", id) })),
-            )
-                .into_response();
-        }
-    };
-
-    let workspace_id_i64 = ergatai_error::id::parse_to_i64(&workspace_id)
-        .expect("workspace ID was validated to be a valid snowflake format");
-
-    // SECURITY (P1 #15): Enforce a workspace cap to prevent a runaway client
-    // from exhausting host resources (memory, file descriptors, NATS subjects).
-    // Default: 100 workspaces. Override with ERGATAI_MAX_WORKSPACES.
-    let max_workspaces: usize = std::env::var("ERGATAI_MAX_WORKSPACES")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(100);
-    match runtime.backend().list_workspaces().await {
-        Ok(list) if list.len() >= max_workspaces => {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(serde_json::json!({
-                    "error": format!(
-                        "Workspace limit reached ({}/{}). Delete a workspace or raise ERGATAI_MAX_WORKSPACES.",
-                        list.len(),
-                        max_workspaces
-                    ),
-                })),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return crate::http_error::internal(e, "list_workspaces_for_cap_check").into_response();
-        }
-        _ => {}
-    }
-
-    let env = req.env.unwrap_or_default();
-
-    // SECURITY (P1 #13): validate and canonicalize the work_dir.
-    // Falls back to the server's default_cwd (already validated at startup)
-    // when the client omits it.
-    let raw_work_dir = req.work_dir.unwrap_or_else(|| state.default_cwd.clone());
-
-    // Validate work_dir is non-empty
-    if raw_work_dir.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Work directory cannot be empty" })),
-        )
-            .into_response();
-    }
-
-    let work_dir = match crate::validate_cwd(&raw_work_dir) {
-        Ok(p) => p,
-        Err(msg) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": msg })),
-            )
-                .into_response()
-        }
-    };
-
-    let env_json = serde_json::to_string(&env).unwrap_or_else(|_| "{}".to_string());
-    let work_dir_str = work_dir.to_string_lossy().into_owned();
-
-    let spec = WorkspaceSpec {
-        id: workspace_id.clone(),
-        work_dir: work_dir.clone(),
-        env,
-        resources: ResourceLimits::default(),
-        capture_thoughts: false,
-    };
-
-    match runtime.backend().create_workspace(spec).await {
-        Ok(handle) => {
-            // Register the workspace with the permission handler for lock management
-            if let Some(permission_handler) = crate::get_permission_handler() {
-                permission_handler
-                    .register_workspace(workspace_id_i64, work_dir.clone())
-                    .await;
-            }
-
-            // Store workspace in user_data_db so that workspace_resource_limits()
-            // can find it when agents are started in this workspace.
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
-            let db_record = crate::user_data_db::Workspace {
-                workspace_id: workspace_id_i64,
-                name: workspace_id.clone(),
-                work_dir: work_dir_str,
-                env: env_json,
-                resources: "{}".to_string(),
-                config: "{}".to_string(),
-                collaboration_mode: "peer".to_string(),
-                status: "active".to_string(),
-                created_at: now,
-                updated_at: now,
-            };
-            match crate::run_blocking(move || crate::user_data_db::workspaces::create(db_record))
-                .await
-            {
-                Ok(_) => {}
-                Err((status, json_value)) => {
-                    tracing::error!(
-                        workspace_id = %workspace_id,
-                        status = %status,
-                        error = ?json_value,
-                        "Failed to store workspace in user_data_db after backend create"
-                    );
-                    // Backend workspace was created but DB write failed.
-                    // Return success anyway since the workspace is functional,
-                    // but log the error for debugging.
-                }
-            }
-
-            let capture_thoughts = agent_service::get_workspace_capture_thoughts(&handle.id)
-                .await
-                .ok()
-                .flatten();
-            let response = WorkspaceResponse {
-                id: handle.id,
-                backend: handle.backend,
-                metadata: handle.metadata,
-                capture_thoughts,
-            };
-            (StatusCode::CREATED, Json(response)).into_response()
-        }
-        // SECURITY (P1 #18): Redact internal error details (may contain
-        // work_dir paths, backend state, OS error info).
-        Err(e) => crate::http_error::internal(e, "create_workspace").into_response(),
-    }
-}
-
-#[utoipa::path(
-    delete,
-    path = "/api/v1/workspaces/{workspace_id}",
-    tag = "Workspaces",
-    params(("workspace_id" = String, Path, description = "Workspace ID")),
-    responses(
-        (status = 204, description = "Workspace deleted"),
-        (status = 400, description = "Workspace not archived", body = crate::api::ApiError),
-        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
-        (status = 409, description = "Workspace has active resources", body = crate::api::ApiError),
-        (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
-)]
-pub async fn delete_workspace(
-    State(_state): State<AppState>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    // 1. 检查 workspace 是否存在且已归档
-    let workspace_id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Workspace") {
-        Ok(id) => id,
-        Err((status, json)) => return (status, json).into_response(),
-    };
-
-    let workspace =
-        match crate::run_blocking(move || crate::user_data_db::workspaces::get(workspace_id_i64))
-            .await
-        {
-            Ok(Some(w)) => w,
-            Ok(None) => return crate::http_error::not_found("Workspace", &id).into_response(),
-            Err((status, json_value)) => return (status, json_value).into_response(),
-        };
-
-    // 2. 只允许删除 archived 状态的 workspace
-    if workspace.status != "archived" {
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": format!(
-                    "Workspace must be archived before deletion (current status: {})",
-                    workspace.status
-                )
-            })),
-        )
-            .into_response();
-    }
-
-    // 3. 清理运行时 workspace（如果存在）
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
-    if let Ok(workspaces) = runtime.backend().list_workspaces().await {
-        if let Some(ws) = workspaces.into_iter().find(|w| w.id == id) {
-            if let Err(e) = runtime.backend().cleanup_workspace(&ws).await {
-                tracing::warn!(error = %e, "Failed to cleanup runtime workspace");
-            }
-        }
-    }
-
-    // 4. 从数据库删除
-    match crate::run_blocking(move || crate::user_data_db::workspaces::delete(workspace_id_i64))
-        .await
-    {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => crate::http_error::not_found("Workspace", &id).into_response(),
-        Err((status, json_value)) => (status, json_value).into_response(),
-    }
-}
-
-/// POST /api/v1/workspaces/{id}/stop — 停止 workspace（停止所有 agent）
-#[utoipa::path(
-    post,
-    path = "/api/v1/workspaces/{workspace_id}/stop",
-    tag = "Workspaces",
-    params(("workspace_id" = String, Path, description = "Workspace ID")),
-    responses(
-        (status = 200, description = "Workspace stopped", body = crate::user_data_db::Workspace),
-        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
-        (status = 409, description = "Workspace already stopped or archived", body = crate::api::ApiError),
-        (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
-)]
-pub async fn stop_workspace(
-    State(_state): State<AppState>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    let workspace_id = id.clone();
-    match manager::stop_workspace(&workspace_id).await {
-        Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
-        Err(error) => managed_error(error, "stop_workspace"),
-    }
-}
-
-/// POST /api/v1/workspaces/{id}/start — 启动 workspace
-#[utoipa::path(
-    post,
-    path = "/api/v1/workspaces/{workspace_id}/start",
-    tag = "Workspaces",
-    params(("workspace_id" = String, Path, description = "Workspace ID")),
-    responses(
-        (status = 200, description = "Workspace started", body = crate::user_data_db::Workspace),
-        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
-        (status = 409, description = "Workspace already active or archived", body = crate::api::ApiError),
-        (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
-)]
-pub async fn start_workspace(
-    State(_state): State<AppState>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    let workspace_id = id.clone();
-    match manager::start_workspace(&workspace_id).await {
-        Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
-        Err(error) => managed_error(error, "start_workspace"),
-    }
-}
-
-/// POST /api/v1/workspaces/{id}/archive — 归档 workspace（软删除）
-#[utoipa::path(
-    post,
-    path = "/api/v1/workspaces/{workspace_id}/archive",
-    tag = "Workspaces",
-    params(("workspace_id" = String, Path, description = "Workspace ID")),
-    responses(
-        (status = 200, description = "Workspace archived", body = crate::user_data_db::Workspace),
-        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
-        (status = 409, description = "Workspace has active resources", body = crate::api::ApiError),
-        (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
-)]
-pub async fn archive_workspace(
-    State(_state): State<AppState>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    let workspace_id = id.clone();
-    match manager::archive_workspace(&workspace_id).await {
-        Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
-        Err(error) => managed_error(error, "archive_workspace"),
-    }
-}
-
-/// POST /api/v1/workspaces/{id}/restore — 从归档恢复
-#[utoipa::path(
-    post,
-    path = "/api/v1/workspaces/{workspace_id}/restore",
-    tag = "Workspaces",
-    params(("workspace_id" = String, Path, description = "Workspace ID")),
-    responses(
-        (status = 200, description = "Workspace restored", body = crate::user_data_db::Workspace),
-        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
-        (status = 409, description = "Workspace not archived", body = crate::api::ApiError),
-        (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
-)]
-pub async fn restore_workspace(
-    State(_state): State<AppState>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    let workspace_id = id.clone();
-    match manager::restore_workspace(&workspace_id).await {
-        Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
-        Err(error) => managed_error(error, "restore_workspace"),
-    }
-}
-
-// ── Persistent Workspace APIs ──
-
-#[derive(Debug, Deserialize, Serialize, ToSchema)]
-pub struct PersistentWorkspaceRequest {
-    /// Optional workspace ID (auto-generated snowflake ID if omitted).
-    #[schema(pattern = "^ws_[0-9]+_[0-9]{1,3}_[0-9]{1,4}$", min_length = 1)]
-    pub id: Option<String>,
-    #[schema(min_length = 1)]
-    pub name: Option<String>,
-    #[schema(min_length = 1)]
-    pub work_dir: String,
-    pub env: Option<String>,
-    pub resources: Option<String>,
-    pub config: Option<String>,
-    pub collaboration_mode: Option<crate::services::collaboration_session::CollaborationMode>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct PersistentWorkspaceResponse {
-    pub id: String,
-    pub name: String,
-    pub work_dir: String,
-    pub env: String,
-    pub resources: String,
-    pub config: String,
-    pub collaboration_mode: String,
-    pub status: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-pub fn persistent_response(workspace: manager::ManagedWorkspace) -> PersistentWorkspaceResponse {
-    PersistentWorkspaceResponse {
-        id: workspace.workspace_id,
-        name: workspace.name,
-        work_dir: workspace.work_dir,
-        env: workspace.env,
-        resources: workspace.resources,
-        config: workspace.config,
-        collaboration_mode: workspace.collaboration_mode,
-        status: workspace.status,
-        created_at: workspace.created_at,
-        updated_at: workspace.updated_at,
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ListPersistentWorkspacesQuery {
-    pub collaboration_mode: Option<crate::services::collaboration_session::CollaborationMode>,
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/v1/workspaces/persistent",
-    tag = "PersistentWorkspaces",
-    params(
-        ("collaboration_mode" = Option<crate::services::collaboration_session::CollaborationMode>, Query, description = "Filter by collaboration mode")
-    ),
-    responses(
-        (status = 200, description = "List persistent workspaces", body = Vec<PersistentWorkspaceResponse>),
-        (status = 500, description = "Internal server error", body = crate::api::ApiError),
-        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
-)]
-pub async fn list_persistent_workspaces(
-    JsonQuery(query): JsonQuery<ListPersistentWorkspacesQuery>,
-) -> impl IntoResponse {
-    match manager::list(query.collaboration_mode.map(|m| m.as_str())).await {
-        Ok(ws_list) => (
-            StatusCode::OK,
-            Json(
-                ws_list
-                    .into_iter()
-                    .map(persistent_response)
-                    .collect::<Vec<_>>(),
-            ),
-        )
-            .into_response(),
-        Err(error) => managed_error(error, "list_persistent_workspaces"),
-    }
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/workspaces/persistent",
-    tag = "PersistentWorkspaces",
-    request_body = PersistentWorkspaceRequest,
-    responses(
-        (status = 201, description = "Persistent workspace created", body = PersistentWorkspaceResponse),
-        (status = 400, description = "Invalid workspace", body = crate::api::ApiError),
-        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
-        (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
-)]
-pub async fn create_persistent_workspace(
-    Json(req): Json<PersistentWorkspaceRequest>,
-) -> impl IntoResponse {
-    // Resolve workspace ID: auto-generate snowflake ID if not provided
-    let workspace_id = match req.id {
-        None => None,
-        Some(id) if crate::api::agents::is_valid_workspace_id(&id) => Some(id),
-        Some(_) => {
-            return managed_error(
-                manager::WorkspaceManagerError::Validation(
-                    "Invalid workspace ID format".to_string(),
-                ),
-                "create_persistent_workspace",
-            )
-        }
-    };
-
-    // Validate work_dir is not empty/whitespace
-    if req.work_dir.trim().is_empty() {
-        return managed_error(
-            manager::WorkspaceManagerError::Validation(
-                "Work directory cannot be empty".to_string(),
-            ),
-            "create_persistent_workspace",
-        );
-    }
-
-    let env = req
-        .env
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .map(serde_json::from_str::<HashMap<String, String>>);
-    let env = match env {
-        Some(Ok(env)) => Some(env),
-        Some(Err(e)) => {
-            return managed_error(
-                manager::WorkspaceManagerError::Validation(e.to_string()),
-                "create_persistent_workspace",
-            )
-        }
-        None => None,
-    };
-    let resources = req
-        .resources
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .map(serde_json::from_str::<serde_json::Value>);
-    let resources = match resources {
-        Some(Ok(resources)) => Some(resources),
-        Some(Err(e)) => {
-            return managed_error(
-                manager::WorkspaceManagerError::Validation(e.to_string()),
-                "create_persistent_workspace",
-            )
-        }
-        None => None,
-    };
-
-    // Validate work_dir is not empty
-    if req.work_dir.trim().is_empty() {
-        return managed_error(
-            manager::WorkspaceManagerError::Validation("work_dir cannot be empty".to_string()),
-            "create_persistent_workspace",
-        );
-    }
-
-    let request = manager::CreateManagedWorkspaceRequest {
-        id: workspace_id,
-        name: req.name,
-        work_dir: req.work_dir.clone(),
-        env,
-        resources,
-        config: req.config,
-        collaboration_mode: req.collaboration_mode,
-    };
-    match manager::create(request).await {
-        Ok(workspace) => {
-            (StatusCode::CREATED, Json(persistent_response(workspace))).into_response()
-        }
-        Err(error) => managed_error(error, "create_persistent_workspace"),
-    }
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/v1/workspaces/persistent/{id}",
-    tag = "PersistentWorkspaces",
-    params(("id" = String, Path, description = "Workspace ID")),
-    responses(
-        (status = 200, description = "Persistent workspace found", body = PersistentWorkspaceResponse),
-        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
-        (status = 500, description = "Internal server error", body = crate::api::ApiError),
-        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
-)]
-pub async fn get_persistent_workspace(Path(id): Path<String>) -> impl IntoResponse {
-    match manager::get(&id).await {
-        Ok(workspace) => (StatusCode::OK, Json(persistent_response(workspace))).into_response(),
-        Err(error) => managed_error(error, "get_persistent_workspace"),
-    }
-}
-
-#[utoipa::path(
-    put,
-    path = "/api/v1/workspaces/persistent/{id}",
-    tag = "PersistentWorkspaces",
-    params(("id" = String, Path, description = "Workspace ID")),
-    request_body = PersistentWorkspaceRequest,
-    responses(
-        (status = 200, description = "Workspace updated", body = PersistentWorkspaceResponse),
-        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),
-        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
-        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
-        (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
-)]
-pub async fn update_persistent_workspace(
-    Path(id): Path<String>,
-    Json(req): Json<PersistentWorkspaceRequest>,
-) -> impl IntoResponse {
-    // Workspace IDs are validated by the database layer; accept any non-empty value
-    // here so the API contract stays aligned with the published schema.
-
-    // Validate work_dir is not empty/whitespace
-    if req.work_dir.trim().is_empty() {
-        return managed_error(
-            manager::WorkspaceManagerError::Validation(
-                "Work directory cannot be empty".to_string(),
-            ),
-            "update_persistent_workspace",
-        );
-    }
-
-    let env = req
-        .env
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .map(serde_json::from_str::<HashMap<String, String>>);
-    let env = match env {
-        Some(Ok(env)) => Some(env),
-        Some(Err(error)) => {
-            return managed_error(
-                manager::WorkspaceManagerError::Validation(error.to_string()),
-                "update_persistent_workspace",
-            )
-        }
-        None => None,
-    };
-    let resources = req
-        .resources
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .map(serde_json::from_str::<serde_json::Value>);
-    let resources = match resources {
-        Some(Ok(resources)) => Some(resources),
-        Some(Err(error)) => {
-            return managed_error(
-                manager::WorkspaceManagerError::Validation(error.to_string()),
-                "update_persistent_workspace",
-            )
-        }
-        None => None,
-    };
-
-    if let Some(id) = &req.id {
-        if !crate::api::agents::is_valid_workspace_id(id) {
-            return managed_error(
-                manager::WorkspaceManagerError::Validation(
-                    "Invalid workspace ID format".to_string(),
-                ),
-                "update_persistent_workspace",
-            );
-        }
-    }
-
-    let request = manager::UpdateManagedWorkspaceRequest {
-        name: req.name,
-        work_dir: Some(req.work_dir),
-        env,
-        resources,
-        config: req.config,
-        status: None,
-    };
-    match manager::update(&id, request).await {
-        Ok(workspace) => (StatusCode::OK, Json(persistent_response(workspace))).into_response(),
-        Err(error) => managed_error(error, "update_persistent_workspace"),
-    }
-}
-
-#[utoipa::path(
-    delete,
-    path = "/api/v1/workspaces/persistent/{id}",
-    tag = "PersistentWorkspaces",
-    params(("id" = String, Path, description = "Workspace ID")),
-    responses(
-        (status = 204, description = "Workspace deleted"),
-        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
-        (status = 500, description = "Internal server error", body = crate::api::ApiError),
-        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
-)]
-pub async fn delete_persistent_workspace(Path(id): Path<String>) -> impl IntoResponse {
-    match manager::delete(&id, false).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => managed_error(error, "delete_persistent_workspace"),
     }
 }
 
@@ -896,359 +186,112 @@ pub async fn delete_managed_workspace(
     }
 }
 
-// ════════════════════════════════════════════════════════════════════════
-// Workspace API（新版扁平化路由）
-// ════════════════════════════════════════════════════════════════════════
+// ── Project Management APIs ──
 
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct UpdateWorkspaceRequest {
-    pub name: Option<String>,
-    pub work_dir: Option<String>,
-    pub env: Option<HashMap<String, String>>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct WorkspaceConfig {
-    pub projects: Option<Vec<serde_json::Value>>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct WorkspaceDetailResponse {
-    pub workspace_id: String,
-    pub name: String,
-    pub work_dir: String,
-    pub env: HashMap<String, String>,
-    pub resources: HashMap<String, String>,
-    pub collaboration_mode: String,
-    pub status: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-/// GET /api/v1/workspaces/{workspace_id}
 #[utoipa::path(
     get,
-    path = "/api/v1/workspaces/{workspace_id}",
-    tag = "Workspaces",
-    params(("workspace_id" = String, Path, description = "Workspace ID")),
+    path = "/api/v1/workspaces/managed/{id}/projects",
+    tag = "ManagedWorkspaces",
+    params(("id" = String, Path, description = "Workspace ID")),
     responses(
-        (status = 200, description = "Workspace details", body = crate::user_data_db::Workspace),
+        (status = 200, description = "List workspace projects", body = Vec<manager::Project>),
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
-        (status = 500, description = "Internal server error", body = crate::api::ApiError),
-        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
-)]
-pub async fn get_workspace(Path(workspace_id): Path<String>) -> impl IntoResponse {
-    let workspace_id_i64 =
-        match crate::http_error::parse_id_or_not_found(&workspace_id, "Workspace") {
-            Ok(id) => id,
-            Err((status, json)) => return (status, json).into_response(),
-        };
-    match crate::run_blocking(move || crate::user_data_db::workspaces::get(workspace_id_i64)).await
-    {
-        Ok(Some(workspace)) => (StatusCode::OK, Json(workspace)).into_response(),
-        Ok(None) => crate::http_error::not_found("Workspace", &workspace_id).into_response(),
-        Err((status, json_value)) => (status, json_value).into_response(),
-    }
-}
-
-/// PATCH /api/v1/workspaces/{workspace_id}
-#[utoipa::path(
-    patch,
-    path = "/api/v1/workspaces/{workspace_id}",
-    tag = "Workspaces",
-    params(("workspace_id" = String, Path, description = "Workspace ID")),
-    request_body = UpdateWorkspaceRequest,
-    responses(
-        (status = 200, description = "Workspace updated", body = crate::user_data_db::Workspace),
-        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
-        (status = 400, description = "Invalid request", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
-pub async fn update_workspace(
-    Path(workspace_id): Path<String>,
-    Json(req): Json<UpdateWorkspaceRequest>,
-) -> impl IntoResponse {
-    // Serialize env before entering spawn_blocking (fallible, so fail fast).
-    let serialized_env: Option<String> = match req.env {
-        Some(ref env) => match serde_json::to_string(env) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                return crate::http_error::bad_request(format!("Invalid env JSON: {}", e))
-                    .into_response();
-            }
-        },
-        None => None,
-    };
-
-    // Parse workspace ID to i64, return 404 if invalid format (consistent with other endpoints)
-    let workspace_id_i64 =
-        match crate::http_error::parse_id_or_not_found(&workspace_id, "Workspace") {
-            Ok(id) => id,
-            Err((status, json)) => return (status, json).into_response(),
-        };
-
-    // Perform read-modify-write atomically inside a single spawn_blocking,
-    // so no other request can interleave between the get and the update.
-    let name = req.name;
-    let work_dir = req.work_dir;
-    match tokio::task::spawn_blocking(move || {
-        let existing = crate::user_data_db::workspaces::get(workspace_id_i64)?;
-        let mut existing = match existing {
-            Some(w) => w,
-            None => return Err(anyhow::anyhow!("__NOT_FOUND__")),
-        };
-        if let Some(name) = name {
-            existing.name = name;
-        }
-        if let Some(work_dir) = work_dir {
-            existing.work_dir = work_dir;
-        }
-        if let Some(env) = serialized_env {
-            existing.env = env;
-        }
-        existing.updated_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        crate::user_data_db::workspaces::update(existing)?;
-        Ok(crate::user_data_db::workspaces::get(workspace_id_i64)?)
-    })
-    .await
-    {
-        Ok(Ok(Some(workspace))) => (StatusCode::OK, Json(workspace)).into_response(),
-        Ok(Ok(None)) => {
-            crate::http_error::internal("Workspace disappeared after update", "update_workspace")
-                .into_response()
-        }
-        Ok(Err(e)) if e.to_string() == "__NOT_FOUND__" => {
-            crate::http_error::not_found("Workspace", &workspace_id).into_response()
-        }
-        Ok(Err(e)) => crate::http_error::internal(e, "update_workspace").into_response(),
-        Err(e) => {
-            crate::http_error::internal(format!("Task join error: {}", e), "update_workspace")
-                .into_response()
-        }
+pub async fn list_managed_workspace_projects(Path(id): Path<String>) -> impl IntoResponse {
+    match manager::list_projects(&id) {
+        Ok(projects) => (StatusCode::OK, Json(projects)).into_response(),
+        Err(error) => managed_error(error, "list_managed_workspace_projects"),
     }
 }
 
-// ── Tests ──// ── Tests ──
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    // ── CreateWorkspaceRequest deserialization ──
-
-    #[test]
-    fn test_create_workspace_request_id_only() {
-        let req: CreateWorkspaceRequest = serde_json::from_value(json!({"id": "ws-1"})).unwrap();
-        assert_eq!(req.id.as_deref(), Some("ws-1"));
-        assert!(req.work_dir.is_none());
-        assert!(req.env.is_none());
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces/managed/{id}/projects",
+    tag = "ManagedWorkspaces",
+    params(("id" = String, Path, description = "Workspace ID")),
+    request_body = manager::RegisterWorkspaceProjectRequest,
+    responses(
+        (status = 201, description = "Project registered", body = manager::Project),
+        (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn register_managed_workspace_project(
+    Path(id): Path<String>,
+    Json(request): Json<manager::RegisterWorkspaceProjectRequest>,
+) -> impl IntoResponse {
+    match manager::register_project(&id, request) {
+        Ok(project) => (StatusCode::CREATED, Json(project)).into_response(),
+        Err(error) => managed_error(error, "register_managed_workspace_project"),
     }
+}
 
-    #[test]
-    fn test_create_workspace_request_all_fields() {
-        let req: CreateWorkspaceRequest = serde_json::from_value(json!({
-            "id": "ws-2",
-            "work_dir": "/home/user/project",
-            "env": {"LANG": "en_US.UTF-8"}
-        }))
-        .unwrap();
-        assert_eq!(req.id.as_deref(), Some("ws-2"));
-        assert_eq!(req.work_dir.as_deref(), Some("/home/user/project"));
-        let env = req.env.unwrap();
-        assert_eq!(env.get("LANG").unwrap(), "en_US.UTF-8");
+#[utoipa::path(
+    patch,
+    path = "/api/v1/workspaces/managed/{id}/projects/{project_id}",
+    tag = "ManagedWorkspaces",
+    params(
+        ("id" = String, Path, description = "Workspace ID"),
+        ("project_id" = String, Path, description = "Project ID"),
+    ),
+    request_body = manager::UpdateWorkspaceProjectRequest,
+    responses(
+        (status = 200, description = "Project updated", body = manager::Project),
+        (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 404, description = "Workspace or project not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn update_managed_workspace_project(
+    Path((id, project_id)): Path<(String, String)>,
+    Json(request): Json<manager::UpdateWorkspaceProjectRequest>,
+) -> impl IntoResponse {
+    match manager::update_project(&id, &project_id, request) {
+        Ok(project) => (StatusCode::OK, Json(project)).into_response(),
+        Err(error) => managed_error(error, "update_managed_workspace_project"),
     }
+}
 
-    #[test]
-    fn test_create_workspace_request_missing_id_succeeds() {
-        // id is now optional — auto-generated at API level
-        let req: CreateWorkspaceRequest =
-            serde_json::from_value(json!({"work_dir": "/tmp"})).unwrap();
-        assert!(req.id.is_none());
-        assert_eq!(req.work_dir.as_deref(), Some("/tmp"));
+#[utoipa::path(
+    delete,
+    path = "/api/v1/workspaces/managed/{id}/projects/{project_id}",
+    tag = "ManagedWorkspaces",
+    params(
+        ("id" = String, Path, description = "Workspace ID"),
+        ("project_id" = String, Path, description = "Project ID"),
+    ),
+    responses(
+        (status = 204, description = "Project removed"),
+        (status = 404, description = "Workspace or project not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn remove_managed_workspace_project(
+    Path((id, project_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    match manager::remove_project(&id, &project_id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => managed_error(error, "remove_managed_workspace_project"),
     }
+}
 
-    #[test]
-    fn test_create_workspace_request_empty_id() {
-        let req: CreateWorkspaceRequest = serde_json::from_value(json!({"id": ""})).unwrap();
-        assert_eq!(req.id.as_deref(), Some(""));
-    }
-
-    #[test]
-    fn test_create_workspace_request_empty_env() {
-        let req: CreateWorkspaceRequest =
-            serde_json::from_value(json!({"id": "ws", "env": {}})).unwrap();
-        assert_eq!(req.env.unwrap().len(), 0);
-    }
-
-    // ── WorkspaceResponse serialization ──
-
-    #[test]
-    fn test_workspace_response_serialization() {
-        let mut metadata = HashMap::new();
-        metadata.insert("key".to_string(), "value".to_string());
-        let resp = WorkspaceResponse {
-            id: "ws-1".to_string(),
-            backend: "pty".to_string(),
-            metadata,
-            capture_thoughts: Some(true),
-        };
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["id"], "ws-1");
-        assert_eq!(json["backend"], "pty");
-        assert_eq!(json["metadata"]["key"], "value");
-        assert_eq!(json["capture_thoughts"], true);
-    }
-
-    #[test]
-    fn test_workspace_response_empty_metadata() {
-        let resp = WorkspaceResponse {
-            id: "ws-1".to_string(),
-            backend: "pty".to_string(),
-            metadata: HashMap::new(),
-            capture_thoughts: None,
-        };
-        let json = serde_json::to_value(&resp).unwrap();
-        assert!(json["metadata"].as_object().unwrap().is_empty());
-    }
-
-    // ── ErrorResponse serialization ──
-
-    #[test]
-    fn test_error_response_contains_message() {
-        let resp = ErrorResponse {
-            error: "Workspace ws-1 not found".to_string(),
-        };
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["error"], "Workspace ws-1 not found");
-    }
-
-    #[test]
-    fn test_error_response_only_has_error_field() {
-        let resp = ErrorResponse {
-            error: "some error".to_string(),
-        };
-        let json = serde_json::to_value(&resp).unwrap();
-        // Verify the shape is exactly {"error": "some error"}
-        let obj = json.as_object().unwrap();
-        assert_eq!(obj.len(), 1);
-        assert!(obj.contains_key("error"));
-    }
-
-    #[test]
-    fn test_create_workspace_request_deserialization() {
-        let json = serde_json::json!({
-            "id": "ws-new",
-            "work_dir": null,
-            "env": null
-        });
-        let req: CreateWorkspaceRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(req.id.as_deref(), Some("ws-new"));
-        assert!(req.work_dir.is_none());
-        assert!(req.env.is_none());
-    }
-
-    #[test]
-    fn test_create_workspace_request_with_all_fields() {
-        let json = serde_json::json!({
-            "id": "ws-full",
-            "work_dir": "/path/to/work",
-            "env": {"KEY": "value"}
-        });
-        let req: CreateWorkspaceRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(req.id.as_deref(), Some("ws-full"));
-        assert_eq!(req.work_dir, Some("/path/to/work".to_string()));
-        assert_eq!(
-            req.env.as_ref().unwrap().get("KEY"),
-            Some(&"value".to_string())
-        );
-    }
-
-    #[test]
-    fn test_workspace_response_all_fields() {
-        let mut metadata = std::collections::HashMap::new();
-        metadata.insert("env".to_string(), "prod".to_string());
-        let resp = WorkspaceResponse {
-            id: "ws-123".to_string(),
-            backend: "local".to_string(),
-            metadata,
-            capture_thoughts: Some(true),
-        };
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["id"], "ws-123");
-        assert_eq!(json["backend"], "local");
-        assert_eq!(json["metadata"]["env"], "prod");
-        assert_eq!(json["capture_thoughts"], true);
-    }
-
-    #[test]
-    fn test_workspace_response_minimal() {
-        let resp = WorkspaceResponse {
-            id: "ws-minimal".to_string(),
-            backend: "local".to_string(),
-            metadata: std::collections::HashMap::new(),
-            capture_thoughts: None,
-        };
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["id"], "ws-minimal");
-        assert!(json["capture_thoughts"].is_null());
-    }
-
-    #[test]
-    fn test_create_workspace_request_with_unicode_id() {
-        let req: CreateWorkspaceRequest =
-            serde_json::from_value(json!({"id": "workspace-日本語"})).unwrap();
-        assert_eq!(req.id.as_deref(), Some("workspace-日本語"));
-    }
-
-    #[test]
-    fn test_create_workspace_request_with_special_chars_in_id() {
-        let req: CreateWorkspaceRequest =
-            serde_json::from_value(json!({"id": "ws_123-test"})).unwrap();
-        assert_eq!(req.id.as_deref(), Some("ws_123-test"));
-    }
-
-    #[test]
-    fn test_workspace_response_with_complex_metadata() {
-        let mut metadata = HashMap::new();
-        metadata.insert("project".to_string(), "ergatai".to_string());
-        metadata.insert("branch".to_string(), "main".to_string());
-        metadata.insert("version".to_string(), "1.0.0".to_string());
-        let resp = WorkspaceResponse {
-            id: "ws-complex".to_string(),
-            backend: "local".to_string(),
-            metadata,
-            capture_thoughts: Some(false),
-        };
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["metadata"]["project"], "ergatai");
-        assert_eq!(json["metadata"]["branch"], "main");
-        assert_eq!(json["metadata"]["version"], "1.0.0");
-        assert_eq!(json["capture_thoughts"], false);
-    }
-
-    #[test]
-    fn test_workspace_response_id_formats() {
-        // Test various ID formats
-        let ids = vec![
-            "ws-1",
-            "workspace_with_underscores",
-            "workspace.with.dots",
-            "123-numeric-start",
-        ];
-        for id in ids {
-            let resp = WorkspaceResponse {
-                id: id.to_string(),
-                backend: "local".to_string(),
-                metadata: HashMap::new(),
-                capture_thoughts: None,
-            };
-            let json = serde_json::to_value(&resp).unwrap();
-            assert_eq!(json["id"], id);
-        }
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/managed/{id}/status",
+    tag = "ManagedWorkspaces",
+    params(("id" = String, Path, description = "Workspace ID")),
+    responses(
+        (status = 200, description = "Workspace status", body = manager::WorkspaceStatus),
+        (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn managed_workspace_status(Path(id): Path<String>) -> impl IntoResponse {
+    match manager::status(&id).await {
+        Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+        Err(error) => managed_error(error, "managed_workspace_status"),
     }
 }

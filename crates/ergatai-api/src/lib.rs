@@ -12,10 +12,10 @@ use axum::{
     http::{header, Request, StatusCode},
     middleware::{self, Next},
     response::IntoResponse,
-    routing::{delete, get, patch, post, put},
+    routing::{delete, get, patch, post},
     Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
@@ -241,43 +241,6 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route("/health", get(health_check))
         .route("/ready", get(readiness_check))
         .route("/metrics", get(metrics_endpoint))
-        // ════════════════════════════════════════════════════════════════
-        // Workspace API（最顶层容器）
-        // ════════════════════════════════════════════════════════════════
-        .route("/api/v1/workspaces", get(api::workspaces::list_workspaces))
-        .route(
-            "/api/v1/workspaces",
-            post(api::workspaces::create_workspace),
-        )
-        .route(
-            "/api/v1/workspaces/{workspace_id}",
-            get(api::workspaces::get_workspace),
-        )
-        .route(
-            "/api/v1/workspaces/{workspace_id}",
-            patch(api::workspaces::update_workspace),
-        )
-        .route(
-            "/api/v1/workspaces/{workspace_id}",
-            delete(api::workspaces::delete_workspace),
-        )
-        // Workspace lifecycle management
-        .route(
-            "/api/v1/workspaces/{workspace_id}/stop",
-            post(api::workspaces::stop_workspace),
-        )
-        .route(
-            "/api/v1/workspaces/{workspace_id}/start",
-            post(api::workspaces::start_workspace),
-        )
-        .route(
-            "/api/v1/workspaces/{workspace_id}/archive",
-            post(api::workspaces::archive_workspace),
-        )
-        .route(
-            "/api/v1/workspaces/{workspace_id}/restore",
-            post(api::workspaces::restore_workspace),
-        )
         .route(
             "/api/v1/terminal-sessions",
             get(api::terminal_sessions::list_sessions)
@@ -311,27 +274,6 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/terminal-sessions/{id}/audit",
             get(api::terminal_sessions::list_audit),
         )
-        // Persistent workspace routes
-        .route(
-            "/api/v1/workspaces/persistent",
-            get(api::workspaces::list_persistent_workspaces),
-        )
-        .route(
-            "/api/v1/workspaces/persistent",
-            post(api::workspaces::create_persistent_workspace),
-        )
-        .route(
-            "/api/v1/workspaces/persistent/{id}",
-            get(api::workspaces::get_persistent_workspace),
-        )
-        .route(
-            "/api/v1/workspaces/persistent/{id}",
-            put(api::workspaces::update_persistent_workspace),
-        )
-        .route(
-            "/api/v1/workspaces/persistent/{id}",
-            delete(api::workspaces::delete_persistent_workspace),
-        )
         // Managed workspace routes
         .route(
             "/api/v1/workspaces/managed",
@@ -361,23 +303,26 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/workspaces/managed/{id}/restore",
             post(api::workspaces::restore_managed_workspace),
         )
-        // TODO: Project management endpoints temporarily disabled
-        // .route(
-        //     "/api/v1/workspaces/managed/{id}/projects",
-        //     get(api::workspaces::list_managed_workspace_projects),
-        // )
-        // .route(
-        //     "/api/v1/workspaces/managed/{id}/projects",
-        //     post(api::workspaces::register_managed_workspace_project),
-        // )
-        // .route(
-        //     "/api/v1/workspaces/managed/{id}/projects/{project_id}",
-        //     delete(api::workspaces::remove_managed_workspace_project),
-        // )
-        // .route(
-        //     "/api/v1/workspaces/managed/{id}/status",
-        //     get(api::workspaces::managed_workspace_status),
-        // )
+        .route(
+            "/api/v1/workspaces/managed/{id}/projects",
+            get(api::workspaces::list_managed_workspace_projects),
+        )
+        .route(
+            "/api/v1/workspaces/managed/{id}/projects",
+            post(api::workspaces::register_managed_workspace_project),
+        )
+        .route(
+            "/api/v1/workspaces/managed/{id}/projects/{project_id}",
+            patch(api::workspaces::update_managed_workspace_project),
+        )
+        .route(
+            "/api/v1/workspaces/managed/{id}/projects/{project_id}",
+            delete(api::workspaces::remove_managed_workspace_project),
+        )
+        .route(
+            "/api/v1/workspaces/managed/{id}/status",
+            get(api::workspaces::managed_workspace_status),
+        )
         // ════════════════════════════════════════════════════════════════
         // Agent API（批量查询 / 管理端点）
         // ════════════════════════════════════════════════════════════════
@@ -397,7 +342,7 @@ pub fn build_rest_app(state: AppState) -> Router {
             post(api::agents::send_message),
         )
         .route(
-            "/api/v1/agents/{id}/spawn-session",
+            "/api/v1/agents/{id}/fork",
             post(api::agents::spawn_session),
         )
         .route(
@@ -464,7 +409,7 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::agents::get_agent_usage),
         )
         .route(
-            "/api/v1/agents/{id}/output",
+            "/api/v1/agents/{id}/outputs/history",
             get(api::agents::get_agent_output),
         )
         .route(
@@ -477,7 +422,7 @@ pub fn build_rest_app(state: AppState) -> Router {
         )
         .route("/api/v1/agents/{id}/pid", get(api::agents::get_agent_pid))
         .route(
-            "/api/v1/agents/{id}/current-output",
+            "/api/v1/agents/{id}/outputs/current",
             get(api::agents::get_agent_current_output),
         )
         // Agent event stream (SSE)
@@ -526,24 +471,6 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/chats/{chat_id}/unarchive",
             post(api::chats::unarchive_chat),
-        )
-        .route(
-            "/api/v1/worktrees/registered",
-            get(api::chats::lookup_registered_worktree),
-        )
-        .route(
-            "/api/v1/chats/lookup-worktree",
-            get(api::chats::lookup_registered_worktree),
-        )
-        .route(
-            "/api/v1/chats/lookup-worktree",
-            axum::routing::options(|| async {
-                axum::response::Response::builder()
-                    .status(StatusCode::OK)
-                    .header("Allow", "GET,HEAD")
-                    .body(axum::body::Body::empty())
-                    .unwrap()
-            }),
         )
         .route(
             "/api/v1/chats/{chat_id}/agents",
@@ -646,10 +573,6 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/collaboration-sessions",
             get(api::collaboration_sessions::list_collaboration_sessions)
                 .post(api::collaboration_sessions::create_collaboration_session),
-        )
-        .route(
-            "/api/v1/collaboration-sessions/by-chat/{chat_id}",
-            get(api::collaboration_sessions::get_collaboration_session_by_chat),
         )
         .route(
             "/api/v1/collaboration-sessions/{collaboration_session_id}",
@@ -983,28 +906,16 @@ pub async fn method_validation_middleware(request: Request<Body>, next: Next) ->
 /// Returns `None` if the path doesn't match any registered route (will result in 404).
 fn get_allowed_methods_for_path(path: &str) -> Option<Vec<axum::http::Method>> {
     use axum::http::Method;
-
-    let matches_pattern = |path: &str, pattern: &str| -> bool {
-        let path_parts: Vec<&str> = path.trim_matches('/').split('/').collect();
-        let pattern_parts: Vec<&str> = pattern.trim_matches('/').split('/').collect();
-
-        if path_parts.len() != pattern_parts.len() {
-            return false;
-        }
-
-        path_parts
-            .iter()
-            .zip(pattern_parts.iter())
-            .all(|(p, pat)| pat.starts_with('{') && pat.ends_with('}') || p == pat)
-    };
-
-    // Cache the OpenAPI spec to avoid regenerating it on every request
+    use std::collections::HashMap;
     use std::sync::OnceLock;
-    static OPENAPI_CACHE: OnceLock<utoipa::openapi::OpenApi> = OnceLock::new();
-    let openapi = OPENAPI_CACHE.get_or_init(crate::api::openapi::ApiDoc::openapi);
 
-    for (pattern, item) in openapi.paths.paths.iter() {
-        if matches_pattern(path, pattern) {
+    // Pre-built route mapping for O(1) lookup on exact matches
+    static ROUTE_MAP: OnceLock<HashMap<String, Vec<Method>>> = OnceLock::new();
+    let route_map = ROUTE_MAP.get_or_init(|| {
+        let openapi = crate::api::openapi::ApiDoc::openapi();
+        let mut map = HashMap::new();
+
+        for (pattern, item) in openapi.paths.paths.iter() {
             let mut methods = Vec::new();
             if item.get.is_some() {
                 methods.push(Method::GET);
@@ -1030,11 +941,41 @@ fn get_allowed_methods_for_path(path: &str) -> Option<Vec<axum::http::Method>> {
             if item.trace.is_some() {
                 methods.push(Method::TRACE);
             }
+
             if !methods.is_empty() {
-                return Some(methods);
+                map.insert(pattern.clone(), methods);
             }
         }
+
+        map
+    });
+
+    // Fast path: exact match (most API routes are static)
+    if let Some(methods) = route_map.get(path) {
+        return Some(methods.clone());
     }
+
+    // Slow path: pattern matching for paths with parameters (e.g., /api/v1/agents/{id})
+    let matches_pattern = |path: &str, pattern: &str| -> bool {
+        let path_parts: Vec<&str> = path.trim_matches('/').split('/').collect();
+        let pattern_parts: Vec<&str> = pattern.trim_matches('/').split('/').collect();
+
+        if path_parts.len() != pattern_parts.len() {
+            return false;
+        }
+
+        path_parts
+            .iter()
+            .zip(pattern_parts.iter())
+            .all(|(p, pat)| pat.starts_with('{') && pat.ends_with('}') || p == pat)
+    };
+
+    for (pattern, methods) in route_map.iter() {
+        if matches_pattern(path, pattern) {
+            return Some(methods.clone());
+        }
+    }
+
     None
 }
 
@@ -1289,30 +1230,4 @@ pub fn validate_cwd(cwd: &str) -> anyhow::Result<PathBuf, String> {
     }
 
     Ok(canonical)
-}
-
-// ── Request / response types ─────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct CreateChatRequest {
-    agent: String,
-    #[serde(default)]
-    cwd: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[allow(dead_code)]
-struct CreateChatResponse {
-    session_id: String,
-    agent: String,
-    cwd: String,
-}
-
-#[derive(Debug, Serialize)]
-#[allow(dead_code)]
-struct AgentSummary {
-    name: String,
-    source: String,
-    available: bool,
 }
