@@ -90,6 +90,7 @@ fn response_from_error(error: CollaborationSessionError, operation: &'static str
     responses(
         (status = 201, description = "Collaboration session created or returned", body = crate::services::collaboration_session::CollaborationSessionDetail),
         (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
@@ -115,6 +116,7 @@ pub async fn create_collaboration_session(
     responses(
         (status = 200, description = "Collaboration session", body = crate::services::collaboration_session::CollaborationSession),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn get_collaboration_session_by_chat(Path(chat_id): Path<String>) -> Response {
@@ -122,9 +124,12 @@ pub async fn get_collaboration_session_by_chat(Path(chat_id): Path<String>) -> R
     match tokio::task::spawn_blocking(move || find_session_by_chat(&chat_id_for_closure)).await {
         Ok(Ok(Some(session))) => (StatusCode::OK, Json(session)).into_response(),
         Ok(Ok(None)) => {
-            crate::http_error::not_found("Collaboration session for chat", &chat_id).into_response()
+            crate::http_error::not_found("Collaboration session for chat", &chat_id.to_string())
+                .into_response()
         }
-        Ok(Err(error)) => response_from_error(error, "find collaboration session by chat"),
+        Ok(Err(error)) => {
+            crate::http_error::internal(error, "find session by chat").into_response()
+        }
         Err(error) => {
             crate::http_error::internal(format!("Task join error: {}", error), "spawn_blocking")
                 .into_response()
@@ -141,6 +146,7 @@ pub async fn get_collaboration_session_by_chat(Path(chat_id): Path<String>) -> R
     responses(
         (status = 200, description = "Collaboration session detail", body = crate::services::collaboration_session::CollaborationSessionDetail),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn get_collaboration_session(Path(collaboration_session_id): Path<String>) -> Response {
@@ -191,11 +197,12 @@ pub async fn transition_collaboration_session_state(
     params(
         ("id" = String, Path, description = "Collaboration session identifier"),
         ("after" = Option<i64>, Query, description = "Return events after this sequence"),
-        ("limit" = Option<usize>, Query, description = "Maximum events to return"),
+        ("limit" = Option<f64>, Query, description = "Maximum events to return"),
     ),
     responses(
         (status = 200, description = "Shared context events", body = Vec<crate::services::collaboration_session::CollaborationContextEvent>),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn list_collaboration_session_events(
@@ -373,6 +380,7 @@ pub async fn stream_collaboration_session_events(
     responses(
         (status = 201, description = "Plan revision created", body = crate::services::collaboration_session::PlanRevisionCreated),
         (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
     )
 )]
@@ -403,6 +411,7 @@ pub async fn create_collaboration_session_plan(
     responses(
         (status = 200, description = "Plan revisions", body = Vec<crate::services::collaboration_session::CollaborationPlanRevision>),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn list_collaboration_session_plans(
@@ -485,6 +494,7 @@ pub async fn execute_collaboration_session_plan(
     responses(
         (status = 201, description = "Approval requested", body = crate::services::collaboration_session::ApprovalDecisionResult),
         (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
     )
 )]
@@ -549,13 +559,14 @@ pub async fn decide_collaboration_session_approval(
         (status = 200, description = "Session cancelled", body = crate::services::collaboration_session::CollaborationSessionDetail),
         (status = 400, description = "Invalid cancellation", body = crate::api::ApiError),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
+        (status = 422, description = "Validation error", body = crate::api::ApiError),
     )
 )]
 pub async fn cancel_collaboration_session(
     Path(collaboration_session_id): Path<String>,
-    reason: Option<axum::Json<String>>,
+    reason: Option<axum::Json<Option<String>>>,
 ) -> Response {
-    let reason = reason.map(|axum::Json(reason)| reason);
+    let reason = reason.and_then(|axum::Json(reason)| reason);
     match cancel_session_execution(&collaboration_session_id, reason).await {
         Ok(detail) => (StatusCode::OK, Json(detail)).into_response(),
         Err(error) => response_from_dag_error(error, "cancel collaboration session"),
@@ -616,6 +627,8 @@ pub struct PatchCollaborationSessionRequest {
     responses(
         (status = 200, description = "Session updated", body = crate::services::collaboration_session::CollaborationSessionDetail),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
+        (status = 415, description = "Unsupported Media Type", body = crate::api::ApiError),
         (status = 400, description = "Invalid request", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
@@ -658,6 +671,7 @@ pub async fn patch_collaboration_session(
     responses(
         (status = 204, description = "Session deleted"),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
         (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
@@ -685,6 +699,7 @@ pub async fn delete_collaboration_session(
     responses(
         (status = 200, description = "Session status", body = serde_json::Value),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn get_collaboration_session_status(
@@ -717,6 +732,7 @@ pub async fn get_collaboration_session_status(
     responses(
         (status = 200, description = "Session progress", body = serde_json::Value),
         (status = 404, description = "Session not found", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn get_collaboration_session_progress(

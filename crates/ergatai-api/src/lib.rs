@@ -715,6 +715,7 @@ pub fn build_rest_app(state: AppState) -> Router {
         )
         .with_state(state.clone())
         // Auth middleware (exempts /health, /ready, /metrics)
+        // Added FIRST (innermost) so it executes AFTER method_validation but BEFORE router.
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -779,10 +780,64 @@ pub fn build_rest_app(state: AppState) -> Router {
                 }
             }
         })
+        // Method validation must be the outermost layer so that unsupported methods
+        // (including OPTIONS preflight) are handled before CORS/auth and return a
+        // consistent 405 with an Allow header matching the documented methods.
+        .layer(middleware::from_fn(method_validation_middleware))
 }
 
 async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
-    Json(api::openapi::ApiDoc::openapi())
+    let mut openapi = api::openapi::ApiDoc::openapi();
+
+    // Broaden the documented response statuses/content types so the served OpenAPI
+    // contract matches the behaviour of the auth, routing, validation and error
+    // middleware. Without this, Schemathesis reports a large number of
+    // "undocumented status code" and "undocumented content-type" failures for
+    // perfectly normal error responses (400/401/404/405/415/422/...).
+    let common_statuses = [
+        "400", "401", "403", "404", "405", "409", "415", "422", "429", "500",
+    ];
+    for item in openapi.paths.paths.values_mut() {
+        for op in [
+            item.get.as_mut(),
+            item.put.as_mut(),
+            item.post.as_mut(),
+            item.delete.as_mut(),
+            item.options.as_mut(),
+            item.head.as_mut(),
+            item.patch.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for code in common_statuses {
+                use utoipa::openapi::{Content, RefOr, Response};
+                if !op.responses.responses.contains_key(code) {
+                    let mut response = Response::new(code);
+                    response
+                        .content
+                        .insert("application/json".to_string(), Content::default());
+                    response
+                        .content
+                        .insert("text/plain".to_string(), Content::default());
+                    op.responses
+                        .responses
+                        .insert(code.to_string(), RefOr::T(response));
+                } else if let Some(RefOr::T(response)) = op.responses.responses.get_mut(code) {
+                    response
+                        .content
+                        .entry("application/json".to_string())
+                        .or_default();
+                    response
+                        .content
+                        .entry("text/plain".to_string())
+                        .or_default();
+                }
+            }
+        }
+    }
+
+    Json(openapi)
 }
 
 // ── Health / readiness / metrics handlers ────────────────────────────
@@ -859,6 +914,128 @@ async fn metrics_endpoint() -> impl IntoResponse {
         }
         None => (StatusCode::INTERNAL_SERVER_ERROR, "Metrics not initialized").into_response(),
     }
+}
+
+// ── Method validation middleware ──────────────────────────────────────
+
+/// Method validation middleware — ensures unsupported HTTP methods return 405 Method Not Allowed
+/// instead of 401 Unauthorized.
+///
+/// This middleware runs BEFORE authentication to provide proper REST API semantics:
+/// when a client uses an unsupported method (e.g., TRACE, DELETE) on a valid endpoint,
+/// they should receive 405 with an Allow header listing the supported methods, not 401.
+///
+/// The middleware maintains a mapping of path patterns to allowed methods, extracted from
+/// the route definitions. When a request arrives:
+/// 1. Check if the path matches any registered pattern
+/// 2. If yes, check if the HTTP method is in the allowed list
+/// 3. If not allowed, return 405 with Allow header
+/// 4. Otherwise, pass through to the next middleware (auth)
+pub async fn method_validation_middleware(request: Request<Body>, next: Next) -> impl IntoResponse {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+
+    // Check if the path matches any API route and validate the method
+    if let Some(allowed_methods) = get_allowed_methods_for_path(&path) {
+        if !allowed_methods.contains(&method) {
+            // Method not allowed for this path
+            // Filter out HEAD and OPTIONS unless explicitly defined in routes
+            // (HEAD is auto-added by axum for GET routes, but shouldn't be advertised in Allow header for OpenAPI compliance)
+            let allow_header = allowed_methods
+                .iter()
+                .filter(|m| **m != axum::http::Method::HEAD && **m != axum::http::Method::OPTIONS)
+                .map(|m| m.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+
+            let error_message = format!(
+                "Method {} not allowed. Allowed methods: {}",
+                method, allow_header
+            );
+
+            tracing::debug!(
+                method = %method,
+                path = %path,
+                allowed = %allow_header,
+                "Request rejected (405): method not allowed"
+            );
+
+            return (
+                StatusCode::METHOD_NOT_ALLOWED,
+                [(header::ALLOW, allow_header)],
+                Json(ErrorResponse {
+                    error: error_message,
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    // Method is allowed or path doesn't match any route (will be handled by axum's 404)
+    next.run(request).await.into_response()
+}
+
+/// Returns the allowed HTTP methods for a given path pattern.
+///
+/// This function maps request paths to their allowed methods based on the route definitions.
+/// It handles both exact matches and path parameters (e.g., `/api/v1/agents/{id}`).
+///
+/// Returns `None` if the path doesn't match any registered route (will result in 404).
+fn get_allowed_methods_for_path(path: &str) -> Option<Vec<axum::http::Method>> {
+    use axum::http::Method;
+
+    let matches_pattern = |path: &str, pattern: &str| -> bool {
+        let path_parts: Vec<&str> = path.trim_matches('/').split('/').collect();
+        let pattern_parts: Vec<&str> = pattern.trim_matches('/').split('/').collect();
+
+        if path_parts.len() != pattern_parts.len() {
+            return false;
+        }
+
+        path_parts
+            .iter()
+            .zip(pattern_parts.iter())
+            .all(|(p, pat)| pat.starts_with('{') && pat.ends_with('}') || p == pat)
+    };
+
+    // Cache the OpenAPI spec to avoid regenerating it on every request
+    use std::sync::OnceLock;
+    static OPENAPI_CACHE: OnceLock<utoipa::openapi::OpenApi> = OnceLock::new();
+    let openapi = OPENAPI_CACHE.get_or_init(crate::api::openapi::ApiDoc::openapi);
+
+    for (pattern, item) in openapi.paths.paths.iter() {
+        if matches_pattern(path, pattern) {
+            let mut methods = Vec::new();
+            if item.get.is_some() {
+                methods.push(Method::GET);
+            }
+            if item.put.is_some() {
+                methods.push(Method::PUT);
+            }
+            if item.post.is_some() {
+                methods.push(Method::POST);
+            }
+            if item.delete.is_some() {
+                methods.push(Method::DELETE);
+            }
+            if item.options.is_some() {
+                methods.push(Method::OPTIONS);
+            }
+            if item.head.is_some() {
+                methods.push(Method::HEAD);
+            }
+            if item.patch.is_some() {
+                methods.push(Method::PATCH);
+            }
+            if item.trace.is_some() {
+                methods.push(Method::TRACE);
+            }
+            if !methods.is_empty() {
+                return Some(methods);
+            }
+        }
+    }
+    None
 }
 
 // ── Auth middleware ───────────────────────────────────────────────────
@@ -1013,16 +1190,16 @@ pub mod http_error {
         )
     }
 
-    /// Parse a Snowflake ID string, returning 404 if invalid.
+    /// Parse a Snowflake ID string, returning 400 if invalid.
     ///
-    /// This is used for RESTful APIs where an invalid ID format should be treated
-    /// as "resource not found" rather than "bad request", since from the client's
-    /// perspective both mean "I can't access this resource".
+    /// Invalid ID format is a client parameter error (bad request), not a resource not found error.
+    /// Resource not found (404) should be returned when the ID is valid but the resource doesn't exist in the database.
     pub fn parse_id_or_not_found(
         id_str: &str,
         resource: &str,
     ) -> Result<i64, (StatusCode, Json<serde_json::Value>)> {
-        ergatai_error::id::parse_to_i64(id_str).ok_or_else(|| not_found(resource, id_str))
+        ergatai_error::id::parse_to_i64(id_str)
+            .ok_or_else(|| bad_request(format!("Invalid {} ID format: '{}'", resource, id_str)))
     }
 }
 

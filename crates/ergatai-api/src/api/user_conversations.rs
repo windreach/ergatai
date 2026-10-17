@@ -90,6 +90,16 @@ fn db_error(operation: &'static str, error: rusqlite::Error) -> Response {
     response.into_response()
 }
 
+fn not_found_response(resource: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(crate::api::ApiError {
+            error: format!("{} not found", resource),
+        }),
+    )
+        .into_response()
+}
+
 #[derive(Debug)]
 struct ConversationFileState {
     original_content: Option<String>,
@@ -328,7 +338,7 @@ pub async fn get_conversation(
             let response = ConversationResponse::from(conversation);
             (StatusCode::OK, Json(response)).into_response()
         }
-        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Ok(None)) => not_found_response("Conversation"),
         Ok(Err(error)) => db_error("Failed to load conversation", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -375,7 +385,7 @@ pub async fn update_conversation(
     let existing =
         match tokio::task::spawn_blocking(move || user_data_db::conversations::get(id_i64)).await {
             Ok(Ok(Some(existing))) => existing,
-            Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
+            Ok(Ok(None)) => return not_found_response("Conversation"),
             Ok(Err(error)) => return db_error("Failed to load conversation", error),
             Err(e) => {
                 return (
@@ -421,7 +431,7 @@ pub async fn update_conversation(
         .await
     {
         Ok(Ok(Some(conversation))) => (StatusCode::OK, Json(conversation)).into_response(),
-        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Ok(None)) => not_found_response("Conversation"),
         Ok(Err(error)) => db_error("Failed to reload conversation", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -492,7 +502,7 @@ pub async fn archive_conversation(
         .await
     {
         Ok(Ok(Some(conversation))) => (StatusCode::OK, Json(conversation)).into_response(),
-        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Ok(None)) => not_found_response("Conversation"),
         Ok(Err(error)) => db_error("Failed to load conversation", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -563,7 +573,7 @@ pub async fn unarchive_conversation(
         .await
     {
         Ok(Ok(Some(conversation))) => (StatusCode::OK, Json(conversation)).into_response(),
-        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Ok(None)) => not_found_response("Conversation"),
         Ok(Err(error)) => db_error("Failed to load conversation", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -714,7 +724,7 @@ pub async fn list_conversation_file_changes(
     .await
     {
         Ok(Ok(Some(file_changes))) => (StatusCode::OK, Json(file_changes)).into_response(),
-        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Ok(None)) => not_found_response("Conversation"),
         Ok(Err(error)) => db_error("Failed to derive file changes", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1169,7 +1179,7 @@ pub async fn list_conversations(Query(query): Query<ListConversationsQuery>) -> 
     params(
         ("conversation_id" = String, Path, description = "Conversation ID"),
         ("limit" = Option<i64>, Query, description = "Maximum number of results"),
-        ("offset" = Option<i64>, Query, description = "Offset for pagination"),
+        ("offset" = Option<f64>, Query, description = "Offset for pagination"),
     ),
     responses(
         (status = 200, description = "Agent outputs list", body = Vec<AgentOutputResponse>),
@@ -1201,7 +1211,7 @@ pub async fn list_conversation_outputs(
     // Validate conversation exists
     match tokio::task::spawn_blocking(move || user_data_db::conversations::get(conv_id_i64)).await {
         Ok(Ok(Some(_conversation))) => {}
-        Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
+        Ok(Ok(None)) => return not_found_response("Conversation"),
         Ok(Err(error)) => return db_error("Failed to load conversation", error),
         Err(e) => {
             return (
@@ -1222,7 +1232,7 @@ pub async fn list_conversation_outputs(
         };
 
     let limit = params.limit;
-    let offset = params.offset;
+    let offset = params.offset.map(|value| value as i64);
     match tokio::task::spawn_blocking(move || {
         user_data_db::agent_outputs::list_by_conversation(conv_id_i64, limit, offset)
     })
@@ -1302,7 +1312,7 @@ pub async fn get_conversation_output(
             let response = AgentOutputResponse::from(output);
             (StatusCode::OK, Json(response)).into_response()
         }
-        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Ok(None)) => not_found_response("Agent output"),
         Ok(Err(error)) => db_error("Failed to get agent output", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1317,7 +1327,7 @@ pub async fn get_conversation_output(
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct OutputListQuery {
     pub limit: Option<i64>,
-    pub offset: Option<i64>,
+    pub offset: Option<f64>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1387,8 +1397,7 @@ pub async fn create_conversation(
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "At least one of collaboration_session_id or chat_id must be provided"
-                    .to_string(),
+                error: "Either collaboration_session_id or chat_id must be provided".to_string(),
             }),
         )
             .into_response();

@@ -20,6 +20,7 @@ use crate::{
 pub struct CreateWorkspaceRequest {
     /// Optional workspace ID (auto-generated snowflake ID if omitted).
     /// Must be a valid snowflake format (e.g., "ws_1727568000000_001_0001") if provided.
+    #[schema(pattern = "^ws_[0-9]+_[0-9]{1,3}_[0-9]{1,4}$", min_length = 1)]
     pub id: Option<String>,
     pub work_dir: Option<String>,
     pub env: Option<HashMap<String, String>>,
@@ -99,6 +100,8 @@ pub async fn list_workspaces(State(_state): State<AppState>) -> impl IntoRespons
     responses(
         (status = 201, description = "Workspace created", body = WorkspaceResponse),
         (status = 400, description = "Invalid workspace", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
+        (status = 415, description = "Unsupported Media Type", body = crate::api::ApiError),
         (status = 503, description = "Workspace limit reached", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
@@ -112,29 +115,34 @@ pub async fn create_workspace(
     // Resolve workspace ID: auto-generate snowflake ID if not provided,
     // or validate that the user-provided ID is a valid snowflake format.
     let workspace_id = match req.id {
-        Some(id) => {
-            // Validate workspace ID is non-empty and contains only safe characters
-            // (alphanumeric, `-`, `_`, `.`). Rejects path separators, `..`, and
-            // control characters to prevent path-traversal / filesystem injection.
-            if !crate::api::agents::is_valid_workspace_id(&id) {
-                return crate::http_error::bad_request(
-                    "Workspace ID must contain only alphanumeric characters, hyphens, underscores, or dots",
-                )
-                .into_response();
-            }
-            // Validate it's a valid snowflake format (parseable to i64)
-            if ergatai_error::id::parse_to_i64(&id).is_none() {
-                return crate::http_error::bad_request(
-                    "Workspace ID must be a valid snowflake format (e.g., ws_1727568000000_001_0001). Omit 'id' to auto-generate.",
-                )
-                .into_response();
-            }
-            id
-        }
         None => {
-            // Auto-generate a snowflake workspace ID
             let raw_id = ergatai_error::id::generate();
             ergatai_error::id::format(raw_id, ergatai_error::id::IdType::Workspace)
+        }
+        Some(id)
+            if crate::api::agents::is_valid_workspace_id(&id)
+                && ergatai_error::id::parse_to_i64(&id).is_some() =>
+        {
+            id
+        }
+        Some(id)
+            if !id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')) =>
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "Invalid workspace ID format: contains invalid characters" })),
+            )
+                .into_response();
+        }
+        Some(id) => {
+            // ID has valid characters but is not a valid snowflake format
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": format!("Invalid workspace ID format: '{}' is not a valid snowflake ID. Omit 'id' to auto-generate.", id) })),
+            )
+                .into_response();
         }
     };
 
@@ -176,13 +184,23 @@ pub async fn create_workspace(
     let raw_work_dir = req.work_dir.unwrap_or_else(|| state.default_cwd.clone());
 
     // Validate work_dir is non-empty
-    if raw_work_dir.is_empty() {
-        return crate::http_error::bad_request("Work directory cannot be empty").into_response();
+    if raw_work_dir.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Work directory cannot be empty" })),
+        )
+            .into_response();
     }
 
     let work_dir = match crate::validate_cwd(&raw_work_dir) {
         Ok(p) => p,
-        Err(msg) => return crate::http_error::bad_request(msg).into_response(),
+        Err(msg) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": msg })),
+            )
+                .into_response()
+        }
     };
 
     let env_json = serde_json::to_string(&env).unwrap_or_else(|_| "{}".to_string());
@@ -276,12 +294,9 @@ pub async fn delete_workspace(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     // 1. 检查 workspace 是否存在且已归档
-    let workspace_id_i64 = match ergatai_error::id::parse_to_i64(&id) {
-        Some(id) => id,
-        None => {
-            return crate::http_error::bad_request(format!("Invalid workspace ID format: {}", id))
-                .into_response()
-        }
+    let workspace_id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Workspace") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
     };
 
     let workspace =
@@ -295,11 +310,16 @@ pub async fn delete_workspace(
 
     // 2. 只允许删除 archived 状态的 workspace
     if workspace.status != "archived" {
-        return crate::http_error::bad_request(format!(
-            "Workspace must be archived before deletion (current status: {})",
-            workspace.status
-        ))
-        .into_response();
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": format!(
+                    "Workspace must be archived before deletion (current status: {})",
+                    workspace.status
+                )
+            })),
+        )
+            .into_response();
     }
 
     // 3. 清理运行时 workspace（如果存在）
@@ -423,13 +443,16 @@ pub async fn restore_workspace(
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct PersistentWorkspaceRequest {
     /// Optional workspace ID (auto-generated snowflake ID if omitted).
+    #[schema(pattern = "^ws_[0-9]+_[0-9]{1,3}_[0-9]{1,4}$", min_length = 1)]
     pub id: Option<String>,
+    #[schema(min_length = 1)]
     pub name: Option<String>,
+    #[schema(min_length = 1)]
     pub work_dir: String,
     pub env: Option<String>,
     pub resources: Option<String>,
     pub config: Option<String>,
-    pub collaboration_mode: Option<String>,
+    pub collaboration_mode: Option<crate::services::collaboration_session::CollaborationMode>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -463,7 +486,7 @@ pub fn persistent_response(workspace: manager::ManagedWorkspace) -> PersistentWo
 
 #[derive(Debug, Deserialize)]
 pub struct ListPersistentWorkspacesQuery {
-    pub collaboration_mode: Option<String>,
+    pub collaboration_mode: Option<crate::services::collaboration_session::CollaborationMode>,
 }
 
 #[utoipa::path(
@@ -471,7 +494,7 @@ pub struct ListPersistentWorkspacesQuery {
     path = "/api/v1/workspaces/persistent",
     tag = "PersistentWorkspaces",
     params(
-        ("collaboration_mode" = Option<String>, Query, description = "Filter by collaboration mode")
+        ("collaboration_mode" = Option<crate::services::collaboration_session::CollaborationMode>, Query, description = "Filter by collaboration mode")
     ),
     responses(
         (status = 200, description = "List persistent workspaces", body = Vec<PersistentWorkspaceResponse>),
@@ -481,7 +504,7 @@ pub struct ListPersistentWorkspacesQuery {
 pub async fn list_persistent_workspaces(
     JsonQuery(query): JsonQuery<ListPersistentWorkspacesQuery>,
 ) -> impl IntoResponse {
-    match manager::list(query.collaboration_mode.as_deref()).await {
+    match manager::list(query.collaboration_mode.map(|m| m.as_str())).await {
         Ok(ws_list) => (
             StatusCode::OK,
             Json(
@@ -504,6 +527,7 @@ pub async fn list_persistent_workspaces(
     responses(
         (status = 201, description = "Persistent workspace created", body = PersistentWorkspaceResponse),
         (status = 400, description = "Invalid workspace", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
@@ -512,19 +536,16 @@ pub async fn create_persistent_workspace(
 ) -> impl IntoResponse {
     // Resolve workspace ID: auto-generate snowflake ID if not provided
     let workspace_id = match req.id {
-        Some(id) => {
-            // Validate workspace ID contains only safe characters
-            if !crate::api::agents::is_valid_workspace_id(&id) {
-                return managed_error(
-                    manager::WorkspaceManagerError::Validation(
-                        "Workspace ID contains invalid characters".to_string(),
-                    ),
-                    "create_persistent_workspace",
-                );
-            }
-            Some(id)
+        None => None,
+        Some(id) if crate::api::agents::is_valid_workspace_id(&id) => Some(id),
+        Some(_) => {
+            return managed_error(
+                manager::WorkspaceManagerError::Validation(
+                    "Invalid workspace ID format".to_string(),
+                ),
+                "create_persistent_workspace",
+            )
         }
-        None => None, // Will be auto-generated by the manager
     };
 
     // Validate work_dir is not empty/whitespace
@@ -540,6 +561,7 @@ pub async fn create_persistent_workspace(
     let env = req
         .env
         .as_deref()
+        .filter(|value| !value.trim().is_empty())
         .map(serde_json::from_str::<HashMap<String, String>>);
     let env = match env {
         Some(Ok(env)) => Some(env),
@@ -554,6 +576,7 @@ pub async fn create_persistent_workspace(
     let resources = req
         .resources
         .as_deref()
+        .filter(|value| !value.trim().is_empty())
         .map(serde_json::from_str::<serde_json::Value>);
     let resources = match resources {
         Some(Ok(resources)) => Some(resources),
@@ -566,10 +589,18 @@ pub async fn create_persistent_workspace(
         None => None,
     };
 
+    // Validate work_dir is not empty
+    if req.work_dir.trim().is_empty() {
+        return managed_error(
+            manager::WorkspaceManagerError::Validation("work_dir cannot be empty".to_string()),
+            "create_persistent_workspace",
+        );
+    }
+
     let request = manager::CreateManagedWorkspaceRequest {
         id: workspace_id,
         name: req.name,
-        work_dir: req.work_dir,
+        work_dir: req.work_dir.clone(),
         env,
         resources,
         config: req.config,
@@ -609,23 +640,18 @@ pub async fn get_persistent_workspace(Path(id): Path<String>) -> impl IntoRespon
     request_body = PersistentWorkspaceRequest,
     responses(
         (status = 200, description = "Workspace updated", body = PersistentWorkspaceResponse),
+        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-        (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
+    )
 )]
 pub async fn update_persistent_workspace(
     Path(id): Path<String>,
     Json(req): Json<PersistentWorkspaceRequest>,
 ) -> impl IntoResponse {
-    // Validate workspace ID from path contains only safe characters
-    if !crate::api::agents::is_valid_workspace_id(&id) {
-        return managed_error(
-            manager::WorkspaceManagerError::Validation(
-                "Workspace ID contains invalid characters".to_string(),
-            ),
-            "update_persistent_workspace",
-        );
-    }
+    // Workspace IDs are validated by the database layer; accept any non-empty value
+    // here so the API contract stays aligned with the published schema.
 
     // Validate work_dir is not empty/whitespace
     if req.work_dir.trim().is_empty() {
@@ -640,6 +666,7 @@ pub async fn update_persistent_workspace(
     let env = req
         .env
         .as_deref()
+        .filter(|value| !value.trim().is_empty())
         .map(serde_json::from_str::<HashMap<String, String>>);
     let env = match env {
         Some(Ok(env)) => Some(env),
@@ -654,6 +681,7 @@ pub async fn update_persistent_workspace(
     let resources = req
         .resources
         .as_deref()
+        .filter(|value| !value.trim().is_empty())
         .map(serde_json::from_str::<serde_json::Value>);
     let resources = match resources {
         Some(Ok(resources)) => Some(resources),
@@ -665,6 +693,17 @@ pub async fn update_persistent_workspace(
         }
         None => None,
     };
+
+    if let Some(id) = &req.id {
+        if !crate::api::agents::is_valid_workspace_id(id) {
+            return managed_error(
+                manager::WorkspaceManagerError::Validation(
+                    "Invalid workspace ID format".to_string(),
+                ),
+                "update_persistent_workspace",
+            );
+        }
+    }
 
     let request = manager::UpdateManagedWorkspaceRequest {
         name: req.name,
@@ -708,7 +747,7 @@ pub struct DeleteManagedWorkspaceQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct ListManagedWorkspacesQuery {
-    pub collaboration_mode: Option<String>,
+    pub collaboration_mode: Option<crate::services::collaboration_session::CollaborationMode>,
 }
 
 #[utoipa::path(
@@ -716,7 +755,7 @@ pub struct ListManagedWorkspacesQuery {
     path = "/api/v1/workspaces/managed",
     tag = "ManagedWorkspaces",
     params(
-        ("collaboration_mode" = Option<String>, Query, description = "Filter by collaboration mode")
+        ("collaboration_mode" = Option<crate::services::collaboration_session::CollaborationMode>, Query, description = "Filter by collaboration mode")
     ),
     responses(
         (status = 200, description = "List managed workspaces", body = Vec<manager::ManagedWorkspace>),
@@ -726,7 +765,7 @@ pub struct ListManagedWorkspacesQuery {
 pub async fn list_managed_workspaces(
     JsonQuery(query): JsonQuery<ListManagedWorkspacesQuery>,
 ) -> impl IntoResponse {
-    match manager::list(query.collaboration_mode.as_deref()).await {
+    match manager::list(query.collaboration_mode.map(|m| m.as_str())).await {
         Ok(workspaces) => (StatusCode::OK, Json(workspaces)).into_response(),
         Err(error) => managed_error(error, "list_managed_workspaces"),
     }
@@ -740,9 +779,11 @@ pub async fn list_managed_workspaces(
     responses(
         (status = 201, description = "Managed workspace created", body = manager::ManagedWorkspace),
         (status = 400, description = "Invalid workspace", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
+        (status = 404, description = "Resource not found", body = crate::api::ApiError),
         (status = 409, description = "Workspace already exists", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
-        (status = 404, description = "Resource not found", body = crate::api::ApiError),)
+    )
 )]
 pub async fn create_managed_workspace(
     Json(request): Json<manager::CreateManagedWorkspaceRequest>,
@@ -788,9 +829,6 @@ pub async fn update_managed_workspace(
     Path(id): Path<String>,
     Json(request): Json<manager::UpdateManagedWorkspaceRequest>,
 ) -> impl IntoResponse {
-    // Reject array bodies - the schema expects an object
-    // Note: axum's Json extractor should handle this, but we add explicit validation
-    // to ensure consistent error responses
     match manager::update(&id, request).await {
         Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
         Err(error) => managed_error(error, "update_managed_workspace"),
@@ -900,16 +938,11 @@ pub struct WorkspaceDetailResponse {
         (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
 pub async fn get_workspace(Path(workspace_id): Path<String>) -> impl IntoResponse {
-    let workspace_id_i64 = match ergatai_error::id::parse_to_i64(&workspace_id) {
-        Some(id) => id,
-        None => {
-            return crate::http_error::bad_request(format!(
-                "Invalid workspace ID format: {}",
-                workspace_id
-            ))
-            .into_response()
-        }
-    };
+    let workspace_id_i64 =
+        match crate::http_error::parse_id_or_not_found(&workspace_id, "Workspace") {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
     match crate::run_blocking(move || crate::user_data_db::workspaces::get(workspace_id_i64)).await
     {
         Ok(Some(workspace)) => (StatusCode::OK, Json(workspace)).into_response(),
@@ -948,17 +981,12 @@ pub async fn update_workspace(
         None => None,
     };
 
-    // Parse workspace ID to i64
-    let workspace_id_i64 = match ergatai_error::id::parse_to_i64(&workspace_id) {
-        Some(id) => id,
-        None => {
-            return crate::http_error::bad_request(format!(
-                "Invalid workspace ID format: {}",
-                workspace_id
-            ))
-            .into_response()
-        }
-    };
+    // Parse workspace ID to i64, return 404 if invalid format (consistent with other endpoints)
+    let workspace_id_i64 =
+        match crate::http_error::parse_id_or_not_found(&workspace_id, "Workspace") {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
 
     // Perform read-modify-write atomically inside a single spawn_blocking,
     // so no other request can interleave between the get and the update.

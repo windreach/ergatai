@@ -48,10 +48,10 @@ impl Drop for SseConnectionGuard {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RecentQuery {
     #[serde(default = "default_limit")]
-    pub limit: usize,
+    pub limit: i64,
 }
 
-fn default_limit() -> usize {
+fn default_limit() -> i64 {
     50
 }
 
@@ -64,8 +64,7 @@ const MAX_RECENT_LIMIT: usize = 1000;
     path = "/api/v1/activity/recent",
     tag = "Activity",
     params(
-        ("limit" = Option<usize>, Query, description = "Maximum number of events (default 50, max 1000)"),
-    ),
+        ("limit" = Option<i64>, Query, description = "Maximum number of events (default 50, max 1000)"),    ),
     responses(
         (status = 200, description = "Recent activity events"),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
@@ -82,7 +81,7 @@ pub async fn get_recent_events(
         }
     };
 
-    let limit = params.limit.min(MAX_RECENT_LIMIT);
+    let limit = (params.limit.clamp(0, MAX_RECENT_LIMIT as i64)) as usize;
     let events = feed.recent(limit).await;
     Json(events).into_response()
 }

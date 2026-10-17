@@ -14,12 +14,15 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct AgentImage {
     /// Base64-encoded image payload without the data-URI prefix.
+    #[serde(default)]
     pub base64_data: String,
 
     /// MIME type of the encoded image payload.
+    #[serde(default)]
     pub media_type: String,
 
     /// Optional filename used for logging and UI context.
+    #[serde(default)]
     pub filename: Option<String>,
 }
 

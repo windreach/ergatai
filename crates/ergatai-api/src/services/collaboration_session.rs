@@ -189,7 +189,9 @@ pub struct ParticipantInput {
 
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct CreateCollaborationSessionRequest {
+    #[schema(min_length = 1)]
     pub chat_id: String,
+    #[schema(min_length = 1)]
     pub workspace_id: String,
     pub mode: CollaborationMode,
     #[serde(default)]
@@ -283,6 +285,7 @@ pub struct CollaborationApproval {
 
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct CreateApprovalRequest {
+    #[schema(min_length = 1)]
     pub kind: String,
     #[serde(default)]
     pub node_id: Option<String>,

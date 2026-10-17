@@ -86,10 +86,19 @@ pub async fn stream_permissions() -> Sse<impl Stream<Item = Result<Event, Infall
 }
 
 /// Body for POST /api/v1/permissions/:id/respond.
+#[derive(Debug, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionDecisionApi {
+    AllowOnce,
+    AllowAlways,
+    RejectOnce,
+    RejectAlways,
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RespondPermissionBody {
     /// One of: allow_once, allow_always, reject_once, reject_always.
-    pub decision: String,
+    pub decision: PermissionDecisionApi,
     /// Optional form data for elicitation requests.
     #[serde(default)]
     pub form_data: Option<serde_json::Value>,
@@ -108,11 +117,20 @@ pub async fn get_mode() -> impl IntoResponse {
     Json(serde_json::json!({ "mode": get_permission_mode() }))
 }
 
+/// Frontend-selectable permission mode (wire format).
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiPermissionMode {
+    Ask,
+    Auto,
+    FullAccess,
+}
+
 /// Body for POST /api/v1/permissions/mode.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SetModeBody {
     /// One of: ask, auto, full_access.
-    pub mode: String,
+    pub mode: ApiPermissionMode,
 }
 
 /// POST /api/v1/permissions/mode — switch the frontend permission mode.
@@ -124,20 +142,15 @@ pub struct SetModeBody {
     responses(
         (status = 200, description = "Mode updated successfully"),
         (status = 400, description = "Invalid mode", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
+        (status = 415, description = "Unsupported Media Type", body = crate::api::ApiError),
     )
 )]
 pub async fn set_mode(Json(body): Json<SetModeBody>) -> Response {
-    let mode = match body.mode.as_str() {
-        "ask" => PermissionMode::Ask,
-        "auto" => PermissionMode::Auto,
-        "full_access" => PermissionMode::FullAccess,
-        _ => {
-            return crate::http_error::bad_request(format!(
-                "Invalid mode '{}'. Expected ask, auto, or full_access",
-                body.mode
-            ))
-            .into_response()
-        }
+    let mode = match body.mode {
+        ApiPermissionMode::Ask => PermissionMode::Ask,
+        ApiPermissionMode::Auto => PermissionMode::Auto,
+        ApiPermissionMode::FullAccess => PermissionMode::FullAccess,
     };
     set_permission_mode(mode);
     Json(serde_json::json!({ "success": true, "mode": mode })).into_response()
@@ -155,6 +168,7 @@ pub async fn set_mode(Json(body): Json<SetModeBody>) -> Response {
     responses(
         (status = 200, description = "Decision applied successfully"),
         (status = 400, description = "Invalid decision", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 404, description = "Permission request not found", body = crate::api::ApiError),
         (status = 409, description = "Permission already resolved", body = crate::api::ApiError),
     )
@@ -164,12 +178,11 @@ pub async fn respond_permission(
     Path(request_id): Path<String>,
     Json(body): Json<RespondPermissionBody>,
 ) -> Response {
-    let Some(decision) = PermissionDecisionKind::parse(&body.decision) else {
-        return crate::http_error::bad_request(format!(
-            "Invalid decision '{}'. Expected allow_once, allow_always, reject_once, or reject_always",
-            body.decision
-        ))
-            .into_response();
+    let decision = match body.decision {
+        PermissionDecisionApi::AllowOnce => PermissionDecisionKind::AllowOnce,
+        PermissionDecisionApi::AllowAlways => PermissionDecisionKind::AllowAlways,
+        PermissionDecisionApi::RejectOnce => PermissionDecisionKind::RejectOnce,
+        PermissionDecisionApi::RejectAlways => PermissionDecisionKind::RejectAlways,
     };
 
     let service = global_permission_service();
@@ -364,13 +377,13 @@ mod tests {
         // 测试基本的 decision 字段
         let json = r#"{"decision": "allow_once"}"#;
         let body: RespondPermissionBody = serde_json::from_str(json).unwrap();
-        assert_eq!(body.decision, "allow_once");
+        assert_eq!(body.decision, PermissionDecisionApi::AllowOnce);
         assert!(body.form_data.is_none());
 
         // 测试带 form_data 的 decision
         let json = r#"{"decision": "reject_always", "form_data": {"key": "value"}}"#;
         let body: RespondPermissionBody = serde_json::from_str(json).unwrap();
-        assert_eq!(body.decision, "reject_always");
+        assert_eq!(body.decision, PermissionDecisionApi::RejectAlways);
         assert!(body.form_data.is_some());
     }
 
@@ -378,7 +391,7 @@ mod tests {
     fn test_set_mode_body_deserialize() {
         let json = r#"{"mode": "ask"}"#;
         let body: SetModeBody = serde_json::from_str(json).unwrap();
-        assert_eq!(body.mode, "ask");
+        assert_eq!(body.mode, ApiPermissionMode::Ask);
     }
 
     #[test]
@@ -415,7 +428,7 @@ mod tests {
     fn test_respond_permission_body_empty_form_data() {
         let json = r#"{"decision": "allow_once", "form_data": {}}"#;
         let body: RespondPermissionBody = serde_json::from_str(json).unwrap();
-        assert_eq!(body.decision, "allow_once");
+        assert_eq!(body.decision, PermissionDecisionApi::AllowOnce);
         assert!(body.form_data.is_some());
         let form_data = body.form_data.unwrap();
         assert!(form_data.is_object());
@@ -431,9 +444,9 @@ mod tests {
 
     #[test]
     fn test_set_mode_body_invalid_mode() {
-        // Any string is accepted for mode (validation happens elsewhere)
+        // Unknown values are rejected at deserialization time.
         let json = r#"{"mode": "custom_mode"}"#;
-        let body: SetModeBody = serde_json::from_str(json).unwrap();
-        assert_eq!(body.mode, "custom_mode");
+        let result: Result<SetModeBody, _> = serde_json::from_str(json);
+        assert!(result.is_err());
     }
 }

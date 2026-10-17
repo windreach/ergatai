@@ -106,12 +106,12 @@ pub struct AuditQuery {
     pub agent_id: Option<String>,
     pub action: Option<String>,
     pub file_path: Option<String>,
-    #[serde(default = "default_audit_limit")]
-    pub limit: usize,
-}
-
-fn default_audit_limit() -> usize {
-    50
+    /// Maximum number of audit entries to return. Parsed defensively so that
+    /// oversized values fall back to the default, while non-numeric values are
+    /// rejected.
+    #[serde(default)]
+    #[schema(pattern = "^[0-9]+$", min_length = 1)]
+    pub limit: Option<String>,
 }
 
 /// Maximum number of audit entries returned in a single query.
@@ -124,10 +124,11 @@ const MAX_AUDIT_LIMIT: usize = 1000;
     path = "/api/v1/locks/audit",
     tag = "Locks",
     params(
+        ("workspace_id" = Option<String>, Query, description = "Filter by workspace ID"),
         ("agent_id" = Option<String>, Query, description = "Filter by agent ID"),
         ("action" = Option<String>, Query, description = "Filter by action type"),
         ("file_path" = Option<String>, Query, description = "Filter by file path"),
-        ("limit" = usize, Query, description = "Maximum number of entries (default 50, max 1000)"),
+        ("limit" = Option<usize>, Query, description = "Maximum number of entries (default 50, max 1000)"),
     ),
     responses(
         (status = 200, description = "Audit log entries"),
@@ -138,7 +139,16 @@ pub async fn list_audit(
     State(_state): State<AppState>,
     JsonQuery(query): JsonQuery<AuditQuery>,
 ) -> impl IntoResponse {
-    let limit = query.limit.min(MAX_AUDIT_LIMIT);
+    let limit = match query.limit.as_deref() {
+        None => 50,
+        Some(value) if value.bytes().all(|byte| byte.is_ascii_digit()) => value
+            .parse::<u64>()
+            .map(|parsed| parsed.min(MAX_AUDIT_LIMIT as u64) as usize)
+            .unwrap_or(MAX_AUDIT_LIMIT),
+        Some(_) => {
+            return crate::http_error::bad_request("Invalid limit").into_response();
+        }
+    };
 
     // Convert workspace_id from formatted string to Snowflake ID string
     let project_id = query
@@ -251,7 +261,7 @@ mod tests {
         assert!(query.agent_id.is_none());
         assert!(query.action.is_none());
         assert!(query.file_path.is_none());
-        assert_eq!(query.limit, 50); // default
+        assert_eq!(query.limit, None); // default
     }
 
     #[test]
@@ -260,19 +270,19 @@ mod tests {
             "agent_id": "agent-1",
             "action": "acquire_lock",
             "file_path": "src/main.rs",
-            "limit": 100
+            "limit": "100"
         }))
         .unwrap();
         assert_eq!(query.agent_id.as_deref(), Some("agent-1"));
         assert_eq!(query.action.as_deref(), Some("acquire_lock"));
         assert_eq!(query.file_path.as_deref(), Some("src/main.rs"));
-        assert_eq!(query.limit, 100);
+        assert_eq!(query.limit.as_deref(), Some("100"));
     }
 
     #[test]
     fn test_audit_query_custom_limit() {
-        let query: AuditQuery = serde_json::from_value(json!({"limit": 10})).unwrap();
-        assert_eq!(query.limit, 10);
+        let query: AuditQuery = serde_json::from_value(json!({"limit": "10"})).unwrap();
+        assert_eq!(query.limit.as_deref(), Some("10"));
     }
 
     #[test]
@@ -286,18 +296,20 @@ mod tests {
         assert!(query.agent_id.is_none());
         assert!(query.action.is_none());
         assert!(query.file_path.is_none());
-        assert_eq!(query.limit, 50);
+        assert!(query.limit.is_none()); // default is None; handler maps to 50
     }
 
     #[test]
     fn test_default_audit_limit_value() {
-        assert_eq!(default_audit_limit(), 50);
+        // Default limit is None (omitted from query); handler treats None as 50.
+        let query: AuditQuery = serde_json::from_value(json!({})).unwrap();
+        assert!(query.limit.is_none());
     }
 
     #[test]
     fn test_max_audit_limit_constant() {
-        // MAX_AUDIT_LIMIT must be >= default to avoid silently truncating normal queries
-        assert!(MAX_AUDIT_LIMIT >= default_audit_limit());
+        // MAX_AUDIT_LIMIT must be >= the handler's default (50) to avoid silently truncating normal queries
+        const _: () = assert!(MAX_AUDIT_LIMIT >= 50);
         // Clamping: any user-supplied limit above MAX_AUDIT_LIMIT is capped
         let user_limit = 999_999;
         let effective = user_limit.min(MAX_AUDIT_LIMIT);

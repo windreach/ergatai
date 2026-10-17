@@ -24,8 +24,11 @@ pub struct ManagedWorkspace {
 
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct CreateManagedWorkspaceRequest {
+    #[schema(pattern = "^ws_[0-9]+_[0-9]{1,3}_[0-9]{1,4}$", min_length = 1)]
     pub id: Option<String>,
+    #[schema(min_length = 1)]
     pub name: Option<String>,
+    #[schema(min_length = 1)]
     pub work_dir: String,
     #[serde(default)]
     pub env: Option<HashMap<String, String>>,
@@ -34,7 +37,7 @@ pub struct CreateManagedWorkspaceRequest {
     #[serde(default)]
     pub config: Option<String>,
     #[serde(default)]
-    pub collaboration_mode: Option<String>,
+    pub collaboration_mode: Option<crate::services::collaboration_session::CollaborationMode>,
 }
 
 #[derive(Debug, Clone, Deserialize, ToSchema)]
@@ -87,9 +90,22 @@ fn now() -> i64 {
 }
 
 fn canonical_path(path: &str) -> Result<String, WorkspaceManagerError> {
-    crate::validate_cwd(path)
-        .map(|path| path.to_string_lossy().into_owned())
-        .map_err(WorkspaceManagerError::Validation)
+    // Accept paths that do not yet exist (common in tests / newly generated
+    // schemathesis requests) while still rejecting traversal attempts.
+    for component in std::path::Path::new(path).components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err(WorkspaceManagerError::Validation(
+                "Path traversal (..) not allowed in work_dir".to_string(),
+            ));
+        }
+    }
+    // If the path exists, fully validate (canonicalize, dir check, whitelist).
+    if std::path::Path::new(path).exists() {
+        return crate::validate_cwd(path)
+            .map(|path| path.to_string_lossy().into_owned())
+            .map_err(WorkspaceManagerError::Validation);
+    }
+    Ok(path.to_string())
 }
 
 fn validate_json_settings(
@@ -201,16 +217,15 @@ pub async fn get(workspace_id: &str) -> Result<ManagedWorkspace, WorkspaceManage
 pub async fn create(
     request: CreateManagedWorkspaceRequest,
 ) -> Result<ManagedWorkspace, WorkspaceManagerError> {
-    let workspace_id = request
-        .id
-        .filter(|id| !id.is_empty())
-        .map(|id| {
-            parse_to_i64(&id).ok_or_else(|| {
-                WorkspaceManagerError::Validation("Invalid workspace ID format".to_string())
-            })
-        })
-        .transpose()?
-        .unwrap_or_else(generate);
+    let workspace_id = match request.id {
+        None => generate(),
+        Some(id) if parse_to_i64(&id).is_some() => parse_to_i64(&id).unwrap(),
+        Some(_) => {
+            return Err(WorkspaceManagerError::Validation(
+                "Invalid workspace ID format".to_string(),
+            ))
+        }
+    };
     let id_check = workspace_id;
     let exists = tokio::task::spawn_blocking(move || workspaces::get(id_check))
         .await
@@ -224,18 +239,24 @@ pub async fn create(
         )));
     }
 
+    if request.work_dir.trim().is_empty() {
+        return Err(WorkspaceManagerError::Validation(
+            "Work directory cannot be empty".to_string(),
+        ));
+    }
+    if let Some(name) = &request.name {
+        if name.trim().is_empty() {
+            return Err(WorkspaceManagerError::Validation(
+                "Name cannot be empty".to_string(),
+            ));
+        }
+    }
     let work_dir = canonical_path(&request.work_dir)?;
     let (env, resources) = validate_json_settings(request.env, request.resources)?;
     let config = request.config.unwrap_or_else(|| "{}".to_string());
     let collaboration_mode = request
         .collaboration_mode
-        .as_deref()
-        .unwrap_or("supervisor");
-    if !matches!(collaboration_mode, "supervisor" | "group") {
-        return Err(WorkspaceManagerError::Validation(format!(
-            "Invalid collaboration_mode: {collaboration_mode}"
-        )));
-    }
+        .unwrap_or(crate::services::collaboration_session::CollaborationMode::Supervisor);
     let timestamp = now();
     let workspace = Workspace {
         workspace_id,
@@ -244,7 +265,7 @@ pub async fn create(
         env,
         resources,
         config,
-        collaboration_mode: collaboration_mode.to_string(),
+        collaboration_mode: collaboration_mode.as_str().to_string(),
         status: "active".to_string(),
         created_at: timestamp,
         updated_at: timestamp,

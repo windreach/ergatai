@@ -25,11 +25,14 @@ pub struct ListChatsParams {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateChatRequest {
     pub name: Option<String>,
+    #[schema(min_length = 1)]
     pub workspace_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct WorktreeLookupParams {
+    #[serde(default)]
+    #[schema(default = "")]
     pub path: String,
 }
 
@@ -117,6 +120,9 @@ pub async fn list_chats(
     request_body = CreateChatRequest,
     responses(
         (status = 201, description = "Chat created", body = ChatResponse),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
+        (status = 415, description = "Unsupported Media Type", body = crate::api::ApiError),
+        (status = 422, description = "Validation error", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
@@ -140,11 +146,7 @@ pub async fn create_chat(
     {
         Ok(Ok(Some(_))) => {}
         Ok(Ok(None)) => {
-            return crate::http_error::bad_request(format!(
-                "Workspace {} not found",
-                req.workspace_id
-            ))
-            .into_response();
+            return crate::http_error::not_found("Workspace", &req.workspace_id).into_response();
         }
         Ok(Err(error)) => {
             return db_error("Failed to validate workspace", error);
@@ -194,6 +196,7 @@ pub async fn create_chat(
     params(("id" = String, Path, description = "Chat ID")),
     responses(
         (status = 200, description = "Chat detail", body = ChatResponse),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 404, description = "Chat not found", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
@@ -224,6 +227,7 @@ pub async fn get_chat(State(_state): State<AppState>, Path(id): Path<String>) ->
     params(("id" = String, Path, description = "Chat ID")),
     responses(
         (status = 204, description = "Chat archived"),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
@@ -252,6 +256,7 @@ pub async fn archive_chat(
     params(("id" = String, Path, description = "Chat ID")),
     responses(
         (status = 204, description = "Chat unarchived"),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
@@ -309,6 +314,7 @@ pub async fn delete_chat(
     tag = "Chats",
     responses(
         (status = 200, description = "Worktree lookup result"),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
@@ -348,6 +354,17 @@ pub async fn list_chat_agents(
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
+    let chat_exists = matches!(
+        tokio::task::spawn_blocking({
+            let cid = chat_id_i64;
+            move || crate::user_data_db::chats::get(cid)
+        })
+        .await,
+        Ok(Ok(Some(_)))
+    );
+    if !chat_exists {
+        return crate::http_error::not_found("Chat", &chat_id).into_response();
+    }
     let conversations = match tokio::task::spawn_blocking({
         move || crate::user_data_db::conversations::list_by_chat(chat_id_i64)
     })
@@ -411,11 +428,25 @@ pub async fn get_agent_graph(
     State(_state): State<AppState>,
     Path(chat_id): Path<String>,
 ) -> Response {
-    // 1. 查询该 chat 下所有 conversations
+    // 0. Ensure the chat still exists (deleted chats must yield 404).
     let chat_id_i64 = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
+    match tokio::task::spawn_blocking(move || crate::user_data_db::chats::get(chat_id_i64)).await {
+        Ok(Ok(Some(_))) => {}
+        Ok(Ok(None)) => {
+            return crate::http_error::not_found("Chat", &chat_id).into_response();
+        }
+        Ok(Err(e)) => return crate::http_error::internal(e, "get chat").into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Task join error: {}", e) })),
+            )
+                .into_response();
+        }
+    }
     let conversations = match tokio::task::spawn_blocking({
         move || crate::user_data_db::conversations::list_by_chat(chat_id_i64)
     })
@@ -526,12 +557,12 @@ pub struct PatchChatRequest {
 /// PATCH /api/v1/chats/{chat_id}
 #[utoipa::path(
     patch,
-    path = "/api/v1/chats/{chat_id}",
+    path = "/api/v1/chats/{id}",
     tag = "Chats",
-    params(("chat_id" = String, Path, description = "Chat ID")),
+    params(("id" = String, Path, description = "Chat ID")),
     request_body = PatchChatRequest,
     responses(
-        (status = 200, description = "Chat updated", body = Chat),
+        (status = 200, description = "Chat updated", body = ChatResponse),
         (status = 404, description = "Chat not found", body = crate::api::ApiError),
         (status = 400, description = "Invalid request", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),

@@ -24,6 +24,7 @@ static ADAPTER_CHECK_CACHE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 /// Validate agent ID format and return appropriate error response if invalid.
 /// Returns None if the ID is valid.
+/// Returns 400 (bad request) because an invalid-format ID is a client error.
 fn validate_agent_id(id: &str) -> Option<Response> {
     if !crate::api::validation::is_valid_agent_id(id) {
         return Some(
@@ -41,13 +42,24 @@ fn validate_agent_id(id: &str) -> Option<Response> {
 
 /// Create a 500 Internal Server Error response for monitoring_handler errors.
 fn monitoring_handler_error(e: &dyn std::fmt::Display) -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse {
-            error: crate::sanitize_error(e, "monitoring_handler"),
-        }),
-    )
-        .into_response()
+    let error_msg = e.to_string();
+    // If the error message contains "not found" related keywords, return 404
+    if error_msg.contains("not found") || error_msg.contains("does not exist") {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse { error: error_msg }),
+        )
+            .into_response()
+    } else {
+        // Otherwise return 500
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: crate::sanitize_error(&error_msg, "monitoring_handler"),
+            }),
+        )
+            .into_response()
+    }
 }
 
 /// Check if an adapter needs version update (cached per-process).
@@ -301,10 +313,12 @@ pub struct SpawnAgentRequest {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SendMessageRequest {
+    #[schema(min_length = 1)]
     pub message: String,
     /// Optional sender identifier. Defaults to "api" if not provided.
     /// Workflows can set this to identify themselves in message history.
     #[serde(default)]
+    #[schema(min_length = 1)]
     pub from: Option<String>,
     /// Optional message type: "request", "response", or "broadcast".
     /// Defaults to "request" if not provided.
@@ -387,6 +401,9 @@ pub struct ErrorResponse {
     tag = "Agents",
     responses(
         (status = 200, description = "List agents", body = Vec<AgentInfoResponse>),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
+        (status = 415, description = "Unsupported Media Type", body = crate::api::ApiError),
+        (status = 422, description = "Validation error", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
@@ -533,7 +550,7 @@ async fn workspace_resource_limits(
 
     let workspace = workspace.ok_or_else(|| {
         (
-            StatusCode::BAD_REQUEST,
+            StatusCode::NOT_FOUND,
             format!("Workspace {} not found", workspace_id),
         )
     })?;
@@ -785,7 +802,7 @@ pub async fn spawn_agent(
             Ok(Ok(Some(workspace_id))) => workspace_id,
             Ok(Ok(None)) => {
                 return (
-                    StatusCode::BAD_REQUEST,
+                    StatusCode::NOT_FOUND,
                     Json(ErrorResponse {
                         error: "Conversation has no workspace".to_string(),
                     }),
@@ -833,7 +850,7 @@ pub async fn spawn_agent(
             Ok(Ok(Some(workspace))) => workspace,
             Ok(Ok(None)) => {
                 return (
-                    StatusCode::BAD_REQUEST,
+                    StatusCode::NOT_FOUND,
                     Json(ErrorResponse {
                         error: "Conversation workspace not found".to_string(),
                     }),
@@ -1099,7 +1116,11 @@ pub async fn cancel_prompt(
     request_body = SendMessageRequest,
     responses(
         (status = 200, description = "Message queued or delivered"),
+        (status = 400, description = "Invalid agent ID format or request", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 404, description = "Agent not found", body = crate::api::ApiError),
+        (status = 415, description = "Unsupported Media Type", body = crate::api::ApiError),
+        (status = 422, description = "Validation error", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
@@ -1181,8 +1202,7 @@ pub async fn send_message(
                 return (
                     StatusCode::NOT_FOUND,
                     Json(serde_json::json!({
-                        "status": "error",
-                        "message": format!("Sender agent {} not found", id),
+                        "error": format!("Sender agent {} not found", id),
                     })),
                 )
                     .into_response();
@@ -2483,8 +2503,12 @@ pub async fn execute_agent_command(
     if let Some(resp) = validate_agent_id(&id) {
         return resp;
     }
-    match crate::services::agent_service::execute_agent_command(&id, &req.command, req.timeout_secs)
-        .await
+    match crate::services::agent_service::execute_agent_command(
+        &id,
+        &req.command,
+        req.timeout_secs.max(1),
+    )
+    .await
     {
         Ok(output) => {
             let parsed = parse_command_output(&req.command, &output);
@@ -3208,9 +3232,16 @@ pub async fn prompt_agent(
     Path(id): Path<String>,
     Json(body): Json<PromptAgentRequest>,
 ) -> impl IntoResponse {
+    // Filter out empty placeholder objects before validation
+    let valid_images: Vec<_> = body
+        .images
+        .iter()
+        .filter(|img| !(img.base64_data.trim().is_empty() && img.media_type.trim().is_empty()))
+        .collect();
+
     // Validate image attachments before any processing to prevent
     // memory-exhaustion from oversized or unsupported payloads.
-    for (i, image) in body.images.iter().enumerate() {
+    for (i, image) in valid_images.iter().enumerate() {
         if let Err(reason) = image.validate() {
             return (
                 StatusCode::BAD_REQUEST,
@@ -3294,7 +3325,7 @@ pub async fn prompt_agent(
             Ok(Ok(Some(workspace_id))) => workspace_id,
             Ok(Ok(None)) => {
                 return (
-                    StatusCode::BAD_REQUEST,
+                    StatusCode::NOT_FOUND,
                     Json(ErrorResponse {
                         error: "Conversation has no workspace".to_string(),
                     }),
@@ -3665,7 +3696,7 @@ pub async fn prompt_agent(
 
 // ── Suspend/Resume API ──
 
-#[derive(Debug, Default, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SuspendRequest {
     #[serde(default)]
     #[schema(value_type = String)]
@@ -3684,7 +3715,10 @@ pub struct SuspendRequest {
     responses(
         (status = 200, description = "Agent suspended"),
         (status = 400, description = "Bad request", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 404, description = "Agent not found", body = crate::api::ApiError),
+        (status = 415, description = "Unsupported Media Type", body = crate::api::ApiError),
+        (status = 422, description = "Validation error", body = crate::api::ApiError),
         (status = 503, description = "Service unavailable", body = crate::api::ApiError),
     )
 )]
@@ -3719,7 +3753,7 @@ pub async fn suspend_agent(
         )
             .into_response(),
         Err(e) => (
-            StatusCode::BAD_REQUEST,
+            StatusCode::NOT_FOUND,
             Json(crate::api::ApiError {
                 error: crate::sanitize_error(&e, "suspend_agent"),
             }),
@@ -3889,8 +3923,7 @@ pub struct AgentSseQuery {
     tag = "Agents",
     params(
         ("id" = String, Path, description = "Agent ID"),
-        ("after_sequence" = Option<i64>, Query, description = "Replay events after this sequence number"),
-    ),
+        ("after_sequence" = Option<i64>, Query, description = "Replay events after this sequence number"),    ),
     responses(
         (status = 200, description = "SSE event stream"),
         (status = 404, description = "Agent not found", body = crate::api::ApiError),
@@ -4078,9 +4111,9 @@ fn event_matches_agent(event: &crate::api::activity::ActivityEvent, agent_id: &s
 /// GET /api/v1/agents/{agent_id}
 #[utoipa::path(
     get,
-    path = "/api/v1/agents/{agent_id}",
+    path = "/api/v1/agents/{id}",
     tag = "Agents",
-    params(("agent_id" = String, Path, description = "Agent ID")),
+    params(("id" = String, Path, description = "Agent ID")),
     responses(
         (status = 200, description = "Agent info", body = AgentInfoResponse),
         (status = 404, description = "Agent not found", body = crate::api::ApiError),

@@ -31,7 +31,8 @@ pub struct TerminalSessionResponse {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct TerminalSessionListQuery {
-    pub workspace_id: String,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
     #[serde(default = "default_list_user_id")]
     pub user_id: String,
 }
@@ -89,6 +90,7 @@ fn response(error: TerminalSessionError, operation: &'static str) -> Response {
     responses(
         (status = 201, description = "Terminal session created", body = TerminalSessionResponse),
         (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 403, description = "Workspace access denied", body = crate::api::ApiError),
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
     )
@@ -116,12 +118,28 @@ pub async fn create_session(
     responses(
         (status = 200, description = "Terminal sessions and recovery metadata", body = TerminalSessionListResponse),
         (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 403, description = "Workspace access denied", body = crate::api::ApiError),
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
     )
 )]
 pub async fn list_sessions(JsonQuery(query): JsonQuery<TerminalSessionListQuery>) -> Response {
-    match terminal_sessions::list_sessions(&query.workspace_id, &query.user_id).await {
+    let workspace_id = query.workspace_id.clone().unwrap_or_default();
+    if workspace_id.trim().is_empty() {
+        return (
+            StatusCode::OK,
+            Json(TerminalSessionListResponse {
+                sessions: Vec::new(),
+            }),
+        )
+            .into_response();
+    }
+    let user_id = if query.user_id.trim().is_empty() {
+        "local".to_string()
+    } else {
+        query.user_id.clone()
+    };
+    match terminal_sessions::list_sessions(&workspace_id, &user_id).await {
         Ok(sessions) => (
             StatusCode::OK,
             Json(TerminalSessionListResponse { sessions }),
@@ -179,6 +197,7 @@ pub async fn write_input(
     responses(
         (status = 204, description = "Terminal resized"),
         (status = 400, description = "Invalid size or transport", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 404, description = "Terminal session not found", body = crate::api::ApiError),
     )
 )]

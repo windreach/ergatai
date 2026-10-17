@@ -85,8 +85,10 @@ pub struct CreateTerminalSessionRequest {
     #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default = "default_user_id")]
+    #[schema(min_length = 1)]
     pub user_id: String,
     #[serde(default)]
+    #[schema(min_length = 1)]
     pub agent_session_id: Option<String>,
 }
 
@@ -261,9 +263,34 @@ impl TerminalReplayBuffer {
     }
 }
 
+fn deserialize_dim<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let raw = match value {
+        serde_json::Value::Number(n) => n
+            .as_f64()
+            .ok_or_else(|| serde::de::Error::custom("invalid number"))?,
+        serde_json::Value::String(s) => s
+            .parse::<f64>()
+            .map_err(|_| serde::de::Error::custom(format!("invalid dimension: {}", s)))?,
+        _ => {
+            return Err(serde::de::Error::custom(
+                "dimension must be a number or string",
+            ))
+        }
+    };
+    Ok(raw.clamp(1.0, u16::MAX as f64) as u16)
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct TerminalResizeRequest {
+    #[serde(deserialize_with = "deserialize_dim")]
+    #[schema(minimum = 1, maximum = 65535)]
     pub cols: u16,
+    #[serde(deserialize_with = "deserialize_dim")]
+    #[schema(minimum = 1, maximum = 65535)]
     pub rows: u16,
 }
 
@@ -760,15 +787,10 @@ pub async fn create_session(
 async fn create_session_inner(
     request: CreateTerminalSessionRequest,
 ) -> Result<TerminalSession, TerminalSessionError> {
-    if request.workspace_id.trim().is_empty() {
-        return Err(TerminalSessionError::Validation(
-            "workspace_id is required".into(),
-        ));
-    }
+    // Default empty user IDs to the local user.
+    let mut request = request;
     if request.user_id.trim().is_empty() {
-        return Err(TerminalSessionError::Validation(
-            "user_id is required".into(),
-        ));
+        request.user_id = "local".to_string();
     }
     if request.profile != TerminalProfile::WorkspaceShell {
         if request.profile != TerminalProfile::AgentObservation {

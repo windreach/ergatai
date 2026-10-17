@@ -13,11 +13,30 @@ use ergatai_runtime::profile_registry::AgentRegistration;
 use crate::services::profile_service;
 
 /// Request to register a new agent profile
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiAgentType {
+    Acp,
+    Mcp,
+}
+
+impl ApiAgentType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Acp => "acp",
+            Self::Mcp => "mcp",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterProfileRequest {
+    #[schema(min_length = 1)]
     pub name: String,
+    #[schema(min_length = 1)]
     pub command: String,
-    pub agent_type: String,
+    #[schema(min_length = 1)]
+    pub agent_type: ApiAgentType,
     pub package_name: Option<String>,
     pub avatar_url: Option<String>,
 }
@@ -65,6 +84,7 @@ pub struct ListProfilesResponse {
     responses(
         (status = 201, description = "Agent profile registered successfully"),
         (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
         (status = 409, description = "Profile already exists", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
@@ -78,7 +98,7 @@ pub async fn register_profile(
     match profile_service::register_profile(
         request.name,
         request.command,
-        request.agent_type,
+        request.agent_type.as_str().to_string(),
         request.package_name,
         request.avatar_url,
     )
@@ -343,6 +363,27 @@ pub async fn list_with_status() -> axum::response::Response {
     )
 )]
 pub async fn install_agent(Path(id): Path<String>) -> axum::response::Response {
+    // Fast path: avoid a potentially long npm install when the agent is
+    // already installed.
+    if let Ok(profiles) = profile_service::list_profiles_with_status() {
+        if let Some(profile) = profiles
+            .iter()
+            .find(|profile| profile.id == id || profile.name == id)
+        {
+            if profile.installed {
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "status": "success",
+                        "message": format!("Agent '{}' is already installed", id),
+                        "output": ""
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     match profile_service::install_agent(&id).await {
         Ok(output) => (
             StatusCode::OK,
@@ -357,10 +398,11 @@ pub async fn install_agent(Path(id): Path<String>) -> axum::response::Response {
             let err_text = e.to_string();
 
             // 区分"资源不存在"（404）和"请求无效"（400）
-            let (status, message) = if err_text.contains("not found") {
+            let (status, message) = if err_text.contains("not found")
+                || err_text.contains("no package_name")
+                || err_text.contains("cannot be empty")
+            {
                 (StatusCode::NOT_FOUND, err_text)
-            } else if err_text.contains("no package_name") || err_text.contains("cannot be empty") {
-                (StatusCode::BAD_REQUEST, err_text)
             } else {
                 return crate::http_error::internal(e, "install_agent").into_response();
             };
@@ -408,10 +450,11 @@ pub async fn uninstall_agent(Path(id): Path<String>) -> axum::response::Response
             let err_text = e.to_string();
 
             // 区分"资源不存在"（404）和"请求无效"（400）
-            let (status, message) = if err_text.contains("not found") {
+            let (status, message) = if err_text.contains("not found")
+                || err_text.contains("no package_name")
+                || err_text.contains("cannot be empty")
+            {
                 (StatusCode::NOT_FOUND, err_text)
-            } else if err_text.contains("no package_name") || err_text.contains("cannot be empty") {
-                (StatusCode::BAD_REQUEST, err_text)
             } else {
                 return crate::http_error::internal(e, "uninstall_agent").into_response();
             };
@@ -442,7 +485,7 @@ mod tests {
         let req: RegisterProfileRequest = serde_json::from_value(json).unwrap();
         assert_eq!(req.name, "test-agent");
         assert_eq!(req.command, "python3 agent.py");
-        assert_eq!(req.agent_type, "acp");
+        assert_eq!(req.agent_type, ApiAgentType::Acp);
         assert!(req.package_name.is_none());
         assert!(req.avatar_url.is_none());
     }
