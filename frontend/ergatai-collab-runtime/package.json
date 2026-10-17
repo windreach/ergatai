@@ -1,0 +1,15 @@
+{
+  "name": "@ergatai/collab-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/main.ts",
+    "start": "bun run src/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}

@@ -1,0 +1,959 @@
+import { atom } from "jotai"
+import { atomFamily, atomWithStorage } from "jotai/utils"
+import type { SyncStorage } from "jotai/vanilla/utils/atomWithStorage"
+import { desktopViewAtom as _desktopViewAtom } from "../../features/agents/atoms"
+
+const ERGATAI_SESSION_INFO_KEY = "ergatai-session-info"
+const LEGACY_SESSION_INFO_KEY = "21st-session-info"
+
+if (
+  typeof window !== "undefined" &&
+  !window.localStorage.getItem(ERGATAI_SESSION_INFO_KEY) &&
+  window.localStorage.getItem(LEGACY_SESSION_INFO_KEY)
+) {
+  window.localStorage.setItem(
+    ERGATAI_SESSION_INFO_KEY,
+    window.localStorage.getItem(LEGACY_SESSION_INFO_KEY)!,
+  )
+}
+
+// ============================================
+// RE-EXPORT FROM FEATURES/AGENTS/ATOMS (source of truth)
+// ============================================
+
+export {
+  // Chat atoms
+  selectedAgentChatIdAtom,
+  conversationModeAtomFamily,
+  conversationModelIdAtomFamily,
+  conversationCodexModelIdAtomFamily,
+  conversationCodexThinkingAtomFamily,
+  lastSelectedModelIdAtom,
+  lastSelectedCodexModelIdAtom,
+  lastSelectedCodexThinkingAtom,
+  lastSelectedAgentIdAtom,
+  lastSelectedRepoAtom,
+  selectedProjectAtom,
+  agentsUnseenChangesAtom,
+  agentsConversationUnseenChangesAtom,
+  loadingConversationsAtom,
+  setLoading,
+  clearLoading,
+  MODEL_ID_MAP,
+  lastChatModesAtom,
+  pendingChatHistoryAtom,
+
+  // Sidebar atoms
+  agentsSidebarOpenAtom,
+  agentsSidebarWidthAtom,
+  collaborationModeAtom,
+  workspaceCollaborationModesAtom,
+  agentsConversationsSidebarModeAtom,
+  agentsConversationsSidebarWidthAtom,
+
+  // Preview atoms
+  previewPathAtomFamily,
+  viewportModeAtomFamily,
+  previewScaleAtomFamily,
+  mobileDeviceAtomFamily,
+  agentsPreviewSidebarWidthAtom,
+  agentsPreviewSidebarOpenAtom,
+
+  // Diff atoms
+  agentsDiffSidebarWidthAtom,
+  agentsChangesPanelWidthAtom,
+  agentsDiffSidebarOpenAtom,
+  agentsFocusedDiffFileAtom,
+  filteredDiffFilesAtom,
+  conversationFilesAtom,
+
+  // Archive atoms
+  archivePopoverOpenAtom,
+  archiveSearchQueryAtom,
+  archiveRepositoryFilterAtom,
+
+  // UI state
+  agentsMobileViewModeAtom,
+
+  // Debug mode
+  agentsDebugModeAtom,
+
+  // Todos
+  currentTodosAtomFamily,
+
+  // AskUserQuestion
+  pendingUserQuestionsAtom,
+
+  // Plan approval
+  pendingPlanApprovalsAtom,
+
+  // PR/Review/Conflict messages
+  pendingPrMessageAtom,
+  pendingReviewMessageAtom,
+  pendingConflictResolutionMessageAtom,
+
+  // Types
+  type SavedRepo,
+  type SelectedProject,
+  type AgentsMobileViewMode,
+  type AgentsDebugMode,
+  type ConversationFileChange,
+  type AgentMode,
+  type CollaborationMode,
+  type CodexThinkingPreference,
+  type PendingChatHistory,
+
+  // Mode utilities
+  AGENT_MODES,
+  getNextMode,
+
+  desktopViewAtom,
+  type DesktopView,
+} from "../../features/agents/atoms"
+
+// ============================================
+// TEAM ATOMS (unique to lib/atoms)
+// ============================================
+
+export const selectedTeamIdAtom = atomWithStorage<string | null>(
+  "agents:selectedTeamId",
+  null,
+  undefined,
+  { getOnInit: true },
+)
+
+export const createTeamDialogOpenAtom = atom<boolean>(false)
+
+// ============================================
+// MULTI-SELECT ATOMS - Chats (unique to lib/atoms)
+// ============================================
+
+export const selectedAgentChatIdsAtom = atom<Set<string>>(new Set<string>())
+
+export const isAgentMultiSelectModeAtom = atom((get) => {
+  return get(selectedAgentChatIdsAtom).size > 0
+})
+
+export const selectedAgentChatsCountAtom = atom((get) => {
+  return get(selectedAgentChatIdsAtom).size
+})
+
+export const toggleAgentChatSelectionAtom = atom(
+  null,
+  (get, set, chatId: string) => {
+    const currentSet = get(selectedAgentChatIdsAtom)
+    const newSet = new Set(currentSet)
+    if (newSet.has(chatId)) {
+      newSet.delete(chatId)
+    } else {
+      newSet.add(chatId)
+    }
+    set(selectedAgentChatIdsAtom, newSet)
+  },
+)
+
+export const selectAllAgentChatsAtom = atom(
+  null,
+  (_get, set, chatIds: string[]) => {
+    set(selectedAgentChatIdsAtom, new Set(chatIds))
+  },
+)
+
+export const clearAgentChatSelectionAtom = atom(null, (_get, set) => {
+  set(selectedAgentChatIdsAtom, new Set())
+})
+
+// ============================================
+// MULTI-SELECT ATOMS - Conversations (unique to lib/atoms)
+// ============================================
+
+export const selectedConversationIdsAtom = atom<Set<string>>(new Set<string>())
+
+export const isConversationMultiSelectModeAtom = atom((get) => {
+  return get(selectedConversationIdsAtom).size > 0
+})
+
+export const selectedConversationsCountAtom = atom((get) => {
+  return get(selectedConversationIdsAtom).size
+})
+
+export const toggleConversationSelectionAtom = atom(
+  null,
+  (get, set, conversationId: string) => {
+    const currentSet = get(selectedConversationIdsAtom)
+    const newSet = new Set(currentSet)
+    if (newSet.has(conversationId)) {
+      newSet.delete(conversationId)
+    } else {
+      newSet.add(conversationId)
+    }
+    set(selectedConversationIdsAtom, newSet)
+  },
+)
+
+export const selectAllConversationsAtom = atom(
+  null,
+  (_get, set, conversationIds: string[]) => {
+    set(selectedConversationIdsAtom, new Set(conversationIds))
+  },
+)
+
+export const clearConversationSelectionAtom = atom(null, (_get, set) => {
+  set(selectedConversationIdsAtom, new Set())
+})
+
+// ============================================
+// DIALOG ATOMS (unique to lib/atoms)
+// ============================================
+
+// Settings dialog
+export type SettingsTab =
+  | "profile"
+  | "appearance"
+  | "preferences"
+  | "projects"
+  | "worktrees"
+  | "debug"
+  | "keyboard"
+export const agentsSettingsDialogActiveTabAtom = atom<SettingsTab>("preferences")
+// Derived atom: maps settings open/close to desktopView navigation
+export const agentsSettingsDialogOpenAtom = atom(
+  (get) => get(_desktopViewAtom) === "settings",
+  (_get, set, open: boolean) => {
+    set(_desktopViewAtom, open ? "settings" : null)
+  }
+)
+
+export type CustomClaudeConfig = {
+  model: string
+  token: string
+  baseUrl: string
+}
+
+// Model profile system - support multiple configs
+export type ModelProfile = {
+  id: string
+  name: string
+  config: CustomClaudeConfig
+  isOffline?: boolean // Mark as offline/Ollama profile
+}
+
+// Selected Ollama model for offline mode
+export const selectedOllamaModelAtom = atomWithStorage<string | null>(
+  "agents:selected-ollama-model",
+  null, // null = use recommended model
+  undefined,
+  { getOnInit: true },
+)
+
+// Ollama base URL - dynamically fetched from main process via tRPC
+// Defaults to localhost:11434, but can be configured via OLLAMA_URL env var in main process
+export const ollamaBaseUrlAtom = atomWithStorage<string>(
+  "agents:ollama-base-url",
+  "http://localhost:11434",
+  undefined,
+  { getOnInit: true },
+)
+
+const conversationOllamaModelsStorageAtom = atomWithStorage<Record<string, string | null>>(
+  "agents:conversation-ollama-models",
+  {},
+  undefined,
+  { getOnInit: true },
+)
+
+export const conversationOllamaModelAtomFamily = atomFamily((conversationId: string) =>
+  atom(
+    (get) => {
+      if (!conversationId) return get(selectedOllamaModelAtom)
+      return get(conversationOllamaModelsStorageAtom)[conversationId] ?? get(selectedOllamaModelAtom)
+    },
+    (get, set, newModelName: string | null) => {
+      if (!conversationId) {
+        set(selectedOllamaModelAtom, newModelName)
+        return
+      }
+      const current = get(conversationOllamaModelsStorageAtom)
+      if (current[conversationId] === newModelName) return
+      set(conversationOllamaModelsStorageAtom, {
+        ...current,
+        [conversationId]: newModelName,
+      })
+    },
+  ),
+)
+
+// Helper to get offline profile with selected model
+// Note: This is now a function that takes the baseUrl as a parameter
+// Use getOfflineProfileAtom for reactive access to the configured URL
+export const getOfflineProfile = (modelName?: string | null, baseUrl?: string): ModelProfile => ({
+  id: 'offline-ollama',
+  name: 'Offline (Ollama)',
+  isOffline: true,
+  config: {
+    model: modelName || 'qwen2.5-coder:7b',
+    token: 'ollama',
+    baseUrl: baseUrl || 'http://localhost:11434',
+  },
+})
+
+// Atom-based offline profile that reads the configured Ollama URL
+export const offlineProfileAtom = atom((get) => {
+  const baseUrl = get(ollamaBaseUrlAtom)
+  return getOfflineProfile(null, baseUrl)
+})
+
+// Legacy: Predefined offline profile for Ollama (uses default URL)
+// For dynamic URL, use offlineProfileAtom instead
+export const OFFLINE_PROFILE: ModelProfile = {
+  id: 'offline-ollama',
+  name: 'Offline (Ollama)',
+  isOffline: true,
+  config: {
+    model: 'qwen2.5-coder:7b',
+    token: 'ollama',
+    baseUrl: 'http://localhost:11434',
+  },
+}
+
+// Legacy single config (deprecated, kept for backwards compatibility)
+export const customClaudeConfigAtom = atomWithStorage<CustomClaudeConfig>(
+  "agents:claude-custom-config",
+  {
+    model: "",
+    token: "",
+    baseUrl: "",
+  },
+  undefined,
+  { getOnInit: true },
+)
+
+// OpenAI API key for voice transcription (for users without paid subscription)
+export const openaiApiKeyAtom = atomWithStorage<string>(
+  "agents:openai-api-key",
+  "",
+  undefined,
+  { getOnInit: true },
+)
+
+// New: Model profiles storage
+export const modelProfilesAtom = atomWithStorage<ModelProfile[]>(
+  "agents:model-profiles",
+  [OFFLINE_PROFILE], // Start with offline profile
+  undefined,
+  { getOnInit: true },
+)
+
+// Active profile ID (null = use Claude Code default)
+export const activeProfileIdAtom = atomWithStorage<string | null>(
+  "agents:active-profile-id",
+  null,
+  undefined,
+  { getOnInit: true },
+)
+
+// Auto-fallback to offline mode when internet is unavailable
+export const autoOfflineModeAtom = atomWithStorage<boolean>(
+  "agents:auto-offline-mode",
+  true, // Enabled by default
+  undefined,
+  { getOnInit: true },
+)
+
+// Simulate offline mode for testing (debug feature)
+export const simulateOfflineAtom = atomWithStorage<boolean>(
+  "agents:simulate-offline",
+  false, // Disabled by default
+  undefined,
+  { getOnInit: true },
+)
+
+// Show offline mode UI (debug feature - enables offline functionality visibility)
+export const showOfflineModeFeaturesAtom = atomWithStorage<boolean>(
+  "agents:show-offline-mode-features",
+  false, // Hidden by default
+  undefined,
+  { getOnInit: true },
+)
+
+// Network status (updated from main process)
+export const networkOnlineAtom = atom<boolean>(true)
+
+export function normalizeCustomClaudeConfig(
+  config: CustomClaudeConfig,
+): CustomClaudeConfig | undefined {
+  const model = config.model.trim()
+  const token = config.token.trim()
+  const baseUrl = config.baseUrl.trim()
+
+  if (!model || !token || !baseUrl) return undefined
+
+  return { model, token, baseUrl }
+}
+
+// Get active config (considering network status and auto-fallback)
+export const activeConfigAtom = atom((get) => {
+  const activeProfileId = get(activeProfileIdAtom)
+  const profiles = get(modelProfilesAtom)
+  const legacyConfig = get(customClaudeConfigAtom)
+  const networkOnline = get(networkOnlineAtom)
+  const autoOffline = get(autoOfflineModeAtom)
+
+  // If auto-offline enabled and no internet, use offline profile
+  if (!networkOnline && autoOffline) {
+    const offlineProfile = profiles.find(p => p.isOffline)
+    if (offlineProfile) {
+      return offlineProfile.config
+    }
+  }
+
+  // If specific profile is selected, use it
+  if (activeProfileId) {
+    const profile = profiles.find(p => p.id === activeProfileId)
+    if (profile) {
+      return profile.config
+    }
+  }
+
+  // Fallback to legacy config if set
+  const normalized = normalizeCustomClaudeConfig(legacyConfig)
+  if (normalized) {
+    return normalized
+  }
+
+  // No custom config
+  return undefined
+})
+
+// Preferences - Extended Thinking
+// When enabled, Claude will use extended thinking for deeper reasoning (128K tokens)
+// Note: Extended thinking disables response streaming
+export const extendedThinkingEnabledAtom = atomWithStorage<boolean>(
+  "preferences:extended-thinking-enabled",
+  true,
+  undefined,
+  { getOnInit: true },
+)
+
+// Preferences - History (Rollback)
+// When enabled, allow rollback to previous assistant messages
+export const historyEnabledAtom = atomWithStorage<boolean>(
+  "preferences:history-enabled",
+  false, // Default OFF — beta feature
+  undefined,
+  { getOnInit: true },
+)
+
+// Preferences - Sound Notifications
+// When enabled, play a sound when agent completes work (if not viewing the chat)
+export const soundNotificationsEnabledAtom = atomWithStorage<boolean>(
+  "preferences:sound-notifications-enabled",
+  true,
+  undefined,
+  { getOnInit: true },
+)
+
+// Preferences - Desktop Notifications (Windows)
+// When enabled, show Windows desktop notification when agent completes work
+export const desktopNotificationsEnabledAtom = atomWithStorage<boolean>(
+  "preferences:desktop-notifications-enabled",
+  true,
+  undefined,
+  { getOnInit: true },
+)
+
+// Preferences - Notify When Focused
+// When enabled, show desktop notifications even when the app window is focused
+// (e.g. when working in a different chat). When disabled, only notify when the app is in the background.
+export const notifyWhenFocusedAtom = atomWithStorage<boolean>(
+  "preferences:notify-when-focused",
+  false,
+  undefined,
+  { getOnInit: true },
+)
+
+// Preferences - Windows Window Frame Style
+// When true, uses native frame (standard Windows title bar)
+// When false, uses frameless window (dark custom title bar)
+// Only applies on Windows, requires app restart to take effect
+export const useNativeFrameAtom = atomWithStorage<boolean>(
+  "preferences:windows-use-native-frame",
+  false, // Default: frameless (dark title bar)
+  undefined,
+  { getOnInit: true },
+)
+
+// Preferences - Analytics Opt-out
+// When true, user has opted out of analytics tracking
+export const analyticsOptOutAtom = atomWithStorage<boolean>(
+  "preferences:analytics-opt-out",
+  false, // Default to opt-in (false means not opted out)
+  undefined,
+  { getOnInit: true },
+)
+
+// Beta: Enable git features in diff sidebar (commit, staging, file selection)
+// When enabled, shows checkboxes for file selection and commit UI in diff sidebar
+// When disabled, shows simple file list with "Create PR" button
+export const betaGitFeaturesEnabledAtom = atomWithStorage<boolean>(
+  "preferences:beta-git-features-enabled",
+  false, // Default OFF
+  undefined,
+  { getOnInit: true },
+)
+
+// Kanban board view
+// When enabled, shows Kanban button in sidebar to view workspaces as a board
+export const betaKanbanEnabledAtom = atomWithStorage<boolean>(
+  "preferences:beta-kanban-enabled",
+  true, // Default ON — graduated from beta
+  undefined,
+  { getOnInit: true },
+)
+
+// Beta: Enable Tasks functionality in Claude Code SDK
+// When enabled (default), the SDK exposes task-related tools (TodoWrite, Task agents)
+export const enableTasksAtom = atomWithStorage<boolean>(
+  "preferences:enable-tasks",
+  true, // Default ON
+  undefined,
+  { getOnInit: true },
+)
+
+// Beta: Enable Early Access Updates
+// When enabled, the app checks for beta releases in addition to stable releases
+export const betaUpdatesEnabledAtom = atomWithStorage<boolean>(
+  "preferences:beta-updates-enabled",
+  false, // Default OFF - only stable releases
+  undefined,
+  { getOnInit: true },
+)
+
+// Preferences - Ctrl+Tab Quick Switch Target
+// When "workspaces" (default), Ctrl+Tab switches between workspaces, and Opt+Ctrl+Tab switches between agents
+// When "agents", Ctrl+Tab switches between agents, and Opt+Ctrl+Tab switches between workspaces
+export type CtrlTabTarget = "workspaces" | "agents"
+export const ctrlTabTargetAtom = atomWithStorage<CtrlTabTarget>(
+  "preferences:ctrl-tab-target",
+  "workspaces", // Default: Ctrl+Tab switches workspaces, Opt+Ctrl+Tab switches agents
+  undefined,
+  { getOnInit: true },
+)
+
+// Preferences - Auto-advance after archive
+// Controls where to navigate after archiving a workspace
+export type AutoAdvanceTarget = "next" | "previous" | "close"
+export const autoAdvanceTargetAtom = atomWithStorage<AutoAdvanceTarget>(
+  "preferences:auto-advance-target",
+  "next", // Default: go to next workspace
+  undefined,
+  { getOnInit: true },
+)
+
+// Preferences - Default Agent Mode
+// Controls what mode new chats/conversations start in (Plan = read-only, Agent = can edit)
+// Re-using AgentMode type from features/agents/atoms
+import { type AgentMode as AgentModeType } from "../../features/agents/atoms"
+
+// Migration: convert old isPlanMode boolean to new defaultAgentMode string
+// This runs once when the module loads
+if (typeof window !== "undefined") {
+  const oldKey = "agents:isPlanMode"
+  const newKey = "preferences:default-agent-mode"
+  const oldValue = localStorage.getItem(oldKey)
+  if (oldValue !== null && localStorage.getItem(newKey) === null) {
+    // Old value was JSON boolean, new value is JSON string
+    const wasInPlanMode = oldValue === "true"
+    localStorage.setItem(newKey, JSON.stringify(wasInPlanMode ? "plan" : "agent"))
+    localStorage.removeItem(oldKey)
+    console.log("[atoms] Migrated isPlanMode to defaultAgentMode:", wasInPlanMode ? "plan" : "agent")
+  }
+}
+
+const defaultAgentModeStorage: SyncStorage<AgentModeType> = {
+  getItem: (_key, initialValue) => {
+    try {
+      const storedValue = localStorage.getItem("preferences:default-agent-mode")
+      const parsedValue: unknown = JSON.parse(storedValue ?? "null")
+      if (parsedValue !== "plan" && parsedValue !== "agent") {
+        return initialValue
+      }
+
+      return parsedValue
+    } catch {
+      return initialValue
+    }
+  },
+  setItem: (_key, value) => {
+    localStorage.setItem("preferences:default-agent-mode", JSON.stringify(value))
+  },
+  removeItem: (_key) => {
+    localStorage.removeItem("preferences:default-agent-mode")
+  },
+}
+
+export const defaultAgentModeAtom = atomWithStorage<AgentModeType>(
+  "preferences:default-agent-mode",
+  "agent",
+  defaultAgentModeStorage,
+  { getOnInit: true },
+)
+
+// Preferences - VS Code Code Themes
+// Selected themes for code syntax highlighting (separate for light/dark UI themes)
+export const vscodeCodeThemeLightAtom = atomWithStorage<string>(
+  "preferences:vscode-code-theme-light",
+  "github-light",
+  undefined,
+  { getOnInit: true },
+)
+
+export const vscodeCodeThemeDarkAtom = atomWithStorage<string>(
+  "preferences:vscode-code-theme-dark",
+  "github-dark",
+  undefined,
+  { getOnInit: true },
+)
+
+// ============================================
+// FULL VS CODE THEME ATOMS
+// ============================================
+
+/**
+ * Full VS Code theme data type
+ * Contains colors for UI, terminal, and tokenColors for syntax highlighting
+ */
+export type VSCodeFullTheme = {
+  id: string
+  name: string
+  type: "light" | "dark"
+  colors: Record<string, string> // UI and terminal colors
+  tokenColors?: any[] // Syntax highlighting rules
+  semanticHighlighting?: boolean // Enable semantic highlighting
+  semanticTokenColors?: Record<string, any> // Semantic token color overrides
+  source: "builtin" | "imported" | "discovered"
+  path?: string // File path for imported/discovered themes
+}
+
+/**
+ * Selected full theme ID
+ * When null, uses system light/dark mode with the themes specified in systemLightThemeIdAtom/systemDarkThemeIdAtom
+ */
+export const selectedFullThemeIdAtom = atomWithStorage<string | null>(
+  "preferences:selected-full-theme-id",
+  null, // null means use system default
+  undefined,
+  { getOnInit: true },
+)
+
+/**
+ * Theme to use when system is in light mode (only used when selectedFullThemeIdAtom is null)
+ */
+export const systemLightThemeIdAtom = atomWithStorage<string>(
+  "preferences:system-light-theme-id",
+  "ergatai-light", // Default light theme
+  undefined,
+  { getOnInit: true },
+)
+
+/**
+ * Theme to use when system is in dark mode (only used when selectedFullThemeIdAtom is null)
+ */
+export const systemDarkThemeIdAtom = atomWithStorage<string>(
+  "preferences:system-dark-theme-id",
+  "ergatai-dark", // Default dark theme
+  undefined,
+  { getOnInit: true },
+)
+
+/**
+ * Show workspace icon in sidebar
+ * When disabled, hides the project icon and moves loader/status indicators to the right of the name
+ */
+export const showWorkspaceIconAtom = atomWithStorage<boolean>(
+  "preferences:show-workspace-icon",
+  false, // Hidden by default
+  undefined,
+  { getOnInit: true },
+)
+
+/**
+ * Always expand to-do list
+ * When enabled, to-do lists are always shown expanded (full list view)
+ * When disabled (default), to-do lists start collapsed and can be expanded manually
+ */
+export const alwaysExpandTodoListAtom = atomWithStorage<boolean>(
+  "preferences:always-expand-todo-list",
+  false, // Collapsed by default
+  undefined,
+  { getOnInit: true },
+)
+
+/**
+ * Cached full theme data for the selected theme
+ * This is populated when a theme is selected and used for applying CSS variables
+ */
+export const fullThemeDataAtom = atom<VSCodeFullTheme | null>(null)
+
+/**
+ * Imported themes from VS Code extensions
+ * Persisted in localStorage, loaded on app start
+ */
+export const importedThemesAtom = atomWithStorage<VSCodeFullTheme[]>(
+  "preferences:imported-themes",
+  [],
+  undefined,
+  { getOnInit: true },
+)
+
+/**
+ * All available full themes (built-in + imported + discovered)
+ * This is a derived atom that combines all theme sources
+ */
+export const allFullThemesAtom = atom<VSCodeFullTheme[]>((get) => {
+  // This will be populated by the theme provider
+  // For now, return empty - will be set imperatively
+  return []
+})
+
+// ============================================
+// CUSTOM HOTKEYS CONFIGURATION
+// ============================================
+
+import type { CustomHotkeysConfig } from "../hotkeys/types"
+export type { CustomHotkeysConfig }
+
+/**
+ * Custom hotkey overrides storage
+ * Maps action IDs to custom hotkey strings (or null for default)
+ */
+export const customHotkeysAtom = atomWithStorage<CustomHotkeysConfig>(
+  "preferences:custom-hotkeys",
+  { version: 1, bindings: {} },
+  undefined,
+  { getOnInit: true },
+)
+
+/**
+ * Currently recording hotkey for action (UI state)
+ * null when not recording
+ */
+export const recordingHotkeyForActionAtom = atom<string | null>(null)
+
+// Login modal (shown when Claude Code auth fails)
+export const agentsLoginModalOpenAtom = atom<boolean>(false)
+
+export type ClaudeLoginModalConfig = {
+  hideCustomModelSettingsLink: boolean
+  autoStartAuth: boolean
+}
+
+export const claudeLoginModalConfigAtom = atom<ClaudeLoginModalConfig>({
+  hideCustomModelSettingsLink: false,
+  autoStartAuth: false,
+})
+
+// Help popover
+export const agentsHelpPopoverOpenAtom = atom<boolean>(false)
+
+// Quick switch dialog - Agents
+export const agentsQuickSwitchOpenAtom = atom<boolean>(false)
+export const agentsQuickSwitchSelectedIndexAtom = atom<number>(0)
+
+// Quick switch dialog - Conversations
+export const conversationsQuickSwitchOpenAtom = atom<boolean>(false)
+export const conversationsQuickSwitchSelectedIndexAtom = atom<number>(0)
+
+// ============================================
+// UPDATE ATOMS
+// ============================================
+
+export type UpdateStatus =
+  | "idle"
+  | "checking"
+  | "available"
+  | "downloading"
+  | "ready"
+  | "error"
+
+export type UpdateState = {
+  status: UpdateStatus
+  version?: string
+  progress?: number // 0-100
+  bytesPerSecond?: number
+  transferred?: number
+  total?: number
+  error?: string
+}
+
+export const updateStateAtom = atom<UpdateState>({ status: "idle" })
+
+// Track if app was just updated (to show "What's New" banner)
+// This is set to true when app launches with a new version, reset when user dismisses
+export const justUpdatedAtom = atom<boolean>(false)
+
+// Store the version that triggered the "just updated" state
+export const justUpdatedVersionAtom = atom<string | null>(null)
+
+// Legacy atom for backwards compatibility (deprecated)
+export type UpdateInfo = {
+  version: string
+  downloadUrl: string
+  releaseNotes?: string
+}
+
+export const updateInfoAtom = atom<UpdateInfo | null>(null)
+
+// ============================================
+// DESKTOP/FULLSCREEN STATE ATOMS
+// ============================================
+
+// Whether app is running in Electron desktop environment
+export const isDesktopAtom = atom<boolean>(false)
+
+// Fullscreen state - null means not initialized yet
+// null = not yet loaded, false = not fullscreen, true = fullscreen
+export const isFullscreenAtom = atom<boolean | null>(null)
+
+// ============================================
+// ONBOARDING ATOMS
+// ============================================
+
+// Billing method selected during onboarding
+// "claude-subscription" = use Claude Pro/Max via OAuth
+// "api-key" = use Anthropic API key directly
+// "custom-model" = use custom base URL and model (e.g. for proxies or alternative providers)
+// null = not yet selected (show billing method selection screen)
+export type BillingMethod =
+  | "claude-subscription"
+  | "api-key"
+  | "custom-model"
+  | null
+
+export const billingMethodAtom = atomWithStorage<BillingMethod>(
+  "onboarding:billing-method",
+  null,
+  undefined,
+  { getOnInit: true },
+)
+
+// Whether user has completed Anthropic OAuth during onboarding
+// This is used to show the onboarding screen after Anthropic sign-in
+// Reset on logout
+export const anthropicOnboardingCompletedAtom = atomWithStorage<boolean>(
+  "onboarding:anthropic-completed",
+  false,
+  undefined,
+  { getOnInit: true },
+)
+
+// Whether user has completed API key configuration during onboarding
+// Only relevant when billingMethod is "api-key"
+export const apiKeyOnboardingCompletedAtom = atomWithStorage<boolean>(
+  "onboarding:api-key-completed",
+  false,
+  undefined,
+  { getOnInit: true },
+)
+
+// ============================================
+// MODEL VISIBILITY (hide specific models from selector)
+// ============================================
+
+// Set of model IDs that are hidden from the model selector dropdown
+// Models are shown by default; only hidden models are stored
+export const hiddenModelsAtom = atomWithStorage<string[]>(
+  "preferences:hidden-models-v4",
+  [],
+  undefined,
+  { getOnInit: true },
+)
+
+// ============================================
+// SESSION INFO ATOMS (MCP, Plugins, Tools)
+// ============================================
+
+export type MCPServerStatus = "connected" | "failed" | "pending" | "needs-auth"
+
+export type MCPServerIcon = {
+  src: string
+  mimeType?: string
+  sizes?: string[]
+  theme?: "light" | "dark"
+}
+
+export type MCPServer = {
+  name: string
+  status: MCPServerStatus
+  serverInfo?: {
+    name: string
+    version: string
+    icons?: MCPServerIcon[]
+  }
+  error?: string
+}
+
+export type SessionInfo = {
+  tools: string[]
+  mcpServers: MCPServer[]
+  plugins: { name: string; path: string }[]
+  skills: string[]
+}
+
+// Session info from SDK init message
+// Contains MCP servers, plugins, available tools, and skills
+// Persisted to localStorage so MCP tools are visible after page refresh
+// Updated when a new chat session starts
+export const sessionInfoAtom = atomWithStorage<SessionInfo | null>(
+  ERGATAI_SESSION_INFO_KEY,
+  null,
+  undefined,
+  { getOnInit: true },
+)
+
+// ============================================
+// DEV TOOLS UNLOCK (Hidden feature)
+// ============================================
+
+// DevTools unlock state (hidden feature - click Beta tab 5 times to enable)
+// Persisted per-session only (not in localStorage for security)
+export const devToolsUnlockedAtom = atom<boolean>(false)
+
+// ============================================
+// PREFERRED EDITOR
+// ============================================
+
+import type { ExternalApp } from "../../../shared/external-apps"
+
+export const preferredEditorAtom = atomWithStorage<ExternalApp>(
+  "preferences:preferred-editor",
+  "cursor",
+  undefined,
+  { getOnInit: true },
+)
+
+// ============================================
+// PERMISSION APPROVAL DIALOG ATOMS
+// ============================================
+
+export type PendingMcpServerApproval = {
+  kind: "mcp-server"
+  pluginSource: string
+  serverName: string
+  identifier: string
+  config: Record<string, unknown>
+}
+
+export type PendingToolApproval = {
+  kind: "tool-approval"
+  toolUseId: string
+  toolName: string
+  title?: string
+  description?: string
+  conversationId?: string
+  input?: unknown
+}
+
+// MCP server identifiers denied during this session, so the watcher
+// does not immediately re-prompt for them
+export const deniedMcpIdentifiersAtom = atom<Set<string>>(new Set<string>())

@@ -78,10 +78,23 @@ coverage.lcov
 lcov.info
 *.lcov
 
-# Frontend (separate repository)
-frontend/
-
 # Test artifacts and generated files
 .schemathesis/
 openapi.json
 CODE_REVIEW_SUMMARY.md
+
+# Frontend (Electron + React)
+frontend/node_modules/
+frontend/out/
+frontend/release/
+frontend/coverage/
+frontend/test-results/
+frontend/.ergatai/
+frontend/logs/
+frontend/.ruff_cache/
+frontend/.schemathesis/
+frontend/.hypothesis/
+frontend/dist/
+frontend/.env.local
+frontend/.env.*.local
+frontend/.codebase-memory/
