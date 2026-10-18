@@ -1296,27 +1296,6 @@ export const ergataiRouter = router({
       }
     }),
 
-  /** Get agent tool calls */
-  getAgentToolCalls: publicProcedure
-    .input(z.object({ agentId: z.string() }))
-    .query(async ({ input }) => {
-      return ergataiFetch(`/api/v1/agents/${input.agentId}/tool-calls`)
-    }),
-
-  /** Get agent thoughts */
-  getAgentThoughts: publicProcedure
-    .input(z.object({ agentId: z.string() }))
-    .query(async ({ input }) => {
-      return ergataiFetch(`/api/v1/agents/${input.agentId}/thoughts`)
-    }),
-
-  /** Get agent usage stats */
-  getAgentUsage: publicProcedure
-    .input(z.object({ agentId: z.string() }))
-    .query(async ({ input }) => {
-      return ergataiFetch(`/api/v1/agents/${input.agentId}/usage`)
-    }),
-
   // ── Projects Endpoints ──────────────────────────────────────────────────
   // Note: Backend projects are workspace-scoped. These endpoints aggregate
   // across all managed workspaces to provide a "standalone" project view.
@@ -2071,34 +2050,6 @@ export const ergataiRouter = router({
       }
     }),
 
-  /** Get agent historical output (persisted) */
-  getAgentOutput: publicProcedure
-    .input(z.object({ agentId: z.string() }))
-    .query(async ({ input }) => {
-      return ergataiFetch(`/api/v1/agents/${input.agentId}/outputs/history`)
-    }),
-
-  /** Get age of the agent's last structured activity */
-  getAgentLastOutput: publicProcedure
-    .input(z.object({ agentId: z.string() }))
-    .query(async ({ input }) => {
-      return ergataiFetch(`/api/v1/agents/${input.agentId}/last-activity`)
-    }),
-
-  /** Get agent exit code */
-  getAgentExitCode: publicProcedure
-    .input(z.object({ agentId: z.string() }))
-    .query(async ({ input }) => {
-      return ergataiFetch(`/api/v1/agents/${input.agentId}/exit-code`)
-    }),
-
-  /** Get agent PID */
-  getAgentPid: publicProcedure
-    .input(z.object({ agentId: z.string() }))
-    .query(async ({ input }) => {
-      return ergataiFetch(`/api/v1/agents/${input.agentId}/pid`)
-    }),
-
   /** Get agent sessions */
   listAgentSessions: publicProcedure
     .input(z.object({ agentId: z.string() }))
@@ -2531,13 +2482,6 @@ export const ergataiRouter = router({
   listSuspendedAgents: publicProcedure.query(async () => {
     return ergataiFetch("/api/v1/agents/suspended")
   }),
-
-  /** Get agent current output (real-time accumulator) */
-  getAgentCurrentOutput: publicProcedure
-    .input(z.object({ agentId: z.string() }))
-    .query(async ({ input }) => {
-      return ergataiFetch(`/api/v1/agents/${input.agentId}/outputs/current`)
-    }),
 
   /** Get agent events stream */
   getAgentEvents: publicProcedure

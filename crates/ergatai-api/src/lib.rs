@@ -359,14 +359,6 @@ pub fn build_rest_app(state: AppState) -> Router {
         )
         .route("/api/v1/agents/{id}/prompt", post(api::agents::prompt_agent))
         // ACP monitoring endpoints
-        .route(
-            "/api/v1/agents/{id}/thoughts",
-            get(api::agents::get_agent_thoughts),
-        )
-        .route(
-            "/api/v1/agents/{id}/tool-calls",
-            get(api::agents::get_agent_tool_calls),
-        )
         .route("/api/v1/agents/{id}/plan", get(api::agents::get_agent_plan))
         .route(
             "/api/v1/agents/{id}/elicitations",
@@ -403,27 +395,6 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/agents/{id}/sessions/{session_id}",
             delete(api::agents::delete_agent_session),
-        )
-        .route(
-            "/api/v1/agents/{id}/usage",
-            get(api::agents::get_agent_usage),
-        )
-        .route(
-            "/api/v1/agents/{id}/outputs/history",
-            get(api::agents::get_agent_output),
-        )
-        .route(
-            "/api/v1/agents/{id}/last-activity",
-            get(api::agents::get_agent_last_activity),
-        )
-        .route(
-            "/api/v1/agents/{id}/exit-code",
-            get(api::agents::get_agent_exit_code),
-        )
-        .route("/api/v1/agents/{id}/pid", get(api::agents::get_agent_pid))
-        .route(
-            "/api/v1/agents/{id}/outputs/current",
-            get(api::agents::get_agent_current_output),
         )
         // Agent event stream (SSE)
         .route(
