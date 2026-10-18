@@ -30,7 +30,7 @@ import {
   deleteConversation,
   getConversation,
   listConversationMessages,
-  listWorkspaceConversations,
+  listAllConversations,
   updateConversation,
   listConversationMessages as listMessages,
   type BackendMessage,
@@ -86,8 +86,8 @@ function mapBackendConversation(conversation: BackendConversation): MappedConver
   return {
     id: conversation.id,
     name: conversation.name,
-    chatId: conversation.id,
-    sessionId: null, // Conversations don't have session_id in the new model
+    chatId: conversation.chat_id,
+    sessionId: conversation.collaboration_session_id,
     mode: conversation.mode,
     messages: "[]", // Messages are now in a separate table
     createdAt: new Date(conversation.created_at * 1000),
@@ -119,14 +119,11 @@ async function listWorkspaceChatCandidates(workspaceId: string): Promise<ChatRec
 async function findChatForConversation(
   conversation: BackendConversation,
 ): Promise<ChatRecord | null> {
-  if (!conversation.workspace_id) return null
+  // Backend now returns chat_id directly on conversations
+  if (!conversation.chat_id) return null
 
-  const chatCandidates = await listWorkspaceChatCandidates(conversation.workspace_id)
-  if (conversation.id.startsWith("chat_")) {
-    return chatCandidates.find((chat) => chat.id === conversation.id) ?? null
-  }
-
-  return findLegacyChatOwner(chatCandidates, conversation)
+  const chatCandidates = await listChats()
+  return chatCandidates.find((chat) => chat.id === conversation.chat_id) ?? null
 }
 
 async function listConversationsForChat(chat: {
@@ -134,24 +131,16 @@ async function listConversationsForChat(chat: {
   workspaceId: string | null
   createdAt: Date
 }): Promise<BackendConversation[]> {
-  // Backend no longer supports listing child conversations
-  // Return empty array as child conversations are no longer available
-  const childConversations: BackendConversation[] = []
-  if (!chat.workspaceId) return childConversations
+  // Fetch all conversations and filter by chat_id (backend now returns chat_id on conversations)
+  const allConversations = await listAllConversations()
 
-  const [workspaceConversations, workspaceChats] = await Promise.all([
-    listWorkspaceConversations(chat.workspaceId),
-    listWorkspaceChatCandidates(chat.workspaceId),
-  ])
-
-  const legacyConversations = workspaceConversations.filter((conversation) => {
-    if (!conversation.id.startsWith("conversation_") || conversation.archived_at !== null) {
-      return false
-    }
-
-    const ownerChat = findLegacyChatOwner(workspaceChats, conversation)
-    return ownerChat?.id === chat.id
+  return allConversations.filter((conversation) => {
+    // Filter by chat_id and exclude archived
+    if (conversation.chat_id !== chat.id) return false
+    if (conversation.status === "archived") return false
+    return true
   })
+}
 
   return [...childConversations, ...legacyConversations]
 }
@@ -306,17 +295,21 @@ export const chatsRouter = router({
           // Map BackendConversation (snake_case) to Conversation (camelCase) format
           return {
             id: conversation.id,
-            parentId: null,
+            parentId: conversation.parent_id,
+            chatId: conversation.chat_id,
+            sessionId: conversation.collaboration_session_id,
             projectId: "",
-            workspaceId: conversation.workspace_id,
+            workspaceId: null,  // Backend doesn't provide workspace_id on conversations
             name: conversation.name,  // Keep as 'name' for frontend compatibility
             title: conversation.name, // Also provide 'title' for backward compatibility
             mode: conversation.mode,
+            participantRole: conversation.participant_role,
+            status: conversation.status,
             createdAt: new Date(conversation.created_at * 1000),
             updatedAt: new Date(conversation.updated_at * 1000),
-            archivedAt: conversation.archived_at === null
-              ? null
-              : new Date(conversation.archived_at * 1000),
+            archivedAt: conversation.status === "archived"
+              ? new Date(conversation.updated_at * 1000)
+              : null,
             created_at: conversation.created_at,
             updated_at: conversation.updated_at,
             messages: JSON.stringify(messages),
@@ -392,6 +385,9 @@ export const chatsRouter = router({
       const chat = await trpcClient.createChat({
         workspaceId,
         name: input.name,
+        collaboration_mode: input.collaborationMode,
+        branch: input.branch ?? undefined,
+        base_branch: input.baseBranch ?? undefined,
       })
       console.log("[chats.create] created chat:", chat)
 
@@ -401,19 +397,10 @@ export const chatsRouter = router({
         ? (input.initialMessage.length > 50 ? input.initialMessage.substring(0, 50) + "..." : input.initialMessage)
         : undefined)
 
-      // Backend no longer supports creating child conversations
-      // Conversation creation is now managed through agent chat transport
-      console.warn("[chats.create] createChildConversation disabled - backend endpoint removed")
-      const conversation = {
-        id: `temp-${chat.id}`,
-        name: initialTitle || "New Conversation",
-        mode: input.mode,
-        workspace_id: workspaceId,
-        created_at: Math.floor(Date.now() / 1000),
-        updated_at: Math.floor(Date.now() / 1000),
-        archived_at: null,
-      }
-      console.log(`[chats.create] created temp conversation ${conversation.id} with name="${conversation.name}"`)
+      // NOTE: Don't create conversation here!
+      // Conversation will be created lazily when first message is sent (in Transport layer)
+      // This follows the principle: "create less, reuse more"
+      console.log("[chats.create] conversation will be created on first message")
 
       // Build initial messages to return in response
       let initialMessages: any[] = []
@@ -426,8 +413,6 @@ export const chatsRouter = router({
             ...(input.model ? { metadata: { model: input.model } } : {}),
           },
         ]
-        // Backend no longer supports replacing messages
-        console.warn("[chats.create] replaceConversationMessages disabled - backend endpoint removed")
       } else if (input.initialMessage) {
         initialMessages = [
           {
@@ -437,11 +422,7 @@ export const chatsRouter = router({
             ...(input.model ? { metadata: { model: input.model } } : {}),
           },
         ]
-        // Backend no longer supports replacing messages
-        console.warn("[chats.create] replaceConversationMessages disabled - backend endpoint removed")
       }
-
-      console.log("[chats.create] created conversation:", conversation)
 
       // Worktree creation result (will be set if useWorktree is true)
       let worktreeResult: {
@@ -522,7 +503,7 @@ export const chatsRouter = router({
         worktreePath: worktreeResult.worktreePath || project.path,
         branch: worktreeResult.branch,
         baseBranch: worktreeResult.baseBranch,
-        conversations: [{ ...conversation, messages: initialMessages }],
+        conversations: [], // Conversation will be created lazily on first message
       }
 
       // Track workspace created
@@ -732,13 +713,13 @@ export const chatsRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      // Get chat to find workspaceId
-      const chat = await trpcClient.getChat({ id: input.chatId })
-      if (!chat) throw new Error("Chat not found")
-
-      // Backend no longer supports creating child conversations
-      console.warn("[chats.createConversation] createChildConversation disabled - backend endpoint removed")
-      throw new Error("Creating conversations is no longer supported")
+      // Call backend to create conversation (backend auto-creates CollaborationSession if needed)
+      const conversation = await trpcClient.createConversation({
+        chatId: input.chatId,
+        title: input.name,
+        mode: input.mode,
+      })
+      return conversation
     }),
 
   /**

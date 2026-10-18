@@ -5,7 +5,7 @@
 //! - 关联查询（通过 workspace_id 查询）
 //! - 级联删除（删除 Chat 时级联删除 CollaborationSession 和 Conversation）
 
-use crate::user_data_db::{chats, Chat};
+use crate::user_data_db::{chats, Chat, DEFAULT_COLLABORATION_MODE};
 use ergatai_core::id::generate;
 
 pub struct ChatService;
@@ -22,6 +22,12 @@ impl ChatService {
             chat_id: generate(),
             workspace_id,
             name,
+            collaboration_mode: Some(DEFAULT_COLLABORATION_MODE.to_string()),
+            worktree_path: None,
+            branch: None,
+            base_branch: None,
+            pr_url: None,
+            pr_number: None,
             created_at: now,
             updated_at: now,
             archived_at: None,

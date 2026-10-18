@@ -290,6 +290,32 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
             let promptId: string | null = null
             const isAgentToAgent = !!this.config.fromAgentId
 
+            // Lazily create conversation on first message
+            // This follows the principle: "create less, reuse more"
+            if (!this.config.conversationId) {
+              console.log("[ErgataiChatTransport] Lazily creating conversation for chat:", this.config.chatId)
+
+              // Check if conversation already exists for this chat
+              const conversations = await trpcClient.ergatai.listConversations.query({
+                chatId: this.config.chatId,
+              })
+
+              if (conversations.length > 0) {
+                // Reuse existing conversation
+                this.config.conversationId = conversations[0].id
+                console.log("[ErgataiChatTransport] Reusing conversation:", this.config.conversationId)
+              } else {
+                // Create new conversation
+                const conversation = await trpcClient.ergatai.createConversation.mutate({
+                  chatId: this.config.chatId,
+                  title: prompt?.slice(0, 50) || "New Conversation",
+                  mode: this.config.mode,
+                })
+                this.config.conversationId = conversation.id
+                console.log("[ErgataiChatTransport] Created conversation:", this.config.conversationId)
+              }
+            }
+
             if (isAgentToAgent) {
               // Agent-to-agent communication
               const result = await trpcClient.ergatai.sendMessage.mutate({

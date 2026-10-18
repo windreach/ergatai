@@ -1,6 +1,6 @@
 //! Agent Output TTL Cleanup Service
 //!
-//! 定期清理超过保留期限的 `agent_outputs` 记录，防止存储无限增长。
+//! 定期清理超过保留期限的 `messages` 记录（包含 agent 输出字段），防止存储无限增长。
 //!
 //! # 行为
 //!
@@ -61,7 +61,7 @@ async fn run_cleanup(ttl_days: u64) -> anyhow::Result<usize> {
     let cutoff = (now_secs as i64).saturating_sub(ttl_seconds);
 
     let deleted = tokio::task::spawn_blocking(move || {
-        crate::user_data_db::agent_outputs::delete_older_than(cutoff)
+        crate::user_data_db::messages::delete_older_than(cutoff)
     })
     .await??;
 

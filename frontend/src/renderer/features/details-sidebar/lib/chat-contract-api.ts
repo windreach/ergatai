@@ -19,6 +19,11 @@ export interface ChatMessage {
   images?: ChatMessageImage[]
   senderAgentId?: string
   senderAgentName?: string
+  // Agent消息专用字段（新增）
+  fromAgentId?: string | null
+  fromAgentName?: string | null
+  messageType?: string | null
+  agentContent?: string | null
   metadata?: Record<string, unknown>
   parts?: unknown[]
 }

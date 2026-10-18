@@ -329,7 +329,13 @@ async fn handle_standard_session_notification(
                     debug!(text_len = text.len(), "ACP agent message chunk");
                 }
                 out.append(text.as_bytes());
-                send_output_event(conversation_id, AgentOutputEvent::Text { delta: text });
+                send_output_event(
+                    conversation_id,
+                    AgentOutputEvent::Text {
+                        role: "assistant".to_string(),
+                        delta: text,
+                    },
+                );
             }
         }
         SessionUpdate::AgentThoughtChunk(chunk) => {
@@ -350,7 +356,13 @@ async fn handle_standard_session_notification(
                         thinking.push_str(&text);
                     }
                 }
-                send_output_event(conversation_id, AgentOutputEvent::Thinking { delta: text });
+                send_output_event(
+                    conversation_id,
+                    AgentOutputEvent::Thinking {
+                        role: "assistant".to_string(),
+                        delta: text,
+                    },
+                );
             }
         }
         SessionUpdate::UsageUpdate(usage_update) => {
@@ -395,6 +407,7 @@ async fn handle_standard_session_notification(
             send_output_event(
                 conversation_id,
                 AgentOutputEvent::ToolCallStart {
+                    role: "assistant".to_string(),
                     id: tc.tool_call_id.to_string(),
                     name: tc.title.clone(),
                     input: tc.raw_input.clone(),
@@ -478,6 +491,7 @@ async fn handle_standard_session_notification(
                     send_output_event(
                         conversation_id,
                         AgentOutputEvent::ToolCallComplete {
+                            role: "assistant".to_string(),
                             id: update.tool_call_id.to_string(),
                             name: update.fields.title.clone().unwrap_or_default(),
                             input: raw_input,
@@ -489,6 +503,7 @@ async fn handle_standard_session_notification(
                     send_output_event(
                         conversation_id,
                         AgentOutputEvent::ToolCallError {
+                            role: "assistant".to_string(),
                             id: update.tool_call_id.to_string(),
                             error: update
                                 .fields
@@ -518,6 +533,7 @@ async fn handle_standard_session_notification(
                     send_output_event(
                         conversation_id,
                         AgentOutputEvent::SessionTitleUpdate {
+                            role: "assistant".to_string(),
                             title: new_title.clone(),
                         },
                     );
@@ -750,20 +766,37 @@ impl OutputBuffer {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentOutputEvent {
     /// Incremental text content from the agent.
-    Text { delta: String },
+    Text {
+        /// Message role: "assistant" for local agent, "agent" for inter-agent
+        role: String,
+        delta: String,
+    },
     /// Incremental thinking/reasoning content.
-    Thinking { delta: String },
+    Thinking {
+        /// Message role: "assistant" for local agent, "agent" for inter-agent
+        role: String,
+        delta: String,
+    },
     /// A tool call has started.
     ToolCallStart {
+        /// Message role: "assistant" for local agent, "agent" for inter-agent
+        role: String,
         id: String,
         name: String,
         input: Option<serde_json::Value>,
         locations: Vec<ToolCallLocation>,
     },
     /// Streaming tool call input (JSON delta).
-    ToolCallInput { id: String, delta: String },
+    ToolCallInput {
+        /// Message role: "assistant" for local agent, "agent" for inter-agent
+        role: String,
+        id: String,
+        delta: String,
+    },
     /// Tool call input is complete and results are available.
     ToolCallComplete {
+        /// Message role: "assistant" for local agent, "agent" for inter-agent
+        role: String,
         id: String,
         name: String,
         input: Option<serde_json::Value>,
@@ -771,11 +804,22 @@ pub enum AgentOutputEvent {
         locations: Vec<ToolCallLocation>,
     },
     /// Tool call failed.
-    ToolCallError { id: String, error: String },
+    ToolCallError {
+        /// Message role: "assistant" for local agent, "agent" for inter-agent
+        role: String,
+        id: String,
+        error: String,
+    },
     /// Session title updated by the agent.
-    SessionTitleUpdate { title: String },
+    SessionTitleUpdate {
+        /// Message role: "assistant" for local agent, "agent" for inter-agent
+        role: String,
+        title: String,
+    },
     /// A subagent has been spawned by the parent agent.
     SubagentSpawned {
+        /// Message role: "assistant" for local agent, "agent" for inter-agent
+        role: String,
         /// Session ID of the spawned subagent
         subagent_session_id: String,
         /// Human-readable name of the subagent
@@ -785,15 +829,25 @@ pub enum AgentOutputEvent {
     },
     /// A subagent's state has changed.
     SubagentStateUpdate {
+        /// Message role: "assistant" for local agent, "agent" for inter-agent
+        role: String,
         /// Session ID of the subagent
         subagent_session_id: String,
         /// New state: "completed", "failed", "cancelled", or "disconnected"
         state: String,
     },
     /// Prompt completed.
-    Done { stop_reason: String },
+    Done {
+        /// Message role: "assistant" for local agent, "agent" for inter-agent
+        role: String,
+        stop_reason: String,
+    },
     /// An error occurred during prompt execution.
-    Error { message: String },
+    Error {
+        /// Message role: "assistant" for local agent, "agent" for inter-agent
+        role: String,
+        message: String,
+    },
     /// Conversation ID for persistence (emitted at prompt start so SSE stream
     /// can associate output with the correct conversation thread).
     /// This event is NOT forwarded to SSE clients — it is consumed internally
@@ -2548,6 +2602,7 @@ impl AcpBackendInterface for AcpBackend {
                                     send_output_event(
                                         &notify_conversation_id,
                                         AgentOutputEvent::SubagentSpawned {
+                                            role: "assistant".to_string(),
                                             subagent_session_id: event.subagent_session_id.clone(),
                                             name: event.name.clone(),
                                             task: event.task.clone(),
@@ -2567,6 +2622,7 @@ impl AcpBackendInterface for AcpBackend {
                                     send_output_event(
                                         &notify_conversation_id,
                                         AgentOutputEvent::SubagentStateUpdate {
+                                            role: "assistant".to_string(),
                                             subagent_session_id: event.subagent_session_id.clone(),
                                             state: event.state.clone(),
                                         },
@@ -3006,7 +3062,10 @@ impl AcpBackendInterface for AcpBackend {
                                         *task_stop_reason.write() = Some(sr.clone());
                                         send_output_event(
                                             &connection_conversation_id,
-                                            AgentOutputEvent::Done { stop_reason: sr },
+                                            AgentOutputEvent::Done {
+                                                role: "assistant".to_string(),
+                                                stop_reason: sr,
+                                            },
                                         );
                                         let _ = response_tx.send(Ok(()));
                                     }
@@ -3076,6 +3135,7 @@ impl AcpBackendInterface for AcpBackend {
                                         send_output_event(
                                             &connection_conversation_id,
                                             AgentOutputEvent::Done {
+                                                role: "assistant".to_string(),
                                                 stop_reason: sr,
                                             },
                                         );
@@ -3149,7 +3209,10 @@ impl AcpBackendInterface for AcpBackend {
                                         *task_stop_reason.write() = Some(sr.clone());
                                         send_output_event(
                                             &connection_conversation_id,
-                                            AgentOutputEvent::Done { stop_reason: sr.clone() },
+                                            AgentOutputEvent::Done {
+                                                role: "assistant".to_string(),
+                                                stop_reason: sr.clone(),
+                                            },
                                         );
                                         let _ = response_tx.send(Ok(()));
 

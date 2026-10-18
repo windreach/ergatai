@@ -542,8 +542,10 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                 }
             }
 
-            // ── User message persistence and SSE streaming ──
-            // Persist user message AFTER successful delivery (like agent messages)
+            // ── User message persistence (NO SSE push - frontend already has it) ──
+            // Persist user message AFTER successful delivery
+            // Note: User messages are NOT pushed via SSE because the frontend already has them
+            // in its local state (they were just sent by the user)
             if from == "user" {
                 let conversation_id_i64 = match conversation_id.parse::<i64>() {
                     Ok(id) => id,
@@ -573,29 +575,23 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                     }));
                 }
 
-                // Persist user message to SQLite
+                // Persist user message to SQLite (NO SSE publish)
                 let append_result = tokio::task::spawn_blocking(move || {
                     crate::user_data_db::messages::append(
                         conversation_id_i64,
                         "user",
                         serde_json::Value::Array(parts),
-                        serde_json::json!({ "source": "user" }),
+                        serde_json::json!({}), // No metadata needed - role="user" already indicates source
+                        None,                  // User messages don't need agent-specific fields
                     )
                 })
                 .await;
 
                 match append_result {
-                    Ok(Ok(persisted_msg)) => {
-                        // Publish to conversation subject for SSE streaming
-                        crate::messaging::publish_to_conversation_subject_with_message(
-                            persisted_msg,
-                            None,
-                            None,
-                        )
-                        .await;
+                    Ok(Ok(_persisted_msg)) => {
                         info!(
                             message_id = %message_id_for_persist,
-                            "User message persisted and published to SSE"
+                            "User message persisted to database (no SSE push)"
                         );
                     }
                     Ok(Err(e)) => {
@@ -644,47 +640,52 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                     _ => "agent",
                 };
 
-                // Persist agent message to SQLite
+                // Parse the JSON message to extract structured data
+                // Backend format_agent_message() generates: {"from":"agent-1","message":"actual content","message_type":"request",...}
+                let parsed_content: Option<serde_json::Value> =
+                    serde_json::from_str(&message_content).ok();
+                let actual_message = parsed_content
+                    .as_ref()
+                    .and_then(|v| v.get("message"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or(&message_content)
+                    .to_string();
+
+                let from_agent_name = parsed_content
+                    .as_ref()
+                    .and_then(|v| v.get("from"))
+                    .and_then(|f| f.as_str())
+                    .unwrap_or(&from_agent)
+                    .to_string();
+
+                // Persist agent message to SQLite with structured fields
                 let append_result = tokio::task::spawn_blocking(move || {
                     let metadata = serde_json::json!({
-                        "source": "agent",
                         "senderAgentId": from_agent,
-                        "senderAgentName": from_agent,  // Use agent ID as name (no separate name field in payload)
+                        "senderAgentName": from_agent_name,
                         "messageType": message_type,
                     });
+
+                    // Use AgentMessageFields for structured storage
+                    let agent_fields = crate::user_data_db::messages::AgentMessageFields {
+                        from_agent_id: Some(from_agent.clone()),
+                        from_agent_name: Some(from_agent_name),
+                        message_type: Some(message_type),
+                        content: Some(actual_message),
+                    };
+
                     crate::user_data_db::messages::append(
                         conversation_id_i64,
                         role,
-                        serde_json::json!([{ "type": "text", "text": message_content }]),
+                        serde_json::json!([{ "type": "text", "text": message_content }]), // Keep original JSON in parts for backward compatibility
                         metadata,
+                        Some(agent_fields),
                     )
                 })
                 .await;
 
                 match append_result {
                     Ok(Ok(persisted_msg)) => {
-                        // Associate message_id with the latest agent_output for this conversation
-                        let conv_id_i64 = conversation_id_i64;
-                        let msg_id_for_output = persisted_msg.message_id;
-                        if let Ok(Ok(Some(output))) = tokio::task::spawn_blocking(move || {
-                            crate::user_data_db::agent_outputs::get_latest_by_conversation(
-                                conv_id_i64,
-                            )
-                        })
-                        .await
-                        {
-                            if output.message_id.is_none() {
-                                let output_id = output.id;
-                                let _ = tokio::task::spawn_blocking(move || {
-                                    crate::user_data_db::agent_outputs::update_message_id(
-                                        output_id,
-                                        msg_id_for_output,
-                                    )
-                                })
-                                .await;
-                            }
-                        }
-
                         // Publish to conversation subject for SSE streaming
                         crate::messaging::publish_to_conversation_subject_with_message(
                             persisted_msg,

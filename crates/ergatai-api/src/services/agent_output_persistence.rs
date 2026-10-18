@@ -1,16 +1,16 @@
 //! Agent output persistence service.
 //!
 //! This module provides the persistence callback that saves accumulated agent
-//! outputs to the database when a turn completes.
+//! outputs to the messages table when a turn completes.
 
 use ergatai_error::id::generate;
 use ergatai_runtime::AgentOutputData;
 
-/// Persist agent output to database.
+/// Persist agent output to messages table.
 ///
 /// This function is called by the runtime when a prompt completes and the
 /// accumulated output needs to be saved. It converts the AgentOutputData
-/// to the database model and inserts it.
+/// to a Message record and inserts it into the messages table.
 ///
 /// If the conversation record doesn't exist, it will be created automatically
 /// to satisfy the FOREIGN KEY constraint.
@@ -18,33 +18,14 @@ pub async fn persist_agent_output(
     conversation_id: i64,
     output_data: AgentOutputData,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use crate::user_data_db::agent_outputs;
     use crate::user_data_db::conversations;
-    use crate::user_data_db::AgentOutput;
-    use crate::user_data_db::Conversation;
+    use crate::user_data_db::messages::{self, AgentOutputFields};
+    use crate::user_data_db::{Conversation, DEFAULT_COLLABORATION_MODE};
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
-
-    // Generate a unique ID for the agent output
-    let output_id = generate();
-
-    let agent_output = AgentOutput {
-        id: output_id,
-        conversation_id: output_data.conversation_id,
-        message_id: output_data.message_id,
-        sequence: output_data.sequence,
-        role: output_data.role,
-        thinking: output_data.thinking,
-        tool_calls: output_data.tool_calls,
-        text_chunks: output_data.text_chunks,
-        final_text: output_data.final_text,
-        metadata: output_data.metadata,
-        created_at: now,
-        updated_at: now,
-    };
 
     // Write to database in a blocking task
     tokio::task::spawn_blocking(
@@ -103,6 +84,12 @@ pub async fn persist_agent_output(
                         "Auto-generated chat for {}",
                         output_data.conversation_id
                     )),
+                    collaboration_mode: Some(DEFAULT_COLLABORATION_MODE.to_string()),
+                    worktree_path: None,
+                    branch: None,
+                    base_branch: None,
+                    pr_url: None,
+                    pr_number: None,
                     created_at: now,
                     updated_at: now,
                     archived_at: None,
@@ -139,8 +126,8 @@ pub async fn persist_agent_output(
                 // Finally create the conversation record
                 let conv = Conversation {
                     conversation_id: output_data.conversation_id,
-                    collaboration_session_id: collab_session_id, // Link to the session we just created
-                    chat_id,                                     // Link to the chat we just created
+                    collaboration_session_id: collab_session_id,
+                    chat_id,
                     parent_id: None,
                     name: Some(format!(
                         "Auto-generated for agent output {}",
@@ -161,7 +148,33 @@ pub async fn persist_agent_output(
                 }
             }
 
-            agent_outputs::create(agent_output)?;
+            // Build agent output fields
+            // Note: thinking/tool_calls/text_chunks are already JSON strings in AgentOutputData,
+            // so we pass them through directly without re-encoding
+            let output_fields = AgentOutputFields {
+                thinking: output_data.thinking,
+                tool_calls: output_data.tool_calls,
+                text_chunks: output_data.text_chunks,
+                stop_reason: None, // metadata is now just a JSON string, not a structured field
+                duration_ms: None, // metadata is now just a JSON string, not a structured field
+            };
+
+            // Build parts JSON array from final_text
+            let parts = output_data
+                .final_text
+                .as_ref()
+                .map(|final_text| serde_json::json!([{ "type": "text", "text": final_text }]));
+
+            // Insert into messages table with agent output fields
+            messages::append_with_output(
+                output_data.conversation_id,
+                &output_data.role,
+                parts,
+                serde_json::json!({}),
+                None,
+                Some(output_fields),
+            )?;
+
             Ok(())
         },
     )
@@ -169,7 +182,7 @@ pub async fn persist_agent_output(
 
     tracing::debug!(
         conversation_id = %conversation_id,
-        "Persisted agent output to database"
+        "Persisted agent output to messages table"
     );
 
     Ok(())

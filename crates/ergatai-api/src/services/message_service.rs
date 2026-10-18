@@ -26,7 +26,7 @@ impl MessageService {
 
         let metadata = metadata.unwrap_or(serde_json::json!({}));
 
-        let message = messages::append(conversation_id, role, parts, metadata)?;
+        let message = messages::append(conversation_id, role, parts, metadata, None)?;
         Ok(message)
     }
 

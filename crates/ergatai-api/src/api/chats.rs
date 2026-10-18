@@ -12,7 +12,7 @@ use ergatai_core::id::{format as format_id, generate, IdType};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::user_data_db::{self, Chat};
+use crate::user_data_db::{self, Chat, DEFAULT_COLLABORATION_MODE};
 use crate::AppState;
 
 // ── Request/Response Types ───────────────────────────────────────────────────
@@ -27,6 +27,12 @@ pub struct CreateChatRequest {
     pub name: Option<String>,
     #[schema(min_length = 1)]
     pub workspace_id: String,
+    pub collaboration_mode: Option<String>,
+    pub worktree_path: Option<String>,
+    pub branch: Option<String>,
+    pub base_branch: Option<String>,
+    pub pr_url: Option<String>,
+    pub pr_number: Option<i32>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -34,6 +40,12 @@ pub struct ChatResponse {
     pub id: String,
     pub name: Option<String>,
     pub workspace_id: String,
+    pub collaboration_mode: Option<String>,
+    pub worktree_path: Option<String>,
+    pub branch: Option<String>,
+    pub base_branch: Option<String>,
+    pub pr_url: Option<String>,
+    pub pr_number: Option<i32>,
     pub created_at: i64,
     pub updated_at: i64,
     pub archived_at: Option<i64>,
@@ -55,6 +67,12 @@ fn chat_to_response(chat: Chat) -> ChatResponse {
         id: format_id(chat.chat_id, IdType::Chat),
         name: chat.name,
         workspace_id: format_id(chat.workspace_id, IdType::Workspace),
+        collaboration_mode: chat.collaboration_mode,
+        worktree_path: chat.worktree_path,
+        branch: chat.branch,
+        base_branch: chat.base_branch,
+        pr_url: chat.pr_url,
+        pr_number: chat.pr_number,
         created_at: chat.created_at,
         updated_at: chat.updated_at,
         archived_at: chat.archived_at,
@@ -158,6 +176,14 @@ pub async fn create_chat(
         chat_id: generate(),
         name: req.name,
         workspace_id: workspace_id_i64_for_create,
+        collaboration_mode: req
+            .collaboration_mode
+            .or_else(|| Some(DEFAULT_COLLABORATION_MODE.to_string())),
+        worktree_path: req.worktree_path,
+        branch: req.branch,
+        base_branch: req.base_branch,
+        pr_url: req.pr_url,
+        pr_number: req.pr_number,
         created_at: now,
         updated_at: now,
         archived_at: None,
@@ -539,6 +565,12 @@ pub async fn patch_chat(
             // Update fields
             let updated = user_data_db::Chat {
                 name: req.name.or(chat.name),
+                collaboration_mode: req.collaboration_mode.or(chat.collaboration_mode),
+                worktree_path: req.worktree_path.or(chat.worktree_path),
+                branch: req.branch.or(chat.branch),
+                base_branch: req.base_branch.or(chat.base_branch),
+                pr_url: req.pr_url.or(chat.pr_url),
+                pr_number: req.pr_number.or(chat.pr_number),
                 updated_at: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()

@@ -222,7 +222,11 @@ fn calculate_conversation_file_changes(
             continue;
         }
 
-        let Ok(parts) = serde_json::from_str::<serde_json::Value>(&message.parts) else {
+        let Some(parts_str) = &message.parts else {
+            continue;
+        };
+
+        let Ok(parts) = serde_json::from_str::<serde_json::Value>(parts_str) else {
             continue;
         };
         let Some(parts) = parts.as_array() else {
@@ -747,8 +751,17 @@ mod conversation_file_change_tests {
             conversation_id: 67890,
             sequence: 0,
             role: role.to_owned(),
-            parts: parts.to_string(),
+            parts: Some(parts.to_string()),
             metadata: None,
+            from_agent_id: None,
+            from_agent_name: None,
+            message_type: None,
+            content: None,
+            thinking: None,
+            tool_calls: None,
+            text_chunks: None,
+            stop_reason: None,
+            duration_ms: None,
             created_at: 0,
             updated_at: 0,
         }
@@ -1234,7 +1247,7 @@ pub async fn list_conversation_outputs(
     let limit = params.limit;
     let offset = params.offset.map(|value| value as i64);
     match tokio::task::spawn_blocking(move || {
-        user_data_db::agent_outputs::list_by_conversation(conv_id_i64, limit, offset)
+        user_data_db::messages::list_by_conversation_paginated(conv_id_i64, limit, offset)
     })
     .await
     {
@@ -1297,7 +1310,7 @@ pub async fn get_conversation_output(
         };
 
     match tokio::task::spawn_blocking(move || {
-        let output = user_data_db::agent_outputs::get(output_id_i64)?;
+        let output = user_data_db::messages::get(output_id_i64)?;
         // Verify the output belongs to the specified conversation
         if let Some(ref out) = output {
             if out.conversation_id != conversation_id_i64 {
@@ -1351,25 +1364,38 @@ pub struct AgentOutputResponse {
     pub updated_at: i64,
 }
 
-impl From<user_data_db::AgentOutput> for AgentOutputResponse {
-    fn from(output: user_data_db::AgentOutput) -> Self {
+impl From<user_data_db::Message> for AgentOutputResponse {
+    fn from(message: user_data_db::Message) -> Self {
+        // Extract final_text from parts JSON
+        let final_text = message.parts.as_ref().and_then(|parts_str| {
+            serde_json::from_str::<serde_json::Value>(parts_str)
+                .ok()
+                .and_then(|parts| {
+                    parts.as_array().and_then(|arr| {
+                        arr.iter()
+                            .find(|p| p.get("type").and_then(|t| t.as_str()) == Some("text"))
+                            .and_then(|p| p.get("text").and_then(|t| t.as_str()).map(String::from))
+                    })
+                })
+        });
+
         Self {
-            id: output.id.to_string(),
-            conversation_id: format_id(output.conversation_id, IdType::Conversation),
-            message_id: output.message_id.map(|id| format_id(id, IdType::Message)),
-            sequence: output.sequence,
-            role: output.role,
-            thinking: output.thinking.and_then(|s| serde_json::from_str(&s).ok()),
-            tool_calls: output
+            id: message.message_id.to_string(),
+            conversation_id: format_id(message.conversation_id, IdType::Conversation),
+            message_id: Some(format_id(message.message_id, IdType::Message)),
+            sequence: message.sequence,
+            role: message.role,
+            thinking: message.thinking.and_then(|s| serde_json::from_str(&s).ok()),
+            tool_calls: message
                 .tool_calls
                 .and_then(|s| serde_json::from_str(&s).ok()),
-            text_chunks: output
+            text_chunks: message
                 .text_chunks
                 .and_then(|s| serde_json::from_str(&s).ok()),
-            final_text: output.final_text,
-            metadata: output.metadata.and_then(|s| serde_json::from_str(&s).ok()),
-            created_at: output.created_at,
-            updated_at: output.updated_at,
+            final_text,
+            metadata: message.metadata.and_then(|s| serde_json::from_str(&s).ok()),
+            created_at: message.created_at,
+            updated_at: message.updated_at,
         }
     }
 }

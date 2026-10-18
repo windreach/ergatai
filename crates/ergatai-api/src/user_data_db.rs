@@ -13,6 +13,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use utoipa::ToSchema;
 
+/// Default collaboration mode for chats
+pub const DEFAULT_COLLABORATION_MODE: &str = "supervisor";
+
 /// Global database instance
 static USER_DATA_DB: Lazy<Arc<Mutex<Connection>>> = Lazy::new(|| {
     let db_path = get_db_path();
@@ -79,8 +82,8 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
 
     // Drop all existing tables (in reverse dependency order)
-    // NOTE: We do NOT drop agent_outputs here to prevent data loss on reinitialization.
-    // The agent_outputs table is created with CREATE TABLE IF NOT EXISTS below.
+    // NOTE: Agent output fields are now part of the messages table (unified schema).
+    // The messages table is dropped and recreated below.
     conn.execute_batch(
         r#"
         DROP TABLE IF EXISTS messages;
@@ -123,6 +126,12 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             chat_id INTEGER PRIMARY KEY,
             workspace_id INTEGER NOT NULL,
             name TEXT,
+            collaboration_mode TEXT DEFAULT 'supervisor',
+            worktree_path TEXT,
+            branch TEXT,
+            base_branch TEXT,
+            pr_url TEXT,
+            pr_number INTEGER,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             archived_at INTEGER,
@@ -217,13 +226,31 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             conversation_id INTEGER NOT NULL,
             sequence INTEGER NOT NULL,
             role TEXT NOT NULL,
-            parts TEXT NOT NULL,
+            parts TEXT,
             metadata TEXT,
+
+            -- Agent 间消息字段（role="agent" 时使用）
+            from_agent_id TEXT,           -- 发送者 agent ID
+            from_agent_name TEXT,         -- 发送者显示名称
+            message_type TEXT,            -- "request" | "response" | "broadcast"
+            content TEXT,                 -- 实际消息内容（纯文本）
+
+            -- Agent 输出字段（role="assistant" 时使用，统一存储 agent 的详细输出）
+            thinking TEXT,                -- JSON: [{text, duration_ms}]
+            tool_calls TEXT,              -- JSON: [{id, name, input, output, status}]
+            text_chunks TEXT,             -- JSON: [{text, timestamp}]
+            stop_reason TEXT,             -- "end_turn" | "max_tokens" | "tool_use"
+            duration_ms INTEGER,          -- 总耗时（毫秒）
+
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_messages_role ON messages(role);
+        CREATE INDEX IF NOT EXISTS idx_messages_from_agent ON messages(from_agent_id);
+        CREATE INDEX IF NOT EXISTS idx_messages_type ON messages(message_type);
+        CREATE INDEX IF NOT EXISTS idx_messages_sequence ON messages(conversation_id, sequence);
 
         CREATE TABLE IF NOT EXISTS terminal_sessions (
             session_id INTEGER PRIMARY KEY,
@@ -312,33 +339,6 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             decided_at INTEGER,
             FOREIGN KEY (session_id) REFERENCES collaboration_sessions(collaboration_session_id) ON DELETE CASCADE
         );
-
-        CREATE TABLE IF NOT EXISTS agent_outputs (
-            id INTEGER PRIMARY KEY,
-            conversation_id INTEGER NOT NULL,
-            message_id INTEGER,
-            sequence INTEGER NOT NULL,
-            role TEXT NOT NULL DEFAULT 'assistant',
-
-            -- 完整输出内容（JSON 字符串）
-            thinking TEXT,
-            tool_calls TEXT,
-            text_chunks TEXT,
-            final_text TEXT,
-
-            -- 元数据（JSON 字符串）
-            metadata TEXT,
-
-            -- 时间戳
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-
-            FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            FOREIGN KEY (message_id) REFERENCES messages(message_id) ON DELETE SET NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_agent_outputs_conversation_id ON agent_outputs(conversation_id);
-        CREATE INDEX IF NOT EXISTS idx_agent_outputs_message_id ON agent_outputs(message_id);
-        CREATE INDEX IF NOT EXISTS idx_agent_outputs_sequence ON agent_outputs(conversation_id, sequence);
         "#,
     )?;
 
@@ -375,6 +375,12 @@ pub struct Chat {
     pub chat_id: i64,
     pub workspace_id: i64,
     pub name: Option<String>,
+    pub collaboration_mode: Option<String>,
+    pub worktree_path: Option<String>,
+    pub branch: Option<String>,
+    pub base_branch: Option<String>,
+    pub pr_url: Option<String>,
+    pub pr_number: Option<i32>,
     pub created_at: i64,
     pub updated_at: i64,
     pub archived_at: Option<i64>,
@@ -439,24 +445,22 @@ pub struct Message {
     pub conversation_id: i64,
     pub sequence: i64,
     pub role: String,
-    pub parts: String,
+    pub parts: Option<String>,
     pub metadata: Option<String>,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct AgentOutput {
-    pub id: i64,
-    pub conversation_id: i64,
-    pub message_id: Option<i64>,
-    pub sequence: i64,
-    pub role: String,
-    pub thinking: Option<String>,    // JSON string
-    pub tool_calls: Option<String>,  // JSON string
-    pub text_chunks: Option<String>, // JSON string
-    pub final_text: Option<String>,
-    pub metadata: Option<String>, // JSON string
+    // Agent 间消息字段（role="agent" 时使用）
+    pub from_agent_id: Option<String>,   // 发送者 agent ID
+    pub from_agent_name: Option<String>, // 发送者显示名称
+    pub message_type: Option<String>,    // "request" | "response" | "broadcast"
+    pub content: Option<String>,         // 实际消息内容（纯文本）
+
+    // Agent 输出字段（role="assistant" 时使用）
+    pub thinking: Option<String>,    // JSON: [{text, duration_ms}]
+    pub tool_calls: Option<String>,  // JSON: [{id, name, input, output, status}]
+    pub text_chunks: Option<String>, // JSON: [{text, timestamp}]
+    pub stop_reason: Option<String>, // "end_turn" | "max_tokens" | "tool_use"
+    pub duration_ms: Option<i64>,    // 总耗时（毫秒）
+
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -767,12 +771,18 @@ pub mod chats {
         let conn = db.lock().unwrap();
 
         conn.execute(
-            "INSERT INTO chats (chat_id, workspace_id, name, created_at, updated_at, archived_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO chats (chat_id, workspace_id, name, collaboration_mode, worktree_path, branch, base_branch, pr_url, pr_number, created_at, updated_at, archived_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 chat.chat_id,
                 chat.workspace_id,
                 chat.name,
+                chat.collaboration_mode,
+                chat.worktree_path,
+                chat.branch,
+                chat.base_branch,
+                chat.pr_url,
+                chat.pr_number,
                 chat.created_at,
                 chat.updated_at,
                 chat.archived_at,
@@ -787,7 +797,7 @@ pub mod chats {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT chat_id, workspace_id, name, created_at, updated_at, archived_at
+            "SELECT chat_id, workspace_id, name, collaboration_mode, worktree_path, branch, base_branch, pr_url, pr_number, created_at, updated_at, archived_at
              FROM chats
              WHERE ?1 IS NULL OR workspace_id = ?1
              ORDER BY created_at DESC",
@@ -797,9 +807,15 @@ pub mod chats {
                 chat_id: row.get(0)?,
                 workspace_id: row.get(1)?,
                 name: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
-                archived_at: row.get(5)?,
+                collaboration_mode: row.get(3)?,
+                worktree_path: row.get(4)?,
+                branch: row.get(5)?,
+                base_branch: row.get(6)?,
+                pr_url: row.get(7)?,
+                pr_number: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
+                archived_at: row.get(11)?,
             })
         })?;
         chats.collect()
@@ -810,7 +826,7 @@ pub mod chats {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT chat_id, workspace_id, name, created_at, updated_at, archived_at
+            "SELECT chat_id, workspace_id, name, collaboration_mode, worktree_path, branch, base_branch, pr_url, pr_number, created_at, updated_at, archived_at
              FROM chats WHERE chat_id = ?1",
         )?;
 
@@ -819,9 +835,15 @@ pub mod chats {
                 chat_id: row.get(0)?,
                 workspace_id: row.get(1)?,
                 name: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
-                archived_at: row.get(5)?,
+                collaboration_mode: row.get(3)?,
+                worktree_path: row.get(4)?,
+                branch: row.get(5)?,
+                base_branch: row.get(6)?,
+                pr_url: row.get(7)?,
+                pr_number: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
+                archived_at: row.get(11)?,
             })
         })?;
 
@@ -838,11 +860,17 @@ pub mod chats {
 
         conn.execute(
             "UPDATE chats
-             SET workspace_id = ?1, name = ?2, updated_at = ?3, archived_at = ?4
-             WHERE chat_id = ?5",
+             SET workspace_id = ?1, name = ?2, collaboration_mode = ?3, worktree_path = ?4, branch = ?5, base_branch = ?6, pr_url = ?7, pr_number = ?8, updated_at = ?9, archived_at = ?10
+             WHERE chat_id = ?11",
             params![
                 chat.workspace_id,
                 chat.name,
+                chat.collaboration_mode,
+                chat.worktree_path,
+                chat.branch,
+                chat.base_branch,
+                chat.pr_url,
+                chat.pr_number,
                 chat.updated_at,
                 chat.archived_at,
                 chat.chat_id,
@@ -1429,13 +1457,16 @@ pub mod messages {
     }
 
     /// Get a single message by message_id
-    pub async fn get(message_id: i64) -> Result<Option<Message>> {
+    pub fn get(message_id: i64) -> Result<Option<Message>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT message_id, conversation_id, sequence, role, parts, metadata, created_at, updated_at
-             FROM messages WHERE message_id = ?1"
+            "SELECT message_id, conversation_id, sequence, role, parts, metadata,
+                    from_agent_id, from_agent_name, message_type, content,
+                    thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                    created_at, updated_at
+             FROM messages WHERE message_id = ?1",
         )?;
 
         let mut rows = stmt.query_map(params![message_id], |row| {
@@ -1446,8 +1477,17 @@ pub mod messages {
                 role: row.get(3)?,
                 parts: row.get(4)?,
                 metadata: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
+                from_agent_id: row.get(6)?,
+                from_agent_name: row.get(7)?,
+                message_type: row.get(8)?,
+                content: row.get(9)?,
+                thinking: row.get(10)?,
+                tool_calls: row.get(11)?,
+                text_chunks: row.get(12)?,
+                stop_reason: row.get(13)?,
+                duration_ms: row.get(14)?,
+                created_at: row.get(15)?,
+                updated_at: row.get(16)?,
             })
         })?;
 
@@ -1467,7 +1507,7 @@ pub mod messages {
         // Check if nothing to update
         if parts.is_none() && metadata.is_none() {
             // Nothing to update, just return current state
-            return get(message_id).await;
+            return get(message_id);
         }
 
         // Execute the synchronous DB update first
@@ -1510,7 +1550,7 @@ pub mod messages {
 
         update_result?;
 
-        get(message_id).await
+        get(message_id)
     }
 
     /// Delete a message by message_id
@@ -1529,7 +1569,10 @@ pub mod messages {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT message_id, conversation_id, sequence, role, parts, metadata, created_at, updated_at
+            "SELECT message_id, conversation_id, sequence, role, parts, metadata,
+                    from_agent_id, from_agent_name, message_type, content,
+                    thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                    created_at, updated_at
              FROM messages WHERE conversation_id = ?1 ORDER BY sequence ASC",
         )?;
         let messages = stmt.query_map(params![conversation_id], |row| {
@@ -1540,8 +1583,17 @@ pub mod messages {
                 role: row.get(3)?,
                 parts: row.get(4)?,
                 metadata: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
+                from_agent_id: row.get(6)?,
+                from_agent_name: row.get(7)?,
+                message_type: row.get(8)?,
+                content: row.get(9)?,
+                thinking: row.get(10)?,
+                tool_calls: row.get(11)?,
+                text_chunks: row.get(12)?,
+                stop_reason: row.get(13)?,
+                duration_ms: row.get(14)?,
+                created_at: row.get(15)?,
+                updated_at: row.get(16)?,
             })
         })?;
         messages.collect()
@@ -1552,7 +1604,10 @@ pub mod messages {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT message_id, conversation_id, sequence, role, parts, metadata, created_at, updated_at
+            "SELECT message_id, conversation_id, sequence, role, parts, metadata,
+                    from_agent_id, from_agent_name, message_type, content,
+                    thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                    created_at, updated_at
              FROM messages
              WHERE conversation_id = ?1 AND sequence > ?2
              ORDER BY sequence ASC",
@@ -1565,8 +1620,17 @@ pub mod messages {
                 role: row.get(3)?,
                 parts: row.get(4)?,
                 metadata: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
+                from_agent_id: row.get(6)?,
+                from_agent_name: row.get(7)?,
+                message_type: row.get(8)?,
+                content: row.get(9)?,
+                thinking: row.get(10)?,
+                tool_calls: row.get(11)?,
+                text_chunks: row.get(12)?,
+                stop_reason: row.get(13)?,
+                duration_ms: row.get(14)?,
+                created_at: row.get(15)?,
+                updated_at: row.get(16)?,
             })
         })?;
         messages.collect()
@@ -1577,7 +1641,10 @@ pub mod messages {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT message_id, conversation_id, sequence, role, parts, metadata, created_at, updated_at
+            "SELECT message_id, conversation_id, sequence, role, parts, metadata,
+                    from_agent_id, from_agent_name, message_type, content,
+                    thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                    created_at, updated_at
              FROM messages
              WHERE conversation_id = ?1
              ORDER BY sequence DESC
@@ -1591,8 +1658,17 @@ pub mod messages {
                 role: row.get(3)?,
                 parts: row.get(4)?,
                 metadata: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
+                from_agent_id: row.get(6)?,
+                from_agent_name: row.get(7)?,
+                message_type: row.get(8)?,
+                content: row.get(9)?,
+                thinking: row.get(10)?,
+                tool_calls: row.get(11)?,
+                text_chunks: row.get(12)?,
+                stop_reason: row.get(13)?,
+                duration_ms: row.get(14)?,
+                created_at: row.get(15)?,
+                updated_at: row.get(16)?,
             })
         })?;
 
@@ -1603,11 +1679,50 @@ pub mod messages {
         }
     }
 
+    /// Agent 消息专用字段（用于结构化存储 agent 间通信）
+    #[derive(Debug, Clone, Default)]
+    pub struct AgentMessageFields {
+        pub from_agent_id: Option<String>,
+        pub from_agent_name: Option<String>,
+        pub message_type: Option<String>,
+        pub content: Option<String>,
+    }
+
+    /// Agent 输出字段（用于存储 agent 的详细输出）
+    #[derive(Debug, Clone, Default)]
+    pub struct AgentOutputFields {
+        pub thinking: Option<String>,
+        pub tool_calls: Option<String>,
+        pub text_chunks: Option<String>,
+        pub stop_reason: Option<String>,
+        pub duration_ms: Option<i64>,
+    }
+
     pub fn append(
         conversation_id: i64,
         role: &str,
         parts: serde_json::Value,
         metadata: serde_json::Value,
+        agent_fields: Option<AgentMessageFields>,
+    ) -> Result<Message> {
+        append_with_output(
+            conversation_id,
+            role,
+            Some(parts),
+            metadata,
+            agent_fields,
+            None,
+        )
+    }
+
+    /// Append a message with optional agent output fields
+    pub fn append_with_output(
+        conversation_id: i64,
+        role: &str,
+        parts: Option<serde_json::Value>,
+        metadata: serde_json::Value,
+        agent_fields: Option<AgentMessageFields>,
+        output_fields: Option<AgentOutputFields>,
     ) -> Result<Message> {
         let db = get_user_data_db();
         let mut conn = db.lock().unwrap();
@@ -1621,24 +1736,40 @@ pub mod messages {
             params![conversation_id],
             |row| row.get(0),
         )?;
+
+        let agent_fields = agent_fields.unwrap_or_default();
+        let output_fields = output_fields.unwrap_or_default();
+
         let message = Message {
             message_id: generate(),
             conversation_id,
             sequence,
             role: role.to_string(),
-            parts: parts.to_string(),
+            parts: parts.map(|p| p.to_string()),
             metadata: if metadata.is_null() {
                 None
             } else {
                 Some(metadata.to_string())
             },
+            from_agent_id: agent_fields.from_agent_id,
+            from_agent_name: agent_fields.from_agent_name,
+            message_type: agent_fields.message_type,
+            content: agent_fields.content,
+            thinking: output_fields.thinking,
+            tool_calls: output_fields.tool_calls,
+            text_chunks: output_fields.text_chunks,
+            stop_reason: output_fields.stop_reason,
+            duration_ms: output_fields.duration_ms,
             created_at: now,
             updated_at: now,
         };
 
         transaction.execute(
-            "INSERT INTO messages (message_id, conversation_id, sequence, role, parts, metadata, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO messages (message_id, conversation_id, sequence, role, parts, metadata,
+             from_agent_id, from_agent_name, message_type, content,
+             thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+             created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 message.message_id,
                 message.conversation_id,
@@ -1646,6 +1777,15 @@ pub mod messages {
                 message.role,
                 message.parts,
                 message.metadata,
+                message.from_agent_id,
+                message.from_agent_name,
+                message.message_type,
+                message.content,
+                message.thinking,
+                message.tool_calls,
+                message.text_chunks,
+                message.stop_reason,
+                message.duration_ms,
                 message.created_at,
                 message.updated_at,
             ],
@@ -1663,7 +1803,10 @@ pub mod messages {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT m.message_id, m.conversation_id, m.sequence, m.role, m.parts, m.metadata, m.created_at, m.updated_at
+            "SELECT m.message_id, m.conversation_id, m.sequence, m.role, m.parts, m.metadata,
+                    m.from_agent_id, m.from_agent_name, m.message_type, m.content,
+                    m.thinking, m.tool_calls, m.text_chunks, m.stop_reason, m.duration_ms,
+                    m.created_at, m.updated_at
              FROM messages m
              JOIN conversations c ON m.conversation_id = c.conversation_id
              WHERE c.collaboration_session_id = ?1
@@ -1677,8 +1820,17 @@ pub mod messages {
                 role: row.get(3)?,
                 parts: row.get(4)?,
                 metadata: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
+                from_agent_id: row.get(6)?,
+                from_agent_name: row.get(7)?,
+                message_type: row.get(8)?,
+                content: row.get(9)?,
+                thinking: row.get(10)?,
+                tool_calls: row.get(11)?,
+                text_chunks: row.get(12)?,
+                stop_reason: row.get(13)?,
+                duration_ms: row.get(14)?,
+                created_at: row.get(15)?,
+                updated_at: row.get(16)?,
             })
         })?;
         messages.collect()
@@ -1689,7 +1841,10 @@ pub mod messages {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT m.message_id, m.conversation_id, m.sequence, m.role, m.parts, m.metadata, m.created_at, m.updated_at
+            "SELECT m.message_id, m.conversation_id, m.sequence, m.role, m.parts, m.metadata,
+                    m.from_agent_id, m.from_agent_name, m.message_type, m.content,
+                    m.thinking, m.tool_calls, m.text_chunks, m.stop_reason, m.duration_ms,
+                    m.created_at, m.updated_at
              FROM messages m
              JOIN conversations c ON m.conversation_id = c.conversation_id
              WHERE c.chat_id = ?1
@@ -1703,15 +1858,27 @@ pub mod messages {
                 role: row.get(3)?,
                 parts: row.get(4)?,
                 metadata: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
+                from_agent_id: row.get(6)?,
+                from_agent_name: row.get(7)?,
+                message_type: row.get(8)?,
+                content: row.get(9)?,
+                thinking: row.get(10)?,
+                tool_calls: row.get(11)?,
+                text_chunks: row.get(12)?,
+                stop_reason: row.get(13)?,
+                duration_ms: row.get(14)?,
+                created_at: row.get(15)?,
+                updated_at: row.get(16)?,
             })
         })?;
         messages.collect()
     }
 
-    fn parts_text(parts: &str) -> String {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(parts) else {
+    fn parts_text(parts: &Option<String>) -> String {
+        let Some(parts_str) = parts else {
+            return String::new();
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(parts_str) else {
             return String::new();
         };
         let Some(items) = value.as_array() else {
@@ -1808,7 +1975,7 @@ pub mod messages {
         let payload_text_index: std::collections::HashSet<(String, String)> = merged
             .iter()
             .filter_map(|(_, role, parts, ..)| {
-                let text = parts_text(parts);
+                let text = parts_text(&Some(parts.clone()));
                 if text.is_empty() {
                     None
                 } else {
@@ -1843,7 +2010,7 @@ pub mod messages {
                 (
                     message.message_id,
                     message.role.clone(),
-                    message.parts.clone(),
+                    message.parts.clone().unwrap_or_default(),
                     message.metadata.clone(),
                     message.created_at,
                 )
@@ -1885,8 +2052,13 @@ pub mod messages {
         let values = messages
             .into_iter()
             .map(|message| {
-                let parts: serde_json::Value = serde_json::from_str(&message.parts)
-                    .unwrap_or(serde_json::Value::String(message.parts.clone()));
+                let parts: serde_json::Value = message
+                    .parts
+                    .as_ref()
+                    .and_then(|p| serde_json::from_str(p).ok())
+                    .unwrap_or_else(|| {
+                        serde_json::Value::String(message.parts.clone().unwrap_or_default())
+                    });
                 let metadata: serde_json::Value = message
                     .metadata
                     .as_deref()
@@ -1904,279 +2076,90 @@ pub mod messages {
         serde_json::to_string(&values)
             .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
     }
-}
 
-pub mod agent_outputs {
-    use super::*;
-
-    /// Create a new agent output record
-    pub fn create(output: AgentOutput) -> Result<AgentOutput> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        conn.execute(
-            "INSERT INTO agent_outputs (id, conversation_id, message_id, sequence, role, thinking, tool_calls, text_chunks, final_text, metadata, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![
-                output.id,
-                output.conversation_id,
-                output.message_id,
-                output.sequence,
-                output.role,
-                output.thinking,
-                output.tool_calls,
-                output.text_chunks,
-                output.final_text,
-                output.metadata,
-                output.created_at,
-                output.updated_at,
-            ],
-        )?;
-
-        Ok(output)
-    }
-
-    /// Get an agent output by ID
-    pub fn get(id: i64) -> Result<Option<AgentOutput>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, message_id, sequence, role, thinking, tool_calls, text_chunks, final_text, metadata, created_at, updated_at
-             FROM agent_outputs WHERE id = ?1"
-        )?;
-
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(AgentOutput {
-                id: row.get(0)?,
-                conversation_id: row.get(1)?,
-                message_id: row.get(2)?,
-                sequence: row.get(3)?,
-                role: row.get(4)?,
-                thinking: row.get(5)?,
-                tool_calls: row.get(6)?,
-                text_chunks: row.get(7)?,
-                final_text: row.get(8)?,
-                metadata: row.get(9)?,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
-            })
-        })?;
-
-        match rows.next() {
-            Some(Ok(output)) => Ok(Some(output)),
-            Some(Err(e)) => Err(e),
-            None => Ok(None),
-        }
-    }
-
-    /// Get an agent output by message_id
-    pub fn get_by_message_id(message_id: i64) -> Result<Option<AgentOutput>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, message_id, sequence, role, thinking, tool_calls, text_chunks, final_text, metadata, created_at, updated_at
-             FROM agent_outputs WHERE message_id = ?1"
-        )?;
-
-        let mut rows = stmt.query_map(params![message_id], |row| {
-            Ok(AgentOutput {
-                id: row.get(0)?,
-                conversation_id: row.get(1)?,
-                message_id: row.get(2)?,
-                sequence: row.get(3)?,
-                role: row.get(4)?,
-                thinking: row.get(5)?,
-                tool_calls: row.get(6)?,
-                text_chunks: row.get(7)?,
-                final_text: row.get(8)?,
-                metadata: row.get(9)?,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
-            })
-        })?;
-
-        match rows.next() {
-            Some(Ok(output)) => Ok(Some(output)),
-            Some(Err(e)) => Err(e),
-            None => Ok(None),
-        }
-    }
-
-    /// List agent outputs by conversation_id with optional pagination
-    pub fn list_by_conversation(
-        conversation_id: i64,
-        limit: Option<i64>,
-        offset: Option<i64>,
-    ) -> Result<Vec<AgentOutput>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut query = String::from(
-            "SELECT id, conversation_id, message_id, sequence, role, thinking, tool_calls, text_chunks, final_text, metadata, created_at, updated_at
-             FROM agent_outputs WHERE conversation_id = ?1 ORDER BY sequence DESC"
-        );
-
-        if limit.is_some() {
-            query.push_str(" LIMIT ?2");
-        }
-        if offset.is_some() {
-            if limit.is_none() {
-                query.push_str(" LIMIT -1");
-            }
-            query.push_str(" OFFSET ?3");
-        }
-
-        let mut stmt = conn.prepare(&query)?;
-
-        let row_mapper = |row: &rusqlite::Row<'_>| -> Result<AgentOutput> {
-            Ok(AgentOutput {
-                id: row.get(0)?,
-                conversation_id: row.get(1)?,
-                message_id: row.get(2)?,
-                sequence: row.get(3)?,
-                role: row.get(4)?,
-                thinking: row.get(5)?,
-                tool_calls: row.get(6)?,
-                text_chunks: row.get(7)?,
-                final_text: row.get(8)?,
-                metadata: row.get(9)?,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
-            })
-        };
-
-        let outputs = match (limit, offset) {
-            (Some(l), Some(o)) => stmt.query_map(params![conversation_id, l, o], row_mapper)?,
-            (Some(l), None) => stmt.query_map(params![conversation_id, l], row_mapper)?,
-            _ => stmt.query_map(params![conversation_id], row_mapper)?,
-        };
-
-        outputs.collect()
-    }
-
-    /// Get the latest agent output for a conversation
-    pub fn get_latest_by_conversation(conversation_id: i64) -> Result<Option<AgentOutput>> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, message_id, sequence, role, thinking, tool_calls, text_chunks, final_text, metadata, created_at, updated_at
-             FROM agent_outputs
-             WHERE conversation_id = ?1
-             ORDER BY sequence DESC
-             LIMIT 1"
-        )?;
-
-        let mut rows = stmt.query_map(params![conversation_id], |row| {
-            Ok(AgentOutput {
-                id: row.get(0)?,
-                conversation_id: row.get(1)?,
-                message_id: row.get(2)?,
-                sequence: row.get(3)?,
-                role: row.get(4)?,
-                thinking: row.get(5)?,
-                tool_calls: row.get(6)?,
-                text_chunks: row.get(7)?,
-                final_text: row.get(8)?,
-                metadata: row.get(9)?,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
-            })
-        })?;
-
-        match rows.next() {
-            Some(Ok(output)) => Ok(Some(output)),
-            Some(Err(e)) => Err(e),
-            None => Ok(None),
-        }
-    }
-
-    /// Update an agent output record
-    pub fn update(output: AgentOutput) -> Result<()> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-
-        conn.execute(
-            "UPDATE agent_outputs SET
-                message_id = ?1,
-                thinking = ?2,
-                tool_calls = ?3,
-                text_chunks = ?4,
-                final_text = ?5,
-                metadata = ?6,
-                updated_at = ?7
-             WHERE id = ?8",
-            params![
-                output.message_id,
-                output.thinking,
-                output.tool_calls,
-                output.text_chunks,
-                output.final_text,
-                output.metadata,
-                now,
-                output.id,
-            ],
-        )?;
-
-        Ok(())
-    }
-
-    /// Update only the message_id for an agent output
-    pub fn update_message_id(id: i64, message_id: i64) -> Result<()> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-
-        conn.execute(
-            "UPDATE agent_outputs SET message_id = ?1, updated_at = ?2 WHERE id = ?3",
-            params![message_id, now, id],
-        )?;
-
-        Ok(())
-    }
-
-    /// Delete an agent output by ID
-    pub fn delete(id: i64) -> Result<bool> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-        let count = conn.execute("DELETE FROM agent_outputs WHERE id = ?1", params![id])?;
-        Ok(count > 0)
-    }
-
-    /// Delete all agent outputs for a conversation
-    pub fn delete_by_conversation(conversation_id: i64) -> Result<()> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
-        conn.execute(
-            "DELETE FROM agent_outputs WHERE conversation_id = ?1",
-            params![conversation_id],
-        )?;
-        Ok(())
-    }
-
-    /// Delete all agent outputs older than the given Unix timestamp (seconds).
-    ///
-    /// Used by the TTL cleanup task to bound storage growth. Returns the
-    /// number of rows deleted.
+    /// Delete messages older than the given timestamp (seconds since epoch).
+    /// Returns the number of deleted messages.
     pub fn delete_older_than(cutoff_timestamp: i64) -> Result<usize> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
-        let deleted = conn.execute(
-            "DELETE FROM agent_outputs WHERE created_at < ?1",
+        let count = conn.execute(
+            "DELETE FROM messages WHERE created_at < ?1",
             params![cutoff_timestamp],
         )?;
-        Ok(deleted)
+        Ok(count)
+    }
+
+    /// List messages by conversation with pagination
+    pub fn list_by_conversation_paginated(
+        conversation_id: i64,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<Vec<Message>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        // Build query with optional LIMIT and OFFSET
+        let query = match (limit, offset) {
+            (Some(_l), Some(_o)) => {
+                "SELECT message_id, conversation_id, sequence, role, parts, metadata,
+                        from_agent_id, from_agent_name, message_type, content,
+                        thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                        created_at, updated_at
+                 FROM messages WHERE conversation_id = ?1 ORDER BY sequence ASC LIMIT ?2 OFFSET ?3"
+            }
+            (Some(_l), None) => {
+                "SELECT message_id, conversation_id, sequence, role, parts, metadata,
+                        from_agent_id, from_agent_name, message_type, content,
+                        thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                        created_at, updated_at
+                 FROM messages WHERE conversation_id = ?1 ORDER BY sequence ASC LIMIT ?2"
+            }
+            _ => {
+                "SELECT message_id, conversation_id, sequence, role, parts, metadata,
+                        from_agent_id, from_agent_name, message_type, content,
+                        thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                        created_at, updated_at
+                 FROM messages WHERE conversation_id = ?1 ORDER BY sequence ASC"
+            }
+        };
+
+        let mut stmt = conn.prepare(query)?;
+
+        let map_row = |row: &rusqlite::Row| -> rusqlite::Result<Message> {
+            Ok(Message {
+                message_id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                sequence: row.get(2)?,
+                role: row.get(3)?,
+                parts: row.get(4)?,
+                metadata: row.get(5)?,
+                from_agent_id: row.get(6)?,
+                from_agent_name: row.get(7)?,
+                message_type: row.get(8)?,
+                content: row.get(9)?,
+                thinking: row.get(10)?,
+                tool_calls: row.get(11)?,
+                text_chunks: row.get(12)?,
+                stop_reason: row.get(13)?,
+                duration_ms: row.get(14)?,
+                created_at: row.get(15)?,
+                updated_at: row.get(16)?,
+            })
+        };
+
+        let messages = match (limit, offset) {
+            (Some(l), Some(o)) => stmt
+                .query_map(params![conversation_id, l, o], map_row)?
+                .collect::<Result<Vec<_>>>()?,
+            (Some(l), None) => stmt
+                .query_map(params![conversation_id, l], map_row)?
+                .collect::<Result<Vec<_>>>()?,
+            _ => stmt
+                .query_map(params![conversation_id], map_row)?
+                .collect::<Result<Vec<_>>>()?,
+        };
+
+        Ok(messages)
     }
 }
 
@@ -2536,6 +2519,12 @@ mod tests {
             chat_id,
             workspace_id,
             name: Some("Test Chat".to_string()),
+            collaboration_mode: Some("supervisor".to_string()),
+            worktree_path: None,
+            branch: None,
+            base_branch: None,
+            pr_url: None,
+            pr_number: None,
             created_at: 1000,
             updated_at: 1000,
             archived_at: None,
@@ -2574,6 +2563,7 @@ mod tests {
             "user",
             serde_json::json!([{ "type": "text", "text": "Hello" }]),
             serde_json::json!({}),
+            None,
         )
         .unwrap();
         messages::append(
@@ -2581,6 +2571,7 @@ mod tests {
             "assistant",
             serde_json::json!([{ "type": "text", "text": "Hi there!" }]),
             serde_json::json!({}),
+            None,
         )
         .unwrap();
 
@@ -2638,6 +2629,12 @@ mod tests {
             chat_id,
             workspace_id,
             name: None,
+            collaboration_mode: Some("supervisor".to_string()),
+            worktree_path: None,
+            branch: None,
+            base_branch: None,
+            pr_url: None,
+            pr_number: None,
             created_at: 1000,
             updated_at: 1000,
             archived_at: None,
@@ -2678,6 +2675,7 @@ mod tests {
                 "user",
                 serde_json::json!([{ "type": "text", "text": format!("Message {}", i) }]),
                 serde_json::json!({ "index": i }),
+                None,
             )
             .unwrap();
             appended_messages.push(msg);
@@ -2735,6 +2733,12 @@ mod tests {
             chat_id,
             workspace_id,
             name: None,
+            collaboration_mode: Some("supervisor".to_string()),
+            worktree_path: None,
+            branch: None,
+            base_branch: None,
+            pr_url: None,
+            pr_number: None,
             created_at: 1000,
             updated_at: 1000,
             archived_at: None,
@@ -2778,6 +2782,7 @@ mod tests {
                 "user",
                 serde_json::json!([{ "type": "text", "text": format!("Message {}", i) }]),
                 serde_json::json!({ "index": i }),
+                None,
             )
             .unwrap();
             last_msg = Some(msg);

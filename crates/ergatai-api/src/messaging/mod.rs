@@ -599,7 +599,6 @@ impl MessageSender {
                     let append_result = tokio::task::spawn_blocking(move || {
                         let role = agent_message_role(&message_type);
                         let metadata = serde_json::json!({
-                            "source": "agent",
                             "senderAgentId": from,
                             "senderAgentName": sender_name,
                             "messageType": message_type,
@@ -610,11 +609,21 @@ impl MessageSender {
                                 warn!("Failed to parse conversation ID '{}', using 0", conversation_id_for_persist);
                                 0
                             });
+
+                        // Use AgentMessageFields for structured storage
+                        let agent_fields = user_data_db::messages::AgentMessageFields {
+                            from_agent_id: Some(from.clone()),
+                            from_agent_name: Some(sender_name),
+                            message_type: Some(message_type),
+                            content: Some(message.clone()),
+                        };
+
                         user_data_db::messages::append(
                             conversation_id_i64,
                             role,
                             serde_json::json!([{ "type": "text", "text": message }]),
                             metadata,
+                            Some(agent_fields),
                         )
                     })
                     .await;
@@ -1514,7 +1523,11 @@ pub async fn publish_to_conversation_subject_with_message(
     let msg_id_for_log = persisted_msg.message_id;
 
     // Extract text content from parts to ensure consistency
-    let content = extract_text_from_parts(&persisted_msg.parts);
+    let content = persisted_msg
+        .parts
+        .as_ref()
+        .map(|p| extract_text_from_parts(p))
+        .unwrap_or_default();
 
     // Fire-and-forget: spawn task but don't await, so send_message is not blocked
     tokio::spawn(async move {
@@ -1524,8 +1537,8 @@ pub async fn publish_to_conversation_subject_with_message(
             message_id: persisted_msg.message_id.to_string(),
             role: persisted_msg.role,
             content,
-            parts: Some(
-                serde_json::from_str(&persisted_msg.parts).unwrap_or_else(|e| {
+            parts: Some(match &persisted_msg.parts {
+                Some(parts_str) => serde_json::from_str(parts_str).unwrap_or_else(|e| {
                     warn!(
                         message_id = %msg_id_for_log,
                         error = %e,
@@ -1533,7 +1546,8 @@ pub async fn publish_to_conversation_subject_with_message(
                     );
                     serde_json::json!([])
                 }),
-            ),
+                None => serde_json::json!([]),
+            }),
             metadata: persisted_msg
                 .metadata
                 .as_ref()

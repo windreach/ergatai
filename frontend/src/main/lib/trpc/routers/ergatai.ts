@@ -257,6 +257,11 @@ type Message = {
   role: string
   parts: unknown[]
   metadata: Record<string, unknown> | null
+  // Agent消息专用字段（新增）
+  fromAgentId: string | null
+  fromAgentName: string | null
+  messageType: string | null
+  content: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -312,7 +317,7 @@ function mapChat(chat: BackendChat): Chat {
     id: chat.id,
     name: chat.name,
     workspaceId: chat.workspace_id,
-    collaborationMode: "supervisor",
+    collaborationMode: chat.collaboration_mode ?? "supervisor",
     createdAt: new Date(chat.created_at * 1000),
     updatedAt: new Date(chat.updated_at * 1000),
     archivedAt: chat.archived_at === null ? null : new Date(chat.archived_at * 1000),
@@ -427,16 +432,16 @@ function parseMessageMetadata(
 function mapConversation(conversation: BackendConversation): Conversation {
   return {
     id: conversation.id,
-    parentId: null,
+    parentId: conversation.parent_id,
     projectId: "",
-    workspaceId: conversation.workspace_id,
+    workspaceId: null,  // Backend doesn't provide workspace_id on conversations; fetch from chat if needed
     title: conversation.name,
     mode: conversation.mode,
     createdAt: new Date(conversation.created_at * 1000),
     updatedAt: new Date(conversation.updated_at * 1000),
-    archivedAt: conversation.archived_at === null
-      ? null
-      : new Date(conversation.archived_at * 1000),
+    archivedAt: conversation.status === "archived"
+      ? new Date(conversation.updated_at * 1000)
+      : null,
   }
 }
 
@@ -448,6 +453,11 @@ function mapMessage(message: BackendMessage): Message {
     role: message.role,
     parts: parseMessageParts(message.parts),
     metadata: parseMessageMetadata(message.metadata),
+    // Agent消息专用字段
+    fromAgentId: message.from_agent_id,
+    fromAgentName: message.from_agent_name,
+    messageType: message.message_type,
+    content: message.content,
     createdAt: new Date(message.created_at * 1000),
     updatedAt: new Date(message.updated_at * 1000),
   }
@@ -705,13 +715,15 @@ export const ergataiRouter = router({
       return conversations.map(mapConversation)
     }),
 
-  /** Create a root conversation in a workspace */
+  /** Create a root conversation for a chat */
   createConversation: publicProcedure
     .input(
       z.object({
-        workspaceId: z.string(),
+        chatId: z.string(),
+        collaborationSessionId: z.string().optional(),
         title: z.string().optional(),
         mode: z.string().optional(),
+        participantRole: z.string().optional(),
       }),
     )
     .mutation(async ({ input }) => {
@@ -720,9 +732,11 @@ export const ergataiRouter = router({
         {
           method: "POST",
           body: JSON.stringify({
-            workspace_id: input.workspaceId,
+            chat_id: input.chatId,
+            collaboration_session_id: input.collaborationSessionId,
             name: input.title,
             mode: input.mode,
+            participant_role: input.participantRole,
           }),
         },
       )
@@ -887,29 +901,6 @@ export const ergataiRouter = router({
   listProfiles: publicProcedure.query(async () => {
     return ergataiFetch<{ profiles: z.infer<typeof AgentProfileSchema>[] }>("/api/v1/agent-profiles")
   }),
-
-  /** List workspaces */
-  listWorkspaces: publicProcedure.query(async () => {
-    return ergataiFetch("/api/v1/workspaces")
-  }),
-
-  /** Create a workspace */
-  createWorkspace: publicProcedure
-    .input(
-      z.object({
-        id: z.string(),
-        workDir: z.string().optional(),
-      }),
-    )
-    .mutation(async ({ input }) => {
-      return ergataiFetch("/api/v1/workspaces", {
-        method: "POST",
-        body: JSON.stringify({
-          id: input.id,
-          work_dir: input.workDir,
-        }),
-      })
-    }),
 
   /** List managed workspaces */
   listManagedWorkspaces: publicProcedure
@@ -1544,6 +1535,12 @@ export const ergataiRouter = router({
       z.object({
         workspaceId: z.string(),
         name: z.string().optional(),
+        collaboration_mode: z.string().optional(),
+        worktree_path: z.string().optional(),
+        branch: z.string().optional(),
+        base_branch: z.string().optional(),
+        pr_url: z.string().optional(),
+        pr_number: z.number().optional(),
       }),
     )
     .mutation(async ({ input }) => {
@@ -1552,6 +1549,12 @@ export const ergataiRouter = router({
         body: JSON.stringify({
           workspace_id: input.workspaceId,
           name: input.name,
+          collaboration_mode: input.collaboration_mode,
+          worktree_path: input.worktree_path,
+          branch: input.branch,
+          base_branch: input.base_branch,
+          pr_url: input.pr_url,
+          pr_number: input.pr_number,
         }),
       })
 
@@ -2202,10 +2205,10 @@ export const ergataiRouter = router({
     .input(z.object({ chatId: z.string() }))
     .query(async ({ input }) => {
       try {
-        return await ergataiFetch<CollaborationSessionDetail | null>(
-          `/api/v1/collaboration-sessions/by-chat/${encodeURIComponent(input.chatId)}`,
-          { silentStatus: [404] },  // 404 is expected for new chats, don't log error
+        const sessions = await ergataiFetch<CollaborationSessionDetail[]>(
+          `/api/v1/collaboration-sessions?chat_id=${encodeURIComponent(input.chatId)}`,
         )
+        return sessions.length > 0 ? sessions[0] : null
       } catch (error) {
         if (isErgataiApiError(error) && error.status === 404) return null
         throw error
@@ -2612,7 +2615,10 @@ export const ergataiRouter = router({
   getCollaborationSessionByChat: publicProcedure
     .input(z.object({ chatId: z.string() }))
     .query(async ({ input }) => {
-      return ergataiFetch(`/api/v1/collaboration-sessions/by-chat/${encodeURIComponent(input.chatId)}`)
+      const sessions = await ergataiFetch<CollaborationSessionDetail[]>(
+        `/api/v1/collaboration-sessions?chat_id=${encodeURIComponent(input.chatId)}`,
+      )
+      return sessions.length > 0 ? sessions[0] : null
     }),
 
   /** Get collaboration session status */

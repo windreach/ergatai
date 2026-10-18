@@ -65,13 +65,23 @@ export function useChatInstance({
     // Keep role as-is - "agent" stays "agent" so MessageRolePolicy.isInitiator() returns true
     const role = message.role as "user" | "assistant" | "agent"
 
-    // Clear messageType to avoid "request"/"response"/"broadcast" styling
+    // Merge all metadata including new agent message fields
     const { messageType, ...restMetadata } = message.metadata || {}
+    const mergedMetadata = {
+      ...restMetadata,
+      // 传递agent消息专用字段
+      fromAgentId: message.fromAgentId,
+      fromAgentName: message.fromAgentName,
+      messageType: message.messageType,
+      agentContent: message.content,  // Use content field from backend
+      senderAgentId: message.senderAgentId,
+      senderAgentName: message.senderAgentName,
+    }
 
     return {
       id: message.id,
       role: role as UIMessage<any>["role"],
-      metadata: restMetadata,
+      metadata: mergedMetadata,
       parts,
     }
   }, [])

@@ -92,11 +92,11 @@ export type ManagedWorkspaceStatus = {
 }
 
 // Matches OpenAPI ChatResponse schema
-// Note: backend no longer returns project_id or collaboration_mode on Chat
 export type BackendChat = {
   id: string
   workspace_id: string
   name: string | null
+  collaboration_mode: string | null
   created_at: number
   updated_at: number
   archived_at: number | null
@@ -131,12 +131,15 @@ export type AgentPlan = {
 // Matches OpenAPI ConversationResponse schema
 export type BackendConversation = {
   id: string
-  workspace_id: string | null
+  collaboration_session_id: string
+  chat_id: string
+  parent_id: string | null
   name: string | null
   mode: string
+  participant_role: string
+  status: string
   created_at: number
   updated_at: number
-  archived_at: number | null
 }
 
 // Matches OpenAPI Message schema
@@ -147,6 +150,11 @@ export type BackendMessage = {
   role: string
   parts: string           // JSON string
   metadata: string | null // JSON string
+  // Agent消息专用字段（新增）
+  from_agent_id: string | null
+  from_agent_name: string | null
+  message_type: string | null
+  content: string | null
   created_at: number
   updated_at: number
 }
@@ -225,8 +233,14 @@ export async function deleteProject(id: string): Promise<void> {
   await ergataiFetch(`/api/v1/projects/${encodeURIComponent(id)}`, { method: "DELETE" })
 }
 
+export async function listAllConversations(): Promise<BackendConversation[]> {
+  return ergataiFetch<BackendConversation[]>("/api/v1/conversations")
+}
+
 export async function listConversations(chatId: string): Promise<BackendConversation[]> {
-  return listChildConversations(chatId)
+  return ergataiFetch<BackendConversation[]>(
+    `/api/v1/conversations?chat_id=${encodeURIComponent(chatId)}`,
+  )
 }
 
 export async function updateConversationMessages(
