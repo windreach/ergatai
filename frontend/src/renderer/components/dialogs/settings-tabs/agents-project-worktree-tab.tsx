@@ -31,7 +31,7 @@ import { COMMAND_PROMPTS } from "../../../features/agents/commands"
 import {
   agentsSettingsDialogOpenAtom,
   selectedAgentChatIdAtom,
-  selectedProjectAtom,
+  selectedWorkspaceAtom,
 } from "../../../lib/atoms"
 import { cn } from "../../../lib/utils"
 import { ResizableSidebar } from "../../ui/resizable-sidebar"
@@ -56,7 +56,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
   // For "Fill with AI" - create chat and close settings
   const setSettingsDialogOpen = useSetAtom(agentsSettingsDialogOpenAtom)
   const setSelectedChatId = useSetAtom(selectedAgentChatIdAtom)
-  const setSelectedProject = useSetAtom(selectedProjectAtom)
+  const setSelectedWorkspace = useSetAtom(selectedWorkspaceAtom)
   const utils = trpc.useUtils()
   const createChatMutation = trpc.chats.create.useMutation({
     onSuccess: (data) => {
@@ -91,7 +91,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
   const deleteMutation = trpc.projects.delete.useMutation({
     onSuccess: () => {
       toast.success("Project removed from list")
-      setSelectedProject((current) => {
+      setSelectedWorkspace((current) => {
         if (current?.id === projectId) {
           return null
         }
@@ -588,7 +588,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
 
 // --- Main Two-Panel Component ---
 export function AgentsProjectsTab() {
-  const selectedProject = useAtomValue(selectedProjectAtom)
+  const selectedWorkspace = useAtomValue(selectedWorkspaceAtom)
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -649,11 +649,11 @@ export function AgentsProjectsTab() {
     }
   }, [projects, selectedProjectId, isLoading])
 
-  // Sync selection from global selectedProject (e.g., toast action)
+  // Sync selection from global selectedWorkspace (e.g., toast action)
   useEffect(() => {
-    if (!selectedProject?.id) return
-    setSelectedProjectId(selectedProject.id)
-  }, [selectedProject?.id])
+    if (!selectedWorkspace?.id) return
+    setSelectedProjectId(selectedWorkspace.id)
+  }, [selectedWorkspace?.id])
 
   return (
     <div className="flex h-full overflow-hidden">

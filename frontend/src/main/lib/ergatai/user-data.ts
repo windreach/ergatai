@@ -14,7 +14,7 @@ export type BackendProject = {
 }
 
 export type BackendWorkspace = {
-  workspace_id: number
+  workspace_id: string  // Backend returns formatted string like "ws_123_000_0000"
   name: string | null
   work_dir: string
   env: string           // JSON string
@@ -22,7 +22,7 @@ export type BackendWorkspace = {
   config: string        // JSON string
   collaboration_mode: string
   status: string
-  default_project_id: number | null
+  default_project_id: string | null  // Backend returns formatted string like "proj_123_000_0000"
   created_at: number    // Unix timestamp (seconds)
   updated_at: number    // Unix timestamp (seconds)
 }
@@ -48,7 +48,7 @@ export type BackendWorkspaceProject = {
 }
 
 export type BackendManagedWorkspace = {
-  workspace_id: number
+  workspace_id: string  // Backend returns formatted string like "ws_123_000_0000"
   name: string | null
   work_dir: string
   env: string
@@ -59,7 +59,7 @@ export type BackendManagedWorkspace = {
   default_project_id: string | null
   created_at: number
   updated_at: number
-  projects: BackendWorkspaceProject[]
+  projects?: BackendWorkspaceProject[]  // 可选字段，后端可能不返回
 }
 
 export type BackendWorkspaceStatus = {
@@ -174,6 +174,7 @@ export type BackendSseMessage = {
   sequence: number
   sender_agent_id?: string
   sender_agent_name?: string
+  message_type?: string
 }
 
 export type RegisteredWorktree = {
@@ -278,21 +279,57 @@ export async function getRegisteredWorktree(
   }
 
   const promise = (async () => {
-    const backend = await ergataiFetch<{
-      chat: BackendChat | null
-      project_path: string | null
-    }>(
-      `/api/v1/worktrees/registered?path=${encodeURIComponent(path)}`,
+    // Get all workspaces
+    const workspaces = await ergataiFetch<BackendManagedWorkspace[]>(
+      `/api/v1/workspaces/managed`,
     )
 
-    if (!backend.chat && backend.project_path === null) {
-      return null
+    // Fetch all workspace projects in parallel (fixes N+1 query)
+    const projectsByWorkspace = await Promise.all(
+      workspaces.map(async (ws) => ({
+        workspaceId: ws.workspace_id,
+        projects: await ergataiFetch<BackendWorkspaceProject[]>(
+          `/api/v1/workspaces/managed/${encodeURIComponent(ws.workspace_id)}/projects`,
+        ),
+      })),
+    )
+
+    // Find matching project
+    for (const { workspaceId, projects } of projectsByWorkspace) {
+      const matchingProject = projects.find(
+        (project) => path === project.path || path.startsWith(project.path + "/"),
+      )
+      if (matchingProject) {
+        // Found a matching project, fetch chats only for this workspace
+        const chats = await ergataiFetch<BackendChat[]>(
+          `/api/v1/chats?workspace_id=${encodeURIComponent(workspaceId)}`,
+        )
+        const chat = chats.find(
+          (c) =>
+            c.worktree_path === path ||
+            c.worktree_path?.startsWith(path + "/"),
+        )
+        return {
+          chat: chat || null,
+          projectPath: matchingProject.path,
+        }
+      }
     }
 
-    return {
-      chat: backend.chat,
-      projectPath: backend.project_path,
+    // Check if path matches any chat's worktree_path (fallback)
+    const allChats = await ergataiFetch<BackendChat[]>(`/api/v1/chats`)
+    const chat = allChats.find(
+      (c) =>
+        c.worktree_path === path || c.worktree_path?.startsWith(path + "/"),
+    )
+    if (chat) {
+      return {
+        chat,
+        projectPath: null,
+      }
     }
+
+    return null
   })()
 
   registeredWorktreeCache.set(path, {

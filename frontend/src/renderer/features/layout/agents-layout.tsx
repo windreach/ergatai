@@ -17,7 +17,7 @@ import {
   customHotkeysAtom,
   betaKanbanEnabledAtom,
 } from "../../lib/atoms"
-import { selectedAgentChatIdAtom, selectedProjectAtom, selectedDraftIdAtom, showNewChatFormAtom, desktopViewAtom, fileSearchDialogOpenAtom } from "../agents/atoms"
+import { selectedAgentChatIdAtom, selectedWorkspaceAtom, selectedDraftIdAtom, showNewChatFormAtom, desktopViewAtom, fileSearchDialogOpenAtom } from "../agents/atoms"
 import { trpc } from "../../lib/trpc"
 import { useAgentsHotkeys } from "../agents/lib/agents-hotkeys-manager"
 import { toggleSearchAtom } from "../agents/search"
@@ -95,7 +95,7 @@ export function AgentsLayout() {
   const desktopView = useAtomValue(desktopViewAtom)
   const setFileSearchDialogOpen = useSetAtom(fileSearchDialogOpenAtom)
   const [selectedChatId, setSelectedChatId] = useAtom(selectedAgentChatIdAtom)
-  const [selectedProject, setSelectedProject] = useAtom(selectedProjectAtom)
+  const [selectedWorkspace, setSelectedWorkspace] = useAtom(selectedWorkspaceAtom)
   const setSelectedDraftId = useSetAtom(selectedDraftIdAtom)
   const setShowNewChatForm = useSetAtom(showNewChatFormAtom)
   const betaKanbanEnabled = useAtomValue(betaKanbanEnabledAtom)
@@ -104,38 +104,38 @@ export function AgentsLayout() {
   const setBillingMethod = useSetAtom(billingMethodAtom)
   const claudeLoginModalConfig = useAtomValue(claudeLoginModalConfigAtom)
 
-  // Fetch projects to validate selectedProject exists
+  // Fetch projects to validate selectedWorkspace exists
   const { data: projects, isLoading: isLoadingProjects } =
     trpc.projects.list.useQuery(undefined, { staleTime: Infinity })
 
   // Validated project - only valid if exists in DB
   // While loading, trust localStorage value to prevent clearing on app restart
   const validatedProject = useMemo(() => {
-    if (!selectedProject) return null
+    if (!selectedWorkspace) return null
     // While loading, trust localStorage value to prevent flicker and clearing
-    if (isLoadingProjects) return selectedProject
+    if (isLoadingProjects) return selectedWorkspace
     // After loading, validate against DB
     if (!projects) return null
-    const exists = projects.some((p) => p.id === selectedProject.id)
-    return exists ? selectedProject : null
-  }, [selectedProject, projects, isLoadingProjects])
+    const exists = projects.some((p) => p.id === selectedWorkspace.id)
+    return exists ? selectedWorkspace : null
+  }, [selectedWorkspace, projects, isLoadingProjects])
 
   // Clear invalid project from storage (only after loading completes)
   useEffect(() => {
     if (
-      selectedProject &&
+      selectedWorkspace &&
       projects &&
       !isLoadingProjects &&
       !validatedProject
     ) {
-      setSelectedProject(null)
+      setSelectedWorkspace(null)
     }
   }, [
-    selectedProject,
+    selectedWorkspace,
     projects,
     isLoadingProjects,
     validatedProject,
-    setSelectedProject,
+    setSelectedWorkspace,
   ])
 
   // Show/hide native traffic lights based on sidebar and fullscreen state
@@ -220,7 +220,15 @@ export function AgentsLayout() {
           onClick: () => {
             const projectMatch = projects?.find((project) => project.id === payload.projectId)
             if (projectMatch) {
-              setSelectedProject(projectMatch as any)
+              setSelectedWorkspace({
+                id: projectMatch.id,
+                name: projectMatch.name,
+                path: projectMatch.path,
+                gitRemoteUrl: projectMatch.gitRemoteUrl ?? null,
+                gitProvider: (projectMatch.gitProvider as "github" | "gitlab" | "bitbucket" | null) ?? null,
+                gitOwner: projectMatch.gitOwner ?? null,
+                gitRepo: projectMatch.gitRepo ?? null,
+              })
             }
             setSettingsActiveTab("projects")
             setSettingsDialogOpen(true)
@@ -230,12 +238,12 @@ export function AgentsLayout() {
     })
 
     return unsubscribe
-  }, [projects, setSelectedProject, setSettingsActiveTab, setSettingsDialogOpen])
+  }, [projects, setSelectedWorkspace, setSettingsActiveTab, setSettingsDialogOpen])
 
   // Handle sign out
   const handleSignOut = useCallback(async () => {
     // Reset onboarding/provider selection state on logout.
-    setSelectedProject(null)
+    setSelectedWorkspace(null)
     setSelectedChatId(null)
     setBillingMethod(null)
     setApiKeyOnboardingCompleted(false)
@@ -243,7 +251,7 @@ export function AgentsLayout() {
       await window.desktopApi.logout()
     }
   }, [
-    setSelectedProject,
+    setSelectedWorkspace,
     setSelectedChatId,
     setBillingMethod,
     setApiKeyOnboardingCompleted,

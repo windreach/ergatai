@@ -71,6 +71,7 @@ const WorkspaceItem = memo(({
       toast.success("Workspace archived")
       onWorkspaceDeleted?.(workspace.id)
       void utils.ergatai.listManagedWorkspaces.invalidate()
+      void utils.ergatai.listArchivedWorkspaces.invalidate()
     },
     onError: error => toast.error("Failed to archive workspace", {
       description: error.message,
@@ -143,13 +144,13 @@ const WorkspaceItem = memo(({
             Edit
           </DropdownMenuItem>
 
-          {workspace.projects.length > 1 && (
+          {(workspace.projects?.length ?? 0) > 1 && (
             <>
               <DropdownMenuSeparator />
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>Set default project</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent>
-                  {workspace.projects.map((project) => (
+                  {(workspace.projects ?? []).map((project) => (
                     <DropdownMenuItem
                       key={project.projectId}
                       disabled={project.isDefault || setDefaultProjectMutation.isPending}
@@ -250,6 +251,8 @@ export const WorkspaceList = memo(({
     trpc.ergatai.listManagedWorkspaces.useQuery({ collaborationMode })
 
   const filteredWorkspaces = (workspaces ?? []).filter((workspace) => {
+    // Filter out archived workspaces
+    if (workspace.status === "archived") return false
     if (workspace.collaborationMode !== collaborationMode) return false
     const query = searchQuery.trim().toLowerCase()
     if (!query) return true

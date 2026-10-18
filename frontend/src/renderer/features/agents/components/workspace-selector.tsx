@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react"
 import { useAtom } from "jotai"
+import { toast } from "sonner"
 import {
   Popover,
   PopoverContent,
@@ -21,37 +22,42 @@ import {
 } from "../../../components/ui/dialog"
 import { Input } from "../../../components/ui/input"
 import { Button } from "../../../components/ui/button"
-import { IconChevronDown, CheckIcon, FolderPlusIcon, GitHubIcon } from "../../../components/ui/icons"
+import { IconChevronDown, CheckIcon, FolderPlusIcon, GitHubIcon, FolderFilledIcon } from "../../../components/ui/icons"
 import { ProjectIcon } from "../../../components/ui/project-icon"
 import { cn } from "../../../lib/utils"
 import { trpc } from "../../../lib/trpc"
-import { selectedProjectAtom } from "../atoms"
+import { selectedWorkspaceAtom } from "../atoms"
 import {
   dedupeByPath,
   getPathDeduplicatedNames,
 } from "../lib/workspace-naming"
+import { useCollaborationMode } from "../collaboration/use-collaboration-mode"
 
-interface ProjectSelectorProps {
+interface WorkspaceSelectorProps {
   triggerClassName?: string
   contentClassName?: string
   matchTriggerWidth?: boolean
-  onProjectSelected?: (project: { id: string; name: string }) => void
+  onWorkspaceSelected?: (workspace: { id: string; name: string; path: string }) => void
 }
 
-export function ProjectSelector({
+export function WorkspaceSelector({
   triggerClassName,
   contentClassName,
   matchTriggerWidth = false,
-  onProjectSelected,
-}: ProjectSelectorProps = {}) {
-  const [selectedProject, setSelectedProject] = useAtom(selectedProjectAtom)
+  onWorkspaceSelected,
+}: WorkspaceSelectorProps = {}) {
+  const [selectedWorkspace, setSelectedWorkspace] = useAtom(selectedWorkspaceAtom)
   const [open, setOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [githubDialogOpen, setGithubDialogOpen] = useState(false)
   const [githubUrl, setGithubUrl] = useState("")
+  const { mode: collaborationMode } = useCollaborationMode()
 
   // Fetch projects from DB
   const { data: projects, isLoading: isLoadingProjects } = trpc.projects.list.useQuery(undefined, { staleTime: Infinity })
+
+  // Fetch workspaces to check for existing default workspace
+  const { data: workspaces } = trpc.ergatai.listManagedWorkspaces.useQuery({ collaborationMode })
 
   const uniqueProjects = useMemo(
     () => dedupeByPath(projects ?? []),
@@ -92,7 +98,7 @@ export function ProjectSelector({
           return [project, ...oldData]
         })
 
-        setSelectedProject({
+        setSelectedWorkspace({
           id: project.id,
           name: project.name,
           path: project.path,
@@ -105,10 +111,55 @@ export function ProjectSelector({
           gitOwner: project.gitOwner,
           gitRepo: project.gitRepo,
         })
-        onProjectSelected?.({ id: project.id, name: project.name })
+        onWorkspaceSelected?.({ id: project.id, name: project.name, path: project.path })
       }
     },
   })
+
+  // Default workspace mutation - quick start without selecting project
+  const defaultWorkspace = trpc.ergatai.createWorkspace.useMutation({
+    onSuccess: (workspace) => {
+      toast.success("Default workspace created")
+      // Refresh workspace and project lists
+      void utils.ergatai.listManagedWorkspaces.invalidate()
+      void utils.projects.list.invalidate()
+      setOpen(false)
+      onWorkspaceSelected?.({
+        id: workspace.defaultProjectId ?? workspace.id,
+        name: workspace.name ?? "Default Workspace",
+        path: "~/.ergatai",
+      })
+    },
+    onError: (error) => {
+      toast.error("Failed to create default workspace", { description: error.message })
+    },
+  })
+
+  const handleDefaultWorkspace = async () => {
+    // Check if a default workspace already exists to avoid duplicates
+    const existingDefault = workspaces?.find(
+      (ws) => ws.name === "Default Workspace" && ws.collaborationMode === collaborationMode,
+    )
+    if (existingDefault) {
+      toast.info("Default workspace already exists")
+      const defaultProject = existingDefault.projects?.find((p) => p.isDefault)
+      onWorkspaceSelected?.({
+        id: defaultProject?.projectId ?? existingDefault.id,
+        name: existingDefault.name ?? "Default Workspace",
+        path: existingDefault.workDir,
+      })
+      setOpen(false)
+      return
+    }
+
+    await defaultWorkspace.mutateAsync({
+      name: "Default Workspace",
+      workDir: "~/.ergatai",
+      projectPath: "~/.ergatai",
+      projectName: "Default Project",
+      collaborationMode,
+    })
+  }
 
   // Clone from GitHub mutation
   const cloneFromGitHub = trpc.projects.cloneFromGitHub.useMutation({
@@ -125,7 +176,7 @@ export function ProjectSelector({
           return [project, ...oldData]
         })
 
-        setSelectedProject({
+        setSelectedWorkspace({
           id: project.id,
           name: project.name,
           path: project.path,
@@ -140,7 +191,7 @@ export function ProjectSelector({
         })
         setGithubDialogOpen(false)
         setGithubUrl("")
-        onProjectSelected?.({ id: project.id, name: project.name })
+        onWorkspaceSelected?.({ id: project.id, name: project.name, path: project.path })
       }
     },
   })
@@ -158,7 +209,7 @@ export function ProjectSelector({
   const handleSelectProject = (projectId: string) => {
     const project = projects?.find((p) => p.id === projectId)
     if (project) {
-      setSelectedProject({
+      setSelectedWorkspace({
         id: project.id,
         name: project.name,
         path: project.path,
@@ -171,7 +222,7 @@ export function ProjectSelector({
         gitOwner: project.gitOwner,
         gitRepo: project.gitRepo,
       })
-      onProjectSelected?.({ id: project.id, name: project.name })
+      onWorkspaceSelected?.({ id: project.id, name: project.name, path: project.path })
       setOpen(false)
     }
   }
@@ -179,18 +230,18 @@ export function ProjectSelector({
   // Validate selected project still exists and use latest DB data (e.g. renamed project)
   // While loading, trust localStorage value to prevent showing "Select repo" on app restart
   const validSelection = useMemo(() => {
-    if (!selectedProject) return null
+    if (!selectedWorkspace) return null
     // While loading, trust localStorage value
-    if (isLoadingProjects) return selectedProject
+    if (isLoadingProjects) return selectedWorkspace
     // After loading, validate against DB and use fresh data
     if (!projects) return null
-    const dbProject = projects.find((p) => p.id === selectedProject.id)
+    const dbProject = projects.find((p) => p.id === selectedWorkspace.id)
     if (!dbProject) return null
     return {
-      ...selectedProject,
+      ...selectedWorkspace,
       name: dbProject.name,
     }
-  }, [selectedProject, projects, isLoadingProjects])
+  }, [selectedWorkspace, projects, isLoadingProjects])
 
   return (
     <>
@@ -216,7 +267,7 @@ export function ProjectSelector({
           <span className="truncate max-w-[120px]">
             {validSelection
               ? projectDisplayNames.get(validSelection.id) ?? validSelection.name
-              : "Select repo"}
+              : "Select workspace"}
           </span>
           <IconChevronDown className="h-3 w-3 shrink-0 opacity-50" />
         </button>
@@ -235,7 +286,7 @@ export function ProjectSelector({
       >
         <Command shouldFilter={false}>
           <CommandInput
-            placeholder="Search repos..."
+            placeholder="Search workspaces..."
             value={searchQuery}
             onValueChange={setSearchQuery}
           />
@@ -274,6 +325,15 @@ export function ProjectSelector({
             )}
           </CommandList>
           <div className="border-t border-border/50 py-1">
+            {/* Default Workspace - Quick Start */}
+            <button
+              onClick={handleDefaultWorkspace}
+              disabled={defaultWorkspace.isPending}
+              className="flex items-center gap-1.5 min-h-[32px] py-[5px] px-1.5 mx-1 w-[calc(100%-8px)] rounded-md text-sm cursor-default select-none outline-none dark:hover:bg-neutral-800 hover:text-foreground transition-colors border-b border-border/30"
+            >
+              <FolderFilledIcon className="h-4 w-4 text-muted-foreground" />
+              <span>{defaultWorkspace.isPending ? "Creating..." : "Default Workspace"}</span>
+            </button>
             <button
               onClick={handleOpenFolder}
               disabled={openFolder.isPending}

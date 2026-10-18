@@ -14,7 +14,7 @@ import {
   type ChangedFileInfo,
 } from "../utils/git-activity"
 import {
-  selectedProjectAtom,
+  selectedWorkspaceAtom,
   diffSidebarOpenAtomFamily,
   filteredDiffFilesAtom,
   filteredConversationIdAtom,
@@ -38,7 +38,7 @@ export const GitActivityBadges = memo(function GitActivityBadges({
   chatId,
   conversationId,
 }: GitActivityBadgesProps) {
-  const selectedProject = useAtomValue(selectedProjectAtom)
+  const selectedWorkspace = useAtomValue(selectedWorkspaceAtom)
   const setDiffSidebarOpen = useSetAtom(diffSidebarOpenAtomFamily(chatId))
   const setFilteredDiffFiles = useSetAtom(filteredDiffFilesAtom)
   const setFilteredConversationId = useSetAtom(filteredConversationIdAtom)
@@ -51,7 +51,7 @@ export const GitActivityBadges = memo(function GitActivityBadges({
   const [isExpanded, setIsExpanded] = useState(false)
 
   const activity = useMemo(() => extractGitActivity(parts), [parts])
-  const changedFiles = useMemo(() => extractChangedFiles(parts, selectedProject?.path), [parts, selectedProject?.path])
+  const changedFiles = useMemo(() => extractChangedFiles(parts, selectedWorkspace?.path), [parts, selectedWorkspace?.path])
 
   const totals = useMemo(() => {
     let additions = 0
@@ -67,8 +67,8 @@ export const GitActivityBadges = memo(function GitActivityBadges({
     if (activity?.type !== "commit") return
 
     // If pushed to remote — open on GitHub
-    const owner = selectedProject?.gitOwner
-    const repo = selectedProject?.gitRepo
+    const owner = selectedWorkspace?.gitOwner
+    const repo = selectedWorkspace?.gitRepo
     if (activity.pushed && activity.hash && owner && repo) {
       window.desktopApi.openExternal(
         `https://github.com/${owner}/${repo}/commit/${activity.hash}`,
@@ -88,7 +88,7 @@ export const GitActivityBadges = memo(function GitActivityBadges({
     setFilteredConversationId(conversationId)
     setDiffActiveTab("history")
     setDiffSidebarOpen(true)
-  }, [activity, conversationId, selectedProject, setSelectedCommit, setFilteredDiffFiles, setFilteredConversationId, setDiffActiveTab, setDiffSidebarOpen])
+  }, [activity, conversationId, selectedWorkspace, setSelectedCommit, setFilteredDiffFiles, setFilteredConversationId, setDiffActiveTab, setDiffSidebarOpen])
 
   const filesCommitted = activity?.type === "commit" || activity?.type === "pr"
 

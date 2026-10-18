@@ -314,7 +314,7 @@ export const lastSelectedRepoAtom = atomWithStorage<SavedRepo>(
 )
 
 // Selected local project (persisted)
-export type SelectedProject = {
+export type SelectedWorkspace = {
   id: string
   name: string
   path: string
@@ -324,9 +324,24 @@ export type SelectedProject = {
   gitRepo?: string | null
 } | null
 
+// Migration: copy old localStorage key to new key for existing users
+if (typeof window !== "undefined") {
+  const oldKey = "agents:selectedProject"
+  const newKey = "agents:selectedWorkspace"
+  try {
+    const oldValue = window.localStorage.getItem(oldKey)
+    if (oldValue && !window.localStorage.getItem(newKey)) {
+      window.localStorage.setItem(newKey, oldValue)
+      window.localStorage.removeItem(oldKey)
+    }
+  } catch {
+    // Ignore storage access errors (e.g., privacy mode)
+  }
+}
+
 // Selected local project - uses window-scoped storage so each window can work with different projects
-export const selectedProjectAtom = atomWithWindowStorage<SelectedProject>(
-  "agents:selectedProject",
+export const selectedWorkspaceAtom = atomWithWindowStorage<SelectedWorkspace>(
+  "agents:selectedWorkspace",
   null,
   { getOnInit: true },
 )

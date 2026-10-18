@@ -9,7 +9,7 @@ import { getToolStatus } from "./agent-tool-registry"
 import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areToolPropsEqual } from "./agent-tool-utils"
 import { cn } from "../../../lib/utils"
-import { selectedProjectAtom } from "../atoms"
+import { selectedWorkspaceAtom } from "../atoms"
 
 interface AgentBashToolProps {
   part: any
@@ -48,8 +48,8 @@ export const AgentBashTool = memo(function AgentBashTool({
 }: AgentBashToolProps) {
   const [isExpanded, setIsExpanded] = useState(false)
   const { isPending } = getToolStatus(part, chatStatus)
-  const selectedProject = useAtomValue(selectedProjectAtom)
-  const projectPath = selectedProject?.path
+  const selectedWorkspace = useAtomValue(selectedWorkspaceAtom)
+  const projectPath = selectedWorkspace?.path
 
   const rawCommand = part.input?.command
   const command = typeof rawCommand === "string" ? rawCommand : rawCommand ? String(rawCommand) : ""

@@ -4,7 +4,7 @@ import { memo, useState, useEffect, useRef } from "react"
 import { useAtomValue } from "jotai"
 import { ChevronRight } from "lucide-react"
 import { useFileOpen } from "../mentions"
-import { selectedProjectAtom } from "../atoms"
+import { selectedWorkspaceAtom } from "../atoms"
 import { AgentToolRegistry, getToolStatus } from "./agent-tool-registry"
 import { AgentToolCall } from "./agent-tool-call"
 import { AgentToolInterrupted } from "./agent-tool-interrupted"
@@ -38,8 +38,8 @@ export const AgentTaskTool = memo(function AgentTaskTool({
   nestedTools,
   chatStatus,
 }: AgentTaskToolProps) {
-  const selectedProject = useAtomValue(selectedProjectAtom)
-  const projectPath = selectedProject?.path
+  const selectedWorkspace = useAtomValue(selectedWorkspaceAtom)
+  const projectPath = selectedWorkspace?.path
   const { isPending, isInterrupted } = getToolStatus(part, chatStatus)
   const onOpenFile = useFileOpen()
 

@@ -171,6 +171,8 @@ export const ArchivedWorkspaceList = memo(({
     trpc.ergatai.listArchivedWorkspaces.useQuery({ collaborationMode })
 
   const filteredWorkspaces = (workspaces ?? []).filter((workspace) => {
+    // Only show archived workspaces
+    if (workspace.status !== "archived") return false
     if (workspace.collaborationMode !== collaborationMode) return false
     const query = searchQuery.trim().toLowerCase()
     if (!query) return true
@@ -214,12 +216,6 @@ export const ArchivedWorkspaceList = memo(({
               onWorkspaceDeleted={onWorkspaceDeleted}
             />
           ))}
-        </div>
-      )}
-
-      {isOpen && !isLoading && filteredWorkspaces.length === 0 && (
-        <div className="px-2 py-3 text-sm text-muted-foreground/60">
-          No archived workspaces
         </div>
       )}
     </div>

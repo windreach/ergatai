@@ -100,8 +100,8 @@ import {
   agentsUnseenChangesAtom,
   archivePopoverOpenAtom,
   agentsDebugModeAtom,
-  selectedProjectAtom,
-  type SelectedProject,
+  selectedWorkspaceAtom,
+  type SelectedWorkspace,
   justCreatedIdsAtom,
   undoStackAtom,
   pendingUserQuestionsAtom,
@@ -907,7 +907,7 @@ const ChatListSection = React.memo(function ChatListSection({
   formatTime,
   justCreatedIds,
 }: ChatListSectionProps) {
-  if (chats.length === 0) return null
+  if (!chats || chats.length === 0) return null
 
   // Pre-compute global indices map to avoid O(n²) findIndex in map()
   const globalIndexMap = useMemo(() => {
@@ -1626,8 +1626,8 @@ export function AgentsSidebar({
   // Sidebar appearance settings
   const showWorkspaceIcon = useAtomValue(showWorkspaceIconAtom)
 
-  // Desktop: use selectedProject instead of teams
-  const [selectedProject, setSelectedProject] = useAtom(selectedProjectAtom)
+  // Desktop: use selectedWorkspace instead of teams
+  const [selectedWorkspace, setSelectedWorkspace] = useAtom(selectedWorkspaceAtom)
 
   const { data: projects } = trpc.projects.list.useQuery(undefined, { staleTime: Infinity })
   const projectsMap = useMemo(() => {
@@ -1966,52 +1966,52 @@ export function AgentsSidebar({
   useEffect(() => {
     // Skip on initial mount (prevProjectIdRefForChats is undefined)
     if (prevProjectIdRefForChats.current === undefined) {
-      prevProjectIdRefForChats.current = selectedProject?.id ?? null
+      prevProjectIdRefForChats.current = selectedWorkspace?.id ?? null
       return
     }
     // Only reset if project actually changed from a real value (not from null/initial load)
     if (
       prevProjectIdRefForChats.current !== null &&
-      prevProjectIdRefForChats.current !== selectedProject?.id &&
+      prevProjectIdRefForChats.current !== selectedWorkspace?.id &&
       selectedChatId
     ) {
       setSelectedChatId(null)
     }
-    prevProjectIdRefForChats.current = selectedProject?.id ?? null
-  }, [selectedProject?.id]) // Don't include selectedChatId in deps to avoid loops
+    prevProjectIdRefForChats.current = selectedWorkspace?.id ?? null
+  }, [selectedWorkspace?.id]) // Don't include selectedChatId in deps to avoid loops
 
   // Load pinned IDs from localStorage when project changes
   useEffect(() => {
-    if (!selectedProject?.id) {
+    if (!selectedWorkspace?.id) {
       setPinnedChatIds(new Set())
       return
     }
     try {
       const stored = localStorage.getItem(
-        `agent-pinned-chats-${selectedProject.id}`,
+        `agent-pinned-chats-${selectedWorkspace.id}`,
       )
       setPinnedChatIds(stored ? new Set(JSON.parse(stored)) : new Set())
     } catch {
       setPinnedChatIds(new Set())
     }
-  }, [selectedProject?.id])
+  }, [selectedWorkspace?.id])
 
   // Save pinned IDs to localStorage when they change
   const prevPinnedRef = useRef<Set<string>>(new Set())
   useEffect(() => {
-    if (!selectedProject?.id) return
+    if (!selectedWorkspace?.id) return
     // Only save if pinnedChatIds actually changed (avoid saving on load)
     if (
       (pinnedChatIds !== prevPinnedRef.current && pinnedChatIds.size > 0) ||
       prevPinnedRef.current.size > 0
     ) {
       localStorage.setItem(
-        `agent-pinned-chats-${selectedProject.id}`,
+        `agent-pinned-chats-${selectedWorkspace.id}`,
         JSON.stringify([...pinnedChatIds]),
       )
     }
     prevPinnedRef.current = pinnedChatIds
-  }, [pinnedChatIds, selectedProject?.id])
+  }, [pinnedChatIds, selectedWorkspace?.id])
 
   // Rename mutation
   const renameChatMutation = trpc.ergatai.updateConversation.useMutation({
@@ -2346,6 +2346,7 @@ export function AgentsSidebar({
 
   const handleNewWorkspace = () => {
     triggerHaptic("light")
+    // Clear current selection and navigate to default view (shows "Select repo")
     setSelectedChatId(null)
     setSelectedDraftId(null)
     setSelectedWorkspaceId(null)
@@ -2363,17 +2364,17 @@ export function AgentsSidebar({
       setSelectedDraftId(null)
     }
 
-    // Sync selectedProject with the chosen workspace
+    // Sync selectedWorkspace with the chosen workspace
     const ws = workspaces?.find((w) => w.id === workspaceId)
     if (ws?.defaultProjectId && projectsMap.has(ws.defaultProjectId)) {
       const proj = projectsMap.get(ws.defaultProjectId)
-      if (proj && proj.id !== selectedProject?.id) {
-        setSelectedProject({
+      if (proj && proj.id !== selectedWorkspace?.id) {
+        setSelectedWorkspace({
           id: proj.id,
           name: proj.name,
           path: proj.path,
           gitRemoteUrl: proj.gitRemoteUrl,
-          gitProvider: proj.gitProvider as NonNullable<SelectedProject>["gitProvider"],
+          gitProvider: proj.gitProvider as NonNullable<SelectedWorkspace>["gitProvider"],
           gitOwner: proj.gitOwner,
           gitRepo: proj.gitRepo,
         })
@@ -2398,8 +2399,8 @@ export function AgentsSidebar({
     triggerHaptic,
     workspaces,
     projectsMap,
-    selectedProject?.id,
-    setSelectedProject,
+    selectedWorkspace?.id,
+    setSelectedWorkspace,
   ])
 
   const handleWorkspaceDeleted = useCallback((workspaceId: string) => {
@@ -2840,7 +2841,7 @@ export function AgentsSidebar({
   // Clear selection when project changes
   useEffect(() => {
     clearChatSelection()
-  }, [selectedProject?.id, clearChatSelection])
+  }, [selectedWorkspace?.id, clearChatSelection])
 
   // Handle scroll for gradients - use DOM manipulation to avoid re-renders
   const handleAgentsScroll = React.useCallback(
@@ -3006,11 +3007,9 @@ export function AgentsSidebar({
                 onClick={handleNewWorkspace}
                 variant="outline"
                 size="sm"
-                disabled={!selectedProject}
                 className={cn(
                   "px-2 w-full hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground rounded-lg gap-1.5",
                   isMobileFullscreen ? "h-10" : "h-7",
-                  !selectedProject && "opacity-50 cursor-not-allowed",
                 )}
               >
                 <span className="text-sm font-medium">
@@ -3019,8 +3018,8 @@ export function AgentsSidebar({
               </ButtonCustom>
             </TooltipTrigger>
             <TooltipContent side="right" className="flex flex-col items-start gap-1">
-              <span>{selectedProject ? collaborationModeConfig.workspaceButtonTooltip : "Please select a project first"}</span>
-              {newWorkspaceHotkey && selectedProject && (
+              <span>{collaborationModeConfig.workspaceButtonTooltip || "Create a new workspace"}</span>
+              {newWorkspaceHotkey && (
                 <span className="flex items-center gap-1.5">
                   <Kbd>{newWorkspaceHotkey}</Kbd>
                   {newWorkspaceAltHotkey && <><span className="text-[10px] opacity-50">or</span><Kbd>{newWorkspaceAltHotkey}</Kbd></>}

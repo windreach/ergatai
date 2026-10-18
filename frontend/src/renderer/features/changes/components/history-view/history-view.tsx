@@ -14,7 +14,7 @@ import {
 } from "../../../../components/ui/context-menu";
 import { toast } from "sonner";
 import { useAtomValue } from "jotai";
-import { selectedProjectAtom } from "../../../agents/atoms";
+import { selectedWorkspaceAtom } from "../../../agents/atoms";
 
 export interface CommitInfo {
 	hash: string;
@@ -173,7 +173,7 @@ const HistoryCommitItem = memo(function HistoryCommitItem({
 		[commit.date],
 	);
 
-	const selectedProject = useAtomValue(selectedProjectAtom);
+	const selectedWorkspace = useAtomValue(selectedWorkspaceAtom);
 
 	const handleCopySha = useCallback(() => {
 		navigator.clipboard.writeText(commit.hash);
@@ -181,8 +181,8 @@ const HistoryCommitItem = memo(function HistoryCommitItem({
 	}, [commit.hash]);
 
 	const handleOpenOnRemote = useCallback(() => {
-		const owner = selectedProject?.gitOwner;
-		const repo = selectedProject?.gitRepo;
+		const owner = selectedWorkspace?.gitOwner;
+		const repo = selectedWorkspace?.gitRepo;
 		if (!owner || !repo) {
 			toast.error("Could not determine remote repository");
 			return;
@@ -190,7 +190,7 @@ const HistoryCommitItem = memo(function HistoryCommitItem({
 		window.desktopApi.openExternal(
 			`https://github.com/${owner}/${repo}/commit/${commit.hash}`,
 		);
-	}, [commit.hash, selectedProject?.gitOwner, selectedProject?.gitRepo]);
+	}, [commit.hash, selectedWorkspace?.gitOwner, selectedWorkspace?.gitRepo]);
 
 	return (
 		<ContextMenu>

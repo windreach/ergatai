@@ -20,7 +20,7 @@ import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areToolPropsEqual } from "./agent-tool-utils"
 import { getFileIconByExtension } from "../mentions/agents-file-mention"
 import { useFileOpen } from "../mentions"
-import { agentsDiffSidebarOpenAtom, agentsFocusedDiffFileAtom, selectedProjectAtom } from "../atoms"
+import { agentsDiffSidebarOpenAtom, agentsFocusedDiffFileAtom, selectedWorkspaceAtom } from "../atoms"
 import { cn } from "../../../lib/utils"
 
 interface AgentEditToolProps {
@@ -226,8 +226,8 @@ export const AgentEditTool = memo(function AgentEditTool({
   // Atoms for opening diff sidebar and focusing on file
   const setDiffSidebarOpen = useSetAtom(agentsDiffSidebarOpenAtom)
   const setFocusedDiffFile = useSetAtom(agentsFocusedDiffFileAtom)
-  const selectedProject = useAtomValue(selectedProjectAtom)
-  const projectPath = selectedProject?.path
+  const selectedWorkspace = useAtomValue(selectedWorkspaceAtom)
+  const projectPath = selectedWorkspace?.path
   const onOpenFile = useFileOpen()
 
   // Determine tool type

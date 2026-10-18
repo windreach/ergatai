@@ -39,6 +39,17 @@ window.onerror = (message, source, lineno, colno, error) => {
   if (typeof message === "string" && resizeObserverErr.test(message)) {
     return true // Suppress the error
   }
+  // Log "Cannot read properties of undefined" errors with full stack trace
+  if (typeof message === "string" && message.includes("Cannot read properties of undefined")) {
+    console.error("🔴 CRITICAL ERROR: Cannot read properties of undefined")
+    console.error("Message:", message)
+    console.error("Source:", source)
+    console.error("Line:", lineno, "Column:", colno)
+    if (error) {
+      console.error("Stack:", error.stack)
+    }
+    console.trace("Error location trace")
+  }
   if (originalOnError) {
     return originalOnError(message, source, lineno, colno, error)
   }

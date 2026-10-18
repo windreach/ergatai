@@ -4,7 +4,7 @@ import { memo, useState, useEffect, useRef } from "react"
 import { useAtomValue } from "jotai"
 import { ChevronRight } from "lucide-react"
 import { useFileOpen } from "../mentions"
-import { selectedProjectAtom } from "../atoms"
+import { selectedWorkspaceAtom } from "../atoms"
 import { AgentToolRegistry, getToolStatus } from "./agent-tool-registry"
 import { AgentToolCall } from "./agent-tool-call"
 import { areExploringGroupPropsEqual } from "./agent-tool-utils"
@@ -26,8 +26,8 @@ export const AgentExploringGroup = memo(function AgentExploringGroup({
   isStreaming,
 }: AgentExploringGroupProps) {
   const onOpenFile = useFileOpen()
-  const selectedProject = useAtomValue(selectedProjectAtom)
-  const projectPath = selectedProject?.path
+  const selectedWorkspace = useAtomValue(selectedWorkspaceAtom)
+  const projectPath = selectedWorkspace?.path
   // Default: expanded while streaming, collapsed when done
   const [isExpanded, setIsExpanded] = useState(isStreaming)
   const scrollRef = useRef<HTMLDivElement>(null)

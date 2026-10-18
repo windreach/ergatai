@@ -470,6 +470,11 @@ function convertSseMessageToBackend(sseMsg: BackendSseMessage): BackendMessage {
       : typeof sseMsg.metadata === "string"
         ? sseMsg.metadata
         : JSON.stringify(sseMsg.metadata),
+    // Agent message fields (may not be present in SSE messages)
+    from_agent_id: sseMsg.sender_agent_id ?? null,
+    from_agent_name: sseMsg.sender_agent_name ?? null,
+    message_type: sseMsg.message_type ?? null,
+    content: sseMsg.content ?? null,
     created_at: sseMsg.timestamp,
     updated_at: sseMsg.timestamp,
   }

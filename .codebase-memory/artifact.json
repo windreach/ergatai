@@ -1,11 +1,12 @@
 {
     "schema_version": 2,
-    "commit": "e78d82083a6e897fbd9f3f7d9f6943f80ed1d2d0",
-    "indexed_at": "2026-10-17T13:22:29Z",
+    "commit": "38e0618b9872cb896ace3561ae2aac43e27aede4",
+    "indexed_at": "2026-10-18T12:15:31Z",
     "project": "home-yubing-code-ergatai",
-    "nodes": 14744,
-    "edges": 66325,
-    "original_size": 55508992,
-    "compressed_size": 10004588,
-    "compression_level": 3
+    "nodes": 14747,
+    "edges": 66197,
+    "original_size": 55246848,
+    "compressed_size": 10000223,
+    "compression_level": 3,
+    "reconcile_basis": "git-clean-head"
 }

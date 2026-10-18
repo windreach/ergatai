@@ -28,6 +28,9 @@
     "release:dev": "rm -rf release && bun run claude:download && bun run codex:download && bun run build && bun run package:mac && rm -rf node_modules && bun i",
     "icon:generate": "node ../scripts/generate-icon.mjs",
     "ts:check": "tsc --noEmit",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:debug": "playwright test --debug",
     "postinstall": "node -e \"if(!process.env.VERCEL){require('child_process').execSync('electron-rebuild -f -w node-pty',{stdio:'inherit'})}\" && node ../scripts/patch-electron-dev.mjs"
   },
   "dependencies": {
@@ -113,6 +116,7 @@
     "@electron-toolkit/preload": "^3.0.1",
     "@electron-toolkit/utils": "^4.0.0",
     "@electron/rebuild": "^4.2.0",
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/container-queries": "^0.1.1",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",

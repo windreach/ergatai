@@ -644,6 +644,16 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                 // Backend format_agent_message() generates: {"from":"agent-1","message":"actual content","message_type":"request",...}
                 let parsed_content: Option<serde_json::Value> =
                     serde_json::from_str(&message_content).ok();
+
+                // Log warning if JSON parsing fails but content looks like JSON
+                if parsed_content.is_none() && message_content.trim().starts_with('{') {
+                    warn!(
+                        message_id = %message_id_for_persist,
+                        from_agent = %from,
+                        "Agent message appears to be malformed JSON"
+                    );
+                }
+
                 let actual_message = parsed_content
                     .as_ref()
                     .and_then(|v| v.get("message"))

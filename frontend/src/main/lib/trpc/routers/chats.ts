@@ -31,10 +31,12 @@ import {
   getConversation,
   listConversationMessages,
   listAllConversations,
+  listChats,
   updateConversation,
   listConversationMessages as listMessages,
   type BackendMessage,
   type BackendConversation,
+  type BackendChat,
 } from "../../ergatai/user-data"
 import { ergataiCaller as trpcClient } from "../../ergatai/caller"
 import { projectIdSchema } from "../../validation/ids"
@@ -118,7 +120,7 @@ async function listWorkspaceChatCandidates(workspaceId: string): Promise<ChatRec
 
 async function findChatForConversation(
   conversation: BackendConversation,
-): Promise<ChatRecord | null> {
+): Promise<BackendChat | null> {
   // Backend now returns chat_id directly on conversations
   if (!conversation.chat_id) return null
 
@@ -128,8 +130,6 @@ async function findChatForConversation(
 
 async function listConversationsForChat(chat: {
   id: string
-  workspaceId: string | null
-  createdAt: Date
 }): Promise<BackendConversation[]> {
   // Fetch all conversations and filter by chat_id (backend now returns chat_id on conversations)
   const allConversations = await listAllConversations()
@@ -140,9 +140,6 @@ async function listConversationsForChat(chat: {
     if (conversation.status === "archived") return false
     return true
   })
-}
-
-  return [...childConversations, ...legacyConversations]
 }
 
 function sendWorktreeSetupFailure(
@@ -355,6 +352,7 @@ export const chatsRouter = router({
           )
           .optional(),
         baseBranch: z.string().optional(), // Branch to base the worktree off
+        branch: z.string().optional(), // Branch name for the chat
         branchType: z.enum(["local", "remote"]).optional(), // Whether baseBranch is local or remote
         useWorktree: z.boolean().default(true), // If false, work directly in project dir
         mode: z.enum(["plan", "agent"]).default("agent"),
@@ -503,7 +501,7 @@ export const chatsRouter = router({
         worktreePath: worktreeResult.worktreePath || project.path,
         branch: worktreeResult.branch,
         baseBranch: worktreeResult.baseBranch,
-        conversations: [], // Conversation will be created lazily on first message
+        conversations: [] as MappedConversation[], // Conversation will be created lazily on first message
       }
 
       // Track workspace created
@@ -865,8 +863,8 @@ export const chatsRouter = router({
       }
 
       // 3. Rollback git state first - if this fails, abort the whole operation
-      if (targetChat?.worktreePath) {
-        const res = await applyRollbackStash(targetChat.worktreePath, input.sdkMessageUuid)
+      if (targetChat?.worktree_path) {
+        const res = await applyRollbackStash(targetChat.worktree_path, input.sdkMessageUuid)
         if (!res.success) {
           return { success: false, error: `Git rollback failed: ${res.error}` }
         }

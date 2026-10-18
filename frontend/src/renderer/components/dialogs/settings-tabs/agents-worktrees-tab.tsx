@@ -181,7 +181,7 @@ export function AgentsWorktreesTab() {
     setter([...list, ""])
   }
 
-  const selectedProject = projects?.find((p) => p.id === selectedProjectId)
+  const selectedWorkspace = projects?.find((p) => p.id === selectedProjectId)
   const cursorExists = configData?.available.cursor.exists ?? false
 
   return (
@@ -217,7 +217,7 @@ export function AgentsWorktreesTab() {
               >
                 <SelectTrigger className="w-full">
                   <span className="text-sm truncate">
-                    {selectedProject?.name ?? "Select..."}
+                    {selectedWorkspace?.name ?? "Select..."}
                   </span>
                 </SelectTrigger>
                 <SelectContent>

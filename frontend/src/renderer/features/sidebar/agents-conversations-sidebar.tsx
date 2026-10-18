@@ -200,11 +200,7 @@ const WorkspaceChatList = memo(function WorkspaceChatList({
         <div className="px-2 py-2 text-xs text-muted-foreground">
           Loading chats...
         </div>
-      ) : workspaceChats.length === 0 ? (
-        <div className="px-2 py-2 text-xs text-muted-foreground">
-          No chats found
-        </div>
-      ) : (
+      ) : workspaceChats.length > 0 ? (
         <div className="list-none p-0 m-0 space-y-0.5">
           {workspaceChats.map((chat) => (
             <WorkspaceChatItem
@@ -215,7 +211,7 @@ const WorkspaceChatList = memo(function WorkspaceChatList({
             />
           ))}
         </div>
-      )}
+      ) : null}
     </div>
   )
 })

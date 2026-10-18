@@ -199,6 +199,7 @@ export async function ergataiFetch<T>(
 
   try {
     const url = `${apiUrl}${path}`
+
     const headers: Record<string, string> = {
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -207,6 +208,7 @@ export async function ergataiFetch<T>(
 
     if (process.env.ERGATAI_DEBUG) {
       console.log(`[ergataiFetch] ${init?.method || "GET"} ${redactUrlPath(url)}`)
+      console.log(`[ergataiFetch] Headers:`, Object.keys(headers).join(', '))
     }
 
     const response = await fetch(url, {

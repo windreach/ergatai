@@ -5,17 +5,13 @@ import { useAtom, useAtomValue } from "jotai"
 import { toast } from "sonner"
 
 import { Logo } from "@/components/ui/logo"
-import { ProjectSelector } from "../components/project-selector"
-import { selectedProjectAtom, selectedWorkspaceIdAtom, showNewChatFormAtom } from "../atoms"
+import { WorkspaceSelector } from "../components/workspace-selector"
+import { selectedWorkspaceIdAtom, showNewChatFormAtom } from "../atoms"
 import { agentsUnseenChangesAtom } from "../atoms"
 import { agentsSidebarOpenAtom } from "../atoms"
 import { AgentsHeaderControls } from "./agents-header-controls"
 import { useCollaborationMode } from "../collaboration/use-collaboration-mode"
 import { trpc } from "../../../lib/trpc"
-import {
-  dedupeByPath,
-  getPathDeduplicatedNames,
-} from "../lib/workspace-naming"
 
 interface AgentsDefaultViewProps {
   onWorkspaceCreated?: (workspaceId: string) => void
@@ -24,17 +20,12 @@ interface AgentsDefaultViewProps {
 export function AgentsDefaultView({
   onWorkspaceCreated,
 }: AgentsDefaultViewProps) {
-  const [selectedProject, setSelectedProject] = useAtom(selectedProjectAtom)
   const [, setSelectedWorkspaceId] = useAtom(selectedWorkspaceIdAtom)
   const [, setShowNewChatForm] = useAtom(showNewChatFormAtom)
   const unseenChanges = useAtomValue(agentsUnseenChangesAtom)
   const [sidebarOpen, setSidebarOpen] = useAtom(agentsSidebarOpenAtom)
   const { mode: collaborationMode } = useCollaborationMode()
 
-  // Fetch projects from DB
-  const { data: projects } = trpc.projects.list.useQuery(undefined, {
-    staleTime: Infinity,
-  })
   // Fetch current-mode workspaces. Workspaces are mode-owned, so a project may
   // be reused in supervisor mode and still get a separate workspace in group mode.
   const { data: workspaces } = trpc.ergatai.listManagedWorkspaces.useQuery({
@@ -51,7 +42,7 @@ export function AgentsDefaultView({
   const utils = trpc.useUtils()
 
   // Create workspace mutation
-  const createWorkspaceMutation = trpc.ergatai.createManagedWorkspace.useMutation({
+  const createWorkspaceMutation = trpc.ergatai.createWorkspace.useMutation({
     onSuccess: (data, variables) => {
       toast.success("Workspace created successfully")
       utils.ergatai.listManagedWorkspaces.invalidate()
@@ -64,15 +55,12 @@ export function AgentsDefaultView({
     },
   })
 
-  // Handle project selection -> create workspace
-  const handleProjectSelected = useCallback(
-    (project: { id: string; name: string }) => {
-      const fullProject = projects?.find((p) => p.id === project.id)
-      if (!fullProject) return
-
+  // Handle workspace selection -> find or create workspace
+  const handleWorkspaceSelected = useCallback(
+    (workspace: { id: string; name: string; path: string }) => {
       // Check if workspace already exists for this project path
       const existingWorkspace = modeWorkspaces?.find(
-        (ws) => ws.workDir === fullProject.path
+        (ws) => ws.workDir === workspace.path
       )
       if (existingWorkspace) {
         setSelectedWorkspaceId(existingWorkspace.id)
@@ -81,20 +69,14 @@ export function AgentsDefaultView({
         return
       }
 
-      // Generate unique workspace name using path deduplication
-      const uniqueProjects = dedupeByPath(projects ?? [])
-      const displayNames = getPathDeduplicatedNames(uniqueProjects)
-      const workspaceName = displayNames.get(fullProject.id) ?? fullProject.name
-
       createWorkspaceMutation.mutate({
-        projectId: fullProject.id,
-        name: workspaceName,
-        workDir: fullProject.path,
+        projectId: workspace.id,
+        name: workspace.name,
+        workDir: workspace.path,
         collaborationMode,
       })
     },
     [
-      projects,
       modeWorkspaces,
       collaborationMode,
       createWorkspaceMutation,
@@ -128,11 +110,11 @@ export function AgentsDefaultView({
             </h1>
 
             <div className="mt-5">
-              <ProjectSelector
+              <WorkspaceSelector
                 triggerClassName="h-16 w-full justify-center gap-2 rounded-xl border border-border bg-background px-4 text-sm font-medium text-foreground shadow-sm hover:bg-accent/50"
                 contentClassName="rounded-xl"
                 matchTriggerWidth
-                onProjectSelected={handleProjectSelected}
+                onWorkspaceSelected={handleWorkspaceSelected}
               />
             </div>
           </div>

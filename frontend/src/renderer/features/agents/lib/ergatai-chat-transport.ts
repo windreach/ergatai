@@ -190,6 +190,9 @@ function transformEvent(
 }
 
 export class ErgataiChatTransport implements ChatTransport<UIMessage> {
+  // Static cache to prevent concurrent conversation creation for the same chat
+  private static conversationCreationPromises = new Map<string, Promise<string>>()
+
   constructor(private config: ErgataiChatTransportConfig) {}
 
   async sendMessages(options: {
@@ -295,24 +298,47 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
             if (!this.config.conversationId) {
               console.log("[ErgataiChatTransport] Lazily creating conversation for chat:", this.config.chatId)
 
-              // Check if conversation already exists for this chat
-              const conversations = await trpcClient.ergatai.listConversations.query({
-                chatId: this.config.chatId,
-              })
+              // Check if there's already a creation in progress for this chat
+              const existingPromise = ErgataiChatTransport.conversationCreationPromises.get(this.config.chatId)
 
-              if (conversations.length > 0) {
-                // Reuse existing conversation
-                this.config.conversationId = conversations[0].id
-                console.log("[ErgataiChatTransport] Reusing conversation:", this.config.conversationId)
+              if (existingPromise) {
+                // Wait for the in-progress creation to complete
+                console.log("[ErgataiChatTransport] Waiting for ongoing conversation creation")
+                this.config.conversationId = await existingPromise
+                console.log("[ErgataiChatTransport] Reusing conversation from ongoing creation:", this.config.conversationId)
               } else {
-                // Create new conversation
-                const conversation = await trpcClient.ergatai.createConversation.mutate({
+                // Check if conversation already exists for this chat
+                const conversations = await trpcClient.ergatai.listConversations.query({
                   chatId: this.config.chatId,
-                  title: prompt?.slice(0, 50) || "New Conversation",
-                  mode: this.config.mode,
                 })
-                this.config.conversationId = conversation.id
-                console.log("[ErgataiChatTransport] Created conversation:", this.config.conversationId)
+
+                if (conversations.length > 0) {
+                  // Reuse existing conversation
+                  this.config.conversationId = conversations[0].id
+                  console.log("[ErgataiChatTransport] Reusing conversation:", this.config.conversationId)
+                } else {
+                  // Create new conversation with concurrency control
+                  const creationPromise = (async () => {
+                    try {
+                      const conversation = await trpcClient.ergatai.createConversation.mutate({
+                        chatId: this.config.chatId,
+                        title: prompt?.slice(0, 50) || "New Conversation",
+                        mode: this.config.mode,
+                      })
+                      return conversation.id
+                    } finally {
+                      // Clean up the promise cache after completion
+                      ErgataiChatTransport.conversationCreationPromises.delete(this.config.chatId)
+                    }
+                  })()
+
+                  // Store the promise in cache
+                  ErgataiChatTransport.conversationCreationPromises.set(this.config.chatId, creationPromise)
+
+                  // Wait for creation to complete
+                  this.config.conversationId = await creationPromise
+                  console.log("[ErgataiChatTransport] Created conversation:", this.config.conversationId)
+                }
               }
             }
 

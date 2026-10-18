@@ -8,7 +8,7 @@
 import { z } from "zod"
 import { observable } from "@trpc/server/observable"
 import { publicProcedure, router } from "../index"
-import { ergataiFetch, getErgataiAuthConfig, isErgataiApiError } from "../../ergatai/api"
+import { ergataiFetch, getErgataiAuthConfig, isErgataiApiError, ErgataiApiError } from "../../ergatai/api"
 import { createSnowflakeId, projectIdSchema } from "../../validation/ids"
 import { subscribeRawAgentStream, subscribeConversationMessages, type AgentOutputEvent } from "../../ergatai/sse-client"
 import { getModelSnapshotManager } from "../../model-snapshot-manager"
@@ -384,7 +384,7 @@ function mapManagedWorkspace(workspace: BackendManagedWorkspace): Workspace {
     ...base,
     // BackendManagedWorkspace uses string workspace_id, handle default_project_id accordingly
     defaultProjectId: workspace.default_project_id ?? null,
-    projects: workspace.projects.map(mapWorkspaceProject),
+    projects: (workspace.projects ?? []).map(mapWorkspaceProject),
   }
 }
 
@@ -882,10 +882,16 @@ export const ergataiRouter = router({
 
   /** List conversations (替代旧的 runtime/conversations) */
   listConversations: publicProcedure
-    .input(z.object({ workspaceId: z.string().optional() }).optional())
+    .input(z.object({
+      workspaceId: z.string().optional(),
+      chatId: z.string().optional(),
+      collaborationSessionId: z.string().optional(),
+    }).optional())
     .query(async ({ input }) => {
       const params = new URLSearchParams()
       if (input?.workspaceId) params.set("workspace_id", input.workspaceId)
+      if (input?.chatId) params.set("chat_id", input.chatId)
+      if (input?.collaborationSessionId) params.set("collaboration_session_id", input.collaborationSessionId)
       const query = params.toString() ? `?${params.toString()}` : ""
       return ergataiFetch<BackendConversation[]>(`/api/v1/conversations${query}`)
     }),
@@ -949,10 +955,20 @@ export const ergataiRouter = router({
   getManagedWorkspace: publicProcedure
     .input(z.object({ id: z.string() }))
     .query(async ({ input }) => {
-      const workspace = await ergataiFetch<BackendManagedWorkspace>(
-        `/api/v1/workspaces/managed/${encodeURIComponent(input.id)}`,
-      )
-      return mapManagedWorkspace(workspace)
+      try {
+        const workspace = await ergataiFetch<BackendManagedWorkspace>(
+          `/api/v1/workspaces/managed/${encodeURIComponent(input.id)}`,
+          { silentStatus: [404] } // Suppress 404 logs - expected for stale localStorage IDs
+        )
+        return mapManagedWorkspace(workspace)
+      } catch (error) {
+        // Return null for 404 errors (workspace no longer exists)
+        // This can happen when localStorage has a stale workspace ID
+        if (error instanceof ErgataiApiError && error.status === 404) {
+          return null
+        }
+        throw error
+      }
     }),
 
   /** Create a managed workspace */
@@ -1310,11 +1326,16 @@ export const ergataiRouter = router({
       // Aggregate projects from all workspaces
       const allProjects: Project[] = []
       for (const ws of workspaces) {
-        const projects = await ergataiFetch<BackendWorkspaceProject[]>(
-          `/api/v1/workspaces/managed/${encodeURIComponent(ws.workspace_id)}/projects`,
-        )
-        for (const p of projects) {
-          allProjects.push(mapWorkspaceProjectToProject(p))
+        try {
+          const projects = await ergataiFetch<BackendWorkspaceProject[]>(
+            `/api/v1/workspaces/managed/${encodeURIComponent(ws.workspace_id)}/projects`,
+          )
+          for (const p of projects) {
+            allProjects.push(mapWorkspaceProjectToProject(p))
+          }
+        } catch (error) {
+          // Skip workspaces that no longer exist or have invalid IDs
+          console.warn(`[Projects] Failed to list projects for workspace ${ws.workspace_id}:`, error)
         }
       }
       return allProjects
@@ -1333,12 +1354,17 @@ export const ergataiRouter = router({
           `/api/v1/workspaces/managed`,
         )
         for (const ws of workspaces) {
-          const projects = await ergataiFetch<BackendWorkspaceProject[]>(
-            `/api/v1/workspaces/managed/${encodeURIComponent(ws.workspace_id)}/projects`,
-          )
-          const found = projects.find((p) => p.project_id === input.id)
-          if (found) {
-            return mapWorkspaceProjectToProject(found)
+          try {
+            const projects = await ergataiFetch<BackendWorkspaceProject[]>(
+              `/api/v1/workspaces/managed/${encodeURIComponent(ws.workspace_id)}/projects`,
+            )
+            const found = projects.find((p) => p.project_id === input.id)
+            if (found) {
+              return mapWorkspaceProjectToProject(found)
+            }
+          } catch (error) {
+            // Skip workspaces that no longer exist or have invalid IDs
+            console.warn(`[Projects] Failed to list projects for workspace ${ws.workspace_id}:`, error)
           }
         }
         return null
@@ -1348,7 +1374,74 @@ export const ergataiRouter = router({
       }
     }),
 
-  /** Create a new project (registers to first available or default workspace) */
+  /** Create workspace - unified API for all workspace creation scenarios */
+  createWorkspace: publicProcedure
+    .input(
+      z.object({
+        name: z.string(),
+        workDir: z.string(),
+        projectId: z.string().optional(),
+        projectPath: z.string().optional(), // If provided and projectId is not, auto-create project
+        projectName: z.string().optional(),
+        collaborationMode: z.enum(["supervisor", "group"]).optional(),
+      }),
+    )
+    .mutation(async ({ input }): Promise<Workspace> => {
+      const collaborationMode = input.collaborationMode ?? "supervisor"
+
+      // Create workspace
+      const workspace = await ergataiFetch<BackendManagedWorkspace>(
+        "/api/v1/workspaces/managed",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name: input.name,
+            work_dir: input.workDir,
+            collaboration_mode: collaborationMode,
+          }),
+        },
+      )
+
+      // If projectId is provided, set it as default project
+      if (input.projectId) {
+        await ergataiFetch<BackendManagedWorkspace>(
+          `/api/v1/workspaces/managed/${encodeURIComponent(workspace.workspace_id)}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify({
+              default_project_id: input.projectId,
+            }),
+          },
+        )
+      } else if (input.projectPath) {
+        // Auto-create project if projectPath is provided
+        const project = await ergataiFetch<BackendWorkspaceProject>(
+          `/api/v1/workspaces/managed/${encodeURIComponent(workspace.workspace_id)}/projects`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              name: input.projectName || input.name,
+              path: input.projectPath,
+            }),
+          },
+        )
+
+        // Set as default project
+        await ergataiFetch<BackendManagedWorkspace>(
+          `/api/v1/workspaces/managed/${encodeURIComponent(workspace.workspace_id)}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify({
+              default_project_id: project.project_id,
+            }),
+          },
+        )
+      }
+
+      return mapManagedWorkspace(workspace)
+    }),
+
+  /** Create a new project (auto-creates workspace if none exists) */
   createProject: publicProcedure
     .input(
       z.object({
@@ -1362,23 +1455,22 @@ export const ergataiRouter = router({
       }),
     )
     .mutation(async ({ input }): Promise<Project> => {
-      // Get or find a default workspace to register the project to
       let workspaceId: string | null = null
       try {
         const workspaces = await ergataiFetch<BackendManagedWorkspace[]>(
           `/api/v1/workspaces/managed`,
         )
-        // Use first active workspace, or create a default one
+        // Use first existing workspace, or create one named after the project
         if (workspaces.length > 0) {
           workspaceId = workspaces[0]!.workspace_id.toString()
         } else {
-          // Create a default workspace
+          // Auto-create workspace named after the project
           const newWs = await ergataiFetch<BackendManagedWorkspace>(
             `/api/v1/workspaces/managed`,
             {
               method: "POST",
               body: JSON.stringify({
-                name: "Default Workspace",
+                name: input.name,
                 work_dir: input.path,
               }),
             },
@@ -1391,22 +1483,41 @@ export const ergataiRouter = router({
       }
 
       // Register the project to the workspace
-      const project = await ergataiFetch<BackendWorkspaceProject>(
-        `/api/v1/workspaces/managed/${encodeURIComponent(workspaceId)}/projects`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            name: input.name,
-            path: input.path,
-            git_remote_url: input.gitRemoteUrl,
-            git_provider: input.gitProvider,
-            git_owner: input.gitOwner,
-            git_repo: input.gitRepo,
-            icon_path: input.iconPath,
-          }),
-        },
-      )
-      return mapWorkspaceProjectToProject(project)
+      try {
+        const project = await ergataiFetch<BackendWorkspaceProject>(
+          `/api/v1/workspaces/managed/${encodeURIComponent(workspaceId)}/projects`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              name: input.name,
+              path: input.path,
+              git_remote_url: input.gitRemoteUrl,
+              git_provider: input.gitProvider,
+              git_owner: input.gitOwner,
+              git_repo: input.gitRepo,
+              icon_path: input.iconPath,
+            }),
+          },
+        )
+
+        // Set this project as the default project for the workspace
+        if (project.project_id) {
+          await ergataiFetch<BackendManagedWorkspace>(
+            `/api/v1/workspaces/managed/${encodeURIComponent(workspaceId)}`,
+            {
+              method: "PATCH",
+              body: JSON.stringify({
+                default_project_id: project.project_id,
+              }),
+            },
+          )
+        }
+
+        return mapWorkspaceProjectToProject(project)
+      } catch (error) {
+        console.error("[Projects] Failed to create project:", error)
+        throw new Error(`Failed to create project: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }),
 
   /** Update a project */

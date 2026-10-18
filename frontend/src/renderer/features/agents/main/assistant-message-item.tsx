@@ -14,7 +14,7 @@ import {
 import { CollapseIcon, ExpandIcon, PlanIcon } from "../../../components/ui/icons"
 import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { cn } from "../../../lib/utils"
-import { selectedProjectAtom, showMessageJsonAtom } from "../atoms"
+import { selectedWorkspaceAtom, showMessageJsonAtom } from "../atoms"
 import { GroupAgentMessageHeader } from "../collaboration/group-agent-message-header"
 import { GroupAgentMentionTool } from "../collaboration/group-agent-mention-tool"
 import { useGroupChat } from "../collaboration/group-chat-context"
@@ -544,8 +544,8 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
   showInterAgentReplies = false,
 }: AssistantMessageItemProps) {
   const showMessageJson = useAtomValue(showMessageJsonAtom)
-  const selectedProject = useAtomValue(selectedProjectAtom)
-  const projectPath = selectedProject?.path
+  const selectedWorkspace = useAtomValue(selectedWorkspaceAtom)
+  const projectPath = selectedWorkspace?.path
   const onOpenFile = useFileOpen()
   const onFork = useContext(ForkContext)
   const isDev = import.meta.env.DEV

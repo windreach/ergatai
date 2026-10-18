@@ -20,7 +20,7 @@ function migrateFromNumericWindowId(key: string, targetWindowKey: string): strin
   // Skip if already checked this key
   if (migratedKeys.has(targetWindowKey)) return null
 
-  // Look for any numeric window ID prefixed key (e.g., "1:agents:selectedProject")
+  // Look for any numeric window ID prefixed key (e.g., "1:agents:selectedWorkspace")
   for (let i = 0; i < localStorage.length; i++) {
     const storageKey = localStorage.key(i)
     if (!storageKey) continue

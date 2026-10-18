@@ -228,7 +228,7 @@ pub async fn to_managed(workspace: Workspace) -> Result<ManagedWorkspace, Worksp
         status: workspace.status,
         default_project_id: workspace
             .default_project_id
-            .map(|id| format_id(id, IdType::Workspace)),
+            .map(|id| format_id(id, IdType::Project)), // 修复：使用 IdType::Project 而不是 IdType::Workspace
         created_at: workspace.created_at,
         updated_at: workspace.updated_at,
     })
@@ -275,9 +275,9 @@ pub async fn get(workspace_id: &str) -> Result<ManagedWorkspace, WorkspaceManage
 pub async fn create(
     request: CreateManagedWorkspaceRequest,
 ) -> Result<ManagedWorkspace, WorkspaceManagerError> {
-    let workspace_id = match request.id {
+    let workspace_id = match &request.id {
         None => generate(),
-        Some(id) if parse_to_i64(&id).is_some() => parse_to_i64(&id).unwrap(),
+        Some(id) if parse_to_i64(id).is_some() => parse_to_i64(id).unwrap(),
         Some(_) => {
             return Err(WorkspaceManagerError::Validation(
                 "Invalid workspace ID format".to_string(),
@@ -349,7 +349,8 @@ pub async fn create(
         .await
         .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
         .map_err(WorkspaceManagerError::from)?;
-    get(&format_id(workspace.workspace_id, IdType::Workspace)).await
+    // Return the workspace we just created, avoiding a redundant database query
+    to_managed(workspace).await
 }
 
 pub async fn update(
@@ -482,7 +483,17 @@ pub async fn status(workspace_id: &str) -> Result<WorkspaceStatus, WorkspaceMana
         .iter()
         .filter(|chat| chat.archived_at.is_none())
         .count();
-    let work_dir_exists = std::path::Path::new(&workspace.work_dir).is_dir();
+
+    // Expand ~ to home directory for proper path checking
+    let expanded_work_dir = if workspace.work_dir.starts_with("~/") {
+        std::env::var("HOME")
+            .map(|home| format!("{}/{}", home, &workspace.work_dir[2..]))
+            .unwrap_or_else(|_| workspace.work_dir.clone())
+    } else {
+        workspace.work_dir.clone()
+    };
+    let work_dir_exists = std::path::Path::new(&expanded_work_dir).is_dir();
+
     Ok(WorkspaceStatus {
         workspace_id: workspace.workspace_id,
         status: workspace.status,
@@ -779,7 +790,7 @@ pub fn list_projects(workspace_id: &str) -> Result<Vec<Project>, WorkspaceManage
     Ok(db_projects
         .into_iter()
         .map(|p| Project {
-            project_id: format_id(p.project_id, IdType::Workspace),
+            project_id: format_id(p.project_id, IdType::Project),
             workspace_id: format_id(p.workspace_id, IdType::Workspace),
             name: p.name,
             path: p.path,
@@ -834,7 +845,7 @@ pub fn register_project(
 
     // Convert to Project type
     Ok(Project {
-        project_id: format_id(created.project_id, IdType::Workspace),
+        project_id: format_id(created.project_id, IdType::Project),
         workspace_id: format_id(created.workspace_id, IdType::Workspace),
         name: created.name,
         path: created.path,
@@ -960,7 +971,7 @@ pub fn update_project(
 
     // Convert to Project type
     Ok(Project {
-        project_id: format_id(project.project_id, IdType::Workspace),
+        project_id: format_id(project.project_id, IdType::Project),
         workspace_id: format_id(project.workspace_id, IdType::Workspace),
         name: project.name,
         path: project.path,

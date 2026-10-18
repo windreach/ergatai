@@ -33,7 +33,7 @@ export {
   lastSelectedCodexThinkingAtom,
   lastSelectedAgentIdAtom,
   lastSelectedRepoAtom,
-  selectedProjectAtom,
+  selectedWorkspaceAtom,
   agentsUnseenChangesAtom,
   agentsConversationUnseenChangesAtom,
   loadingConversationsAtom,
@@ -94,7 +94,7 @@ export {
 
   // Types
   type SavedRepo,
-  type SelectedProject,
+  type SelectedWorkspace,
   type AgentsMobileViewMode,
   type AgentsDebugMode,
   type ConversationFileChange,

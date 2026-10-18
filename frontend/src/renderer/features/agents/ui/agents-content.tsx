@@ -24,7 +24,7 @@ import {
   agentsConversationsSidebarWidthAtom,
   desktopViewAtom,
   selectedWorkspaceIdAtom,
-  selectedProjectAtom,
+  selectedWorkspaceAtom,
 } from "../atoms"
 import {
   billingMethodAtom,
@@ -93,11 +93,20 @@ export function AgentsContent() {
     agentsConversationsSidebarModeAtom,
   )
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useAtom(selectedWorkspaceIdAtom)
-  const [selectedProject] = useAtom(selectedProjectAtom)
-  const { data: selectedWorkspace } = trpc.ergatai.getManagedWorkspace.useQuery(
+  const [selectedProjectEntry] = useAtom(selectedWorkspaceAtom)
+  const { data: selectedWorkspace, error: workspaceError } = trpc.ergatai.getManagedWorkspace.useQuery(
     { id: selectedWorkspaceId! },
     { enabled: !!selectedWorkspaceId },
   )
+
+  // Clear invalid workspace ID if workspace no longer exists (returns null for 404)
+  useEffect(() => {
+    if ((workspaceError || selectedWorkspace === null) && selectedWorkspaceId) {
+      console.warn("[Workspace] Selected workspace no longer exists, clearing selection:", selectedWorkspaceId)
+      setSelectedWorkspaceId(null)
+    }
+  }, [workspaceError, selectedWorkspace, selectedWorkspaceId, setSelectedWorkspaceId])
+
   // Per-chat terminal sidebar state
   const terminalSidebarAtom = useMemo(
     () => terminalSidebarOpenAtomFamily(selectedChatId || ""),

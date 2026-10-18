@@ -8,10 +8,10 @@ import { IconSpinner, GitHubIcon } from "../../components/ui/icons"
 import { Logo } from "../../components/ui/logo"
 import { Input } from "../../components/ui/input"
 import { trpc } from "../../lib/trpc"
-import { selectedProjectAtom } from "../agents/atoms"
+import { selectedWorkspaceAtom } from "../agents/atoms"
 
 export function SelectRepoPage() {
-  const [, setSelectedProject] = useAtom(selectedProjectAtom)
+  const [, setSelectedWorkspace] = useAtom(selectedWorkspaceAtom)
   const [showClonePage, setShowClonePage] = useState(false)
   const [githubUrl, setGithubUrl] = useState("")
 
@@ -34,7 +34,7 @@ export function SelectRepoPage() {
           return [project, ...oldData]
         })
 
-        setSelectedProject({
+        setSelectedWorkspace({
           id: project.id,
           name: project.name,
           path: project.path,
@@ -66,7 +66,7 @@ export function SelectRepoPage() {
           return [project, ...oldData]
         })
 
-        setSelectedProject({
+        setSelectedWorkspace({
           id: project.id,
           name: project.name,
           path: project.path,

@@ -11,7 +11,7 @@ import {
   pendingUserQuestionsAtom,
   pendingPlanApprovalsAtom,
   agentsUnseenChangesAtom,
-  selectedProjectAtom,
+  selectedWorkspaceAtom,
   agentsSidebarOpenAtom,
 } from "../agents/atoms"
 import {
@@ -70,7 +70,7 @@ export function KanbanView() {
   const unseenChanges = useAtomValue(agentsUnseenChangesAtom)
 
   // Project for pinned chats storage
-  const [selectedProject] = useAtom(selectedProjectAtom)
+  const [selectedWorkspace] = useAtom(selectedWorkspaceAtom)
 
   // Pinned chats (stored in localStorage per project)
   const [pinnedChatIds, setPinnedChatIds] = useState<Set<string>>(new Set())
@@ -91,35 +91,35 @@ export function KanbanView() {
 
   // Load pinned IDs from localStorage when project changes
   useEffect(() => {
-    if (!selectedProject?.id) {
+    if (!selectedWorkspace?.id) {
       setPinnedChatIds(new Set())
       return
     }
     try {
       const windowId = getWindowId()
-      const stored = localStorage.getItem(`${windowId}:agent-pinned-chats-${selectedProject.id}`)
+      const stored = localStorage.getItem(`${windowId}:agent-pinned-chats-${selectedWorkspace.id}`)
       setPinnedChatIds(stored ? new Set(JSON.parse(stored)) : new Set())
     } catch {
       setPinnedChatIds(new Set())
     }
-  }, [selectedProject?.id])
+  }, [selectedWorkspace?.id])
 
   // Save pinned IDs to localStorage when they change
   const prevPinnedRef = useRef<Set<string>>(new Set())
   useEffect(() => {
-    if (!selectedProject?.id) return
+    if (!selectedWorkspace?.id) return
     if (
       (pinnedChatIds !== prevPinnedRef.current && pinnedChatIds.size > 0) ||
       prevPinnedRef.current.size > 0
     ) {
       const windowId = getWindowId()
       localStorage.setItem(
-        `${windowId}:agent-pinned-chats-${selectedProject.id}`,
+        `${windowId}:agent-pinned-chats-${selectedWorkspace.id}`,
         JSON.stringify([...pinnedChatIds]),
       )
     }
     prevPinnedRef.current = pinnedChatIds
-  }, [pinnedChatIds, selectedProject?.id])
+  }, [pinnedChatIds, selectedWorkspace?.id])
 
   // Toggle pin handler
   const handleTogglePin = useCallback((chatId: string) => {

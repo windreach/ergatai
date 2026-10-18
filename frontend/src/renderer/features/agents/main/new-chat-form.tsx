@@ -38,7 +38,7 @@ import {
   lastSelectedWorkModeAtom,
   selectedAgentChatIdAtom,
   selectedDraftIdAtom,
-  selectedProjectAtom,
+  selectedWorkspaceAtom,
   registeredAgentsAtom,
   getNextMode,
   type AgentMode,
@@ -117,6 +117,7 @@ import {
 } from "../../terminal/terminal-sidebar"
 import { getTerminalScopeKey } from "../../terminal/utils"
 import { AgentSendButton } from "../components/agent-send-button"
+import { WorkspaceSelector } from "../components/workspace-selector"
 import { useCollaborationMode } from "../collaboration/use-collaboration-mode"
 import {
   resolveGroupMentionAgents,
@@ -300,22 +301,22 @@ export function NewChatForm({
   // Check if any chat has unseen changes
   const hasAnyUnseenChanges = unseenChanges.size > 0
   const [lastSelectedRepo, setLastSelectedRepo] = useAtom(lastSelectedRepoAtom)
-  const [selectedProject, setSelectedProject] = useAtom(selectedProjectAtom)
-  // Fetch projects to validate selectedProject exists
+  const [selectedWorkspace, setSelectedWorkspace] = useAtom(selectedWorkspaceAtom)
+  // Fetch projects to validate selectedWorkspace exists
   const { data: projectsList, isLoading: isLoadingProjects } =
     trpc.projects.list.useQuery()
 
   // Validate selected project exists in DB
   // While loading, trust the stored value to prevent flicker
   const validatedProject = useMemo(() => {
-    if (!selectedProject) return null
+    if (!selectedWorkspace) return null
     // While loading, trust localStorage value to prevent flicker
-    if (isLoadingProjects) return selectedProject
+    if (isLoadingProjects) return selectedWorkspace
     // After loading, validate against DB
     if (!projectsList) return null
-    const exists = projectsList.some((p) => p.id === selectedProject.id)
-    return exists ? selectedProject : null
-  }, [selectedProject, projectsList, isLoadingProjects])
+    const exists = projectsList.some((p) => p.id === selectedWorkspace.id)
+    return exists ? selectedWorkspace : null
+  }, [selectedWorkspace, projectsList, isLoadingProjects])
   const canUseRightSidebar = true
   const terminalSidebarAtom = useMemo(
     () => terminalSidebarOpenAtomFamily(validatedProject?.id ?? ""),
@@ -353,10 +354,10 @@ export function NewChatForm({
 
   // Clear invalid project from storage
   useEffect(() => {
-    if (selectedProject && projectsList && !validatedProject) {
-      setSelectedProject(null)
+    if (selectedWorkspace && projectsList && !validatedProject) {
+      setSelectedWorkspace(null)
     }
-  }, [selectedProject, projectsList, validatedProject, setSelectedProject])
+  }, [selectedWorkspace, projectsList, validatedProject, setSelectedWorkspace])
   const [lastSelectedAgentId, setLastSelectedAgentId] = useAtom(
     lastSelectedAgentIdAtom,
   )
@@ -1232,47 +1233,6 @@ export function NewChatForm({
     },
   })
 
-  // Open folder mutation for selecting a project
-  const openFolder = trpc.projects.openFolder.useMutation({
-    onSuccess: (project) => {
-      if (project) {
-        // Optimistically update the projects list cache to prevent "Select repo" flash
-        // This ensures validatedProject can find the new project immediately
-        utils.projects.list.setData(undefined, (oldData) => {
-          if (!oldData) return [project]
-          // Check if project already exists (reopened existing project)
-          const exists = oldData.some((p) => p.id === project.id)
-          if (exists) {
-            // Update existing project's timestamp
-            return oldData.map((p) =>
-              p.id === project.id ? { ...p, updatedAt: project.updatedAt } : p,
-            )
-          }
-          // Add new project at the beginning
-          return [project, ...oldData]
-        })
-
-        setSelectedProject({
-          id: project.id,
-          name: project.name,
-          path: project.path,
-          gitRemoteUrl: project.gitRemoteUrl,
-          gitProvider: project.gitProvider as
-            | "github"
-            | "gitlab"
-            | "bitbucket"
-            | null,
-          gitOwner: project.gitOwner,
-          gitRepo: project.gitRepo,
-        })
-      }
-    },
-  })
-
-  const handleOpenFolder = async () => {
-    await openFolder.mutateAsync()
-  }
-
   const renderWorkModeSelector = useCallback(
     () =>
       validatedProject ? (
@@ -1302,7 +1262,7 @@ export function NewChatForm({
     const hasFiles = files.filter((f) => !f.isLoading).length > 0
     const hasPastedTexts = pastedTexts.length > 0
 
-    if ((!hasText && !hasImages && !hasFiles && !hasPastedTexts) || !selectedProject) {
+    if ((!hasText && !hasImages && !hasFiles && !hasPastedTexts) || !selectedWorkspace) {
       return
     }
 
@@ -1371,7 +1331,7 @@ export function NewChatForm({
 
     // Create chat with selected project, branch, and initial message
     createChatMutation.mutate({
-      projectId: selectedProject.id,
+      projectId: selectedWorkspace.id,
       workspaceId: selectedWorkspaceId || undefined,
       name: message.trim().slice(0, 50), // Use first 50 chars as chat name
       model: selectedChatModel || undefined, // Only send model if explicitly selected
@@ -1386,7 +1346,7 @@ export function NewChatForm({
     })
     // Editor, images, files, and pasted texts are cleared in onSuccess callback
   }, [
-    selectedProject,
+    selectedWorkspace,
     validatedProject?.path,
     createChatMutation,
     hasContent,
@@ -1868,18 +1828,11 @@ export function NewChatForm({
 
           {/* Input Area or Select Repo State */}
           {!validatedProject ? (
-            // No project selected - show select repo button (like Sign in button)
             <div className="flex justify-center">
-              <button
-                onClick={handleOpenFolder}
-                disabled={openFolder.isPending}
-                className="h-8 px-3 bg-primary text-primary-foreground rounded-lg text-sm font-medium transition-[background-color,transform] duration-150 hover:bg-primary/90 active:scale-[0.97] shadow-[0_0_0_0.5px_rgb(23,23,23),inset_0_0_0_1px_rgba(255,255,255,0.14)] disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {openFolder.isPending ? "Opening..." : "Select repo"}
-              </button>
+              <WorkspaceSelector matchTriggerWidth />
             </div>
           ) : (
-            // Project selected - show input form
+            // Workspace ready - show input form
             <div
               className="relative w-full"
               onDragOver={handleDragOver}
@@ -1987,7 +1940,7 @@ export function NewChatForm({
                             isUploading
                           }
                           disabled={Boolean(
-                            !hasContent || !selectedProject || isUploading,
+                            !hasContent || !selectedWorkspace || isUploading,
                           )}
                           onClick={handleSend}
                           mode={agentMode}

@@ -246,11 +246,12 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             updated_at INTEGER NOT NULL,
             FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );
+        -- Core indexes for message queries
         CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
-        CREATE INDEX IF NOT EXISTS idx_messages_role ON messages(role);
-        CREATE INDEX IF NOT EXISTS idx_messages_from_agent ON messages(from_agent_id);
-        CREATE INDEX IF NOT EXISTS idx_messages_type ON messages(message_type);
         CREATE INDEX IF NOT EXISTS idx_messages_sequence ON messages(conversation_id, sequence);
+        CREATE INDEX IF NOT EXISTS idx_messages_role ON messages(role);
+        CREATE INDEX IF NOT EXISTS idx_messages_from_agent_id ON messages(from_agent_id);
+        CREATE INDEX IF NOT EXISTS idx_messages_message_type ON messages(message_type);
 
         CREATE TABLE IF NOT EXISTS terminal_sessions (
             session_id INTEGER PRIMARY KEY,
@@ -341,6 +342,12 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         );
         "#,
     )?;
+
+    // Migration: Update any existing NULL parts to '[]' for consistency
+    // Note: Currently initialize_tables drops and recreates all tables on startup,
+    // so this migration is a no-op. However, if the initialization logic changes to
+    // preserve data in the future, this migration ensures existing NULL values are updated.
+    conn.execute_batch("UPDATE messages SET parts = '[]' WHERE parts IS NULL;")?;
 
     // Re-enable foreign key constraints after table recreation
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
@@ -761,6 +768,39 @@ pub mod projects {
         )?;
         Ok(count as u64)
     }
+
+    pub fn find_by_path(path: &str) -> Result<Option<Project>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT project_id, workspace_id, name, path, description, git_remote_url, git_provider, git_owner, git_repo, icon_path, created_at, updated_at
+             FROM projects WHERE path = ?1 LIMIT 1",
+        )?;
+
+        let mut rows = stmt.query_map(params![path], |row| {
+            Ok(Project {
+                project_id: row.get(0)?,
+                workspace_id: row.get(1)?,
+                name: row.get(2)?,
+                path: row.get(3)?,
+                description: row.get(4)?,
+                git_remote_url: row.get(5)?,
+                git_provider: row.get(6)?,
+                git_owner: row.get(7)?,
+                git_repo: row.get(8)?,
+                icon_path: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(project)) => Ok(Some(project)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
 }
 
 pub mod chats {
@@ -913,6 +953,39 @@ pub mod chats {
             params![now, chat_id],
         )?;
         Ok(())
+    }
+
+    pub fn find_by_worktree_path(path: &str) -> Result<Option<Chat>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT chat_id, workspace_id, name, collaboration_mode, worktree_path, branch, base_branch, pr_url, pr_number, created_at, updated_at, archived_at
+             FROM chats WHERE worktree_path = ?1 LIMIT 1",
+        )?;
+
+        let mut rows = stmt.query_map(params![path], |row| {
+            Ok(Chat {
+                chat_id: row.get(0)?,
+                workspace_id: row.get(1)?,
+                name: row.get(2)?,
+                collaboration_mode: row.get(3)?,
+                worktree_path: row.get(4)?,
+                branch: row.get(5)?,
+                base_branch: row.get(6)?,
+                pr_url: row.get(7)?,
+                pr_number: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
+                archived_at: row.get(11)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(chat)) => Ok(Some(chat)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
     }
 }
 
@@ -1740,12 +1813,17 @@ pub mod messages {
         let agent_fields = agent_fields.unwrap_or_default();
         let output_fields = output_fields.unwrap_or_default();
 
+        // Use empty array instead of NULL for parts to simplify query logic
+        let parts_str = parts
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "[]".to_string());
+
         let message = Message {
             message_id: generate(),
             conversation_id,
             sequence,
             role: role.to_string(),
-            parts: parts.map(|p| p.to_string()),
+            parts: Some(parts_str),
             metadata: if metadata.is_null() {
                 None
             } else {

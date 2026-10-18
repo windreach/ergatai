@@ -141,7 +141,7 @@ export function WorkspaceEditDialog({
           <div className="space-y-2">
             <div className="text-xs font-medium text-muted-foreground">Source Folders</div>
             <div className="space-y-1.5">
-              {projects.map((project) => (
+              {(projects ?? []).map((project) => (
                 <div
                   key={project.projectId}
                   className="flex items-center justify-between rounded-md border bg-background px-3 py-2"
