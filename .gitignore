@@ -80,6 +80,7 @@ lcov.info
 
 # Test artifacts and generated files
 .schemathesis/
+.codebase-memory/
 openapi.json
 CODE_REVIEW_SUMMARY.md
 
