@@ -274,6 +274,11 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/terminal-sessions/{id}/audit",
             get(api::terminal_sessions::list_audit),
         )
+        // Path registration lookup (single-call replacement for N+1 client-side path resolution)
+        .route(
+            "/api/v1/registered-path",
+            get(api::workspaces::get_registered_path),
+        )
         // Managed workspace routes
         .route(
             "/api/v1/workspaces/managed",
@@ -478,6 +483,24 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/agent-profiles/{name}",
             delete(api::agent_profiles::delete_profile),
+        )
+        // ════════════════════════════════════════════════════════════════
+        // MCP Server Configuration API
+        // ════════════════════════════════════════════════════════════════
+        .route(
+            "/api/v1/mcp-servers",
+            get(api::mcp_servers::list_mcp_servers)
+                .post(api::mcp_servers::create_mcp_server),
+        )
+        .route(
+            "/api/v1/mcp-servers/for-profile/{profile_id}",
+            get(api::mcp_servers::list_mcp_servers_for_profile),
+        )
+        .route(
+            "/api/v1/mcp-servers/{id}",
+            get(api::mcp_servers::get_mcp_server)
+                .put(api::mcp_servers::update_mcp_server)
+                .delete(api::mcp_servers::delete_mcp_server),
         )
         .route("/api/v1/status", get(api::status::get_status))
         .route(

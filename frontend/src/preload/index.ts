@@ -14,6 +14,12 @@ contextBridge.exposeInMainWorld("desktopApi", {
   // Platform info
   platform: process.platform,
   arch: process.arch,
+
+  // 测试模式标志（从主进程环境变量读取）
+  // Defensive check: disable test mode in production builds even if env vars are set
+  isTestMode: process.env.NODE_ENV === "test" ||
+    (process.env.ELECTRON_TEST_MODE === "true" && process.env.NODE_ENV !== "production"),
+
   getVersion: () => ipcRenderer.invoke("app:version"),
   isPackaged: () => ipcRenderer.invoke("app:isPackaged"),
   getDefaultWorkspacePath: () => ipcRenderer.invoke("app:get-default-workspace-path"),

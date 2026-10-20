@@ -16,6 +16,7 @@ import { backendTerminalRouter } from "./backend-terminal"
 import { worktreeConfigRouter } from "./worktree-config"
 import { pluginsRouter } from "./plugins"
 import { groupChatRouter } from "./group-chat"
+import { testRouter } from "./test"
 import { createGitRouter } from "../../git"
 import { BrowserWindow } from "electron"
 
@@ -42,6 +43,7 @@ export function createAppRouter(getWindow: () => BrowserWindow | null) {
     worktreeConfig: worktreeConfigRouter,
     plugins: pluginsRouter,
     groupChat: groupChatRouter,
+    test: testRouter,  // 测试模式 IPC（只在 NODE_ENV=test 时可用）
     // Git operations - named "changes" to match Superset API
     changes: createGitRouter(),
   })

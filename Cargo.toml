@@ -15,7 +15,7 @@ members = [
     "crates/ergatai-preload",
 ]
 exclude = [
-    "desktop/src-tauri",
+    "frontend",
 ]
 
 [workspace.package]

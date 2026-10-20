@@ -1,0 +1,151 @@
+/**
+ * IPC 单元测试 - 文件操作
+ */
+
+import { test, expect, describe, beforeAll, afterAll, beforeEach } from '@playwright/test'
+import { launchElectron } from '../../fixtures/electron-launcher'
+import * as fs from 'fs/promises'
+import * as path from 'path'
+
+describe('IPC: 文件操作', () => {
+  let electron: any
+  let page: any
+  const testDir = '/tmp/ergatai-file-test'
+
+  beforeAll(async () => {
+    electron = await launchElectron({
+      extraEnv: { NODE_ENV: 'test', ELECTRON_TEST_MODE: 'true' },
+    })
+    page = electron.page
+    await fs.mkdir(testDir, { recursive: true })
+
+    process.on('exit', async () => {
+      if (electron) { try { await electron.close() } catch (e) { /* ignore */ } }
+    })
+    process.on('SIGINT', async () => {
+      if (electron) { await electron.close() }
+      process.exit(130)
+    })
+  })
+
+  afterAll(async () => {
+    await fs.rm(testDir, { recursive: true, force: true }).catch(() => {})
+    await electron.close()
+  })
+
+  beforeEach(async () => {
+    await page.evaluate(async () => { await (window as any).trpc.test.helpers.cleanup.mutate() })
+  })
+
+  describe('test.files', () => {
+    test('创建文件', async () => {
+      const filePath = path.join(testDir, 'test-create.txt')
+      const content = 'Hello, World!'
+
+      const result = await page.evaluate(async (args: { path: string; content: string }) => {
+        return await (window as any).trpc.test.files.create.mutate(args)
+      }, { path: filePath, content })
+
+      expect(result.success).toBe(true)
+      expect(result.path).toBe(filePath)
+
+      const actual = await fs.readFile(filePath, 'utf-8')
+      expect(actual).toBe(content)
+    })
+
+    test('读取文件', async () => {
+      const filePath = path.join(testDir, 'test-read.txt')
+      const content = 'Test content'
+      await fs.writeFile(filePath, content, 'utf-8')
+
+      const result = await page.evaluate(async (p: string) => {
+        return await (window as any).trpc.test.files.read.query({ path: p })
+      }, filePath)
+
+      expect(result.success).toBe(true)
+      expect(result.content).toBe(content)
+      expect(result.path).toBe(filePath)
+    })
+
+    test('读取不存在的文件应报错', async () => {
+      const filePath = path.join(testDir, 'does-not-exist.txt')
+
+      await expect(
+        page.evaluate(async (p: string) => {
+          return await (window as any).trpc.test.files.read.query({ path: p })
+        }, filePath)
+      ).rejects.toThrow()
+    })
+
+    test('删除文件', async () => {
+      const filePath = path.join(testDir, 'test-delete.txt')
+      await fs.writeFile(filePath, 'delete me', 'utf-8')
+
+      const result = await page.evaluate(async (p: string) => {
+        return await (window as any).trpc.test.files.delete.mutate({ path: p })
+      }, filePath)
+
+      expect(result.success).toBe(true)
+
+      const exists = await fs.access(filePath).then(() => true).catch(() => false)
+      expect(exists).toBe(false)
+    })
+
+    test('创建文件会自动创建父目录', async () => {
+      const filePath = path.join(testDir, 'nested', 'dir', 'file.txt')
+
+      const result = await page.evaluate(async (args: { path: string; content: string }) => {
+        return await (window as any).trpc.test.files.create.mutate(args)
+      }, { path: filePath, content: 'nested' })
+
+      expect(result.success).toBe(true)
+
+      const actual = await fs.readFile(filePath, 'utf-8')
+      expect(actual).toBe('nested')
+    })
+
+    test('操作日志记录', async () => {
+      const file1 = path.join(testDir, 'log-1.txt')
+      const file2 = path.join(testDir, 'log-2.txt')
+
+      await page.evaluate(async (args: { path: string; content: string }) => {
+        await (window as any).trpc.test.files.create.mutate(args)
+      }, { path: file1, content: 'a' })
+
+      await page.evaluate(async (args: { path: string; content: string }) => {
+        await (window as any).trpc.test.files.create.mutate(args)
+      }, { path: file2, content: 'b' })
+
+      await page.evaluate(async (p: string) => {
+        await (window as any).trpc.test.files.delete.mutate({ path: p })
+      }, file1)
+
+      const log = await page.evaluate(async () => {
+        return await (window as any).trpc.test.files.getOperationLog.query()
+      })
+
+      expect(log.length).toBeGreaterThanOrEqual(3)
+
+      const createOps = log.filter((op: any) => op.type === 'create')
+      expect(createOps.length).toBeGreaterThanOrEqual(2)
+
+      const deleteOps = log.filter((op: any) => op.type === 'delete')
+      expect(deleteOps.length).toBeGreaterThanOrEqual(1)
+      expect(deleteOps[0].path).toBe(file1)
+    })
+
+    test('路径为空应报错', async () => {
+      await expect(
+        page.evaluate(async () => {
+          return await (window as any).trpc.test.files.create.mutate({ path: '', content: 'x' })
+        })
+      ).rejects.toThrow()
+
+      await expect(
+        page.evaluate(async () => {
+          return await (window as any).trpc.test.files.read.query({ path: '' })
+        })
+      ).rejects.toThrow()
+    })
+  })
+})

@@ -83,6 +83,11 @@ lcov.info
 openapi.json
 CODE_REVIEW_SUMMARY.md
 
+# Test result data (JSON)
+*-results.json
+test-results.json
+frontend/e2e-tests/reports/
+
 # Frontend (Electron + React)
 frontend/node_modules/
 frontend/out/

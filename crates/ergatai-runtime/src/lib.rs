@@ -45,6 +45,7 @@ pub mod bash_path_extractor;
 pub mod binary_detection;
 pub mod cgroups;
 pub mod dirs;
+pub mod mcp_config;
 pub mod mcp_over_acp;
 pub mod output_accumulator;
 pub mod permission;

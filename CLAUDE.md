@@ -1,6 +1,6 @@
 # CLAUDE.md — Ergatai
 
-多 agent 协作工作台。将独立运行的 AI 编码助手（如 Claude Code、Cursor、Codex）组织成协作团队，通过 ACP（Agent Client Protocol）协议实现结构化通信。提供桌面应用（Tauri）、CLI（`ergatai`）、REST API、MCP 协议四种接入方式。核心能力：agent 模板注册与一键启动、文件访问控制（零信任锁 + Git 快照）、DAG 工作流编排、跨 agent 消息投递。
+多 agent 协作工作台。将独立运行的 AI 编码助手（如 Claude Code、Cursor、Codex）组织成协作团队，通过 ACP（Agent Client Protocol）协议实现结构化通信。提供桌面应用（Electron）、CLI（`ergatai`）、REST API、MCP 协议四种接入方式。核心能力：agent 模板注册与一键启动、文件访问控制（零信任锁 + Git 快照）、DAG 工作流编排、跨 agent 消息投递。
 
 ---
 
@@ -722,7 +722,7 @@ JetStream Streams:
 | 数据库 | SQLite (rusqlite 0.31, bundled) |
 | 异步 | tokio 1.36 |
 | CLI | clap 4.5 |
-| 桌面应用 | Tauri 2.x + React + Vite + TypeScript |
+| 桌面应用 | Electron + React + Vite + TypeScript |
 | TUI | ratatui 0.30 + tui-widgets 0.7 |
 | HTTP 客户端 | reqwest 0.12 (rustls-tls) |
 | 序列化 | serde 1.0 + serde_json 1.0 + serde_yaml 0.9 |

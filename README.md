@@ -29,7 +29,7 @@ Ergatai takes standalone AI coding agents (Claude Code, Cursor, Codex, OpenCode,
 - **DAG orchestration** — submit a YAML task graph; budget, timeout tiers (Warn → Escalate → Fail), and mesh policies (Open / Adjacent / Star / Restricted) are enforced
 - **Reliable messaging** — NATS JetStream persistence, read receipts, request correlation + auto-timeout (`reqwatch`)
 - **Defensive by default** — per-agent rate limits (60 msg/min), NATS back-pressure, stall + idle watchers, conversation loop guards, graceful shutdown on SIGINT/SIGTERM
-- **Four interfaces** — Tauri desktop app, `ergatai` CLI, REST API, and MCP over Streamable HTTP
+- **Four interfaces** — Electron desktop app, `ergatai` CLI, REST API, and MCP over Streamable HTTP
 
 ## 📦 Crate layout
 
@@ -47,7 +47,7 @@ crates/
   ergatai-agent      Agent configuration & discovery
   ergatai-binary     Locates / downloads embedded nats-server
   ergatai-preload    Preload hooks
-frontend/            Tauri + React + Vite desktop app (npm workspaces)
+frontend/            Electron + React + Vite desktop app (npm workspaces)
 ```
 
 ## 🚀 Quick start
@@ -70,8 +70,8 @@ cargo build -p ergatai-api
 # Just the CLI
 cargo build -p ergatai-cli
 
-# Desktop app (frontend + Tauri shell)
-cd frontend && npm install && npm run tauri dev
+# Desktop app (frontend + Electron shell)
+cd frontend && npm install && npm run electron:dev
 ```
 
 ### Run the API server
@@ -108,7 +108,7 @@ ergatai status --watch
 | MCP | `POST /mcp/{agent}/*` | JSON-RPC 2025-06-18, one path per agent |
 | SSE | `GET /api/v1/activity/stream` | Live activity events |
 | Metrics | `GET /metrics` | Prometheus format |
-| Desktop | Tauri window | React + Monaco + terminal panes |
+| Desktop | Electron window | React + Monaco + terminal panes |
 | CLI | `ergatai` binary | See `ergatai --help` |
 
 ### MCP tools available to every agent
@@ -171,7 +171,7 @@ Server flags (`ergatai-api`):
 
 ## 🗺️ Roadmap
 
-🚧 **Frontend in active development** — the Tauri + React desktop app is under active construction. See `frontend/` for current work.
+🚧 **Frontend in active development** — the Electron + React desktop app is under active construction. See `frontend/` for current work.
 
 ## 🤝 Contributing
 

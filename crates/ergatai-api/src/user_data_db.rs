@@ -138,6 +138,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_chats_workspace_id ON chats(workspace_id);
+        CREATE INDEX IF NOT EXISTS idx_chats_worktree_path ON chats(worktree_path);
 
         CREATE TABLE IF NOT EXISTS projects (
             project_id INTEGER PRIMARY KEY,
@@ -155,6 +156,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_projects_workspace_id ON projects(workspace_id);
+        CREATE INDEX IF NOT EXISTS idx_projects_path ON projects(path);
 
         CREATE TABLE IF NOT EXISTS collaboration_sessions (
             collaboration_session_id INTEGER PRIMARY KEY,
@@ -349,6 +351,32 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
     // preserve data in the future, this migration ensures existing NULL values are updated.
     conn.execute_batch("UPDATE messages SET parts = '[]' WHERE parts IS NULL;")?;
 
+    // MCP Servers table - created separately to preserve user data across restarts
+    // This table is NOT dropped in the destructive migration above
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS mcp_servers (
+            id INTEGER PRIMARY KEY,
+            profile_id TEXT,
+            name TEXT NOT NULL,
+            server_type TEXT NOT NULL CHECK (server_type IN ('stdio', 'http', 'sse')),
+            command TEXT,
+            args TEXT DEFAULT '[]',
+            env TEXT DEFAULT '{}',
+            url TEXT,
+            headers TEXT DEFAULT '{}',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(profile_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_mcp_servers_profile_id ON mcp_servers(profile_id);
+        CREATE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(name);
+        CREATE INDEX IF NOT EXISTS idx_mcp_servers_enabled ON mcp_servers(enabled);
+        CREATE INDEX IF NOT EXISTS idx_mcp_servers_server_type ON mcp_servers(server_type);
+        "#,
+    )?;
+
     // Re-enable foreign key constraints after table recreation
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
 
@@ -490,6 +518,24 @@ pub struct GroupAgentBinding {
     pub agent_name: String,
     pub agent_command: Option<String>,
     pub conversation_id: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// MCP Server configuration
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct McpServer {
+    pub id: i64,
+    /// Agent profile ID (from profile_registry.db). None = global MCP server.
+    pub profile_id: Option<String>,
+    pub name: String,
+    pub server_type: String, // "stdio", "http", "sse"
+    pub command: Option<String>,
+    pub args: String, // JSON array as TEXT
+    pub env: String,  // JSON object as TEXT
+    pub url: Option<String>,
+    pub headers: String, // JSON object as TEXT
+    pub enabled: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -801,6 +847,45 @@ pub mod projects {
             None => Ok(None),
         }
     }
+
+    /// Find a project by exact path match, or by prefix match (input path is a subdirectory of a project path).
+    /// Returns the most specific (longest) matching project path.
+    /// Example: input "/project/.ergatai/worktrees/ws/branch" matches project path "/project".
+    pub fn find_by_path_or_parent(path: &str) -> Result<Option<Project>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT project_id, workspace_id, name, path, description, git_remote_url, git_provider, git_owner, git_repo, icon_path, created_at, updated_at
+             FROM projects
+             WHERE path = ?1 OR ?1 LIKE path || '/%'
+             ORDER BY LENGTH(path) DESC
+             LIMIT 1",
+        )?;
+
+        let mut rows = stmt.query_map(params![path], |row| {
+            Ok(Project {
+                project_id: row.get(0)?,
+                workspace_id: row.get(1)?,
+                name: row.get(2)?,
+                path: row.get(3)?,
+                description: row.get(4)?,
+                git_remote_url: row.get(5)?,
+                git_provider: row.get(6)?,
+                git_owner: row.get(7)?,
+                git_repo: row.get(8)?,
+                icon_path: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(project)) => Ok(Some(project)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
 }
 
 pub mod chats {
@@ -962,6 +1047,44 @@ pub mod chats {
         let mut stmt = conn.prepare(
             "SELECT chat_id, workspace_id, name, collaboration_mode, worktree_path, branch, base_branch, pr_url, pr_number, created_at, updated_at, archived_at
              FROM chats WHERE worktree_path = ?1 LIMIT 1",
+        )?;
+
+        let mut rows = stmt.query_map(params![path], |row| {
+            Ok(Chat {
+                chat_id: row.get(0)?,
+                workspace_id: row.get(1)?,
+                name: row.get(2)?,
+                collaboration_mode: row.get(3)?,
+                worktree_path: row.get(4)?,
+                branch: row.get(5)?,
+                base_branch: row.get(6)?,
+                pr_url: row.get(7)?,
+                pr_number: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
+                archived_at: row.get(11)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(chat)) => Ok(Some(chat)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    /// Find a chat by exact worktree_path match, or by prefix match (input path is a subdirectory of a chat's worktree_path).
+    /// Returns the most specific (longest) matching worktree_path.
+    pub fn find_by_worktree_path_or_parent(path: &str) -> Result<Option<Chat>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT chat_id, workspace_id, name, collaboration_mode, worktree_path, branch, base_branch, pr_url, pr_number, created_at, updated_at, archived_at
+             FROM chats
+             WHERE worktree_path = ?1 OR ?1 LIKE worktree_path || '/%'
+             ORDER BY LENGTH(worktree_path) DESC
+             LIMIT 1",
         )?;
 
         let mut rows = stmt.query_map(params![path], |row| {
@@ -2511,6 +2634,271 @@ pub mod conversation_execution_contexts {
     }
 }
 
+// ── MCP Servers CRUD ─────────────────────────────────────────────────────────
+
+pub mod mcp_servers {
+    use super::*;
+
+    /// Create a new MCP server configuration
+    pub fn create(server: McpServer) -> Result<McpServer> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO mcp_servers (id, profile_id, name, server_type, command, args, env, url, headers, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                server.id,
+                server.profile_id,
+                server.name,
+                server.server_type,
+                server.command,
+                server.args,
+                server.env,
+                server.url,
+                server.headers,
+                server.enabled as i64,
+                server.created_at,
+                server.updated_at,
+            ],
+        )?;
+
+        Ok(server)
+    }
+
+    /// Get an MCP server by ID
+    pub fn get(id: i64) -> Result<Option<McpServer>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.query_row(
+            "SELECT id, profile_id, name, server_type, command, args, env, url, headers, enabled, created_at, updated_at
+             FROM mcp_servers WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(McpServer {
+                    id: row.get(0)?,
+                    profile_id: row.get(1)?,
+                    name: row.get(2)?,
+                    server_type: row.get(3)?,
+                    command: row.get(4)?,
+                    args: row.get(5)?,
+                    env: row.get(6)?,
+                    url: row.get(7)?,
+                    headers: row.get(8)?,
+                    enabled: row.get::<_, i64>(9)? != 0,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    /// Get an MCP server by profile_id and name
+    pub fn get_by_profile_and_name(
+        profile_id: Option<&str>,
+        name: &str,
+    ) -> Result<Option<McpServer>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.query_row(
+            "SELECT id, profile_id, name, server_type, command, args, env, url, headers, enabled, created_at, updated_at
+             FROM mcp_servers WHERE profile_id IS ?1 AND name = ?2",
+            params![profile_id, name],
+            |row| {
+                Ok(McpServer {
+                    id: row.get(0)?,
+                    profile_id: row.get(1)?,
+                    name: row.get(2)?,
+                    server_type: row.get(3)?,
+                    command: row.get(4)?,
+                    args: row.get(5)?,
+                    env: row.get(6)?,
+                    url: row.get(7)?,
+                    headers: row.get(8)?,
+                    enabled: row.get::<_, i64>(9)? != 0,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    /// List all MCP servers
+    pub fn list() -> Result<Vec<McpServer>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, profile_id, name, server_type, command, args, env, url, headers, enabled, created_at, updated_at
+             FROM mcp_servers ORDER BY created_at DESC",
+        )?;
+
+        let servers = stmt.query_map([], |row| {
+            Ok(McpServer {
+                id: row.get(0)?,
+                profile_id: row.get(1)?,
+                name: row.get(2)?,
+                server_type: row.get(3)?,
+                command: row.get(4)?,
+                args: row.get(5)?,
+                env: row.get(6)?,
+                url: row.get(7)?,
+                headers: row.get(8)?,
+                enabled: row.get::<_, i64>(9)? != 0,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        })?;
+
+        servers.collect()
+    }
+
+    /// List MCP servers by profile_id (including global servers where profile_id IS NULL)
+    pub fn list_by_profile(profile_id: Option<&str>) -> Result<Vec<McpServer>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, profile_id, name, server_type, command, args, env, url, headers, enabled, created_at, updated_at
+             FROM mcp_servers WHERE profile_id IS ?1 ORDER BY created_at DESC",
+        )?;
+
+        let servers = stmt.query_map(params![profile_id], |row| {
+            Ok(McpServer {
+                id: row.get(0)?,
+                profile_id: row.get(1)?,
+                name: row.get(2)?,
+                server_type: row.get(3)?,
+                command: row.get(4)?,
+                args: row.get(5)?,
+                env: row.get(6)?,
+                url: row.get(7)?,
+                headers: row.get(8)?,
+                enabled: row.get::<_, i64>(9)? != 0,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        })?;
+
+        servers.collect()
+    }
+
+    /// List enabled MCP servers for a specific profile (including global servers)
+    pub fn list_enabled_for_profile(profile_id: Option<&str>) -> Result<Vec<McpServer>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, profile_id, name, server_type, command, args, env, url, headers, enabled, created_at, updated_at
+             FROM mcp_servers WHERE enabled = 1 AND (profile_id IS ?1 OR profile_id IS NULL)
+             ORDER BY profile_id DESC NULLS LAST, created_at DESC",
+        )?;
+
+        let servers = stmt.query_map(params![profile_id], |row| {
+            Ok(McpServer {
+                id: row.get(0)?,
+                profile_id: row.get(1)?,
+                name: row.get(2)?,
+                server_type: row.get(3)?,
+                command: row.get(4)?,
+                args: row.get(5)?,
+                env: row.get(6)?,
+                url: row.get(7)?,
+                headers: row.get(8)?,
+                enabled: row.get::<_, i64>(9)? != 0,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        })?;
+
+        servers.collect()
+    }
+
+    /// List all enabled MCP servers
+    pub fn list_enabled() -> Result<Vec<McpServer>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, profile_id, name, server_type, command, args, env, url, headers, enabled, created_at, updated_at
+             FROM mcp_servers WHERE enabled = 1 ORDER BY created_at DESC",
+        )?;
+
+        let servers = stmt.query_map([], |row| {
+            Ok(McpServer {
+                id: row.get(0)?,
+                profile_id: row.get(1)?,
+                name: row.get(2)?,
+                server_type: row.get(3)?,
+                command: row.get(4)?,
+                args: row.get(5)?,
+                env: row.get(6)?,
+                url: row.get(7)?,
+                headers: row.get(8)?,
+                enabled: row.get::<_, i64>(9)? != 0,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        })?;
+
+        servers.collect()
+    }
+
+    /// Update an MCP server configuration
+    pub fn update(server: McpServer) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "UPDATE mcp_servers
+             SET profile_id = ?1, name = ?2, server_type = ?3, command = ?4, args = ?5, env = ?6, url = ?7, headers = ?8, enabled = ?9, updated_at = ?10
+             WHERE id = ?11",
+            params![
+                server.profile_id,
+                server.name,
+                server.server_type,
+                server.command,
+                server.args,
+                server.env,
+                server.url,
+                server.headers,
+                server.enabled as i64,
+                server.updated_at,
+                server.id,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Delete an MCP server by ID
+    pub fn delete(id: i64) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let count = conn.execute("DELETE FROM mcp_servers WHERE id = ?1", params![id])?;
+
+        Ok(count > 0)
+    }
+
+    /// Delete all MCP servers for a specific profile
+    pub fn delete_by_profile(profile_id: &str) -> Result<usize> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let count = conn.execute(
+            "DELETE FROM mcp_servers WHERE profile_id = ?1",
+            params![profile_id],
+        )?;
+
+        Ok(count)
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2872,5 +3260,94 @@ mod tests {
         assert_eq!(last.message_id, last_msg.unwrap().message_id);
 
         workspaces::delete(workspace_id).unwrap();
+    }
+
+    #[test]
+    fn test_mcp_servers_crud() {
+        let _guard = lock_user_data_db_for_tests();
+
+        // Create global MCP server (profile_id = None)
+        let global_server = mcp_servers::create(McpServer {
+            id: generate(),
+            profile_id: None,
+            name: "global-mcp".to_string(),
+            server_type: "stdio".to_string(),
+            command: Some("npx".to_string()),
+            args: "[]".to_string(),
+            env: "{}".to_string(),
+            url: None,
+            headers: "{}".to_string(),
+            enabled: true,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+
+        // Create profile-specific MCP server
+        let profile_server = mcp_servers::create(McpServer {
+            id: generate(),
+            profile_id: Some("agent_123".to_string()),
+            name: "profile-mcp".to_string(),
+            server_type: "http".to_string(),
+            command: None,
+            args: "[]".to_string(),
+            env: "{}".to_string(),
+            url: Some("http://localhost:3000".to_string()),
+            headers: "{}".to_string(),
+            enabled: true,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+
+        // Read by ID
+        let fetched = mcp_servers::get(global_server.id).unwrap().unwrap();
+        assert_eq!(fetched.name, "global-mcp");
+        assert!(fetched.profile_id.is_none());
+
+        // Read by profile and name
+        let fetched_by_profile =
+            mcp_servers::get_by_profile_and_name(Some("agent_123"), "profile-mcp")
+                .unwrap()
+                .unwrap();
+        assert_eq!(fetched_by_profile.id, profile_server.id);
+
+        // List all
+        let all = mcp_servers::list().unwrap();
+        assert!(all.len() >= 2);
+
+        // List by profile
+        let profile_servers = mcp_servers::list_by_profile(Some("agent_123")).unwrap();
+        assert_eq!(profile_servers.len(), 1);
+        assert_eq!(profile_servers[0].name, "profile-mcp");
+
+        // List enabled for profile (should include both profile-specific and global)
+        let enabled_for_profile = mcp_servers::list_enabled_for_profile(Some("agent_123")).unwrap();
+        assert!(enabled_for_profile.len() >= 2);
+
+        // Update
+        let mut updated_server = fetched;
+        updated_server.enabled = false;
+        updated_server.updated_at = 2000;
+        mcp_servers::update(updated_server.clone()).unwrap();
+
+        let refetched = mcp_servers::get(global_server.id).unwrap().unwrap();
+        assert!(!refetched.enabled);
+        assert_eq!(refetched.updated_at, 2000);
+
+        // Delete by profile
+        let deleted_count = mcp_servers::delete_by_profile("agent_123").unwrap();
+        assert_eq!(deleted_count, 1);
+
+        // Verify profile server is deleted
+        let not_found = mcp_servers::get(profile_server.id).unwrap();
+        assert!(not_found.is_none());
+
+        // Delete global server
+        let deleted = mcp_servers::delete(global_server.id).unwrap();
+        assert!(deleted);
+
+        let not_found = mcp_servers::get(global_server.id).unwrap();
+        assert!(not_found.is_none());
     }
 }

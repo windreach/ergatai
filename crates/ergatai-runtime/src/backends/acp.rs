@@ -266,9 +266,105 @@ fn event_type_name(event: &AgentOutputEvent) -> &'static str {
     }
 }
 
+/// Helper function to flush accumulated output and persist to database.
+/// This is called when a task completes (interrupt, queued prompt, or normal completion).
+/// Returns true if output was flushed and persisted, false otherwise.
+async fn flush_and_persist_output(
+    conversation_id: &str,
+    agent_id: &str,
+    context_label: &str,
+) -> bool {
+    if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
+        if let Some(output_data) = registry.flush(conversation_id).await {
+            tracing::info!(
+                agent_id = %agent_id,
+                conversation_id = %conversation_id,
+                "Flushed accumulated output for persistence ({})",
+                context_label
+            );
+            // Call persist callback if set
+            if let Some(callback) = crate::output_accumulator::get_global_persist_callback() {
+                let cb = callback.clone();
+                let conv_id = conversation_id.to_string();
+                let context_label_owned = context_label.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = cb(conv_id, output_data).await {
+                        tracing::error!(
+                            error = %e,
+                            "Failed to persist agent output ({})",
+                            context_label_owned
+                        );
+                    } else {
+                        tracing::info!(
+                            "Agent output persisted successfully ({})",
+                            context_label_owned
+                        );
+                    }
+                });
+            }
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
 /// Helper function to send an event to output publisher (NATS).
 /// Broadcast channel has been removed - all output goes through NATS for unified routing.
 fn send_output_event(conversation_id: &str, event: AgentOutputEvent) {
+    // Accumulate output data for persistence
+    if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
+        let registry_clone = registry.clone();
+        let conv_id = conversation_id.to_string();
+        let event_clone = event.clone();
+
+        tokio::spawn(async move {
+            let accumulator = registry_clone.get_or_create(&conv_id, 0).await;
+            let mut acc = accumulator.lock().await;
+
+            match event_clone {
+                AgentOutputEvent::Text { delta, .. } => {
+                    acc.accumulate_text(&delta);
+                }
+                AgentOutputEvent::Thinking { delta, .. } => {
+                    acc.accumulate_thinking(&delta);
+                }
+                AgentOutputEvent::ToolCallStart {
+                    id,
+                    name,
+                    input,
+                    locations,
+                    ..
+                } => {
+                    // Convert ACP ToolCallLocation to output_accumulator ToolCallLocation
+                    let acc_locations: Vec<crate::output_accumulator::ToolCallLocation> = locations
+                        .into_iter()
+                        .map(|loc| crate::output_accumulator::ToolCallLocation {
+                            path: loc.path.to_string_lossy().into_owned(),
+                            line: loc.line.map(|l| l as u64),
+                        })
+                        .collect();
+                    acc.record_tool_call_start(
+                        id,
+                        name,
+                        None,
+                        input.unwrap_or(serde_json::json!({})),
+                        acc_locations,
+                    );
+                }
+                AgentOutputEvent::ToolCallComplete { id, output, .. } => {
+                    acc.record_tool_call_update(&id, output, "completed".to_string(), None);
+                }
+                AgentOutputEvent::Done { stop_reason, .. } => {
+                    acc.set_stop_reason(stop_reason);
+                }
+                _ => {}
+            }
+        });
+    }
+
     // Get global output publisher (set during initialization)
     if let Some(publisher) = crate::output_publisher::get_global_output_publisher() {
         if let Err(e) = publisher.publish(conversation_id, event) {
@@ -1431,6 +1527,112 @@ impl AcpBackend {
         Some(meta)
     }
 
+    /// Load user-configured MCP servers from database
+    ///
+    /// Loads global MCP servers (profile_id IS NULL) from user_data.db.
+    /// Currently only HTTP type is supported; stdio/sse types are logged and skipped.
+    fn load_user_mcp_servers(profile_id: Option<&str>, mcp_http_supported: bool) -> Vec<McpServer> {
+        if !mcp_http_supported {
+            debug!("Agent does not support HTTP MCP; skipping user MCP servers");
+            return Vec::new();
+        }
+
+        let db_path = crate::dirs::user_data_db_path();
+        if !db_path.exists() {
+            debug!(
+                db_path = %db_path.display(),
+                "user_data.db not found; no user MCP servers to load"
+            );
+            return Vec::new();
+        }
+
+        let conn = match rusqlite::Connection::open(&db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    db_path = %db_path.display(),
+                    "Failed to open user_data.db; skipping user MCP servers"
+                );
+                return Vec::new();
+            }
+        };
+
+        // Load profile-specific + global MCP servers
+        let user_servers = match crate::mcp_config::load_mcp_servers_for_profile(&conn, profile_id)
+        {
+            Ok(servers) => servers,
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    profile_id = ?profile_id,
+                    "Failed to load user MCP servers from database"
+                );
+                return Vec::new();
+            }
+        };
+
+        let mut declarations = Vec::new();
+        for server in user_servers {
+            match server.server_type.as_str() {
+                "http" => {
+                    if let Some(url) = &server.url {
+                        let mut http_server = McpServerHttp::new(&server.name, url);
+
+                        // Parse and add headers
+                        if let Ok(headers) =
+                            serde_json::from_str::<HashMap<String, String>>(&server.headers)
+                        {
+                            let header_vec: Vec<HttpHeader> = headers
+                                .into_iter()
+                                .map(|(k, v)| HttpHeader::new(k, v))
+                                .collect();
+                            if !header_vec.is_empty() {
+                                http_server = http_server.headers(header_vec);
+                            }
+                        }
+
+                        declarations.push(McpServer::Http(http_server));
+                        debug!(
+                            mcp_name = %server.name,
+                            mcp_url = %url,
+                            "User MCP server loaded"
+                        );
+                    } else {
+                        warn!(
+                            mcp_name = %server.name,
+                            "HTTP MCP server missing URL; skipping"
+                        );
+                    }
+                }
+                "stdio" => {
+                    // TODO: Implement stdio MCP support when ACP protocol supports it
+                    warn!(
+                        mcp_name = %server.name,
+                        "Stdio MCP servers not yet supported; skipping"
+                    );
+                }
+                "sse" => {
+                    // TODO: Implement SSE MCP support when ACP protocol supports it
+                    warn!(
+                        mcp_name = %server.name,
+                        "SSE MCP servers not yet supported; skipping"
+                    );
+                }
+                other => {
+                    warn!(
+                        mcp_name = %server.name,
+                        mcp_type = %other,
+                        "Unknown MCP server type; skipping"
+                    );
+                }
+            }
+        }
+
+        info!(count = declarations.len(), "Loaded user MCP servers");
+        declarations
+    }
+
     /// Enable automatic prompt continuation when `stop_reason` is `max_tokens`
     /// or `max_turn_requests`.
     ///
@@ -2410,6 +2612,7 @@ impl AcpBackendInterface for AcpBackend {
             .cloned()
             .unwrap_or_else(|| agent_id.clone());
         let task_workspace_id = handle.id.clone();
+        let task_profile_id = handle.metadata.get("agent_profile_id").cloned();
         let task_dead_agents = self.dead_agents.clone();
         let task_permission_handler = self.permission_handler.clone();
         let task_shared_session_id = shared_session_id.clone();
@@ -2861,13 +3064,22 @@ impl AcpBackendInterface for AcpBackend {
                         None
                     };
 
+                    // Load user-configured MCP servers from database (profile-specific + global)
+                    let user_mcp_declarations =
+                        Self::load_user_mcp_servers(task_profile_id.as_deref(), mcp_http_supported);
+
                     // Step 2: Create or load an ACP session.
                     let mut session_id = if let Some(saved_sid) = saved_session_id {
                         info!(session_id = %saved_sid, "Attempting session/load");
                         let mut load_request =
                             LoadSessionRequest::new(saved_sid.clone(), &cwd);
+                        // Add ergatai built-in MCP
                         if let Some(declaration) = &mcp_declaration {
                             load_request.mcp_servers.push(declaration.clone());
+                        }
+                        // Add user-configured MCP servers
+                        for decl in &user_mcp_declarations {
+                            load_request.mcp_servers.push(decl.clone());
                         }
                         // Add Claude Code MCP config via _meta field (workaround)
                         if let Some(meta) = claude_code_mcp_meta.as_ref() {
@@ -2896,8 +3108,13 @@ impl AcpBackendInterface for AcpBackend {
                                     "session/load failed, falling back to session/new"
                                 );
                                 let mut new_request = NewSessionRequest::new(&cwd);
+                                // Add ergatai built-in MCP
                                 if let Some(declaration) = &mcp_declaration {
                                     new_request.mcp_servers.push(declaration.clone());
+                                }
+                                // Add user-configured MCP servers
+                                for decl in &user_mcp_declarations {
+                                    new_request.mcp_servers.push(decl.clone());
                                 }
                                 // Add Claude Code MCP config via _meta field (workaround)
                                 if let Some(meta) = claude_code_mcp_meta.as_ref() {
@@ -2917,8 +3134,13 @@ impl AcpBackendInterface for AcpBackend {
                         }
                     } else {
                         let mut new_request = NewSessionRequest::new(&cwd);
+                        // Add ergatai built-in MCP
                         if let Some(declaration) = &mcp_declaration {
                             new_request.mcp_servers.push(declaration.clone());
+                        }
+                        // Add user-configured MCP servers
+                        for decl in &user_mcp_declarations {
+                            new_request.mcp_servers.push(decl.clone());
                         }
                         // Add Claude Code MCP config via _meta field (workaround)
                         if let Some(meta) = claude_code_mcp_meta {
@@ -3060,6 +3282,14 @@ impl AcpBackendInterface for AcpBackend {
                                             .force_resolve_rejected_for_agent(&connection_agent_id)
                                             .await;
                                         *task_stop_reason.write() = Some(sr.clone());
+
+                                        // Flush accumulated output and persist to database
+                                        flush_and_persist_output(
+                                            &connection_conversation_id,
+                                            &connection_agent_id,
+                                            "interrupt",
+                                        ).await;
+
                                         send_output_event(
                                             &connection_conversation_id,
                                             AgentOutputEvent::Done {
@@ -3132,6 +3362,14 @@ impl AcpBackendInterface for AcpBackend {
                                             .force_resolve_rejected_for_agent(&connection_agent_id)
                                             .await;
                                         *task_stop_reason.write() = Some(sr.clone());
+
+                                        // Flush accumulated output and persist to database
+                                        flush_and_persist_output(
+                                            &connection_conversation_id,
+                                            &connection_agent_id,
+                                            "queued prompt",
+                                        ).await;
+
                                         send_output_event(
                                             &connection_conversation_id,
                                             AgentOutputEvent::Done {
@@ -3207,6 +3445,14 @@ impl AcpBackendInterface for AcpBackend {
                                             .force_resolve_rejected_for_agent(&connection_agent_id)
                                             .await;
                                         *task_stop_reason.write() = Some(sr.clone());
+
+                                        // Flush accumulated output and persist to database
+                                        flush_and_persist_output(
+                                            &connection_conversation_id,
+                                            &connection_agent_id,
+                                            "normal completion",
+                                        ).await;
+
                                         send_output_event(
                                             &connection_conversation_id,
                                             AgentOutputEvent::Done {

@@ -1124,6 +1124,47 @@ pub async fn cancel_prompt(
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
+/// Helper function to update AgentInfo in registry with conversation_id.
+/// This enables message_delivery.rs to resolve conversation → agent mapping.
+async fn update_agent_conversation_id(agent_id: &str, conversation_id_i64: i64) {
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    if let Some(agent_info) = runtime.registry().get(agent_id).await {
+        let mut updated_info = agent_info.clone();
+        // Update handle.metadata for backward compatibility
+        updated_info.handle.metadata.insert(
+            "conversation_id".to_string(),
+            conversation_id_i64.to_string(),
+        );
+        // Update conversation_id field for resolve_conversation_id()
+        updated_info.conversation_id = Some(conversation_id_i64.to_string());
+        runtime.registry().insert(updated_info).await;
+        tracing::info!(
+            agent_id = %agent_id,
+            conversation_id = %conversation_id_i64,
+            "Updated AgentInfo with conversation_id for message routing"
+        );
+    } else {
+        tracing::warn!(
+            agent_id = %agent_id,
+            "AgentInfo not found in registry, cannot update conversation_id"
+        );
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/agents/{id}/send",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    request_body = SendMessageRequest,
+    responses(
+        (status = 200, description = "Message sent"),
+        (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 404, description = "Agent not found", body = crate::api::ApiError),
+        (status = 429, description = "Rate limit exceeded", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
 pub async fn send_message(
     State(_state): State<AppState>,
     Path(id): Path<String>,
@@ -1546,22 +1587,49 @@ pub async fn send_message(
                     Ok(id) => id,
                     Err((status, json)) => return (status, json).into_response(),
                 };
-                let chat_id_i64_for_parent = chat_id_i64;
+                let chat_id_i64_for_lookup = chat_id_i64;
                 let create_conversation =
                     tokio::task::spawn_blocking(move || -> Result<i64, rusqlite::Error> {
-                        let Some(root_conversation) =
-                            crate::user_data_db::conversations::get(chat_id_i64_for_parent)?
-                        else {
-                            return Err(rusqlite::Error::QueryReturnedNoRows);
+                        // Get the chat to find its collaboration session
+                        let chat = match crate::user_data_db::chats::get(chat_id_i64_for_lookup)? {
+                            Some(c) => c,
+                            None => return Err(rusqlite::Error::QueryReturnedNoRows),
+                        };
+
+                        // Get or create collaboration session for this chat
+                        let sessions =
+                            crate::user_data_db::collaboration_sessions::list(Some(chat.chat_id))?;
+                        let session = if let Some(s) = sessions.into_iter().next() {
+                            s
+                        } else {
+                            // Create default collaboration session
+                            // Use chat's collaboration_mode if available, otherwise default to "supervisor"
+                            let mode = chat
+                                .collaboration_mode
+                                .unwrap_or_else(|| "supervisor".to_string());
+                            let now = chrono::Utc::now().timestamp();
+                            let session_id = generate();
+                            crate::user_data_db::collaboration_sessions::create(
+                                crate::user_data_db::CollaborationSession {
+                                    collaboration_session_id: session_id,
+                                    chat_id: chat.chat_id,
+                                    workspace_id: chat.workspace_id,
+                                    mode,
+                                    state: "idle".to_string(),
+                                    goal: None,
+                                    active_plan_revision: None,
+                                    created_at: now,
+                                    updated_at: now,
+                                },
+                            )?
                         };
 
                         crate::user_data_db::conversations::create(
                             crate::user_data_db::Conversation {
                                 conversation_id: conversation_id_i64_for_create,
-                                collaboration_session_id: root_conversation
-                                    .collaboration_session_id,
-                                chat_id: root_conversation.chat_id,
-                                parent_id: Some(chat_id_i64_for_parent),
+                                collaboration_session_id: session.collaboration_session_id,
+                                chat_id: chat.chat_id,
+                                parent_id: None, // Root conversation for this agent
                                 name: Some(agent_command_for_name),
                                 mode: "agent".to_string(),
                                 participant_role: "peer".to_string(),
@@ -1666,6 +1734,10 @@ pub async fn send_message(
                 {
                     tracing::warn!(error = %error, "Failed to bind agent session to conversation");
                 }
+
+                // CRITICAL FIX: Update AgentInfo in registry with conversation_id
+                // This enables message_delivery.rs to resolve conversation → agent mapping
+                update_agent_conversation_id(&new_agent_id, agent_conversation_id_i64).await;
 
                 // Register the conversation in the collaboration session.
                 let chat_id_i64 = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
@@ -2727,6 +2799,12 @@ pub async fn prompt_agent(
     Path(id): Path<String>,
     Json(body): Json<PromptAgentRequest>,
 ) -> impl IntoResponse {
+    tracing::info!(
+        agent_id = %id,
+        conversation_id = ?body.conversation_id,
+        "prompt_agent: START"
+    );
+
     // Filter out empty placeholder objects (both fields empty)
     let valid_images: Vec<_> = body
         .images
@@ -2770,6 +2848,7 @@ pub async fn prompt_agent(
                 Ok(id) => id,
                 Err((status, json)) => return (status, json).into_response(),
             };
+        let conversation_id_i64_for_update = conversation_id_i64; // Clone for later use
         let conversation = match tokio::task::spawn_blocking(move || {
             crate::user_data_db::conversations::get(conversation_id_i64)
         })
@@ -2852,6 +2931,11 @@ pub async fn prompt_agent(
 
         let workspace_id_str = format_id(workspace_id_i64, IdType::Workspace);
         let agent_info = crate::services::agent_service::get_agent_info(&runtime_id).await;
+        tracing::info!(
+            runtime_id = %runtime_id,
+            has_agent_info = agent_info.is_some(),
+            "prompt_agent: checking agent info"
+        );
         let agent_profile = agent_info.as_ref().and_then(|info| info.profile.clone());
         if let Some(info) = &agent_info {
             if info.workspace_id != workspace_id_str {
@@ -2865,6 +2949,10 @@ pub async fn prompt_agent(
                     .into_response();
             }
         }
+
+        // CRITICAL FIX: Update AgentInfo in registry with conversation_id
+        // This enables message_delivery.rs to resolve conversation → agent mapping
+        update_agent_conversation_id(&runtime_id, conversation_id_i64_for_update).await;
 
         let agent_name = agent_info
             .as_ref()

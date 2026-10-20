@@ -40,6 +40,36 @@ pub struct ListManagedWorkspacesQuery {
     pub collaboration_mode: Option<crate::services::collaboration_session::CollaborationMode>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RegisteredPathQuery {
+    pub path: String,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/registered-path",
+    tag = "ManagedWorkspaces",
+    params(
+        ("path" = String, Query, description = "Filesystem path to resolve against registered projects and chats")
+    ),
+    responses(
+        (status = 200, description = "Resolved project and/or chat for the path", body = manager::RegisteredPathResponse),
+        (status = 400, description = "Missing path parameter", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn get_registered_path(
+    JsonQuery(query): JsonQuery<RegisteredPathQuery>,
+) -> impl IntoResponse {
+    if query.path.is_empty() {
+        return crate::http_error::bad_request("path query parameter is required").into_response();
+    }
+    match manager::find_registered_path(&query.path) {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(error) => managed_error(error, "get_registered_path"),
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/api/v1/workspaces/managed",

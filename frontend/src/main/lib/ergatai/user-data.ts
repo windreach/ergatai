@@ -279,57 +279,16 @@ export async function getRegisteredWorktree(
   }
 
   const promise = (async () => {
-    // Get all workspaces
-    const workspaces = await ergataiFetch<BackendManagedWorkspace[]>(
-      `/api/v1/workspaces/managed`,
-    )
+    // Single API call — backend does prefix matching on projects.path and chats.worktree_path
+    const result = await ergataiFetch<{
+      project?: BackendWorkspaceProject
+      chat?: BackendChat
+    }>(`/api/v1/registered-path?path=${encodeURIComponent(path)}`)
 
-    // Fetch all workspace projects in parallel (fixes N+1 query)
-    const projectsByWorkspace = await Promise.all(
-      workspaces.map(async (ws) => ({
-        workspaceId: ws.workspace_id,
-        projects: await ergataiFetch<BackendWorkspaceProject[]>(
-          `/api/v1/workspaces/managed/${encodeURIComponent(ws.workspace_id)}/projects`,
-        ),
-      })),
-    )
-
-    // Find matching project
-    for (const { workspaceId, projects } of projectsByWorkspace) {
-      const matchingProject = projects.find(
-        (project) => path === project.path || path.startsWith(project.path + "/"),
-      )
-      if (matchingProject) {
-        // Found a matching project, fetch chats only for this workspace
-        const chats = await ergataiFetch<BackendChat[]>(
-          `/api/v1/chats?workspace_id=${encodeURIComponent(workspaceId)}`,
-        )
-        const chat = chats.find(
-          (c) =>
-            c.worktree_path === path ||
-            c.worktree_path?.startsWith(path + "/"),
-        )
-        return {
-          chat: chat || null,
-          projectPath: matchingProject.path,
-        }
-      }
+    return {
+      chat: result.chat || null,
+      projectPath: result.project?.path || null,
     }
-
-    // Check if path matches any chat's worktree_path (fallback)
-    const allChats = await ergataiFetch<BackendChat[]>(`/api/v1/chats`)
-    const chat = allChats.find(
-      (c) =>
-        c.worktree_path === path || c.worktree_path?.startsWith(path + "/"),
-    )
-    if (chat) {
-      return {
-        chat,
-        projectPath: null,
-      }
-    }
-
-    return null
   })()
 
   registeredWorktreeCache.set(path, {

@@ -436,6 +436,12 @@ impl AgentRuntime {
                 .metadata
                 .insert("ergatai_chat_id".to_string(), chat_id.to_string());
         }
+        // Pass profile_name to workspace metadata for MCP server loading
+        if let Some(profile) = profile_name {
+            workspace_with_id
+                .metadata
+                .insert("agent_profile_id".to_string(), profile.to_string());
+        }
 
         // Generate or use provided conversation_id for this agent
         // This is used for NATS subject routing: ergatai.conversation.message.{conversation_id}

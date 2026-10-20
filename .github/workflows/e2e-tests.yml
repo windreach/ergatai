@@ -1,0 +1,76 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: frontend/package.json
+
+    - name: Install dependencies
+      working-directory: frontend
+      run: |
+        npm ci
+        # 安装 Playwright 浏览器（如果需要）
+        npx playwright install --with-deps chromium
+
+    - name: Build frontend
+      working-directory: frontend
+      run: npm run build
+
+    - name: Start backend
+      run: |
+        cargo build --release -p ergatai-api
+        cargo run -p ergatai-api -- --port 3000 &
+        # 等待后端就绪
+        timeout=60
+        while ! curl -s http://localhost:3000/health > /dev/null; do
+          sleep 1
+          timeout=$((timeout - 1))
+          if [ $timeout -le 0 ]; then
+            echo "Backend failed to start"
+            exit 1
+          fi
+        done
+
+    - name: Run E2E tests (Headless)
+      working-directory: frontend
+      env:
+        # 默认就是 headless 模式，无需额外配置
+        CI: true
+      run: |
+        npx playwright test e2e-tests/tests/ipc/ \
+          --reporter=html,line \
+          --output=test-results
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: playwright-report
+        path: |
+          frontend/playwright-report/
+          frontend/test-results/
+        retention-days: 7
+
+    - name: Upload test screenshots
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-screenshots
+        path: frontend/test-results/**/*.png
+        retention-days: 7

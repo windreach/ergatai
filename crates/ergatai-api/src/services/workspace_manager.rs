@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use utoipa::ToSchema;
 
-use crate::user_data_db::{projects, workspaces, Project as DbProject, Workspace};
+use crate::user_data_db::{
+    chats, projects, workspaces, Chat as DbChat, Project as DbProject, Workspace,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ManagedWorkspace {
@@ -984,6 +986,84 @@ pub fn update_project(
         created_at: project.created_at,
         updated_at: project.updated_at,
     })
+}
+
+/// Response for path registration lookup.
+/// Used by GET /api/v1/registered-path to resolve a filesystem path to its registered project and/or chat.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RegisteredPathResponse {
+    /// The project whose path matches (exact or parent), if any.
+    pub project: Option<Project>,
+    /// The chat whose worktree_path matches (exact or parent), if any.
+    pub chat: Option<ChatResponse>,
+}
+
+/// Lightweight chat representation for the registered-path endpoint.
+/// Mirrors the fields the frontend needs from a chat record (matches BackendChat type).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ChatResponse {
+    pub id: String,
+    pub workspace_id: String,
+    pub name: Option<String>,
+    pub collaboration_mode: Option<String>,
+    pub worktree_path: Option<String>,
+    pub branch: Option<String>,
+    pub base_branch: Option<String>,
+    pub pr_url: Option<String>,
+    pub pr_number: Option<i32>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub archived_at: Option<i64>,
+}
+
+fn db_chat_to_response(chat: DbChat) -> ChatResponse {
+    ChatResponse {
+        id: format_id(chat.chat_id, IdType::Chat),
+        workspace_id: format_id(chat.workspace_id, IdType::Workspace),
+        name: chat.name,
+        collaboration_mode: chat.collaboration_mode,
+        worktree_path: chat.worktree_path,
+        branch: chat.branch,
+        base_branch: chat.base_branch,
+        pr_url: chat.pr_url,
+        pr_number: chat.pr_number,
+        created_at: chat.created_at,
+        updated_at: chat.updated_at,
+        archived_at: chat.archived_at,
+    }
+}
+
+/// Resolve a filesystem path to its registered project and/or chat.
+///
+/// Uses prefix matching: if the input path is a subdirectory of a registered project path
+/// or chat worktree_path, the most specific (longest) match is returned.
+///
+/// Example:
+///   - Input: `/home/user/project/.ergatai/worktrees/ws/branch`
+///   - Matches project path: `/home/user/project`
+pub fn find_registered_path(path: &str) -> Result<RegisteredPathResponse, WorkspaceManagerError> {
+    let db_project = projects::find_by_path_or_parent(path).map_err(WorkspaceManagerError::from)?;
+    let db_chat =
+        chats::find_by_worktree_path_or_parent(path).map_err(WorkspaceManagerError::from)?;
+
+    let project = db_project.map(|p| Project {
+        project_id: format_id(p.project_id, IdType::Project),
+        workspace_id: format_id(p.workspace_id, IdType::Workspace),
+        name: p.name,
+        path: p.path,
+        description: p.description,
+        git_remote_url: p.git_remote_url,
+        git_provider: p.git_provider,
+        git_owner: p.git_owner,
+        git_repo: p.git_repo,
+        icon_path: p.icon_path,
+        created_at: p.created_at,
+        updated_at: p.updated_at,
+    });
+
+    let chat = db_chat.map(db_chat_to_response);
+
+    Ok(RegisteredPathResponse { project, chat })
 }
 
 #[cfg(test)]

@@ -6,6 +6,104 @@
 use ergatai_error::id::generate;
 use ergatai_runtime::AgentOutputData;
 
+/// Build complete parts array from agent output data.
+///
+/// Converts thinking, tool_calls, and final_text into a structured parts array
+/// that matches the format expected by the frontend (same as streaming output).
+///
+/// Format:
+/// - Thinking: { "type": "tool-Thinking", "input": { "text": "..." }, "state": "result" }
+/// - Tool calls: { "type": "tool-{name}", "input": {...}, "state": "result", "output": "..." }
+/// - Final text: { "type": "text", "text": "..." }
+fn build_complete_parts_array(output_data: &AgentOutputData) -> Option<serde_json::Value> {
+    let mut parts_array = Vec::new();
+
+    // 1. Add thinking blocks as tool-Thinking parts
+    if let Some(thinking_json) = &output_data.thinking {
+        match serde_json::from_str::<Vec<serde_json::Value>>(thinking_json) {
+            Ok(thinking_blocks) => {
+                for block in thinking_blocks {
+                    let thinking_text = block.get("text").and_then(|t| t.as_str()).unwrap_or("");
+
+                    parts_array.push(serde_json::json!({
+                        "type": "tool-Thinking",
+                        "state": "result",
+                        "input": { "text": thinking_text },
+                        "output": { "completed": true }
+                    }));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to parse thinking JSON, skipping thinking parts"
+                );
+            }
+        }
+    }
+
+    // 2. Add tool calls as tool-{name} parts
+    if let Some(tool_calls_json) = &output_data.tool_calls {
+        match serde_json::from_str::<Vec<serde_json::Value>>(tool_calls_json) {
+            Ok(tool_calls) => {
+                for tool_call in tool_calls {
+                    let name = tool_call
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("Unknown");
+                    let input = tool_call
+                        .get("input")
+                        .cloned()
+                        .unwrap_or(serde_json::json!({}));
+                    let output = tool_call
+                        .get("output")
+                        .and_then(|o| o.as_str())
+                        .unwrap_or("");
+                    let status = tool_call
+                        .get("status")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("completed");
+
+                    let state = if status == "completed" {
+                        "result"
+                    } else {
+                        "error"
+                    };
+
+                    parts_array.push(serde_json::json!({
+                        "type": format!("tool-{}", name),
+                        "state": state,
+                        "input": input,
+                        "output": output
+                    }));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to parse tool_calls JSON, skipping tool call parts"
+                );
+            }
+        }
+    }
+
+    // 3. Add final text as text part
+    if let Some(final_text) = &output_data.final_text {
+        if !final_text.is_empty() {
+            parts_array.push(serde_json::json!({
+                "type": "text",
+                "text": final_text
+            }));
+        }
+    }
+
+    if parts_array.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Array(parts_array))
+    }
+}
+
 /// Persist agent output to messages table.
 ///
 /// This function is called by the runtime when a prompt completes and the
@@ -152,18 +250,16 @@ pub async fn persist_agent_output(
             // Note: thinking/tool_calls/text_chunks are already JSON strings in AgentOutputData,
             // so we pass them through directly without re-encoding
             let output_fields = AgentOutputFields {
-                thinking: output_data.thinking,
-                tool_calls: output_data.tool_calls,
-                text_chunks: output_data.text_chunks,
+                thinking: output_data.thinking.clone(),
+                tool_calls: output_data.tool_calls.clone(),
+                text_chunks: output_data.text_chunks.clone(),
                 stop_reason: None, // metadata is now just a JSON string, not a structured field
                 duration_ms: None, // metadata is now just a JSON string, not a structured field
             };
 
-            // Build parts JSON array from final_text
-            let parts = output_data
-                .final_text
-                .as_ref()
-                .map(|final_text| serde_json::json!([{ "type": "text", "text": final_text }]));
+            // Build complete parts JSON array including thinking, tool_calls, and final_text
+            // This ensures the frontend can render all content from the parts array
+            let parts = build_complete_parts_array(&output_data);
 
             // Insert into messages table with agent output fields
             messages::append_with_output(

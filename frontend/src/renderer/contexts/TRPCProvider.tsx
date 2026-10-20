@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { trpc } from "../lib/trpc"
+import { trpc, trpcClient as vanillaTrpcClient } from "../lib/trpc"
 import { ipcLink } from "../lib/ipc-link"
 import superjson from "superjson"
 
@@ -43,6 +43,12 @@ export function TRPCProvider({ children }: TRPCProviderProps) {
     // Expose for debugging in DevTools console
     if (typeof window !== "undefined") {
       ;(window as any).trpcClient = client
+      // 测试模式下暴露为 window.trpc 以便测试访问
+      const isTestMode = (window as any).desktopApi?.isTestMode === true
+      if (isTestMode) {
+        // 暴露 vanilla proxy client（支持 query/mutation/subscription 方法）
+        ;(window as any).trpc = vanillaTrpcClient
+      }
     }
     return client
   })

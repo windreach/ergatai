@@ -6,6 +6,7 @@ pub mod agents;
 pub mod chats;
 pub mod collaboration_sessions;
 pub mod locks;
+pub mod mcp_servers;
 pub mod openapi;
 pub mod permissions;
 pub mod status;
