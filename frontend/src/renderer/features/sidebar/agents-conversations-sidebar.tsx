@@ -1444,6 +1444,7 @@ export function AgentsConversationsSidebar({
 
   return (
     <div
+      data-testid="conversation-sidebar"
       className="flex flex-col h-full bg-background border-r overflow-hidden relative"
       style={{ borderRightWidth: "0.5px" }}
     >
@@ -1526,6 +1527,7 @@ export function AgentsConversationsSidebar({
           >
             <Input
               ref={searchInputRef}
+              data-testid="conversation-search-input"
               placeholder={collaborationModeConfig.conversationSearchPlaceholder}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -1581,6 +1583,7 @@ export function AgentsConversationsSidebar({
             <Tooltip delayDuration={500}>
               <TooltipTrigger asChild>
                 <Button
+                  data-testid="new-conversation-button"
                   onClick={() => onNewChatClick?.()}
                   disabled={!workspaceId}
                   variant="outline"
@@ -1708,6 +1711,7 @@ export function AgentsConversationsSidebar({
                             <ContextMenu key={conversation?.id}>
                               <ContextMenuTrigger asChild>
                                 <div
+                                  data-testid={`conversation-item-${conversation?.id}`}
                                   data-conversation-index={globalIndex}
                                   onClick={(e) =>
                                     handleConversationItemClick(
@@ -2020,6 +2024,7 @@ export function AgentsConversationsSidebar({
                             <ContextMenu key={conversation?.id}>
                               <ContextMenuTrigger asChild>
                                 <div
+                                  data-testid={`conversation-item-${conversation?.id}`}
                                   data-conversation-index={globalIndex}
                                   onClick={(e) =>
                                     handleConversationItemClick(

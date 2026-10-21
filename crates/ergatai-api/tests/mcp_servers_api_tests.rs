@@ -543,7 +543,7 @@ async fn get_mcp_server_by_id_returns_200() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri(&format!("/api/v1/mcp-servers/{}", server_id))
+                .uri(format!("/api/v1/mcp-servers/{}", server_id))
                 .method(Method::GET)
                 .body(Body::empty())
                 .unwrap(),
@@ -614,7 +614,7 @@ async fn update_mcp_server_returns_200() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri(&format!("/api/v1/mcp-servers/{}", server_id))
+                .uri(format!("/api/v1/mcp-servers/{}", server_id))
                 .method(Method::PUT)
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -696,7 +696,7 @@ async fn delete_mcp_server_returns_204() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri(&format!("/api/v1/mcp-servers/{}", server_id))
+                .uri(format!("/api/v1/mcp-servers/{}", server_id))
                 .method(Method::DELETE)
                 .body(Body::empty())
                 .unwrap(),
@@ -715,7 +715,7 @@ async fn delete_mcp_server_returns_204() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri(&format!("/api/v1/mcp-servers/{}", server_id))
+                .uri(format!("/api/v1/mcp-servers/{}", server_id))
                 .method(Method::GET)
                 .body(Body::empty())
                 .unwrap(),

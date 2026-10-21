@@ -9,6 +9,7 @@ use ergatai_core::id::generate;
 use once_cell::sync::Lazy;
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use utoipa::ToSchema;
@@ -531,10 +532,10 @@ pub struct McpServer {
     pub name: String,
     pub server_type: String, // "stdio", "http", "sse"
     pub command: Option<String>,
-    pub args: String, // JSON array as TEXT
-    pub env: String,  // JSON object as TEXT
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
     pub url: Option<String>,
-    pub headers: String, // JSON object as TEXT
+    pub headers: HashMap<String, String>,
     pub enabled: bool,
     pub created_at: i64,
     pub updated_at: i64,
@@ -2639,10 +2640,66 @@ pub mod conversation_execution_contexts {
 pub mod mcp_servers {
     use super::*;
 
+    /// Helper function to deserialize MCP server from database row
+    fn deserialize_server(row: &rusqlite::Row) -> rusqlite::Result<McpServer> {
+        let args_str: String = row.get(5)?;
+        let env_str: String = row.get(6)?;
+        let headers_str: String = row.get(8)?;
+
+        let args = serde_json::from_str(&args_str).unwrap_or_else(|e| {
+            tracing::warn!(
+                server_id = row.get::<_, String>(0).unwrap_or_default(),
+                error = %e,
+                "Failed to parse args JSON from database, using empty array"
+            );
+            Vec::new()
+        });
+
+        let env = serde_json::from_str(&env_str).unwrap_or_else(|e| {
+            tracing::warn!(
+                server_id = row.get::<_, String>(0).unwrap_or_default(),
+                error = %e,
+                "Failed to parse env JSON from database, using empty map"
+            );
+            HashMap::new()
+        });
+
+        let headers = serde_json::from_str(&headers_str).unwrap_or_else(|e| {
+            tracing::warn!(
+                server_id = row.get::<_, String>(0).unwrap_or_default(),
+                error = %e,
+                "Failed to parse headers JSON from database, using empty map"
+            );
+            HashMap::new()
+        });
+
+        Ok(McpServer {
+            id: row.get(0)?,
+            profile_id: row.get(1)?,
+            name: row.get(2)?,
+            server_type: row.get(3)?,
+            command: row.get(4)?,
+            args,
+            env,
+            url: row.get(7)?,
+            headers,
+            enabled: row.get::<_, i64>(9)? != 0,
+            created_at: row.get(10)?,
+            updated_at: row.get(11)?,
+        })
+    }
+
     /// Create a new MCP server configuration
     pub fn create(server: McpServer) -> Result<McpServer> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
+
+        let args_json = serde_json::to_string(&server.args)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let env_json = serde_json::to_string(&server.env)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let headers_json = serde_json::to_string(&server.headers)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
         conn.execute(
             "INSERT INTO mcp_servers (id, profile_id, name, server_type, command, args, env, url, headers, enabled, created_at, updated_at)
@@ -2653,10 +2710,10 @@ pub mod mcp_servers {
                 server.name,
                 server.server_type,
                 server.command,
-                server.args,
-                server.env,
+                args_json,
+                env_json,
                 server.url,
-                server.headers,
+                headers_json,
                 server.enabled as i64,
                 server.created_at,
                 server.updated_at,
@@ -2675,22 +2732,7 @@ pub mod mcp_servers {
             "SELECT id, profile_id, name, server_type, command, args, env, url, headers, enabled, created_at, updated_at
              FROM mcp_servers WHERE id = ?1",
             params![id],
-            |row| {
-                Ok(McpServer {
-                    id: row.get(0)?,
-                    profile_id: row.get(1)?,
-                    name: row.get(2)?,
-                    server_type: row.get(3)?,
-                    command: row.get(4)?,
-                    args: row.get(5)?,
-                    env: row.get(6)?,
-                    url: row.get(7)?,
-                    headers: row.get(8)?,
-                    enabled: row.get::<_, i64>(9)? != 0,
-                    created_at: row.get(10)?,
-                    updated_at: row.get(11)?,
-                })
-            },
+            deserialize_server,
         )
         .optional()
     }
@@ -2707,22 +2749,7 @@ pub mod mcp_servers {
             "SELECT id, profile_id, name, server_type, command, args, env, url, headers, enabled, created_at, updated_at
              FROM mcp_servers WHERE profile_id IS ?1 AND name = ?2",
             params![profile_id, name],
-            |row| {
-                Ok(McpServer {
-                    id: row.get(0)?,
-                    profile_id: row.get(1)?,
-                    name: row.get(2)?,
-                    server_type: row.get(3)?,
-                    command: row.get(4)?,
-                    args: row.get(5)?,
-                    env: row.get(6)?,
-                    url: row.get(7)?,
-                    headers: row.get(8)?,
-                    enabled: row.get::<_, i64>(9)? != 0,
-                    created_at: row.get(10)?,
-                    updated_at: row.get(11)?,
-                })
-            },
+            deserialize_server,
         )
         .optional()
     }
@@ -2737,22 +2764,22 @@ pub mod mcp_servers {
              FROM mcp_servers ORDER BY created_at DESC",
         )?;
 
-        let servers = stmt.query_map([], |row| {
-            Ok(McpServer {
-                id: row.get(0)?,
-                profile_id: row.get(1)?,
-                name: row.get(2)?,
-                server_type: row.get(3)?,
-                command: row.get(4)?,
-                args: row.get(5)?,
-                env: row.get(6)?,
-                url: row.get(7)?,
-                headers: row.get(8)?,
-                enabled: row.get::<_, i64>(9)? != 0,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
-            })
-        })?;
+        let servers = stmt.query_map([], deserialize_server)?;
+
+        servers.collect()
+    }
+
+    /// List global MCP servers (profile_id IS NULL)
+    pub fn list_global() -> Result<Vec<McpServer>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, profile_id, name, server_type, command, args, env, url, headers, enabled, created_at, updated_at
+             FROM mcp_servers WHERE profile_id IS NULL ORDER BY created_at DESC",
+        )?;
+
+        let servers = stmt.query_map([], deserialize_server)?;
 
         servers.collect()
     }
@@ -2767,22 +2794,7 @@ pub mod mcp_servers {
              FROM mcp_servers WHERE profile_id IS ?1 ORDER BY created_at DESC",
         )?;
 
-        let servers = stmt.query_map(params![profile_id], |row| {
-            Ok(McpServer {
-                id: row.get(0)?,
-                profile_id: row.get(1)?,
-                name: row.get(2)?,
-                server_type: row.get(3)?,
-                command: row.get(4)?,
-                args: row.get(5)?,
-                env: row.get(6)?,
-                url: row.get(7)?,
-                headers: row.get(8)?,
-                enabled: row.get::<_, i64>(9)? != 0,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
-            })
-        })?;
+        let servers = stmt.query_map(params![profile_id], deserialize_server)?;
 
         servers.collect()
     }
@@ -2798,22 +2810,7 @@ pub mod mcp_servers {
              ORDER BY profile_id DESC NULLS LAST, created_at DESC",
         )?;
 
-        let servers = stmt.query_map(params![profile_id], |row| {
-            Ok(McpServer {
-                id: row.get(0)?,
-                profile_id: row.get(1)?,
-                name: row.get(2)?,
-                server_type: row.get(3)?,
-                command: row.get(4)?,
-                args: row.get(5)?,
-                env: row.get(6)?,
-                url: row.get(7)?,
-                headers: row.get(8)?,
-                enabled: row.get::<_, i64>(9)? != 0,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
-            })
-        })?;
+        let servers = stmt.query_map(params![profile_id], deserialize_server)?;
 
         servers.collect()
     }
@@ -2828,22 +2825,7 @@ pub mod mcp_servers {
              FROM mcp_servers WHERE enabled = 1 ORDER BY created_at DESC",
         )?;
 
-        let servers = stmt.query_map([], |row| {
-            Ok(McpServer {
-                id: row.get(0)?,
-                profile_id: row.get(1)?,
-                name: row.get(2)?,
-                server_type: row.get(3)?,
-                command: row.get(4)?,
-                args: row.get(5)?,
-                env: row.get(6)?,
-                url: row.get(7)?,
-                headers: row.get(8)?,
-                enabled: row.get::<_, i64>(9)? != 0,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
-            })
-        })?;
+        let servers = stmt.query_map([], deserialize_server)?;
 
         servers.collect()
     }
@@ -2852,6 +2834,13 @@ pub mod mcp_servers {
     pub fn update(server: McpServer) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
+
+        let args_json = serde_json::to_string(&server.args)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let env_json = serde_json::to_string(&server.env)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let headers_json = serde_json::to_string(&server.headers)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
         conn.execute(
             "UPDATE mcp_servers
@@ -2862,10 +2851,10 @@ pub mod mcp_servers {
                 server.name,
                 server.server_type,
                 server.command,
-                server.args,
-                server.env,
+                args_json,
+                env_json,
                 server.url,
-                server.headers,
+                headers_json,
                 server.enabled as i64,
                 server.updated_at,
                 server.id,
@@ -3273,10 +3262,10 @@ mod tests {
             name: "global-mcp".to_string(),
             server_type: "stdio".to_string(),
             command: Some("npx".to_string()),
-            args: "[]".to_string(),
-            env: "{}".to_string(),
+            args: Vec::new(),
+            env: HashMap::new(),
             url: None,
-            headers: "{}".to_string(),
+            headers: HashMap::new(),
             enabled: true,
             created_at: 1000,
             updated_at: 1000,
@@ -3290,10 +3279,10 @@ mod tests {
             name: "profile-mcp".to_string(),
             server_type: "http".to_string(),
             command: None,
-            args: "[]".to_string(),
-            env: "{}".to_string(),
+            args: Vec::new(),
+            env: HashMap::new(),
             url: Some("http://localhost:3000".to_string()),
-            headers: "{}".to_string(),
+            headers: HashMap::new(),
             enabled: true,
             created_at: 1000,
             updated_at: 1000,

@@ -1082,6 +1082,7 @@ dependencies = [
  "nix",
  "once_cell",
  "percent-encoding",
+ "reqwest",
  "rmcp",
  "rusqlite",
  "schemars 1.2.2",
@@ -1094,6 +1095,7 @@ dependencies = [
  "tower",
  "tower-http 0.7.1",
  "tracing",
+ "tracing-subscriber",
  "utoipa",
  "uuid",
 ]

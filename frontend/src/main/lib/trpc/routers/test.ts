@@ -259,6 +259,210 @@ interface FileOperation {
 
 const testFileOperationLog: FileOperation[] = []
 
+// 消息存储 (按 conversation 分组)
+interface TestMessage {
+  id: string
+  conversationId: string
+  role: 'user' | 'agent' | 'assistant' | 'system'
+  content: string
+  senderAgentId?: string
+  senderAgentName?: string
+  messageType?: 'request' | 'response' | 'broadcast'
+  correlationId?: string
+  requiresReceipt?: boolean
+  createdAt: string
+  metadata?: Record<string, unknown>
+}
+
+const testMessageStore = {
+  messages: new Map<string, TestMessage>(), // key: message id
+  byConversation: new Map<string, Set<string>>(), // conversationId -> Set<messageId>
+
+  list(conversationId: string): TestMessage[] {
+    const ids = this.byConversation.get(conversationId)
+    if (!ids) return []
+    return Array.from(ids)
+      .map(id => this.messages.get(id))
+      .filter((m): m is TestMessage => !!m)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  },
+
+  add(msg: TestMessage) {
+    this.messages.set(msg.id, msg)
+    if (!this.byConversation.has(msg.conversationId)) {
+      this.byConversation.set(msg.conversationId, new Set())
+    }
+    this.byConversation.get(msg.conversationId)!.add(msg.id)
+  },
+
+  clear() {
+    this.messages.clear()
+    this.byConversation.clear()
+  },
+}
+
+// Agent Output 存储
+interface TestAgentOutput {
+  id: string
+  conversationId: string
+  agentId: string
+  turnIndex: number
+  thinking?: string
+  toolCalls?: Array<{ name: string; input: unknown; output?: string }>
+  responseText?: string
+  createdAt: string
+}
+
+const testAgentOutputStore = {
+  outputs: new Map<string, TestAgentOutput>(),
+
+  list(conversationId: string): TestAgentOutput[] {
+    return Array.from(this.outputs.values())
+      .filter(o => o.conversationId === conversationId)
+      .sort((a, b) => a.turnIndex - b.turnIndex)
+  },
+
+  get(agentId: string): TestAgentOutput | undefined {
+    // Return the most recent output for an agent
+    return Array.from(this.outputs.values())
+      .filter(o => o.agentId === agentId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
+  },
+
+  add(output: TestAgentOutput) {
+    this.outputs.set(output.id, output)
+  },
+
+  clear() {
+    this.outputs.clear()
+  },
+}
+
+// Agent Profile 存储
+interface TestAgentProfile {
+  name: string
+  command: string
+  agent_type: string
+  instruction?: string
+  env_overrides?: Record<string, string>
+  createdAt: string
+}
+
+const testAgentProfileStore = {
+  profiles: new Map<string, TestAgentProfile>(),
+
+  list(): TestAgentProfile[] {
+    return Array.from(this.profiles.values())
+  },
+
+  get(name: string): TestAgentProfile | undefined {
+    return this.profiles.get(name)
+  },
+
+  add(profile: TestAgentProfile) {
+    this.profiles.set(profile.name, profile)
+  },
+
+  delete(name: string) {
+    this.profiles.delete(name)
+  },
+
+  clear() {
+    this.profiles.clear()
+  },
+}
+
+// File Lock 存储
+interface TestFileLock {
+  token: string
+  agentId: string
+  path: string
+  acquiredAt: string
+  expiresAt: string
+}
+
+const testLockStore = {
+  locks: new Map<string, TestFileLock>(), // key: token
+  auditLog: Array<{ timestamp: string; agentId: string; path: string; action: string }>(),
+
+  list(): TestFileLock[] {
+    return Array.from(this.locks.values())
+  },
+
+  acquire(agentId: string, filePath: string): TestFileLock {
+    const token = uniqueId('lock')
+    const lock: TestFileLock = {
+      token,
+      agentId,
+      path: filePath,
+      acquiredAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(), // 30 min TTL
+    }
+    this.locks.set(token, lock)
+    this.auditLog.push({ timestamp: lock.acquiredAt, agentId, path: filePath, action: 'acquire' })
+    return lock
+  },
+
+  release(token: string): boolean {
+    const lock = this.locks.get(token)
+    if (!lock) return false
+    this.locks.delete(token)
+    this.auditLog.push({ timestamp: new Date().toISOString(), agentId: lock.agentId, path: lock.path, action: 'release' })
+    return true
+  },
+
+  clear() {
+    this.locks.clear()
+    this.auditLog.length = 0
+  },
+}
+
+// Rate Limiter mock state (sliding window simulation)
+interface RateLimitState {
+  agentId: string
+  windowMs: number // 60_000
+  maxRequests: number // 60
+  requests: number[] // timestamps
+}
+
+const testRateLimiterState = {
+  byAgent: new Map<string, RateLimitState>(),
+
+  check(agentId: string): { allowed: boolean; remaining: number; resetAt: string } {
+    const now = Date.now()
+    const windowMs = 60_000
+    const maxRequests = 60
+
+    if (!this.byAgent.has(agentId)) {
+      this.byAgent.set(agentId, { agentId, windowMs, maxRequests, requests: [] })
+    }
+    const state = this.byAgent.get(agentId)!
+
+    // Prune old requests
+    state.requests = state.requests.filter(t => now - t < windowMs)
+
+    const allowed = state.requests.length < maxRequests
+
+    // Record this request
+    if (allowed) {
+      state.requests.push(now)
+    }
+
+    // Calculate remaining AFTER recording
+    const remaining = Math.max(0, maxRequests - state.requests.length)
+
+    const resetAt = state.requests.length > 0
+      ? new Date(state.requests[0] + windowMs).toISOString()
+      : new Date(now + windowMs).toISOString()
+
+    return { allowed, remaining, resetAt }
+  },
+
+  clear() {
+    this.byAgent.clear()
+  },
+}
+
 export const testRouter = router({
   /**
    * 检查测试模式是否启用
@@ -697,10 +901,37 @@ ${input.prompt}
       .input(z.object({
         agentId: z.string(),
         message: z.string(),
+        conversationId: z.string().optional(),
+        messageType: z.enum(['request', 'response', 'broadcast']).optional(),
       }))
       .mutation(({ input }) => {
-        // Mock 发送消息 - 返回 queued 状态
-        return { status: "queued" as const, messageId: uniqueId('msg') }
+        // Enhanced mock - track messages per conversation
+        const messageId = uniqueId('msg')
+        const conversationId = input.conversationId || uniqueId('conv')
+
+        // Generate correlationId for request messages
+        const correlationId = input.messageType === 'request' ? uniqueId('corr') : undefined
+
+        const msg: TestMessage = {
+          id: messageId,
+          conversationId,
+          role: 'agent',
+          content: input.message,
+          senderAgentId: input.agentId,
+          messageType: input.messageType || 'request',
+          correlationId,
+          requiresReceipt: input.messageType === 'request',
+          createdAt: new Date().toISOString(),
+        }
+
+        testMessageStore.add(msg)
+
+        return {
+          status: "queued" as const,
+          messageId,
+          conversationId,
+          correlationId,
+        }
       }),
 
     promptAgent: testProcedure
@@ -712,6 +943,29 @@ ${input.prompt}
       .mutation(({ input }) => {
         // Mock prompt agent - 返回 queued 状态
         return { status: "queued" as const, promptId: uniqueId('prompt') }
+      }),
+
+    // Message history mocks
+    getConversationMessages: testProcedure
+      .input(z.object({ conversationId: z.string() }))
+      .query(({ input }) => {
+        return testMessageStore.list(input.conversationId)
+      }),
+
+    getAgentOutputs: testProcedure
+      .input(z.object({ conversationId: z.string() }))
+      .query(({ input }) => {
+        return testAgentOutputStore.list(input.conversationId)
+      }),
+
+    getAgentCurrentOutput: testProcedure
+      .input(z.object({ agentId: z.string() }))
+      .query(({ input }) => {
+        const output = testAgentOutputStore.get(input.agentId)
+        if (!output) {
+          return { id: null, agentId: input.agentId, turnIndex: 0 }
+        }
+        return output
       }),
 
     // Conversation 管理
@@ -795,24 +1049,201 @@ ${input.prompt}
     validateDagYaml: testProcedure
       .input(z.object({ yaml: z.string() }))
       .mutation(({ input }) => {
-        // Mock 验证 - 简单检测无效 YAML（重复任务名）
-        const taskNameMatches = input.yaml.match(/- name:\s*(\w+)/g) || []
-        const taskNames = taskNameMatches.map(m => m.replace(/- name:\s*/, ''))
-        const hasDuplicates = new Set(taskNames).size !== taskNames.length
+        // Enhanced YAML validator implementing all 9 strict rules from CLAUDE.md
+        const yaml = input.yaml
+        const errors: string[] = []
 
-        if (hasDuplicates) {
-          return {
-            valid: false,
-            error: 'Duplicate task names detected',
+        // Raw lines preserve indentation for top-level detection
+        const rawLines = yaml.split('\n')
+        const trimmedLines = rawLines.map(l => l.trim()).filter(l => l && !l.startsWith('#'))
+
+        // Allowed top-level fields
+        const allowedTopLevel = new Set([
+          'name', 'description', 'priority', 'tasks', 'communication',
+          'parameters', 'max_agent_calls', 'stall_timeout_secs',
+          'node_timeout_secs', 'timeout'
+        ])
+
+        // Rule 1: Check for unknown top-level fields
+        // A top-level field is a non-empty, non-comment line starting at column 0
+        // (no leading whitespace) that contains ':'
+        const topLevelFields = rawLines
+          .filter(l => l.length > 0 && !l.startsWith('#') && !l.startsWith(' ') && !l.startsWith('\t') && !l.startsWith('-') && l.includes(':'))
+          .map(l => l.split(':')[0].trim())
+
+        for (const field of topLevelFields) {
+          if (!allowedTopLevel.has(field)) {
+            errors.push(`Rule 1: Unknown top-level field '${field}'`)
           }
         }
+
+        // Extract task names from tasks: section only (not parameters:)
+        const tasksBlockMatch = yaml.match(/^tasks:\s*\n((?:\s+.*\n)*)/m)
+        const taskNames: string[] = []
+        if (tasksBlockMatch) {
+          const tasksBlock = tasksBlockMatch[1]
+          const taskNameMatches = tasksBlock.matchAll(/^\s*-\s*name:\s*(.+)$/gm)
+          for (const match of taskNameMatches) {
+            // Strip quotes and trim
+            let name = match[1].trim().replace(/^["']|["']$/g, '').trim()
+            taskNames.push(name)
+          }
+        }
+
+        // Rule 2: Task name non-empty
+        for (const name of taskNames) {
+          if (!name || name.trim() === '') {
+            errors.push('Rule 2: Task name cannot be empty')
+          }
+        }
+
+        // Rule 3: Task name uniqueness
+        const uniqueNames = new Set(taskNames)
+        if (uniqueNames.size !== taskNames.length) {
+          errors.push('Rule 3: Duplicate task names detected')
+        }
+
+        // Rule 4: Priority enum validation (case-insensitive) - DAG level and task level
+        const dagPriorityMatch = yaml.match(/^priority:\s*(.+)$/m)
+        if (dagPriorityMatch) {
+          const priority = dagPriorityMatch[1].trim().replace(/^["']|["']$/g, '').toLowerCase()
+          if (!['low', 'medium', 'high'].includes(priority)) {
+            errors.push(`Rule 4: Invalid priority '${dagPriorityMatch[1].trim()}' (must be low|medium|high)`)
+          }
+        }
+        // Task-level priority
+        if (tasksBlockMatch) {
+          const taskPriorityMatches = tasksBlockMatch[1].matchAll(/^\s*priority:\s*(.+)$/gm)
+          for (const match of taskPriorityMatches) {
+            const priority = match[1].trim().replace(/^["']|["']$/g, '').toLowerCase()
+            if (!['low', 'medium', 'high'].includes(priority)) {
+              errors.push(`Rule 4: Invalid task priority '${match[1].trim()}' (must be low|medium|high)`)
+            }
+          }
+        }
+
+        // Rule 5: Positive values for timeout fields (handle negative numbers and task-level)
+        const timeoutFields = ['timeout', 'max_agent_calls', 'stall_timeout_secs', 'node_timeout_secs']
+        for (const field of timeoutFields) {
+          // Match both top-level and task-level (indented) fields, handle negative numbers
+          const fieldMatches = yaml.matchAll(new RegExp(`^\\s*${field}:\\s*(-?\\d+)`, 'gm'))
+          for (const match of fieldMatches) {
+            const value = parseInt(match[1])
+            if (value <= 0) {
+              errors.push(`Rule 5: ${field} must be > 0 (got ${value})`)
+            }
+          }
+        }
+
+        // Rule 6: Communication format validation
+        const commMatch = yaml.match(/^communication:\s*(.+)$/m)
+        if (commMatch) {
+          const comm = commMatch[1].trim()
+          if (!['open', 'adjacent'].includes(comm) && !comm.startsWith('star:')) {
+            errors.push(`Rule 6: Invalid communication format '${comm}' (must be open|adjacent|star:{hub})`)
+          }
+          if (comm.startsWith('star:')) {
+            const hub = comm.substring(5).trim()
+            // Check if hub is a valid agent (simplified: just check it's not empty)
+            if (!hub) {
+              errors.push('Rule 6: star communication requires a hub agent')
+            }
+          }
+        }
+
+        // Rule 7: Template variable reference (skip if no parameters)
+        const paramsMatch = yaml.match(/^parameters:\s*$/m)
+        if (!paramsMatch) {
+          // No parameters declared, skip check
+        } else {
+          // Extract declared parameters from within the parameters: section only
+          // Find the parameters block: from "parameters:" to the next top-level field
+          const paramsBlockMatch = yaml.match(/^parameters:\s*\n((?:\s+.*\n)*)/m)
+          const paramNames = new Set<string>()
+          if (paramsBlockMatch) {
+            const paramBlock = paramsBlockMatch[1]
+            const paramNameMatches = paramBlock.matchAll(/^\s*-\s*name:\s*(.+)$/gm)
+            for (const match of paramNameMatches) {
+              paramNames.add(match[1].trim())
+            }
+          }
+
+          // Check for {{var}} references
+          const varRefs = yaml.matchAll(/\{\{(\w+)\}\}/g)
+          for (const match of varRefs) {
+            const varName = match[1]
+            if (!paramNames.has(varName)) {
+              errors.push(`Rule 7: Template variable '{{${varName}}}' references undeclared parameter`)
+            }
+          }
+        }
+
+        // Rule 8: Dependency existence - handle both inline [a, b] and YAML list format
+        // Inline format: depends_on: [task1, task2]
+        const inlineDepsMatches = yaml.matchAll(/depends_on:\s*\[(.+)\]/g)
+        for (const match of inlineDepsMatches) {
+          const deps = match[1].split(',').map(d => d.trim().replace(/['"]/g, ''))
+          for (const dep of deps) {
+            if (!taskNames.includes(dep)) {
+              errors.push(`Rule 8: Dependency '${dep}' does not exist in tasks`)
+            }
+          }
+        }
+        // YAML list format: depends_on:\n  - task1\n  - task2
+        const yamlListDepsMatches = yaml.matchAll(/depends_on:[ \t]*\n((?:[ \t]+-[ \t]+[\w-]+[ \t]*(?:\n|$))*)/g)
+        for (const match of yamlListDepsMatches) {
+          const listBlock = match[1]
+          const depItems = listBlock.matchAll(/^[ \t]+-[ \t]+([\w-]+)[ \t]*$/gm)
+          for (const item of depItems) {
+            const dep = item[1].trim()
+            if (dep && !taskNames.includes(dep)) {
+              errors.push(`Rule 8: Dependency '${dep}' does not exist in tasks`)
+            }
+          }
+        }
+
+        // Rule 9: Scope glob validity (must be relative path)
+        const scopeMatches = yaml.matchAll(/scope:\s*(.+)/g)
+        for (const match of scopeMatches) {
+          // Strip quotes
+          const scope = match[1].trim().replace(/^["']|["']$/g, '')
+          // Check if it's an absolute path
+          if (scope.startsWith('/') || scope.match(/^[a-zA-Z]:\\/)) {
+            errors.push(`Rule 9: Scope glob must be relative path (got '${scope}')`)
+          }
+          // Check for invalid glob patterns (simplified)
+          if (scope.includes('[') && !scope.includes(']')) {
+            errors.push(`Rule 9: Invalid glob pattern in scope '${scope}'`)
+          }
+        }
+
+        // Return result
+        if (errors.length > 0) {
+          return {
+            valid: false,
+            error: errors.join('; '),
+          }
+        }
+
+        // Build summary
+        const taskSummaries = taskNames.map(name => {
+          // Extract agent for this task (simplified)
+          const agentMatch = yaml.match(new RegExp(`- name:\\s*${name}[\\s\\S]*?agent:\\s*(\\w+)`))
+          const complexityMatch = yaml.match(new RegExp(`- name:\\s*${name}[\\s\\S]*?complexity:\\s*(\\w+)`))
+          return {
+            name,
+            agent: agentMatch ? agentMatch[1] : 'unknown',
+            complexity: complexityMatch ? complexityMatch[1].toLowerCase() : 'medium',
+          }
+        })
 
         return {
           valid: true,
           summary: {
             taskCount: taskNames.length || 3,
-            estimatedComplexity: 'medium',
-            dependencies: [],
+            tasks: taskSummaries,
+            communication: commMatch ? commMatch[1].trim() : 'open',
+            priority: dagPriorityMatch ? dagPriorityMatch[1].trim().replace(/^["']|["']$/g, '').toLowerCase() : 'medium',
           },
         }
       }),
@@ -845,6 +1276,111 @@ ${input.prompt}
         totalWorkspaces: testWorkspaceStore.list().length,
       }
     }),
+  }),
+
+  /**
+   * Agent Profiles Mock - 模板注册表
+   */
+  agentProfiles: router({
+    list: testProcedure.query(() => {
+      return testAgentProfileStore.list()
+    }),
+
+    get: testProcedure
+      .input(z.object({ name: z.string() }))
+      .query(({ input }) => {
+        const profile = testAgentProfileStore.get(input.name)
+        if (!profile) {
+          throw new Error(`Agent profile not found: ${input.name}`)
+        }
+        return profile
+      }),
+
+    register: testProcedure
+      .input(z.object({
+        name: z.string().min(1, 'Name is required'),
+        command: z.string().min(1, 'Command is required'),
+        agent_type: z.string().min(1, 'Agent type is required'),
+        instruction: z.string().optional(),
+        env_overrides: z.record(z.string()).optional(),
+      }))
+      .mutation(({ input }) => {
+        if (testAgentProfileStore.get(input.name)) {
+          throw new Error(`Agent profile already exists: ${input.name}`)
+        }
+        const profile: TestAgentProfile = {
+          name: input.name,
+          command: input.command,
+          agent_type: input.agent_type,
+          instruction: input.instruction,
+          env_overrides: input.env_overrides,
+          createdAt: new Date().toISOString(),
+        }
+        testAgentProfileStore.add(profile)
+        return profile
+      }),
+
+    delete: testProcedure
+      .input(z.object({ name: z.string() }))
+      .mutation(({ input }) => {
+        testAgentProfileStore.delete(input.name)
+        return { success: true }
+      }),
+  }),
+
+  /**
+   * File Locks Mock - 零信任文件访问控制
+   */
+  locks: router({
+    list: testProcedure.query(() => {
+      return testLockStore.list()
+    }),
+
+    getAuditLog: testProcedure.query(() => {
+      return testLockStore.auditLog
+    }),
+
+    getContention: testProcedure.query(() => {
+      // Mock contention detection - return locks that are close to expiry
+      const now = Date.now()
+      const locks = testLockStore.list()
+      const contention = locks.filter(lock => {
+        const expiresAt = new Date(lock.expiresAt).getTime()
+        return expiresAt - now < 5 * 60 * 1000 // Less than 5 minutes remaining
+      })
+      return {
+        contendedLocks: contention,
+        totalActive: locks.length,
+      }
+    }),
+
+    acquireLock: testProcedure
+      .input(z.object({
+        agentId: z.string(),
+        path: z.string(),
+      }))
+      .mutation(({ input }) => {
+        const lock = testLockStore.acquire(input.agentId, input.path)
+        return lock
+      }),
+
+    releaseLock: testProcedure
+      .input(z.object({ token: z.string() }))
+      .mutation(({ input }) => {
+        const success = testLockStore.release(input.token)
+        return { success }
+      }),
+  }),
+
+  /**
+   * Rate Limiter Mock - 滑动窗口速率限制
+   */
+  rateLimiter: router({
+    checkRate: testProcedure
+      .input(z.object({ agentId: z.string() }))
+      .query(({ input }) => {
+        return testRateLimiterState.check(input.agentId)
+      }),
   }),
 
   /**
@@ -1024,6 +1560,13 @@ ${input.prompt}
 
       results.deletedErgataiConversations = testErgataiConversationStore.list().length
       testErgataiConversationStore.clear()
+
+      // 清理新增的存储
+      testMessageStore.clear()
+      testAgentOutputStore.clear()
+      testAgentProfileStore.clear()
+      testLockStore.clear()
+      testRateLimiterState.clear()
 
       return results
     }),

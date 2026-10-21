@@ -129,25 +129,56 @@ export const claudeRouter = router({
       z.object({
         name: z.string().min(1),
         scope: z.enum(["global", "project"]).default("global"),
-        transport: z.enum(["stdio", "http"]),
+        transport: z.enum(["stdio", "http", "sse"]),
         command: z.string().optional(),
         args: z.array(z.string()).optional(),
         url: z.string().optional(),
+        env: z.record(z.string()).optional(),
+        headers: z.record(z.string()).optional(),
         projectPath: z.string().nullish(),
       }),
     )
     .mutation(async ({ input }) => {
-      const projectPath = resolveMcpProjectPath(input.scope, input.projectPath)
-      const serverConfig: Partial<McpServerConfig> = {}
-      if (input.transport === "http") {
-        serverConfig.url = input.url
-      } else {
-        serverConfig.command = input.command
-        serverConfig.args = input.args
+      // For now, only support global servers via backend API
+      // Project-specific servers still use local config
+      if (input.scope === "project") {
+        const projectPath = resolveMcpProjectPath(input.scope, input.projectPath)
+        const serverConfig: Partial<McpServerConfig> = {}
+        if (input.transport === "http") {
+          serverConfig.url = input.url
+        } else {
+          serverConfig.command = input.command
+          serverConfig.args = input.args
+        }
+        await updateClaudeConfigAtomic(async (config) =>
+          updateMcpServerConfig(config, projectPath ?? GLOBAL_MCP_PATH, input.name, serverConfig),
+        )
+        return { success: true }
       }
-      await updateClaudeConfigAtomic(async (config) =>
-        updateMcpServerConfig(config, projectPath ?? GLOBAL_MCP_PATH, input.name, serverConfig),
-      )
+
+      // Global servers: use backend API
+      const body: Record<string, unknown> = {
+        name: input.name,
+        server_type: input.transport,
+        profile_id: null, // global server
+        enabled: true,
+      }
+
+      if (input.transport === "http" || input.transport === "sse") {
+        body.url = input.url
+      } else {
+        body.command = input.command
+        body.args = input.args || []
+      }
+
+      if (input.env) body.env = input.env
+      if (input.headers) body.headers = input.headers
+
+      await ergataiFetch("/api/v1/mcp-servers", {
+        method: "POST",
+        body: JSON.stringify(body),
+      })
+
       return { success: true }
     }),
 
@@ -162,12 +193,31 @@ export const claudeRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      const projectPath = resolveMcpProjectPath(input.scope, input.projectPath)
-      await updateClaudeConfigAtomic(async (config) =>
-        updateMcpServerConfig(config, projectPath ?? GLOBAL_MCP_PATH, input.name, {
-          disabled: input.disabled,
-        }),
-      )
+      // Project-specific servers still use local config
+      if (input.scope === "project") {
+        const projectPath = resolveMcpProjectPath(input.scope, input.projectPath)
+        await updateClaudeConfigAtomic(async (config) =>
+          updateMcpServerConfig(config, projectPath ?? GLOBAL_MCP_PATH, input.name, {
+            disabled: input.disabled,
+          }),
+        )
+        return { success: true }
+      }
+
+      // Global servers: use backend API
+      // First, list all servers to find the ID
+      const data = await ergataiFetch<{ servers: Array<{ id: string; name: string }> }>("/api/v1/mcp-servers?profile_id=global", {
+        method: "GET",
+      })
+      const server = data.servers.find(s => s.name === input.name)
+
+      if (server && input.disabled !== undefined) {
+        await ergataiFetch(`/api/v1/mcp-servers/${server.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ enabled: !input.disabled }),
+        })
+      }
+
       return { success: true }
     }),
 
@@ -181,10 +231,28 @@ export const claudeRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      const projectPath = resolveMcpProjectPath(input.scope, input.projectPath)
-      await updateClaudeConfigAtomic(async (config) =>
-        removeMcpServerConfig(config, projectPath ?? GLOBAL_MCP_PATH, input.name),
-      )
+      // Project-specific servers still use local config
+      if (input.scope === "project") {
+        const projectPath = resolveMcpProjectPath(input.scope, input.projectPath)
+        await updateClaudeConfigAtomic(async (config) =>
+          removeMcpServerConfig(config, projectPath ?? GLOBAL_MCP_PATH, input.name),
+        )
+        return { success: true }
+      }
+
+      // Global servers: use backend API
+      // First, list all servers to find the ID
+      const data = await ergataiFetch<{ servers: Array<{ id: string; name: string }> }>("/api/v1/mcp-servers?profile_id=global", {
+        method: "GET",
+      })
+      const server = data.servers.find(s => s.name === input.name)
+
+      if (server) {
+        await ergataiFetch(`/api/v1/mcp-servers/${server.id}`, {
+          method: "DELETE",
+        })
+      }
+
       return { success: true }
     }),
 
@@ -199,15 +267,38 @@ export const claudeRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      const projectPath = resolveMcpProjectPath(input.scope, input.projectPath)
-      await updateClaudeConfigAtomic(async (config) =>
-        updateMcpServerConfig(config, projectPath ?? GLOBAL_MCP_PATH, input.name, {
-          authType: "bearer",
-          headers: {
-            Authorization: `Bearer ${input.token}`,
-          },
-        }),
-      )
+      // Project-specific servers still use local config
+      if (input.scope === "project") {
+        const projectPath = resolveMcpProjectPath(input.scope, input.projectPath)
+        await updateClaudeConfigAtomic(async (config) =>
+          updateMcpServerConfig(config, projectPath ?? GLOBAL_MCP_PATH, input.name, {
+            authType: "bearer",
+            headers: {
+              Authorization: `Bearer ${input.token}`,
+            },
+          }),
+        )
+        return { success: true }
+      }
+
+      // Global servers: use backend API
+      // First, list all servers to find the ID
+      const data = await ergataiFetch<{ servers: Array<{ id: string; name: string }> }>("/api/v1/mcp-servers?profile_id=global", {
+        method: "GET",
+      })
+      const server = data.servers.find(s => s.name === input.name)
+
+      if (server) {
+        await ergataiFetch(`/api/v1/mcp-servers/${server.id}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            headers: {
+              Authorization: `Bearer ${input.token}`,
+            },
+          }),
+        })
+      }
+
       return { success: true }
     }),
 

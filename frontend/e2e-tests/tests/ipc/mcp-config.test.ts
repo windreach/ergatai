@@ -4,7 +4,7 @@
  */
 
 import { test, expect, describe, beforeAll, afterAll, beforeEach } from '@playwright/test'
-import { launchElectron } from '../../fixtures/electron-launcher'
+import { launchIntegrationElectron, cleanupIntegration } from '../../fixtures/integration-launcher'
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
@@ -16,10 +16,9 @@ describe('IPC: MCP Config Router', () => {
   let originalConfig: string | null = null
 
   beforeAll(async () => {
-    electron = await launchElectron({
-      extraEnv: { NODE_ENV: 'test', ELECTRON_TEST_MODE: 'true' },
-    })
-    page = electron.page
+    const launched = await launchIntegrationElectron()
+    electron = launched.electron
+    page = launched.page
 
     // 保存原始配置
     try {
@@ -29,10 +28,10 @@ describe('IPC: MCP Config Router', () => {
     }
 
     process.on('exit', async () => {
-      if (electron) { try { await electron.close() } catch (e) { /* ignore */ } }
+      if (electron) { try { await cleanupIntegration(electron) } catch (e) { /* ignore */ } }
     })
     process.on('SIGINT', async () => {
-      if (electron) { await electron.close() }
+      if (electron) { await cleanupIntegration(electron) }
       process.exit(130)
     })
   })
@@ -45,7 +44,7 @@ describe('IPC: MCP Config Router', () => {
       // 如果原本不存在，删除测试创建的文件
       await fs.unlink(configPath).catch(() => {})
     }
-    await electron.close()
+    await cleanupIntegration(electron)
   })
 
   beforeEach(async () => {

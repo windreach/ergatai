@@ -19,6 +19,7 @@ export default defineConfig({
     actionTimeout: 10000,
     navigationTimeout: 30000,
   },
+  globalSetup: './global-setup.ts',  // 设置环境变量，默认使用 Xvfb
   projects: [
     {
       name: 'electron',

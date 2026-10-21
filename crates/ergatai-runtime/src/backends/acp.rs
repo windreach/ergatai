@@ -32,11 +32,11 @@ use ergatai_error::id::{format as format_id, generate, IdType};
 
 use agent_client_protocol::schema::v1::{
     ContentBlock, CreateElicitationRequest, CreateElicitationResponse, DeleteSessionRequest,
-    ElicitationAction, HttpHeader, ImageContent, InitializeRequest, ListSessionsRequest,
-    LoadSessionRequest, McpServer, McpServerHttp, NewSessionRequest, Plan, PromptRequest,
-    RequestPermissionRequest, RequestPermissionResponse, SessionNotification, SessionUpdate,
-    TextContent, ToolCall as AcpToolCall, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
-    ToolKind,
+    ElicitationAction, EnvVariable, HttpHeader, ImageContent, InitializeRequest,
+    ListSessionsRequest, LoadSessionRequest, McpServer, McpServerHttp, McpServerStdio,
+    NewSessionRequest, Plan, PromptRequest, RequestPermissionRequest, RequestPermissionResponse,
+    SessionNotification, SessionUpdate, TextContent, ToolCall as AcpToolCall, ToolCallLocation,
+    ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{
@@ -1529,14 +1529,10 @@ impl AcpBackend {
 
     /// Load user-configured MCP servers from database
     ///
-    /// Loads global MCP servers (profile_id IS NULL) from user_data.db.
-    /// Currently only HTTP type is supported; stdio/sse types are logged and skipped.
+    /// Loads profile-specific and global MCP servers from user_data.db.
+    /// - stdio type: always loaded (stdio is mandatory per ACP spec)
+    /// - http/sse type: only loaded if agent supports HTTP MCP
     fn load_user_mcp_servers(profile_id: Option<&str>, mcp_http_supported: bool) -> Vec<McpServer> {
-        if !mcp_http_supported {
-            debug!("Agent does not support HTTP MCP; skipping user MCP servers");
-            return Vec::new();
-        }
-
         let db_path = crate::dirs::user_data_db_path();
         if !db_path.exists() {
             debug!(
@@ -1576,14 +1572,22 @@ impl AcpBackend {
         for server in user_servers {
             match server.server_type.as_str() {
                 "http" => {
+                    // HTTP MCP requires agent HTTP support
+                    if !mcp_http_supported {
+                        debug!(
+                            mcp_name = %server.name,
+                            "Agent does not support HTTP MCP; skipping HTTP user MCP server"
+                        );
+                        continue;
+                    }
                     if let Some(url) = &server.url {
                         let mut http_server = McpServerHttp::new(&server.name, url);
 
-                        // Parse and add headers
-                        if let Ok(headers) =
-                            serde_json::from_str::<HashMap<String, String>>(&server.headers)
-                        {
-                            let header_vec: Vec<HttpHeader> = headers
+                        // Add headers
+                        if !server.headers.is_empty() {
+                            let header_vec: Vec<HttpHeader> = server
+                                .headers
+                                .clone()
                                 .into_iter()
                                 .map(|(k, v)| HttpHeader::new(k, v))
                                 .collect();
@@ -1596,7 +1600,7 @@ impl AcpBackend {
                         debug!(
                             mcp_name = %server.name,
                             mcp_url = %url,
-                            "User MCP server loaded"
+                            "User MCP server loaded (HTTP)"
                         );
                     } else {
                         warn!(
@@ -1606,18 +1610,79 @@ impl AcpBackend {
                     }
                 }
                 "stdio" => {
-                    // TODO: Implement stdio MCP support when ACP protocol supports it
-                    warn!(
-                        mcp_name = %server.name,
-                        "Stdio MCP servers not yet supported; skipping"
-                    );
+                    if let Some(command) = &server.command {
+                        let mut stdio_server = McpServerStdio::new(&server.name, command);
+
+                        // Add args
+                        if !server.args.is_empty() {
+                            stdio_server = stdio_server.args(server.args.clone());
+                        }
+
+                        // Add env (convert HashMap to Vec<EnvVariable>)
+                        if !server.env.is_empty() {
+                            let env_vars: Vec<EnvVariable> = server
+                                .env
+                                .iter()
+                                .map(|(k, v)| EnvVariable::new(k, v))
+                                .collect();
+                            stdio_server = stdio_server.env(env_vars);
+                        }
+
+                        declarations.push(McpServer::Stdio(stdio_server));
+                        debug!(
+                            mcp_name = %server.name,
+                            mcp_command = %command,
+                            "User MCP server loaded (Stdio)"
+                        );
+                    } else {
+                        warn!(
+                            mcp_name = %server.name,
+                            "Stdio MCP server missing command; skipping"
+                        );
+                    }
                 }
                 "sse" => {
-                    // TODO: Implement SSE MCP support when ACP protocol supports it
-                    warn!(
-                        mcp_name = %server.name,
-                        "SSE MCP servers not yet supported; skipping"
-                    );
+                    // SSE MCP requires agent HTTP support (SSE is transported over HTTP)
+                    if !mcp_http_supported {
+                        debug!(
+                            mcp_name = %server.name,
+                            "Agent does not support HTTP MCP; skipping SSE user MCP server"
+                        );
+                        continue;
+                    }
+                    // SSE support depends on agent capabilities declared in initialize
+                    // For now, we'll treat SSE similar to HTTP but with SSE-specific handling
+                    // TODO: Check agent's mcpCapabilities.sse before adding SSE servers
+                    if let Some(url) = &server.url {
+                        // SSE servers use the same HTTP structure for now
+                        // The actual SSE transport will be handled by the MCP client
+                        let mut sse_server = McpServerHttp::new(&server.name, url);
+
+                        // Add headers
+                        if !server.headers.is_empty() {
+                            let header_vec: Vec<HttpHeader> = server
+                                .headers
+                                .clone()
+                                .into_iter()
+                                .map(|(k, v)| HttpHeader::new(k, v))
+                                .collect();
+                            if !header_vec.is_empty() {
+                                sse_server = sse_server.headers(header_vec);
+                            }
+                        }
+
+                        declarations.push(McpServer::Http(sse_server));
+                        debug!(
+                            mcp_name = %server.name,
+                            mcp_url = %url,
+                            "User MCP server loaded (SSE as HTTP)"
+                        );
+                    } else {
+                        warn!(
+                            mcp_name = %server.name,
+                            "SSE MCP server missing URL; skipping"
+                        );
+                    }
                 }
                 other => {
                     warn!(
@@ -3013,6 +3078,10 @@ impl AcpBackendInterface for AcpBackend {
                             (Some(guard), Some(declaration))
                         }
                         Some(factory) => {
+                            // Fallback 顺序：HTTP → stdio 适配器
+                            // 1. HTTP 更简单，不需要启动额外进程
+                            // 2. stdio 适配器是最后的手段（需要启动 mcp-stdio-adapter 进程）
+
                             if mcp_http_supported {
                                 if let Some(url) = &task_http_mcp_url {
                                     // Build HTTP MCP declaration with optional auth header
@@ -3046,10 +3115,39 @@ impl AcpBackendInterface for AcpBackend {
                                     );
                                     (None, None)
                                 }
+                            } else if let Some(url) = &task_http_mcp_url {
+                                // Agent 不支持 HTTP MCP，使用 stdio 适配器作为最后的 fallback
+                                // stdio 是 ACP 强制要求的（MUST），所以所有 agent 都应该支持
+                                let adapter_command = std::env::var("ERGATAI_MCP_ADAPTER_PATH")
+                                    .unwrap_or_else(|_| "mcp-stdio-adapter".to_string());
+
+                                let adapter_args = vec!["--url".to_string(), url.clone()];
+
+                                // Pass API token via environment variable (NOT command-line arg)
+                                // Command-line args are world-readable via /proc/<pid>/cmdline or ps
+                                let mut adapter_env: Vec<EnvVariable> = Vec::new();
+                                if let Some(token) = crate::runtime::read_api_token() {
+                                    adapter_env.push(EnvVariable::new("ERGATAI_API_TOKEN", &token));
+                                }
+
+                                let mut stdio_server = McpServerStdio::new(factory.server_name(), &adapter_command)
+                                    .args(adapter_args);
+
+                                if !adapter_env.is_empty() {
+                                    stdio_server = stdio_server.env(adapter_env);
+                                }
+
+                                let declaration = McpServer::Stdio(stdio_server);
+                                info!(
+                                    mcp_server_name = %factory.server_name(),
+                                    adapter_command = %adapter_command,
+                                    "Agent does not support MCP-over-ACP or HTTP MCP; using stdio adapter fallback"
+                                );
+                                (None, Some(declaration))
                             } else {
                                 debug!(
                                     mcp_server_name = %factory.server_name(),
-                                    "Agent does not advertise MCP-over-ACP or HTTP MCP support"
+                                    "Agent does not support MCP-over-ACP or HTTP MCP, and no HTTP MCP URL is configured for stdio adapter"
                                 );
                                 (None, None)
                             }

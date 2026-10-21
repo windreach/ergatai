@@ -4,6 +4,7 @@
 
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tracing::debug;
 
 /// User-configured MCP server (loaded from database)
@@ -14,11 +15,58 @@ pub struct UserMcpServer {
     pub name: String,
     pub server_type: String, // "stdio", "http", "sse"
     pub command: Option<String>,
-    pub args: String, // JSON array as TEXT
-    pub env: String,  // JSON object as TEXT
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
     pub url: Option<String>,
-    pub headers: String, // JSON object as TEXT
+    pub headers: HashMap<String, String>,
     pub enabled: bool,
+}
+
+/// Helper function to deserialize MCP server from database row
+fn deserialize_server(row: &rusqlite::Row) -> rusqlite::Result<UserMcpServer> {
+    let args_str: String = row.get(5)?;
+    let env_str: String = row.get(6)?;
+    let headers_str: String = row.get(8)?;
+
+    let args = serde_json::from_str(&args_str).unwrap_or_else(|e| {
+        tracing::warn!(
+            server_id = row.get::<_, String>(0).unwrap_or_default(),
+            error = %e,
+            "Failed to parse args JSON from database, using empty array"
+        );
+        Vec::new()
+    });
+
+    let env = serde_json::from_str(&env_str).unwrap_or_else(|e| {
+        tracing::warn!(
+            server_id = row.get::<_, String>(0).unwrap_or_default(),
+            error = %e,
+            "Failed to parse env JSON from database, using empty map"
+        );
+        HashMap::new()
+    });
+
+    let headers = serde_json::from_str(&headers_str).unwrap_or_else(|e| {
+        tracing::warn!(
+            server_id = row.get::<_, String>(0).unwrap_or_default(),
+            error = %e,
+            "Failed to parse headers JSON from database, using empty map"
+        );
+        HashMap::new()
+    });
+
+    Ok(UserMcpServer {
+        id: row.get(0)?,
+        profile_id: row.get(1)?,
+        name: row.get(2)?,
+        server_type: row.get(3)?,
+        command: row.get(4)?,
+        args,
+        env,
+        url: row.get(7)?,
+        headers,
+        enabled: row.get::<_, i64>(9)? != 0,
+    })
 }
 
 /// Load enabled MCP servers for a specific agent profile
@@ -36,20 +84,7 @@ pub fn load_mcp_servers_for_profile(
          ORDER BY profile_id DESC, created_at DESC",
     )?;
 
-    let servers = stmt.query_map(params![profile_id], |row| {
-        Ok(UserMcpServer {
-            id: row.get(0)?,
-            profile_id: row.get(1)?,
-            name: row.get(2)?,
-            server_type: row.get(3)?,
-            command: row.get(4)?,
-            args: row.get(5)?,
-            env: row.get(6)?,
-            url: row.get(7)?,
-            headers: row.get(8)?,
-            enabled: row.get::<_, i64>(9)? != 0,
-        })
-    })?;
+    let servers = stmt.query_map(params![profile_id], deserialize_server)?;
 
     let result: Vec<UserMcpServer> = servers.collect::<Result<Vec<_>>>()?;
     debug!(
@@ -69,20 +104,7 @@ pub fn load_global_mcp_servers(conn: &Connection) -> Result<Vec<UserMcpServer>> 
          ORDER BY created_at DESC",
     )?;
 
-    let servers = stmt.query_map([], |row| {
-        Ok(UserMcpServer {
-            id: row.get(0)?,
-            profile_id: row.get(1)?,
-            name: row.get(2)?,
-            server_type: row.get(3)?,
-            command: row.get(4)?,
-            args: row.get(5)?,
-            env: row.get(6)?,
-            url: row.get(7)?,
-            headers: row.get(8)?,
-            enabled: row.get::<_, i64>(9)? != 0,
-        })
-    })?;
+    let servers = stmt.query_map([], deserialize_server)?;
 
     let result: Vec<UserMcpServer> = servers.collect::<Result<Vec<_>>>()?;
     debug!(count = result.len(), "Loaded global MCP servers");

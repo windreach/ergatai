@@ -11,6 +11,7 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::user_data_db::{mcp_servers, McpServer};
@@ -30,28 +31,20 @@ pub struct CreateMcpServerRequest {
     pub server_type: String,
     /// Command to run (for stdio type)
     pub command: Option<String>,
-    /// Command arguments as JSON array string (for stdio type)
-    #[serde(default = "default_json_array")]
-    pub args: String,
-    /// Environment variables as JSON object string
-    #[serde(default = "default_json_object")]
-    pub env: String,
+    /// Command arguments (for stdio type)
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Environment variables
+    #[serde(default)]
+    pub env: HashMap<String, String>,
     /// Server URL (for http/sse type)
     pub url: Option<String>,
-    /// HTTP headers as JSON object string
-    #[serde(default = "default_json_object")]
-    pub headers: String,
+    /// HTTP headers
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
     /// Whether this MCP server is enabled
     #[serde(default = "default_true")]
     pub enabled: bool,
-}
-
-fn default_json_array() -> String {
-    "[]".to_string()
-}
-
-fn default_json_object() -> String {
-    "{}".to_string()
 }
 
 fn default_true() -> bool {
@@ -64,24 +57,24 @@ pub struct UpdateMcpServerRequest {
     pub name: Option<String>,
     pub server_type: Option<String>,
     pub command: Option<String>,
-    pub args: Option<String>,
-    pub env: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub env: Option<HashMap<String, String>>,
     pub url: Option<String>,
-    pub headers: Option<String>,
+    pub headers: Option<HashMap<String, String>>,
     pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct McpServerResponse {
-    pub id: i64,
+    pub id: String, // Changed from i64 to String to avoid JavaScript precision issues
     pub profile_id: Option<String>,
     pub name: String,
     pub server_type: String,
     pub command: Option<String>,
-    pub args: String,
-    pub env: String,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
     pub url: Option<String>,
-    pub headers: String,
+    pub headers: HashMap<String, String>,
     pub enabled: bool,
     pub created_at: i64,
     pub updated_at: i64,
@@ -90,7 +83,7 @@ pub struct McpServerResponse {
 impl From<McpServer> for McpServerResponse {
     fn from(s: McpServer) -> Self {
         Self {
-            id: s.id,
+            id: s.id.to_string(), // Convert i64 to String
             profile_id: s.profile_id,
             name: s.name,
             server_type: s.server_type,
@@ -171,35 +164,6 @@ pub async fn create_mcp_server(Json(req): Json<CreateMcpServerRequest>) -> impl 
                 .into_response();
         }
         _ => {}
-    }
-
-    // Validate JSON fields
-    if let Err(e) = serde_json::from_str::<serde_json::Value>(&req.args) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Invalid 'args' JSON: {}", e)
-            })),
-        )
-            .into_response();
-    }
-    if let Err(e) = serde_json::from_str::<serde_json::Value>(&req.env) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Invalid 'env' JSON: {}", e)
-            })),
-        )
-            .into_response();
-    }
-    if let Err(e) = serde_json::from_str::<serde_json::Value>(&req.headers) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Invalid 'headers' JSON: {}", e)
-            })),
-        )
-            .into_response();
     }
 
     let now = std::time::SystemTime::now()
@@ -443,35 +407,6 @@ pub async fn update_mcp_server(
     }
     if let Some(v) = req.enabled {
         updated.enabled = v;
-    }
-
-    // Validate JSON fields if they were updated
-    if let Err(e) = serde_json::from_str::<serde_json::Value>(&updated.args) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Invalid 'args' JSON: {}", e)
-            })),
-        )
-            .into_response();
-    }
-    if let Err(e) = serde_json::from_str::<serde_json::Value>(&updated.env) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Invalid 'env' JSON: {}", e)
-            })),
-        )
-            .into_response();
-    }
-    if let Err(e) = serde_json::from_str::<serde_json::Value>(&updated.headers) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Invalid 'headers' JSON: {}", e)
-            })),
-        )
-            .into_response();
     }
 
     // Validate type-specific requirements after applying updates

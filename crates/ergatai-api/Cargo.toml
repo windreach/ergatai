@@ -14,6 +14,10 @@ path = "src/lib.rs"
 name = "ergatai-server"
 path = "src/main.rs"
 
+[[bin]]
+name = "mcp-stdio-adapter"
+path = "src/mcp_stdio_adapter.rs"
+
 [dependencies]
 # Core library
 ergatai-core = { path = "../ergatai-core" }
@@ -53,6 +57,10 @@ rusqlite.workspace = true
 
 # Logging
 tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# HTTP client (for MCP stdio adapter)
+reqwest.workspace = true
 
 # CLI
 clap.workspace = true

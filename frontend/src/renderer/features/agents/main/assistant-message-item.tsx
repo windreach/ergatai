@@ -960,6 +960,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
 
   return (
     <div
+      data-testid="agent-message"
       data-assistant-message-id={message.id}
       className={cn(
         "group/message w-full mb-4",

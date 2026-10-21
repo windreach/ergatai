@@ -260,6 +260,7 @@ export function AgentSendButton({
     <Tooltip delayDuration={1_000} open={tooltipOpen}>
       <TooltipTrigger asChild>
         <Button
+          data-testid="send-button"
           size={size}
           className={`h-7 w-7 rounded-full transition-[background-color,transform,opacity] duration-150 ease-out active:scale-[0.97] flex items-center justify-center ${glowClass || ""} ${modeClass} ${className}`}
           disabled={isDisabled || isTranscribing}
