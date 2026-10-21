@@ -10,6 +10,7 @@
 //! Tests run in parallel safely via `TEST_LOCK` (each test gets its own
 //! isolated NATS server with a unique tempdir store).
 
+use ergatai_error::TaskId;
 use ergatai_nats::{init_nats_with_store_dir, shutdown_nats, EventBus, TaskSubmitPayload};
 use futures_util::StreamExt;
 use std::sync::Mutex;
@@ -49,9 +50,9 @@ async fn ensure_nats() -> Option<(
     }
 }
 
-fn make_payload(task_id: &str, agent: &str) -> TaskSubmitPayload {
+fn make_payload(task_id: TaskId, agent: &str) -> TaskSubmitPayload {
     TaskSubmitPayload {
-        task_id: task_id.to_string(),
+        task_id,
         plan_content: format!("# {task_id}\n\n**Objective**: Integration test"),
         plan_file: format!(".ergatai/.dag-plans/{task_id}.md"),
         target_agent: agent.to_string(),
@@ -61,15 +62,6 @@ fn make_payload(task_id: &str, agent: &str) -> TaskSubmitPayload {
         expected_outputs: Default::default(),
         ..Default::default()
     }
-}
-
-fn unique_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .to_string()
 }
 
 /// Helper: create a pull consumer on DAG_EVENTS filtered to task submissions.
@@ -101,8 +93,8 @@ async fn test_consumer_receives_published_task() {
 
     // Publish a task
     let bus = EventBus::new(conn);
-    let task_id = format!("test-{}", unique_id());
-    let payload = make_payload(&task_id, "%test_agent");
+    let task_id = TaskId::generate();
+    let payload = make_payload(task_id, "%test_agent");
     let ack = bus
         .publish_task_submit(&payload)
         .await
@@ -138,8 +130,8 @@ async fn test_consumer_receives_multiple_tasks() {
     let count = 3u32;
     let mut task_ids = Vec::new();
     for i in 0..count {
-        let task_id = format!("multi-{i}-{}", unique_id());
-        let payload = make_payload(&task_id, &format!("%agent_{i}"));
+        let task_id = TaskId::generate();
+        let payload = make_payload(task_id, &format!("%agent_{i}"));
         bus.publish_task_submit(&payload)
             .await
             .expect("publish should succeed");
@@ -176,8 +168,8 @@ async fn test_consumer_survives_malformed_messages() {
 
     // 2. Publish a valid message
     let bus = EventBus::new(conn);
-    let task_id = format!("after-malformed-{}", unique_id());
-    let payload = make_payload(&task_id, "%valid_agent");
+    let task_id = TaskId::generate();
+    let payload = make_payload(task_id, "%valid_agent");
     bus.publish_task_submit(&payload)
         .await
         .expect("publish valid task should succeed");

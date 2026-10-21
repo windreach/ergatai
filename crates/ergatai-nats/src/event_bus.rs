@@ -819,6 +819,7 @@ fn sanitize_agent_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ergatai_error::{DagId, TaskId};
     use std::collections::HashMap;
 
     #[test]
@@ -886,13 +887,13 @@ mod tests {
 
         // Publish
         let payload = TaskSubmitPayload {
-            task_id: "task-1".to_string(),
+            task_id: TaskId::new(1),
             plan_content: "# Plan\nDo stuff".to_string(),
             plan_file: ".ergatai/plans/task-1.md".to_string(),
             target_agent: "claude-code".to_string(),
             priority: 1,
             timeout_secs: Some(60),
-            dag_id: Some("dag-1".to_string()),
+            dag_id: Some(DagId::new(1)),
             expected_outputs: Default::default(),
             ..Default::default()
         };
@@ -907,7 +908,7 @@ mod tests {
                 .expect("stream closed")
                 .expect("deserialization failed");
 
-        assert_eq!(received.task_id, "task-1");
+        assert_eq!(received.task_id, TaskId::new(1));
         assert_eq!(received.plan_content, "# Plan\nDo stuff");
         assert_eq!(received.timeout_secs, Some(60));
     }
@@ -952,8 +953,8 @@ mod tests {
         );
 
         let payload = NodeCompletePayload {
-            node_id: "n1".to_string(),
-            task_id: "n1".to_string(),
+            node_id: TaskId::new(1),
+            task_id: TaskId::new(1),
             agent_name: "agent".to_string(),
             result_summary: Some("ok".to_string()),
             outputs: serde_json::Value::Object(outputs),
@@ -970,7 +971,7 @@ mod tests {
                 .expect("stream closed")
                 .expect("deser failed");
 
-        assert_eq!(received.node_id, "n1");
+        assert_eq!(received.node_id, TaskId::new(1));
         assert_eq!(
             received.outputs.get("result"),
             Some(&serde_json::Value::String("done".to_string()))
@@ -1011,8 +1012,8 @@ mod tests {
         let mut sub = bus.subscribe_all_node_failed().await.unwrap();
 
         let payload = NodeFailedPayload {
-            node_id: "n2".to_string(),
-            task_id: "n2".to_string(),
+            node_id: TaskId::new(1),
+            task_id: TaskId::new(1),
             agent_name: "codex".to_string(),
             error: "crash".to_string(),
             retryable: false,
@@ -1028,7 +1029,7 @@ mod tests {
                 .expect("stream closed")
                 .expect("deser failed");
 
-        assert_eq!(received.node_id, "n2");
+        assert_eq!(received.node_id, TaskId::new(1));
         assert_eq!(received.error, "crash");
         assert!(!received.retryable);
     }
@@ -1107,7 +1108,7 @@ mod tests {
         let mut sub = bus.subscribe_dag_complete("dag-test").await.unwrap();
 
         let payload = DagCompletePayload {
-            dag_id: "dag-test".to_string(),
+            dag_id: DagId::new(42),
             total_nodes: 5,
             completed_nodes: 5,
             failed_nodes: 0,
@@ -1124,7 +1125,7 @@ mod tests {
                 .expect("stream closed")
                 .expect("deser failed");
 
-        assert_eq!(received.dag_id, "dag-test");
+        assert_eq!(received.dag_id, DagId::new(42));
         assert_eq!(received.total_nodes, 5);
         assert_eq!(received.duration_secs, 42);
     }

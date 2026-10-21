@@ -5,23 +5,36 @@
 
 use chrono::Utc;
 use ergatai_core::unified_registry::UnifiedAgentRegistry;
+use ergatai_error::{AgentId, ConversationId, WorkspaceId};
 use ergatai_runtime::{
     AgentLifecycleState, AgentRecord, RecordAgentHandle as AgentHandle,
     RecordWorkspaceHandle as WorkspaceHandle,
 };
 use std::collections::HashMap;
 
-fn make_record(agent_id: &str) -> AgentRecord {
+fn test_agent_id(raw: i64) -> String {
+    AgentId::new(raw).to_string()
+}
+
+fn conversation_id(raw: i64) -> String {
+    ConversationId::new(raw).to_string()
+}
+
+fn workspace_id_string() -> String {
+    WorkspaceId::new(1).to_string()
+}
+
+fn make_record(id: &str) -> AgentRecord {
     AgentRecord::new(
-        agent_id.to_string(),
-        "ws-test".to_string(),
+        id.to_string(),
+        workspace_id_string(),
         AgentHandle {
             workspace: WorkspaceHandle {
-                id: "ws-test".to_string(),
+                id: workspace_id_string(),
                 backend: "test".to_string(),
                 metadata: HashMap::new(),
             },
-            agent_id: agent_id.to_string(),
+            agent_id: id.to_string(),
             process_id: Some("1234".to_string()),
             metadata: HashMap::new(),
         },
@@ -33,21 +46,24 @@ fn make_record(agent_id: &str) -> AgentRecord {
 #[tokio::test]
 async fn register_lookup_by_all_keys() {
     let reg = UnifiedAgentRegistry::new();
-    let mut rec = make_record("agent-1");
-    rec.conversation_id = Some("cov-1".to_string());
+    let mut rec = make_record(&test_agent_id(1));
+    rec.conversation_id = Some(conversation_id(1));
     reg.register(rec).await;
 
-    reg.set_mcp_agent_id("agent-1", "opencode@xyz".to_string())
+    reg.set_mcp_agent_id(&test_agent_id(1), "opencode@xyz".to_string())
         .await
         .unwrap();
 
-    let by_agent = reg.get("agent-1").await.unwrap();
+    let by_agent = reg.get(&test_agent_id(1)).await.unwrap();
     let by_mcp = reg.get_by_mcp_id("opencode@xyz").await.unwrap();
-    let by_cov = reg.get_by_conversation_id("cov-1").await.unwrap();
+    let by_cov = reg
+        .get_by_conversation_id(&conversation_id(1))
+        .await
+        .unwrap();
 
-    assert_eq!(by_agent.agent_id, "agent-1");
-    assert_eq!(by_mcp.agent_id, "agent-1");
-    assert_eq!(by_cov.agent_id, "agent-1");
+    assert_eq!(by_agent.agent_id, test_agent_id(1));
+    assert_eq!(by_mcp.agent_id, test_agent_id(1));
+    assert_eq!(by_cov.agent_id, test_agent_id(1));
 }
 
 // ── Unregister cleans up all indices ─────────────────────────────────
@@ -55,22 +71,28 @@ async fn register_lookup_by_all_keys() {
 #[tokio::test]
 async fn unregister_removes_all_indices() {
     let reg = UnifiedAgentRegistry::new();
-    let mut rec = make_record("agent-2");
-    rec.conversation_id = Some("cov-2".to_string());
+    let mut rec = make_record(&test_agent_id(2));
+    rec.conversation_id = Some(conversation_id(2));
     reg.register(rec).await;
-    reg.set_mcp_agent_id("agent-2", "mcp@old".to_string())
+    reg.set_mcp_agent_id(&test_agent_id(2), "mcp@old".to_string())
         .await
         .unwrap();
 
-    assert!(reg.get("agent-2").await.is_some());
+    assert!(reg.get(&test_agent_id(2)).await.is_some());
     assert!(reg.get_by_mcp_id("mcp@old").await.is_some());
-    assert!(reg.get_by_conversation_id("cov-2").await.is_some());
+    assert!(reg
+        .get_by_conversation_id(&conversation_id(2))
+        .await
+        .is_some());
 
-    reg.unregister("agent-2").await;
+    reg.unregister(&test_agent_id(2)).await;
 
-    assert!(reg.get("agent-2").await.is_none());
+    assert!(reg.get(&test_agent_id(2)).await.is_none());
     assert!(reg.get_by_mcp_id("mcp@old").await.is_none());
-    assert!(reg.get_by_conversation_id("cov-2").await.is_none());
+    assert!(reg
+        .get_by_conversation_id(&conversation_id(2))
+        .await
+        .is_none());
 }
 
 // ── MCP ID re-binding removes old index ──────────────────────────────
@@ -78,14 +100,14 @@ async fn unregister_removes_all_indices() {
 #[tokio::test]
 async fn mcp_id_rebind_removes_old_binding() {
     let reg = UnifiedAgentRegistry::new();
-    reg.register(make_record("agent-3")).await;
+    reg.register(make_record(&test_agent_id(3))).await;
 
-    reg.set_mcp_agent_id("agent-3", "mcp@v1".to_string())
+    reg.set_mcp_agent_id(&test_agent_id(3), "mcp@v1".to_string())
         .await
         .unwrap();
     assert!(reg.get_by_mcp_id("mcp@v1").await.is_some());
 
-    reg.set_mcp_agent_id("agent-3", "mcp@v2".to_string())
+    reg.set_mcp_agent_id(&test_agent_id(3), "mcp@v2".to_string())
         .await
         .unwrap();
 
@@ -98,10 +120,10 @@ async fn mcp_id_rebind_removes_old_binding() {
 #[tokio::test]
 async fn state_transitions_update_record() {
     let reg = UnifiedAgentRegistry::new();
-    reg.register(make_record("agent-4")).await;
+    reg.register(make_record(&test_agent_id(4))).await;
 
     reg.update_state(
-        "agent-4",
+        &test_agent_id(4),
         AgentLifecycleState::Running {
             task_id: None,
             started_at: Utc::now(),
@@ -112,7 +134,7 @@ async fn state_transitions_update_record() {
     .unwrap();
 
     reg.update_state(
-        "agent-4",
+        &test_agent_id(4),
         AgentLifecycleState::Idle {
             ready_since: Utc::now(),
             capabilities: vec!["rust".to_string()],
@@ -121,7 +143,7 @@ async fn state_transitions_update_record() {
     .await
     .unwrap();
 
-    assert!(reg.get("agent-4").await.unwrap().is_idle());
+    assert!(reg.get(&test_agent_id(4)).await.unwrap().is_idle());
 }
 
 // ── Terminal state makes agent non-alive ─────────────────────────────
@@ -129,11 +151,11 @@ async fn state_transitions_update_record() {
 #[tokio::test]
 async fn terminal_state_makes_agent_non_alive() {
     let reg = UnifiedAgentRegistry::new();
-    reg.register(make_record("agent-5")).await;
-    assert!(reg.get("agent-5").await.unwrap().is_alive());
+    reg.register(make_record(&test_agent_id(5))).await;
+    assert!(reg.get(&test_agent_id(5)).await.unwrap().is_alive());
 
     reg.update_state(
-        "agent-5",
+        &test_agent_id(5),
         AgentLifecycleState::Terminated {
             outcome: ergatai_runtime::ExitOutcome::Exited { exit_code: Some(0) },
             terminated_at: Utc::now(),
@@ -143,7 +165,7 @@ async fn terminal_state_makes_agent_non_alive() {
     .await
     .unwrap();
 
-    let r = reg.get("agent-5").await.unwrap();
+    let r = reg.get(&test_agent_id(5)).await.unwrap();
     assert!(!r.is_alive());
     assert!(!r.is_idle());
     assert!(!r.is_processing());
@@ -154,12 +176,12 @@ async fn terminal_state_makes_agent_non_alive() {
 #[tokio::test]
 async fn list_filters_by_state_category() {
     let reg = UnifiedAgentRegistry::new();
-    reg.register(make_record("a")).await;
-    reg.register(make_record("b")).await;
-    reg.register(make_record("c")).await;
+    reg.register(make_record(&test_agent_id(10))).await;
+    reg.register(make_record(&test_agent_id(11))).await;
+    reg.register(make_record(&test_agent_id(12))).await;
 
     reg.update_state(
-        "a",
+        &test_agent_id(10),
         AgentLifecycleState::Running {
             task_id: None,
             started_at: Utc::now(),
@@ -169,7 +191,7 @@ async fn list_filters_by_state_category() {
     .await
     .unwrap();
     reg.update_state(
-        "b",
+        &test_agent_id(11),
         AgentLifecycleState::Idle {
             ready_since: Utc::now(),
             capabilities: vec![],
@@ -178,7 +200,7 @@ async fn list_filters_by_state_category() {
     .await
     .unwrap();
     reg.update_state(
-        "c",
+        &test_agent_id(12),
         AgentLifecycleState::Terminated {
             outcome: ergatai_runtime::ExitOutcome::Signaled { signal: 9 },
             terminated_at: Utc::now(),
@@ -190,7 +212,7 @@ async fn list_filters_by_state_category() {
 
     assert_eq!(reg.list_alive().await.len(), 2);
     assert_eq!(reg.list_idle().await.len(), 1);
-    assert_eq!(reg.list_idle().await[0].agent_id, "b");
+    assert_eq!(reg.list_idle().await[0].agent_id, test_agent_id(11));
     assert_eq!(reg.list_processing().await.len(), 0);
 }
 
@@ -199,12 +221,12 @@ async fn list_filters_by_state_category() {
 #[tokio::test]
 async fn count_by_state_counts_correctly() {
     let reg = UnifiedAgentRegistry::new();
-    reg.register(make_record("x")).await;
-    reg.register(make_record("y")).await;
-    reg.register(make_record("z")).await;
+    reg.register(make_record(&test_agent_id(20))).await;
+    reg.register(make_record(&test_agent_id(21))).await;
+    reg.register(make_record(&test_agent_id(22))).await;
 
     reg.update_state(
-        "y",
+        &test_agent_id(21),
         AgentLifecycleState::Idle {
             ready_since: Utc::now(),
             capabilities: vec![],
@@ -213,7 +235,7 @@ async fn count_by_state_counts_correctly() {
     .await
     .unwrap();
     reg.update_state(
-        "z",
+        &test_agent_id(22),
         AgentLifecycleState::Terminated {
             outcome: ergatai_runtime::ExitOutcome::Exited { exit_code: Some(0) },
             terminated_at: Utc::now(),
@@ -235,15 +257,18 @@ async fn count_by_state_counts_correctly() {
 #[tokio::test]
 async fn list_summaries_returns_all() {
     let reg = UnifiedAgentRegistry::new();
-    let mut rec = make_record("m1");
+    let mut rec = make_record(&test_agent_id(30));
     rec.capabilities = vec!["code-review".to_string(), "testing".to_string()];
     reg.register(rec).await;
-    reg.register(make_record("m2")).await;
+    reg.register(make_record(&test_agent_id(31))).await;
 
     let summaries = reg.list_summaries().await;
     assert_eq!(summaries.len(), 2);
-    let s1 = summaries.iter().find(|s| s.agent_id == "m1").unwrap();
-    assert_eq!(s1.workspace_id, "ws-test");
+    let s1 = summaries
+        .iter()
+        .find(|s| s.agent_id == test_agent_id(30))
+        .unwrap();
+    assert_eq!(s1.workspace_id, workspace_id_string());
     assert!(s1.is_alive);
     assert_eq!(s1.capabilities.len(), 2);
 }
@@ -261,13 +286,13 @@ async fn update_heartbeat_unknown_agent_returns_error() {
 #[tokio::test]
 async fn update_heartbeat_refreshes_timestamp() {
     let reg = UnifiedAgentRegistry::new();
-    reg.register(make_record("hb1")).await;
-    let before = reg.get("hb1").await.unwrap().last_heartbeat;
+    reg.register(make_record(&test_agent_id(40))).await;
+    let before = reg.get(&test_agent_id(40)).await.unwrap().last_heartbeat;
 
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    reg.update_heartbeat("hb1").await.unwrap();
+    reg.update_heartbeat(&test_agent_id(40)).await.unwrap();
 
-    let after = reg.get("hb1").await.unwrap().last_heartbeat;
+    let after = reg.get(&test_agent_id(40)).await.unwrap().last_heartbeat;
     assert!(after > before);
 }
 
@@ -279,8 +304,9 @@ async fn concurrent_registration_is_consistent() {
     let mut handles = Vec::new();
     for i in 0..20 {
         let r = reg.clone();
+        let id = test_agent_id(100 + i);
         handles.push(tokio::spawn(async move {
-            r.register(make_record(&format!("c{i}"))).await;
+            r.register(make_record(&id)).await;
         }));
     }
     for h in handles {
@@ -289,6 +315,6 @@ async fn concurrent_registration_is_consistent() {
 
     assert_eq!(reg.list().await.len(), 20);
     for i in 0..20 {
-        assert!(reg.get(&format!("c{i}")).await.is_some());
+        assert!(reg.get(&test_agent_id(100 + i)).await.is_some());
     }
 }

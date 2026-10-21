@@ -313,6 +313,7 @@ fn parse_file_event(subject: &str, payload: &[u8]) -> Result<Option<FileEvent>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ergatai_error::AgentId;
 
     // ─── Payload serialization (original tests) ────────────────────
 
@@ -320,7 +321,7 @@ mod tests {
     fn test_file_ready_payload_serialization() {
         let payload = FileReadyPayload {
             file_path: "/path/to/file.txt".to_string(),
-            agent_id: "agent-1".to_string(),
+            agent_id: AgentId::new(1),
             token_id: "token-abc".to_string(),
             timestamp: 1234567890,
         };
@@ -338,7 +339,7 @@ mod tests {
     fn test_file_error_payload_serialization() {
         let payload = FileErrorPayload {
             file_path: "/path/to/file.txt".to_string(),
-            agent_id: "agent-1".to_string(),
+            agent_id: AgentId::new(1),
             reason: "Agent crashed".to_string(),
             timestamp: 1234567890,
         };
@@ -358,7 +359,7 @@ mod tests {
     fn test_parse_file_event_ready() {
         let payload = FileReadyPayload {
             file_path: "src/main.rs".to_string(),
-            agent_id: "agent-42".to_string(),
+            agent_id: AgentId::new(42),
             token_id: "token-42".to_string(),
             timestamp: 1_700_000_000,
         };
@@ -368,7 +369,7 @@ mod tests {
         match result {
             Some(FileEvent::Ready(p)) => {
                 assert_eq!(p.file_path, "src/main.rs");
-                assert_eq!(p.agent_id, "agent-42");
+                assert_eq!(p.agent_id, AgentId::new(42));
                 assert_eq!(p.token_id, "token-42");
                 assert_eq!(p.timestamp, 1_700_000_000);
             }
@@ -380,7 +381,7 @@ mod tests {
     fn test_parse_file_event_error() {
         let payload = FileErrorPayload {
             file_path: "src/lib.rs".to_string(),
-            agent_id: "agent-7".to_string(),
+            agent_id: AgentId::new(7),
             reason: "OOM killed".to_string(),
             timestamp: 1_700_000_001,
         };
@@ -390,7 +391,7 @@ mod tests {
         match result {
             Some(FileEvent::Error(p)) => {
                 assert_eq!(p.file_path, "src/lib.rs");
-                assert_eq!(p.agent_id, "agent-7");
+                assert_eq!(p.agent_id, AgentId::new(7));
                 assert_eq!(p.reason, "OOM killed");
             }
             other => panic!("expected Some(FileEvent::Error(..)), got {:?}", other),
@@ -403,7 +404,7 @@ mod tests {
     fn test_parse_file_event_unknown_subject_returns_none() {
         let payload = serde_json::to_vec(&FileReadyPayload {
             file_path: "x".to_string(),
-            agent_id: "a".to_string(),
+            agent_id: AgentId::new(1),
             token_id: "t".to_string(),
             timestamp: 0,
         })
@@ -418,7 +419,7 @@ mod tests {
     fn test_parse_file_event_similar_but_wrong_prefix() {
         let payload = serde_json::to_vec(&FileReadyPayload {
             file_path: "x".to_string(),
-            agent_id: "a".to_string(),
+            agent_id: AgentId::new(1),
             token_id: "t".to_string(),
             timestamp: 0,
         })
@@ -473,7 +474,7 @@ mod tests {
     fn test_parse_file_event_unicode_path() {
         let payload = FileReadyPayload {
             file_path: "src/路径/файл.rs".to_string(),
-            agent_id: "agent-中文".to_string(),
+            agent_id: AgentId::new(1),
             token_id: "token-unicode".to_string(),
             timestamp: 0,
         };
@@ -482,7 +483,7 @@ mod tests {
         match result {
             Some(FileEvent::Ready(p)) => {
                 assert_eq!(p.file_path, "src/路径/файл.rs");
-                assert_eq!(p.agent_id, "agent-中文");
+                assert_eq!(p.agent_id, AgentId::new(1));
             }
             other => panic!("unexpected: {:?}", other),
         }
@@ -492,7 +493,7 @@ mod tests {
     fn test_parse_file_event_empty_strings() {
         let payload = FileReadyPayload {
             file_path: "".to_string(),
-            agent_id: "".to_string(),
+            agent_id: AgentId::new(1),
             token_id: "".to_string(),
             timestamp: 0,
         };
@@ -505,7 +506,7 @@ mod tests {
     fn test_parse_file_event_max_timestamp() {
         let payload = FileReadyPayload {
             file_path: "x".to_string(),
-            agent_id: "a".to_string(),
+            agent_id: AgentId::new(1),
             token_id: "t".to_string(),
             timestamp: u64::MAX,
         };
@@ -520,7 +521,7 @@ mod tests {
     #[test]
     fn test_parse_file_event_extra_fields_ignored() {
         // JSON with extra fields should still deserialize (serde default)
-        let bytes = br#"{"file_path":"f.rs","agent_id":"a","token_id":"t","timestamp":1,"extra":"ignored"}"#;
+        let bytes = br#"{"file_path":"f.rs","agent_id":1,"token_id":"t","timestamp":1,"extra":"ignored"}"#;
         let result = parse_file_event("ergatai.file.ready.h", bytes).unwrap();
         assert!(matches!(result, Some(FileEvent::Ready(_))));
     }
@@ -531,7 +532,7 @@ mod tests {
     fn test_file_event_debug_formatting() {
         let ready = FileEvent::Ready(FileReadyPayload {
             file_path: "a.rs".to_string(),
-            agent_id: "ag".to_string(),
+            agent_id: AgentId::new(10),
             token_id: "tk".to_string(),
             timestamp: 1,
         });
@@ -541,7 +542,7 @@ mod tests {
 
         let error = FileEvent::Error(FileErrorPayload {
             file_path: "b.rs".to_string(),
-            agent_id: "ag".to_string(),
+            agent_id: AgentId::new(20),
             reason: "boom".to_string(),
             timestamp: 2,
         });
@@ -556,7 +557,7 @@ mod tests {
     fn test_parse_file_event_unknown_subject_returns_none_v2() {
         let payload = FileReadyPayload {
             file_path: "x.rs".to_string(),
-            agent_id: "a".to_string(),
+            agent_id: AgentId::new(1),
             token_id: "t".to_string(),
             timestamp: 0,
         };
@@ -569,7 +570,7 @@ mod tests {
     fn test_parse_file_event_error_subject() {
         let payload = FileErrorPayload {
             file_path: "broken.rs".to_string(),
-            agent_id: "agent-x".to_string(),
+            agent_id: AgentId::new(1),
             reason: "disk full".to_string(),
             timestamp: 99,
         };
@@ -597,7 +598,7 @@ mod tests {
     fn test_file_ready_payload_clone_and_debug() {
         let payload = FileReadyPayload {
             file_path: "file.rs".to_string(),
-            agent_id: "agent".to_string(),
+            agent_id: AgentId::new(1),
             token_id: "token".to_string(),
             timestamp: 42,
         };
@@ -614,7 +615,7 @@ mod tests {
     fn test_file_error_payload_clone_and_debug() {
         let payload = FileErrorPayload {
             file_path: "file.rs".to_string(),
-            agent_id: "agent".to_string(),
+            agent_id: AgentId::new(1),
             reason: "something broke".to_string(),
             timestamp: 77,
         };

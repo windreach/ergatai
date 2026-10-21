@@ -270,16 +270,17 @@ async fn graph_find_node_operations() {
 
 #[test]
 fn task_submit_payload_roundtrip() {
+    use ergatai_error::{DagId, TaskId};
     use ergatai_nats::TaskSubmitPayload;
 
     let payload = TaskSubmitPayload {
-        task_id: "t1".to_string(),
+        task_id: TaskId::new(1),
         plan_content: "# Plan\n\nDo the thing".to_string(),
         plan_file: ".ergatai/plans/t1.md".to_string(),
         target_agent: "%15".to_string(),
         priority: 5,
         timeout_secs: Some(300),
-        dag_id: Some("dag-123".to_string()),
+        dag_id: Some(DagId::new(123)),
         expected_outputs: Default::default(),
         session_id: None,
         chat_id: None,
@@ -289,10 +290,10 @@ fn task_submit_payload_roundtrip() {
     let json = serde_json::to_string(&payload).unwrap();
     let deser: TaskSubmitPayload = serde_json::from_str(&json).unwrap();
 
-    assert_eq!(deser.task_id, "t1");
+    assert_eq!(deser.task_id, TaskId::new(1));
     assert_eq!(deser.target_agent, "%15");
     assert_eq!(deser.timeout_secs, Some(300));
-    assert_eq!(deser.dag_id.as_deref(), Some("dag-123"));
+    assert_eq!(deser.dag_id, Some(DagId::new(123)));
 }
 
 #[test]

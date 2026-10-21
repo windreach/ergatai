@@ -10,6 +10,7 @@
 //! `shutdown_nats()` + `init_nats_with_store_dir()` to get a fresh server with
 //! its own tempdir store. Tests skip gracefully if nats-server is not on PATH.
 
+use ergatai_error::{DagId, TaskId};
 use ergatai_nats::{
     init_nats_with_store_dir, shutdown_nats, AgentMessagePayload, DagEvent, EventBus,
     NodeCompletePayload, TaskSubmitPayload,
@@ -247,8 +248,8 @@ async fn test_event_bus_node_complete_as_dag_event() {
     );
 
     let payload = NodeCompletePayload {
-        node_id: "node-6".to_string(),
-        task_id: "task-6".to_string(),
+        node_id: TaskId::new(6),
+        task_id: TaskId::new(6),
         agent_name: "agent-6".to_string(),
         result_summary: Some("ok".to_string()),
         outputs: serde_json::Value::Object(outputs),
@@ -267,13 +268,13 @@ async fn test_event_bus_node_complete_as_dag_event() {
     // prove the payload is compatible with the DagEvent tagged enum.
     let received: NodeCompletePayload =
         serde_json::from_slice(&msg.payload).expect("payload should deserialize");
-    assert_eq!(received.node_id, "node-6");
+    assert_eq!(received.node_id, TaskId::new(6));
 
     let dag_event = DagEvent::NodeComplete(received.clone());
     let json = serde_json::to_string(&dag_event).expect("DagEvent should serialize");
     let roundtrip: DagEvent = serde_json::from_str(&json).expect("DagEvent should roundtrip");
     match roundtrip {
-        DagEvent::NodeComplete(p) => assert_eq!(p.node_id, "node-6"),
+        DagEvent::NodeComplete(p) => assert_eq!(p.node_id, TaskId::new(6)),
         other => panic!("expected DagEvent::NodeComplete, got {other:?}"),
     }
 }
@@ -300,13 +301,13 @@ async fn test_event_bus_task_submit_via_pull_consumer() {
 
     let bus = EventBus::new(conn.clone());
     let payload = TaskSubmitPayload {
-        task_id: "task-7".to_string(),
+        task_id: TaskId::new(7),
         plan_content: "# Plan\nDo the thing".to_string(),
         plan_file: ".ergatai/.dag-plans/task-7.md".to_string(),
         target_agent: "%agent_7".to_string(),
         priority: 2,
         timeout_secs: Some(300),
-        dag_id: Some("dag-7".to_string()),
+        dag_id: Some(DagId::new(7)),
         expected_outputs: Default::default(),
         ..Default::default()
     };
@@ -325,7 +326,7 @@ async fn test_event_bus_task_submit_via_pull_consumer() {
 
     let received: TaskSubmitPayload =
         serde_json::from_slice(&msg.payload).expect("payload should deserialize");
-    assert_eq!(received.task_id, "task-7");
+    assert_eq!(received.task_id, TaskId::new(7));
     assert_eq!(received.target_agent, "%agent_7");
     assert_eq!(received.priority, 2);
     assert_eq!(received.timeout_secs, Some(300));
@@ -421,7 +422,7 @@ async fn test_stream_persistence_consumer_after_publish() {
 
     // Publish FIRST, before any consumer exists.
     let payload = TaskSubmitPayload {
-        task_id: "persisted-task-10".to_string(),
+        task_id: TaskId::new(10),
         plan_content: "# Persisted".to_string(),
         plan_file: ".ergatai/.dag-plans/persisted-task-10.md".to_string(),
         target_agent: "%late_consumer_agent".to_string(),
@@ -455,7 +456,7 @@ async fn test_stream_persistence_consumer_after_publish() {
 
     let received: TaskSubmitPayload =
         serde_json::from_slice(&msg.payload).expect("payload should deserialize");
-    assert_eq!(received.task_id, "persisted-task-10");
+    assert_eq!(received.task_id, TaskId::new(10));
     assert_eq!(received.target_agent, "%late_consumer_agent");
 
     msg.ack().await.ok();

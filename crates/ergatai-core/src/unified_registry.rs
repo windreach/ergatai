@@ -222,6 +222,8 @@ impl UnifiedAgentRegistry {
     ) -> Result<(), ErgataiError> {
         // Capture event data under write lock, then release lock before publishing
         // to avoid holding the write lock during async I/O operations.
+        let typed_agent_id = AgentId::decode(agent_id)
+            .map_err(|error| ErgataiError::AgentNotFound(format!("Invalid agent ID: {}", error)))?;
         let event_payload = {
             let mut agents = self.agents.write().await;
             let record = agents.get_mut(agent_id).ok_or_else(|| {
@@ -238,10 +240,6 @@ impl UnifiedAgentRegistry {
             let is_alive = new_state.is_alive();
 
             debug!(agent_id = %agent_id, "Updated agent state");
-
-            let typed_agent_id = AgentId::decode(agent_id).map_err(|error| {
-                ErgataiError::AgentNotFound(format!("Invalid agent ID: {}", error))
-            })?;
 
             // Build event payload while still holding the write lock
             // (to ensure consistent state capture)

@@ -16,7 +16,7 @@ use ergatai_api::services::collaboration_session_dag::{
     cancel_session_execution, recover_session_dag,
 };
 use ergatai_error::id::{format as format_id, generate, IdType};
-use ergatai_error::{ChatId, WorkspaceId};
+use ergatai_error::{ChatId, CollaborationSessionId, ConversationId, WorkspaceId};
 use http_body_util::BodyExt;
 use serde_json::json;
 
@@ -37,7 +37,7 @@ fn lock_user_data_db_for_tests() -> tokio::sync::MutexGuard<'static, ()> {
     guard
 }
 
-fn ensure_workspace_and_chat_exist(workspace_id: i64, chat_id: i64) {
+fn ensure_workspace_and_chat_exist(workspace_id: i64, chat_id: i64) -> ConversationId {
     let workspace_id = WorkspaceId::new(workspace_id);
     let chat_id = ChatId::new(chat_id);
     let _ = ergatai_api::user_data_db::workspaces::create(ergatai_api::user_data_db::Workspace {
@@ -67,6 +67,48 @@ fn ensure_workspace_and_chat_exist(workspace_id: i64, chat_id: i64) {
         updated_at: 0,
         archived_at: None,
     });
+    create_collaboration_session_and_conversation(workspace_id, chat_id)
+}
+
+fn ensure_test_conversation(workspace_id: i64, chat_id: i64) -> ConversationId {
+    let workspace_id = WorkspaceId::new(workspace_id);
+    let chat_id = ChatId::new(chat_id);
+    create_collaboration_session_and_conversation(workspace_id, chat_id)
+}
+
+fn create_collaboration_session_and_conversation(
+    workspace_id: WorkspaceId,
+    chat_id: ChatId,
+) -> ConversationId {
+    let collaboration_session_id = CollaborationSessionId::generate();
+    let _ = ergatai_api::user_data_db::collaboration_sessions::create(
+        ergatai_api::user_data_db::CollaborationSession {
+            collaboration_session_id,
+            chat_id,
+            workspace_id,
+            mode: "supervisor".to_string(),
+            state: "idle".to_string(),
+            goal: None,
+            active_plan_revision: None,
+            created_at: 0,
+            updated_at: 0,
+        },
+    );
+    let conversation_id = ConversationId::generate();
+    let _ =
+        ergatai_api::user_data_db::conversations::create(ergatai_api::user_data_db::Conversation {
+            conversation_id,
+            collaboration_session_id,
+            chat_id,
+            parent_id: None,
+            name: Some("Test conversation".to_string()),
+            mode: "agent".to_string(),
+            participant_role: "peer".to_string(),
+            status: "ready".to_string(),
+            created_at: 0,
+            updated_at: 0,
+        });
+    conversation_id
 }
 
 async fn lock_user_data_db_for_tests_async() -> tokio::sync::MutexGuard<'static, ()> {
@@ -90,7 +132,7 @@ fn recovery_queries_track_active_sessions_plans_and_approvals() {
     let chat_id_raw = generate();
     let workspace_id = format_id(workspace_id_raw, IdType::Workspace);
     let chat_id = format_id(chat_id_raw, IdType::Chat);
-    ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
+    let conversation_id = ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
 
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id: chat_id.clone(),
@@ -98,7 +140,7 @@ fn recovery_queries_track_active_sessions_plans_and_approvals() {
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Recover after restart".to_string()),
         participants: vec![ParticipantInput {
-            conversation_id: "conv-agent-recovery".to_string(),
+            conversation_id: conversation_id.to_string(),
             agent_id: "agent-recovery".to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
@@ -185,14 +227,14 @@ async fn concurrent_session_dag_registries_stay_isolated() {
     let make_active_session = |agent_id: &'static str| async move {
         let workspace_id_raw = generate();
         let chat_id_raw = generate();
-        ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
+        let conversation_id = ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
         let created = create_session(CreateCollaborationSessionRequest {
             chat_id: format_id(chat_id_raw, IdType::Chat),
             workspace_id: format_id(workspace_id_raw, IdType::Workspace),
             mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
             goal: Some("Execute concurrent session DAGs".to_string()),
             participants: vec![ParticipantInput {
-                conversation_id: format!("conv-{agent_id}"),
+                conversation_id: conversation_id.to_string(),
                 agent_id: agent_id.to_string(),
                 role: "peer".to_string(),
                 status: "ready".to_string(),
@@ -296,14 +338,14 @@ async fn inactive_session_plan_is_not_recovered() {
     let _database_guard = lock_user_data_db_for_tests_async().await;
     let workspace_id_raw = generate();
     let chat_id_raw = generate();
-    ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
+    let conversation_id = ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id: format_id(chat_id_raw, IdType::Chat),
         workspace_id: format_id(workspace_id_raw, IdType::Workspace),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Do not recover inactive plan".to_string()),
         participants: vec![ParticipantInput {
-            conversation_id: "conv-agent-inactive".to_string(),
+            conversation_id: conversation_id.to_string(),
             agent_id: "agent-inactive".to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
@@ -343,14 +385,14 @@ async fn executing_user_message_hot_swaps_active_revision() {
     ergatai_api::app_state_with_token(None);
     let workspace_id_raw = generate();
     let chat_id_raw = generate();
-    ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
+    let conversation_id = ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id: format_id(chat_id_raw, IdType::Chat),
         workspace_id: format_id(workspace_id_raw, IdType::Workspace),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Hot-swap the active plan".to_string()),
         participants: vec![ParticipantInput {
-            conversation_id: "conv-peer-a".to_string(),
+            conversation_id: conversation_id.to_string(),
             agent_id: "peer-a".to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
@@ -478,7 +520,8 @@ fn collaboration_interaction_routes_lightweight_and_plans() {
     let _database_guard = lock_user_data_db_for_tests();
     let workspace_id_raw = generate();
     let chat_id_raw = generate();
-    ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
+    let conversation_id = ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
+    let peer_b_conversation_id = ensure_test_conversation(workspace_id_raw, chat_id_raw);
     let chat_id = format_id(chat_id_raw, IdType::Chat);
     let workspace_id = format_id(workspace_id_raw, IdType::Workspace);
     let created = create_session(CreateCollaborationSessionRequest {
@@ -488,13 +531,13 @@ fn collaboration_interaction_routes_lightweight_and_plans() {
         goal: Some("Route interactions".to_string()),
         participants: vec![
             ParticipantInput {
-                conversation_id: "conv-peer-a".to_string(),
+                conversation_id: conversation_id.to_string(),
                 agent_id: "peer-a".to_string(),
                 role: "peer".to_string(),
                 status: "ready".to_string(),
             },
             ParticipantInput {
-                conversation_id: "conv-peer-b".to_string(),
+                conversation_id: peer_b_conversation_id.to_string(),
                 agent_id: "peer-b".to_string(),
                 role: "peer".to_string(),
                 status: "ready".to_string(),
@@ -562,14 +605,14 @@ async fn collaboration_session_stream_replays_requested_events() {
     let _database_guard = lock_user_data_db_for_tests_async().await;
     let workspace_id_raw = generate();
     let chat_id_raw = generate();
-    ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
+    let conversation_id = ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id: format_id(chat_id_raw, IdType::Chat),
         workspace_id: format_id(workspace_id_raw, IdType::Workspace),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Stream replay".to_string()),
         participants: vec![ParticipantInput {
-            conversation_id: "conv-agent-stream".to_string(),
+            conversation_id: conversation_id.to_string(),
             agent_id: "agent-stream".to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
@@ -608,7 +651,7 @@ fn collaboration_session_persists_context_plans_and_approvals() {
     let _database_guard = lock_user_data_db_for_tests();
     let workspace_id_raw = generate();
     let chat_id_raw = generate();
-    ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
+    let conversation_id = ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
     let chat_id = format_id(chat_id_raw, IdType::Chat);
 
     let created = create_session(CreateCollaborationSessionRequest {
@@ -617,7 +660,7 @@ fn collaboration_session_persists_context_plans_and_approvals() {
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Supervisor,
         goal: Some("Fix the failing test".to_string()),
         participants: vec![ParticipantInput {
-            conversation_id: "conv-agent-1".to_string(),
+            conversation_id: conversation_id.to_string(),
             agent_id: "agent-1".to_string(),
             role: "worker".to_string(),
             status: "ready".to_string(),
@@ -736,14 +779,14 @@ async fn approval_rejection_and_cancellation_cancel_pending_work() {
     let _database_guard = lock_user_data_db_for_tests_async().await;
     let workspace_id_raw = generate();
     let chat_id_raw = generate();
-    ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
+    let conversation_id = ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
     let created = create_session(CreateCollaborationSessionRequest {
         chat_id: format_id(chat_id_raw, IdType::Chat),
         workspace_id: format_id(workspace_id_raw, IdType::Workspace),
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Cancel rejected and pending work".to_string()),
         participants: vec![ParticipantInput {
-            conversation_id: "conv-agent-lifecycle".to_string(),
+            conversation_id: conversation_id.to_string(),
             agent_id: "agent-lifecycle".to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
@@ -878,7 +921,7 @@ fn plan_revision_preserves_completed_outputs() {
     let _database_guard = lock_user_data_db_for_tests();
     let workspace_id_raw = generate();
     let chat_id_raw = generate();
-    ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
+    let conversation_id = ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
     let chat_id = format_id(chat_id_raw, IdType::Chat);
     let workspace_id = format_id(workspace_id_raw, IdType::Workspace);
     let created = create_session(CreateCollaborationSessionRequest {
@@ -887,7 +930,7 @@ fn plan_revision_preserves_completed_outputs() {
         mode: ergatai_api::services::collaboration_session::CollaborationMode::Group,
         goal: Some("Preserve outputs across revisions".to_string()),
         participants: vec![ParticipantInput {
-            conversation_id: "conv-agent-preserve".to_string(),
+            conversation_id: conversation_id.to_string(),
             agent_id: "agent-preserve".to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
