@@ -1069,6 +1069,7 @@ dependencies = [
  "axum-server",
  "chrono",
  "clap",
+ "dirs",
  "ergatai-core",
  "ergatai-error",
  "ergatai-lock",
@@ -1194,10 +1195,12 @@ dependencies = [
  "anyhow",
  "chrono",
  "rusqlite",
+ "serde",
  "serde_json",
  "snowdon",
  "thiserror 2.0.20",
  "tracing",
+ "utoipa",
 ]
 
 [[package]]

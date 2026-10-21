@@ -10,6 +10,7 @@ use axum::{
         IntoResponse, Response,
     },
 };
+use ergatai_error::{CollaborationSessionId, ConversationId};
 use serde::Deserialize;
 use std::convert::Infallible;
 
@@ -758,7 +759,7 @@ pub async fn get_collaboration_session_progress(
 )]
 pub async fn list_session_conversations(Path(collaboration_session_id): Path<String>) -> Response {
     // Parse session ID to i64, return 404 if invalid format (consistent with other endpoints)
-    let session_id_i64 = match crate::http_error::parse_id_or_not_found(
+    let session_id = match crate::http_error::parse_typed_id::<CollaborationSessionId>(
         &collaboration_session_id,
         "CollaborationSession",
     ) {
@@ -768,7 +769,7 @@ pub async fn list_session_conversations(Path(collaboration_session_id): Path<Str
 
     // 1. 验证 session 存在
     let _session = match tokio::task::spawn_blocking({
-        let session_id = session_id_i64;
+        let session_id = session_id;
         move || crate::user_data_db::collaboration_sessions::get(session_id)
     })
     .await
@@ -784,7 +785,7 @@ pub async fn list_session_conversations(Path(collaboration_session_id): Path<Str
 
     // 2. 查询该 session 下的所有 conversations
     let conversations = match tokio::task::spawn_blocking({
-        let session_id = session_id_i64;
+        let session_id = session_id;
         move || crate::user_data_db::conversations::list_by_collaboration_session(session_id)
     })
     .await
@@ -848,22 +849,23 @@ pub async fn get_session_conversation(
     Path((collaboration_session_id, conversation_id)): Path<(String, String)>,
 ) -> Response {
     // Parse IDs to i64, return 404 if invalid format (consistent with other endpoints)
-    let session_id_i64 = match crate::http_error::parse_id_or_not_found(
+    let session_id = match crate::http_error::parse_typed_id::<CollaborationSessionId>(
         &collaboration_session_id,
         "CollaborationSession",
     ) {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
-    let conversation_id_i64 =
-        match crate::http_error::parse_id_or_not_found(&conversation_id, "Conversation") {
+    let conversation_id_typed =
+        match crate::http_error::parse_typed_id::<ConversationId>(&conversation_id, "Conversation")
+        {
             Ok(id) => id,
             Err((status, json)) => return (status, json).into_response(),
         };
 
     // 1. 验证 session 存在
     let session_exists = match tokio::task::spawn_blocking({
-        let session_id = session_id_i64;
+        let session_id = session_id;
         move || crate::user_data_db::collaboration_sessions::get(session_id)
     })
     .await
@@ -881,7 +883,7 @@ pub async fn get_session_conversation(
 
     // 2. 查询 conversation
     let conversation = match tokio::task::spawn_blocking({
-        let conversation_id = conversation_id_i64;
+        let conversation_id = conversation_id_typed;
         move || crate::user_data_db::conversations::get(conversation_id)
     })
     .await
@@ -895,7 +897,7 @@ pub async fn get_session_conversation(
     };
 
     // 3. 验证 conversation 属于该 session
-    if conversation.collaboration_session_id != session_id_i64 {
+    if conversation.collaboration_session_id != session_id {
         return crate::http_error::not_found("Conversation", &conversation_id).into_response();
     }
 

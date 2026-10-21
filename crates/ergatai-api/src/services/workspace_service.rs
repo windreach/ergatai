@@ -6,7 +6,7 @@
 //! - 级联删除（删除 Workspace 时级联删除 Chat）
 
 use crate::user_data_db::{workspaces, Workspace};
-use ergatai_core::id::generate;
+use ergatai_error::WorkspaceId;
 
 pub struct WorkspaceService;
 
@@ -26,7 +26,7 @@ impl WorkspaceService {
             .as_secs() as i64;
 
         let workspace = Workspace {
-            workspace_id: generate(),
+            workspace_id: WorkspaceId::generate(),
             name,
             work_dir,
             env: env.unwrap_or_else(|| "{}".to_string()),
@@ -44,7 +44,7 @@ impl WorkspaceService {
     }
 
     /// 获取 Workspace
-    pub fn get_workspace(workspace_id: i64) -> anyhow::Result<Option<Workspace>> {
+    pub fn get_workspace(workspace_id: WorkspaceId) -> anyhow::Result<Option<Workspace>> {
         let workspace = workspaces::get(workspace_id)?;
         Ok(workspace)
     }
@@ -73,7 +73,7 @@ impl WorkspaceService {
     }
 
     /// 更新 Workspace Config
-    pub fn update_config(workspace_id: i64, config: &str) -> anyhow::Result<bool> {
+    pub fn update_config(workspace_id: WorkspaceId, config: &str) -> anyhow::Result<bool> {
         // Get the workspace, update config, and save
         let workspace = workspaces::get(workspace_id)?;
         if let Some(mut workspace) = workspace {
@@ -86,13 +86,13 @@ impl WorkspaceService {
     }
 
     /// 删除 Workspace（事务性级联删除 Chat、Conversation、Message 等）
-    pub fn delete_workspace(workspace_id: i64) -> anyhow::Result<bool> {
+    pub fn delete_workspace(workspace_id: WorkspaceId) -> anyhow::Result<bool> {
         let deleted = workspaces::delete(workspace_id)?;
         Ok(deleted)
     }
 
     /// 设置 Workspace 状态
-    pub fn set_status(workspace_id: i64, status: &str) -> anyhow::Result<bool> {
+    pub fn set_status(workspace_id: WorkspaceId, status: &str) -> anyhow::Result<bool> {
         let updated = workspaces::set_status(workspace_id, status)?;
         Ok(updated)
     }

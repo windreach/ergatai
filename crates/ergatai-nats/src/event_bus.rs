@@ -195,7 +195,9 @@ impl EventBus {
         &self,
         payload: &ConversationMessagePayload,
     ) -> ErgataiResult<()> {
-        let subject = crate::connection::subjects::conversation_message(&payload.conversation_id)?;
+        let subject = crate::connection::subjects::conversation_message(
+            &payload.conversation_id.to_string(),
+        )?;
         self.publish(&subject, payload).await
     }
 
@@ -210,7 +212,7 @@ impl EventBus {
     ) -> ErgataiResult<()> {
         let subject = format!(
             "ergatai.agent.interrupted.{}",
-            sanitize_agent_name(&payload.agent_id)
+            sanitize_agent_name(&payload.agent_id.to_string())
         );
         self.publish(&subject, payload).await
     }
@@ -491,7 +493,7 @@ impl EventBus {
     ) -> ErgataiResult<()> {
         let subject = format!(
             "ergatai.file.access.grant.{}",
-            sanitize_agent_name(&payload.agent_id)
+            sanitize_agent_name(&payload.agent_id.to_string())
         );
         self.publish(&subject, payload).await
     }
@@ -503,7 +505,7 @@ impl EventBus {
     ) -> ErgataiResult<()> {
         let subject = format!(
             "ergatai.file.access.deny.{}",
-            sanitize_agent_name(&payload.agent_id)
+            sanitize_agent_name(&payload.agent_id.to_string())
         );
         self.publish(&subject, payload).await
     }
@@ -590,7 +592,7 @@ impl EventBus {
     pub async fn publish_system_token(&self, payload: &SystemTokenPayload) -> ErgataiResult<()> {
         let subject = format!(
             "ergatai.system.token.{}",
-            sanitize_agent_name(&payload.agent_id)
+            sanitize_agent_name(&payload.agent_id.to_string())
         );
         self.publish(&subject, payload).await
     }
@@ -618,7 +620,7 @@ impl EventBus {
     ) -> ErgataiResult<()> {
         let subject = format!(
             "ergatai.agent.lifecycle.{}",
-            sanitize_agent_name(&payload.agent_id)
+            sanitize_agent_name(&payload.agent_id.to_string())
         );
         self.publish(&subject, payload).await
     }

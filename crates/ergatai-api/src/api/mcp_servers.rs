@@ -34,12 +34,19 @@ pub struct CreateMcpServerRequest {
     /// Command arguments (for stdio type)
     #[serde(default)]
     pub args: Vec<String>,
-    /// Environment variables
+    /// Environment variables passed to the MCP server process.
+    ///
+    /// **SECURITY WARNING**: These are stored in plaintext in SQLite. Do NOT store
+    /// sensitive secrets (API keys, passwords, tokens) here. Use file-based secrets
+    /// or system keychains instead, and reference them via non-sensitive env vars.
     #[serde(default)]
     pub env: HashMap<String, String>,
     /// Server URL (for http/sse type)
     pub url: Option<String>,
-    /// HTTP headers
+    /// HTTP headers sent with MCP requests.
+    ///
+    /// **SECURITY WARNING**: Stored in plaintext in SQLite. Do NOT store
+    /// authentication tokens or secrets in headers.
     #[serde(default)]
     pub headers: HashMap<String, String>,
     /// Whether this MCP server is enabled
@@ -72,12 +79,52 @@ pub struct McpServerResponse {
     pub server_type: String,
     pub command: Option<String>,
     pub args: Vec<String>,
+    /// Environment variable names are returned, but values are redacted to "***"
+    /// to prevent leaking secrets via the API.
     pub env: HashMap<String, String>,
     pub url: Option<String>,
+    /// Header names are returned, but sensitive values (Authorization, cookies,
+    /// API keys) are redacted to "***" to prevent leaking credentials.
     pub headers: HashMap<String, String>,
     pub enabled: bool,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// Header names whose values should be redacted in API responses.
+const SENSITIVE_HEADER_PREFIXES: &[&str] = &[
+    "authorization",
+    "x-api-key",
+    "x-auth",
+    "cookie",
+    "set-cookie",
+    "proxy-authorization",
+];
+
+/// Redact sensitive header values to prevent credential leakage.
+fn redact_headers(headers: &HashMap<String, String>) -> HashMap<String, String> {
+    headers
+        .iter()
+        .map(|(k, v)| {
+            let lower = k.to_lowercase();
+            let is_sensitive = SENSITIVE_HEADER_PREFIXES
+                .iter()
+                .any(|prefix| lower.starts_with(prefix));
+            if is_sensitive {
+                (k.clone(), "***".to_string())
+            } else {
+                (k.clone(), v.clone())
+            }
+        })
+        .collect()
+}
+
+/// Redact all env values — env vars commonly contain API keys and secrets.
+/// We return the keys (for UI display) but replace values with "***".
+fn redact_env(env: &HashMap<String, String>) -> HashMap<String, String> {
+    env.iter()
+        .map(|(k, _)| (k.clone(), "***".to_string()))
+        .collect()
 }
 
 impl From<McpServer> for McpServerResponse {
@@ -89,9 +136,9 @@ impl From<McpServer> for McpServerResponse {
             server_type: s.server_type,
             command: s.command,
             args: s.args,
-            env: s.env,
+            env: redact_env(&s.env),
             url: s.url,
-            headers: s.headers,
+            headers: redact_headers(&s.headers),
             enabled: s.enabled,
             created_at: s.created_at,
             updated_at: s.updated_at,
@@ -397,13 +444,19 @@ pub async fn update_mcp_server(
         updated.args = v;
     }
     if let Some(v) = req.env {
-        updated.env = v;
+        // Merge: partial env update preserves existing keys not in the request
+        for (k, val) in v {
+            updated.env.insert(k, val);
+        }
     }
     if let Some(v) = req.url {
         updated.url = Some(v);
     }
     if let Some(v) = req.headers {
-        updated.headers = v;
+        // Merge: partial header update preserves existing headers not in the request
+        for (k, val) in v {
+            updated.headers.insert(k, val);
+        }
     }
     if let Some(v) = req.enabled {
         updated.enabled = v;

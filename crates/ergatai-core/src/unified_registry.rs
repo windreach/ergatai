@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use chrono::{DateTime, Utc};
-use ergatai_error::ErgataiError;
+use ergatai_error::{AgentId, ErgataiError, TaskId};
 use ergatai_runtime::{AgentLifecycleState, AgentRecord};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -239,14 +239,21 @@ impl UnifiedAgentRegistry {
 
             debug!(agent_id = %agent_id, "Updated agent state");
 
+            let typed_agent_id = AgentId::decode(agent_id).map_err(|error| {
+                ErgataiError::AgentNotFound(format!("Invalid agent ID: {}", error))
+            })?;
+
             // Build event payload while still holding the write lock
             // (to ensure consistent state capture)
             Some(ergatai_nats::AgentLifecycleEventPayload {
-                agent_id: agent_id.to_string(),
+                agent_id: typed_agent_id,
                 from_state: old_state,
                 to_state: new_state_str,
                 reason: None,
-                task_id: record.task_id.clone(),
+                task_id: record
+                    .task_id
+                    .clone()
+                    .and_then(|id| TaskId::decode(&id).ok()),
                 is_terminal,
                 is_alive,
                 timestamp: chrono::Utc::now().to_rfc3339(),

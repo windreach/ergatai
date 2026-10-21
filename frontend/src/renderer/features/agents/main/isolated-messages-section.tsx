@@ -1,6 +1,6 @@
 "use client"
 
-import { memo } from "react"
+import { memo, useMemo } from "react"
 import { useAtomValue } from "jotai"
 import { userMessageIdsPerChatAtom } from "../stores/message-store"
 import { IsolatedMessageGroup } from "./isolated-message-group"
@@ -84,9 +84,37 @@ export const IsolatedMessagesSection = memo(function IsolatedMessagesSection({
   // Per-conversation selector - split panes render fully independently.
   const userMsgIds = useAtomValue(userMessageIdsPerChatAtom(conversationId))
 
+  // Message IDs normally come from the message store, but an optimistic or
+  // malformed message can temporarily enter it without an id. Render only
+  // valid groups so React does not see undefined/duplicate keys.
+  const validUserMsgIds = useMemo(() => {
+    const seen = new Set<string>()
+
+    return userMsgIds.filter((userMsgId): userMsgId is string => {
+      if (typeof userMsgId !== "string" || userMsgId.length === 0) {
+        console.warn(
+          "[IsolatedMessagesSection] Skipping message group without an id",
+          { conversationId, userMsgId },
+        )
+        return false
+      }
+
+      if (seen.has(userMsgId)) {
+        console.warn(
+          "[IsolatedMessagesSection] Skipping duplicate message group id",
+          { conversationId, userMsgId },
+        )
+        return false
+      }
+
+      seen.add(userMsgId)
+      return true
+    })
+  }, [userMsgIds, conversationId])
+
   return (
     <>
-      {userMsgIds.map((userMsgId) => (
+      {validUserMsgIds.map((userMsgId) => (
         <IsolatedMessageGroup
           key={userMsgId}
           userMsgId={userMsgId}

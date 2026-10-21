@@ -2,39 +2,21 @@
  * IPC 单元测试 - 文件操作
  */
 
-import { test, expect, describe, beforeAll, afterAll, beforeEach } from '@playwright/test'
-import { launchElectron } from '../../fixtures/electron-launcher'
+import { test, expect, describe } from '@playwright/test'
+import { createTestContext } from '../../fixtures/test-context'
 import * as fs from 'fs/promises'
 import * as path from 'path'
 
 describe('IPC: 文件操作', () => {
-  let electron: any
-  let page: any
+  const ctx = createTestContext()
   const testDir = '/tmp/ergatai-file-test'
 
-  beforeAll(async () => {
-    electron = await launchElectron({
-      extraEnv: { NODE_ENV: 'test', ELECTRON_TEST_MODE: 'true' },
-    })
-    page = electron.page
+  ctx.beforeAll(async () => {
     await fs.mkdir(testDir, { recursive: true })
-
-    process.on('exit', async () => {
-      if (electron) { try { await electron.close() } catch (e) { /* ignore */ } }
-    })
-    process.on('SIGINT', async () => {
-      if (electron) { await electron.close() }
-      process.exit(130)
-    })
   })
 
-  afterAll(async () => {
+  ctx.afterAll(async () => {
     await fs.rm(testDir, { recursive: true, force: true }).catch(() => {})
-    await electron.close()
-  })
-
-  beforeEach(async () => {
-    await page.evaluate(async () => { await (window as any).trpc.test.helpers.cleanup.mutate() })
   })
 
   describe('test.files', () => {
@@ -42,7 +24,7 @@ describe('IPC: 文件操作', () => {
       const filePath = path.join(testDir, 'test-create.txt')
       const content = 'Hello, World!'
 
-      const result = await page.evaluate(async (args: { path: string; content: string }) => {
+      const result = await ctx.page.evaluate(async (args: { path: string; content: string }) => {
         return await (window as any).trpc.test.files.create.mutate(args)
       }, { path: filePath, content })
 
@@ -58,7 +40,7 @@ describe('IPC: 文件操作', () => {
       const content = 'Test content'
       await fs.writeFile(filePath, content, 'utf-8')
 
-      const result = await page.evaluate(async (p: string) => {
+      const result = await ctx.page.evaluate(async (p: string) => {
         return await (window as any).trpc.test.files.read.query({ path: p })
       }, filePath)
 
@@ -71,7 +53,7 @@ describe('IPC: 文件操作', () => {
       const filePath = path.join(testDir, 'does-not-exist.txt')
 
       await expect(
-        page.evaluate(async (p: string) => {
+        ctx.page.evaluate(async (p: string) => {
           return await (window as any).trpc.test.files.read.query({ path: p })
         }, filePath)
       ).rejects.toThrow()
@@ -81,7 +63,7 @@ describe('IPC: 文件操作', () => {
       const filePath = path.join(testDir, 'test-delete.txt')
       await fs.writeFile(filePath, 'delete me', 'utf-8')
 
-      const result = await page.evaluate(async (p: string) => {
+      const result = await ctx.page.evaluate(async (p: string) => {
         return await (window as any).trpc.test.files.delete.mutate({ path: p })
       }, filePath)
 
@@ -94,7 +76,7 @@ describe('IPC: 文件操作', () => {
     test('创建文件会自动创建父目录', async () => {
       const filePath = path.join(testDir, 'nested', 'dir', 'file.txt')
 
-      const result = await page.evaluate(async (args: { path: string; content: string }) => {
+      const result = await ctx.page.evaluate(async (args: { path: string; content: string }) => {
         return await (window as any).trpc.test.files.create.mutate(args)
       }, { path: filePath, content: 'nested' })
 
@@ -108,19 +90,19 @@ describe('IPC: 文件操作', () => {
       const file1 = path.join(testDir, 'log-1.txt')
       const file2 = path.join(testDir, 'log-2.txt')
 
-      await page.evaluate(async (args: { path: string; content: string }) => {
+      await ctx.page.evaluate(async (args: { path: string; content: string }) => {
         await (window as any).trpc.test.files.create.mutate(args)
       }, { path: file1, content: 'a' })
 
-      await page.evaluate(async (args: { path: string; content: string }) => {
+      await ctx.page.evaluate(async (args: { path: string; content: string }) => {
         await (window as any).trpc.test.files.create.mutate(args)
       }, { path: file2, content: 'b' })
 
-      await page.evaluate(async (p: string) => {
+      await ctx.page.evaluate(async (p: string) => {
         await (window as any).trpc.test.files.delete.mutate({ path: p })
       }, file1)
 
-      const log = await page.evaluate(async () => {
+      const log = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.files.getOperationLog.query()
       })
 
@@ -136,13 +118,13 @@ describe('IPC: 文件操作', () => {
 
     test('路径为空应报错', async () => {
       await expect(
-        page.evaluate(async () => {
+        ctx.page.evaluate(async () => {
           return await (window as any).trpc.test.files.create.mutate({ path: '', content: 'x' })
         })
       ).rejects.toThrow()
 
       await expect(
-        page.evaluate(async () => {
+        ctx.page.evaluate(async () => {
           return await (window as any).trpc.test.files.read.query({ path: '' })
         })
       ).rejects.toThrow()

@@ -30,9 +30,9 @@ import {
   deleteConversation,
   getConversation,
   listConversationMessages,
-  listAllConversations,
   listChats,
   updateConversation,
+  updateConversationMessages,
   listConversationMessages as listMessages,
   type BackendMessage,
   type BackendConversation,
@@ -131,15 +131,11 @@ async function findChatForConversation(
 async function listConversationsForChat(chat: {
   id: string
 }): Promise<BackendConversation[]> {
-  // Fetch all conversations and filter by chat_id (backend now returns chat_id on conversations)
-  const allConversations = await listAllConversations()
+  // The conversations API requires a chat_id or collaboration_session_id.
+  // Let the backend filter by chat_id instead of trying to fetch all conversations.
+  const conversations = await trpcClient.listConversations({ chatId: chat.id })
 
-  return allConversations.filter((conversation) => {
-    // Filter by chat_id and exclude archived
-    if (conversation.chat_id !== chat.id) return false
-    if (conversation.status === "archived") return false
-    return true
-  })
+  return conversations.filter((conversation) => conversation.status !== "archived")
 }
 
 function sendWorktreeSetupFailure(
@@ -363,15 +359,17 @@ export const chatsRouter = router({
       console.log("[chats.create] called with:", input)
       const requestingWindowId = ctx.getWindow?.()?.id ?? null
 
-      // Get project path
-      // Backend no longer provides project endpoint
-      // Use mock project for backward compatibility
-      const project = {
-        id: "mock-project",
-        path: process.cwd(),
-        name: "Mock Project",
+      // Resolve the selected project so the chat/worktree uses its real path.
+      const backendProject = await trpcClient.getProject({ id: input.projectId })
+      if (!backendProject) {
+        throw new Error(`Project not found: ${input.projectId}`)
       }
-      console.log("[chats.create] using mock project:", project)
+      const project = {
+        id: backendProject.id,
+        path: backendProject.path,
+        name: backendProject.name || "Untitled Project",
+      }
+      console.log("[chats.create] using project:", project)
 
       const workspaceId = await resolveChatWorkspace(
         project.id,
@@ -395,11 +393,6 @@ export const chatsRouter = router({
         ? (input.initialMessage.length > 50 ? input.initialMessage.substring(0, 50) + "..." : input.initialMessage)
         : undefined)
 
-      // NOTE: Don't create conversation here!
-      // Conversation will be created lazily when first message is sent (in Transport layer)
-      // This follows the principle: "create less, reuse more"
-      console.log("[chats.create] conversation will be created on first message")
-
       // Build initial messages to return in response
       let initialMessages: any[] = []
       if (input.initialMessageParts && input.initialMessageParts.length > 0) {
@@ -421,6 +414,19 @@ export const chatsRouter = router({
           },
         ]
       }
+
+      // The active conversation UI needs a real conversation ID. Create it here
+      // when the chat is created with a first message, and persist that message
+      // so auto-trigger can route it to the agent after the chat view opens.
+      const conversation = await trpcClient.createConversation({
+        chatId: chat.id,
+        title: initialTitle,
+        mode: input.mode,
+      })
+      if (initialMessages.length > 0) {
+        await updateConversationMessages(conversation.id, JSON.stringify(initialMessages))
+      }
+      console.log("[chats.create] created initial conversation:", conversation.id)
 
       // Worktree creation result (will be set if useWorktree is true)
       let worktreeResult: {
@@ -501,7 +507,16 @@ export const chatsRouter = router({
         worktreePath: worktreeResult.worktreePath || project.path,
         branch: worktreeResult.branch,
         baseBranch: worktreeResult.baseBranch,
-        conversations: [] as MappedConversation[], // Conversation will be created lazily on first message
+        conversations: [{
+          id: conversation.id,
+          name: conversation.title,
+          chatId: chat.id,
+          sessionId: null,
+          mode: conversation.mode,
+          messages: JSON.stringify(initialMessages),
+          createdAt: conversation.createdAt,
+          updatedAt: conversation.updatedAt,
+        }] as MappedConversation[],
       }
 
       // Track workspace created

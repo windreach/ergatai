@@ -49,7 +49,7 @@ export function useQuestionAnswers({
         await sendUserMessage(formatAnswersAsText(answers))
       } else {
         // Question is still live - use tool approval path
-        await trpcClient.claude.respondToolApproval.mutate({
+        await trpcClient.mcp.respondToolApproval.mutate({
           toolUseId: displayQuestions.toolUseId,
           approved: true,
           updatedInput: { questions: displayQuestions.questions, answers },
@@ -78,7 +78,7 @@ export function useQuestionAnswers({
 
     // Try to notify backend (may fail if already aborted - that's ok)
     try {
-      await trpcClient.claude.respondToolApproval.mutate({
+      await trpcClient.mcp.respondToolApproval.mutate({
         toolUseId,
         approved: false,
         message: QUESTIONS_SKIPPED_MESSAGE,
@@ -131,7 +131,7 @@ export function useQuestionAnswers({
           await sendUserMessage(customText)
         } else {
           // Live: use existing tool approval flow
-          await trpcClient.claude.respondToolApproval.mutate({
+          await trpcClient.mcp.respondToolApproval.mutate({
             toolUseId: displayQuestions.toolUseId,
             approved: true,
             updatedInput: {

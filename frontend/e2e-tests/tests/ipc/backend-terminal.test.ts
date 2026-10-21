@@ -2,36 +2,16 @@
  * IPC 单元测试 - Backend Terminal Router
  */
 
-import { test, expect, describe, beforeAll, afterAll } from '@playwright/test'
-import { launchElectron } from '../../fixtures/electron-launcher'
+import { test, expect, describe } from '@playwright/test'
+import { createTestContext } from '../../fixtures/test-context'
 
 describe('IPC: Backend Terminal Router', () => {
-  let electron: any
-  let page: any
-
-  beforeAll(async () => {
-    electron = await launchElectron({
-      extraEnv: { NODE_ENV: 'test', ELECTRON_TEST_MODE: 'true' },
-    })
-    page = electron.page
-
-    process.on('exit', async () => {
-      if (electron) { try { await electron.close() } catch (e) { /* ignore */ } }
-    })
-    process.on('SIGINT', async () => {
-      if (electron) { await electron.close() }
-      process.exit(130)
-    })
-  })
-
-  afterAll(async () => {
-    await electron.close()
-  })
+  const ctx = createTestContext()
 
   describe('backendTerminal.attach', () => {
     test('应该返回结果或报错（需要真实后端）', async () => {
       try {
-        const result = await page.evaluate(async () => {
+        const result = await ctx.page.evaluate(async () => {
           return await (window as any).trpc.backendTerminal.attach.mutate({
             paneId: 'test-pane',
             workspaceId: 'test-workspace',
@@ -53,7 +33,7 @@ describe('IPC: Backend Terminal Router', () => {
   describe('backendTerminal.write', () => {
     test('应该成功或报错（需要会话）', async () => {
       try {
-        const result = await page.evaluate(async () => {
+        const result = await ctx.page.evaluate(async () => {
           return await (window as any).trpc.backendTerminal.write.mutate({
             paneId: 'test-pane',
             data: 'echo test',
@@ -72,7 +52,7 @@ describe('IPC: Backend Terminal Router', () => {
   describe('backendTerminal.signal', () => {
     test('应该成功或报错（需要会话）', async () => {
       try {
-        const result = await page.evaluate(async () => {
+        const result = await ctx.page.evaluate(async () => {
           return await (window as any).trpc.backendTerminal.signal.mutate({
             paneId: 'test-pane',
             signal: 'INT',
@@ -91,7 +71,7 @@ describe('IPC: Backend Terminal Router', () => {
   describe('backendTerminal.kill', () => {
     test('应该成功或报错（需要会话）', async () => {
       try {
-        const result = await page.evaluate(async () => {
+        const result = await ctx.page.evaluate(async () => {
           return await (window as any).trpc.backendTerminal.kill.mutate({
             paneId: 'test-pane',
           })
@@ -109,7 +89,7 @@ describe('IPC: Backend Terminal Router', () => {
   describe('backendTerminal.resize', () => {
     test('应该成功或报错（需要会话）', async () => {
       try {
-        const result = await page.evaluate(async () => {
+        const result = await ctx.page.evaluate(async () => {
           return await (window as any).trpc.backendTerminal.resize.mutate({
             paneId: 'test-pane',
             cols: 80,
@@ -129,7 +109,7 @@ describe('IPC: Backend Terminal Router', () => {
   describe('backendTerminal.detach', () => {
     test('应该成功（空操作）', async () => {
       try {
-        const result = await page.evaluate(async () => {
+        const result = await ctx.page.evaluate(async () => {
           return await (window as any).trpc.backendTerminal.detach.mutate({
             paneId: 'test-pane',
           })
@@ -147,7 +127,7 @@ describe('IPC: Backend Terminal Router', () => {
   describe('backendTerminal.clearScrollback', () => {
     test('应该成功（空操作）', async () => {
       try {
-        const result = await page.evaluate(async () => {
+        const result = await ctx.page.evaluate(async () => {
           return await (window as any).trpc.backendTerminal.clearScrollback.mutate({
             paneId: 'test-pane',
           })
@@ -166,7 +146,7 @@ describe('IPC: Backend Terminal Router', () => {
     test('订阅应该存在（但可能没有数据）', async () => {
       try {
         // 尝试订阅
-        const subscriptionPromise = page.evaluate(async () => {
+        const subscriptionPromise = ctx.page.evaluate(async () => {
           return new Promise((resolve) => {
             const subscription = (window as any).trpc.backendTerminal.stream.subscribe('test-pane', {
               onData: (data: any) => {

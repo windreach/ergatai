@@ -257,7 +257,10 @@ export async function updateConversationMessages(
     throw new Error(`Invalid messages payload: ${error instanceof Error ? error.message : String(error)}`)
   }
 
-  await replaceConversationMessages(id, parsedMessages)
+  await ergataiFetch<BackendMessage[]>(
+    `/api/v1/conversations/${encodeURIComponent(id)}/messages`,
+    { method: "POST", body: JSON.stringify({ messages: parsedMessages }) },
+  )
   const conversation = await getConversation(id)
   if (!conversation) throw new Error("Conversation not found")
   return conversation

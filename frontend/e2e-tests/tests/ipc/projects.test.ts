@@ -3,62 +3,15 @@
  * 通过 test router 直接测试业务逻辑（不依赖 UI）
  */
 
-import { test, expect, describe, beforeAll, afterAll, beforeEach } from '@playwright/test'
-import { launchElectron } from '../../fixtures/electron-launcher'
+import { test, expect, describe } from '@playwright/test'
+import { createTestContext } from '../../fixtures/test-context'
 
 describe('IPC: 项目/Workspace 管理', () => {
-  let electron: any
-  let page: any
-
-  beforeAll(async () => {
-    // 启动 Electron（测试模式）
-    electron = await launchElectron({
-      extraEnv: {
-        NODE_ENV: 'test',
-        ELECTRON_TEST_MODE: 'true',
-      },
-    })
-    page = electron.page
-
-    // 添加进程退出保护，确保清理
-    process.on('exit', async () => {
-      if (electron) {
-        try {
-          await electron.close()
-        } catch (e) {
-          // 忽略
-        }
-      }
-    })
-
-    process.on('SIGINT', async () => {
-      if (electron) {
-        await electron.close()
-      }
-      process.exit(130)
-    })
-  })
-
-  afterAll(async () => {
-    // 清理测试数据
-    await page.evaluate(async () => {
-      await (window as any).trpc.test.helpers.cleanup.mutate()
-    })
-
-    // 关闭 Electron
-    await electron.close()
-  })
-
-  beforeEach(async () => {
-    // 每个测试前清理
-    await page.evaluate(async () => {
-      await (window as any).trpc.test.helpers.cleanup.mutate()
-    })
-  })
+  const ctx = createTestContext()
 
   describe('test.isTestMode', () => {
     test('应该返回 true（测试模式已启用）', async () => {
-      const isTestMode = await page.evaluate(async () => {
+      const isTestMode = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.isTestMode.query()
       })
 
@@ -68,7 +21,7 @@ describe('IPC: 项目/Workspace 管理', () => {
 
   describe('test.projects', () => {
     test('创建项目', async () => {
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.projects.create.mutate({
           name: 'test-project-1',
           path: '/tmp/test-project-1',
@@ -83,7 +36,7 @@ describe('IPC: 项目/Workspace 管理', () => {
 
     test('列出项目', async () => {
       // 创建两个测试项目
-      await page.evaluate(async () => {
+      await ctx.page.evaluate(async () => {
         await (window as any).trpc.test.projects.create.mutate({
           name: 'test-project-1',
           path: '/tmp/test-project-1'
@@ -95,7 +48,7 @@ describe('IPC: 项目/Workspace 管理', () => {
       })
 
       // 列出所有项目
-      const projects = await page.evaluate(async () => {
+      const projects = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.projects.list.query()
       })
 
@@ -110,7 +63,7 @@ describe('IPC: 项目/Workspace 管理', () => {
 
     test('获取单个项目', async () => {
       // 创建项目
-      const created = await page.evaluate(async () => {
+      const created = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.projects.create.mutate({
           name: 'test-project-get',
           path: '/tmp/test-project-get'
@@ -118,7 +71,7 @@ describe('IPC: 项目/Workspace 管理', () => {
       })
 
       // TODO: 实现 get 方法后，取消注释
-      // const project = await page.evaluate(async (id: string) => {
+      // const project = await ctx.page.evaluate(async (id: string) => {
       //   return await (window as any).trpc.test.projects.get.query({ id })
       // }, created.id)
       // expect(project).toBeDefined()
@@ -130,7 +83,7 @@ describe('IPC: 项目/Workspace 管理', () => {
 
     test('删除项目', async () => {
       // 创建项目
-      const created = await page.evaluate(async () => {
+      const created = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.projects.create.mutate({
           name: 'test-project-delete',
           path: '/tmp/test-project-delete'
@@ -138,14 +91,14 @@ describe('IPC: 项目/Workspace 管理', () => {
       })
 
       // 删除项目
-      const result = await page.evaluate(async (id: string) => {
+      const result = await ctx.page.evaluate(async (id: string) => {
         return await (window as any).trpc.test.projects.delete.mutate({ id })
       }, created.id)
 
       expect(result).toBeDefined()
 
       // TODO: 实现数据库操作后，取消注释
-      // const projects = await page.evaluate(async () => {
+      // const projects = await ctx.page.evaluate(async () => {
       //   return await (window as any).trpc.test.projects.list.query()
       // })
       // const projectNames = projects.map((p: any) => p.name)
@@ -154,7 +107,7 @@ describe('IPC: 项目/Workspace 管理', () => {
 
     test('创建项目 - 缺少必填字段应报错', async () => {
       await expect(
-        page.evaluate(async () => {
+        ctx.page.evaluate(async () => {
           return await (window as any).trpc.test.projects.create.mutate({
             name: '',  // 空名称
             path: '/tmp/test'

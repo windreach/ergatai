@@ -770,7 +770,7 @@ async fn handle_dag_event(js_msg: &async_nats::jetstream::Message, scheduler: &D
         // Validate expected_outputs vs actual outputs before recording
         {
             let mut graph = scheduler.graph.lock().await;
-            if let Some(node) = graph.find_node_mut(&payload.node_id) {
+            if let Some(node) = graph.find_node_mut(&payload.node_id.to_string()) {
                 if !node.expected_outputs.is_empty() {
                     let actual_keys: std::collections::HashSet<&String> = payload
                         .outputs
@@ -807,12 +807,12 @@ async fn handle_dag_event(js_msg: &async_nats::jetstream::Message, scheduler: &D
             matches!(&payload.outputs, serde_json::Value::Object(obj) if !obj.is_empty());
         if has_outputs {
             scheduler
-                .record_outputs(&payload.node_id, payload.outputs)
+                .record_outputs(&payload.node_id.to_string(), payload.outputs)
                 .await;
         }
 
         match scheduler
-            .on_node_completed(&payload.node_id, payload.result_file)
+            .on_node_completed(&payload.node_id.to_string(), payload.result_file)
             .await
         {
             Ok(newly_submitted) => {
@@ -848,7 +848,7 @@ async fn handle_dag_event(js_msg: &async_nats::jetstream::Message, scheduler: &D
         tracing::info!(node_id = %payload.node_id, error = %payload.error, "Received JetStream node_failed event");
 
         match scheduler
-            .on_node_failed(&payload.node_id, &payload.error)
+            .on_node_failed(&payload.node_id.to_string(), &payload.error)
             .await
         {
             Ok(()) => {

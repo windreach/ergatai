@@ -71,8 +71,8 @@ async fn create_stdio_mcp_server_returns_201() {
                         "name": "test-github",
                         "server_type": "stdio",
                         "command": "npx",
-                        "args": "[\"@modelcontextprotocol/server-github\"]",
-                        "env": "{\"GITHUB_TOKEN\":\"test-token\"}",
+                        "args": ["@modelcontextprotocol/server-github"],
+                        "env": {"GITHUB_TOKEN": "test-token"},
                         "enabled": true
                     })
                     .to_string(),
@@ -93,7 +93,7 @@ async fn create_stdio_mcp_server_returns_201() {
     assert_eq!(body["server_type"], "stdio");
     assert_eq!(body["command"], "npx");
     assert!(body["enabled"].as_bool().unwrap());
-    assert!(body["id"].as_i64().is_some());
+    assert!(body["id"].as_str().is_some(), "id should be a string");
     assert!(body["created_at"].as_i64().is_some());
 }
 
@@ -112,7 +112,7 @@ async fn create_http_mcp_server_returns_201() {
                         "name": "test-http-mcp",
                         "server_type": "http",
                         "url": "http://localhost:8080/mcp",
-                        "headers": "{\"Authorization\":\"Bearer test-token\"}",
+                        "headers": {"Authorization": "Bearer test-token"},
                         "enabled": true
                     })
                     .to_string(),
@@ -146,7 +146,7 @@ async fn create_global_mcp_server_with_null_profile_id() {
                         "name": "global-mcp",
                         "server_type": "stdio",
                         "command": "npx",
-                        "args": "[]",
+                        "args": [],
                         "enabled": true
                     })
                     .to_string(),
@@ -181,7 +181,7 @@ async fn create_profile_specific_mcp_server() {
                         "name": "profile-mcp",
                         "server_type": "stdio",
                         "command": "npx",
-                        "args": "[]",
+                        "args": [],
                         "enabled": true
                     })
                     .to_string(),
@@ -293,7 +293,7 @@ async fn create_http_mcp_server_without_url_returns_400() {
 }
 
 #[tokio::test]
-async fn create_mcp_server_invalid_args_json_returns_400() {
+async fn create_mcp_server_invalid_args_type_returns_422() {
     let app = build_rest_app(test_state());
 
     let response = app
@@ -307,7 +307,7 @@ async fn create_mcp_server_invalid_args_json_returns_400() {
                         "name": "bad-json",
                         "server_type": "stdio",
                         "command": "npx",
-                        "args": "not-valid-json"
+                        "args": "not-an-array"
                     })
                     .to_string(),
                 ))
@@ -316,13 +316,9 @@ async fn create_mcp_server_invalid_args_json_returns_400() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-    let body = body_json(response).await;
-    assert!(body["error"]
-        .as_str()
-        .unwrap()
-        .contains("Invalid 'args' JSON"));
+    // axum's Json extractor returns 422 when serde deserialization fails
+    // (e.g., sending a string where Vec<String> is expected)
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]
@@ -341,7 +337,7 @@ async fn create_mcp_server_duplicate_name_returns_409() {
                         "name": "duplicate-test",
                         "server_type": "stdio",
                         "command": "npx",
-                        "args": "[]"
+                        "args": []
                     })
                     .to_string(),
                 ))
@@ -365,7 +361,7 @@ async fn create_mcp_server_duplicate_name_returns_409() {
                         "name": "duplicate-test",
                         "server_type": "stdio",
                         "command": "npx",
-                        "args": "[]"
+                        "args": []
                     })
                     .to_string(),
                 ))
@@ -400,7 +396,7 @@ async fn list_mcp_servers_returns_all() {
                         "name": "list-test-1",
                         "server_type": "stdio",
                         "command": "npx",
-                        "args": "[]"
+                        "args": []
                     })
                     .to_string(),
                 ))
@@ -472,7 +468,7 @@ async fn list_mcp_servers_filter_by_enabled() {
                         "name": "enabled-filter-test",
                         "server_type": "stdio",
                         "command": "npx",
-                        "args": "[]",
+                        "args": [],
                         "enabled": true
                     })
                     .to_string(),
@@ -482,7 +478,10 @@ async fn list_mcp_servers_filter_by_enabled() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
-    let server_id = body_json(response).await["id"].as_i64().unwrap();
+    let server_id = body_json(response).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // List with enabled=true filter
     let app = build_rest_app(test_state());
@@ -503,7 +502,9 @@ async fn list_mcp_servers_filter_by_enabled() {
     let servers = body["servers"]
         .as_array()
         .expect("servers should be an array");
-    let found = servers.iter().any(|s| s["id"].as_i64() == Some(server_id));
+    let found = servers
+        .iter()
+        .any(|s| s["id"].as_str() == Some(server_id.as_str()));
     assert!(found, "enabled server should be in filtered results");
 }
 
@@ -526,7 +527,7 @@ async fn get_mcp_server_by_id_returns_200() {
                         "name": "get-by-id-test",
                         "server_type": "stdio",
                         "command": "npx",
-                        "args": "[]"
+                        "args": []
                     })
                     .to_string(),
                 ))
@@ -536,7 +537,7 @@ async fn get_mcp_server_by_id_returns_200() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
     let created = body_json(response).await;
-    let server_id = created["id"].as_i64().unwrap();
+    let server_id = created["id"].as_str().unwrap();
 
     // Get by ID
     let app = build_rest_app(test_state());
@@ -554,7 +555,7 @@ async fn get_mcp_server_by_id_returns_200() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let body = body_json(response).await;
-    assert_eq!(body["id"], server_id);
+    assert_eq!(body["id"].as_str().unwrap(), server_id);
     assert_eq!(body["name"], "get-by-id-test");
 }
 
@@ -597,7 +598,7 @@ async fn update_mcp_server_returns_200() {
                         "name": "update-test",
                         "server_type": "stdio",
                         "command": "npx",
-                        "args": "[]",
+                        "args": [],
                         "enabled": true
                     })
                     .to_string(),
@@ -607,7 +608,10 @@ async fn update_mcp_server_returns_200() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
-    let server_id = body_json(response).await["id"].as_i64().unwrap();
+    let server_id = body_json(response).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Update the server
     let app = build_rest_app(test_state());
@@ -680,7 +684,7 @@ async fn delete_mcp_server_returns_204() {
                         "name": "delete-test",
                         "server_type": "stdio",
                         "command": "npx",
-                        "args": "[]"
+                        "args": []
                     })
                     .to_string(),
                 ))
@@ -689,7 +693,10 @@ async fn delete_mcp_server_returns_204() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
-    let server_id = body_json(response).await["id"].as_i64().unwrap();
+    let server_id = body_json(response).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Delete the server
     let app = build_rest_app(test_state());
@@ -763,7 +770,7 @@ async fn list_mcp_servers_for_profile_includes_global() {
                         "name": "global-for-profile-test",
                         "server_type": "stdio",
                         "command": "npx",
-                        "args": "[]",
+                        "args": [],
                         "enabled": true
                     })
                     .to_string(),
@@ -788,7 +795,7 @@ async fn list_mcp_servers_for_profile_includes_global() {
                         "name": "profile-for-profile-test",
                         "server_type": "stdio",
                         "command": "npx",
-                        "args": "[]",
+                        "args": [],
                         "enabled": true
                     })
                     .to_string(),
@@ -850,7 +857,7 @@ async fn list_mcp_servers_for_global_profile_id() {
                         "name": "global-only-test",
                         "server_type": "stdio",
                         "command": "npx",
-                        "args": "[]",
+                        "args": [],
                         "enabled": true
                     })
                     .to_string(),
@@ -907,7 +914,7 @@ async fn list_mcp_servers_for_profile_excludes_disabled() {
                         "name": "disabled-server-test",
                         "server_type": "stdio",
                         "command": "npx",
-                        "args": "[]",
+                        "args": [],
                         "enabled": false
                     })
                     .to_string(),

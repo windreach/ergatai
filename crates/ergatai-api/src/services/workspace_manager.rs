@@ -1,6 +1,7 @@
 //! Workspace-first management service.
 
 use ergatai_core::id::{format as format_id, generate, parse_to_i64, IdType};
+use ergatai_error::{ProjectId, WorkspaceId};
 use ergatai_runtime::ResourceLimits;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -146,7 +147,16 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
+/// Normalize stored paths for API consumers and downstream filesystem use.
+fn normalized_path(path: &str) -> String {
+    crate::expand_home_path(path).to_string_lossy().into_owned()
+}
+
 fn canonical_path(path: &str) -> Result<String, WorkspaceManagerError> {
+    let expanded_path = crate::expand_home_path(path);
+    let path = expanded_path.to_string_lossy();
+    let path = path.as_ref();
+
     // Accept paths that do not yet exist (common in tests / newly generated
     // schemathesis requests) while still rejecting traversal attempts.
     for component in std::path::Path::new(path).components() {
@@ -220,17 +230,15 @@ pub async fn to_managed(workspace: Workspace) -> Result<ManagedWorkspace, Worksp
     validate_resource_json(&workspace.resources)?;
 
     Ok(ManagedWorkspace {
-        workspace_id: format_id(workspace.workspace_id, IdType::Workspace),
+        workspace_id: workspace.workspace_id.to_string(),
         name: workspace.name,
-        work_dir: workspace.work_dir,
+        work_dir: normalized_path(&workspace.work_dir),
         env: workspace.env,
         resources: workspace.resources,
         config: workspace.config,
         collaboration_mode: workspace.collaboration_mode,
         status: workspace.status,
-        default_project_id: workspace
-            .default_project_id
-            .map(|id| format_id(id, IdType::Project)), // 修复：使用 IdType::Project 而不是 IdType::Workspace
+        default_project_id: workspace.default_project_id.map(|id| id.to_string()),
         created_at: workspace.created_at,
         updated_at: workspace.updated_at,
     })
@@ -263,10 +271,10 @@ pub async fn list(
 }
 
 pub async fn get(workspace_id: &str) -> Result<ManagedWorkspace, WorkspaceManagerError> {
-    let id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+    let id = WorkspaceId::decode(workspace_id).map_err(|_| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
-    let workspace = tokio::task::spawn_blocking(move || workspaces::get(id_i64))
+    let workspace = tokio::task::spawn_blocking(move || workspaces::get(id))
         .await
         .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
         .map_err(WorkspaceManagerError::from)?
@@ -278,8 +286,8 @@ pub async fn create(
     request: CreateManagedWorkspaceRequest,
 ) -> Result<ManagedWorkspace, WorkspaceManagerError> {
     let workspace_id = match &request.id {
-        None => generate(),
-        Some(id) if parse_to_i64(id).is_some() => parse_to_i64(id).unwrap(),
+        None => WorkspaceId::generate(),
+        Some(id) if WorkspaceId::decode(id).is_ok() => WorkspaceId::decode(id).unwrap(),
         Some(_) => {
             return Err(WorkspaceManagerError::Validation(
                 "Invalid workspace ID format".to_string(),
@@ -322,13 +330,28 @@ pub async fn create(
     let default_project_id = match request.default_project_id {
         None => None,
         Some(id_str) => {
-            let id_i64 = parse_to_i64(&id_str).ok_or_else(|| {
+            let id = ProjectId::decode(&id_str).map_err(|_| {
                 WorkspaceManagerError::Validation(format!(
                     "Invalid default_project_id format: {}",
                     id_str
                 ))
             })?;
-            Some(id_i64)
+
+            // Validate that the project exists
+            let project_exists = tokio::task::spawn_blocking(move || {
+                crate::user_data_db::projects::exists(id.as_i64())
+            })
+            .await
+            .map_err(|e| WorkspaceManagerError::Internal(e.into()))??;
+
+            if !project_exists {
+                return Err(WorkspaceManagerError::Validation(format!(
+                    "Project {} does not exist",
+                    id_str
+                )));
+            }
+
+            Some(id)
         }
     };
 
@@ -359,10 +382,10 @@ pub async fn update(
     workspace_id: &str,
     request: UpdateManagedWorkspaceRequest,
 ) -> Result<ManagedWorkspace, WorkspaceManagerError> {
-    let id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+    let id = WorkspaceId::decode(workspace_id).map_err(|_| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
-    let existing = tokio::task::spawn_blocking(move || workspaces::get(id_i64))
+    let existing = tokio::task::spawn_blocking(move || workspaces::get(id))
         .await
         .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
         .map_err(WorkspaceManagerError::from)?
@@ -401,13 +424,34 @@ pub async fn update(
         match project_id_opt {
             None => None, // Set to null
             Some(id_str) => {
-                let id_i64 = parse_to_i64(&id_str).ok_or_else(|| {
+                let project_id = ProjectId::decode(&id_str).map_err(|_| {
                     WorkspaceManagerError::Validation(format!(
                         "Invalid default_project_id format: {}",
                         id_str
                     ))
                 })?;
-                Some(id_i64)
+
+                // Validate that the project exists and belongs to this workspace
+                let project_exists = tokio::task::spawn_blocking({
+                    let workspace_id = existing.workspace_id;
+                    move || {
+                        crate::user_data_db::projects::exists_and_belongs_to(
+                            project_id.as_i64(),
+                            workspace_id.as_i64(),
+                        )
+                    }
+                })
+                .await
+                .map_err(|e| WorkspaceManagerError::Internal(e.into()))??;
+
+                if !project_exists {
+                    return Err(WorkspaceManagerError::Validation(format!(
+                        "Project {} does not exist or does not belong to workspace {}",
+                        id_str, workspace_id
+                    )));
+                }
+
+                Some(project_id)
             }
         }
     } else {
@@ -445,15 +489,14 @@ pub async fn set_status(
             status
         )));
     }
-    let id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+    let id = WorkspaceId::decode(workspace_id).map_err(|_| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
     let status_owned = status.to_string();
-    let success =
-        tokio::task::spawn_blocking(move || workspaces::set_status(id_i64, &status_owned))
-            .await
-            .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
-            .map_err(WorkspaceManagerError::from)?;
+    let success = tokio::task::spawn_blocking(move || workspaces::set_status(id, &status_owned))
+        .await
+        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+        .map_err(WorkspaceManagerError::from)?;
     if !success {
         return Err(WorkspaceManagerError::NotFound(workspace_id.to_string()));
     }
@@ -467,20 +510,21 @@ pub async fn status(workspace_id: &str) -> Result<WorkspaceStatus, WorkspaceMana
         .list_agents()
         .await
         .iter()
-        .filter(|agent| agent.workspace_id == workspace_id && agent.lifecycle.is_alive())
+        .filter(|agent| {
+            agent.workspace_id.to_string() == workspace_id && agent.lifecycle.is_alive()
+        })
         .count();
-    let workspace_id_i64 = parse_to_i64(&workspace.workspace_id).ok_or_else(|| {
+    let workspace_id = WorkspaceId::decode(&workspace.workspace_id).map_err(|_| {
         WorkspaceManagerError::Internal(anyhow::anyhow!(
             "Invalid workspace ID format: {}",
             workspace.workspace_id
         ))
     })?;
-    let chats = tokio::task::spawn_blocking(move || {
-        crate::user_data_db::chats::list(Some(workspace_id_i64))
-    })
-    .await
-    .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
-    .map_err(WorkspaceManagerError::from)?;
+    let chats =
+        tokio::task::spawn_blocking(move || crate::user_data_db::chats::list(Some(workspace_id)))
+            .await
+            .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+            .map_err(WorkspaceManagerError::from)?;
     let active_chat_count = chats
         .iter()
         .filter(|chat| chat.archived_at.is_none())
@@ -515,7 +559,9 @@ pub async fn delete(workspace_id: &str, force: bool) -> Result<(), WorkspaceMana
         .list_agents()
         .await
         .into_iter()
-        .filter(|agent| agent.workspace_id == workspace_id && agent.lifecycle.is_alive())
+        .filter(|agent| {
+            agent.workspace_id.to_string() == workspace_id && agent.lifecycle.is_alive()
+        })
         .collect();
     if !active_agents.is_empty() && !force {
         return Err(WorkspaceManagerError::Conflict(format!(
@@ -528,14 +574,14 @@ pub async fn delete(workspace_id: &str, force: bool) -> Result<(), WorkspaceMana
     // (unless force=true). These guards protect in-progress user work from accidental destruction.
     if !force {
         // Check for active (non-archived) chats
-        let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+        let workspace_id = WorkspaceId::decode(workspace_id).map_err(|_| {
             WorkspaceManagerError::NotFound(format!(
                 "Invalid workspace ID format: {}",
                 workspace_id
             ))
         })?;
         let chats_result = tokio::task::spawn_blocking(move || {
-            crate::user_data_db::chats::list(Some(workspace_id_i64))
+            crate::user_data_db::chats::list(Some(workspace_id))
         })
         .await;
 
@@ -565,13 +611,15 @@ pub async fn delete(workspace_id: &str, force: bool) -> Result<(), WorkspaceMana
 
     // Unregister workspace from permission handler to prevent memory leak
     if let Some(permission_handler) = crate::get_permission_handler() {
-        permission_handler.unregister_workspace(workspace_id).await;
+        permission_handler
+            .unregister_workspace(&workspace_id.to_string())
+            .await;
     }
 
-    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+    let workspace_id = WorkspaceId::decode(workspace_id).map_err(|_| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
-    tokio::task::spawn_blocking(move || workspaces::delete(workspace_id_i64))
+    tokio::task::spawn_blocking(move || workspaces::delete(workspace_id))
         .await
         .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
         .map_err(WorkspaceManagerError::from)?;
@@ -580,12 +628,12 @@ pub async fn delete(workspace_id: &str, force: bool) -> Result<(), WorkspaceMana
 
 /// 停止 workspace（停止所有 agent，保留数据）
 pub async fn stop_workspace(workspace_id: &str) -> Result<Workspace, WorkspaceManagerError> {
-    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+    let workspace_id = WorkspaceId::decode(workspace_id).map_err(|_| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
 
     // 1. 检查 workspace 存在且状态为 active
-    let workspace = tokio::task::spawn_blocking(move || workspaces::get(workspace_id_i64))
+    let workspace = tokio::task::spawn_blocking(move || workspaces::get(workspace_id))
         .await
         .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
         .map_err(WorkspaceManagerError::from)?
@@ -608,7 +656,9 @@ pub async fn stop_workspace(workspace_id: &str) -> Result<Workspace, WorkspaceMa
         .list_agents()
         .await
         .into_iter()
-        .filter(|agent| agent.workspace_id == workspace_id && agent.lifecycle.is_alive())
+        .filter(|agent| {
+            agent.workspace_id == workspace_id.to_string() && agent.lifecycle.is_alive()
+        })
         .collect();
 
     for agent in active_agents {
@@ -617,7 +667,10 @@ pub async fn stop_workspace(workspace_id: &str) -> Result<Workspace, WorkspaceMa
 
     // 3. 清理运行时 workspace
     if let Ok(workspaces) = runtime.backend().list_workspaces().await {
-        if let Some(ws) = workspaces.into_iter().find(|w| w.id == workspace_id) {
+        if let Some(ws) = workspaces
+            .into_iter()
+            .find(|w| w.id == workspace_id.to_string())
+        {
             if let Err(e) = runtime.backend().cleanup_workspace(&ws).await {
                 tracing::warn!(error = %e, "Failed to cleanup runtime workspace");
             }
@@ -640,12 +693,12 @@ pub async fn stop_workspace(workspace_id: &str) -> Result<Workspace, WorkspaceMa
 
 /// 启动 workspace（从 stopped 状态恢复）
 pub async fn start_workspace(workspace_id: &str) -> Result<Workspace, WorkspaceManagerError> {
-    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+    let workspace_id = WorkspaceId::decode(workspace_id).map_err(|_| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
 
     // 1. 检查 workspace 存在且状态为 stopped
-    let workspace = tokio::task::spawn_blocking(move || workspaces::get(workspace_id_i64))
+    let workspace = tokio::task::spawn_blocking(move || workspaces::get(workspace_id))
         .await
         .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
         .map_err(WorkspaceManagerError::from)?
@@ -678,12 +731,12 @@ pub async fn start_workspace(workspace_id: &str) -> Result<Workspace, WorkspaceM
 
 /// 归档 workspace（软删除，停止所有 agent）
 pub async fn archive_workspace(workspace_id: &str) -> Result<Workspace, WorkspaceManagerError> {
-    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+    let workspace_id = WorkspaceId::decode(workspace_id).map_err(|_| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
 
     // 1. 检查 workspace 存在
-    let workspace = tokio::task::spawn_blocking(move || workspaces::get(workspace_id_i64))
+    let workspace = tokio::task::spawn_blocking(move || workspaces::get(workspace_id))
         .await
         .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
         .map_err(WorkspaceManagerError::from)?
@@ -701,7 +754,9 @@ pub async fn archive_workspace(workspace_id: &str) -> Result<Workspace, Workspac
         .list_agents()
         .await
         .into_iter()
-        .filter(|agent| agent.workspace_id == workspace_id && agent.lifecycle.is_alive())
+        .filter(|agent| {
+            agent.workspace_id == workspace_id.to_string() && agent.lifecycle.is_alive()
+        })
         .collect();
 
     if !active_agents.is_empty() {
@@ -713,7 +768,10 @@ pub async fn archive_workspace(workspace_id: &str) -> Result<Workspace, Workspac
 
     // 3. 清理运行时 workspace
     if let Ok(workspaces) = runtime.backend().list_workspaces().await {
-        if let Some(ws) = workspaces.into_iter().find(|w| w.id == workspace_id) {
+        if let Some(ws) = workspaces
+            .into_iter()
+            .find(|w| w.id == workspace_id.to_string())
+        {
             if let Err(e) = runtime.backend().cleanup_workspace(&ws).await {
                 tracing::warn!(error = %e, "Failed to cleanup runtime workspace");
             }
@@ -722,7 +780,9 @@ pub async fn archive_workspace(workspace_id: &str) -> Result<Workspace, Workspac
 
     // 4. 从权限处理器注销
     if let Some(permission_handler) = crate::get_permission_handler() {
-        permission_handler.unregister_workspace(workspace_id).await;
+        permission_handler
+            .unregister_workspace(&workspace_id.to_string())
+            .await;
     }
 
     // 5. 更新数据库状态为 archived
@@ -741,12 +801,12 @@ pub async fn archive_workspace(workspace_id: &str) -> Result<Workspace, Workspac
 
 /// 从归档恢复 workspace
 pub async fn restore_workspace(workspace_id: &str) -> Result<Workspace, WorkspaceManagerError> {
-    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+    let workspace_id = WorkspaceId::decode(workspace_id).map_err(|_| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
 
     // 1. 检查 workspace 存在且状态为 archived
-    let workspace = tokio::task::spawn_blocking(move || workspaces::get(workspace_id_i64))
+    let workspace = tokio::task::spawn_blocking(move || workspaces::get(workspace_id))
         .await
         .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
         .map_err(WorkspaceManagerError::from)?
@@ -776,17 +836,17 @@ pub async fn restore_workspace(workspace_id: &str) -> Result<Workspace, Workspac
 
 /// List all projects in a workspace
 pub fn list_projects(workspace_id: &str) -> Result<Vec<Project>, WorkspaceManagerError> {
-    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+    let workspace_id = WorkspaceId::decode(workspace_id).map_err(|_| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
 
     // Check workspace exists
-    let _ws = workspaces::get(workspace_id_i64)
+    let _ws = workspaces::get(workspace_id)
         .map_err(WorkspaceManagerError::from)?
         .ok_or_else(|| WorkspaceManagerError::NotFound(workspace_id.to_string()))?;
 
     // List projects from database
-    let db_projects = projects::list(workspace_id_i64).map_err(WorkspaceManagerError::from)?;
+    let db_projects = projects::list(workspace_id.as_i64()).map_err(WorkspaceManagerError::from)?;
 
     // Convert to Project type
     Ok(db_projects
@@ -795,7 +855,7 @@ pub fn list_projects(workspace_id: &str) -> Result<Vec<Project>, WorkspaceManage
             project_id: format_id(p.project_id, IdType::Project),
             workspace_id: format_id(p.workspace_id, IdType::Workspace),
             name: p.name,
-            path: p.path,
+            path: normalized_path(&p.path),
             description: p.description,
             git_remote_url: p.git_remote_url,
             git_provider: p.git_provider,
@@ -813,12 +873,12 @@ pub fn register_project(
     workspace_id: &str,
     request: RegisterWorkspaceProjectRequest,
 ) -> Result<Project, WorkspaceManagerError> {
-    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+    let workspace_id = WorkspaceId::decode(workspace_id).map_err(|_| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
 
     // Check workspace exists
-    let _ws = workspaces::get(workspace_id_i64)
+    let _ws = workspaces::get(workspace_id)
         .map_err(WorkspaceManagerError::from)?
         .ok_or_else(|| WorkspaceManagerError::NotFound(workspace_id.to_string()))?;
 
@@ -830,7 +890,7 @@ pub fn register_project(
     let project_id = generate();
     let db_project = DbProject {
         project_id,
-        workspace_id: workspace_id_i64,
+        workspace_id: workspace_id.as_i64(),
         name: request.name.clone(),
         path: canonical_path,
         description: request.description.clone(),
@@ -864,7 +924,7 @@ pub fn register_project(
 
 /// Remove a project from a workspace
 pub fn remove_project(workspace_id: &str, project_id: &str) -> Result<(), WorkspaceManagerError> {
-    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+    let workspace_id = WorkspaceId::decode(workspace_id).map_err(|_| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
 
@@ -873,7 +933,7 @@ pub fn remove_project(workspace_id: &str, project_id: &str) -> Result<(), Worksp
     })?;
 
     // Check workspace exists
-    let _ws = workspaces::get(workspace_id_i64)
+    let _ws = workspaces::get(workspace_id)
         .map_err(WorkspaceManagerError::from)?
         .ok_or_else(|| WorkspaceManagerError::NotFound(workspace_id.to_string()))?;
 
@@ -883,7 +943,7 @@ pub fn remove_project(workspace_id: &str, project_id: &str) -> Result<(), Worksp
         .ok_or_else(|| WorkspaceManagerError::NotFound(project_id.to_string()))?;
 
     // Verify project belongs to workspace
-    if project.workspace_id != workspace_id_i64 {
+    if project.workspace_id != workspace_id.as_i64() {
         return Err(WorkspaceManagerError::Validation(
             "Project does not belong to this workspace".to_string(),
         ));
@@ -901,7 +961,7 @@ pub fn update_project(
     project_id: &str,
     request: UpdateWorkspaceProjectRequest,
 ) -> Result<Project, WorkspaceManagerError> {
-    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+    let workspace_id = WorkspaceId::decode(workspace_id).map_err(|_| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
 
@@ -910,7 +970,7 @@ pub fn update_project(
     })?;
 
     // Check workspace exists
-    let _ws = workspaces::get(workspace_id_i64)
+    let _ws = workspaces::get(workspace_id)
         .map_err(WorkspaceManagerError::from)?
         .ok_or_else(|| WorkspaceManagerError::NotFound(workspace_id.to_string()))?;
 
@@ -920,7 +980,7 @@ pub fn update_project(
         .ok_or_else(|| WorkspaceManagerError::NotFound(project_id.to_string()))?;
 
     // Verify project belongs to workspace
-    if project.workspace_id != workspace_id_i64 {
+    if project.workspace_id != workspace_id.as_i64() {
         return Err(WorkspaceManagerError::Validation(
             "Project does not belong to this workspace".to_string(),
         ));
@@ -976,7 +1036,7 @@ pub fn update_project(
         project_id: format_id(project.project_id, IdType::Project),
         workspace_id: format_id(project.workspace_id, IdType::Workspace),
         name: project.name,
-        path: project.path,
+        path: normalized_path(&project.path),
         description: project.description,
         git_remote_url: project.git_remote_url,
         git_provider: project.git_provider,
@@ -1018,8 +1078,8 @@ pub struct ChatResponse {
 
 fn db_chat_to_response(chat: DbChat) -> ChatResponse {
     ChatResponse {
-        id: format_id(chat.chat_id, IdType::Chat),
-        workspace_id: format_id(chat.workspace_id, IdType::Workspace),
+        id: chat.chat_id.to_string(),
+        workspace_id: chat.workspace_id.to_string(),
         name: chat.name,
         collaboration_mode: chat.collaboration_mode,
         worktree_path: chat.worktree_path,

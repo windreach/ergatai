@@ -7,7 +7,7 @@
 //! - 级联删除（删除 Session 时级联删除 Conversation）
 
 use crate::user_data_db::{collaboration_sessions, CollaborationSession};
-use ergatai_core::id::generate;
+use ergatai_error::{ChatId, CollaborationSessionId, WorkspaceId};
 
 pub struct CollaborationSessionService;
 
@@ -25,11 +25,9 @@ impl CollaborationSessionService {
         }
 
         // Parse IDs to i64
-        let chat_id_i64 = chat_id
-            .parse::<i64>()
+        let chat_id = ChatId::decode(chat_id)
             .map_err(|_| anyhow::anyhow!("Invalid chat_id format: {}", chat_id))?;
-        let workspace_id_i64 = workspace_id
-            .parse::<i64>()
+        let workspace_id = WorkspaceId::decode(workspace_id)
             .map_err(|_| anyhow::anyhow!("Invalid workspace_id format: {}", workspace_id))?;
 
         let now = std::time::SystemTime::now()
@@ -38,9 +36,9 @@ impl CollaborationSessionService {
             .as_secs() as i64;
 
         let session = CollaborationSession {
-            collaboration_session_id: generate(),
-            chat_id: chat_id_i64,
-            workspace_id: workspace_id_i64,
+            collaboration_session_id: CollaborationSessionId::generate(),
+            chat_id,
+            workspace_id,
             mode,
             state: "idle".to_string(),
             goal,
@@ -57,22 +55,22 @@ impl CollaborationSessionService {
     pub async fn get_session(
         collaboration_session_id: &str,
     ) -> anyhow::Result<Option<CollaborationSession>> {
-        let session_id_i64 = collaboration_session_id.parse::<i64>().map_err(|_| {
-            anyhow::anyhow!(
-                "Invalid collaboration_session_id format: {}",
-                collaboration_session_id
-            )
-        })?;
-        let session = collaboration_sessions::get(session_id_i64)?;
+        let session_id =
+            CollaborationSessionId::decode(collaboration_session_id).map_err(|_| {
+                anyhow::anyhow!(
+                    "Invalid collaboration_session_id format: {}",
+                    collaboration_session_id
+                )
+            })?;
+        let session = collaboration_sessions::get(session_id)?;
         Ok(session)
     }
 
     /// 列出 CollaborationSession（通过 chat_id 过滤）
     pub async fn list_sessions_by_chat(chat_id: &str) -> anyhow::Result<Vec<CollaborationSession>> {
-        let chat_id_i64 = chat_id
-            .parse::<i64>()
+        let chat_id = ChatId::decode(chat_id)
             .map_err(|_| anyhow::anyhow!("Invalid chat_id format: {}", chat_id))?;
-        let sessions = collaboration_sessions::list(Some(chat_id_i64))?;
+        let sessions = collaboration_sessions::list(Some(chat_id))?;
         Ok(sessions)
     }
 
@@ -87,25 +85,27 @@ impl CollaborationSessionService {
         collaboration_session_id: &str,
         new_state: &str,
     ) -> anyhow::Result<bool> {
-        let session_id_i64 = collaboration_session_id.parse::<i64>().map_err(|_| {
-            anyhow::anyhow!(
-                "Invalid collaboration_session_id format: {}",
-                collaboration_session_id
-            )
-        })?;
-        collaboration_sessions::update_state(session_id_i64, new_state)?;
+        let session_id =
+            CollaborationSessionId::decode(collaboration_session_id).map_err(|_| {
+                anyhow::anyhow!(
+                    "Invalid collaboration_session_id format: {}",
+                    collaboration_session_id
+                )
+            })?;
+        collaboration_sessions::update_state(session_id, new_state)?;
         Ok(true)
     }
 
     /// 删除 CollaborationSession（级联删除 Conversation）
     pub async fn delete_session(collaboration_session_id: &str) -> anyhow::Result<bool> {
-        let session_id_i64 = collaboration_session_id.parse::<i64>().map_err(|_| {
-            anyhow::anyhow!(
-                "Invalid collaboration_session_id format: {}",
-                collaboration_session_id
-            )
-        })?;
-        collaboration_sessions::delete(session_id_i64)?;
+        let session_id =
+            CollaborationSessionId::decode(collaboration_session_id).map_err(|_| {
+                anyhow::anyhow!(
+                    "Invalid collaboration_session_id format: {}",
+                    collaboration_session_id
+                )
+            })?;
+        collaboration_sessions::delete(session_id)?;
         Ok(true)
     }
 }

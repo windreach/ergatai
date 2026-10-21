@@ -2,35 +2,15 @@
  * IPC 单元测试 - Plugins Router
  */
 
-import { test, expect, describe, beforeAll, afterAll } from '@playwright/test'
-import { launchElectron } from '../../fixtures/electron-launcher'
+import { test, expect, describe } from '@playwright/test'
+import { createTestContext } from '../../fixtures/test-context'
 
 describe('IPC: Plugins Router', () => {
-  let electron: any
-  let page: any
-
-  beforeAll(async () => {
-    electron = await launchElectron({
-      extraEnv: { NODE_ENV: 'test', ELECTRON_TEST_MODE: 'true' },
-    })
-    page = electron.page
-
-    process.on('exit', async () => {
-      if (electron) { try { await electron.close() } catch (e) { /* ignore */ } }
-    })
-    process.on('SIGINT', async () => {
-      if (electron) { await electron.close() }
-      process.exit(130)
-    })
-  })
-
-  afterAll(async () => {
-    await electron.close()
-  })
+  const ctx = createTestContext()
 
   describe('plugins.list', () => {
     test('应该返回插件数组', async () => {
-      const plugins = await page.evaluate(async () => {
+      const plugins = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.plugins.list.query()
       })
 
@@ -55,7 +35,7 @@ describe('IPC: Plugins Router', () => {
 
   describe('plugins.clearCache', () => {
     test('应该成功清除缓存', async () => {
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.plugins.clearCache.mutate()
       })
 
@@ -65,12 +45,12 @@ describe('IPC: Plugins Router', () => {
 
     test('清除缓存后 list 应该重新扫描', async () => {
       // 先清除缓存
-      await page.evaluate(async () => {
+      await ctx.page.evaluate(async () => {
         await (window as any).trpc.plugins.clearCache.mutate()
       })
 
       // 再次列出插件
-      const plugins = await page.evaluate(async () => {
+      const plugins = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.plugins.list.query()
       })
 

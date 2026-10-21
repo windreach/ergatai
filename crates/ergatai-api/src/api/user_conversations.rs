@@ -8,7 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use ergatai_core::id::{format as format_id, generate, IdType};
+use ergatai_error::{ChatId, CollaborationSessionId, ConversationId, MessageId};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -21,6 +21,20 @@ pub struct UpdateConversationRequest {
     pub name: Option<String>,
     #[serde(default)]
     pub mode: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateConversationMessageInput {
+    pub role: String,
+    #[serde(default)]
+    pub parts: Option<serde_json::Value>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateConversationMessagesRequest {
+    pub messages: Vec<CreateConversationMessageInput>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -55,10 +69,10 @@ pub struct ConversationResponse {
 impl From<Conversation> for ConversationResponse {
     fn from(c: Conversation) -> Self {
         Self {
-            id: format_id(c.conversation_id, IdType::Conversation),
-            collaboration_session_id: format_id(c.collaboration_session_id, IdType::Session),
-            chat_id: format_id(c.chat_id, IdType::Chat),
-            parent_id: c.parent_id.map(|id| format_id(id, IdType::Conversation)),
+            id: c.conversation_id.to_string(),
+            collaboration_session_id: c.collaboration_session_id.to_string(),
+            chat_id: c.chat_id.to_string(),
+            parent_id: c.parent_id.map(|id| id.to_string()),
             name: c.name,
             mode: c.mode,
             participant_role: c.participant_role,
@@ -76,8 +90,8 @@ fn now_unix_seconds() -> i64 {
         .as_secs() as i64
 }
 
-fn conversation_id() -> i64 {
-    generate()
+fn conversation_id() -> ConversationId {
+    ConversationId::generate()
 }
 
 fn db_error(operation: &'static str, error: rusqlite::Error) -> Response {
@@ -332,7 +346,7 @@ pub async fn get_conversation(
             .into_response();
     }
 
-    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Conversation") {
+    let id_i64 = match crate::http_error::parse_typed_id::<ConversationId>(&id, "Conversation") {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
@@ -381,7 +395,7 @@ pub async fn update_conversation(
             .into_response();
     }
 
-    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Conversation") {
+    let id_i64 = match crate::http_error::parse_typed_id::<ConversationId>(&id, "Conversation") {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
@@ -426,7 +440,7 @@ pub async fn update_conversation(
 
     let id_for_reload = id.clone();
     let id_for_reload_i64 =
-        match crate::http_error::parse_id_or_not_found(&id_for_reload, "Conversation") {
+        match crate::http_error::parse_typed_id::<ConversationId>(&id_for_reload, "Conversation") {
             Ok(id) => id,
             Err((status, json)) => return (status, json).into_response(),
         };
@@ -472,7 +486,7 @@ pub async fn archive_conversation(
             .into_response();
     }
 
-    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Conversation") {
+    let id_i64 = match crate::http_error::parse_typed_id::<ConversationId>(&id, "Conversation") {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
@@ -496,11 +510,11 @@ pub async fn archive_conversation(
     }
 
     let id_for_get = id.clone();
-    let id_for_get_i64 = match crate::http_error::parse_id_or_not_found(&id_for_get, "Conversation")
-    {
-        Ok(id) => id,
-        Err((status, json)) => return (status, json).into_response(),
-    };
+    let id_for_get_i64 =
+        match crate::http_error::parse_typed_id::<ConversationId>(&id_for_get, "Conversation") {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
 
     match tokio::task::spawn_blocking(move || user_data_db::conversations::get(id_for_get_i64))
         .await
@@ -543,7 +557,7 @@ pub async fn unarchive_conversation(
             .into_response();
     }
 
-    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Conversation") {
+    let id_i64 = match crate::http_error::parse_typed_id::<ConversationId>(&id, "Conversation") {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
@@ -567,11 +581,11 @@ pub async fn unarchive_conversation(
     }
 
     let id_for_get = id.clone();
-    let id_for_get_i64 = match crate::http_error::parse_id_or_not_found(&id_for_get, "Conversation")
-    {
-        Ok(id) => id,
-        Err((status, json)) => return (status, json).into_response(),
-    };
+    let id_for_get_i64 =
+        match crate::http_error::parse_typed_id::<ConversationId>(&id_for_get, "Conversation") {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
 
     match tokio::task::spawn_blocking(move || user_data_db::conversations::get(id_for_get_i64))
         .await
@@ -613,7 +627,7 @@ pub async fn delete_conversation(
             .into_response();
     }
 
-    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Conversation") {
+    let id_i64 = match crate::http_error::parse_typed_id::<ConversationId>(&id, "Conversation") {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
@@ -655,7 +669,7 @@ pub async fn list_conversation_messages(
             .into_response();
     }
 
-    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Conversation") {
+    let id_i64 = match crate::http_error::parse_typed_id::<ConversationId>(&id, "Conversation") {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
@@ -663,6 +677,96 @@ pub async fn list_conversation_messages(
     match tokio::task::spawn_blocking(move || user_data_db::messages::list(id_i64)).await {
         Ok(Ok(messages)) => (StatusCode::OK, Json(messages)).into_response(),
         Ok(Err(error)) => db_error("Failed to list messages", error),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/conversations/{id}/messages",
+    tag = "Conversations",
+    params(("id" = String, Path, description = "Conversation ID")),
+    request_body = CreateConversationMessagesRequest,
+    responses(
+        (status = 201, description = "Messages appended", body = Vec<crate::user_data_db::Message>),
+        (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 404, description = "Conversation not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn create_conversation_messages(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<CreateConversationMessagesRequest>,
+) -> Response {
+    if id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Conversation ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    if request.messages.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "messages cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let id_i64 = match crate::http_error::parse_typed_id::<ConversationId>(&id, "Conversation") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
+    };
+
+    let conversation =
+        match tokio::task::spawn_blocking(move || crate::user_data_db::conversations::get(id_i64))
+            .await
+        {
+            Ok(Ok(Some(conversation))) => conversation,
+            Ok(Ok(None)) => {
+                return crate::http_error::not_found("Conversation", &id).into_response();
+            }
+            Ok(Err(error)) => return db_error("Failed to load conversation", error),
+            Err(e) => {
+                return crate::http_error::internal(e, "load_conversation_join").into_response()
+            }
+        };
+    drop(conversation);
+
+    let result = tokio::task::spawn_blocking(move || {
+        request
+            .messages
+            .into_iter()
+            .map(|message| {
+                user_data_db::messages::append(
+                    id_i64,
+                    &message.role,
+                    message.parts.unwrap_or(serde_json::json!([{
+                        "type": "text",
+                        "text": "",
+                    }])),
+                    message.metadata.unwrap_or(serde_json::json!({})),
+                    None,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .await;
+
+    match result {
+        Ok(Ok(messages)) => (StatusCode::CREATED, Json(messages)).into_response(),
+        Ok(Err(error)) => db_error("Failed to append conversation messages", error),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -698,7 +802,7 @@ pub async fn list_conversation_file_changes(
             .into_response();
     }
 
-    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Conversation") {
+    let id_i64 = match crate::http_error::parse_typed_id::<ConversationId>(&id, "Conversation") {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
@@ -747,8 +851,8 @@ mod conversation_file_change_tests {
 
     fn message(role: &str, parts: serde_json::Value) -> Message {
         Message {
-            message_id: 12345,
-            conversation_id: 67890,
+            message_id: MessageId::new(12345),
+            conversation_id: ConversationId::new(67890),
             sequence: 0,
             role: role.to_owned(),
             parts: Some(parts.to_string()),
@@ -1101,7 +1205,7 @@ pub struct CreateConversationRequestNew {
 )]
 pub async fn list_conversations(Query(query): Query<ListConversationsQuery>) -> impl IntoResponse {
     let conversations = if let Some(collaboration_session_id) = query.collaboration_session_id {
-        let session_id_i64 = match crate::http_error::parse_id_or_not_found(
+        let session_id_i64 = match crate::http_error::parse_typed_id::<CollaborationSessionId>(
             &collaboration_session_id,
             "CollaborationSession",
         ) {
@@ -1135,7 +1239,7 @@ pub async fn list_conversations(Query(query): Query<ListConversationsQuery>) -> 
             }
         }
     } else if let Some(chat_id) = query.chat_id {
-        let chat_id_i64 = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+        let chat_id_i64 = match crate::http_error::parse_typed_id::<ChatId>(&chat_id, "Chat") {
             Ok(id) => id,
             Err((status, json)) => return (status, json).into_response(),
         };
@@ -1216,7 +1320,8 @@ pub async fn list_conversation_outputs(
     }
 
     let conv_id_i64 =
-        match crate::http_error::parse_id_or_not_found(&conversation_id, "Conversation") {
+        match crate::http_error::parse_typed_id::<ConversationId>(&conversation_id, "Conversation")
+        {
             Ok(id) => id,
             Err((status, json)) => return (status, json).into_response(),
         };
@@ -1238,11 +1343,13 @@ pub async fn list_conversation_outputs(
     }
 
     let conv_id_for_list = conversation_id.clone();
-    let conv_id_i64 =
-        match crate::http_error::parse_id_or_not_found(&conv_id_for_list, "Conversation") {
-            Ok(id) => id,
-            Err((status, json)) => return (status, json).into_response(),
-        };
+    let conv_id_i64 = match crate::http_error::parse_typed_id::<ConversationId>(
+        &conv_id_for_list,
+        "Conversation",
+    ) {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
+    };
 
     let limit = params.limit;
     let offset = params.offset.map(|value| value as i64);
@@ -1298,13 +1405,14 @@ pub async fn get_conversation_output(
             .into_response();
     }
 
-    let output_id_i64 = match crate::http_error::parse_id_or_not_found(&output_id, "Output") {
+    let output_id_i64 = match crate::http_error::parse_typed_id::<MessageId>(&output_id, "Output") {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
 
     let conversation_id_i64 =
-        match crate::http_error::parse_id_or_not_found(&conversation_id, "Conversation") {
+        match crate::http_error::parse_typed_id::<ConversationId>(&conversation_id, "Conversation")
+        {
             Ok(id) => id,
             Err((status, json)) => return (status, json).into_response(),
         };
@@ -1381,8 +1489,8 @@ impl From<user_data_db::Message> for AgentOutputResponse {
 
         Self {
             id: message.message_id.to_string(),
-            conversation_id: format_id(message.conversation_id, IdType::Conversation),
-            message_id: Some(format_id(message.message_id, IdType::Message)),
+            conversation_id: message.conversation_id.to_string(),
+            message_id: Some(message.message_id.to_string()),
             sequence: message.sequence,
             role: message.role,
             thinking: message.thinking.and_then(|s| serde_json::from_str(&s).ok()),
@@ -1434,11 +1542,13 @@ pub async fn create_conversation(
     // Resolve collaboration_session_id and chat_id
     let (collaboration_session_id, chat_id) = if let Some(session_id) = req.collaboration_session_id
     {
-        let session_id_i64 =
-            match crate::http_error::parse_id_or_not_found(&session_id, "CollaborationSession") {
-                Ok(id) => id,
-                Err((status, json)) => return (status, json).into_response(),
-            };
+        let session_id_i64 = match crate::http_error::parse_typed_id::<CollaborationSessionId>(
+            &session_id,
+            "CollaborationSession",
+        ) {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
 
         // Validate collaboration session exists
         match tokio::task::spawn_blocking(move || {
@@ -1468,7 +1578,7 @@ pub async fn create_conversation(
             }
         }
     } else if let Some(chat_id) = req.chat_id {
-        let chat_id_i64 = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+        let chat_id_i64 = match crate::http_error::parse_typed_id::<ChatId>(&chat_id, "Chat") {
             Ok(id) => id,
             Err((status, json)) => return (status, json).into_response(),
         };
@@ -1484,7 +1594,7 @@ pub async fn create_conversation(
                     s
                 } else {
                     // Create default collaboration session
-                    let session_id = generate();
+                    let session_id = CollaborationSessionId::generate();
                     crate::user_data_db::collaboration_sessions::create(
                         crate::user_data_db::CollaborationSession {
                             collaboration_session_id: session_id,

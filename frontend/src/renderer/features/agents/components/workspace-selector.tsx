@@ -118,16 +118,59 @@ export function WorkspaceSelector({
 
   // Default workspace mutation - quick start without selecting project
   const defaultWorkspace = trpc.ergatai.createWorkspace.useMutation({
-    onSuccess: (workspace) => {
+    onSuccess: async (workspace) => {
       toast.success("Default workspace created")
-      // Refresh workspace and project lists
-      void utils.ergatai.listManagedWorkspaces.invalidate()
-      void utils.projects.list.invalidate()
+
+      // Refresh both caches before navigating. `projects.list` uses
+      // staleTime: Infinity, so `fetch()` alone can return the old list and
+      // make NewChatForm treat the newly created project as invalid.
+      await utils.ergatai.listManagedWorkspaces.invalidate()
+      await utils.projects.list.invalidate()
+      const freshProjects = await utils.projects.list.fetch()
       setOpen(false)
+
+      // Use the actual project ID from the created workspace, not workspace.id
+      // workspace.id is a ws_... format, not a proj_... format
+      const projectId = workspace.defaultProjectId
+      if (!projectId) {
+        toast.error("Workspace created but no project found", {
+          description: "Please refresh and try again",
+        })
+        return
+      }
+
+      // Sync selectedWorkspace with the created workspace's default project
+      // This is critical for NewChatForm to show the input form instead of WorkspaceSelector
+      const project = freshProjects.find(p => p.id === projectId)
+      if (!project) {
+        toast.error("Workspace created but project not found", {
+          description: "Please refresh the page and try again",
+        })
+        return
+      }
+
+      setSelectedWorkspace({
+        id: project.id,
+        name: project.name,
+        path: project.path,
+        gitRemoteUrl: project.gitRemoteUrl,
+        gitProvider: project.gitProvider as NonNullable<typeof selectedWorkspace>["gitProvider"],
+        gitOwner: project.gitOwner,
+        gitRepo: project.gitRepo,
+      })
+
+      // Keep the aggregate projects cache in sync for NewChatForm validation.
+      utils.projects.list.setData(undefined, oldData => {
+        if (oldData?.some(p => p.id === project.id)) {
+          return oldData
+        }
+        return [project, ...(oldData ?? [])]
+      })
+
       onWorkspaceSelected?.({
-        id: workspace.defaultProjectId ?? workspace.id,
+        id: projectId,
         name: workspace.name ?? "Default Workspace",
-        path: "~/.ergatai",
+        path: project.path,
       })
     },
     onError: (error) => {
@@ -142,9 +185,19 @@ export function WorkspaceSelector({
     )
     if (existingDefault) {
       toast.info("Default workspace already exists")
-      const defaultProject = existingDefault.projects?.find((p) => p.isDefault)
+
+      // Use defaultProjectId directly, don't fallback to workspace.id (ws_... format)
+      const projectId = existingDefault.defaultProjectId
+      if (!projectId) {
+        toast.error("Default workspace has no project", {
+          description: "Please refresh and try again",
+        })
+        setOpen(false)
+        return
+      }
+
       onWorkspaceSelected?.({
-        id: defaultProject?.projectId ?? existingDefault.id,
+        id: projectId,
         name: existingDefault.name ?? "Default Workspace",
         path: existingDefault.workDir,
       })

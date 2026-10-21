@@ -25,7 +25,7 @@ export function usePlanApproval({
       // This would need planApprovalPending state passed in or managed here
       // For now, we'll just handle the API call
       try {
-        await trpcClient.claude.respondToolApproval.mutate({
+        await trpcClient.mcp.respondToolApproval.mutate({
           toolUseId,
           approved,
         })

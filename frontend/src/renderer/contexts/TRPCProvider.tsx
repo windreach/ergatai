@@ -40,14 +40,18 @@ export function TRPCProvider({ children }: TRPCProviderProps) {
     const client = trpc.createClient({
       links: [ipcLink({ transformer: superjson })],
     })
-    // Expose for debugging in DevTools console
+    // SECURITY: Only expose tRPC client in test mode.
+    // The test router is also conditionally registered (see routers/index.ts),
+    // so even if window.trpc is accessed in production, test.* procedures won't exist.
     if (typeof window !== "undefined") {
-      ;(window as any).trpcClient = client
-      // 测试模式下暴露为 window.trpc 以便测试访问
       const isTestMode = (window as any).desktopApi?.isTestMode === true
       if (isTestMode) {
-        // 暴露 vanilla proxy client（支持 query/mutation/subscription 方法）
+        // Expose vanilla proxy client for e2e tests
         ;(window as any).trpc = vanillaTrpcClient
+      }
+      // Debug-only: expose for DevTools console access (dev builds only)
+      if (process.env.NODE_ENV === "development") {
+        ;(window as any).trpcClient = client
       }
     }
     return client

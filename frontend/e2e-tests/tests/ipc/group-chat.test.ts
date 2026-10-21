@@ -2,35 +2,15 @@
  * IPC 单元测试 - Group Chat Router
  */
 
-import { test, expect, describe, beforeAll, afterAll } from '@playwright/test'
-import { launchElectron } from '../../fixtures/electron-launcher'
+import { test, expect, describe } from '@playwright/test'
+import { createTestContext } from '../../fixtures/test-context'
 
 describe('IPC: Group Chat Router', () => {
-  let electron: any
-  let page: any
-
-  beforeAll(async () => {
-    electron = await launchElectron({
-      extraEnv: { NODE_ENV: 'test', ELECTRON_TEST_MODE: 'true' },
-    })
-    page = electron.page
-
-    process.on('exit', async () => {
-      if (electron) { try { await electron.close() } catch (e) { /* ignore */ } }
-    })
-    process.on('SIGINT', async () => {
-      if (electron) { await electron.close() }
-      process.exit(130)
-    })
-  })
-
-  afterAll(async () => {
-    await electron.close()
-  })
+  const ctx = createTestContext()
 
   describe('groupChat.listMembers', () => {
     test('应该返回数组', async () => {
-      const members = await page.evaluate(async () => {
+      const members = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.groupChat.listMembers.query({ chatId: 'test-chat' })
       })
 
@@ -41,7 +21,7 @@ describe('IPC: Group Chat Router', () => {
   describe('groupChat.addMember', () => {
     test('应该抛出错误（已禁用）', async () => {
       await expect(
-        page.evaluate(async () => {
+        ctx.page.evaluate(async () => {
           return await (window as any).trpc.groupChat.addMember.mutate({
             chatId: 'test',
             agentCommand: 'test',
@@ -55,7 +35,7 @@ describe('IPC: Group Chat Router', () => {
   describe('groupChat.removeMember', () => {
     test('应该抛出错误（已禁用）', async () => {
       await expect(
-        page.evaluate(async () => {
+        ctx.page.evaluate(async () => {
           return await (window as any).trpc.groupChat.removeMember.mutate({
             chatId: 'test',
             agentId: 'test-agent',
@@ -68,7 +48,7 @@ describe('IPC: Group Chat Router', () => {
   describe('groupChat.sendToAgent', () => {
     test('应该成功或因为后端问题而失败', async () => {
       try {
-        const result = await page.evaluate(async () => {
+        const result = await ctx.page.evaluate(async () => {
           return await (window as any).trpc.groupChat.sendToAgent.mutate({
             chatId: 'test-chat',
             agentCommand: 'test-agent',

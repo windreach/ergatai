@@ -647,7 +647,7 @@ async fn async_main(args: Args) -> Result<()> {
                         let ws_count = workspaces.len();
                         for ws in workspaces {
                             permission_handler
-                                .register_workspace(ws.workspace_id, ws.work_dir.into())
+                                .register_workspace(ws.workspace_id.as_i64(), ws.work_dir.into())
                                 .await;
                         }
                         tracing::info!(

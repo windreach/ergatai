@@ -4,6 +4,8 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
+use crate::typed_ids::IdParseError;
+
 /// Boxed error type for source chains
 type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
@@ -307,6 +309,12 @@ impl From<serde_json::Error> for ErgataiError {
 impl From<rusqlite::Error> for ErgataiError {
     fn from(err: rusqlite::Error) -> Self {
         ErgataiError::DatabaseError(err.to_string())
+    }
+}
+
+impl From<IdParseError> for ErgataiError {
+    fn from(err: IdParseError) -> Self {
+        ErgataiError::InvalidArgument(err.to_string())
     }
 }
 

@@ -35,9 +35,10 @@ export interface ErgataiAgent {
 /** Agent bound to a chat (from GET /api/v1/chats/:chatId/agents) */
 export interface ChatAgent {
   agent_id: string
-  command: string
-  status: string
-  bound_at: string
+  conversation_id: string
+  state: string
+  profile: string | null
+  last_heartbeat: string
 }
 
 /** Result of spawning a new agent session */

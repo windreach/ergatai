@@ -23,6 +23,7 @@ use ergatai_core::cross_agent::{
     try_set_session_dag_scheduler, DagScheduler,
 };
 use ergatai_core::orchestration::{parse_dag_auto, DagContext, TaskGraph, TaskStatus};
+use ergatai_error::ChatId;
 
 // ── 领域类型 ──────────────────────────────────────────────────────────
 
@@ -229,8 +230,8 @@ pub async fn submit_dag(req: DagSubmitRequest) -> Result<DagSubmitResponse> {
             wid.clone()
         } else {
             // Try to get workspace_id from chat
-            let chat_id_i64 = chat_id.parse::<i64>()?;
-            match user_data_db::chats::get(chat_id_i64)? {
+            let chat_id = ChatId::decode(chat_id)?;
+            match user_data_db::chats::get(chat_id)? {
                 Some(chat) => chat.workspace_id.to_string(),
                 None => anyhow::bail!("Chat {} not found", chat_id),
             }

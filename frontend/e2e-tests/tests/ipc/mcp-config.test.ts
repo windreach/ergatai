@@ -57,7 +57,7 @@ describe('IPC: MCP Config Router', () => {
   describe('claude.getAllMcpConfig', () => {
     test('应该返回配置对象', async () => {
       const config = await page.evaluate(async () => {
-        return await (window as any).trpc.claude.getAllMcpConfig.query()
+        return await (window as any).trpc.mcp.getAllMcpConfig.query()
       })
 
       expect(config).toBeDefined()
@@ -68,7 +68,7 @@ describe('IPC: MCP Config Router', () => {
   describe('claude.getMcpConfig', () => {
     test('应该返回特定配置', async () => {
       const config = await page.evaluate(async () => {
-        return await (window as any).trpc.claude.getMcpConfig.query()
+        return await (window as any).trpc.mcp.getMcpConfig.query()
       })
 
       expect(config).toBeDefined()
@@ -87,7 +87,7 @@ describe('IPC: MCP Config Router', () => {
       }
 
       const result = await page.evaluate(async (config: any) => {
-        return await (window as any).trpc.claude.addMcpServer.mutate(config)
+        return await (window as any).trpc.mcp.addMcpServer.mutate(config)
       }, serverConfig)
 
       expect(result).toBeDefined()
@@ -106,7 +106,7 @@ describe('IPC: MCP Config Router', () => {
       }
 
       await page.evaluate(async (config: any) => {
-        await (window as any).trpc.claude.addMcpServer.mutate(config)
+        await (window as any).trpc.mcp.addMcpServer.mutate(config)
       }, serverConfig)
 
       // 更新服务器配置
@@ -119,7 +119,7 @@ describe('IPC: MCP Config Router', () => {
       }
 
       const result = await page.evaluate(async (config: any) => {
-        return await (window as any).trpc.claude.updateMcpServer.mutate(config)
+        return await (window as any).trpc.mcp.updateMcpServer.mutate(config)
       }, updatedConfig)
 
       expect(result).toBeDefined()
@@ -139,12 +139,12 @@ describe('IPC: MCP Config Router', () => {
       }
 
       await page.evaluate(async (config: any) => {
-        await (window as any).trpc.claude.addMcpServer.mutate(config)
+        await (window as any).trpc.mcp.addMcpServer.mutate(config)
       }, serverConfig)
 
       // 移除服务器
       const result = await page.evaluate(async (name: string) => {
-        return await (window as any).trpc.claude.removeMcpServer.mutate({ name })
+        return await (window as any).trpc.mcp.removeMcpServer.mutate({ name })
       }, serverName)
 
       expect(result).toBeDefined()
@@ -160,7 +160,7 @@ describe('IPC: MCP Config Router', () => {
       }
 
       const result = await page.evaluate(async (config: any) => {
-        return await (window as any).trpc.claude.setMcpBearerToken.mutate(config)
+        return await (window as any).trpc.mcp.setMcpBearerToken.mutate(config)
       }, tokenConfig)
 
       expect(result).toBeDefined()
@@ -175,7 +175,7 @@ describe('IPC: MCP Config Router', () => {
 
       try {
         await page.evaluate(async () => {
-          await (window as any).trpc.claude.refreshMcpConfig.mutate()
+          await (window as any).trpc.mcp.refreshMcpConfig.mutate()
         })
       } catch (e) {
         error = e

@@ -658,7 +658,7 @@ export const ChatInputArea = memo(function ChatInputArea({
     data: allMcpConfig,
     isLoading: isMcpLoading,
     refetch: refetchMcp,
-  } = trpc.claude.getAllMcpConfig.useQuery(undefined, {
+  } = trpc.mcp.getAllMcpConfig.useQuery(undefined, {
     staleTime: 5 * 60 * 1000,
   })
 

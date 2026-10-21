@@ -101,7 +101,7 @@ export function PermissionApprovalPanel({
       staleTime: APPROVED_POLL_INTERVAL_MS,
       refetchInterval: APPROVED_POLL_INTERVAL_MS,
     })
-  const mcpConfigQuery = trpc.claude.getAllMcpConfig.useQuery(undefined, {
+  const mcpConfigQuery = trpc.mcp.getAllMcpConfig.useQuery(undefined, {
     staleTime: MCP_POLL_INTERVAL_MS,
     refetchInterval: MCP_POLL_INTERVAL_MS,
   })
@@ -151,7 +151,7 @@ export function PermissionApprovalPanel({
   const approveAllMcpMutation =
     trpc.claudeSettings.approveAllPluginMcpServers.useMutation()
   const respondToolApprovalMutation =
-    trpc.claude.respondToolApproval.useMutation()
+    trpc.mcp.respondToolApproval.useMutation()
 
   const backendPendingRequests = useMemo<BackendPendingRequest[]>(() => {
     return normalizePendingRequests(pendingPermissionsQuery.data)

@@ -3,7 +3,7 @@
 //! This module provides the persistence callback that saves accumulated agent
 //! outputs to the messages table when a turn completes.
 
-use ergatai_error::id::generate;
+use ergatai_error::{ChatId, CollaborationSessionId, ConversationId, WorkspaceId};
 use ergatai_runtime::AgentOutputData;
 
 /// Build complete parts array from agent output data.
@@ -130,7 +130,8 @@ pub async fn persist_agent_output(
         move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // Ensure conversation record exists (FOREIGN KEY constraint)
             // Try to get the conversation; if it doesn't exist, create a minimal record
-            let conv_exists = match conversations::get(output_data.conversation_id) {
+            let conversation_id = ConversationId::new(output_data.conversation_id);
+            let conv_exists = match conversations::get(conversation_id) {
                 Ok(Some(_)) => true,
                 Ok(None) => false,
                 Err(e) => {
@@ -145,17 +146,14 @@ pub async fn persist_agent_output(
 
             if !conv_exists {
                 // Generate unique IDs for each entity to avoid ID collisions
-                let workspace_id = generate();
-                let chat_id = generate();
-                let collab_session_id = generate();
+                let workspace_id = WorkspaceId::generate();
+                let chat_id = ChatId::generate();
+                let collab_session_id = CollaborationSessionId::generate();
 
                 // Create a default workspace record (required by FOREIGN KEY)
                 let workspace = crate::user_data_db::Workspace {
                     workspace_id,
-                    name: format!(
-                        "Auto-generated workspace for {}",
-                        output_data.conversation_id
-                    ),
+                    name: format!("Auto-generated workspace for {}", conversation_id),
                     work_dir: std::env::temp_dir().to_string_lossy().into_owned(),
                     env: "{}".to_string(),
                     resources: "{}".to_string(),
@@ -168,7 +166,7 @@ pub async fn persist_agent_output(
                 };
                 if let Err(e) = crate::user_data_db::workspaces::create(workspace) {
                     tracing::warn!(
-                        workspace_id = workspace_id,
+                        workspace_id = %workspace_id,
                         error = %e,
                         "Failed to create auto-generated workspace (may already exist)"
                     );
@@ -178,10 +176,7 @@ pub async fn persist_agent_output(
                 let chat = crate::user_data_db::Chat {
                     chat_id,
                     workspace_id,
-                    name: Some(format!(
-                        "Auto-generated chat for {}",
-                        output_data.conversation_id
-                    )),
+                    name: Some(format!("Auto-generated chat for {}", conversation_id)),
                     collaboration_mode: Some(DEFAULT_COLLABORATION_MODE.to_string()),
                     worktree_path: None,
                     branch: None,
@@ -194,7 +189,7 @@ pub async fn persist_agent_output(
                 };
                 if let Err(e) = crate::user_data_db::chats::create(chat) {
                     tracing::warn!(
-                        chat_id = chat_id,
+                        chat_id = %chat_id,
                         error = %e,
                         "Failed to create auto-generated chat (may already exist)"
                     );
@@ -215,7 +210,7 @@ pub async fn persist_agent_output(
                 if let Err(e) = crate::user_data_db::collaboration_sessions::create(collab_session)
                 {
                     tracing::warn!(
-                        collaboration_session_id = collab_session_id,
+                        collaboration_session_id = %collab_session_id,
                         error = %e,
                         "Failed to create auto-generated collaboration session (may already exist)"
                     );
@@ -223,13 +218,13 @@ pub async fn persist_agent_output(
 
                 // Finally create the conversation record
                 let conv = Conversation {
-                    conversation_id: output_data.conversation_id,
+                    conversation_id,
                     collaboration_session_id: collab_session_id,
                     chat_id,
                     parent_id: None,
                     name: Some(format!(
                         "Auto-generated for agent output {}",
-                        output_data.conversation_id
+                        conversation_id
                     )),
                     mode: "agent".to_string(),
                     participant_role: "assistant".to_string(),
@@ -263,7 +258,7 @@ pub async fn persist_agent_output(
 
             // Insert into messages table with agent output fields
             messages::append_with_output(
-                output_data.conversation_id,
+                conversation_id,
                 &output_data.role,
                 parts,
                 serde_json::json!({}),

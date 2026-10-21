@@ -534,10 +534,11 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/conversations/{conversation_id}/unarchive",
             post(api::user_conversations::unarchive_conversation),
         )
-        // Conversation Messages (read-only)
+        // Conversation Messages
         .route(
             "/api/v1/conversations/{conversation_id}/messages",
-            get(api::user_conversations::list_conversation_messages),
+            get(api::user_conversations::list_conversation_messages)
+                .post(api::user_conversations::create_conversation_messages),
         )
         .route(
             "/api/v1/conversations/{conversation_id}/file-changes",
@@ -1136,6 +1137,23 @@ pub mod http_error {
         ergatai_error::id::parse_to_i64(id_str)
             .ok_or_else(|| bad_request(format!("Invalid {} ID format: '{}'", resource, id_str)))
     }
+
+    /// Parse a typed Snowflake ID string, returning 400 if invalid.
+    pub fn parse_typed_id<T>(
+        id_str: &str,
+        resource: &str,
+    ) -> Result<T, (StatusCode, Json<serde_json::Value>)>
+    where
+        T: std::str::FromStr,
+        T::Err: std::fmt::Display,
+    {
+        T::from_str(id_str).map_err(|error| {
+            bad_request(format!(
+                "Invalid {} ID format: '{}' ({error})",
+                resource, id_str
+            ))
+        })
+    }
 }
 
 /// Run a blocking operation on the thread pool with unified error handling.
@@ -1178,7 +1196,8 @@ where
 ///     a client with API access from spawning agents in arbitrary host
 ///     directories such as `/etc`, `/root`, or another user's project.
 pub fn validate_cwd(cwd: &str) -> anyhow::Result<PathBuf, String> {
-    let path = Path::new(cwd);
+    let expanded = expand_home_path(cwd);
+    let path = expanded.as_path();
 
     for component in path.components() {
         if matches!(component, std::path::Component::ParentDir) {
@@ -1224,4 +1243,17 @@ pub fn validate_cwd(cwd: &str) -> anyhow::Result<PathBuf, String> {
     }
 
     Ok(canonical)
+}
+
+/// Expand a leading `~` or `~/...` using the current user's home directory.
+pub fn expand_home_path(path: &str) -> PathBuf {
+    if path == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path));
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(path)
 }

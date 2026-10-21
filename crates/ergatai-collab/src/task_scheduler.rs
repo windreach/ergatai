@@ -865,7 +865,8 @@ impl TaskScheduler {
         // NATS JetStream redelivers after `nak`, consumer restart, or `ack_wait`
         // timeout can all cause the same task_id to reach this handler more than
         // once. Without this guard the task would be launched a second time.
-        if !self.try_insert_seen(payload.task_id.clone()).await {
+        let task_id_string = payload.task_id.to_string();
+        if !self.try_insert_seen(task_id_string.clone()).await {
             tracing::warn!(
                 task_id = %payload.task_id,
                 "Duplicate NATS task delivery rejected (already seen in this process)"
@@ -880,7 +881,7 @@ impl TaskScheduler {
             .as_secs();
 
         let pending = PendingTask {
-            task_id: payload.task_id.clone(),
+            task_id: task_id_string.clone(),
             plan_file: canonical.clone(),
             target_agent: payload.target_agent.clone(),
             submitted_at: now,
@@ -888,10 +889,10 @@ impl TaskScheduler {
         };
 
         // Build a minimal TaskPlan from the payload
-        let objective = extract_objective_from_plan(&payload.plan_content, &payload.task_id);
+        let objective = extract_objective_from_plan(&payload.plan_content, &task_id_string);
 
         let plan = TaskPlan {
-            task_id: payload.task_id.clone(),
+            task_id: task_id_string.clone(),
             task_name: objective.clone(),
             coordinator: "nats".to_string(),
             status: super::task_coordinator::PlanStatus::InProgress,
@@ -1010,7 +1011,7 @@ impl TaskScheduler {
                         );
 
                         // Cancel the running task (releases concurrency permit)
-                        scheduler.cancel_running_task(task_id).await;
+                        scheduler.cancel_running_task(&task_id.to_string()).await;
                     }
                 }
             }

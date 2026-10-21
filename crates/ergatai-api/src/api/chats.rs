@@ -8,7 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use ergatai_core::id::{format as format_id, generate, IdType};
+use ergatai_error::{ChatId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
@@ -64,9 +64,9 @@ fn db_error(operation: &'static str, error: rusqlite::Error) -> Response {
 
 fn chat_to_response(chat: Chat) -> ChatResponse {
     ChatResponse {
-        id: format_id(chat.chat_id, IdType::Chat),
+        id: chat.chat_id.to_string(),
         name: chat.name,
-        workspace_id: format_id(chat.workspace_id, IdType::Workspace),
+        workspace_id: chat.workspace_id.to_string(),
         collaboration_mode: chat.collaboration_mode,
         worktree_path: chat.worktree_path,
         branch: chat.branch,
@@ -98,14 +98,14 @@ pub async fn list_chats(
     State(_state): State<AppState>,
     Query(params): Query<ListChatsParams>,
 ) -> impl IntoResponse {
-    let workspace_id_i64 = match params.workspace_id.as_deref() {
-        Some(ws_id) => match crate::http_error::parse_id_or_not_found(ws_id, "Workspace") {
+    let workspace_id = match params.workspace_id.as_deref() {
+        Some(ws_id) => match crate::http_error::parse_typed_id::<WorkspaceId>(ws_id, "Workspace") {
             Ok(id) => Some(id),
             Err((status, json)) => return (status, json).into_response(),
         },
         None => None,
     };
-    match tokio::task::spawn_blocking(move || user_data_db::chats::list(workspace_id_i64)).await {
+    match tokio::task::spawn_blocking(move || user_data_db::chats::list(workspace_id)).await {
         Ok(Ok(chats)) => {
             let response: Vec<ChatResponse> = chats.into_iter().map(chat_to_response).collect();
             (StatusCode::OK, Json(response)).into_response()
@@ -140,12 +140,11 @@ pub async fn create_chat(
         return crate::http_error::bad_request("Workspace ID cannot be empty").into_response();
     }
 
-    let workspace_id_i64 =
-        match crate::http_error::parse_id_or_not_found(&req.workspace_id, "Workspace") {
+    let workspace_id_for_check =
+        match crate::http_error::parse_typed_id::<WorkspaceId>(&req.workspace_id, "Workspace") {
             Ok(id) => id,
             Err((status, json)) => return (status, json).into_response(),
         };
-    let workspace_id_for_check = workspace_id_i64;
     match tokio::task::spawn_blocking(move || user_data_db::workspaces::get(workspace_id_for_check))
         .await
     {
@@ -166,16 +165,16 @@ pub async fn create_chat(
         .unwrap()
         .as_secs() as i64;
 
-    let workspace_id_i64_for_create =
-        match crate::http_error::parse_id_or_not_found(&req.workspace_id, "Workspace") {
+    let workspace_id_for_create =
+        match crate::http_error::parse_typed_id::<WorkspaceId>(&req.workspace_id, "Workspace") {
             Ok(id) => id,
             Err((status, json)) => return (status, json).into_response(),
         };
 
     let chat = Chat {
-        chat_id: generate(),
+        chat_id: ChatId::generate(),
         name: req.name,
-        workspace_id: workspace_id_i64_for_create,
+        workspace_id: workspace_id_for_create,
         collaboration_mode: req
             .collaboration_mode
             .or_else(|| Some(DEFAULT_COLLABORATION_MODE.to_string())),
@@ -215,16 +214,16 @@ pub async fn create_chat(
     )
 )]
 pub async fn get_chat(State(_state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
-    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Chat") {
+    let id = match crate::http_error::parse_typed_id::<ChatId>(&id, "Chat") {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
-    match tokio::task::spawn_blocking(move || user_data_db::chats::get(id_i64)).await {
+    match tokio::task::spawn_blocking(move || user_data_db::chats::get(id)).await {
         Ok(Ok(Some(chat))) => {
             let response = chat_to_response(chat);
             (StatusCode::OK, Json(response)).into_response()
         }
-        Ok(Ok(None)) => crate::http_error::not_found("Chat", &id).into_response(),
+        Ok(Ok(None)) => crate::http_error::not_found("Chat", &id.to_string()).into_response(),
         Ok(Err(error)) => db_error("Failed to get chat", error),
         Err(e) => crate::http_error::internal(e, "get_chat_join").into_response(),
     }
@@ -248,11 +247,11 @@ pub async fn archive_chat(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Chat") {
+    let id = match crate::http_error::parse_typed_id::<ChatId>(&id, "Chat") {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
-    match tokio::task::spawn_blocking(move || user_data_db::chats::archive(id_i64)).await {
+    match tokio::task::spawn_blocking(move || user_data_db::chats::archive(id)).await {
         Ok(Ok(_)) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(error)) => db_error("Failed to archive chat", error),
         Err(e) => crate::http_error::internal(e, "archive_chat_join").into_response(),
@@ -277,11 +276,11 @@ pub async fn unarchive_chat(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Chat") {
+    let id = match crate::http_error::parse_typed_id::<ChatId>(&id, "Chat") {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
-    match tokio::task::spawn_blocking(move || user_data_db::chats::unarchive(id_i64)).await {
+    match tokio::task::spawn_blocking(move || user_data_db::chats::unarchive(id)).await {
         Ok(Ok(_)) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(error)) => db_error("Failed to unarchive chat", error),
         Err(e) => crate::http_error::internal(e, "unarchive_chat_join").into_response(),
@@ -305,11 +304,11 @@ pub async fn delete_chat(
     State(_state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let id_i64 = match crate::http_error::parse_id_or_not_found(&id, "Chat") {
+    let id = match crate::http_error::parse_typed_id::<ChatId>(&id, "Chat") {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
-    match tokio::task::spawn_blocking(move || user_data_db::chats::delete(id_i64)).await {
+    match tokio::task::spawn_blocking(move || user_data_db::chats::delete(id)).await {
         Ok(Ok(_)) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(error)) => db_error("Failed to delete chat", error),
         Err(e) => crate::http_error::internal(e, "delete_chat_join").into_response(),
@@ -332,23 +331,23 @@ pub async fn list_chat_agents(
     Path(chat_id): Path<String>,
 ) -> Response {
     // 1. 查询该 chat 下所有 conversations
-    let chat_id_i64 = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+    let chat_id = match crate::http_error::parse_typed_id::<ChatId>(&chat_id, "Chat") {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
     let chat_exists = matches!(
         tokio::task::spawn_blocking({
-            let cid = chat_id_i64;
+            let cid = chat_id;
             move || crate::user_data_db::chats::get(cid)
         })
         .await,
         Ok(Ok(Some(_)))
     );
     if !chat_exists {
-        return crate::http_error::not_found("Chat", &chat_id).into_response();
+        return crate::http_error::not_found("Chat", &chat_id.to_string()).into_response();
     }
     let conversations = match tokio::task::spawn_blocking({
-        move || crate::user_data_db::conversations::list_by_chat(chat_id_i64)
+        move || crate::user_data_db::conversations::list_by_chat(chat_id)
     })
     .await
     {
@@ -362,7 +361,7 @@ pub async fn list_chat_agents(
     let mut agents = Vec::new();
 
     for conv in conversations {
-        let conversation_id_str = format_id(conv.conversation_id, IdType::Conversation);
+        let conversation_id_str = conv.conversation_id.to_string();
         if let Some(agent) = registry.get_by_conversation_id(&conversation_id_str).await {
             if agent.state.is_alive() {
                 agents.push(serde_json::json!({
@@ -411,14 +410,14 @@ pub async fn get_agent_graph(
     Path(chat_id): Path<String>,
 ) -> Response {
     // 0. Ensure the chat still exists (deleted chats must yield 404).
-    let chat_id_i64 = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+    let chat_id = match crate::http_error::parse_typed_id::<ChatId>(&chat_id, "Chat") {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
-    match tokio::task::spawn_blocking(move || crate::user_data_db::chats::get(chat_id_i64)).await {
+    match tokio::task::spawn_blocking(move || crate::user_data_db::chats::get(chat_id)).await {
         Ok(Ok(Some(_))) => {}
         Ok(Ok(None)) => {
-            return crate::http_error::not_found("Chat", &chat_id).into_response();
+            return crate::http_error::not_found("Chat", &chat_id.to_string()).into_response();
         }
         Ok(Err(e)) => return crate::http_error::internal(e, "get chat").into_response(),
         Err(e) => {
@@ -430,7 +429,7 @@ pub async fn get_agent_graph(
         }
     }
     let conversations = match tokio::task::spawn_blocking({
-        move || crate::user_data_db::conversations::list_by_chat(chat_id_i64)
+        move || crate::user_data_db::conversations::list_by_chat(chat_id)
     })
     .await
     {
@@ -448,7 +447,7 @@ pub async fn get_agent_graph(
         std::collections::HashMap::new();
 
     for conv in &conversations {
-        let conversation_id_str = format_id(conv.conversation_id, IdType::Conversation);
+        let conversation_id_str = conv.conversation_id.to_string();
         if let Some(agent) = registry.get_by_conversation_id(&conversation_id_str).await {
             if agent.state.is_alive() {
                 let agent_id = agent.agent_id.clone();
@@ -556,7 +555,7 @@ pub async fn patch_chat(
     Json(req): Json<PatchChatRequest>,
 ) -> impl IntoResponse {
     // Get existing chat
-    let chat_id_for_get = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+    let chat_id_for_get = match crate::http_error::parse_typed_id::<ChatId>(&chat_id, "Chat") {
         Ok(id) => id,
         Err((status, json)) => return (status, json).into_response(),
     };
@@ -582,7 +581,7 @@ pub async fn patch_chat(
                 Ok(Ok(())) => {
                     // Fetch updated chat
                     let chat_id_for_refetch =
-                        match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+                        match crate::http_error::parse_typed_id::<ChatId>(&chat_id, "Chat") {
                             Ok(id) => id,
                             Err((status, json)) => return (status, json).into_response(),
                         };

@@ -329,18 +329,6 @@ async fn process_messages(
 }
 
 /// Handle a single message: deserialize, deliver, ack/nak.
-/// Parse conversation_id to i64 using the ID module's parse_to_i64 function with fallback.
-/// Returns Some(id) if parsing succeeds, None otherwise.
-fn parse_conversation_id_with_fallback(conversation_id: &str) -> Option<i64> {
-    // Try the ID module's parse_to_i64 function first
-    if let Some(id) = ergatai_core::id::parse_to_i64(conversation_id) {
-        Some(id)
-    } else {
-        // Fallback: try direct parse for backward compatibility
-        conversation_id.parse::<i64>().ok()
-    }
-}
-
 async fn handle_message(msg: &async_nats::jetstream::Message) {
     // Deserialize the payload
     let payload: AgentMessagePayload = match serde_json::from_slice(&msg.payload) {
@@ -505,7 +493,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
     // Choose delivery method based on whether images are present
     let delivery_result = if payload.images.is_empty() {
         runtime
-            .inject_message_to_conversation(&conversation_id, formatted_message)
+            .inject_message_to_conversation(&conversation_id.to_string(), formatted_message)
             .await
     } else {
         // Convert NATS AgentImage to runtime AgentImage
@@ -521,7 +509,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
 
         runtime
             .inject_message_to_conversation_with_images(
-                &conversation_id,
+                &conversation_id.to_string(),
                 formatted_message,
                 runtime_images,
             )
@@ -560,19 +548,6 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
             // in its local state (they were just sent by the user)
             if from == "user" {
                 // Parse conversation_id to i64 with fallback
-                let conversation_id_i64 =
-                    match parse_conversation_id_with_fallback(&conversation_id) {
-                        Some(id) => id,
-                        None => {
-                            error!(
-                                message_id = %payload.message_id,
-                                conversation_id = %conversation_id,
-                                "Invalid conversation ID format, cannot persist message"
-                            );
-                            // Message was delivered but we can't persist - just log and continue
-                            return;
-                        }
-                    };
                 let message_content = payload.content.clone();
                 let message_id_for_persist = payload.message_id.clone();
 
@@ -592,7 +567,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                 // Persist user message to SQLite (NO SSE publish)
                 let append_result = tokio::task::spawn_blocking(move || {
                     crate::user_data_db::messages::append(
-                        conversation_id_i64,
+                        conversation_id.clone(),
                         "user",
                         serde_json::Value::Array(parts),
                         serde_json::json!({}), // No metadata needed - role="user" already indicates source
@@ -631,19 +606,6 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
             // If this is an agent message (not from user), persist it to SQLite and publish to SSE
             if from != "user" {
                 // Parse conversation_id to i64 with fallback
-                let conversation_id_i64 =
-                    match parse_conversation_id_with_fallback(&conversation_id) {
-                        Some(id) => id,
-                        None => {
-                            error!(
-                                message_id = %payload.message_id,
-                                conversation_id = %conversation_id,
-                                "Invalid conversation ID format, cannot persist agent message"
-                            );
-                            let _ = msg.ack().await;
-                            return;
-                        }
-                    };
                 let message_content = payload.content.clone();
                 let message_id_for_persist = payload.message_id.clone();
                 let from_agent = from.to_string();
@@ -701,7 +663,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                     };
 
                     crate::user_data_db::messages::append(
-                        conversation_id_i64,
+                        conversation_id.clone(),
                         role,
                         serde_json::json!([{ "type": "text", "text": message_content }]), // Keep original JSON in parts for backward compatibility
                         metadata,

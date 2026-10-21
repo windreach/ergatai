@@ -135,7 +135,7 @@ impl FileEventsConsumer {
                             FileEvent::Ready(payload) => {
                                 info!(
                                     file_path = payload.file_path,
-                                    agent_id = payload.agent_id,
+                                    agent_id = payload.agent_id.to_string(),
                                     "File ready event received"
                                 );
                                 if let Err(e) = self
@@ -153,7 +153,7 @@ impl FileEventsConsumer {
                             FileEvent::Error(payload) => {
                                 warn!(
                                     file_path = payload.file_path,
-                                    agent_id = payload.agent_id,
+                                    agent_id = payload.agent_id.to_string(),
                                     reason = payload.reason,
                                     "File error event received"
                                 );

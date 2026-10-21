@@ -57,9 +57,17 @@ export function AgentsDefaultView({
 
   // Handle workspace selection -> find or create workspace
   const handleWorkspaceSelected = useCallback(
-    (workspace: { id: string; name: string; path: string }) => {
+    async (workspace: { id: string; name: string; path: string }) => {
+      // Fetch fresh workspace list to avoid creating duplicates due to stale cache
+      const freshWorkspaces = await utils.ergatai.listManagedWorkspaces.fetch({
+        collaborationMode,
+      })
+      const freshModeWorkspaces = freshWorkspaces.filter(
+        (ws) => ws.collaborationMode === collaborationMode,
+      )
+
       // Check if workspace already exists for this project path
-      const existingWorkspace = modeWorkspaces?.find(
+      const existingWorkspace = freshModeWorkspaces.find(
         (ws) => ws.workDir === workspace.path
       )
       if (existingWorkspace) {
@@ -77,12 +85,12 @@ export function AgentsDefaultView({
       })
     },
     [
-      modeWorkspaces,
       collaborationMode,
       createWorkspaceMutation,
       setSelectedWorkspaceId,
       setShowNewChatForm,
       onWorkspaceCreated,
+      utils.ergatai.listManagedWorkspaces,
     ],
   )
 

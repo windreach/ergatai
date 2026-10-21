@@ -10,7 +10,7 @@
 //! level through the shared `impl DagScheduler` block.
 
 use ergatai_dag::{TaskNode, TaskStatus};
-use ergatai_error::{ErgataiError, ErgataiResult};
+use ergatai_error::{DagId, ErgataiError, ErgataiResult, TaskId};
 
 use super::DagScheduler;
 
@@ -216,11 +216,14 @@ impl DagScheduler {
             if let Some(conn) = ergatai_nats::get_nats_connection().await {
                 let bus = ergatai_nats::EventBus::new(conn);
                 let plan_content = tokio::fs::read_to_string(&plan_file).await?;
-                let dag_id = self.dag_id().to_string();
+                let dag_id = DagId::decode(self.dag_id())
+                    .map_err(|error| ErgataiError::InvalidArgument(error.to_string()))?;
+                let typed_task_id = TaskId::decode(&task_id)
+                    .map_err(|error| ErgataiError::InvalidArgument(error.to_string()))?;
                 let scope = self.collaboration_scope.clone();
 
                 let payload = ergatai_nats::TaskSubmitPayload {
-                    task_id: task_id.clone(),
+                    task_id: typed_task_id,
                     plan_content,
                     plan_file: plan_file.to_string_lossy().to_string(),
                     target_agent: node.agent.clone(),
@@ -234,7 +237,7 @@ impl DagScheduler {
                 };
 
                 bus.publish_task_submit(&payload).await?;
-                tracing::info!(task_id = task_id, "Submitted node via NATS event");
+                tracing::info!(task_id = %task_id, "Submitted node via NATS event");
 
                 // Start timeout watchdog if timeout is configured
                 if let Some(timeout_secs) = adjusted_timeout {

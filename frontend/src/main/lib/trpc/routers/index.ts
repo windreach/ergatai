@@ -1,5 +1,5 @@
 import { router } from "../index"
-import { claudeRouter } from "./claude"
+import { mcpRouter } from "./mcp"
 import { projectsRouter } from "./projects"
 import { chatsRouter } from "./chats"
 import { claudeSettingsRouter } from "./claude-settings"
@@ -25,8 +25,13 @@ import { BrowserWindow } from "electron"
  * Uses getter pattern to avoid stale window references
  */
 export function createAppRouter(getWindow: () => BrowserWindow | null) {
+  // SECURITY: Only register test router in test environment.
+  // This prevents the test router from being accessible in production,
+  // even if environment variables are injected.
+  const isTestEnv = process.env.NODE_ENV === "test"
+
   return router({
-    claude: claudeRouter,
+    mcp: mcpRouter,
     projects: projectsRouter,
     chats: chatsRouter,
     claudeSettings: claudeSettingsRouter,
@@ -43,7 +48,8 @@ export function createAppRouter(getWindow: () => BrowserWindow | null) {
     worktreeConfig: worktreeConfigRouter,
     plugins: pluginsRouter,
     groupChat: groupChatRouter,
-    test: testRouter,  // 测试模式 IPC（只在 NODE_ENV=test 时可用）
+    // Test router — only registered when NODE_ENV=test (build-time/launch-time check)
+    ...(isTestEnv ? { test: testRouter } : {}),
     // Git operations - named "changes" to match Superset API
     changes: createGitRouter(),
   })

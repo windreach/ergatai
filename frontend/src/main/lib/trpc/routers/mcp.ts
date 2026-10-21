@@ -108,7 +108,36 @@ function toMcpServerEntries(servers: Record<string, McpServerConfig>) {
   }))
 }
 
-export const claudeRouter = router({
+/**
+ * Look up a global MCP server by name via the backend API.
+ * Returns the server record or null if not found.
+ */
+async function findGlobalServerByName(
+  name: string,
+): Promise<{ id: string; name: string } | null> {
+  const data = await ergataiFetch<{ servers: Array<{ id: string; name: string }> }>(
+    "/api/v1/mcp-servers?profile_id=global",
+    { method: "GET" },
+  )
+  return data.servers.find((s) => s.name === name) ?? null
+}
+
+/**
+ * Fetch the full server record for a global MCP server by name.
+ * Throws if not found — callers should not silently succeed when
+ * the target server doesn't exist.
+ */
+async function getGlobalServerOrThrow(
+  name: string,
+): Promise<{ id: string; name: string }> {
+  const server = await findGlobalServerByName(name)
+  if (!server) {
+    throw new Error(`MCP server "${name}" not found in global config`)
+  }
+  return server
+}
+
+export const mcpRouter = router({
   /** Get all MCP servers grouped by scope - file reading removed, returns empty */
   getAllMcpConfig: publicProcedure.query(async (): Promise<{
     groups: Array<{ groupName: string; projectPath: string | null; mcpServers: McpServerEntry[] }>
@@ -205,13 +234,9 @@ export const claudeRouter = router({
       }
 
       // Global servers: use backend API
-      // First, list all servers to find the ID
-      const data = await ergataiFetch<{ servers: Array<{ id: string; name: string }> }>("/api/v1/mcp-servers?profile_id=global", {
-        method: "GET",
-      })
-      const server = data.servers.find(s => s.name === input.name)
+      const server = await getGlobalServerOrThrow(input.name)
 
-      if (server && input.disabled !== undefined) {
+      if (input.disabled !== undefined) {
         await ergataiFetch(`/api/v1/mcp-servers/${server.id}`, {
           method: "PUT",
           body: JSON.stringify({ enabled: !input.disabled }),
@@ -241,17 +266,11 @@ export const claudeRouter = router({
       }
 
       // Global servers: use backend API
-      // First, list all servers to find the ID
-      const data = await ergataiFetch<{ servers: Array<{ id: string; name: string }> }>("/api/v1/mcp-servers?profile_id=global", {
-        method: "GET",
-      })
-      const server = data.servers.find(s => s.name === input.name)
+      const server = await getGlobalServerOrThrow(input.name)
 
-      if (server) {
-        await ergataiFetch(`/api/v1/mcp-servers/${server.id}`, {
-          method: "DELETE",
-        })
-      }
+      await ergataiFetch(`/api/v1/mcp-servers/${server.id}`, {
+        method: "DELETE",
+      })
 
       return { success: true }
     }),
@@ -282,22 +301,20 @@ export const claudeRouter = router({
       }
 
       // Global servers: use backend API
-      // First, list all servers to find the ID
-      const data = await ergataiFetch<{ servers: Array<{ id: string; name: string }> }>("/api/v1/mcp-servers?profile_id=global", {
-        method: "GET",
-      })
-      const server = data.servers.find(s => s.name === input.name)
+      // SECURITY: Headers in GET responses are redacted ("***"), so we cannot
+      // safely do a GET-merge-PUT (that would write "***" into the database,
+      // destroying real values). Instead, rely on the backend's partial update
+      // semantics: PUT only updates the fields we send, leaving other headers intact.
+      const server = await getGlobalServerOrThrow(input.name)
 
-      if (server) {
-        await ergataiFetch(`/api/v1/mcp-servers/${server.id}`, {
-          method: "PUT",
-          body: JSON.stringify({
-            headers: {
-              Authorization: `Bearer ${input.token}`,
-            },
-          }),
-        })
-      }
+      await ergataiFetch(`/api/v1/mcp-servers/${server.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          headers: {
+            Authorization: `Bearer ${input.token}`,
+          },
+        }),
+      })
 
       return { success: true }
     }),

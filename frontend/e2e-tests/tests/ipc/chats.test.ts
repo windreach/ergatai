@@ -3,50 +3,15 @@
  * 通过 test router 直接测试业务逻辑（不依赖 UI）
  */
 
-import { test, expect, describe, beforeAll, afterAll, beforeEach } from '@playwright/test'
-import { launchElectron } from '../../fixtures/electron-launcher'
+import { test, expect, describe } from '@playwright/test'
+import { createTestContext } from '../../fixtures/test-context'
 
 describe('IPC: 对话管理', () => {
-  let electron: any
-  let page: any
-
-  beforeAll(async () => {
-    electron = await launchElectron({
-      extraEnv: {
-        NODE_ENV: 'test',
-        ELECTRON_TEST_MODE: 'true',
-      },
-    })
-    page = electron.page
-
-    process.on('exit', async () => {
-      if (electron) {
-        try { await electron.close() } catch (e) { /* ignore */ }
-      }
-    })
-
-    process.on('SIGINT', async () => {
-      if (electron) { await electron.close() }
-      process.exit(130)
-    })
-  })
-
-  afterAll(async () => {
-    await page.evaluate(async () => {
-      await (window as any).trpc.test.helpers.cleanup.mutate()
-    })
-    await electron.close()
-  })
-
-  beforeEach(async () => {
-    await page.evaluate(async () => {
-      await (window as any).trpc.test.helpers.cleanup.mutate()
-    })
-  })
+  const ctx = createTestContext()
 
   describe('test.chats', () => {
     test('创建对话', async () => {
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.chats.create.mutate({
           name: 'test-chat-1',
           projectId: 'test-project-1',
@@ -60,19 +25,19 @@ describe('IPC: 对话管理', () => {
     })
 
     test('列出对话（含项目过滤）', async () => {
-      await page.evaluate(async () => {
+      await ctx.page.evaluate(async () => {
         await (window as any).trpc.test.chats.create.mutate({ name: 'test-chat-1', projectId: 'project-1' })
         await (window as any).trpc.test.chats.create.mutate({ name: 'test-chat-2', projectId: 'project-1' })
         await (window as any).trpc.test.chats.create.mutate({ name: 'test-chat-3', projectId: 'project-2' })
       })
 
-      const allChats = await page.evaluate(async () => {
+      const allChats = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.chats.list.query()
       })
 
       expect(allChats.length).toBeGreaterThanOrEqual(3)
 
-      const project1Chats = await page.evaluate(async () => {
+      const project1Chats = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.chats.list.query({ projectId: 'project-1' })
       })
 
@@ -81,14 +46,14 @@ describe('IPC: 对话管理', () => {
     })
 
     test('获取单个对话', async () => {
-      const created = await page.evaluate(async () => {
+      const created = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.chats.create.mutate({
           name: 'test-chat-get',
           projectId: 'test-project-get',
         })
       })
 
-      const chat = await page.evaluate(async (id: string) => {
+      const chat = await ctx.page.evaluate(async (id: string) => {
         return await (window as any).trpc.test.chats.get.query({ id })
       }, created.id)
 
@@ -97,18 +62,18 @@ describe('IPC: 对话管理', () => {
     })
 
     test('归档对话', async () => {
-      const created = await page.evaluate(async () => {
+      const created = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.chats.create.mutate({
           name: 'test-chat-archive',
           projectId: 'test-project-archive',
         })
       })
 
-      await page.evaluate(async (id: string) => {
+      await ctx.page.evaluate(async (id: string) => {
         return await (window as any).trpc.test.chats.archive.mutate({ id })
       }, created.id)
 
-      const chat = await page.evaluate(async (id: string) => {
+      const chat = await ctx.page.evaluate(async (id: string) => {
         return await (window as any).trpc.test.chats.get.query({ id })
       }, created.id)
 
@@ -116,18 +81,18 @@ describe('IPC: 对话管理', () => {
     })
 
     test('删除对话', async () => {
-      const created = await page.evaluate(async () => {
+      const created = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.chats.create.mutate({
           name: 'test-chat-delete',
           projectId: 'test-project-delete',
         })
       })
 
-      await page.evaluate(async (id: string) => {
+      await ctx.page.evaluate(async (id: string) => {
         return await (window as any).trpc.test.chats.delete.mutate({ id })
       }, created.id)
 
-      const chats = await page.evaluate(async () => {
+      const chats = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.chats.list.query()
       })
 
@@ -136,13 +101,13 @@ describe('IPC: 对话管理', () => {
 
     test('缺少必填字段应报错', async () => {
       await expect(
-        page.evaluate(async () => {
+        ctx.page.evaluate(async () => {
           return await (window as any).trpc.test.chats.create.mutate({ name: '', projectId: 'p1' })
         })
       ).rejects.toThrow()
 
       await expect(
-        page.evaluate(async () => {
+        ctx.page.evaluate(async () => {
           return await (window as any).trpc.test.chats.create.mutate({ name: 'test-chat', projectId: '' })
         })
       ).rejects.toThrow()

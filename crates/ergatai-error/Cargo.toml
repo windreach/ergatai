@@ -10,9 +10,11 @@ description = "Error types and classification for Ergatai"
 
 [dependencies]
 thiserror = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 rusqlite = { workspace = true }
 chrono = { workspace = true }
 snowdon = "0.2"
+utoipa = "5"

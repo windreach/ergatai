@@ -105,13 +105,39 @@ pub async fn get_profile_by_name(name: &str) -> Result<Option<AgentRegistration>
 
 /// 删除指定 ID 的 agent profile。
 ///
+/// 同时删除该 profile 关联的所有 MCP 服务器配置（级联清理）。
 /// 返回 true 表示删除成功，false 表示 profile 不存在。
 pub async fn delete_profile(id: &str) -> Result<bool> {
     let registry = get_profile_registry()?;
-    registry
+    let deleted = registry
         .delete(id)
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to delete profile: {}", e))
+        .map_err(|e| anyhow::anyhow!("Failed to delete profile: {}", e))?;
+
+    // Cascade: delete MCP servers bound to this profile
+    // (profile_id FK can't be enforced at DB level because profile_registry.db is a separate database)
+    if deleted {
+        match crate::user_data_db::mcp_servers::delete_by_profile(id) {
+            Ok(count) => {
+                if count > 0 {
+                    tracing::info!(
+                        profile_id = %id,
+                        deleted_count = count,
+                        "Cascade deleted MCP servers for removed profile"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    profile_id = %id,
+                    error = %e,
+                    "Failed to cascade delete MCP servers for removed profile"
+                );
+            }
+        }
+    }
+
+    Ok(deleted)
 }
 
 /// 列出所有 profile 及其安装状态。

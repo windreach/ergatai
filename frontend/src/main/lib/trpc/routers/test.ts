@@ -30,17 +30,18 @@ const testProcedure = publicProcedure.use(async ({ next }) => {
 /**
  * Validate that a path is within allowed test directories.
  * Prevents arbitrary file system access even in test mode.
+ *
+ * SECURITY: process.cwd() is intentionally excluded because it could be
+ * any directory (e.g., /home/user, /) depending on where the app was launched.
  */
 function validateTestPath(inputPath: string): string {
   const fullPath = path.resolve(inputPath)
 
-  // Allow operations in:
-  // 1. System temp directory
-  // 2. Current working directory (for project-level tests)
-  // 3. Explicit test directories (if defined)
+  // Allow operations ONLY in safe, well-defined directories:
+  // 1. System temp directory (cleaned by OS)
+  // 2. Explicit test directories under home
   const allowedRoots = [
     os.tmpdir(),
-    process.cwd(),
     path.join(os.homedir(), '.ergatai', 'test'), // Dedicated test directory
   ]
 
@@ -767,6 +768,9 @@ export const testRouter = router({
 
     /**
      * 创建测试 agent（直接写文件）
+     *
+     * SECURITY: Only allows creating agents with names starting with "test-"
+     * to prevent accidental overwrite of real user agents in ~/.claude/agents/.
      */
     create: testProcedure
       .input(
@@ -782,6 +786,14 @@ export const testRouter = router({
         const safeName = input.name.toLowerCase().replace(/[^a-z0-9-]/g, "-")
         if (!safeName) {
           throw new Error("Invalid agent name")
+        }
+
+        // SECURITY: Enforce test- prefix for user agents to prevent overwriting real agents
+        if (input.source === "user" && !safeName.startsWith("test-")) {
+          throw new Error(
+            `User agent name must start with "test-" in test mode (got: "${safeName}"). ` +
+            `This prevents accidental overwrite of real user agents.`
+          )
         }
 
         let targetDir: string
@@ -819,6 +831,9 @@ ${input.prompt}
 
     /**
      * 删除测试 agent
+     *
+     * SECURITY: Only allows deleting agents with names starting with "test-"
+     * to prevent accidental deletion of real user agents in ~/.claude/agents/.
      */
     delete: testProcedure
       .input(
@@ -830,6 +845,14 @@ ${input.prompt}
       )
       .mutation(async ({ input }) => {
         const safeName = input.name.toLowerCase().replace(/[^a-z0-9-]/g, "-")
+
+        // SECURITY: Enforce test- prefix for user agents to prevent deleting real agents
+        if (input.source === "user" && !safeName.startsWith("test-")) {
+          throw new Error(
+            `User agent name must start with "test-" in test mode (got: "${safeName}"). ` +
+            `This prevents accidental deletion of real user agents.`
+          )
+        }
 
         let targetDir: string
         if (input.source === "project") {

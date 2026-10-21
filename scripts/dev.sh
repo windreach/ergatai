@@ -39,7 +39,7 @@ trap cleanup EXIT
 echo "── Starting backend (ergatai-api) ──"
 cd "$ROOT_DIR"
 # Start backend without hot reload (use separate terminal for development)
-RUST_LOG=info cargo run -p ergatai-api -- --host $API_HOST --port $API_PORT >> "$BACKEND_LOG" 2>&1 &
+RUST_LOG=info cargo run -p ergatai-api --bin ergatai-server -- --host "$API_HOST" --port "$API_PORT" >> "$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
 
 echo "Waiting for backend at $API_URL/health..."

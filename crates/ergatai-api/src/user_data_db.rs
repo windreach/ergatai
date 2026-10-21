@@ -5,7 +5,9 @@
 //!                                                                                   ↓
 //!                                                                           AgentSession (1:1)
 
-use ergatai_core::id::generate;
+use ergatai_error::{
+    ChatId, CollaborationSessionId, ConversationId, MessageId, ProjectId, WorkspaceId,
+};
 use once_cell::sync::Lazy;
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use serde::{Deserialize, Serialize};
@@ -182,13 +184,14 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS collaboration_session_participants (
             id TEXT PRIMARY KEY,
             session_id INTEGER NOT NULL,
-            conversation_id TEXT NOT NULL,
+            conversation_id INTEGER NOT NULL,
             agent_id TEXT NOT NULL,
             role TEXT NOT NULL DEFAULT 'peer',
             status TEXT NOT NULL DEFAULT 'active',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             FOREIGN KEY (session_id) REFERENCES collaboration_sessions(collaboration_session_id) ON DELETE CASCADE,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE,
             UNIQUE (session_id, conversation_id)
         );
         CREATE INDEX IF NOT EXISTS idx_collaboration_session_participants_session_id ON collaboration_session_participants(session_id);
@@ -354,6 +357,15 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
 
     // MCP Servers table - created separately to preserve user data across restarts
     // This table is NOT dropped in the destructive migration above
+    //
+    // NOTE: profile_id references agent_profiles(name) in profile_registry.db (a separate database).
+    // SQLite foreign keys only work within the same database, so we cannot add a FK constraint here.
+    // Instead, application-level cleanup in the agent profile deletion handler ensures orphaned
+    // MCP servers are removed when their profile is deleted (see agent_profiles API handler).
+    //
+    // SECURITY: The `env` and `headers` fields store JSON that may contain sensitive data
+    // (API keys, tokens). These are stored in plaintext in SQLite. Users should be warned
+    // not to store secrets in MCP server configuration, or we should add encryption at rest.
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS mcp_servers (
@@ -393,7 +405,7 @@ pub fn get_user_data_db() -> Arc<Mutex<Connection>> {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Workspace {
-    pub workspace_id: i64,
+    pub workspace_id: WorkspaceId,
     pub name: String,
     pub work_dir: String,
     pub env: String,
@@ -401,15 +413,15 @@ pub struct Workspace {
     pub config: String,
     pub collaboration_mode: String,
     pub status: String,
-    pub default_project_id: Option<i64>,
+    pub default_project_id: Option<ProjectId>,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Chat {
-    pub chat_id: i64,
-    pub workspace_id: i64,
+    pub chat_id: ChatId,
+    pub workspace_id: WorkspaceId,
     pub name: Option<String>,
     pub collaboration_mode: Option<String>,
     pub worktree_path: Option<String>,
@@ -440,9 +452,9 @@ pub struct Project {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CollaborationSession {
-    pub collaboration_session_id: i64,
-    pub chat_id: i64,
-    pub workspace_id: i64,
+    pub collaboration_session_id: CollaborationSessionId,
+    pub chat_id: ChatId,
+    pub workspace_id: WorkspaceId,
     pub mode: String,
     pub state: String,
     pub goal: Option<String>,
@@ -453,10 +465,10 @@ pub struct CollaborationSession {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Conversation {
-    pub conversation_id: i64,
-    pub collaboration_session_id: i64,
-    pub chat_id: i64,
-    pub parent_id: Option<i64>,
+    pub conversation_id: ConversationId,
+    pub collaboration_session_id: CollaborationSessionId,
+    pub chat_id: ChatId,
+    pub parent_id: Option<ConversationId>,
     pub name: Option<String>,
     pub mode: String,
     pub participant_role: String,
@@ -477,8 +489,8 @@ pub struct AgentSession {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Message {
-    pub message_id: i64,
-    pub conversation_id: i64,
+    pub message_id: MessageId,
+    pub conversation_id: ConversationId,
     pub sequence: i64,
     pub role: String,
     pub parts: Option<String>,
@@ -503,7 +515,7 @@ pub struct Message {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ConversationExecutionContext {
-    pub conversation_id: i64,
+    pub conversation_id: ConversationId,
     pub worktree_path: Option<String>,
     pub branch: Option<String>,
     pub base_branch: Option<String>,
@@ -513,12 +525,12 @@ pub struct ConversationExecutionContext {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct GroupAgentBinding {
-    pub workspace_id: i64,
-    pub chat_id: i64,
+    pub workspace_id: WorkspaceId,
+    pub chat_id: ChatId,
     pub agent_id: i64,
     pub agent_name: String,
     pub agent_command: Option<String>,
-    pub conversation_id: i64,
+    pub conversation_id: ConversationId,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -599,7 +611,7 @@ pub mod workspaces {
         workspaces.collect()
     }
 
-    pub fn get(workspace_id: i64) -> Result<Option<Workspace>> {
+    pub fn get(workspace_id: WorkspaceId) -> Result<Option<Workspace>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -657,7 +669,7 @@ pub mod workspaces {
         Ok(())
     }
 
-    pub fn delete(workspace_id: i64) -> Result<bool> {
+    pub fn delete(workspace_id: WorkspaceId) -> Result<bool> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         let count = conn.execute(
@@ -667,7 +679,7 @@ pub mod workspaces {
         Ok(count > 0)
     }
 
-    pub fn set_status(workspace_id: i64, status: &str) -> Result<bool> {
+    pub fn set_status(workspace_id: WorkspaceId, status: &str) -> Result<bool> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         let count = conn.execute(
@@ -769,6 +781,32 @@ pub mod projects {
         }
     }
 
+    pub fn exists_and_belongs_to(project_id: i64, workspace_id: i64) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM projects WHERE project_id = ?1 AND workspace_id = ?2",
+            params![project_id, workspace_id],
+            |row| row.get(0),
+        )?;
+
+        Ok(count > 0)
+    }
+
+    pub fn exists(project_id: i64) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM projects WHERE project_id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )?;
+
+        Ok(count > 0)
+    }
+
     pub fn update(project: Project) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
@@ -852,6 +890,9 @@ pub mod projects {
     /// Find a project by exact path match, or by prefix match (input path is a subdirectory of a project path).
     /// Returns the most specific (longest) matching project path.
     /// Example: input "/project/.ergatai/worktrees/ws/branch" matches project path "/project".
+    ///
+    /// Uses `substr` instead of `LIKE` to avoid SQL injection via LIKE wildcards (`%`, `_`)
+    /// in stored path values, and to enable more efficient index usage.
     pub fn find_by_path_or_parent(path: &str) -> Result<Option<Project>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
@@ -859,7 +900,8 @@ pub mod projects {
         let mut stmt = conn.prepare(
             "SELECT project_id, workspace_id, name, path, description, git_remote_url, git_provider, git_owner, git_repo, icon_path, created_at, updated_at
              FROM projects
-             WHERE path = ?1 OR ?1 LIKE path || '/%'
+             WHERE path = ?1
+                OR (length(?1) > length(path) AND substr(?1, 1, length(path) + 1) = path || '/')
              ORDER BY LENGTH(path) DESC
              LIMIT 1",
         )?;
@@ -918,7 +960,7 @@ pub mod chats {
         Ok(chat)
     }
 
-    pub fn list(workspace_id: Option<i64>) -> Result<Vec<Chat>> {
+    pub fn list(workspace_id: Option<WorkspaceId>) -> Result<Vec<Chat>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -947,7 +989,7 @@ pub mod chats {
         chats.collect()
     }
 
-    pub fn get(chat_id: i64) -> Result<Option<Chat>> {
+    pub fn get(chat_id: ChatId) -> Result<Option<Chat>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -1006,14 +1048,14 @@ pub mod chats {
         Ok(())
     }
 
-    pub fn delete(chat_id: i64) -> Result<()> {
+    pub fn delete(chat_id: ChatId) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         conn.execute("DELETE FROM chats WHERE chat_id = ?1", params![chat_id])?;
         Ok(())
     }
 
-    pub fn archive(chat_id: i64) -> Result<()> {
+    pub fn archive(chat_id: ChatId) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         let now = std::time::SystemTime::now()
@@ -1027,7 +1069,7 @@ pub mod chats {
         Ok(())
     }
 
-    pub fn unarchive(chat_id: i64) -> Result<()> {
+    pub fn unarchive(chat_id: ChatId) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         let now = std::time::SystemTime::now()
@@ -1076,6 +1118,9 @@ pub mod chats {
 
     /// Find a chat by exact worktree_path match, or by prefix match (input path is a subdirectory of a chat's worktree_path).
     /// Returns the most specific (longest) matching worktree_path.
+    ///
+    /// Uses `substr` instead of `LIKE` to avoid SQL injection via LIKE wildcards (`%`, `_`)
+    /// in stored worktree_path values, and to enable more efficient index usage.
     pub fn find_by_worktree_path_or_parent(path: &str) -> Result<Option<Chat>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
@@ -1083,7 +1128,8 @@ pub mod chats {
         let mut stmt = conn.prepare(
             "SELECT chat_id, workspace_id, name, collaboration_mode, worktree_path, branch, base_branch, pr_url, pr_number, created_at, updated_at, archived_at
              FROM chats
-             WHERE worktree_path = ?1 OR ?1 LIKE worktree_path || '/%'
+             WHERE worktree_path = ?1
+                OR (length(?1) > length(worktree_path) AND substr(?1, 1, length(worktree_path) + 1) = worktree_path || '/')
              ORDER BY LENGTH(worktree_path) DESC
              LIMIT 1",
         )?;
@@ -1139,7 +1185,7 @@ pub mod collaboration_sessions {
         Ok(session)
     }
 
-    pub fn list(chat_id: Option<i64>) -> Result<Vec<CollaborationSession>> {
+    pub fn list(chat_id: Option<ChatId>) -> Result<Vec<CollaborationSession>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -1165,7 +1211,9 @@ pub mod collaboration_sessions {
         sessions.collect()
     }
 
-    pub fn get(collaboration_session_id: i64) -> Result<Option<CollaborationSession>> {
+    pub fn get(
+        collaboration_session_id: CollaborationSessionId,
+    ) -> Result<Option<CollaborationSession>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -1219,7 +1267,7 @@ pub mod collaboration_sessions {
         Ok(())
     }
 
-    pub fn delete(collaboration_session_id: i64) -> Result<()> {
+    pub fn delete(collaboration_session_id: CollaborationSessionId) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         conn.execute(
@@ -1229,7 +1277,10 @@ pub mod collaboration_sessions {
         Ok(())
     }
 
-    pub fn update_state(collaboration_session_id: i64, state: &str) -> Result<()> {
+    pub fn update_state(
+        collaboration_session_id: CollaborationSessionId,
+        state: &str,
+    ) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         let now = std::time::SystemTime::now()
@@ -1272,7 +1323,7 @@ pub mod conversations {
     }
 
     pub fn list_by_collaboration_session(
-        collaboration_session_id: i64,
+        collaboration_session_id: CollaborationSessionId,
     ) -> Result<Vec<Conversation>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
@@ -1298,7 +1349,7 @@ pub mod conversations {
         conversations.collect()
     }
 
-    pub fn list_by_chat(chat_id: i64) -> Result<Vec<Conversation>> {
+    pub fn list_by_chat(chat_id: ChatId) -> Result<Vec<Conversation>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -1323,7 +1374,7 @@ pub mod conversations {
         conversations.collect()
     }
 
-    pub fn list_children(parent_id: i64) -> Result<Vec<Conversation>> {
+    pub fn list_children(parent_id: ConversationId) -> Result<Vec<Conversation>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -1350,7 +1401,7 @@ pub mod conversations {
 
     pub fn list_roots(
         _agent_id: Option<&str>,
-        workspace_id: Option<i64>,
+        workspace_id: Option<WorkspaceId>,
     ) -> Result<Vec<Conversation>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
@@ -1413,7 +1464,7 @@ pub mod conversations {
         Ok(conversations)
     }
 
-    pub fn get(conversation_id: i64) -> Result<Option<Conversation>> {
+    pub fn get(conversation_id: ConversationId) -> Result<Option<Conversation>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -1469,7 +1520,7 @@ pub mod conversations {
         Ok(())
     }
 
-    pub fn delete(conversation_id: i64) -> Result<()> {
+    pub fn delete(conversation_id: ConversationId) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         conn.execute(
@@ -1479,7 +1530,7 @@ pub mod conversations {
         Ok(())
     }
 
-    pub fn archive(conversation_id: i64, updated_at: i64) -> Result<()> {
+    pub fn archive(conversation_id: ConversationId, updated_at: i64) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         conn.execute(
@@ -1489,7 +1540,7 @@ pub mod conversations {
         Ok(())
     }
 
-    pub fn unarchive(conversation_id: i64, updated_at: i64) -> Result<()> {
+    pub fn unarchive(conversation_id: ConversationId, updated_at: i64) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         conn.execute(
@@ -1499,7 +1550,7 @@ pub mod conversations {
         Ok(())
     }
 
-    pub fn resolve_workspace_id(conversation_id: i64) -> Result<Option<i64>> {
+    pub fn resolve_workspace_id(conversation_id: ConversationId) -> Result<Option<WorkspaceId>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -1614,12 +1665,12 @@ pub mod messages {
     use super::*;
 
     /// List messages by conversation_id (alias for `list` following naming convention)
-    pub fn list_by_conversation(conversation_id: i64) -> Result<Vec<Message>> {
+    pub fn list_by_conversation(conversation_id: ConversationId) -> Result<Vec<Message>> {
         list(conversation_id)
     }
 
     /// Get the next sequence number for a conversation
-    pub async fn get_next_sequence(conversation_id: i64) -> Result<i64> {
+    pub async fn get_next_sequence(conversation_id: ConversationId) -> Result<i64> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         let sequence: i64 = conn.query_row(
@@ -1654,7 +1705,7 @@ pub mod messages {
     }
 
     /// Get a single message by message_id
-    pub fn get(message_id: i64) -> Result<Option<Message>> {
+    pub fn get(message_id: MessageId) -> Result<Option<Message>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -1697,7 +1748,7 @@ pub mod messages {
 
     /// Update a message's parts and metadata
     pub async fn update(
-        message_id: i64,
+        message_id: MessageId,
         parts: Option<String>,
         metadata: Option<String>,
     ) -> Result<Option<Message>> {
@@ -1751,7 +1802,7 @@ pub mod messages {
     }
 
     /// Delete a message by message_id
-    pub async fn delete(message_id: i64) -> Result<bool> {
+    pub async fn delete(message_id: MessageId) -> Result<bool> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         let count = conn.execute(
@@ -1761,7 +1812,7 @@ pub mod messages {
         Ok(count > 0)
     }
 
-    pub fn list(conversation_id: i64) -> Result<Vec<Message>> {
+    pub fn list(conversation_id: ConversationId) -> Result<Vec<Message>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -1796,7 +1847,10 @@ pub mod messages {
         messages.collect()
     }
 
-    pub fn list_after_sequence(conversation_id: i64, after_sequence: i64) -> Result<Vec<Message>> {
+    pub fn list_after_sequence(
+        conversation_id: ConversationId,
+        after_sequence: i64,
+    ) -> Result<Vec<Message>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -1833,7 +1887,7 @@ pub mod messages {
         messages.collect()
     }
 
-    pub fn get_last(conversation_id: i64) -> Result<Option<Message>> {
+    pub fn get_last(conversation_id: ConversationId) -> Result<Option<Message>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -1896,7 +1950,7 @@ pub mod messages {
     }
 
     pub fn append(
-        conversation_id: i64,
+        conversation_id: ConversationId,
         role: &str,
         parts: serde_json::Value,
         metadata: serde_json::Value,
@@ -1914,7 +1968,7 @@ pub mod messages {
 
     /// Append a message with optional agent output fields
     pub fn append_with_output(
-        conversation_id: i64,
+        conversation_id: ConversationId,
         role: &str,
         parts: Option<serde_json::Value>,
         metadata: serde_json::Value,
@@ -1943,7 +1997,7 @@ pub mod messages {
             .unwrap_or_else(|| "[]".to_string());
 
         let message = Message {
-            message_id: generate(),
+            message_id: MessageId::generate(),
             conversation_id,
             sequence,
             role: role.to_string(),
@@ -2000,7 +2054,9 @@ pub mod messages {
         Ok(message)
     }
 
-    pub fn list_by_collaboration_session(collaboration_session_id: i64) -> Result<Vec<Message>> {
+    pub fn list_by_collaboration_session(
+        collaboration_session_id: CollaborationSessionId,
+    ) -> Result<Vec<Message>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -2038,7 +2094,7 @@ pub mod messages {
         messages.collect()
     }
 
-    pub fn list_by_chat(chat_id: i64) -> Result<Vec<Message>> {
+    pub fn list_by_chat(chat_id: ChatId) -> Result<Vec<Message>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -2115,7 +2171,7 @@ pub mod messages {
     }
 
     pub fn replace_legacy(
-        conversation_id: i64,
+        conversation_id: ConversationId,
         messages_json: &str,
         updated_at: i64,
     ) -> Result<()> {
@@ -2138,18 +2194,19 @@ pub mod messages {
             params![conversation_id],
         )?;
 
-        let mut merged: Vec<(i64, String, String, Option<String>, i64)> =
+        let mut merged: Vec<(MessageId, String, String, Option<String>, i64)> =
             Vec::with_capacity(items.len());
         let mut payload_ids = std::collections::HashSet::with_capacity(items.len());
         for value in items.iter() {
             // Try to parse ID as i64, or generate a new one
-            let id: i64 = value
+            let id = value
                 .get("id")
-                .and_then(|v| {
-                    v.as_i64()
-                        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                .and_then(|v| match v {
+                    serde_json::Value::Number(number) => number.as_i64().map(MessageId::new),
+                    serde_json::Value::String(raw) => MessageId::decode(raw).ok(),
+                    _ => None,
                 })
-                .unwrap_or_else(generate);
+                .unwrap_or_else(MessageId::generate);
             payload_ids.insert(id);
             let role = value
                 .get("role")
@@ -2206,7 +2263,7 @@ pub mod messages {
             _ => merged.len(),
         };
 
-        let preserved_rows: Vec<(i64, String, String, Option<String>, i64)> = preserved
+        let preserved_rows: Vec<(MessageId, String, String, Option<String>, i64)> = preserved
             .iter()
             .map(|message| {
                 (
@@ -2249,7 +2306,7 @@ pub mod messages {
         Ok(())
     }
 
-    pub fn serialize_legacy(conversation_id: i64) -> Result<String> {
+    pub fn serialize_legacy(conversation_id: ConversationId) -> Result<String> {
         let messages = list(conversation_id)?;
         let values = messages
             .into_iter()
@@ -2293,7 +2350,7 @@ pub mod messages {
 
     /// List messages by conversation with pagination
     pub fn list_by_conversation_paginated(
-        conversation_id: i64,
+        conversation_id: ConversationId,
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<Vec<Message>> {
@@ -2416,7 +2473,7 @@ pub mod group_agent_bindings {
             .unwrap_or_else(|| Err(rusqlite::Error::QueryReturnedNoRows))
     }
 
-    pub fn list(chat_id: i64) -> Result<Vec<GroupAgentBinding>> {
+    pub fn list(chat_id: ChatId) -> Result<Vec<GroupAgentBinding>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -2428,17 +2485,17 @@ pub mod group_agent_bindings {
         bindings.collect()
     }
 
-    pub fn find_conversation_id(agent_id: i64) -> Result<Option<i64>> {
+    pub fn find_conversation_id(agent_id: i64) -> Result<Option<ConversationId>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
         let mut stmt = conn
             .prepare("SELECT conversation_id FROM group_agent_bindings WHERE agent_id = ?1 ORDER BY updated_at DESC, created_at DESC LIMIT 1")?;
-        let mut rows = stmt.query_map(params![agent_id], |row| row.get::<_, i64>(0))?;
+        let mut rows = stmt.query_map(params![agent_id], |row| row.get::<_, ConversationId>(0))?;
         rows.next().transpose()
     }
 
-    pub fn delete(chat_id: i64, agent_id: i64) -> Result<bool> {
+    pub fn delete(chat_id: ChatId, agent_id: i64) -> Result<bool> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         let count = conn.execute(
@@ -2586,7 +2643,7 @@ pub mod conversation_execution_contexts {
         Ok(())
     }
 
-    pub fn get(conversation_id: i64) -> Result<Option<ConversationExecutionContext>> {
+    pub fn get(conversation_id: ConversationId) -> Result<Option<ConversationExecutionContext>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         conn.query_row(
@@ -2919,7 +2976,7 @@ mod tests {
         let _database_guard = lock_user_data_db_for_tests();
 
         let workspace = Workspace {
-            workspace_id: 12345,
+            workspace_id: WorkspaceId::new(12345),
             name: "Test Workspace".to_string(),
             work_dir: "/tmp/test".to_string(),
             env: "{}".to_string(),
@@ -2950,10 +3007,10 @@ mod tests {
     fn test_full_hierarchy_crud() {
         let _database_guard = lock_user_data_db_for_tests();
         let prefix = std::process::id() as i64;
-        let workspace_id = prefix * 10000 + 1;
-        let chat_id = prefix * 10000 + 2;
-        let session_id = prefix * 10000 + 3;
-        let conversation_id = prefix * 10000 + 4;
+        let workspace_id = WorkspaceId::new(prefix * 10000 + 1);
+        let chat_id = ChatId::new(prefix * 10000 + 2);
+        let session_id = CollaborationSessionId::new(prefix * 10000 + 3);
+        let conversation_id = ConversationId::new(prefix * 10000 + 4);
 
         workspaces::create(Workspace {
             workspace_id,
@@ -3060,10 +3117,10 @@ mod tests {
     fn test_messages_list_after_sequence() {
         let _database_guard = lock_user_data_db_for_tests();
         let prefix = std::process::id() as i64;
-        let workspace_id = prefix * 10000 + 101;
-        let chat_id = prefix * 10000 + 102;
-        let session_id = prefix * 10000 + 103;
-        let conversation_id = prefix * 10000 + 104;
+        let workspace_id = WorkspaceId::new(prefix * 10000 + 101);
+        let chat_id = ChatId::new(prefix * 10000 + 102);
+        let session_id = CollaborationSessionId::new(prefix * 10000 + 103);
+        let conversation_id = ConversationId::new(prefix * 10000 + 104);
 
         workspaces::create(Workspace {
             workspace_id,
@@ -3164,10 +3221,10 @@ mod tests {
     fn test_messages_get_last() {
         let _database_guard = lock_user_data_db_for_tests();
         let prefix = std::process::id() as i64;
-        let workspace_id = prefix * 10000 + 201;
-        let chat_id = prefix * 10000 + 202;
-        let session_id = prefix * 10000 + 203;
-        let conversation_id = prefix * 10000 + 204;
+        let workspace_id = WorkspaceId::new(prefix * 10000 + 201);
+        let chat_id = ChatId::new(prefix * 10000 + 202);
+        let session_id = CollaborationSessionId::new(prefix * 10000 + 203);
+        let conversation_id = ConversationId::new(prefix * 10000 + 204);
 
         workspaces::create(Workspace {
             workspace_id,
@@ -3257,7 +3314,7 @@ mod tests {
 
         // Create global MCP server (profile_id = None)
         let global_server = mcp_servers::create(McpServer {
-            id: generate(),
+            id: ergatai_core::id::generate(),
             profile_id: None,
             name: "global-mcp".to_string(),
             server_type: "stdio".to_string(),
@@ -3274,7 +3331,7 @@ mod tests {
 
         // Create profile-specific MCP server
         let profile_server = mcp_servers::create(McpServer {
-            id: generate(),
+            id: ergatai_core::id::generate(),
             profile_id: Some("agent_123".to_string()),
             name: "profile-mcp".to_string(),
             server_type: "http".to_string(),

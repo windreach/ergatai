@@ -2,40 +2,23 @@
  * IPC 单元测试 - Agents Router (真实 router，非 test.agents)
  */
 
-import { test, expect, describe, beforeAll, afterAll, beforeEach } from '@playwright/test'
-import { launchElectron } from '../../fixtures/electron-launcher'
+import { test, expect, describe } from '@playwright/test'
+import { createTestContext } from '../../fixtures/test-context'
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
 
 describe('IPC: Agents Router (Real)', () => {
-  let electron: any
-  let page: any
+  const ctx = createTestContext({ skipAutoCleanup: true })
   const testAgentName = 'test-real-agent'
 
-  beforeAll(async () => {
-    electron = await launchElectron({
-      extraEnv: { NODE_ENV: 'test', ELECTRON_TEST_MODE: 'true' },
-    })
-    page = electron.page
-
-    process.on('exit', async () => {
-      if (electron) { try { await electron.close() } catch (e) { /* ignore */ } }
-    })
-    process.on('SIGINT', async () => {
-      if (electron) { await electron.close() }
-      process.exit(130)
-    })
-  })
-
-  afterAll(async () => {
+  ctx.afterAll(async () => {
     // 清理测试 agent
     const agentPath = path.join(os.homedir(), '.claude', 'agents', `${testAgentName}.md`)
     await fs.unlink(agentPath).catch(() => {})
-    await electron.close()
   })
 
-  beforeEach(async () => {
+  test.beforeEach(async () => {
     // 每个测试前清理
     const agentPath = path.join(os.homedir(), '.claude', 'agents', `${testAgentName}.md`)
     await fs.unlink(agentPath).catch(() => {})
@@ -43,7 +26,7 @@ describe('IPC: Agents Router (Real)', () => {
 
   describe('agents.list', () => {
     test('应该返回 agent 数组', async () => {
-      const agents = await page.evaluate(async () => {
+      const agents = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.agents.list.query()
       })
 
@@ -59,7 +42,7 @@ describe('IPC: Agents Router (Real)', () => {
     })
 
     test('接受可选的 cwd 参数', async () => {
-      const agents = await page.evaluate(async () => {
+      const agents = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.agents.list.query({ cwd: '/tmp' })
       })
 
@@ -69,7 +52,7 @@ describe('IPC: Agents Router (Real)', () => {
 
   describe('agents.listEnabled', () => {
     test('应该返回 agent 数组（与 list 相同）', async () => {
-      const agents = await page.evaluate(async () => {
+      const agents = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.agents.listEnabled.query()
       })
 
@@ -79,7 +62,7 @@ describe('IPC: Agents Router (Real)', () => {
 
   describe('agents.create', () => {
     test('应该创建 user agent', async () => {
-      const result = await page.evaluate(async (name: string) => {
+      const result = await ctx.page.evaluate(async (name: string) => {
         return await (window as any).trpc.agents.create.mutate({
           name,
           description: 'Test agent',
@@ -105,7 +88,7 @@ describe('IPC: Agents Router (Real)', () => {
     })
 
     test('名称应该被规范化为 kebab-case', async () => {
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.agents.create.mutate({
           name: 'Test Agent With Spaces',
           description: 'Test',
@@ -125,7 +108,7 @@ describe('IPC: Agents Router (Real)', () => {
   describe('agents.get', () => {
     test('应该获取已存在的 agent', async () => {
       // 先创建 agent
-      await page.evaluate(async (name: string) => {
+      await ctx.page.evaluate(async (name: string) => {
         await (window as any).trpc.agents.create.mutate({
           name,
           description: 'Test agent',
@@ -135,7 +118,7 @@ describe('IPC: Agents Router (Real)', () => {
       }, testAgentName)
 
       // 获取 agent
-      const agent = await page.evaluate(async (name: string) => {
+      const agent = await ctx.page.evaluate(async (name: string) => {
         return await (window as any).trpc.agents.get.query({ name })
       }, testAgentName)
 
@@ -145,7 +128,7 @@ describe('IPC: Agents Router (Real)', () => {
     })
 
     test('不存在的 agent 应该返回 null', async () => {
-      const agent = await page.evaluate(async () => {
+      const agent = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.agents.get.query({ name: 'non-existent-agent' })
       })
 
@@ -156,7 +139,7 @@ describe('IPC: Agents Router (Real)', () => {
   describe('agents.update', () => {
     test('应该更新 agent', async () => {
       // 先创建 agent
-      await page.evaluate(async (name: string) => {
+      await ctx.page.evaluate(async (name: string) => {
         await (window as any).trpc.agents.create.mutate({
           name,
           description: 'Original description',
@@ -166,7 +149,7 @@ describe('IPC: Agents Router (Real)', () => {
       }, testAgentName)
 
       // 更新 agent
-      const result = await page.evaluate(async (name: string) => {
+      const result = await ctx.page.evaluate(async (name: string) => {
         return await (window as any).trpc.agents.update.mutate({
           originalName: name,
           name,
@@ -189,7 +172,7 @@ describe('IPC: Agents Router (Real)', () => {
   describe('agents.delete', () => {
     test('应该删除 agent', async () => {
       // 先创建 agent
-      await page.evaluate(async (name: string) => {
+      await ctx.page.evaluate(async (name: string) => {
         await (window as any).trpc.agents.create.mutate({
           name,
           description: 'Test',
@@ -199,7 +182,7 @@ describe('IPC: Agents Router (Real)', () => {
       }, testAgentName)
 
       // 删除 agent
-      const result = await page.evaluate(async (name: string) => {
+      const result = await ctx.page.evaluate(async (name: string) => {
         return await (window as any).trpc.agents.delete.mutate({ name, source: 'user' })
       }, testAgentName)
 

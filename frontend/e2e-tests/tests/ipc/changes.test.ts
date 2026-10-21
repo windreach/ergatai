@@ -3,8 +3,8 @@
  * 注意：大部分 procedure 需要真实 git 仓库，使用 test.skip()
  */
 
-import { test, expect, describe, beforeAll, afterAll } from '@playwright/test'
-import { launchElectron } from '../../fixtures/electron-launcher'
+import { test, expect, describe } from '@playwright/test'
+import { createTestContext } from '../../fixtures/test-context'
 import * as fs from 'fs/promises'
 import { exec as execCallback } from 'child_process'
 import { promisify } from 'util'
@@ -12,16 +12,10 @@ import { promisify } from 'util'
 const exec = promisify(execCallback)
 
 describe('IPC: Changes/Git Router', () => {
-  let electron: any
-  let page: any
+  const ctx = createTestContext()
   let tempGitRepo: string
 
-  beforeAll(async () => {
-    electron = await launchElectron({
-      extraEnv: { NODE_ENV: 'test', ELECTRON_TEST_MODE: 'true' },
-    })
-    page = electron.page
-
+  ctx.beforeAll(async () => {
     // 创建临时 git 仓库
     tempGitRepo = `/tmp/ergatai-git-test-${Date.now()}`
     await fs.mkdir(tempGitRepo, { recursive: true })
@@ -33,25 +27,16 @@ describe('IPC: Changes/Git Router', () => {
     await fs.writeFile(`${tempGitRepo}/README.md`, '# Test Repo\n')
     await exec('git add README.md', { cwd: tempGitRepo })
     await exec('git commit -m "Initial commit"', { cwd: tempGitRepo })
-
-    process.on('exit', async () => {
-      if (electron) { try { await electron.close() } catch (e) { /* ignore */ } }
-    })
-    process.on('SIGINT', async () => {
-      if (electron) { await electron.close() }
-      process.exit(130)
-    })
   })
 
-  afterAll(async () => {
+  ctx.afterAll(async () => {
     // 清理临时仓库
     await fs.rm(tempGitRepo, { recursive: true, force: true }).catch(() => {})
-    await electron.close()
   })
 
   describe('changes.isWorktreeRegistered', () => {
     test('应该返回布尔值', async () => {
-      const result = await page.evaluate(async (worktreePath: string) => {
+      const result = await ctx.page.evaluate(async (worktreePath: string) => {
         return await (window as any).trpc.changes.isWorktreeRegistered.query({ worktreePath })
       }, tempGitRepo)
 
@@ -59,7 +44,7 @@ describe('IPC: Changes/Git Router', () => {
     })
 
     test('对于不存在的目录应该返回 false', async () => {
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.changes.isWorktreeRegistered.query({
           worktreePath: '/nonexistent/path',
         })
@@ -75,7 +60,7 @@ describe('IPC: Changes/Git Router', () => {
       let error: any = null
 
       try {
-        status = await page.evaluate(async (worktreePath: string) => {
+        status = await ctx.page.evaluate(async (worktreePath: string) => {
           return await (window as any).trpc.changes.getStatus.query({ worktreePath })
         }, tempGitRepo)
       } catch (e) {
@@ -98,7 +83,7 @@ describe('IPC: Changes/Git Router', () => {
       let error: any = null
 
       try {
-        branches = await page.evaluate(async (worktreePath: string) => {
+        branches = await ctx.page.evaluate(async (worktreePath: string) => {
           return await (window as any).trpc.changes.getBranches.query({ worktreePath })
         }, tempGitRepo)
       } catch (e) {

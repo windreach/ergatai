@@ -45,10 +45,11 @@ async-trait.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
-utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
+utoipa.workspace = true
 
 # Error handling
 anyhow.workspace = true
+dirs.workspace = true
 nix.workspace = true
 libc.workspace = true
 

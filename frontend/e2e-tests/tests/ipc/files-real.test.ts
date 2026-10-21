@@ -9,45 +9,30 @@
  * - 需要 worktree 验证的 procedure：readFile、readTextFile、renameFile、deleteFile（应报错）
  */
 
-import { test, expect, describe, beforeAll, afterAll, beforeEach } from '@playwright/test'
-import { launchElectron } from '../../fixtures/electron-launcher'
+import { test, expect, describe } from '@playwright/test'
+import { createTestContext } from '../../fixtures/test-context'
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
 
 describe('IPC: Files Router (Real)', () => {
-  let electron: any
-  let page: any
+  const ctx = createTestContext({ skipAutoCleanup: true })
   let testProjectDir: string
 
-  beforeAll(async () => {
-    electron = await launchElectron({
-      extraEnv: { NODE_ENV: 'test', ELECTRON_TEST_MODE: 'true' },
-    })
-    page = electron.page
-
+  ctx.beforeAll(async () => {
     // 创建测试项目目录
     testProjectDir = path.join(os.tmpdir(), `ergatai-files-real-test-${Date.now()}`)
     await fs.mkdir(testProjectDir, { recursive: true })
-
-    process.on('exit', async () => {
-      if (electron) { try { await electron.close() } catch (e) { /* ignore */ } }
-    })
-    process.on('SIGINT', async () => {
-      if (electron) { await electron.close() }
-      process.exit(130)
-    })
   })
 
-  afterAll(async () => {
+  ctx.afterAll(async () => {
     await fs.rm(testProjectDir, { recursive: true, force: true }).catch(() => {})
-    await electron.close()
   })
 
-  beforeEach(async () => {
-    await page.evaluate(async () => { await (window as any).trpc.test.helpers.cleanup.mutate() })
+  test.beforeEach(async () => {
+    await ctx.page.evaluate(async () => { await (window as any).trpc.test.helpers.cleanup.mutate() })
     // 清除文件搜索缓存，避免测试间干扰
-    await page.evaluate(async (projectPath: string) => {
+    await ctx.page.evaluate(async (projectPath: string) => {
       await (window as any).trpc.files.clearCache.mutate({ projectPath }).catch(() => {})
     }, testProjectDir)
   })
@@ -60,7 +45,7 @@ describe('IPC: Files Router (Real)', () => {
       await fs.mkdir(path.join(testProjectDir, 'subdir'), { recursive: true })
       await fs.writeFile(path.join(testProjectDir, 'subdir', 'nested.ts'), 'content 3')
 
-      const results = await page.evaluate(async (projectPath: string) => {
+      const results = await ctx.page.evaluate(async (projectPath: string) => {
         return await (window as any).trpc.files.search.query({ projectPath })
       }, testProjectDir)
 
@@ -83,7 +68,7 @@ describe('IPC: Files Router (Real)', () => {
         await fs.writeFile(path.join(testProjectDir, `limit-test-${i}.txt`), `content ${i}`)
       }
 
-      const results = await page.evaluate(async (projectPath: string) => {
+      const results = await ctx.page.evaluate(async (projectPath: string) => {
         return await (window as any).trpc.files.search.query({
           projectPath,
           limit: 5,
@@ -99,7 +84,7 @@ describe('IPC: Files Router (Real)', () => {
       await fs.writeFile(path.join(testProjectDir, 'type-filter-file.txt'), 'content')
       await fs.mkdir(path.join(testProjectDir, 'type-filter-dir'), { recursive: true })
 
-      const fileResults = await page.evaluate(async (projectPath: string) => {
+      const fileResults = await ctx.page.evaluate(async (projectPath: string) => {
         return await (window as any).trpc.files.search.query({
           projectPath,
           typeFilter: 'file',
@@ -110,7 +95,7 @@ describe('IPC: Files Router (Real)', () => {
         expect(entry.type).toBe('file')
       }
 
-      const folderResults = await page.evaluate(async (projectPath: string) => {
+      const folderResults = await ctx.page.evaluate(async (projectPath: string) => {
         return await (window as any).trpc.files.search.query({
           projectPath,
           typeFilter: 'folder',
@@ -123,7 +108,7 @@ describe('IPC: Files Router (Real)', () => {
     })
 
     test('不存在的目录应该返回空数组', async () => {
-      const results = await page.evaluate(async () => {
+      const results = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.files.search.query({
           projectPath: '/non/existent/path',
         })
@@ -137,7 +122,7 @@ describe('IPC: Files Router (Real)', () => {
       await fs.writeFile(path.join(testProjectDir, 'query-test-foo.txt'), 'content')
       await fs.writeFile(path.join(testProjectDir, 'query-test-bar.js'), 'content')
 
-      const results = await page.evaluate(async (projectPath: string) => {
+      const results = await ctx.page.evaluate(async (projectPath: string) => {
         return await (window as any).trpc.files.search.query({
           projectPath,
           query: 'foo',
@@ -153,7 +138,7 @@ describe('IPC: Files Router (Real)', () => {
 
   describe('files.clearCache', () => {
     test('应该成功清除缓存', async () => {
-      const result = await page.evaluate(async (projectPath: string) => {
+      const result = await ctx.page.evaluate(async (projectPath: string) => {
         return await (window as any).trpc.files.clearCache.mutate({ projectPath })
       }, testProjectDir)
 
@@ -167,7 +152,7 @@ describe('IPC: Files Router (Real)', () => {
       const conversationId = `test-conv-${Date.now()}`
       const text = 'This is a pasted text content for testing'
 
-      const result = await page.evaluate(async (args: { conversationId: string; text: string }) => {
+      const result = await ctx.page.evaluate(async (args: { conversationId: string; text: string }) => {
         return await (window as any).trpc.files.writePastedText.mutate(args)
       }, { conversationId, text })
 
@@ -188,7 +173,7 @@ describe('IPC: Files Router (Real)', () => {
       const conversationId = `test-conv-size-${Date.now()}`
       const text = 'A'.repeat(1000) // 1000 字节
 
-      const result = await page.evaluate(async (args: { conversationId: string; text: string }) => {
+      const result = await ctx.page.evaluate(async (args: { conversationId: string; text: string }) => {
         return await (window as any).trpc.files.writePastedText.mutate(args)
       }, { conversationId, text })
 
@@ -201,7 +186,7 @@ describe('IPC: Files Router (Real)', () => {
       const customFilename = 'custom-name.txt'
       const text = 'Custom named paste'
 
-      const result = await page.evaluate(async (args: { conversationId: string; text: string; filename: string }) => {
+      const result = await ctx.page.evaluate(async (args: { conversationId: string; text: string; filename: string }) => {
         return await (window as any).trpc.files.writePastedText.mutate(args)
       }, { conversationId, text, filename: customFilename })
 
@@ -217,7 +202,7 @@ describe('IPC: Files Router (Real)', () => {
       await fs.writeFile(testFile, 'read content')
 
       await expect(
-        page.evaluate(async (filePath: string) => {
+        ctx.page.evaluate(async (filePath: string) => {
           return await (window as any).trpc.files.readFile.query({ filePath })
         }, testFile)
       ).rejects.toThrow()
@@ -230,7 +215,7 @@ describe('IPC: Files Router (Real)', () => {
       await fs.writeFile(testFile, 'text content')
 
       await expect(
-        page.evaluate(async (filePath: string) => {
+        ctx.page.evaluate(async (filePath: string) => {
           return await (window as any).trpc.files.readTextFile.query({ filePath })
         }, testFile)
       ).rejects.toThrow()
@@ -243,7 +228,7 @@ describe('IPC: Files Router (Real)', () => {
       await fs.writeFile(testFile, 'rename content')
 
       await expect(
-        page.evaluate(async (absolutePath: string) => {
+        ctx.page.evaluate(async (absolutePath: string) => {
           return await (window as any).trpc.files.renameFile.mutate({
             absolutePath,
             newName: 'renamed.txt',
@@ -259,7 +244,7 @@ describe('IPC: Files Router (Real)', () => {
       await fs.writeFile(testFile, 'delete content')
 
       await expect(
-        page.evaluate(async (absolutePath: string) => {
+        ctx.page.evaluate(async (absolutePath: string) => {
           return await (window as any).trpc.files.deleteFile.mutate({ absolutePath })
         }, testFile)
       ).rejects.toThrow()

@@ -6,6 +6,7 @@
 //! - Spawning new sessions (POST /api/v1/agents/:agentId/spawn-session)
 
 use ergatai_api::api::agents::{SpawnSessionRequest, SpawnSessionResponse};
+use ergatai_error::{ChatId, ConversationId, WorkspaceId};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -160,19 +161,19 @@ async fn test_agent_binding_persistence() {
     use ergatai_api::user_data_db::GroupAgentBinding;
 
     let binding = GroupAgentBinding {
-        workspace_id: 123i64,
-        chat_id: 456i64,
+        workspace_id: WorkspaceId::new(123),
+        chat_id: ChatId::new(456),
         agent_id: 789i64,
         agent_name: "codex".to_string(),
         agent_command: Some("codex".to_string()),
-        conversation_id: 101112i64,
+        conversation_id: ConversationId::new(101112),
         created_at: 1234567890,
         updated_at: 1234567890,
     };
 
     // Verify binding structure
-    assert_eq!(binding.workspace_id, 123i64);
-    assert_eq!(binding.chat_id, 456i64);
+    assert_eq!(binding.workspace_id, WorkspaceId::new(123));
+    assert_eq!(binding.chat_id, ChatId::new(456));
     assert_eq!(binding.agent_command, Some("codex".to_string()));
 }
 

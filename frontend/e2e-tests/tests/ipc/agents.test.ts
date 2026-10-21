@@ -3,55 +3,23 @@
  * 通过 test router 直接测试业务逻辑（不依赖 UI）
  */
 
-import { test, expect, describe, beforeAll, afterAll, beforeEach } from '@playwright/test'
-import { launchElectron } from '../../fixtures/electron-launcher'
+import { test, expect, describe } from '@playwright/test'
+import { createTestContext } from '../../fixtures/test-context'
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
 
 describe('IPC: Agent 管理', () => {
-  let electron: any
-  let page: any
+  const ctx = createTestContext({ skipAutoCleanup: true })
 
-  beforeAll(async () => {
-    // 启动 Electron（测试模式）
-    electron = await launchElectron({
-      extraEnv: {
-        ELECTRON_TEST_MODE: 'true',
-      },
-    })
-    page = electron.page
-
-    // 添加进程退出保护，确保清理
-    process.on('exit', async () => {
-      if (electron) {
-        try {
-          await electron.close()
-        } catch (e) {
-          // 忽略
-        }
-      }
-    })
-
-    process.on('SIGINT', async () => {
-      if (electron) {
-        await electron.close()
-      }
-      process.exit(130)
-    })
-  })
-
-  afterAll(async () => {
+  ctx.afterAll(async () => {
     // 清理测试数据
-    await page.evaluate(async () => {
+    await ctx.page.evaluate(async () => {
       await (window as any).trpc.test.helpers.cleanup.mutate()
     })
-
-    // 关闭 Electron
-    await electron.close()
   })
 
-  beforeEach(async () => {
+  test.beforeEach(async () => {
     // 每个测试前清理测试 agent
     const userAgentsDir = path.join(os.homedir(), '.claude', 'agents')
     try {
@@ -69,7 +37,7 @@ describe('IPC: Agent 管理', () => {
   describe('test.agents.list', () => {
     test('列出用户 agent', async () => {
       // 创建测试 agent
-      await page.evaluate(async () => {
+      await ctx.page.evaluate(async () => {
         await (window as any).trpc.test.agents.create.mutate({
           name: 'test-agent-1',
           description: 'Test agent 1',
@@ -79,7 +47,7 @@ describe('IPC: Agent 管理', () => {
       })
 
       // 列出 agent
-      const agents = await page.evaluate(async () => {
+      const agents = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.agents.list.query()
       })
 
@@ -99,7 +67,7 @@ describe('IPC: Agent 管理', () => {
       await fs.mkdir(testProjectPath, { recursive: true })
 
       // 创建项目 agent
-      await page.evaluate(async (cwd: string) => {
+      await ctx.page.evaluate(async (cwd: string) => {
         await (window as any).trpc.test.agents.create.mutate({
           name: 'test-project-agent',
           description: 'Test project agent',
@@ -110,7 +78,7 @@ describe('IPC: Agent 管理', () => {
       }, testProjectPath)
 
       // 列出项目 agent
-      const agents = await page.evaluate(async (cwd: string) => {
+      const agents = await ctx.page.evaluate(async (cwd: string) => {
         return await (window as any).trpc.test.agents.list.query({ cwd })
       }, testProjectPath)
 
@@ -125,7 +93,7 @@ describe('IPC: Agent 管理', () => {
     })
 
     test('空目录返回空数组', async () => {
-      const agents = await page.evaluate(async () => {
+      const agents = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.agents.list.query()
       })
 
@@ -137,7 +105,7 @@ describe('IPC: Agent 管理', () => {
 
   describe('test.agents.create', () => {
     test('创建用户 agent', async () => {
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.agents.create.mutate({
           name: 'test-agent-create',
           description: 'Test agent creation',
@@ -160,7 +128,7 @@ describe('IPC: Agent 管理', () => {
       const testProjectPath = '/tmp/test-project-create'
       await fs.mkdir(testProjectPath, { recursive: true })
 
-      const result = await page.evaluate(async (cwd: string) => {
+      const result = await ctx.page.evaluate(async (cwd: string) => {
         return await (window as any).trpc.test.agents.create.mutate({
           name: 'test-project-agent-create',
           description: 'Test project agent creation',
@@ -184,7 +152,7 @@ describe('IPC: Agent 管理', () => {
     })
 
     test('agent 名称自动转换为 kebab-case', async () => {
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.agents.create.mutate({
           name: 'Test Agent Name',  // 应该转换为 test-agent-name
           description: 'Test',
@@ -198,9 +166,10 @@ describe('IPC: Agent 管理', () => {
 
     test('无效 agent 名称应被转换', async () => {
       // 业务逻辑不验证名称，而是自动转换为 kebab-case
-      const result = await page.evaluate(async () => {
+      // 但测试模式下要求名称必须以 "test-" 开头
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.agents.create.mutate({
-          name: '..',  // 会被转换为 '--'
+          name: 'test.Invalid-Name',  // 会被转换为 'test-invalid-name'
           description: 'Test',
           prompt: 'Test',
           source: 'user'
@@ -209,12 +178,12 @@ describe('IPC: Agent 管理', () => {
 
       // 验证名称被转换（不是报错）
       expect(result).toBeDefined()
-      expect(result.name).toBe('--')
+      expect(result.name).toBe('test-invalid-name')
 
       // 清理
-      await page.evaluate(async () => {
+      await ctx.page.evaluate(async () => {
         await (window as any).trpc.test.agents.delete.mutate({
-          name: '--',
+          name: 'test-invalid-name',
           source: 'user'
         })
       })
@@ -222,7 +191,7 @@ describe('IPC: Agent 管理', () => {
 
     test('项目 agent 缺少 cwd 应报错', async () => {
       await expect(
-        page.evaluate(async () => {
+        ctx.page.evaluate(async () => {
           return await (window as any).trpc.test.agents.create.mutate({
             name: 'test-agent',
             description: 'Test',
@@ -238,7 +207,7 @@ describe('IPC: Agent 管理', () => {
   describe('test.agents.delete', () => {
     test('删除用户 agent', async () => {
       // 创建 agent
-      await page.evaluate(async () => {
+      await ctx.page.evaluate(async () => {
         await (window as any).trpc.test.agents.create.mutate({
           name: 'test-agent-delete',
           description: 'Test',
@@ -248,7 +217,7 @@ describe('IPC: Agent 管理', () => {
       })
 
       // 删除 agent
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.agents.delete.mutate({
           name: 'test-agent-delete',
           source: 'user'
@@ -266,9 +235,9 @@ describe('IPC: Agent 管理', () => {
     })
 
     test('删除不存在的 agent 返回 deleted: false', async () => {
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.agents.delete.mutate({
-          name: 'non-existent-agent',
+          name: 'test-non-existent-agent',
           source: 'user'
         })
       })
@@ -280,7 +249,7 @@ describe('IPC: Agent 管理', () => {
   describe('test.helpers', () => {
     test('清理测试数据', async () => {
       // 创建多个测试 agent
-      await page.evaluate(async () => {
+      await ctx.page.evaluate(async () => {
         await (window as any).trpc.test.agents.create.mutate({
           name: 'test-agent-1',
           description: 'Test',
@@ -296,14 +265,14 @@ describe('IPC: Agent 管理', () => {
       })
 
       // 清理
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.helpers.cleanup.mutate()
       })
 
       expect(result.deletedAgents).toBeGreaterThanOrEqual(2)
 
       // 验证已清理
-      const agents = await page.evaluate(async () => {
+      const agents = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.agents.list.query()
       })
 
@@ -312,7 +281,7 @@ describe('IPC: Agent 管理', () => {
     })
 
     test('获取测试环境信息', async () => {
-      const env = await page.evaluate(async () => {
+      const env = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.helpers.getEnv.query()
       })
 

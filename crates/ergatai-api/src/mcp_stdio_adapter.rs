@@ -72,6 +72,11 @@ struct JsonRpcError {
     data: Option<serde_json::Value>,
 }
 
+/// Maximum number of retry attempts for transient HTTP failures (5xx, connection errors).
+const MAX_RETRIES: u32 = 3;
+/// Base delay in milliseconds for exponential backoff between retries.
+const RETRY_BASE_DELAY_MS: u64 = 200;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -94,6 +99,10 @@ async fn main() -> Result<()> {
         .build()
         .context("Failed to create HTTP client")?;
 
+    // Set up graceful shutdown on SIGTERM / SIGINT
+    let shutdown = tokio::signal::ctrl_c();
+    tokio::pin!(shutdown);
+
     // 从 stdin 读取 JSON-RPC 请求
     let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
@@ -103,11 +112,22 @@ async fn main() -> Result<()> {
     loop {
         line.clear();
 
-        // 读取一行 JSON-RPC 请求
-        let bytes_read = reader
-            .read_line(&mut line)
-            .await
-            .context("Failed to read from stdin")?;
+        // Read a line from stdin, checking for shutdown signal concurrently
+        let bytes_read = tokio::select! {
+            result = reader.read_line(&mut line) => {
+                match result {
+                    Ok(n) => n,
+                    Err(e) => {
+                        tracing::error!("Failed to read from stdin: {}", e);
+                        break;
+                    }
+                }
+            }
+            _ = &mut shutdown => {
+                tracing::info!("Received shutdown signal, exiting gracefully");
+                break;
+            }
+        };
 
         if bytes_read == 0 {
             tracing::info!("stdin closed, exiting");
@@ -144,14 +164,18 @@ async fn main() -> Result<()> {
             }
         };
 
-        // 转发到 HTTP endpoint
-        let http_result = forward_to_http(&client, &args.url, &args.token, &request).await;
+        // 转发到 HTTP endpoint (with retry for transient failures)
+        // TODO: Add SSE/streaming support for MCP servers that use event streams.
+        // Currently only request-response JSON-RPC over HTTP is supported.
+        let http_result =
+            forward_to_http_with_retry(&client, &args.url, &args.token, &request, MAX_RETRIES)
+                .await;
 
         // 构建响应
         let response = match http_result {
             Ok(resp) => resp,
             Err(e) => {
-                tracing::error!("HTTP request failed: {}", e);
+                tracing::error!("HTTP request failed after {} retries: {}", MAX_RETRIES, e);
                 JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: request.id,
@@ -174,6 +198,70 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Forward a JSON-RPC request to the HTTP endpoint with exponential backoff retry.
+///
+/// Retries on transient failures: connection errors, timeouts, and 5xx server errors.
+/// Does NOT retry on 4xx client errors (those are permanent failures).
+async fn forward_to_http_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    token: &Option<String>,
+    request: &JsonRpcRequest,
+    max_retries: u32,
+) -> Result<JsonRpcResponse> {
+    let mut last_error = None;
+
+    for attempt in 0..=max_retries {
+        if attempt > 0 {
+            let delay_ms = RETRY_BASE_DELAY_MS * 2u64.pow(attempt - 1);
+            tracing::warn!(
+                attempt = attempt,
+                max_retries = max_retries,
+                delay_ms = delay_ms,
+                "Retrying HTTP request after transient failure"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+
+        match forward_to_http(client, url, token, request).await {
+            Ok(response) => return Ok(response),
+            Err(e) => {
+                // Only retry on transient errors (connection, timeout, 5xx).
+                // Do NOT retry on client errors (4xx) — they won't succeed on retry.
+                let is_retryable = if let Some(reqwest_err) = e.downcast_ref::<reqwest::Error>() {
+                    if let Some(status) = reqwest_err.status() {
+                        // Only retry on 5xx server errors
+                        status.is_server_error()
+                    } else {
+                        // Connection/timeout errors have no status code — these are retryable
+                        reqwest_err.is_connect() || reqwest_err.is_timeout()
+                    }
+                } else {
+                    // Non-reqwest errors: check message for transient indicators
+                    let msg = e.to_string().to_lowercase();
+                    msg.contains("connection")
+                        || msg.contains("timeout")
+                        || msg.contains("502")
+                        || msg.contains("503")
+                        || msg.contains("504")
+                };
+                if is_retryable && attempt < max_retries {
+                    tracing::debug!(
+                        attempt = attempt + 1,
+                        error = %e,
+                        "Transient HTTP error, will retry"
+                    );
+                    last_error = Some(e);
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Unknown retry failure")))
 }
 
 async fn forward_to_http(

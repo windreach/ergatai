@@ -17,7 +17,7 @@
 use std::sync::atomic::Ordering;
 
 use ergatai_dag::{TaskGraph, TaskNode, TaskStatus};
-use ergatai_error::{ErgataiError, ErgataiResult};
+use ergatai_error::{DagId, ErgataiError, ErgataiResult};
 
 use super::registry::{clear_dag_scheduler_by_id, clear_session_dag_scheduler};
 use super::{rand_delay, DagScheduler};
@@ -584,7 +584,7 @@ impl DagScheduler {
                 drop(graph);
 
                 let payload = ergatai_nats::DagCompletePayload {
-                    dag_id: self.dag_id().to_string(),
+                    dag_id: DagId::decode(self.dag_id()).expect("valid DAG ID"),
                     total_nodes: total,
                     completed_nodes: completed,
                     failed_nodes: failed,

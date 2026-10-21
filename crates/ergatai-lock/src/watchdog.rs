@@ -23,7 +23,7 @@
 
 use crate::lock_manager::FileLockManager;
 use chrono::{Duration, Utc};
-use ergatai_error::{ErgataiError, ErgataiResult};
+use ergatai_error::{AgentId, ErgataiError, ErgataiResult};
 use ergatai_nats::event_bus::EventBus;
 use ergatai_nats::events::FileErrorPayload;
 use std::collections::HashMap;
@@ -441,7 +441,8 @@ impl Watchdog {
                 if let Some(bus) = event_bus {
                     let payload = FileErrorPayload {
                         file_path: file_path.clone(),
-                        agent_id: lock.agent_id.clone(),
+                        agent_id: AgentId::decode(&lock.agent_id)
+                            .unwrap_or_else(|_| AgentId::new(0)),
                         reason: format!("Token {} expired or ACP disconnected", token_id),
                         timestamp: Utc::now().timestamp() as u64,
                     };
@@ -535,7 +536,7 @@ impl Watchdog {
             if let Some(bus) = &self.event_bus {
                 let payload = FileErrorPayload {
                     file_path: lock.file_path.clone(),
-                    agent_id: lock.agent_id.clone(),
+                    agent_id: AgentId::decode(&lock.agent_id).unwrap_or_else(|_| AgentId::new(0)),
                     reason: format!("ACP session {} disconnected", session_id),
                     timestamp: Utc::now().timestamp() as u64,
                 };

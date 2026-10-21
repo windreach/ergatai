@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 use utoipa::ToSchema;
 
 use ergatai_core::id::{format as format_id, generate, parse_to_i64, IdType};
+use ergatai_error::{AgentId, ChatId, CollaborationSessionId, ConversationId, WorkspaceId};
 
 use crate::messaging::{get_message_sender, SendMessageResult, SendRequest};
 use crate::AppState;
@@ -522,14 +523,14 @@ pub(crate) fn is_valid_workspace_id(id: &str) -> bool {
 async fn workspace_resource_limits(
     workspace_id: &str,
 ) -> Result<ResourceLimits, (StatusCode, String)> {
-    let workspace_id_i64 = parse_to_i64(workspace_id).ok_or_else(|| {
+    let workspace_id = WorkspaceId::decode(workspace_id).map_err(|_| {
         (
             StatusCode::NOT_FOUND,
             format!("Workspace not found: {}", workspace_id),
         )
     })?;
     let workspace = match tokio::task::spawn_blocking(move || {
-        crate::user_data_db::workspaces::get(workspace_id_i64)
+        crate::user_data_db::workspaces::get(workspace_id)
     })
     .await
     {
@@ -738,13 +739,15 @@ pub async fn spawn_agent(
     let mut spawn_chat_id: Option<String> = None;
 
     if let Some(conversation_id) = req.conversation_id.as_deref() {
-        let conversation_id_i64 =
-            match crate::http_error::parse_id_or_not_found(conversation_id, "Conversation") {
-                Ok(id) => id,
-                Err((status, json)) => return (status, json).into_response(),
-            };
+        let conversation_id_typed = match crate::http_error::parse_typed_id::<ConversationId>(
+            conversation_id,
+            "Conversation",
+        ) {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
         match tokio::task::spawn_blocking(move || {
-            crate::user_data_db::conversations::get(conversation_id_i64)
+            crate::user_data_db::conversations::get(conversation_id_typed)
         })
         .await
         {
@@ -752,10 +755,8 @@ pub async fn spawn_agent(
                 spawn_chat_id = Some(
                     conversation
                         .parent_id
-                        .map(|id| format_id(id, IdType::Chat))
-                        .unwrap_or_else(|| {
-                            format_id(conversation.conversation_id, IdType::Conversation)
-                        }),
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| conversation.conversation_id.to_string()),
                 );
             }
             Ok(Ok(None)) => {
@@ -787,15 +788,15 @@ pub async fn spawn_agent(
             }
         }
 
-        let conversation_id_i64_for_resolve =
-            match crate::http_error::parse_id_or_not_found(conversation_id, "Conversation") {
-                Ok(id) => id,
-                Err((status, json)) => return (status, json).into_response(),
-            };
+        let conversation_id_for_resolve = match crate::http_error::parse_typed_id::<ConversationId>(
+            conversation_id,
+            "Conversation",
+        ) {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
         let resolved_workspace_id_i64 = match tokio::task::spawn_blocking(move || {
-            crate::user_data_db::conversations::resolve_workspace_id(
-                conversation_id_i64_for_resolve,
-            )
+            crate::user_data_db::conversations::resolve_workspace_id(conversation_id_for_resolve)
         })
         .await
         {
@@ -829,7 +830,7 @@ pub async fn spawn_agent(
             }
         };
 
-        let resolved_workspace_id_str = format_id(resolved_workspace_id_i64, IdType::Workspace);
+        let resolved_workspace_id_str = resolved_workspace_id_i64.to_string();
         if let Some(requested_workspace_id) = &workspace_id {
             if requested_workspace_id != &resolved_workspace_id_str {
                 return (
@@ -877,15 +878,15 @@ pub async fn spawn_agent(
             }
         };
 
-        let conversation_id_i64_for_context =
-            match crate::http_error::parse_id_or_not_found(conversation_id, "Conversation") {
-                Ok(id) => id,
-                Err((status, json)) => return (status, json).into_response(),
-            };
+        let conversation_id_for_context = match crate::http_error::parse_typed_id::<ConversationId>(
+            conversation_id,
+            "Conversation",
+        ) {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
         let execution_context = match tokio::task::spawn_blocking(move || {
-            crate::user_data_db::conversation_execution_contexts::get(
-                conversation_id_i64_for_context,
-            )
+            crate::user_data_db::conversation_execution_contexts::get(conversation_id_for_context)
         })
         .await
         {
@@ -910,10 +911,13 @@ pub async fn spawn_agent(
             }
         };
 
+        let resolved_work_dir = execution_context
+            .and_then(|context| context.worktree_path)
+            .unwrap_or(workspace.work_dir);
         raw_work_dir = Some(
-            execution_context
-                .and_then(|context| context.worktree_path)
-                .unwrap_or(workspace.work_dir),
+            crate::expand_home_path(&resolved_work_dir)
+                .to_string_lossy()
+                .into_owned(),
         );
         env = serde_json::from_str::<HashMap<String, String>>(&workspace.env)
             .map(Some)
@@ -1130,17 +1134,32 @@ async fn update_agent_conversation_id(agent_id: &str, conversation_id_i64: i64) 
     let runtime = crate::context::get_app_context().agent_runtime.clone();
     if let Some(agent_info) = runtime.registry().get(agent_id).await {
         let mut updated_info = agent_info.clone();
-        // Update handle.metadata for backward compatibility
+
+        // Format conversation ID for registry indexing and handle.metadata (business ID)
+        let conversation_id_formatted =
+            ergatai_error::id::format(conversation_id_i64, ergatai_error::id::IdType::Conversation);
+
+        // Update handle.metadata with formatted ID (used by AgentInfo.conversation_id)
+        // This is the canonical format for conversation_id across the system
         updated_info.handle.metadata.insert(
             "conversation_id".to_string(),
+            conversation_id_formatted.clone(),
+        );
+
+        // Store raw i64 separately for database queries (backward compatibility)
+        updated_info.handle.metadata.insert(
+            "conversation_id_i64".to_string(),
             conversation_id_i64.to_string(),
         );
-        // Update conversation_id field for resolve_conversation_id()
-        updated_info.conversation_id = Some(conversation_id_i64.to_string());
+
+        // Update conversation_id field with formatted ID (for resolve_conversation_id lookups)
+        updated_info.conversation_id = Some(conversation_id_formatted.clone());
+
         runtime.registry().insert(updated_info).await;
         tracing::info!(
             agent_id = %agent_id,
-            conversation_id = %conversation_id_i64,
+            conversation_id_i64 = %conversation_id_i64,
+            conversation_id_formatted = %conversation_id_formatted,
             "Updated AgentInfo with conversation_id for message routing"
         );
     } else {
@@ -1264,7 +1283,7 @@ pub async fn send_message(
 
         let chat_id = {
             let requested_conversation_id = requested_conversation_id.clone();
-            let requested_conversation_id_i64 = match crate::http_error::parse_id_or_not_found(
+            let requested_conversation_id = match crate::http_error::parse_typed_id::<ConversationId>(
                 &requested_conversation_id,
                 "Conversation",
             ) {
@@ -1273,12 +1292,12 @@ pub async fn send_message(
             };
             match tokio::task::spawn_blocking(move || -> Result<String, String> {
                 if let Ok(Some(conversation)) =
-                    crate::user_data_db::conversations::get(requested_conversation_id_i64)
+                    crate::user_data_db::conversations::get(requested_conversation_id)
                 {
                     let chat_id_i64 = conversation
                         .parent_id
                         .unwrap_or(conversation.conversation_id);
-                    return Ok(format_id(chat_id_i64, IdType::Chat));
+                    return Ok(chat_id_i64.to_string());
                 }
                 Err("Conversation not found for agent-to-agent routing".to_string())
             })
@@ -1314,7 +1333,7 @@ pub async fn send_message(
         if !force_new {
             // Try to find an existing agent with the target command bound to this chat
             let chat_id_i64_for_list =
-                match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
+                match crate::http_error::parse_typed_id::<ChatId>(&chat_id, "Chat") {
                     Ok(id) => id,
                     Err((status, json)) => return (status, json).into_response(),
                 };
@@ -1395,9 +1414,9 @@ pub async fn send_message(
                                 }
                             } else {
                                 // Agent is dead - clean up stale binding
-                                let chat_id_i64_for_delete = match parse_to_i64(&chat_id) {
-                                    Some(id) => id,
-                                    None => {
+                                let chat_id_i64_for_delete = match ChatId::decode(&chat_id) {
+                                    Ok(id) => id,
+                                    Err(_) => {
                                         tracing::warn!(
                                             chat_id = %chat_id,
                                             "Invalid chat ID format, skipping binding cleanup"
@@ -1423,9 +1442,9 @@ pub async fn send_message(
                             }
                         } else {
                             // Agent not found - clean up stale binding
-                            let chat_id_i64_for_delete = match parse_to_i64(&chat_id) {
-                                Some(id) => id,
-                                None => {
+                            let chat_id_i64_for_delete = match ChatId::decode(&chat_id) {
+                                Ok(id) => id,
+                                Err(_) => {
                                     tracing::warn!(
                                         chat_id = %chat_id,
                                         "Invalid chat ID format, skipping binding cleanup"
@@ -1575,21 +1594,23 @@ pub async fn send_message(
 
                 // Bind the new agent to its own conversation below the chat.
                 let now = chrono::Utc::now().timestamp();
-                let chat_id_i64 = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
-                    Ok(id) => id,
-                    Err((status, json)) => return (status, json).into_response(),
-                };
+                let chat_id_i64 =
+                    match crate::http_error::parse_typed_id::<ChatId>(&chat_id, "Chat") {
+                        Ok(id) => id,
+                        Err((status, json)) => return (status, json).into_response(),
+                    };
                 let agent_command_for_name = target_command.clone();
-                let conversation_id_i64_for_create = match crate::http_error::parse_id_or_not_found(
-                    &agent_conversation_id,
-                    "Conversation",
+                let conversation_id_i64_for_create = match crate::http_error::parse_typed_id::<
+                    ConversationId,
+                >(
+                    &agent_conversation_id, "Conversation"
                 ) {
                     Ok(id) => id,
                     Err((status, json)) => return (status, json).into_response(),
                 };
                 let chat_id_i64_for_lookup = chat_id_i64;
                 let create_conversation =
-                    tokio::task::spawn_blocking(move || -> Result<i64, rusqlite::Error> {
+                    tokio::task::spawn_blocking(move || -> Result<ConversationId, rusqlite::Error> {
                         // Get the chat to find its collaboration session
                         let chat = match crate::user_data_db::chats::get(chat_id_i64_for_lookup)? {
                             Some(c) => c,
@@ -1603,12 +1624,14 @@ pub async fn send_message(
                             s
                         } else {
                             // Create default collaboration session
-                            // Use chat's collaboration_mode if available, otherwise default to "supervisor"
-                            let mode = chat
-                                .collaboration_mode
-                                .unwrap_or_else(|| "supervisor".to_string());
+                            // Use chat's collaboration_mode if available, otherwise default to Supervisor
+                            let mode = chat.collaboration_mode.unwrap_or_else(|| {
+                                crate::services::collaboration_session::CollaborationMode::Supervisor
+                                    .as_str()
+                                    .to_string()
+                            });
                             let now = chrono::Utc::now().timestamp();
-                            let session_id = generate();
+                            let session_id = CollaborationSessionId::generate();
                             crate::user_data_db::collaboration_sessions::create(
                                 crate::user_data_db::CollaborationSession {
                                     collaboration_session_id: session_id,
@@ -1643,9 +1666,7 @@ pub async fn send_message(
                     .await;
 
                 let agent_conversation_id = match create_conversation {
-                    Ok(Ok(conversation_id_i64)) => {
-                        format_id(conversation_id_i64, IdType::Conversation)
-                    }
+                    Ok(Ok(conversation_id_i64)) => conversation_id_i64.to_string(),
                     Ok(Err(error)) => {
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1668,25 +1689,27 @@ pub async fn send_message(
                     }
                 };
 
-                let workspace_id_i64 = match crate::http_error::parse_id_or_not_found(
+                let workspace_id_i64 = match crate::http_error::parse_typed_id::<WorkspaceId>(
                     &sender_info.workspace_id,
                     "Workspace",
                 ) {
                     Ok(id) => id,
                     Err((status, json)) => return (status, json).into_response(),
                 };
-                let chat_id_i64 = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
-                    Ok(id) => id,
-                    Err((status, json)) => return (status, json).into_response(),
-                };
+                let chat_id_i64 =
+                    match crate::http_error::parse_typed_id::<ChatId>(&chat_id, "Chat") {
+                        Ok(id) => id,
+                        Err((status, json)) => return (status, json).into_response(),
+                    };
                 let new_agent_id_i64 =
                     match crate::http_error::parse_id_or_not_found(&new_agent_id, "Agent") {
                         Ok(id) => id,
                         Err((status, json)) => return (status, json).into_response(),
                     };
-                let agent_conversation_id_i64 = match crate::http_error::parse_id_or_not_found(
-                    &agent_conversation_id,
-                    "Conversation",
+                let agent_conversation_id_i64 = match crate::http_error::parse_typed_id::<
+                    ConversationId,
+                >(
+                    &agent_conversation_id, "Conversation"
                 ) {
                     Ok(id) => id,
                     Err((status, json)) => return (status, json).into_response(),
@@ -1723,7 +1746,7 @@ pub async fn send_message(
                 if let Err(error) = tokio::task::spawn_blocking(move || {
                     crate::user_data_db::agent_sessions::upsert(crate::user_data_db::AgentSession {
                         agent_session_id: agent_session_id_i64,
-                        conversation_id: agent_conversation_id_i64,
+                        conversation_id: agent_conversation_id_i64.as_i64(),
                         acp_session_id: Some(session_id),
                         mode: "agent".to_string(),
                         created_at: now,
@@ -1737,13 +1760,15 @@ pub async fn send_message(
 
                 // CRITICAL FIX: Update AgentInfo in registry with conversation_id
                 // This enables message_delivery.rs to resolve conversation → agent mapping
-                update_agent_conversation_id(&new_agent_id, agent_conversation_id_i64).await;
+                update_agent_conversation_id(&new_agent_id, agent_conversation_id_i64.as_i64())
+                    .await;
 
                 // Register the conversation in the collaboration session.
-                let chat_id_i64 = match crate::http_error::parse_id_or_not_found(&chat_id, "Chat") {
-                    Ok(id) => id,
-                    Err((status, json)) => return (status, json).into_response(),
-                };
+                let chat_id_i64 =
+                    match crate::http_error::parse_typed_id::<ChatId>(&chat_id, "Chat") {
+                        Ok(id) => id,
+                        Err((status, json)) => return (status, json).into_response(),
+                    };
 
                 let session_for_participant = tokio::task::spawn_blocking(move || {
                     crate::services::collaboration_session::find_session_by_chat(
@@ -2843,11 +2868,13 @@ pub async fn prompt_agent(
     let prompt_id = format_id(generate(), IdType::Session);
 
     if let Some(conversation_id) = body.conversation_id.as_deref() {
-        let conversation_id_i64 =
-            match crate::http_error::parse_id_or_not_found(conversation_id, "Conversation") {
-                Ok(id) => id,
-                Err((status, json)) => return (status, json).into_response(),
-            };
+        let conversation_id_i64 = match crate::http_error::parse_typed_id::<ConversationId>(
+            conversation_id,
+            "Conversation",
+        ) {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
         let conversation_id_i64_for_update = conversation_id_i64; // Clone for later use
         let conversation = match tokio::task::spawn_blocking(move || {
             crate::user_data_db::conversations::get(conversation_id_i64)
@@ -2884,11 +2911,13 @@ pub async fn prompt_agent(
             }
         };
 
-        let conversation_id_i64_for_resolve =
-            match crate::http_error::parse_id_or_not_found(conversation_id, "Conversation") {
-                Ok(id) => id,
-                Err((status, json)) => return (status, json).into_response(),
-            };
+        let conversation_id_i64_for_resolve = match crate::http_error::parse_typed_id::<
+            ConversationId,
+        >(conversation_id, "Conversation")
+        {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
         let workspace_id_i64 = match tokio::task::spawn_blocking(move || {
             crate::user_data_db::conversations::resolve_workspace_id(
                 conversation_id_i64_for_resolve,
@@ -2929,7 +2958,7 @@ pub async fn prompt_agent(
             }
         };
 
-        let workspace_id_str = format_id(workspace_id_i64, IdType::Workspace);
+        let workspace_id_str = workspace_id_i64.to_string();
         let agent_info = crate::services::agent_service::get_agent_info(&runtime_id).await;
         tracing::info!(
             runtime_id = %runtime_id,
@@ -2952,7 +2981,7 @@ pub async fn prompt_agent(
 
         // CRITICAL FIX: Update AgentInfo in registry with conversation_id
         // This enables message_delivery.rs to resolve conversation → agent mapping
-        update_agent_conversation_id(&runtime_id, conversation_id_i64_for_update).await;
+        update_agent_conversation_id(&runtime_id, conversation_id_i64_for_update.as_i64()).await;
 
         let agent_name = agent_info
             .as_ref()
@@ -3005,14 +3034,17 @@ pub async fn prompt_agent(
                             if let Some(nats_conn) = ctx.nats_connection.clone() {
                                 let bus = ergatai_nats::EventBus::new(nats_conn);
                                 let interrupt_event = ergatai_nats::AgentInterrupted {
-                                    agent_id: runtime_id.clone(),
+                                    agent_id: AgentId::new(parse_to_i64(&runtime_id).unwrap_or(0)),
                                     paused_message_id: None,
                                     new_message_id: prompt_id.clone(),
                                     interrupted_at: std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .map(|d| d.as_secs())
                                         .unwrap_or(0),
-                                    conversation_id: body.conversation_id.clone(),
+                                    conversation_id: body
+                                        .conversation_id
+                                        .as_deref()
+                                        .and_then(|id| ConversationId::decode(id).ok()),
                                 };
                                 if let Err(e) = bus.publish_interrupt_event(&interrupt_event).await
                                 {
@@ -3086,7 +3118,7 @@ pub async fn prompt_agent(
                     correlation_id: None,
                     timeout_ms: None,
                     message_type: "request".to_string(),
-                    target_conversation_id: Some(conversation_id.to_string()),
+                    target_conversation_id: Some(conversation_id_i64_for_update),
                     images: body
                         .images
                         .iter()
@@ -3156,7 +3188,7 @@ pub async fn prompt_agent(
             if let Err(e) = tokio::task::spawn_blocking(move || {
                 crate::user_data_db::agent_sessions::upsert(crate::user_data_db::AgentSession {
                     agent_session_id,
-                    conversation_id: conversation_id_for_session,
+                    conversation_id: conversation_id_for_session.as_i64(),
                     acp_session_id: Some(session_id),
                     mode: conversation_mode,
                     created_at: now,
@@ -3183,7 +3215,7 @@ pub async fn prompt_agent(
         let runtime_id_i64 = parse_to_i64(&runtime_id).unwrap_or(0);
         let binding = crate::user_data_db::GroupAgentBinding {
             workspace_id: workspace_id_i64,
-            chat_id: root_conversation_id_i64,
+            chat_id: ChatId::new(root_conversation_id_i64.as_i64()),
             agent_id: runtime_id_i64,
             agent_name: agent_name.clone(),
             agent_command: agent_profile,
@@ -3213,8 +3245,8 @@ pub async fn prompt_agent(
         // No conversation_id — auto-create one for persistence
         let agent_info = crate::services::agent_service::get_agent_info(&runtime_id).await;
 
-        let conversation_id_i64 = generate();
-        let conversation_id_str = format_id(conversation_id_i64, IdType::Conversation);
+        let conversation_id_i64 = ConversationId::generate();
+        let conversation_id_str = conversation_id_i64.to_string();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -3227,8 +3259,8 @@ pub async fn prompt_agent(
 
         let conv = crate::user_data_db::Conversation {
             conversation_id: conversation_id_i64,
-            collaboration_session_id: 0,
-            chat_id: 0,
+            collaboration_session_id: CollaborationSessionId::new(0),
+            chat_id: ChatId::new(0),
             parent_id: None,
             name: Some(format!("Auto-generated for agent {}", agent_name)),
             mode: "agent".to_string(),

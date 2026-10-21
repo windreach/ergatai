@@ -2,35 +2,15 @@
  * IPC 单元测试 - Ollama Router
  */
 
-import { test, expect, describe, beforeAll, afterAll } from '@playwright/test'
-import { launchElectron } from '../../fixtures/electron-launcher'
+import { test, expect, describe } from '@playwright/test'
+import { createTestContext } from '../../fixtures/test-context'
 
 describe('IPC: Ollama Router', () => {
-  let electron: any
-  let page: any
-
-  beforeAll(async () => {
-    electron = await launchElectron({
-      extraEnv: { NODE_ENV: 'test', ELECTRON_TEST_MODE: 'true' },
-    })
-    page = electron.page
-
-    process.on('exit', async () => {
-      if (electron) { try { await electron.close() } catch (e) { /* ignore */ } }
-    })
-    process.on('SIGINT', async () => {
-      if (electron) { await electron.close() }
-      process.exit(130)
-    })
-  })
-
-  afterAll(async () => {
-    await electron.close()
-  })
+  const ctx = createTestContext()
 
   describe('ollama.getConfig', () => {
     test('应该返回配置对象', async () => {
-      const config = await page.evaluate(async () => {
+      const config = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.ollama.getConfig.query()
       })
 
@@ -43,7 +23,7 @@ describe('IPC: Ollama Router', () => {
 
   describe('ollama.getStatus', () => {
     test('应该返回状态', async () => {
-      const status = await page.evaluate(async () => {
+      const status = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.ollama.getStatus.query()
       })
 
@@ -60,7 +40,7 @@ describe('IPC: Ollama Router', () => {
 
   describe('ollama.isOfflineModeAvailable', () => {
     test('应该返回可用性对象', async () => {
-      const availability = await page.evaluate(async () => {
+      const availability = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.ollama.isOfflineModeAvailable.query()
       })
 
@@ -74,7 +54,7 @@ describe('IPC: Ollama Router', () => {
 
   describe('ollama.getModels', () => {
     test('应该返回模型列表', async () => {
-      const models = await page.evaluate(async () => {
+      const models = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.ollama.getModels.query()
       })
 
@@ -90,7 +70,7 @@ describe('IPC: Ollama Router', () => {
   describe('ollama.generateCommitMessage', () => {
     test('应该报错或返回 null（需要 Ollama 服务）', async () => {
       try {
-        const result = await page.evaluate(async () => {
+        const result = await ctx.page.evaluate(async () => {
           return await (window as any).trpc.ollama.generateCommitMessage.mutate({
             diff: 'test diff content',
             fileCount: 1,

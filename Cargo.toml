@@ -118,5 +118,8 @@ agent-client-protocol = { git = "https://github.com/agentclientprotocol/rust-sdk
 agent-client-protocol-http = { git = "https://github.com/agentclientprotocol/rust-sdk.git", rev = "754d5aa1ce2cfa54ba2c2a6d3edc7e7b6bce28eb", features = ["client", "server"] }
 agent-client-protocol-rmcp = { git = "https://github.com/agentclientprotocol/rust-sdk.git", rev = "754d5aa1ce2cfa54ba2c2a6d3edc7e7b6bce28eb" }
 
+# OpenAPI documentation
+utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
+
 # Benchmarking
 criterion = { version = "0.5", features = ["html_reports"] }

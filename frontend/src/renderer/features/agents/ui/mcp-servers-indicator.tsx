@@ -38,7 +38,7 @@ export const McpServersIndicator = memo(function McpServersIndicator({
   const [sessionInfo, setSessionInfo] = useAtom(sessionInfoAtom)
 
   // Fetch MCP config on mount if we have projectPath and no session info yet
-  const { data: mcpConfig } = trpc.claude.getMcpConfig.useQuery(
+  const { data: mcpConfig } = trpc.mcp.getMcpConfig.useQuery(
     { projectPath: projectPath! },
     {
       enabled: !!projectPath && !sessionInfo?.mcpServers?.length,

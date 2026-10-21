@@ -3,6 +3,7 @@
 use std::fmt;
 
 use ergatai_core::id::{format as format_id, generate, parse_to_i64, IdType};
+use ergatai_error::{ChatId, CollaborationSessionId, ConversationId, WorkspaceId};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -134,7 +135,7 @@ impl SessionState {
 pub struct CollaborationSessionParticipant {
     pub id: String,
     pub session_id: String,
-    pub conversation_id: String, // ✅ 新增：关联 Conversation
+    pub conversation_id: String, // 内部存储为 i64，API 边界 format_id
     pub agent_id: String,        // 保留：从 conversation 获取
     pub role: String,
     pub status: String,
@@ -413,17 +414,17 @@ fn validate_visibility(value: &str) -> Result<(), CollaborationSessionError> {
 
 fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CollaborationSession> {
     // Read INTEGER columns as i64, then format to string IDs
-    let collaboration_session_id_i64: i64 = row.get(0)?;
-    let chat_id_i64: i64 = row.get(1)?;
-    let workspace_id_i64: i64 = row.get(2)?;
+    let collaboration_session_id: CollaborationSessionId = row.get(0)?;
+    let chat_id: ChatId = row.get(1)?;
+    let workspace_id: WorkspaceId = row.get(2)?;
 
     let mode = row.get::<_, String>(3)?;
     let state = row.get::<_, String>(4)?;
 
     Ok(CollaborationSession {
-        collaboration_session_id: format_id(collaboration_session_id_i64, IdType::Session),
-        chat_id: format_id(chat_id_i64, IdType::Chat),
-        workspace_id: format_id(workspace_id_i64, IdType::Workspace),
+        collaboration_session_id: collaboration_session_id.to_string(),
+        chat_id: chat_id.to_string(),
+        workspace_id: workspace_id.to_string(),
         mode: CollaborationMode::parse(&mode).map_err(|_| {
             rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, mode.into())
         })?,
@@ -442,13 +443,14 @@ const SESSION_COLUMNS: &str = "collaboration_session_id, chat_id, workspace_id, 
 fn participant_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<CollaborationSessionParticipant> {
-    // session_id is INTEGER in DB, read as i64 then format to string
-    let session_id_i64: i64 = row.get(1)?;
+    // session_id and conversation_id are INTEGER in DB, read as i64 then format to string
+    let session_id: CollaborationSessionId = row.get(1)?;
+    let conversation_id: ConversationId = row.get(2)?;
     Ok(CollaborationSessionParticipant {
         id: row.get(0)?, // TEXT
-        session_id: format_id(session_id_i64, IdType::Session),
-        conversation_id: row.get(2)?, // TEXT
-        agent_id: row.get(3)?,        // TEXT
+        session_id: session_id.to_string(),
+        conversation_id: conversation_id.to_string(),
+        agent_id: row.get(3)?, // TEXT
         role: row.get(4)?,
         status: row.get(5)?,
         created_at: row.get(6)?,
@@ -464,10 +466,10 @@ fn context_event_from_row(
 ) -> Result<CollaborationContextEvent, CollaborationSessionError> {
     // id and session_id are INTEGER in DB, read as i64 then format to string
     let id_i64: i64 = row.get(0)?;
-    let session_id_i64: i64 = row.get(1)?;
+    let session_id: CollaborationSessionId = row.get(1)?;
     Ok(CollaborationContextEvent {
         id: format_id(id_i64, IdType::Session),
-        session_id: format_id(session_id_i64, IdType::Session),
+        session_id: session_id.to_string(),
         sequence: row.get(2)?,
         event_type: row.get(3)?,
         actor_type: row.get(4)?,
@@ -487,12 +489,12 @@ fn plan_revision_from_row(
 ) -> Result<CollaborationPlanRevision, CollaborationSessionError> {
     // id and session_id are INTEGER in DB, read as i64 then format to string
     let id_i64: i64 = row.get(0)?;
-    let session_id_i64: i64 = row.get(1)?;
+    let session_id: CollaborationSessionId = row.get(1)?;
     Ok(CollaborationPlanRevision {
         // Note: Plan revision uses IdType::Dag because it represents a versioned DAG plan/snapshot.
         // This is semantically aligned with DAG orchestration, though not a DAG execution itself.
         id: format_id(id_i64, IdType::Dag),
-        session_id: format_id(session_id_i64, IdType::Session),
+        session_id: session_id.to_string(),
         revision: row.get(2)?,
         status: row.get(3)?,
         source_event_id: row.get(4)?,
@@ -522,10 +524,10 @@ fn approval_from_row(
     };
     // id and session_id are INTEGER in DB, read as i64 then format to string
     let id_i64: i64 = row.get(0)?;
-    let session_id_i64: i64 = row.get(1)?;
+    let session_id: CollaborationSessionId = row.get(1)?;
     Ok(CollaborationApproval {
         id: format_id(id_i64, IdType::Session),
-        session_id: format_id(session_id_i64, IdType::Session),
+        session_id: session_id.to_string(),
         plan_revision_id: row.get(2)?, // TEXT
         node_id: row.get(3)?,          // TEXT
         kind: row.get(4)?,
@@ -542,7 +544,7 @@ const APPROVAL_COLUMNS: &str = "id, session_id, plan_revision_id, node_id, kind,
 
 fn insert_participant(
     transaction: &rusqlite::Transaction<'_>,
-    session_id_i64: i64,
+    session_id: CollaborationSessionId,
     participant: &ParticipantInput,
     timestamp: i64,
 ) -> Result<(), CollaborationSessionError> {
@@ -556,6 +558,14 @@ fn insert_participant(
             "participant agent_id cannot be empty".to_string(),
         ));
     }
+    // Parse conversation_id from formatted string to i64
+    let conversation_id =
+        ConversationId::decode(participant.conversation_id.trim()).map_err(|_| {
+            CollaborationSessionError::Validation(format!(
+                "Invalid conversation_id format: '{}'",
+                participant.conversation_id
+            ))
+        })?;
     transaction.execute(
         "INSERT INTO collaboration_session_participants
          (id, session_id, conversation_id, agent_id, role, status, created_at, updated_at)
@@ -567,8 +577,8 @@ fn insert_participant(
            updated_at = excluded.updated_at",
         params![
             format_id(generate(), IdType::Session),
-            session_id_i64,
-            participant.conversation_id.trim(),
+            session_id,
+            conversation_id,
             participant.agent_id.trim(),
             participant.role,
             participant.status,
@@ -590,17 +600,14 @@ struct NewContextEvent<'a> {
 
 fn append_event_in_transaction(
     transaction: &rusqlite::Transaction<'_>,
-    session_id: &str,
+    session_id: CollaborationSessionId,
     draft: NewContextEvent<'_>,
 ) -> Result<CollaborationContextEvent, CollaborationSessionError> {
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
-        CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
-    })?;
     validate_actor_type(draft.actor_type)?;
     validate_visibility(draft.visibility)?;
     let sequence: i64 = transaction.query_row(
         "SELECT COALESCE(MAX(sequence), 0) + 1 FROM collaboration_context_events WHERE session_id = ?1",
-        params![session_id_i64],
+        params![session_id],
         |row| row.get(0),
     )?;
     let timestamp = now();
@@ -623,7 +630,7 @@ fn append_event_in_transaction(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             event_id_i64,  // INTEGER
-            session_id_i64,
+            session_id,
             event.sequence,
             event.event_type,
             event.actor_type,
@@ -639,32 +646,26 @@ fn append_event_in_transaction(
 
 fn load_participants(
     connection: &Connection,
-    session_id: &str,
+    session_id: CollaborationSessionId,
 ) -> Result<Vec<CollaborationSessionParticipant>, CollaborationSessionError> {
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
-        CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
-    })?;
     let mut statement = connection.prepare(&format!(
         "SELECT {PARTICIPANT_COLUMNS} FROM collaboration_session_participants WHERE session_id = ?1 ORDER BY created_at ASC"
     ))?;
     let participants = statement
-        .query_map(params![session_id_i64], participant_from_row)?
+        .query_map(params![session_id], participant_from_row)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(participants)
 }
 
 fn get_session_with_connection(
     connection: &Connection,
-    session_id: &str,
+    session_id: CollaborationSessionId,
 ) -> Result<Option<CollaborationSession>, CollaborationSessionError> {
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
-        CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
-    })?;
     let mut statement = connection.prepare(&format!(
         "SELECT {SESSION_COLUMNS} FROM collaboration_sessions WHERE collaboration_session_id = ?1"
     ))?;
     let session = statement
-        .query_row(params![session_id_i64], session_from_row)
+        .query_row(params![session_id], session_from_row)
         .optional()?;
     Ok(session)
 }
@@ -678,13 +679,13 @@ pub fn create_session(
         ));
     }
     // Parse formatted string IDs to i64 for database storage
-    let chat_id_i64 = parse_to_i64(request.chat_id.trim()).ok_or_else(|| {
+    let chat_id_i64 = ChatId::decode(request.chat_id.trim()).map_err(|_| {
         CollaborationSessionError::Validation(format!(
             "Invalid chat_id format: {}",
             request.chat_id
         ))
     })?;
-    let workspace_id_i64 = parse_to_i64(&request.workspace_id).ok_or_else(|| {
+    let workspace_id_i64 = WorkspaceId::decode(&request.workspace_id).map_err(|_| {
         CollaborationSessionError::Validation(format!(
             "Invalid workspace_id format: {}",
             request.workspace_id
@@ -692,8 +693,7 @@ pub fn create_session(
     })?;
 
     let timestamp = now();
-    let session_id_i64 = generate();
-    let session_id = format_id(session_id_i64, IdType::Session);
+    let session_id = CollaborationSessionId::generate();
     {
         lock_db!(mut connection);
         let transaction = connection.transaction()?;
@@ -703,7 +703,7 @@ pub fn create_session(
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
             ),
             rusqlite::params![
-                session_id_i64,
+                session_id,
                 chat_id_i64,
                 workspace_id_i64,
                 request.mode.as_str(),
@@ -715,11 +715,11 @@ pub fn create_session(
             ],
         )?;
         for participant in &request.participants {
-            insert_participant(&transaction, session_id_i64, participant, timestamp)?;
+            insert_participant(&transaction, session_id, participant, timestamp)?;
         }
         append_event_in_transaction(
             &transaction,
-            &session_id,
+            session_id,
             NewContextEvent {
                 event_type: "session_created",
                 actor_type: "system",
@@ -736,11 +736,11 @@ pub fn create_session(
     }
 
     lock_db!(connection);
-    let session = get_session_with_connection(&connection, &session_id)?.ok_or_else(|| {
+    let session = get_session_with_connection(&connection, session_id)?.ok_or_else(|| {
         CollaborationSessionError::NotFound("Session disappeared after creation".to_string())
     })?;
     Ok(CollaborationSessionDetail {
-        participants: load_participants(&connection, &session_id)?,
+        participants: load_participants(&connection, session_id)?,
         session,
     })
 }
@@ -748,7 +748,7 @@ pub fn create_session(
 pub fn find_session_by_chat(
     chat_id: &str,
 ) -> Result<Option<CollaborationSession>, CollaborationSessionError> {
-    let chat_id_i64 = parse_to_i64(chat_id).ok_or_else(|| {
+    let chat_id_i64 = ChatId::decode(chat_id).map_err(|_| {
         CollaborationSessionError::Validation(format!("Invalid chat_id format: {}", chat_id))
     })?;
     lock_db!(connection);
@@ -765,7 +765,7 @@ pub fn find_session_by_chat(
 pub fn list_sessions_by_chat(
     chat_id: &str,
 ) -> Result<Vec<CollaborationSession>, CollaborationSessionError> {
-    let chat_id_i64 = parse_to_i64(chat_id).ok_or_else(|| {
+    let chat_id_i64 = ChatId::decode(chat_id).map_err(|_| {
         CollaborationSessionError::Validation(format!("Invalid chat_id format: {}", chat_id))
     })?;
     lock_db!(connection);
@@ -783,7 +783,7 @@ pub fn upsert_participant(
     participant: ParticipantInput,
 ) -> Result<CollaborationSessionParticipant, CollaborationSessionError> {
     // Parse formatted session_id to i64 for database operations
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
+    let session_id = CollaborationSessionId::decode(session_id).map_err(|_| {
         CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
     })?;
 
@@ -794,8 +794,20 @@ pub fn upsert_participant(
 
     let timestamp = now();
     let transaction = connection.transaction()?;
-    insert_participant(&transaction, session_id_i64, &participant, timestamp)?;
+    insert_participant(&transaction, session_id, &participant, timestamp)?;
     transaction.commit()?;
+
+    // Parse conversation_id for query
+    let conversation_id_i64 = ergatai_error::id::parse_to_i64_with_type(
+        participant.conversation_id.trim(),
+        ergatai_error::id::IdType::Conversation,
+    )
+    .ok_or_else(|| {
+        CollaborationSessionError::Validation(format!(
+            "Invalid conversation_id format: '{}'",
+            participant.conversation_id
+        ))
+    })?;
 
     let mut statement = connection.prepare(&format!(
         "SELECT {PARTICIPANT_COLUMNS} FROM collaboration_session_participants
@@ -803,7 +815,7 @@ pub fn upsert_participant(
     ))?;
     statement
         .query_row(
-            params![session_id_i64, participant.conversation_id.trim()],
+            params![session_id, conversation_id_i64],
             participant_from_row,
         )
         .map_err(CollaborationSessionError::from)
@@ -813,6 +825,9 @@ pub fn get_session(
     session_id: &str,
 ) -> Result<CollaborationSessionDetail, CollaborationSessionError> {
     lock_db!(connection);
+    let session_id = CollaborationSessionId::decode(session_id).map_err(|_| {
+        CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
+    })?;
     let session = get_session_with_connection(&connection, session_id)?.ok_or_else(|| {
         CollaborationSessionError::NotFound("Collaboration session not found".to_string())
     })?;
@@ -827,7 +842,7 @@ pub fn append_message(
     session_id: &str,
     request: AppendSessionMessageRequest,
 ) -> Result<CollaborationSessionDetail, CollaborationSessionError> {
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
+    let session_id = CollaborationSessionId::decode(session_id).map_err(|_| {
         CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
     })?;
     lock_db!(mut connection);
@@ -864,13 +879,13 @@ pub fn append_message(
     if matches!(current.state, SessionState::Idle | SessionState::Completed) {
         transaction.execute(
             "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE collaboration_session_id = ?3",
-            params![SessionState::Planning.as_str(), now(), session_id_i64],
+            params![SessionState::Planning.as_str(), now(), session_id],
         )?;
     }
     transaction.commit()?;
 
     drop(connection);
-    get_session(session_id)
+    get_session(&session_id.to_string())
 }
 
 pub fn append_context_event(
@@ -883,6 +898,9 @@ pub fn append_context_event(
     artifact_refs: &[String],
 ) -> Result<CollaborationContextEvent, CollaborationSessionError> {
     lock_db!(mut connection);
+    let session_id = CollaborationSessionId::decode(session_id).map_err(|_| {
+        CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
+    })?;
     if get_session_with_connection(&connection, session_id)?.is_none() {
         return Err(CollaborationSessionError::NotFound(
             "Collaboration session not found".to_string(),
@@ -910,7 +928,7 @@ pub fn transition_state(
     session_id: &str,
     request: SessionStateTransitionRequest,
 ) -> Result<CollaborationSessionDetail, CollaborationSessionError> {
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
+    let session_id = CollaborationSessionId::decode(session_id).map_err(|_| {
         CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
     })?;
     lock_db!(mut connection);
@@ -942,11 +960,11 @@ pub fn transition_state(
     )?;
     transaction.execute(
         "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE collaboration_session_id = ?3",
-        params![request.state.as_str(), now(), session_id_i64],
+        params![request.state.as_str(), now(), session_id],
     )?;
     transaction.commit()?;
     drop(connection);
-    get_session(session_id)
+    get_session(&session_id.to_string())
 }
 
 pub fn list_events(
@@ -954,7 +972,7 @@ pub fn list_events(
     after_sequence: Option<i64>,
     limit: usize,
 ) -> Result<Vec<CollaborationContextEvent>, CollaborationSessionError> {
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
+    let session_id = CollaborationSessionId::decode(session_id).map_err(|_| {
         CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
     })?;
     lock_db!(connection);
@@ -970,7 +988,7 @@ pub fn list_events(
     ))?;
     let events = statement
         .query_map(
-            params![session_id_i64, after_sequence.unwrap_or(0), limit as i64],
+            params![session_id, after_sequence.unwrap_or(0), limit as i64],
             |row| {
                 context_event_from_row(row)
                     .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))
@@ -983,7 +1001,7 @@ pub fn list_events(
 pub fn latest_context_event(
     session_id: &str,
 ) -> Result<Option<CollaborationContextEvent>, CollaborationSessionError> {
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
+    let session_id = CollaborationSessionId::decode(session_id).map_err(|_| {
         CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
     })?;
     lock_db!(connection);
@@ -997,7 +1015,7 @@ pub fn latest_context_event(
          WHERE session_id = ?1 ORDER BY sequence DESC LIMIT 1"
     ))?;
     statement
-        .query_row(params![session_id_i64], |row| {
+        .query_row(params![session_id], |row| {
             context_event_from_row(row)
                 .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))
         })
@@ -1009,7 +1027,7 @@ pub fn create_plan_revision(
     session_id: &str,
     request: CreatePlanRevisionRequest,
 ) -> Result<PlanRevisionCreated, CollaborationSessionError> {
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
+    let session_id = CollaborationSessionId::decode(session_id).map_err(|_| {
         CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
     })?;
     if !request.dag_snapshot.is_object() {
@@ -1052,7 +1070,7 @@ pub fn create_plan_revision(
             "SELECT id FROM collaboration_plan_revisions
              WHERE session_id = ?1 AND status = 'active'
              ORDER BY created_at DESC LIMIT 1",
-            params![session_id_i64],
+            params![session_id],
             |row| row.get(0),
         )
         .optional()?;
@@ -1064,7 +1082,7 @@ pub fn create_plan_revision(
              ORDER BY sequence ASC",
         )?;
         let completed = statement
-            .query_map(params![session_id_i64], |row| row.get::<_, String>(0))?
+            .query_map(params![session_id], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         drop(statement);
         let preserved_outputs = completed
@@ -1095,7 +1113,7 @@ pub fn create_plan_revision(
 
     let revision: i64 = transaction.query_row(
         "SELECT COALESCE(MAX(revision), 0) + 1 FROM collaboration_plan_revisions WHERE session_id = ?1",
-        params![session_id_i64],
+        params![session_id],
         |row| row.get(0),
     )?;
     let timestamp = now();
@@ -1108,7 +1126,7 @@ pub fn create_plan_revision(
         ),
         params![
             plan_id_i64,
-            session_id_i64,
+            session_id,
             revision,
             "active",
             request.source_event_id,
@@ -1121,7 +1139,7 @@ pub fn create_plan_revision(
         "UPDATE collaboration_plan_revisions
          SET status = 'superseded'
          WHERE session_id = ?1 AND id != ?2 AND status = 'active'",
-        params![session_id_i64, plan_id_i64],
+        params![session_id, plan_id_i64],
     )?;
     let next_state = if matches!(current.state, SessionState::Idle) {
         Some(SessionState::Planning)
@@ -1153,13 +1171,13 @@ pub fn create_plan_revision(
             plan_id,
             next_state.map(SessionState::as_str),
             now(),
-            session_id_i64
+            session_id
         ],
     )?;
     transaction.commit()?;
     drop(connection);
 
-    let session = get_session(session_id)?;
+    let session = get_session(&session_id.to_string())?;
 
     lock_db!(connection);
     let mut statement = connection.prepare(&format!(
@@ -1180,7 +1198,7 @@ pub fn create_plan_revision(
 pub fn list_plan_revisions(
     session_id: &str,
 ) -> Result<Vec<CollaborationPlanRevision>, CollaborationSessionError> {
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
+    let session_id = CollaborationSessionId::decode(session_id).map_err(|_| {
         CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
     })?;
     lock_db!(connection);
@@ -1194,7 +1212,7 @@ pub fn list_plan_revisions(
          WHERE session_id = ?1 ORDER BY revision DESC"
     ))?;
     let revisions = statement
-        .query_map(params![session_id_i64], |row| {
+        .query_map(params![session_id], |row| {
             plan_revision_from_row(row)
                 .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))
         })?
@@ -1206,7 +1224,7 @@ pub fn get_plan_revision(
     session_id: &str,
     plan_revision_id: &str,
 ) -> Result<CollaborationPlanRevision, CollaborationSessionError> {
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
+    let session_id = CollaborationSessionId::decode(session_id).map_err(|_| {
         CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
     })?;
     let plan_revision_id_i64 = parse_to_i64(plan_revision_id).ok_or_else(|| {
@@ -1221,7 +1239,7 @@ pub fn get_plan_revision(
          WHERE session_id = ?1 AND id = ?2"
     ))?;
     statement
-        .query_row(params![session_id_i64, plan_revision_id_i64], |row| {
+        .query_row(params![session_id, plan_revision_id_i64], |row| {
             plan_revision_from_row(row)
                 .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))
         })
@@ -1235,7 +1253,7 @@ pub fn create_approval(
     session_id: &str,
     request: CreateApprovalRequest,
 ) -> Result<ApprovalDecisionResult, CollaborationSessionError> {
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
+    let session_id = CollaborationSessionId::decode(session_id).map_err(|_| {
         CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
     })?;
     if request.kind.trim().is_empty() {
@@ -1265,7 +1283,7 @@ pub fn create_approval(
         ),
         params![
             approval_id_raw,
-            session_id_i64,
+            session_id,
             request
                 .plan_revision_id
                 .or(current.active_plan_revision.clone()),
@@ -1298,12 +1316,12 @@ pub fn create_approval(
     )?;
     transaction.execute(
         "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE collaboration_session_id = ?3",
-        params![SessionState::WaitingApproval.as_str(), now(), session_id_i64],
+        params![SessionState::WaitingApproval.as_str(), now(), session_id],
     )?;
     transaction.commit()?;
     drop(connection);
 
-    let session = get_session(session_id)?;
+    let session = get_session(&session_id.to_string())?;
     let approval = get_approval(&approval_id)?;
     Ok(ApprovalDecisionResult { session, approval })
 }
@@ -1332,7 +1350,7 @@ pub fn decide_approval(
     approval_id: &str,
     request: ApprovalDecisionRequest,
 ) -> Result<ApprovalDecisionResult, CollaborationSessionError> {
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
+    let session_id = CollaborationSessionId::decode(session_id).map_err(|_| {
         CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
     })?;
     let approval_id_i64 = parse_to_i64(approval_id).ok_or_else(|| {
@@ -1350,7 +1368,7 @@ pub fn decide_approval(
             "SELECT {APPROVAL_COLUMNS} FROM collaboration_approvals WHERE id = ?1 AND session_id = ?2"
         ))?;
         statement
-            .query_row(params![approval_id_i64, session_id_i64], |row| {
+            .query_row(params![approval_id_i64, session_id], |row| {
                 approval_from_row(row)
                     .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))
             })
@@ -1386,7 +1404,7 @@ pub fn decide_approval(
             serde_json::to_string(&request.decision_payload)?,
             timestamp,
             approval_id_i64,
-            session_id_i64,
+            session_id,
         ],
     )?;
     append_event_in_transaction(
@@ -1410,12 +1428,12 @@ pub fn decide_approval(
     )?;
     transaction.execute(
         "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE collaboration_session_id = ?3",
-        params![next_state.as_str(), now(), session_id_i64],
+        params![next_state.as_str(), now(), session_id],
     )?;
     transaction.commit()?;
     drop(connection);
 
-    let session = get_session(session_id)?;
+    let session = get_session(&session_id.to_string())?;
     let approval = get_approval(approval_id)?;
     Ok(ApprovalDecisionResult { session, approval })
 }
@@ -1424,7 +1442,7 @@ pub fn cancel_session(
     session_id: &str,
     reason: Option<String>,
 ) -> Result<CollaborationSessionDetail, CollaborationSessionError> {
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
+    let session_id = CollaborationSessionId::decode(session_id).map_err(|_| {
         CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
     })?;
     lock_db!(mut connection);
@@ -1450,7 +1468,7 @@ pub fn cancel_session(
         params![
             ApprovalStatus::Cancelled.as_str(),
             now(),
-            session_id_i64,
+            session_id,
             ApprovalStatus::Pending.as_str(),
         ],
     )?;
@@ -1468,11 +1486,11 @@ pub fn cancel_session(
     )?;
     transaction.execute(
         "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE collaboration_session_id = ?3",
-        params![SessionState::Cancelled.as_str(), now(), session_id_i64],
+        params![SessionState::Cancelled.as_str(), now(), session_id],
     )?;
     transaction.commit()?;
     drop(connection);
-    get_session(session_id)
+    get_session(&session_id.to_string())
 }
 
 /// Mark a session as failed (used for cleanup when DAG submission fails).
@@ -1480,7 +1498,7 @@ pub fn fail_session(
     session_id: &str,
     reason: &str,
 ) -> Result<CollaborationSessionDetail, CollaborationSessionError> {
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
+    let session_id = CollaborationSessionId::decode(session_id).map_err(|_| {
         CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
     })?;
     lock_db!(mut connection);
@@ -1499,11 +1517,11 @@ pub fn fail_session(
     )?;
     transaction.execute(
         "UPDATE collaboration_sessions SET state = ?1, updated_at = ?2 WHERE collaboration_session_id = ?3",
-        params![SessionState::Failed.as_str(), now(), session_id_i64],
+        params![SessionState::Failed.as_str(), now(), session_id],
     )?;
     transaction.commit()?;
     drop(connection);
-    get_session(session_id)
+    get_session(&session_id.to_string())
 }
 
 const ACTIVE_SESSION_STATES_SQL: &str =
@@ -1523,7 +1541,9 @@ pub fn list_active_sessions() -> Result<Vec<CollaborationSessionDetail>, Collabo
     sessions
         .into_iter()
         .map(|session| {
-            let participants = load_participants(&connection, &session.collaboration_session_id)?;
+            let session_id = CollaborationSessionId::decode(&session.collaboration_session_id)
+                .map_err(|error| CollaborationSessionError::Validation(error.to_string()))?;
+            let participants = load_participants(&connection, session_id)?;
             Ok(CollaborationSessionDetail {
                 session,
                 participants,
@@ -1624,7 +1644,7 @@ pub async fn update_session(
 ) -> Result<Option<CollaborationSessionDetail>, CollaborationSessionError> {
     lock_db!(connection);
 
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
+    let session_id = CollaborationSessionId::decode(session_id).map_err(|_| {
         CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
     })?;
 
@@ -1632,7 +1652,7 @@ pub async fn update_session(
     let exists = connection
         .query_row(
             "SELECT 1 FROM collaboration_sessions WHERE collaboration_session_id = ?1",
-            [session_id_i64],
+            [session_id],
             |_| Ok(()),
         )
         .is_ok();
@@ -1669,7 +1689,7 @@ pub async fn update_session(
             "UPDATE collaboration_sessions SET {} WHERE collaboration_session_id = ?",
             updates.join(", ")
         );
-        params.push(Box::new(session_id_i64));
+        params.push(Box::new(session_id));
 
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
@@ -1695,13 +1715,13 @@ pub async fn update_session(
 pub async fn delete_session(session_id: &str) -> Result<bool, CollaborationSessionError> {
     lock_db!(connection);
 
-    let session_id_i64 = parse_to_i64(session_id).ok_or_else(|| {
+    let session_id = CollaborationSessionId::decode(session_id).map_err(|_| {
         CollaborationSessionError::Validation(format!("Invalid session_id format: {}", session_id))
     })?;
 
     let count = connection.execute(
         "DELETE FROM collaboration_sessions WHERE collaboration_session_id = ?1",
-        [session_id_i64],
+        [session_id],
     )?;
 
     Ok(count > 0)

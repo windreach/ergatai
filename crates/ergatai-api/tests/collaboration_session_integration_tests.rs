@@ -16,6 +16,7 @@ use ergatai_api::services::collaboration_session_dag::{
     cancel_session_execution, recover_session_dag,
 };
 use ergatai_error::id::{format as format_id, generate, IdType};
+use ergatai_error::{ChatId, WorkspaceId};
 use http_body_util::BodyExt;
 use serde_json::json;
 
@@ -37,6 +38,8 @@ fn lock_user_data_db_for_tests() -> tokio::sync::MutexGuard<'static, ()> {
 }
 
 fn ensure_workspace_and_chat_exist(workspace_id: i64, chat_id: i64) {
+    let workspace_id = WorkspaceId::new(workspace_id);
+    let chat_id = ChatId::new(chat_id);
     let _ = ergatai_api::user_data_db::workspaces::create(ergatai_api::user_data_db::Workspace {
         workspace_id,
         name: format!("Test Workspace {}", workspace_id),

@@ -14,46 +14,15 @@
  * - 清理（1 个）
  */
 
-import { test, expect, describe, beforeAll, afterAll, beforeEach } from '@playwright/test'
-import { launchElectron } from '../../fixtures/electron-launcher'
+import { test, expect, describe } from '@playwright/test'
+import { createTestContext } from '../../fixtures/test-context'
 
 describe('IPC: Ergatai Router (Mock)', () => {
-  let electron: any
-  let page: any
-
-  beforeAll(async () => {
-    electron = await launchElectron({
-      extraEnv: { NODE_ENV: 'test', ELECTRON_TEST_MODE: 'true' },
-    })
-    page = electron.page
-
-    process.on('exit', async () => {
-      if (electron) { try { await electron.close() } catch (e) { /* ignore */ } }
-    })
-    process.on('SIGINT', async () => {
-      if (electron) { await electron.close() }
-      process.exit(130)
-    })
-  })
-
-  afterAll(async () => {
-    // 清理所有测试数据
-    await page.evaluate(async () => {
-      await (window as any).trpc.test.helpers.cleanup.mutate()
-    })
-    await electron.close()
-  })
-
-  beforeEach(async () => {
-    // 每个测试前重置状态
-    await page.evaluate(async () => {
-      await (window as any).trpc.test.helpers.cleanup.mutate()
-    })
-  })
+  const ctx = createTestContext()
 
   describe('Agent 管理', () => {
     test('listAgents 应该返回数组', async () => {
-      const agents = await page.evaluate(async () => {
+      const agents = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.listAgents.query()
       })
 
@@ -62,14 +31,14 @@ describe('IPC: Ergatai Router (Mock)', () => {
 
     test('listAgents 应该返回 agent 详细信息', async () => {
       // 先创建一个 agent
-      const spawned = await page.evaluate(async () => {
+      const spawned = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.spawnAgent.mutate({
           command: 'claude',
           workspaceId: 'test-workspace-details',
         })
       })
 
-      const agents = await page.evaluate(async () => {
+      const agents = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.listAgents.query()
       })
 
@@ -82,7 +51,7 @@ describe('IPC: Ergatai Router (Mock)', () => {
     })
 
     test('spawnAgent 应该创建 agent', async () => {
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.spawnAgent.mutate({
           command: 'claude',
           workspaceId: 'test-workspace',
@@ -95,7 +64,7 @@ describe('IPC: Ergatai Router (Mock)', () => {
       expect(typeof result.agent_id).toBe('string')
 
       // 验证 agent 已被添加到列表
-      const agents = await page.evaluate(async () => {
+      const agents = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.listAgents.query()
       })
 
@@ -105,14 +74,14 @@ describe('IPC: Ergatai Router (Mock)', () => {
 
     test('getAgent 应该获取 agent', async () => {
       // 先创建一个 agent
-      const spawned = await page.evaluate(async () => {
+      const spawned = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.spawnAgent.mutate({
           command: 'claude',
           workspaceId: 'test-workspace',
         })
       })
 
-      const agent = await page.evaluate(async (agentId: string) => {
+      const agent = await ctx.page.evaluate(async (agentId: string) => {
         return await (window as any).trpc.test.ergatai.getAgent.query({ agentId })
       }, spawned.agent_id)
 
@@ -122,21 +91,21 @@ describe('IPC: Ergatai Router (Mock)', () => {
 
     test('killAgent 应该删除 agent', async () => {
       // 先创建一个 agent
-      const spawned = await page.evaluate(async () => {
+      const spawned = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.spawnAgent.mutate({
           command: 'claude',
           workspaceId: 'test-workspace',
         })
       })
 
-      const killResult = await page.evaluate(async (agentId: string) => {
+      const killResult = await ctx.page.evaluate(async (agentId: string) => {
         return await (window as any).trpc.test.ergatai.killAgent.mutate({ agentId })
       }, spawned.agent_id)
 
       expect(killResult.success).toBe(true)
 
       // 验证 agent 已从列表移除
-      const agents = await page.evaluate(async () => {
+      const agents = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.listAgents.query()
       })
 
@@ -146,14 +115,14 @@ describe('IPC: Ergatai Router (Mock)', () => {
 
     test('sendMessage 应该成功', async () => {
       // 先创建一个 agent
-      const spawned = await page.evaluate(async () => {
+      const spawned = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.spawnAgent.mutate({
           command: 'claude',
           workspaceId: 'test-workspace',
         })
       })
 
-      const result = await page.evaluate(async (agentId: string) => {
+      const result = await ctx.page.evaluate(async (agentId: string) => {
         return await (window as any).trpc.test.ergatai.sendMessage.mutate({
           agentId,
           message: 'Hello from test',
@@ -167,14 +136,14 @@ describe('IPC: Ergatai Router (Mock)', () => {
 
     test('promptAgent 应该成功', async () => {
       // 先创建一个 agent
-      const spawned = await page.evaluate(async () => {
+      const spawned = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.spawnAgent.mutate({
           command: 'claude',
           workspaceId: 'test-workspace',
         })
       })
 
-      const result = await page.evaluate(async (agentId: string) => {
+      const result = await ctx.page.evaluate(async (agentId: string) => {
         return await (window as any).trpc.test.ergatai.promptAgent.mutate({
           agentId,
           prompt: 'Please complete this task',
@@ -186,7 +155,7 @@ describe('IPC: Ergatai Router (Mock)', () => {
     })
 
     test('spawnAgent 应该支持可选参数', async () => {
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.spawnAgent.mutate({
           command: 'claude',
           workspaceId: 'test-workspace-opts',
@@ -204,7 +173,7 @@ describe('IPC: Ergatai Router (Mock)', () => {
 
   describe('Conversation 管理', () => {
     test('listConversations 应该返回数组', async () => {
-      const conversations = await page.evaluate(async () => {
+      const conversations = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.listConversations.query()
       })
 
@@ -212,7 +181,7 @@ describe('IPC: Ergatai Router (Mock)', () => {
     })
 
     test('createConversation 应该创建对话', async () => {
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.createConversation.mutate({
           name: 'Test Conversation',
           chatId: 'test-chat-1',
@@ -224,7 +193,7 @@ describe('IPC: Ergatai Router (Mock)', () => {
       expect(typeof result.id).toBe('string')
 
       // 验证对话已添加到列表
-      const conversations = await page.evaluate(async () => {
+      const conversations = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.listConversations.query()
       })
 
@@ -233,7 +202,7 @@ describe('IPC: Ergatai Router (Mock)', () => {
     })
 
     test('createConversation 应该支持可选字段', async () => {
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.createConversation.mutate({
           name: 'Test with Options',
           chatId: 'test-chat-opts',
@@ -246,14 +215,14 @@ describe('IPC: Ergatai Router (Mock)', () => {
 
     test('getConversation 应该获取对话', async () => {
       // 先创建对话
-      const created = await page.evaluate(async () => {
+      const created = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.createConversation.mutate({
           name: 'Get Test',
           chatId: 'test-chat-get',
         })
       })
 
-      const conversation = await page.evaluate(async (conversationId: string) => {
+      const conversation = await ctx.page.evaluate(async (conversationId: string) => {
         return await (window as any).trpc.test.ergatai.getConversation.query({ id: conversationId })
       }, created.id)
 
@@ -263,21 +232,21 @@ describe('IPC: Ergatai Router (Mock)', () => {
 
     test('deleteConversation 应该删除对话', async () => {
       // 先创建对话
-      const created = await page.evaluate(async () => {
+      const created = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.createConversation.mutate({
           name: 'Delete Test',
           chatId: 'test-chat-delete',
         })
       })
 
-      const deleteResult = await page.evaluate(async (conversationId: string) => {
+      const deleteResult = await ctx.page.evaluate(async (conversationId: string) => {
         return await (window as any).trpc.test.ergatai.deleteConversation.mutate({ id: conversationId })
       }, created.id)
 
       expect(deleteResult.success).toBe(true)
 
       // 验证对话已从列表移除
-      const conversations = await page.evaluate(async () => {
+      const conversations = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.listConversations.query()
       })
 
@@ -288,7 +257,7 @@ describe('IPC: Ergatai Router (Mock)', () => {
 
   describe('Workspace 管理', () => {
     test('listManagedWorkspaces 应该返回数组', async () => {
-      const workspaces = await page.evaluate(async () => {
+      const workspaces = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.listManagedWorkspaces.query()
       })
 
@@ -297,14 +266,14 @@ describe('IPC: Ergatai Router (Mock)', () => {
 
     test('getManagedWorkspace 应该获取 workspace', async () => {
       // 先创建 workspace
-      const created = await page.evaluate(async () => {
+      const created = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.createManagedWorkspace.mutate({
           name: 'test-workspace-get',
           workDir: '/tmp/test-ws-get',
         })
       })
 
-      const workspace = await page.evaluate(async (workspaceId: string) => {
+      const workspace = await ctx.page.evaluate(async (workspaceId: string) => {
         return await (window as any).trpc.test.ergatai.getManagedWorkspace.query({ id: workspaceId })
       }, created.id)
 
@@ -314,7 +283,7 @@ describe('IPC: Ergatai Router (Mock)', () => {
     })
 
     test('createManagedWorkspace 应该创建 workspace', async () => {
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.createManagedWorkspace.mutate({
           name: 'test-workspace-1',
           workDir: '/tmp/test-workspace-1',
@@ -327,7 +296,7 @@ describe('IPC: Ergatai Router (Mock)', () => {
       expect(result.name).toBe('test-workspace-1')
 
       // 验证 workspace 已添加到列表
-      const workspaces = await page.evaluate(async () => {
+      const workspaces = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.listManagedWorkspaces.query()
       })
 
@@ -336,7 +305,7 @@ describe('IPC: Ergatai Router (Mock)', () => {
     })
 
     test('createManagedWorkspace 应该支持可选参数', async () => {
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.createManagedWorkspace.mutate({
           name: 'test-workspace-opts',
           workDir: '/tmp/test-ws-opts',
@@ -352,21 +321,21 @@ describe('IPC: Ergatai Router (Mock)', () => {
 
     test('deleteManagedWorkspaces 应该删除 workspace', async () => {
       // 先创建 workspace
-      const created = await page.evaluate(async () => {
+      const created = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.createManagedWorkspace.mutate({
           name: 'test-workspace-delete',
           workDir: '/tmp/test-ws-delete',
         })
       })
 
-      const deleteResult = await page.evaluate(async (workspaceId: string) => {
+      const deleteResult = await ctx.page.evaluate(async (workspaceId: string) => {
         return await (window as any).trpc.test.ergatai.deleteManagedWorkspaces.mutate({ workspaceId })
       }, created.id)
 
       expect(deleteResult.success).toBe(true)
 
       // 验证 workspace 已从列表移除
-      const workspaces = await page.evaluate(async () => {
+      const workspaces = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.listManagedWorkspaces.query()
       })
 
@@ -389,7 +358,7 @@ tasks:
     depends_on:
       - task1
 `
-      const result = await page.evaluate(async (yaml: string) => {
+      const result = await ctx.page.evaluate(async (yaml: string) => {
         return await (window as any).trpc.test.ergatai.validateDagYaml.mutate({ yaml })
       }, validYaml)
 
@@ -406,7 +375,7 @@ tasks:
   - name: task1
     agent: claude
 `
-      const result = await page.evaluate(async (yaml: string) => {
+      const result = await ctx.page.evaluate(async (yaml: string) => {
         return await (window as any).trpc.test.ergatai.validateDagYaml.mutate({ yaml })
       }, invalidYaml)
 
@@ -416,7 +385,7 @@ tasks:
     })
 
     test('getDagStatus 应该返回状态', async () => {
-      const result = await page.evaluate(async () => {
+      const result = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.getDagStatus.query({
           dagId: 'test-dag-1',
         })
@@ -433,7 +402,7 @@ tasks:
 
   describe('System', () => {
     test('getSystemStatus 应该返回系统状态', async () => {
-      const status = await page.evaluate(async () => {
+      const status = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.getSystemStatus.query()
       })
 
@@ -442,7 +411,7 @@ tasks:
     })
 
     test('getStats 应该返回统计信息', async () => {
-      const stats = await page.evaluate(async () => {
+      const stats = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.getStats.query()
       })
 
@@ -454,7 +423,7 @@ tasks:
   describe('错误处理', () => {
     test('获取不存在的 agent 应该报错或返回 null', async () => {
       await expect(
-        page.evaluate(async () => {
+        ctx.page.evaluate(async () => {
           return await (window as any).trpc.test.ergatai.getAgent.query({
             agentId: 'non-existent-agent-id',
           })
@@ -464,7 +433,7 @@ tasks:
 
     test('获取不存在的 conversation 应该报错或返回 null', async () => {
       await expect(
-        page.evaluate(async () => {
+        ctx.page.evaluate(async () => {
           return await (window as any).trpc.test.ergatai.getConversation.query({
             id: 'non-existent-conversation-id',
           })
@@ -474,7 +443,7 @@ tasks:
 
     test('获取不存在的 workspace 应该报错或返回 null', async () => {
       await expect(
-        page.evaluate(async () => {
+        ctx.page.evaluate(async () => {
           return await (window as any).trpc.test.ergatai.getManagedWorkspace.query({
             id: 'non-existent-workspace-id',
           })
@@ -486,7 +455,7 @@ tasks:
   describe('清理', () => {
     test('cleanup 应该清除所有测试数据', async () => {
       // 先创建一些数据
-      await page.evaluate(async () => {
+      await ctx.page.evaluate(async () => {
         await (window as any).trpc.test.ergatai.spawnAgent.mutate({
           command: 'claude',
           workspaceId: 'test-workspace',
@@ -502,20 +471,20 @@ tasks:
       })
 
       // 执行清理
-      const cleanupResult = await page.evaluate(async () => {
+      const cleanupResult = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.helpers.cleanup.mutate()
       })
 
       expect(cleanupResult).toBeDefined()
 
       // 验证所有数据已被清除
-      const agents = await page.evaluate(async () => {
+      const agents = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.listAgents.query()
       })
-      const conversations = await page.evaluate(async () => {
+      const conversations = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.listConversations.query()
       })
-      const workspaces = await page.evaluate(async () => {
+      const workspaces = await ctx.page.evaluate(async () => {
         return await (window as any).trpc.test.ergatai.listManagedWorkspaces.query()
       })
 

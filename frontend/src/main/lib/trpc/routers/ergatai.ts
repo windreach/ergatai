@@ -1380,7 +1380,7 @@ export const ergataiRouter = router({
       z.object({
         name: z.string(),
         workDir: z.string(),
-        projectId: z.string().optional(),
+        projectId: projectIdSchema.optional(),
         projectPath: z.string().optional(), // If provided and projectId is not, auto-create project
         projectName: z.string().optional(),
         collaborationMode: z.enum(["supervisor", "group"]).optional(),
@@ -1390,7 +1390,7 @@ export const ergataiRouter = router({
       const collaborationMode = input.collaborationMode ?? "supervisor"
 
       // Create workspace
-      const workspace = await ergataiFetch<BackendManagedWorkspace>(
+      let workspace = await ergataiFetch<BackendManagedWorkspace>(
         "/api/v1/workspaces/managed",
         {
           method: "POST",
@@ -1412,6 +1412,11 @@ export const ergataiRouter = router({
               default_project_id: input.projectId,
             }),
           },
+        )
+        // Re-fetch workspace to get updated defaultProjectId
+        workspace = await ergataiFetch<BackendManagedWorkspace>(
+          `/api/v1/workspaces/managed/${encodeURIComponent(workspace.workspace_id)}`,
+          { method: "GET" },
         )
       } else if (input.projectPath) {
         // Auto-create project if projectPath is provided
@@ -1435,6 +1440,11 @@ export const ergataiRouter = router({
               default_project_id: project.project_id,
             }),
           },
+        )
+        // Re-fetch workspace to get updated defaultProjectId
+        workspace = await ergataiFetch<BackendManagedWorkspace>(
+          `/api/v1/workspaces/managed/${encodeURIComponent(workspace.workspace_id)}`,
+          { method: "GET" },
         )
       }
 
@@ -1731,22 +1741,26 @@ export const ergataiRouter = router({
     .query(async ({ input }): Promise<AgentBinding[]> => {
       // Use the /agents endpoint to get associated agents
       try {
-        const agents = await ergataiFetch<Array<{
-          agent_id: string
-          command: string
-          status: string
-          bound_at: string
-        }>>(`/api/v1/chats/${encodeURIComponent(input.chatId)}/agents`)
+        const response = await ergataiFetch<{
+          agents: Array<{
+            agent_id: string
+            conversation_id: string
+            state: string
+            profile: string | null
+            last_heartbeat: string
+          }>
+        }>(`/api/v1/chats/${encodeURIComponent(input.chatId)}/agents`)
+        const agents = response.agents
         return agents.map((agent) => ({
           id: agent.agent_id,
           workspaceId: "",
           chatId: input.chatId,
           agentId: agent.agent_id,
-          agentName: agent.command,
-          agentCommand: agent.command,
-          conversationId: "",
-          createdAt: new Date(agent.bound_at),
-          updatedAt: new Date(agent.bound_at),
+          agentName: agent.profile ?? agent.agent_id,
+          agentCommand: agent.profile,
+          conversationId: agent.conversation_id ?? "",
+          createdAt: new Date(agent.last_heartbeat),
+          updatedAt: new Date(agent.last_heartbeat),
         }))
       } catch (err) {
         console.warn("[ergatai] getAgentBindings failed:", err)
@@ -1759,13 +1773,16 @@ export const ergataiRouter = router({
     .input(z.object({ chatId: z.string() }))
     .query(async ({ input }) => {
       try {
-        const agents = await ergataiFetch<Array<{
-          agent_id: string
-          command: string
-          status: string
-          bound_at: string
-        }>>(`/api/v1/chats/${input.chatId}/agents`)
-        return agents
+        const response = await ergataiFetch<{
+          agents: Array<{
+            agent_id: string
+            conversation_id: string
+            state: string
+            profile: string | null
+            last_heartbeat: string
+          }>
+        }>(`/api/v1/chats/${encodeURIComponent(input.chatId)}/agents`)
+        return response.agents
       } catch (err) {
         // Backend endpoint not yet implemented — return empty
         console.warn("[ergatai] getChatAgents failed (backend may not support it yet):", err)

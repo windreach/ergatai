@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use ergatai_error::id::{format as format_id, generate, IdType};
-use ergatai_error::{ErgataiError, ErgataiResult};
+use ergatai_error::{ErgataiError, ErgataiResult, TaskId};
 use ergatai_lock::{FileMode, FileToken, SystemToken};
 use ergatai_runtime::{get_agent_runtime, WorkspaceSpec};
 use serde::{Deserialize, Serialize};
@@ -715,10 +715,12 @@ impl AgentLauncher {
             if ergatai_nats::is_nats_initialized().await {
                 if let Some(conn) = ergatai_nats::get_nats_connection().await {
                     let bus = ergatai_nats::event_bus::EventBus::new(conn);
+                    let typed_task_id =
+                        TaskId::decode(&node_id_monitor).expect("valid collaboration task ID");
                     if result_file_exists {
                         let payload = ergatai_nats::events::NodeCompletePayload {
-                            node_id: node_id_monitor.clone(),
-                            task_id: node_id_monitor.clone(),
+                            node_id: typed_task_id,
+                            task_id: typed_task_id,
                             agent_name: agent_name_monitor.clone(),
                             result_summary: Some("Reused agent completed task".to_string()),
                             outputs: if let Some(ref path) = result_file_path {
@@ -745,8 +747,8 @@ impl AgentLauncher {
                         }
                     } else {
                         let payload = ergatai_nats::events::NodeFailedPayload {
-                            node_id: node_id_monitor.clone(),
-                            task_id: node_id_monitor.clone(),
+                            node_id: typed_task_id,
+                            task_id: typed_task_id,
                             agent_name: agent_name_monitor.clone(),
                             error: "Result file not produced within timeout".to_string(),
                             retryable: false,
@@ -1337,11 +1339,13 @@ identifiers, configuration values, etc.).
                 if ergatai_nats::is_nats_initialized().await {
                     if let Some(conn) = ergatai_nats::get_nats_connection().await {
                         let bus = ergatai_nats::event_bus::EventBus::new(conn);
+                        let typed_task_id =
+                            TaskId::decode(&node_id_monitor).expect("valid collaboration task ID");
                         match &result_file_exists {
                             true => {
                                 let payload = ergatai_nats::events::NodeCompletePayload {
-                                    node_id: node_id_monitor.clone(),
-                                    task_id: node_id_monitor.clone(),
+                                    node_id: typed_task_id,
+                                    task_id: typed_task_id,
                                     agent_name: agent_name_monitor.clone(),
                                     result_summary,
                                     outputs: if let Some(ref path) = result_file_path {
@@ -1365,8 +1369,8 @@ identifiers, configuration values, etc.).
                             }
                             false => {
                                 let payload = ergatai_nats::events::NodeFailedPayload {
-                                    node_id: node_id_monitor.clone(),
-                                    task_id: node_id_monitor.clone(),
+                                    node_id: typed_task_id,
+                                    task_id: typed_task_id,
                                     agent_name: agent_name_monitor.clone(),
                                     error: error_msg.unwrap_or_default(),
                                     retryable: false,
