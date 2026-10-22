@@ -49,6 +49,7 @@ use utoipa::OpenApi;
         crate::api::agents::load_agent_session,
         crate::api::agents::delete_agent_session,
         crate::api::agents::stream_agent_events,
+        crate::api::agents::stream_agent_output,
         crate::api::user_conversations::get_conversation,
         crate::api::user_conversations::update_conversation,
         crate::api::user_conversations::delete_conversation,

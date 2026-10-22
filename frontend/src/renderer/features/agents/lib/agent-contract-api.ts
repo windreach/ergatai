@@ -236,7 +236,7 @@ export const DEFAULT_INSTALLED_CORE_AGENT_IDS: CoreAgentId[] = [
 
 /** Agent registration for UI (stored in localStorage via jotai atoms) */
 export interface AgentRegistration {
-  id: string  // Stable identifier (UUID or slug), used for linking/referencing
+  id: string  // Backend-generated profile ID, used for linking/referencing
   name: string  // Display name (user-friendly, can be changed)
   runtimeId: CoreAgentId
   startupCommand: string
@@ -448,10 +448,14 @@ export const agentContractApi: AgentContractApi = {
       packageName,
       avatarUrl,
     })
-    // Backend now returns the profile with id, but for now we'll query it back
-    // to get the id since the register endpoint doesn't return it yet
+    if (result?.id) {
+      return { id: result.id }
+    }
+
+    // The backend's success response may use a minimal shape in some error
+    // paths. Resolve the backend-owned ID instead of creating one locally.
     const profiles = await trpcClient.ergatai.listProfiles.query()
     const profile = profiles.profiles.find((p) => p.name === name)
-    return { id: profile?.name || name }  // Temporary: use name as id until backend returns id
+    return { id: profile?.id || name }
   },
 }

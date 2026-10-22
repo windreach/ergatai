@@ -276,6 +276,7 @@ impl AgentLifecycleState {
                 | (Processing { .. }, Stopping { .. })
                 | (Stopping { .. }, Terminated { .. })
                 // Suspend/resume transitions
+                | (Idle { .. }, Suspended { .. })
                 | (Running { .. }, Suspended { .. })
                 | (Processing { .. }, Suspended { .. })
                 | (Suspended { .. }, Running { .. })

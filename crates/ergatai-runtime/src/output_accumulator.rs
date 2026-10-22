@@ -296,7 +296,7 @@ impl OutputAccumulatorRegistry {
         accumulators
             .entry(conversation_id.to_string())
             .or_insert_with(|| {
-                let conv_id_i64 = conversation_id.parse::<i64>().unwrap_or(0);
+                let conv_id_i64 = ergatai_error::id::parse_to_i64(conversation_id).unwrap_or(0);
                 Arc::new(Mutex::new(TurnAccumulator::new(conv_id_i64, sequence)))
             })
             .clone()

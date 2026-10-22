@@ -362,22 +362,21 @@ pub async fn list_chat_agents(
     let registry = ergatai_core::unified_registry::unified_registry();
     let mut agents = Vec::new();
 
-    let bindings: Vec<crate::user_data_db::GroupAgentBinding> =
-        match tokio::task::spawn_blocking(move || {
-            crate::user_data_db::group_agent_bindings::list(chat_id)
-        })
-        .await
-        {
-            Ok(Ok(b)) => b,
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, "Failed to list agent bindings for chat; falling back to heartbeat timestamps");
-                Vec::new()
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Task join error listing agent bindings");
-                Vec::new()
-            }
-        };
+    let bindings: Vec<crate::user_data_db::GroupAgentBinding> = match tokio::task::spawn_blocking(
+        move || crate::user_data_db::group_agent_bindings::list(chat_id),
+    )
+    .await
+    {
+        Ok(Ok(b)) => b,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "Failed to list agent bindings for chat; falling back to heartbeat timestamps");
+            Vec::new()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Task join error listing agent bindings");
+            Vec::new()
+        }
+    };
 
     for conv in conversations {
         let conversation_id_str = conv.conversation_id.to_string();

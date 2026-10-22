@@ -481,12 +481,21 @@ async fn handle_standard_session_notification(
 
             // Renew locks for write operations
             if matches!(tc.kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move) {
-                if let Some(workspace_id) = agent_id.rfind("-agent-").map(|pos| &agent_id[..pos]) {
-                    if let Ok(lock_mgr) = ergatai_lock::get_lock_manager(workspace_id).await {
+                if let Some(workspace_id_formatted) =
+                    agent_id.rfind("-agent-").map(|pos| &agent_id[..pos])
+                {
+                    // Convert formatted typed ID (e.g., "ws_123_000_0000") to plain decimal string
+                    // to match the key format used in lock_permission.rs register_workspace()
+                    let workspace_id_plain =
+                        ergatai_error::id::parse_to_i64(workspace_id_formatted)
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| workspace_id_formatted.to_string());
+                    if let Ok(lock_mgr) = ergatai_lock::get_lock_manager(&workspace_id_plain).await
+                    {
                         let session_id_str = session_id.read().clone().unwrap_or_default();
                         match lock_mgr.renew_lock_on_tool_start(agent_id, &session_id_str) {
                             Ok(true) => {
-                                debug!(agent_id = %agent_id, workspace_id = %workspace_id, "Renewed locks on tool start");
+                                debug!(agent_id = %agent_id, workspace_id = %workspace_id_plain, "Renewed locks on tool start");
                             }
                             Ok(false) => {
                                 debug!(agent_id = %agent_id, "No active locks to renew on tool start");
@@ -554,10 +563,16 @@ async fn handle_standard_session_notification(
                 // Release locks for write operations
                 if let Some(ref kind) = kind {
                     if matches!(kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move) {
-                        if let Some(workspace_id) =
+                        if let Some(workspace_id_formatted) =
                             agent_id.rfind("-agent-").map(|pos| &agent_id[..pos])
                         {
-                            if let Ok(lock_mgr) = ergatai_lock::get_lock_manager(workspace_id).await
+                            // Convert formatted typed ID to plain decimal string
+                            let workspace_id_plain =
+                                ergatai_error::id::parse_to_i64(workspace_id_formatted)
+                                    .map(|id| id.to_string())
+                                    .unwrap_or_else(|| workspace_id_formatted.to_string());
+                            if let Ok(lock_mgr) =
+                                ergatai_lock::get_lock_manager(&workspace_id_plain).await
                             {
                                 let session_id_str = session_id.read().clone().unwrap_or_default();
                                 for loc in &locations {
@@ -686,8 +701,14 @@ async fn register_system_token_for_acp_session(
 ) -> ErgataiResult<()> {
     use ergatai_lock::token::SystemToken;
 
+    // Convert formatted typed ID (e.g., "ws_123_000_0000") to plain decimal string
+    // to match the key format used in lock_permission.rs register_workspace()
+    let workspace_id_plain = ergatai_error::id::parse_to_i64(workspace_id)
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| workspace_id.to_string());
+
     // Get the lock manager for this workspace
-    let lock_manager = ergatai_lock::get_lock_manager(workspace_id).await?;
+    let lock_manager = ergatai_lock::get_lock_manager(&workspace_id_plain).await?;
 
     // Create a SystemToken with reasonable defaults
     // TTL: 1 hour, heartbeat interval: 30 seconds

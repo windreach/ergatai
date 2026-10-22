@@ -120,7 +120,7 @@ export function AddAgentDialog({
   )
 
   const handleSubmit = useCallback(
-    (event: React.FormEvent<HTMLFormElement>) => {
+    async (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault()
 
       if (!startupCommand.trim()) {
@@ -128,24 +128,35 @@ export function AddAgentDialog({
         return
       }
 
-      const newAgent: AgentRegistration = {
-        id: crypto.randomUUID(),  // Generate stable UUID as identifier
-        name: agentName.trim() || selectedAgent.name,
-        runtimeId: selectedAgent.id,
-        startupCommand: startupCommand.trim(),
-        avatarUrl: avatarUrl || undefined,
-      }
+      const name = agentName.trim() || selectedAgent.name
+      const resolvedStartupCommand = startupCommand.trim()
 
-      // Register to backend (fire-and-forget; UI callback still runs)
-      agentContractApi
-        .registerAgent(newAgent.name, newAgent.startupCommand, "acp", undefined, newAgent.avatarUrl)
-        .catch((err) => {
-          console.error("Failed to register agent to backend:", err)
-          toast.error("Agent created locally but backend registration failed")
+      try {
+        // The backend owns persistent profile IDs; the UI only keeps a local view.
+        const registered = await agentContractApi.registerAgent(
+          name,
+          resolvedStartupCommand,
+          "acp",
+          undefined,
+          avatarUrl || undefined,
+        )
+
+        const newAgent: AgentRegistration = {
+          id: registered.id,
+          name,
+          runtimeId: selectedAgent.id,
+          startupCommand: resolvedStartupCommand,
+          avatarUrl: avatarUrl || undefined,
+        }
+
+        onCreateAgent(newAgent)
+        onOpenChange(false)
+      } catch (err) {
+        console.error("Failed to register agent to backend:", err)
+        toast.error("Agent registration failed", {
+          description: err instanceof Error ? err.message : "Please try again",
         })
-
-      onCreateAgent(newAgent)
-      onOpenChange(false)
+      }
     },
     [onCreateAgent, onOpenChange, selectedAgent, startupCommand, agentName, avatarUrl],
   )

@@ -344,6 +344,30 @@ async fn async_main(args: Args) -> Result<()> {
     let mcp_registry = std::sync::Arc::new(ergatai_api::mcp::AgentRegistry::new());
     let peer_registry = ergatai_api::mcp::server::new_peer_registry();
 
+    // Agent lifetime owns MCP session lifetime.  Register the closer before
+    // the runtime can launch agents so stop/suspend always has a hook even if
+    // an agent never sends an MCP request.
+    let mut local_mcp_sessions =
+        rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default();
+    local_mcp_sessions.session_config.keep_alive = None;
+    let mcp_session_manager =
+        ergatai_api::mcp::server::AgentSessionManager::new(std::sync::Arc::new(local_mcp_sessions));
+    let mcp_session_closer: ergatai_runtime::mcp_lifecycle::McpSessionCloser = {
+        let manager = mcp_session_manager.clone();
+        std::sync::Arc::new(move |agent_id| {
+            let manager = manager.clone();
+            let agent_id = agent_id.to_string();
+            Box::pin(async move {
+                manager.close_agent_sessions(&agent_id).await;
+            })
+        })
+    };
+    if let Err(_) =
+        ergatai_runtime::mcp_lifecycle::set_global_mcp_session_closer(mcp_session_closer)
+    {
+        tracing::warn!("MCP session closer already installed; keeping existing hook");
+    }
+
     // Initialize AgentRuntime with ACP backend
     //
     // Attach a SessionStore so agent sessions survive API-server restarts.
@@ -513,6 +537,7 @@ async fn async_main(args: Args) -> Result<()> {
     start_peer_reaper(
         mcp_registry.clone(),
         peer_registry.clone(),
+        mcp_session_manager.clone(),
         mcp_cancellation_token.clone(),
     );
 
@@ -794,6 +819,7 @@ async fn async_main(args: Args) -> Result<()> {
         mcp_cancellation_token.clone(),
         args.sse_keep_alive,
         None, // Agent ID will be determined from URL path
+        mcp_session_manager.clone(),
     );
 
     let app = api_app

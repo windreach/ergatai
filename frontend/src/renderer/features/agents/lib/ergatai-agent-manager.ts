@@ -394,6 +394,7 @@ async function spawnTempModelAgentFallback(
     // Step 1: Spawn temporary agent
     const spawnResult = await trpcClient.ergatai.spawnAgent.mutate({
       conversationId,
+      temporaryAgent: true,
       command,
       workDir,
     })

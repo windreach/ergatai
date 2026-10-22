@@ -409,11 +409,28 @@ impl AgentRuntime {
             spec.work_dir.to_string_lossy().to_string()
         };
 
-        if let Err(e) =
-            ergatai_lock::register_workspace_for_project("default", &agent_id, &workspace_dir).await
+        // File access state is keyed by the workspace's raw Snowflake ID.  The ACP
+        // session later registers its SystemToken with the same key, so both sides
+        // must not use a separate legacy "default" namespace here.
+        let lock_project_id = ergatai_error::WorkspaceId::decode(&workspace.id)
+            .map(|id| id.as_i64().to_string())
+            .unwrap_or_else(|_| workspace.id.clone());
+
+        if let Err(e) = async {
+            ergatai_lock::init_file_access(&lock_project_id, &spec.work_dir).await?;
+            ergatai_lock::register_workspace_for_project(
+                &lock_project_id,
+                &agent_id,
+                &workspace_dir,
+            )
+            .await
+        }
+        .await
         {
             warn!(
                 agent_id = %agent_id,
+                workspace_id = %workspace.id,
+                lock_project_id = %lock_project_id,
                 workspace = %workspace_dir,
                 error = %e,
                 "Failed to pre-register workspace boundary (non-fatal, continuing)"
@@ -718,6 +735,11 @@ impl AgentRuntime {
 
     /// Stop an agent.
     pub async fn stop_agent(&self, agent_id: &str) -> ErgataiResult<()> {
+        // Close the MCP transport before removing runtime state.  This makes
+        // MCP session lifetime a consequence of agent lifetime, not an
+        // independent idle timeout.
+        crate::mcp_lifecycle::close_agent_mcp_sessions(agent_id).await;
+
         // 原子移除 — 自动清理所有反向索引（mcp, streaks）
         let info = self
             .registry
@@ -823,10 +845,13 @@ impl AgentRuntime {
         // 6. Save to suspend store
         self.suspend_store.save_suspended(&record)?;
 
-        // 7. Remove from registry FIRST (prevents new messages from being sent)
+        // 7. Close MCP sessions while the agent is still registered.
+        crate::mcp_lifecycle::close_agent_mcp_sessions(agent_id).await;
+
+        // 8. Remove from registry (prevents new messages from being sent)
         self.registry.remove(agent_id).await;
 
-        // 8. Abort the monitor task if it exists
+        // 9. Abort the monitor task if it exists
         // M3 FIX: Use map_err instead of unwrap() to handle lock poisoning
         if let Some(handle) = self
             .monitor_handles
@@ -836,9 +861,6 @@ impl AgentRuntime {
         {
             handle.abort();
         }
-
-        // 9. Update lifecycle state to Suspended
-        self.set_agent_lifecycle(agent_id, target_state).await?;
 
         // 10. Kill the agent process (after removal to prevent message race)
         self.backend.kill_agent(&agent.handle).await?;
@@ -1367,6 +1389,9 @@ impl AgentRuntime {
         }
 
         // Step 5: Remove pruned agents from registry — 原子移除，自动清理所有反向索引
+        for agent_id in &pruned {
+            crate::mcp_lifecycle::close_agent_mcp_sessions(agent_id).await;
+        }
         {
             let mut guard = self.registry.write().await;
             for agent_id in &pruned {

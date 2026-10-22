@@ -64,9 +64,11 @@ pub async fn get_registered_path(
     if query.path.is_empty() {
         return crate::http_error::bad_request("path query parameter is required").into_response();
     }
-    match manager::find_registered_path(&query.path) {
-        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
-        Err(error) => managed_error(error, "get_registered_path"),
+    let path_owned = query.path.clone();
+    match tokio::task::spawn_blocking(move || manager::find_registered_path(&path_owned)).await {
+        Ok(Ok(result)) => (StatusCode::OK, Json(result)).into_response(),
+        Ok(Err(error)) => managed_error(error, "get_registered_path"),
+        Err(e) => crate::http_error::internal(e, "get_registered_path_join").into_response(),
     }
 }
 
@@ -230,9 +232,13 @@ pub async fn delete_managed_workspace(
     )
 )]
 pub async fn list_managed_workspace_projects(Path(id): Path<String>) -> impl IntoResponse {
-    match manager::list_projects(&id) {
-        Ok(projects) => (StatusCode::OK, Json(projects)).into_response(),
-        Err(error) => managed_error(error, "list_managed_workspace_projects"),
+    let id_owned = id;
+    match tokio::task::spawn_blocking(move || manager::list_projects(&id_owned)).await {
+        Ok(Ok(projects)) => (StatusCode::OK, Json(projects)).into_response(),
+        Ok(Err(error)) => managed_error(error, "list_managed_workspace_projects"),
+        Err(e) => {
+            crate::http_error::internal(e, "list_managed_workspace_projects_join").into_response()
+        }
     }
 }
 
@@ -253,9 +259,12 @@ pub async fn register_managed_workspace_project(
     Path(id): Path<String>,
     Json(request): Json<manager::RegisterWorkspaceProjectRequest>,
 ) -> impl IntoResponse {
-    match manager::register_project(&id, request) {
-        Ok(project) => (StatusCode::CREATED, Json(project)).into_response(),
-        Err(error) => managed_error(error, "register_managed_workspace_project"),
+    let id_owned = id;
+    match tokio::task::spawn_blocking(move || manager::register_project(&id_owned, request)).await {
+        Ok(Ok(project)) => (StatusCode::CREATED, Json(project)).into_response(),
+        Ok(Err(error)) => managed_error(error, "register_managed_workspace_project"),
+        Err(e) => crate::http_error::internal(e, "register_managed_workspace_project_join")
+            .into_response(),
     }
 }
 
@@ -279,9 +288,18 @@ pub async fn update_managed_workspace_project(
     Path((id, project_id)): Path<(String, String)>,
     Json(request): Json<manager::UpdateWorkspaceProjectRequest>,
 ) -> impl IntoResponse {
-    match manager::update_project(&id, &project_id, request) {
-        Ok(project) => (StatusCode::OK, Json(project)).into_response(),
-        Err(error) => managed_error(error, "update_managed_workspace_project"),
+    let id_owned = id;
+    let project_id_owned = project_id;
+    match tokio::task::spawn_blocking(move || {
+        manager::update_project(&id_owned, &project_id_owned, request)
+    })
+    .await
+    {
+        Ok(Ok(project)) => (StatusCode::OK, Json(project)).into_response(),
+        Ok(Err(error)) => managed_error(error, "update_managed_workspace_project"),
+        Err(e) => {
+            crate::http_error::internal(e, "update_managed_workspace_project_join").into_response()
+        }
     }
 }
 
@@ -302,9 +320,16 @@ pub async fn update_managed_workspace_project(
 pub async fn remove_managed_workspace_project(
     Path((id, project_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match manager::remove_project(&id, &project_id) {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => managed_error(error, "remove_managed_workspace_project"),
+    let id_owned = id;
+    let project_id_owned = project_id;
+    match tokio::task::spawn_blocking(move || manager::remove_project(&id_owned, &project_id_owned))
+        .await
+    {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(error)) => managed_error(error, "remove_managed_workspace_project"),
+        Err(e) => {
+            crate::http_error::internal(e, "remove_managed_workspace_project_join").into_response()
+        }
     }
 }
 

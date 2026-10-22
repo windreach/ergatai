@@ -446,11 +446,12 @@ fn participant_from_row(
     // session_id and conversation_id are INTEGER in DB, read as i64 then format to string
     let session_id: CollaborationSessionId = row.get(1)?;
     let conversation_id: ConversationId = row.get(2)?;
+    let agent_id_i64: i64 = row.get(3)?; // INTEGER in DB
     Ok(CollaborationSessionParticipant {
         id: row.get(0)?, // TEXT
         session_id: session_id.to_string(),
         conversation_id: conversation_id.to_string(),
-        agent_id: row.get(3)?, // TEXT
+        agent_id: format_id(agent_id_i64, IdType::Agent), // Format i64 to String for API
         role: row.get(4)?,
         status: row.get(5)?,
         created_at: row.get(6)?,
@@ -566,6 +567,13 @@ fn insert_participant(
                 participant.conversation_id
             ))
         })?;
+    // Parse agent_id from formatted string to i64
+    let agent_id = parse_to_i64(participant.agent_id.trim()).ok_or_else(|| {
+        CollaborationSessionError::Validation(format!(
+            "Invalid agent_id format: '{}'",
+            participant.agent_id
+        ))
+    })?;
     transaction.execute(
         "INSERT INTO collaboration_session_participants
          (id, session_id, conversation_id, agent_id, role, status, created_at, updated_at)
@@ -579,7 +587,7 @@ fn insert_participant(
             format_id(generate(), IdType::Session),
             session_id,
             conversation_id,
-            participant.agent_id.trim(),
+            agent_id,
             participant.role,
             participant.status,
             timestamp,

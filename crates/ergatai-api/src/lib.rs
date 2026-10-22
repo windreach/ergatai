@@ -406,6 +406,10 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/agents/{id}/events",
             get(api::agents::stream_agent_events),
         )
+        .route(
+            "/api/v1/agents/{id}/stream",
+            get(api::agents::stream_agent_output),
+        )
         // Permission requests (unified approval feed)
         .route(
             "/api/v1/permissions/pending",

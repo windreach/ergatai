@@ -35,6 +35,7 @@ use async_nats::jetstream::message::AckKind;
 use futures::StreamExt;
 use tracing::{debug, error, info, warn};
 
+use ergatai_core::id::parse_to_i64;
 use ergatai_error::{ErgataiError, ErgataiResult};
 use ergatai_nats::connection::NatsConnection;
 use ergatai_nats::events::AgentMessagePayload;
@@ -656,7 +657,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
 
                     // Use AgentMessageFields for structured storage
                     let agent_fields = crate::user_data_db::messages::AgentMessageFields {
-                        from_agent_id: Some(from_agent.clone()),
+                        from_agent_id: parse_to_i64(&from_agent),
                         from_agent_name: Some(from_agent_name),
                         message_type: Some(message_type),
                         content: Some(actual_message),

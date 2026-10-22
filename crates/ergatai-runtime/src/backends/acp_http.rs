@@ -46,6 +46,32 @@ const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// Output buffer max size (256 KiB).
 const OUTPUT_BUFFER_MAX_SIZE: usize = 256 * 1024;
 
+/// Maximum process-output tail retained for HTTP spawn diagnostics.
+const HTTP_SPAWN_OUTPUT_TAIL_MAX: usize = 8 * 1024;
+
+/// Consume child output and retain a bounded tail for error reporting.
+async fn capture_output_tail<R>(output: R, tail: Arc<std::sync::Mutex<String>>)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let mut lines = BufReader::new(output).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let mut tail = tail.lock().unwrap();
+        tail.push_str(line.trim_end());
+        tail.push('\n');
+        if tail.len() > HTTP_SPAWN_OUTPUT_TAIL_MAX {
+            let cut = tail.len() - HTTP_SPAWN_OUTPUT_TAIL_MAX;
+            let cut = (0..=cut)
+                .rev()
+                .find(|&index| tail.is_char_boundary(index))
+                .unwrap_or(0);
+            tail.drain(..cut);
+        }
+    }
+}
+
 // ── Internal types ──
 
 /// Per-agent output buffer: bounded rolling buffer of captured ACP output.
@@ -301,9 +327,21 @@ impl AcpHttpBackend {
         let binary = parts[0];
         let args = &parts[1..];
 
-        // Generate a unique port for this agent (avoid conflicts)
-        // Use port 0 to let the OS assign an available port, then read it from stdout
-        let port = 0; // Let OS choose
+        // Allocate a concrete port before spawn.  Some ACP servers do not
+        // print their ephemeral port on stdout, and an HTTP endpoint can be
+        // readiness-probed without depending on implementation-specific logs.
+        let port_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to reserve HTTP agent port: {}", e))
+            })?;
+        let port = port_listener
+            .local_addr()
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to read reserved HTTP agent port: {}", e))
+            })?
+            .port();
+        drop(port_listener);
         let hostname = "127.0.0.1";
 
         info!(
@@ -334,116 +372,69 @@ impl AcpHttpBackend {
         let pid = child.id();
         info!(pid = ?pid, "HTTP agent process spawned, waiting for port assignment");
 
-        // Read stdout to find the actual port assigned by the OS
-        // opencode acp typically outputs something like "Listening on http://127.0.0.1:PORT"
-        let stdout = child.stdout.take().ok_or_else(|| {
-            let _ = child.start_kill();
-            ErgataiError::internal("Failed to capture stdout from HTTP agent process".to_string())
-        })?;
-
-        // Drain stderr in background to prevent pipe buffer deadlock.
-        // A verbose agent can fill the OS pipe buffer (~64KB) and block itself
-        // if we don't consume stderr concurrently.
+        // Drain stdout/stderr to prevent pipe-buffer deadlock and retain a
+        // bounded tail for actionable spawn failures.
         let stderr = child.stderr.take();
+        let stderr_tail = Arc::new(std::sync::Mutex::new(String::new()));
         let stderr_drain = stderr.map(|stderr| {
-            tokio::spawn(async move {
-                use tokio::io::AsyncBufReadExt;
-                let mut reader = tokio::io::BufReader::new(stderr);
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    match reader.read_line(&mut line).await {
-                        Ok(0) => break,
-                        Ok(_) => tracing::debug!(target: "acp_http_stderr", "{}", line.trim_end()),
-                        Err(_) => break,
-                    }
-                }
-            })
+            let tail = stderr_tail.clone();
+            tokio::spawn(capture_output_tail(stderr, tail))
+        });
+        let stdout = child.stdout.take();
+        let stdout_tail = Arc::new(std::sync::Mutex::new(String::new()));
+        let stdout_drain = stdout.map(|stdout| {
+            let tail = stdout_tail.clone();
+            tokio::spawn(capture_output_tail(stdout, tail))
         });
 
-        // Wait for the server to output its listening address
+        // Wait for the HTTP listener to accept connections.
         let max_wait = std::time::Duration::from_secs(30);
         let start = std::time::Instant::now();
-
-        let mut endpoint = None;
-        let mut stdout_reader = tokio::io::BufReader::new(stdout);
-        let mut line = String::new();
+        let mut exit_status = None;
 
         while start.elapsed() < max_wait {
-            use tokio::io::AsyncBufReadExt;
-            line.clear();
-
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(500),
-                stdout_reader.read_line(&mut line),
-            )
-            .await
-            {
-                Ok(Ok(0)) => break, // EOF
-                Ok(Ok(_)) => {
-                    // Look for patterns like "Listening on http://127.0.0.1:PORT" or "http://127.0.0.1:PORT"
-                    if let Some(pos) = line.find("http://127.0.0.1:") {
-                        let addr_start = pos + 7; // Skip "http://"
-                        let addr_end = line[addr_start..]
-                            .find(|c: char| !c.is_ascii_digit() && c != '.')
-                            .map(|p| addr_start + p)
-                            .unwrap_or(line.len());
-                        endpoint = Some(line[addr_start..addr_end].trim().to_string());
-                        break;
-                    }
-                    // Also check for "Listening on PORT" or "port: PORT" patterns
-                    if line.to_lowercase().contains("listening")
-                        || line.to_lowercase().contains("started")
-                    {
-                        // Try to extract port number from the line by finding sequences of digits
-                        let mut i = 0;
-                        while i < line.len() {
-                            if let Some(start_pos) = line[i..].find(|c: char| c.is_ascii_digit()) {
-                                let num_start = i + start_pos;
-                                let num_end = line[num_start..]
-                                    .find(|c: char| !c.is_ascii_digit())
-                                    .map(|p| num_start + p)
-                                    .unwrap_or(line.len());
-                                let num_str = &line[num_start..num_end];
-                                if let Ok(port_num) = num_str.parse::<u16>() {
-                                    // Check if it's a reasonable port number (1024-65535)
-                                    if port_num >= 1024 {
-                                        endpoint = Some(format!("127.0.0.1:{}", port_num));
-                                        break;
-                                    }
-                                }
-                                i = num_end;
-                            } else {
-                                break;
-                            }
-                        }
-                        if endpoint.is_some() {
-                            break;
-                        }
-                    }
-                }
-                Ok(Err(_)) => break, // Read error
-                Err(_) => continue,  // Timeout, keep reading
+            if let Ok(Some(status)) = child.try_wait() {
+                exit_status = Some(status);
+                break;
             }
+
+            if tokio::net::TcpStream::connect((hostname, port))
+                .await
+                .is_ok()
+            {
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        let endpoint = match endpoint {
-            Some(ep) => ep,
-            None => {
-                // Clean up the child process on failure to prevent orphan processes
-                warn!(pid = ?pid, "Failed to determine HTTP agent endpoint, killing process");
-                let _ = child.start_kill();
-                return Err(ErgataiError::internal(format!(
-                    "Failed to determine HTTP agent endpoint within {:?}",
-                    max_wait
-                )));
-            }
+        let endpoint = if exit_status.is_none()
+            && tokio::net::TcpStream::connect((hostname, port))
+                .await
+                .is_ok()
+        {
+            format!("{}:{}", hostname, port)
+        } else {
+            // Clean up the child process on failure to prevent orphan processes
+            let stderr_tail = stderr_tail.lock().unwrap().trim().to_string();
+            let stdout_tail = stdout_tail.lock().unwrap().trim().to_string();
+            warn!(
+                pid = ?pid,
+                exit_status = ?exit_status,
+                stderr = %stderr_tail,
+                stdout = %stdout_tail,
+                "Failed to determine HTTP agent endpoint, killing process"
+            );
+            let _ = child.start_kill();
+            return Err(ErgataiError::internal(format!(
+                "Failed to determine HTTP agent endpoint within {:?}; exit_status={:?}; stderr={}",
+                max_wait, exit_status, stderr_tail
+            )));
         };
 
-        // Cancel stderr drain task (process is still running, but we're done reading)
-        if let Some(handle) = stderr_drain {
-            handle.abort();
-        }
+        // Keep both drain tasks running so a chatty server cannot fill its
+        // pipe buffers after readiness.
+        debug!(stderr_drain = ?stderr_drain.is_some(), stdout_drain = ?stdout_drain.is_some(), "HTTP agent output drains active");
 
         info!(endpoint = %endpoint, "HTTP agent is ready");
 

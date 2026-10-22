@@ -185,7 +185,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             id TEXT PRIMARY KEY,
             session_id INTEGER NOT NULL,
             conversation_id INTEGER NOT NULL,
-            agent_id TEXT NOT NULL,
+            agent_id INTEGER NOT NULL,
             role TEXT NOT NULL DEFAULT 'peer',
             status TEXT NOT NULL DEFAULT 'active',
             created_at INTEGER NOT NULL,
@@ -236,7 +236,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
             metadata TEXT,
 
             -- Agent 间消息字段（role="agent" 时使用）
-            from_agent_id TEXT,           -- 发送者 agent ID
+            from_agent_id INTEGER,        -- 发送者 agent ID (雪花ID)
             from_agent_name TEXT,         -- 发送者显示名称
             message_type TEXT,            -- "request" | "response" | "broadcast"
             content TEXT,                 -- 实际消息内容（纯文本）
@@ -497,7 +497,7 @@ pub struct Message {
     pub metadata: Option<String>,
 
     // Agent 间消息字段（role="agent" 时使用）
-    pub from_agent_id: Option<String>,   // 发送者 agent ID
+    pub from_agent_id: Option<i64>,      // 发送者 agent ID (雪花ID)
     pub from_agent_name: Option<String>, // 发送者显示名称
     pub message_type: Option<String>,    // "request" | "response" | "broadcast"
     pub content: Option<String>,         // 实际消息内容（纯文本）
@@ -511,6 +511,30 @@ pub struct Message {
 
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// Helper function to map a database row to a Message struct.
+/// Used across multiple query functions to avoid code duplication.
+pub fn map_row_to_message(row: &rusqlite::Row) -> rusqlite::Result<Message> {
+    Ok(Message {
+        message_id: row.get(0)?,
+        conversation_id: row.get(1)?,
+        sequence: row.get(2)?,
+        role: row.get(3)?,
+        parts: row.get(4)?,
+        metadata: row.get(5)?,
+        from_agent_id: row.get(6)?,
+        from_agent_name: row.get(7)?,
+        message_type: row.get(8)?,
+        content: row.get(9)?,
+        thinking: row.get(10)?,
+        tool_calls: row.get(11)?,
+        text_chunks: row.get(12)?,
+        stop_reason: row.get(13)?,
+        duration_ms: row.get(14)?,
+        created_at: row.get(15)?,
+        updated_at: row.get(16)?,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1717,27 +1741,7 @@ pub mod messages {
              FROM messages WHERE message_id = ?1",
         )?;
 
-        let mut rows = stmt.query_map(params![message_id], |row| {
-            Ok(Message {
-                message_id: row.get(0)?,
-                conversation_id: row.get(1)?,
-                sequence: row.get(2)?,
-                role: row.get(3)?,
-                parts: row.get(4)?,
-                metadata: row.get(5)?,
-                from_agent_id: row.get(6)?,
-                from_agent_name: row.get(7)?,
-                message_type: row.get(8)?,
-                content: row.get(9)?,
-                thinking: row.get(10)?,
-                tool_calls: row.get(11)?,
-                text_chunks: row.get(12)?,
-                stop_reason: row.get(13)?,
-                duration_ms: row.get(14)?,
-                created_at: row.get(15)?,
-                updated_at: row.get(16)?,
-            })
-        })?;
+        let mut rows = stmt.query_map(params![message_id], map_row_to_message)?;
 
         match rows.next() {
             Some(Ok(msg)) => Ok(Some(msg)),
@@ -1823,27 +1827,7 @@ pub mod messages {
                     created_at, updated_at
              FROM messages WHERE conversation_id = ?1 ORDER BY sequence ASC",
         )?;
-        let messages = stmt.query_map(params![conversation_id], |row| {
-            Ok(Message {
-                message_id: row.get(0)?,
-                conversation_id: row.get(1)?,
-                sequence: row.get(2)?,
-                role: row.get(3)?,
-                parts: row.get(4)?,
-                metadata: row.get(5)?,
-                from_agent_id: row.get(6)?,
-                from_agent_name: row.get(7)?,
-                message_type: row.get(8)?,
-                content: row.get(9)?,
-                thinking: row.get(10)?,
-                tool_calls: row.get(11)?,
-                text_chunks: row.get(12)?,
-                stop_reason: row.get(13)?,
-                duration_ms: row.get(14)?,
-                created_at: row.get(15)?,
-                updated_at: row.get(16)?,
-            })
-        })?;
+        let messages = stmt.query_map(params![conversation_id], map_row_to_message)?;
         messages.collect()
     }
 
@@ -1863,27 +1847,8 @@ pub mod messages {
              WHERE conversation_id = ?1 AND sequence > ?2
              ORDER BY sequence ASC",
         )?;
-        let messages = stmt.query_map(params![conversation_id, after_sequence], |row| {
-            Ok(Message {
-                message_id: row.get(0)?,
-                conversation_id: row.get(1)?,
-                sequence: row.get(2)?,
-                role: row.get(3)?,
-                parts: row.get(4)?,
-                metadata: row.get(5)?,
-                from_agent_id: row.get(6)?,
-                from_agent_name: row.get(7)?,
-                message_type: row.get(8)?,
-                content: row.get(9)?,
-                thinking: row.get(10)?,
-                tool_calls: row.get(11)?,
-                text_chunks: row.get(12)?,
-                stop_reason: row.get(13)?,
-                duration_ms: row.get(14)?,
-                created_at: row.get(15)?,
-                updated_at: row.get(16)?,
-            })
-        })?;
+        let messages =
+            stmt.query_map(params![conversation_id, after_sequence], map_row_to_message)?;
         messages.collect()
     }
 
@@ -1901,27 +1866,7 @@ pub mod messages {
              ORDER BY sequence DESC
              LIMIT 1",
         )?;
-        let mut rows = stmt.query_map(params![conversation_id], |row| {
-            Ok(Message {
-                message_id: row.get(0)?,
-                conversation_id: row.get(1)?,
-                sequence: row.get(2)?,
-                role: row.get(3)?,
-                parts: row.get(4)?,
-                metadata: row.get(5)?,
-                from_agent_id: row.get(6)?,
-                from_agent_name: row.get(7)?,
-                message_type: row.get(8)?,
-                content: row.get(9)?,
-                thinking: row.get(10)?,
-                tool_calls: row.get(11)?,
-                text_chunks: row.get(12)?,
-                stop_reason: row.get(13)?,
-                duration_ms: row.get(14)?,
-                created_at: row.get(15)?,
-                updated_at: row.get(16)?,
-            })
-        })?;
+        let mut rows = stmt.query_map(params![conversation_id], map_row_to_message)?;
 
         match rows.next() {
             Some(Ok(msg)) => Ok(Some(msg)),
@@ -1933,7 +1878,7 @@ pub mod messages {
     /// Agent 消息专用字段（用于结构化存储 agent 间通信）
     #[derive(Debug, Clone, Default)]
     pub struct AgentMessageFields {
-        pub from_agent_id: Option<String>,
+        pub from_agent_id: Option<i64>,
         pub from_agent_name: Option<String>,
         pub message_type: Option<String>,
         pub content: Option<String>,
@@ -2054,6 +1999,100 @@ pub mod messages {
         Ok(message)
     }
 
+    /// Append multiple messages in a single transaction.
+    /// If any message fails to append, the entire batch is rolled back.
+    pub fn append_batch(
+        conversation_id: ConversationId,
+        messages: Vec<(String, serde_json::Value, serde_json::Value)>, // (role, parts, metadata)
+    ) -> Result<Vec<Message>> {
+        let db = get_user_data_db();
+        let mut conn = db.lock().unwrap();
+        let transaction = conn.transaction()?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let mut result = Vec::with_capacity(messages.len());
+
+        for (role, parts, metadata) in messages {
+            let sequence: i64 = transaction.query_row(
+                "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
+                params![conversation_id],
+                |row| row.get(0),
+            )?;
+
+            let agent_fields = AgentMessageFields::default();
+            let output_fields = AgentOutputFields::default();
+
+            // Use empty array instead of NULL for parts to simplify query logic
+            let parts_str = parts.to_string();
+
+            let message = Message {
+                message_id: MessageId::generate(),
+                conversation_id,
+                sequence,
+                role, // role is already a String from the tuple, no need to clone
+                parts: Some(parts_str),
+                metadata: if metadata.is_null() {
+                    None
+                } else {
+                    Some(metadata.to_string())
+                },
+                from_agent_id: agent_fields.from_agent_id,
+                from_agent_name: agent_fields.from_agent_name,
+                message_type: agent_fields.message_type,
+                content: agent_fields.content,
+                thinking: output_fields.thinking,
+                tool_calls: output_fields.tool_calls,
+                text_chunks: output_fields.text_chunks,
+                stop_reason: output_fields.stop_reason,
+                duration_ms: output_fields.duration_ms,
+                created_at: now,
+                updated_at: now,
+            };
+
+            transaction.execute(
+                "INSERT INTO messages (message_id, conversation_id, sequence, role, parts, metadata,
+                 from_agent_id, from_agent_name, message_type, content,
+                 thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                 created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                params![
+                    message.message_id,
+                    message.conversation_id,
+                    message.sequence,
+                    message.role,
+                    message.parts,
+                    message.metadata,
+                    message.from_agent_id,
+                    message.from_agent_name,
+                    message.message_type,
+                    message.content,
+                    message.thinking,
+                    message.tool_calls,
+                    message.text_chunks,
+                    message.stop_reason,
+                    message.duration_ms,
+                    message.created_at,
+                    message.updated_at,
+                ],
+            )?;
+
+            result.push(message);
+        }
+
+        // Update conversation's updated_at once for the entire batch
+        transaction.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE conversation_id = ?2",
+            params![now, conversation_id],
+        )?;
+
+        transaction.commit()?;
+        Ok(result)
+    }
+
     pub fn list_by_collaboration_session(
         collaboration_session_id: CollaborationSessionId,
     ) -> Result<Vec<Message>> {
@@ -2070,27 +2109,7 @@ pub mod messages {
              WHERE c.collaboration_session_id = ?1
              ORDER BY m.created_at ASC",
         )?;
-        let messages = stmt.query_map(params![collaboration_session_id], |row| {
-            Ok(Message {
-                message_id: row.get(0)?,
-                conversation_id: row.get(1)?,
-                sequence: row.get(2)?,
-                role: row.get(3)?,
-                parts: row.get(4)?,
-                metadata: row.get(5)?,
-                from_agent_id: row.get(6)?,
-                from_agent_name: row.get(7)?,
-                message_type: row.get(8)?,
-                content: row.get(9)?,
-                thinking: row.get(10)?,
-                tool_calls: row.get(11)?,
-                text_chunks: row.get(12)?,
-                stop_reason: row.get(13)?,
-                duration_ms: row.get(14)?,
-                created_at: row.get(15)?,
-                updated_at: row.get(16)?,
-            })
-        })?;
+        let messages = stmt.query_map(params![collaboration_session_id], map_row_to_message)?;
         messages.collect()
     }
 
@@ -2108,27 +2127,7 @@ pub mod messages {
              WHERE c.chat_id = ?1
              ORDER BY m.created_at ASC",
         )?;
-        let messages = stmt.query_map(params![chat_id], |row| {
-            Ok(Message {
-                message_id: row.get(0)?,
-                conversation_id: row.get(1)?,
-                sequence: row.get(2)?,
-                role: row.get(3)?,
-                parts: row.get(4)?,
-                metadata: row.get(5)?,
-                from_agent_id: row.get(6)?,
-                from_agent_name: row.get(7)?,
-                message_type: row.get(8)?,
-                content: row.get(9)?,
-                thinking: row.get(10)?,
-                tool_calls: row.get(11)?,
-                text_chunks: row.get(12)?,
-                stop_reason: row.get(13)?,
-                duration_ms: row.get(14)?,
-                created_at: row.get(15)?,
-                updated_at: row.get(16)?,
-            })
-        })?;
+        let messages = stmt.query_map(params![chat_id], map_row_to_message)?;
         messages.collect()
     }
 
@@ -2384,37 +2383,15 @@ pub mod messages {
 
         let mut stmt = conn.prepare(query)?;
 
-        let map_row = |row: &rusqlite::Row| -> rusqlite::Result<Message> {
-            Ok(Message {
-                message_id: row.get(0)?,
-                conversation_id: row.get(1)?,
-                sequence: row.get(2)?,
-                role: row.get(3)?,
-                parts: row.get(4)?,
-                metadata: row.get(5)?,
-                from_agent_id: row.get(6)?,
-                from_agent_name: row.get(7)?,
-                message_type: row.get(8)?,
-                content: row.get(9)?,
-                thinking: row.get(10)?,
-                tool_calls: row.get(11)?,
-                text_chunks: row.get(12)?,
-                stop_reason: row.get(13)?,
-                duration_ms: row.get(14)?,
-                created_at: row.get(15)?,
-                updated_at: row.get(16)?,
-            })
-        };
-
         let messages = match (limit, offset) {
             (Some(l), Some(o)) => stmt
-                .query_map(params![conversation_id, l, o], map_row)?
+                .query_map(params![conversation_id, l, o], map_row_to_message)?
                 .collect::<Result<Vec<_>>>()?,
             (Some(l), None) => stmt
-                .query_map(params![conversation_id, l], map_row)?
+                .query_map(params![conversation_id, l], map_row_to_message)?
                 .collect::<Result<Vec<_>>>()?,
             _ => stmt
-                .query_map(params![conversation_id], map_row)?
+                .query_map(params![conversation_id], map_row_to_message)?
                 .collect::<Result<Vec<_>>>()?,
         };
 

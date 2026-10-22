@@ -9,7 +9,7 @@ import { z } from "zod"
 import { observable } from "@trpc/server/observable"
 import { publicProcedure, router } from "../index"
 import { ergataiFetch, getErgataiAuthConfig, isErgataiApiError, ErgataiApiError } from "../../ergatai/api"
-import { createSnowflakeId, projectIdSchema } from "../../validation/ids"
+import { projectIdSchema } from "../../validation/ids"
 import { subscribeRawAgentStream, subscribeConversationMessages, type AgentOutputEvent } from "../../ergatai/sse-client"
 import { getModelSnapshotManager } from "../../model-snapshot-manager"
 import { terminalManager } from "../../terminal"
@@ -609,6 +609,7 @@ export const ergataiRouter = router({
       z.object({
         workspaceId: z.string().optional(),
         conversationId: z.string().optional(),
+        temporaryAgent: z.boolean().optional(),
         command: z.string(),
         instruction: z.string().optional(),
         workDir: z.string().optional(),
@@ -636,6 +637,7 @@ export const ergataiRouter = router({
           body: JSON.stringify({
             workspace_id: input.workspaceId,
             conversation_id: input.conversationId,
+            temporary_agent: input.temporaryAgent,
             command: input.command,
             instruction: input.instruction,
             work_dir: workDir,
@@ -1252,7 +1254,7 @@ export const ergataiRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      return ergataiFetch<{ status: string; message: string }>("/api/v1/agent-profiles", {
+      return ergataiFetch<{ id: string; name: string }>("/api/v1/agent-profiles", {
         method: "POST",
         body: JSON.stringify({
           name: input.name,

@@ -5,12 +5,21 @@
 //! - [`crate::mcp::tools`] — tool implementations (one file per tool)
 //! - [`crate::mcp::protocol`] — `ServerHandler` impl (initialize handshake, server info)
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
+use rmcp::transport::streamable_http_server::{
+    session::{
+        local::{LocalSessionManager, LocalSessionManagerError},
+        ServerSseMessage, SessionId, SessionManager,
+    },
+    StreamableHttpServerConfig, StreamableHttpService,
+};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::CallToolResult,
+    model::{CallToolResult, ClientJsonRpcMessage, ServerJsonRpcMessage},
     service::Peer,
     tool, tool_router, ErrorData, RoleServer,
 };
@@ -213,9 +222,176 @@ impl ErgataiMcpServer {
 
 // ── Public API for creating the Streamable HTTP service ──
 
-use rmcp::transport::streamable_http_server::{
-    session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
-};
+/// Maps runtime agent IDs to their live Streamable HTTP MCP sessions.
+///
+/// This wrapper exists so agent stop/suspend can close exactly the sessions
+/// created for that agent, instead of relying on a transport-wide idle timeout.
+#[derive(Clone, Debug)]
+pub struct AgentSessionManager {
+    inner: Arc<LocalSessionManager>,
+    sessions_by_agent: Arc<RwLock<HashMap<String, HashSet<SessionId>>>>,
+}
+
+impl AgentSessionManager {
+    pub fn new(inner: Arc<LocalSessionManager>) -> Self {
+        Self {
+            inner,
+            sessions_by_agent: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    async fn bind_session(&self, agent_id: &str, session_id: SessionId) {
+        self.sessions_by_agent
+            .write()
+            .await
+            .entry(agent_id.to_string())
+            .or_default()
+            .insert(session_id);
+    }
+
+    async fn unbind_session(&self, session_id: &SessionId) {
+        let mut sessions = self.sessions_by_agent.write().await;
+        let mut empty_key = None;
+        for (key, ids) in sessions.iter_mut() {
+            if ids.remove(session_id) {
+                if ids.is_empty() {
+                    empty_key = Some(key.clone());
+                }
+                break;
+            }
+        }
+        if let Some(key) = empty_key {
+            sessions.remove(&key);
+        }
+    }
+
+    /// Close every MCP session registered for a runtime agent.
+    ///
+    /// Returns the number of sessions that were still tracked.  Missing
+    /// sessions are not an error: an agent may stop before it ever called an
+    /// MCP tool.
+    pub async fn close_agent_sessions(&self, agent_id: &str) -> usize {
+        let session_ids = self
+            .sessions_by_agent
+            .write()
+            .await
+            .remove(agent_id)
+            .unwrap_or_default();
+        let session_count = session_ids.len();
+
+        for session_id in session_ids {
+            if let Err(error) = self.inner.close_session(&session_id).await {
+                warn!(
+                    agent_id = %agent_id,
+                    session_id = %session_id,
+                    error = %error,
+                    "Failed to close agent MCP session"
+                );
+            } else {
+                info!(
+                    agent_id = %agent_id,
+                    session_id = %session_id,
+                    "Closed agent MCP session"
+                );
+            }
+        }
+
+        session_count
+    }
+}
+
+fn agent_id_from_initialize_message(message: &ClientJsonRpcMessage) -> Option<String> {
+    let ClientJsonRpcMessage::Request(request) = message else {
+        return None;
+    };
+    let parts = match &request.request {
+        rmcp::model::ClientRequest::InitializeRequest(request) => {
+            request.extensions.get::<axum::http::request::Parts>()?
+        }
+        _ => return None,
+    };
+    let path = parts
+        .extensions
+        .get::<axum::extract::OriginalUri>()
+        .map(|uri| uri.path().to_string())
+        .unwrap_or_else(|| parts.uri.path().to_string());
+    super::protocol::agent_identifier_from_path(&path)
+}
+
+impl SessionManager for AgentSessionManager {
+    type Error = LocalSessionManagerError;
+    type Transport = <LocalSessionManager as SessionManager>::Transport;
+
+    async fn create_session(&self) -> Result<(SessionId, Self::Transport), Self::Error> {
+        self.inner.create_session().await
+    }
+
+    async fn initialize_session(
+        &self,
+        id: &SessionId,
+        message: ClientJsonRpcMessage,
+    ) -> Result<ServerJsonRpcMessage, Self::Error> {
+        let agent_id = agent_id_from_initialize_message(&message);
+        let response = self.inner.initialize_session(id, message).await?;
+        if let Some(agent_id) = agent_id {
+            self.bind_session(&agent_id, id.clone()).await;
+        }
+        Ok(response)
+    }
+
+    async fn has_session(&self, id: &SessionId) -> Result<bool, Self::Error> {
+        self.inner.has_session(id).await
+    }
+
+    async fn close_session(&self, id: &SessionId) -> Result<(), Self::Error> {
+        self.unbind_session(id).await;
+        self.inner.close_session(id).await
+    }
+
+    async fn create_stream(
+        &self,
+        id: &SessionId,
+        message: ClientJsonRpcMessage,
+    ) -> Result<impl futures::Stream<Item = ServerSseMessage> + Send + Sync + 'static, Self::Error>
+    {
+        self.inner.create_stream(id, message).await
+    }
+
+    async fn accept_message(
+        &self,
+        id: &SessionId,
+        message: ClientJsonRpcMessage,
+    ) -> Result<(), Self::Error> {
+        self.inner.accept_message(id, message).await
+    }
+
+    async fn create_standalone_stream(
+        &self,
+        id: &SessionId,
+    ) -> Result<impl futures::Stream<Item = ServerSseMessage> + Send + Sync + 'static, Self::Error>
+    {
+        self.inner.create_standalone_stream(id).await
+    }
+
+    async fn resume(
+        &self,
+        id: &SessionId,
+        last_event_id: String,
+    ) -> Result<impl futures::Stream<Item = ServerSseMessage> + Send + Sync + 'static, Self::Error>
+    {
+        self.inner.resume(id, last_event_id).await
+    }
+
+    async fn restore_session(
+        &self,
+        id: SessionId,
+    ) -> Result<
+        rmcp::transport::streamable_http_server::session::RestoreOutcome<Self::Transport>,
+        Self::Error,
+    > {
+        self.inner.restore_session(id).await
+    }
+}
 
 /// Create the MCP Streamable HTTP service for mounting in axum.
 ///
@@ -233,20 +409,14 @@ pub fn create_mcp_service(
     cancellation_token: CancellationToken,
     sse_keep_alive_secs: u64,
     agent_identifier: Option<String>,
-) -> StreamableHttpService<ErgataiMcpServer, LocalSessionManager> {
+    session_manager: AgentSessionManager,
+) -> StreamableHttpService<ErgataiMcpServer, AgentSessionManager> {
     let config = StreamableHttpServerConfig::default()
         .with_sse_keep_alive(Some(std::time::Duration::from_secs(sse_keep_alive_secs)))
         .with_sse_retry(Some(std::time::Duration::from_secs(3)))
         .with_json_response(true)
         .with_cancellation_token(cancellation_token)
         .with_allowed_hosts(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
-
-    // Session keep_alive: auto-close sessions after this duration of inactivity.
-    // This catches dead clients (kill, network drop) within 10 minutes.
-    // Default is 300s (5 min). Agents that call tools periodically stay alive.
-    // Increased from 120s to 600s to prevent premature disconnection during idle periods.
-    let mut session_manager = LocalSessionManager::default();
-    session_manager.session_config.keep_alive = Some(std::time::Duration::from_secs(600));
 
     StreamableHttpService::new(
         move || {
@@ -256,7 +426,7 @@ pub fn create_mcp_service(
                 agent_identifier.clone(),
             ))
         },
-        std::sync::Arc::new(session_manager),
+        Arc::new(session_manager),
         config,
     )
 }
@@ -270,6 +440,7 @@ pub fn create_mcp_service(
 pub fn start_peer_reaper(
     registry: Arc<AgentRegistry>,
     peer_registry: PeerRegistry,
+    session_manager: AgentSessionManager,
     cancellation_token: CancellationToken,
 ) {
     tokio::spawn(async move {
@@ -291,6 +462,7 @@ pub fn start_peer_reaper(
 
                     for agent_id in stale_peers {
                         warn!("Peer reaper: detected dead transport for {}, cleaning up", agent_id);
+                        session_manager.close_agent_sessions(&agent_id).await;
                         do_unregister_agent(
                             &registry, &peer_registry, &agent_id, "dead transport (reaper)",
                         ).await;

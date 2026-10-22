@@ -20,7 +20,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ergatai_core::agent_registry::{agent_registry, AgentRegistry};
-use ergatai_core::id::{format as format_id, generate, IdType};
+use ergatai_core::id::{format as format_id, generate, parse_to_i64, IdType};
 use ergatai_error::{AgentId, ConversationId};
 use ergatai_runtime::AgentRuntime;
 use tokio::sync::Mutex;
@@ -613,7 +613,7 @@ impl MessageSender {
 
                         // Use AgentMessageFields for structured storage
                         let agent_fields = user_data_db::messages::AgentMessageFields {
-                            from_agent_id: Some(from.clone()),
+                            from_agent_id: parse_to_i64(&from),
                             from_agent_name: Some(sender_name),
                             message_type: Some(message_type),
                             content: Some(message.clone()),

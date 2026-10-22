@@ -521,7 +521,8 @@ mod tests {
     #[test]
     fn test_parse_file_event_extra_fields_ignored() {
         // JSON with extra fields should still deserialize (serde default)
-        let bytes = br#"{"file_path":"f.rs","agent_id":1,"token_id":"t","timestamp":1,"extra":"ignored"}"#;
+        let bytes =
+            br#"{"file_path":"f.rs","agent_id":1,"token_id":"t","timestamp":1,"extra":"ignored"}"#;
         let result = parse_file_event("ergatai.file.ready.h", bytes).unwrap();
         assert!(matches!(result, Some(FileEvent::Ready(_))));
     }

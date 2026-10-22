@@ -458,8 +458,8 @@ export function subscribeRawAgentStream(
  */
 function convertSseMessageToBackend(sseMsg: BackendSseMessage): BackendMessage {
   return {
-    message_id: Number(sseMsg.message_id),
-    conversation_id: Number(sseMsg.conversation_id),
+    message_id: sseMsg.message_id,
+    conversation_id: sseMsg.conversation_id,
     sequence: sseMsg.sequence,
     role: sseMsg.role,
     parts: typeof sseMsg.parts === "string"

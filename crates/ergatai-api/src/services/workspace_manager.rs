@@ -893,6 +893,17 @@ pub fn register_project(
     // Validate project path
     let canonical_path = canonical_path(&request.path)?;
 
+    // Check if path is already registered (prevent duplicates)
+    if let Some(existing) =
+        projects::find_by_path(&canonical_path).map_err(WorkspaceManagerError::from)?
+    {
+        return Err(WorkspaceManagerError::Conflict(format!(
+            "Path '{}' is already registered for workspace {}",
+            canonical_path,
+            format_id(existing.workspace_id, IdType::Workspace)
+        )));
+    }
+
     // Create project in database
     let now = now();
     let project_id = generate();

@@ -746,22 +746,23 @@ pub async fn create_conversation_messages(
     // naturally — no explicit drop needed (Conversation is a plain data struct).
 
     let result = tokio::task::spawn_blocking(move || {
-        request
+        // Prepare batch: (role, parts, metadata) tuples
+        let batch: Vec<_> = request
             .messages
             .into_iter()
             .map(|message| {
-                user_data_db::messages::append(
-                    id_i64,
-                    &message.role,
+                (
+                    message.role,
                     message.parts.unwrap_or(serde_json::json!([{
                         "type": "text",
                         "text": "",
                     }])),
                     message.metadata.unwrap_or(serde_json::json!({})),
-                    None,
                 )
             })
-            .collect::<Result<Vec<_>, _>>()
+            .collect();
+
+        user_data_db::messages::append_batch(id_i64, batch)
     })
     .await;
 

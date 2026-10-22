@@ -144,8 +144,8 @@ export type BackendConversation = {
 
 // Matches OpenAPI Message schema
 export type BackendMessage = {
-  message_id: number
-  conversation_id: number
+  message_id: string
+  conversation_id: string
   sequence: number
   role: string
   parts: string           // JSON string
@@ -243,14 +243,12 @@ export async function listConversations(chatId: string): Promise<BackendConversa
 export async function updateConversationMessages(
   id: string,
   messages: Array<Record<string, unknown>>,
-): Promise<BackendConversation> {
-  await ergataiFetch<BackendMessage[]>(
+): Promise<BackendMessage[]> {
+  const persistedMessages = await ergataiFetch<BackendMessage[]>(
     `/api/v1/conversations/${encodeURIComponent(id)}/messages`,
     { method: "POST", body: JSON.stringify({ messages }) },
   )
-  const conversation = await getConversation(id)
-  if (!conversation) throw new Error("Conversation not found")
-  return conversation
+  return persistedMessages
 }
 
 export async function createConversation(

@@ -114,11 +114,15 @@ fn build_complete_parts_array(output_data: &AgentOutputData) -> Option<serde_jso
 /// to satisfy the FOREIGN KEY constraint.
 pub async fn persist_agent_output(
     conversation_id: i64,
-    output_data: AgentOutputData,
+    mut output_data: AgentOutputData,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use crate::user_data_db::conversations;
     use crate::user_data_db::messages::{self, AgentOutputFields};
     use crate::user_data_db::{Conversation, DEFAULT_COLLABORATION_MODE};
+
+    // The callback resolves the formatted conversation ID; accumulator data may
+    // still be from an older snapshot. Treat the callback ID as authoritative.
+    output_data.conversation_id = conversation_id;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -121,6 +121,13 @@ fn test_lifecycle_state_transitions() {
     let suspended = Suspended { suspended_at: now };
     assert!(running.can_transition_to(&suspended));
 
+    // Idle -> Suspended (valid; idle agents may be auto-suspended)
+    let idle = Idle {
+        ready_since: now,
+        capabilities: vec![],
+    };
+    assert!(idle.can_transition_to(&suspended));
+
     // Suspended -> Running (valid - resume)
     let suspended = Suspended { suspended_at: now };
     let running = Running {

@@ -73,7 +73,11 @@ pub struct UpdateMcpServerRequest {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct McpServerResponse {
-    pub id: String, // Changed from i64 to String to avoid JavaScript precision issues
+    // Note: McpServer uses auto-increment INTEGER PRIMARY KEY (not snowflake IDs like Chat/Workspace/Conversation).
+    // Plain decimal string is sufficient and won't exceed Number.MAX_SAFE_INTEGER for practical usage.
+    // Other entities use typed-ID wrappers (e.g., ChatId, WorkspaceId) with format like "chat_xxx_yyy_zzz",
+    // but McpServer is a simpler configuration entity that doesn't require the full typed-ID treatment.
+    pub id: String,
     pub profile_id: Option<String>,
     pub name: String,
     pub server_type: String,

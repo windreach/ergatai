@@ -23,7 +23,7 @@ fn agent_identifier_from_request(context: &RequestContext<rmcp::RoleServer>) -> 
     agent_identifier_from_path(path)
 }
 
-fn agent_identifier_from_path(path: &str) -> Option<String> {
+pub(crate) fn agent_identifier_from_path(path: &str) -> Option<String> {
     let path = path.strip_prefix("/mcp")?;
     let encoded_id = path.trim_start_matches('/').trim_end_matches('/');
     if encoded_id.is_empty() {

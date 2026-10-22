@@ -24,5 +24,5 @@ pub use rate_limiter::{get_rate_limiter, AgentRateLimiter};
 pub use request_monitor::{
     spawn_request_monitor, spawn_request_monitor_with_cancel, RequestMonitor,
 };
-pub use server::create_mcp_service;
 pub use server::start_peer_reaper;
+pub use server::{create_mcp_service, AgentSessionManager};
