@@ -2868,16 +2868,16 @@ pub async fn prompt_agent(
     let prompt_id = format_id(generate(), IdType::Session);
 
     if let Some(conversation_id) = body.conversation_id.as_deref() {
-        let conversation_id_i64 = match crate::http_error::parse_typed_id::<ConversationId>(
+        let conversation_id_typed = match crate::http_error::parse_typed_id::<ConversationId>(
             conversation_id,
             "Conversation",
         ) {
             Ok(id) => id,
             Err((status, json)) => return (status, json).into_response(),
         };
-        let conversation_id_i64_for_update = conversation_id_i64; // Clone for later use
+        let conversation_id_for_update = conversation_id_typed; // Clone for later use
         let conversation = match tokio::task::spawn_blocking(move || {
-            crate::user_data_db::conversations::get(conversation_id_i64)
+            crate::user_data_db::conversations::get(conversation_id_typed)
         })
         .await
         {
@@ -2911,16 +2911,16 @@ pub async fn prompt_agent(
             }
         };
 
-        let conversation_id_i64_for_resolve = match crate::http_error::parse_typed_id::<
+        let conversation_id_for_resolve = match crate::http_error::parse_typed_id::<
             ConversationId,
         >(conversation_id, "Conversation")
         {
             Ok(id) => id,
             Err((status, json)) => return (status, json).into_response(),
         };
-        let workspace_id_i64 = match tokio::task::spawn_blocking(move || {
+        let workspace_id_typed = match tokio::task::spawn_blocking(move || {
             crate::user_data_db::conversations::resolve_workspace_id(
-                conversation_id_i64_for_resolve,
+                conversation_id_for_resolve,
             )
         })
         .await
@@ -2958,7 +2958,7 @@ pub async fn prompt_agent(
             }
         };
 
-        let workspace_id_str = workspace_id_i64.to_string();
+        let workspace_id_str = workspace_id_typed.to_string();
         let agent_info = crate::services::agent_service::get_agent_info(&runtime_id).await;
         tracing::info!(
             runtime_id = %runtime_id,
@@ -2981,7 +2981,7 @@ pub async fn prompt_agent(
 
         // CRITICAL FIX: Update AgentInfo in registry with conversation_id
         // This enables message_delivery.rs to resolve conversation → agent mapping
-        update_agent_conversation_id(&runtime_id, conversation_id_i64_for_update.as_i64()).await;
+        update_agent_conversation_id(&runtime_id, conversation_id_for_update.as_i64()).await;
 
         let agent_name = agent_info
             .as_ref()
@@ -3033,18 +3033,40 @@ pub async fn prompt_agent(
                             // Publish interrupt event to NATS for SSE streaming
                             if let Some(nats_conn) = ctx.nats_connection.clone() {
                                 let bus = ergatai_nats::EventBus::new(nats_conn);
+                                let agent_id = match parse_to_i64(&runtime_id) {
+                                    Some(id) => AgentId::new(id),
+                                    None => {
+                                        tracing::warn!(
+                                            runtime_id = %runtime_id,
+                                            "Failed to parse runtime_id to i64 for interrupt event; using sentinel AgentId(0)"
+                                        );
+                                        AgentId::new(0)
+                                    }
+                                };
+                                let conversation_id = body
+                                    .conversation_id
+                                    .as_deref()
+                                    .map(|id| match ConversationId::decode(id) {
+                                        Ok(cid) => Some(cid),
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                conversation_id = %id,
+                                                error = %e,
+                                                "Failed to decode conversation_id for interrupt event"
+                                            );
+                                            None
+                                        }
+                                    })
+                                    .flatten();
                                 let interrupt_event = ergatai_nats::AgentInterrupted {
-                                    agent_id: AgentId::new(parse_to_i64(&runtime_id).unwrap_or(0)),
+                                    agent_id,
                                     paused_message_id: None,
                                     new_message_id: prompt_id.clone(),
                                     interrupted_at: std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .map(|d| d.as_secs())
                                         .unwrap_or(0),
-                                    conversation_id: body
-                                        .conversation_id
-                                        .as_deref()
-                                        .and_then(|id| ConversationId::decode(id).ok()),
+                                    conversation_id,
                                 };
                                 if let Err(e) = bus.publish_interrupt_event(&interrupt_event).await
                                 {
@@ -3118,7 +3140,7 @@ pub async fn prompt_agent(
                     correlation_id: None,
                     timeout_ms: None,
                     message_type: "request".to_string(),
-                    target_conversation_id: Some(conversation_id_i64_for_update),
+                    target_conversation_id: Some(conversation_id_for_update),
                     images: body
                         .images
                         .iter()
@@ -3209,13 +3231,22 @@ pub async fn prompt_agent(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        let root_conversation_id_i64 = conversation
+        let root_conversation_id = conversation
             .parent_id
             .unwrap_or(conversation.conversation_id);
-        let runtime_id_i64 = parse_to_i64(&runtime_id).unwrap_or(0);
+        let runtime_id_i64 = match parse_to_i64(&runtime_id) {
+            Some(id) => id,
+            None => {
+                tracing::warn!(
+                    runtime_id = %runtime_id,
+                    "Failed to parse runtime_id to i64 for GroupAgentBinding; using sentinel 0"
+                );
+                0
+            }
+        };
         let binding = crate::user_data_db::GroupAgentBinding {
-            workspace_id: workspace_id_i64,
-            chat_id: ChatId::new(root_conversation_id_i64.as_i64()),
+            workspace_id: workspace_id_typed,
+            chat_id: ChatId::new(root_conversation_id.as_i64()),
             agent_id: runtime_id_i64,
             agent_name: agent_name.clone(),
             agent_command: agent_profile,
@@ -3245,8 +3276,8 @@ pub async fn prompt_agent(
         // No conversation_id — auto-create one for persistence
         let agent_info = crate::services::agent_service::get_agent_info(&runtime_id).await;
 
-        let conversation_id_i64 = ConversationId::generate();
-        let conversation_id_str = conversation_id_i64.to_string();
+        let new_conversation_id = ConversationId::generate();
+        let conversation_id_str = new_conversation_id.to_string();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -3258,7 +3289,7 @@ pub async fn prompt_agent(
             .unwrap_or_else(|| runtime_id.clone());
 
         let conv = crate::user_data_db::Conversation {
-            conversation_id: conversation_id_i64,
+            conversation_id: new_conversation_id,
             collaboration_session_id: CollaborationSessionId::new(0),
             chat_id: ChatId::new(0),
             parent_id: None,

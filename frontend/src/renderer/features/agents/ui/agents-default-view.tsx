@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useMemo } from "react"
+import { useCallback } from "react"
 import { useAtom, useAtomValue } from "jotai"
 import { toast } from "sonner"
 
@@ -26,19 +26,6 @@ export function AgentsDefaultView({
   const [sidebarOpen, setSidebarOpen] = useAtom(agentsSidebarOpenAtom)
   const { mode: collaborationMode } = useCollaborationMode()
 
-  // Fetch current-mode workspaces. Workspaces are mode-owned, so a project may
-  // be reused in supervisor mode and still get a separate workspace in group mode.
-  const { data: workspaces } = trpc.ergatai.listManagedWorkspaces.useQuery({
-    collaborationMode,
-  })
-  const modeWorkspaces = useMemo(
-    () =>
-      (workspaces ?? []).filter(
-        (workspace) => workspace.collaborationMode === collaborationMode,
-      ),
-    [workspaces, collaborationMode],
-  )
-
   const utils = trpc.useUtils()
 
   // Create workspace mutation
@@ -55,34 +42,42 @@ export function AgentsDefaultView({
     },
   })
 
-  // Handle workspace selection -> find or create workspace
+  // Handle workspace selection -> find or create workspace.
+  // Wrapped in try/catch: prop type is `(workspace) => void` (synchronous), so
+  // the caller in WorkspaceSelector won't await this or catch rejections.
   const handleWorkspaceSelected = useCallback(
     async (workspace: { id: string; name: string; path: string }) => {
-      // Fetch fresh workspace list to avoid creating duplicates due to stale cache
-      const freshWorkspaces = await utils.ergatai.listManagedWorkspaces.fetch({
-        collaborationMode,
-      })
-      const freshModeWorkspaces = freshWorkspaces.filter(
-        (ws) => ws.collaborationMode === collaborationMode,
-      )
+      try {
+        // Fetch fresh workspace list to avoid creating duplicates due to stale cache
+        const freshWorkspaces = await utils.ergatai.listManagedWorkspaces.fetch({
+          collaborationMode,
+        })
+        const freshModeWorkspaces = freshWorkspaces.filter(
+          (ws) => ws.collaborationMode === collaborationMode,
+        )
 
-      // Check if workspace already exists for this project path
-      const existingWorkspace = freshModeWorkspaces.find(
-        (ws) => ws.workDir === workspace.path
-      )
-      if (existingWorkspace) {
-        setSelectedWorkspaceId(existingWorkspace.id)
-        setShowNewChatForm(true)
-        onWorkspaceCreated?.(existingWorkspace.id)
-        return
+        // Check if workspace already exists for this project path
+        const existingWorkspace = freshModeWorkspaces.find(
+          (ws) => ws.workDir === workspace.path
+        )
+        if (existingWorkspace) {
+          setSelectedWorkspaceId(existingWorkspace.id)
+          setShowNewChatForm(true)
+          onWorkspaceCreated?.(existingWorkspace.id)
+          return
+        }
+
+        createWorkspaceMutation.mutate({
+          projectId: workspace.id,
+          name: workspace.name,
+          workDir: workspace.path,
+          collaborationMode,
+        })
+      } catch (err) {
+        toast.error("Failed to check existing workspaces", {
+          description: err instanceof Error ? err.message : "Please try again",
+        })
       }
-
-      createWorkspaceMutation.mutate({
-        projectId: workspace.id,
-        name: workspace.name,
-        workDir: workspace.path,
-        collaborationMode,
-      })
     },
     [
       collaborationMode,

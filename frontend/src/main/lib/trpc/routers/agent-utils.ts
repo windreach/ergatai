@@ -22,7 +22,7 @@ export interface ParsedAgent {
 
 // Agent with source/path metadata
 export interface FileAgent extends ParsedAgent {
-  source: "user" | "project" | "plugin"
+  source: "user" | "project" | "plugin" | "backend"
   pluginName?: string
   path: string
 }

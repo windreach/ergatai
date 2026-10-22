@@ -124,54 +124,62 @@ export function WorkspaceSelector({
       // Refresh both caches before navigating. `projects.list` uses
       // staleTime: Infinity, so `fetch()` alone can return the old list and
       // make NewChatForm treat the newly created project as invalid.
-      await utils.ergatai.listManagedWorkspaces.invalidate()
-      await utils.projects.list.invalidate()
-      const freshProjects = await utils.projects.list.fetch()
-      setOpen(false)
+      // Wrapped in try/catch: React Query does NOT catch async onSuccess rejections
+      // via onError, so unhandled errors would leave the UI inconsistent.
+      try {
+        await utils.ergatai.listManagedWorkspaces.invalidate()
+        await utils.projects.list.invalidate()
+        const freshProjects = await utils.projects.list.fetch()
+        setOpen(false)
 
-      // Use the actual project ID from the created workspace, not workspace.id
-      // workspace.id is a ws_... format, not a proj_... format
-      const projectId = workspace.defaultProjectId
-      if (!projectId) {
-        toast.error("Workspace created but no project found", {
-          description: "Please refresh and try again",
-        })
-        return
-      }
-
-      // Sync selectedWorkspace with the created workspace's default project
-      // This is critical for NewChatForm to show the input form instead of WorkspaceSelector
-      const project = freshProjects.find(p => p.id === projectId)
-      if (!project) {
-        toast.error("Workspace created but project not found", {
-          description: "Please refresh the page and try again",
-        })
-        return
-      }
-
-      setSelectedWorkspace({
-        id: project.id,
-        name: project.name,
-        path: project.path,
-        gitRemoteUrl: project.gitRemoteUrl,
-        gitProvider: project.gitProvider as NonNullable<typeof selectedWorkspace>["gitProvider"],
-        gitOwner: project.gitOwner,
-        gitRepo: project.gitRepo,
-      })
-
-      // Keep the aggregate projects cache in sync for NewChatForm validation.
-      utils.projects.list.setData(undefined, oldData => {
-        if (oldData?.some(p => p.id === project.id)) {
-          return oldData
+        // Use the actual project ID from the created workspace, not workspace.id
+        // workspace.id is a ws_... format, not a proj_... format
+        const projectId = workspace.defaultProjectId
+        if (!projectId) {
+          toast.error("Workspace created but no project found", {
+            description: "Please refresh and try again",
+          })
+          return
         }
-        return [project, ...(oldData ?? [])]
-      })
 
-      onWorkspaceSelected?.({
-        id: projectId,
-        name: workspace.name ?? "Default Workspace",
-        path: project.path,
-      })
+        // Sync selectedWorkspace with the created workspace's default project
+        // This is critical for NewChatForm to show the input form instead of WorkspaceSelector
+        const project = freshProjects.find(p => p.id === projectId)
+        if (!project) {
+          toast.error("Workspace created but project not found", {
+            description: "Please refresh the page and try again",
+          })
+          return
+        }
+
+        setSelectedWorkspace({
+          id: project.id,
+          name: project.name,
+          path: project.path,
+          gitRemoteUrl: project.gitRemoteUrl,
+          gitProvider: project.gitProvider as "github" | "gitlab" | "bitbucket" | null,
+          gitOwner: project.gitOwner,
+          gitRepo: project.gitRepo,
+        })
+
+        // Keep the aggregate projects cache in sync for NewChatForm validation.
+        utils.projects.list.setData(undefined, oldData => {
+          if (oldData?.some(p => p.id === project.id)) {
+            return oldData
+          }
+          return [project, ...(oldData ?? [])]
+        })
+
+        onWorkspaceSelected?.({
+          id: projectId,
+          name: workspace.name ?? "Default Workspace",
+          path: project.path,
+        })
+      } catch (err) {
+        toast.error("Workspace created but failed to refresh data", {
+          description: err instanceof Error ? err.message : "Please refresh and try again",
+        })
+      }
     },
     onError: (error) => {
       toast.error("Failed to create default workspace", { description: error.message })

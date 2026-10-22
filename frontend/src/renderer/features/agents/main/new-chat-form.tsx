@@ -1179,6 +1179,15 @@ export function NewChatForm({
   const utils = trpc.useUtils()
   const createChatMutation = trpc.chats.create.useMutation({
     onSuccess: (data, variables) => {
+      // Save the selected agent command for the first conversation
+      const firstConversationId = data.conversations?.[0]?.id
+      if (firstConversationId && variables.agentCommand) {
+        // Import dynamically to avoid circular dependency
+        import("../lib/conversation-agent-storage").then(({ conversationAgentStorage }) => {
+          conversationAgentStorage.set(firstConversationId, variables.agentCommand!)
+        })
+      }
+
       if (collaborationMode === "group") {
         const groupAgents =
           boundGroupAgents.length > 0
@@ -1343,6 +1352,7 @@ export function NewChatForm({
       useWorktree: workMode === "worktree",
       mode: agentMode,
       collaborationMode,
+      agentCommand: selectedAgent.id, // Pass selected agent command
     })
     // Editor, images, files, and pasted texts are cleared in onSuccess callback
   }, [
@@ -1891,7 +1901,12 @@ export function NewChatForm({
                                 ? current
                                 : [...current, agent.id],
                             )
-                            if (agent.id === "codex") {
+                            // Update selectedAgent for any agent (including custom profiles like mock-agent)
+                            const matchedAgent = enabledAgents.find((item) => item.id === agent.id)
+                            if (matchedAgent) {
+                              setSelectedAgent(matchedAgent)
+                              setLastSelectedAgentId(agent.id)
+                            } else if (agent.id === "codex") {
                               setSelectedAgent(enabledAgents.find((item) => item.id === "codex") || fallbackAgent)
                               setLastSelectedAgentId("codex")
                             } else if (agent.id === "claude-code") {

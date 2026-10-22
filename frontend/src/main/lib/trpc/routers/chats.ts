@@ -56,6 +56,10 @@ type MappedConversation = {
   messages: string
   createdAt: Date
   updatedAt: Date
+  agent?: {
+    id: string
+    name: string
+  }
 }
 
 type ChatRecord = Awaited<ReturnType<typeof trpcClient.listChats>>[number]
@@ -353,6 +357,7 @@ export const chatsRouter = router({
         useWorktree: z.boolean().default(true), // If false, work directly in project dir
         mode: z.enum(["plan", "agent"]).default("agent"),
         collaborationMode: z.enum(["supervisor", "group"]).default("supervisor"),
+        agentCommand: z.string().optional(), // Agent command/profile to use (e.g., "claude-code", "mock-agent")
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -424,7 +429,7 @@ export const chatsRouter = router({
         mode: input.mode,
       })
       if (initialMessages.length > 0) {
-        await updateConversationMessages(conversation.id, JSON.stringify(initialMessages))
+        await updateConversationMessages(conversation.id, initialMessages)
       }
       console.log("[chats.create] created initial conversation:", conversation.id)
 
@@ -435,6 +440,10 @@ export const chatsRouter = router({
         baseBranch?: string
       } = {}
 
+      // Wrap worktree setup + chat-update in try/catch so a failure doesn't
+      // orphan the conversation we just created. If anything throws, we delete
+      // the conversation before re-raising.
+      try {
       // Only create worktree if useWorktree is true
       if (input.useWorktree) {
         console.log(
@@ -501,6 +510,25 @@ export const chatsRouter = router({
         })
         worktreeResult = { worktreePath: project.path }
       }
+      } catch (err) {
+        // Worktree/update failed — clean up the conversation we just created
+        // to avoid orphaned records in the database.
+        console.warn(
+          "[chats.create] post-conversation setup failed, cleaning up conversation:",
+          conversation.id,
+          err,
+        )
+        try {
+          await deleteConversation(conversation.id)
+        } catch (cleanupErr) {
+          console.warn(
+            "[chats.create] failed to clean up conversation:",
+            conversation.id,
+            cleanupErr,
+          )
+        }
+        throw err
+      }
 
       const response = {
         ...chat,
@@ -516,7 +544,11 @@ export const chatsRouter = router({
           messages: JSON.stringify(initialMessages),
           createdAt: conversation.createdAt,
           updatedAt: conversation.updatedAt,
-        }] as MappedConversation[],
+          agent: {
+            id: input.agentCommand || "claude-code", // Store the selected agent command
+            name: input.agentCommand || "claude-code",
+          },
+        }],
       }
 
       // Track workspace created

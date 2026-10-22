@@ -609,10 +609,16 @@ pub async fn delete(workspace_id: &str, force: bool) -> Result<(), WorkspaceMana
         let _ = runtime.stop_agent(&agent.agent_id).await;
     }
 
-    // Unregister workspace from permission handler to prevent memory leak
+    // Unregister workspace from permission handler to prevent memory leak.
+    // Key format must match register_workspace() in main.rs: raw i64 decimal string
+    // (e.g. "1234567890"), not the formatted typed ID (e.g. "ws_123_001_0001").
     if let Some(permission_handler) = crate::get_permission_handler() {
+        let unregister_key = match WorkspaceId::decode(workspace_id) {
+            Ok(typed_id) => typed_id.as_i64().to_string(),
+            Err(_) => workspace_id.to_string(),
+        };
         permission_handler
-            .unregister_workspace(&workspace_id.to_string())
+            .unregister_workspace(&unregister_key)
             .await;
     }
 
@@ -779,9 +785,11 @@ pub async fn archive_workspace(workspace_id: &str) -> Result<Workspace, Workspac
     }
 
     // 4. 从权限处理器注销
+    // Key format must match register_workspace() in main.rs: raw i64 decimal string,
+    // not the formatted typed ID (e.g. "ws_123_001_0001").
     if let Some(permission_handler) = crate::get_permission_handler() {
         permission_handler
-            .unregister_workspace(&workspace_id.to_string())
+            .unregister_workspace(&workspace_id.as_i64().to_string())
             .await;
     }
 

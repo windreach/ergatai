@@ -357,19 +357,50 @@ pub async fn list_chat_agents(
     };
 
     // 2. 查询每个 conversation 的 agent（只返回存活的）
+    //    同时查询 group_agent_bindings 以获取绑定创建时间（而非最后心跳时间），
+    //    使前端 dedup 逻辑能基于绑定时间而非心跳时间。
     let registry = ergatai_core::unified_registry::unified_registry();
     let mut agents = Vec::new();
+
+    let bindings: Vec<crate::user_data_db::GroupAgentBinding> =
+        match tokio::task::spawn_blocking(move || {
+            crate::user_data_db::group_agent_bindings::list(chat_id)
+        })
+        .await
+        {
+            Ok(Ok(b)) => b,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "Failed to list agent bindings for chat; falling back to heartbeat timestamps");
+                Vec::new()
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Task join error listing agent bindings");
+                Vec::new()
+            }
+        };
 
     for conv in conversations {
         let conversation_id_str = conv.conversation_id.to_string();
         if let Some(agent) = registry.get_by_conversation_id(&conversation_id_str).await {
             if agent.state.is_alive() {
+                // Prefer the binding's created_at/updated_at (stable binding time)
+                // over last_heartbeat (frequently-updated activity timestamp).
+                let (created_at, updated_at) = bindings
+                    .iter()
+                    .find(|b| b.conversation_id.to_string() == conversation_id_str)
+                    .map(|b| (b.created_at, b.updated_at))
+                    .unwrap_or_else(|| {
+                        let hb = agent.last_heartbeat.timestamp();
+                        (hb, hb)
+                    });
                 agents.push(serde_json::json!({
                     "agent_id": agent.agent_id,
                     "conversation_id": conversation_id_str,
                     "state": format!("{:?}", agent.state),
                     "profile": agent.profile,
                     "last_heartbeat": agent.last_heartbeat,
+                    "created_at": created_at,
+                    "updated_at": updated_at,
                 }));
             }
         }

@@ -729,7 +729,7 @@ pub async fn create_conversation_messages(
         Err((status, json)) => return (status, json).into_response(),
     };
 
-    let conversation =
+    let _conversation =
         match tokio::task::spawn_blocking(move || crate::user_data_db::conversations::get(id_i64))
             .await
         {
@@ -742,7 +742,8 @@ pub async fn create_conversation_messages(
                 return crate::http_error::internal(e, "load_conversation_join").into_response()
             }
         };
-    drop(conversation);
+    // `_conversation` was loaded only to verify existence; it goes out of scope
+    // naturally — no explicit drop needed (Conversation is a plain data struct).
 
     let result = tokio::task::spawn_blocking(move || {
         request

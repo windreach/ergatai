@@ -234,10 +234,6 @@ export async function deleteProject(id: string): Promise<void> {
   await ergataiFetch(`/api/v1/projects/${encodeURIComponent(id)}`, { method: "DELETE" })
 }
 
-export async function listAllConversations(): Promise<BackendConversation[]> {
-  return ergataiFetch<BackendConversation[]>("/api/v1/conversations")
-}
-
 export async function listConversations(chatId: string): Promise<BackendConversation[]> {
   return ergataiFetch<BackendConversation[]>(
     `/api/v1/conversations?chat_id=${encodeURIComponent(chatId)}`,
@@ -246,20 +242,11 @@ export async function listConversations(chatId: string): Promise<BackendConversa
 
 export async function updateConversationMessages(
   id: string,
-  messages: string,
+  messages: Array<Record<string, unknown>>,
 ): Promise<BackendConversation> {
-  let parsedMessages: Array<Record<string, unknown>>
-  try {
-    const parsed = JSON.parse(messages)
-    if (!Array.isArray(parsed)) throw new Error("Messages must be an array")
-    parsedMessages = parsed as Array<Record<string, unknown>>
-  } catch (error) {
-    throw new Error(`Invalid messages payload: ${error instanceof Error ? error.message : String(error)}`)
-  }
-
   await ergataiFetch<BackendMessage[]>(
     `/api/v1/conversations/${encodeURIComponent(id)}/messages`,
-    { method: "POST", body: JSON.stringify({ messages: parsedMessages }) },
+    { method: "POST", body: JSON.stringify({ messages }) },
   )
   const conversation = await getConversation(id)
   if (!conversation) throw new Error("Conversation not found")

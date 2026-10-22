@@ -12,6 +12,40 @@ import {
 } from "./agent-utils"
 import { discoverInstalledPlugins, getPluginComponentPaths } from "../../plugins"
 import { getEnabledPlugins } from "./claude-settings"
+import { ergataiFetch } from "../../ergatai/api"
+
+// Helper: fetch backend agent profiles and convert to FileAgent format
+async function fetchBackendAgents(): Promise<FileAgent[]> {
+  try {
+    const response = await ergataiFetch<{
+      profiles: Array<{
+        id: string
+        name: string
+        command: string
+        agent_type: string
+        package_name: string | null
+        avatar_url: string | null
+        installed: boolean
+        created_at: string
+      }>
+    }>("/api/v1/agent-profiles/with-status")
+
+    return response.profiles.map((profile) => ({
+      name: profile.name,
+      description: `ACP agent: ${profile.name} (${profile.agent_type})`,
+      prompt: "", // Backend profiles don't have prompts
+      tools: [], // Backend profiles don't specify tools
+      disallowedTools: [],
+      model: undefined,
+      source: "backend" as const,
+      path: profile.command, // Use command as path for backend agents
+    }))
+  } catch (error) {
+    // Backend unreachable - silently return empty array
+    // This ensures filesystem agents still work even if backend is down
+    return []
+  }
+}
 
 // Shared procedure for listing agents
 const listAgentsProcedure = publicProcedure
@@ -50,16 +84,22 @@ const listAgentsProcedure = publicProcedure
       }
     })
 
-    // Scan all directories in parallel
-    const [userAgents, projectAgents, ...pluginAgentsArrays] =
+    // Fetch backend profiles (agents registered via Ergatai API)
+    const backendAgentsPromise = fetchBackendAgents()
+
+    // Scan all directories and fetch backend in parallel
+    const [userAgents, projectAgents, backendAgents, ...pluginAgentsArrays] =
       await Promise.all([
         userAgentsPromise,
         projectAgentsPromise,
+        backendAgentsPromise,
         ...pluginAgentsPromises,
       ])
     const pluginAgents = pluginAgentsArrays.flat()
 
-    return [...projectAgents, ...userAgents, ...pluginAgents]
+    // Merge all sources: project + user + plugin + backend
+    // Filesystem agents take priority (they have more detailed info)
+    return [...projectAgents, ...userAgents, ...pluginAgents, ...backendAgents]
   })
 
 export const agentsRouter = router({
@@ -96,6 +136,7 @@ export const agentsRouter = router({
           : []),
       ]
 
+      // Search filesystem first
       for (const { dir, source } of locations) {
         const agentPath = path.join(dir, `${input.name}.md`)
         try {
@@ -135,6 +176,14 @@ export const agentsRouter = router({
           continue
         }
       }
+
+      // Search in backend profiles
+      const backendAgents = await fetchBackendAgents()
+      const backendMatch = backendAgents.find((agent) => agent.name === input.name)
+      if (backendMatch) {
+        return backendMatch
+      }
+
       return null
     }),
 

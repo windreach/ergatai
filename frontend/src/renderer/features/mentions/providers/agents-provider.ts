@@ -30,7 +30,7 @@ export interface AgentData {
   tools?: string[]
   disallowedTools?: string[]
   model?: AgentModel
-  source: "user" | "project" | "plugin"
+  source: "user" | "project" | "plugin" | "backend"
   path: string
 }
 

@@ -1403,6 +1403,7 @@ export const ergataiRouter = router({
       )
 
       // If projectId is provided, set it as default project
+      let didUpdateDefaultProject = false
       if (input.projectId) {
         await ergataiFetch<BackendManagedWorkspace>(
           `/api/v1/workspaces/managed/${encodeURIComponent(workspace.workspace_id)}`,
@@ -1413,11 +1414,7 @@ export const ergataiRouter = router({
             }),
           },
         )
-        // Re-fetch workspace to get updated defaultProjectId
-        workspace = await ergataiFetch<BackendManagedWorkspace>(
-          `/api/v1/workspaces/managed/${encodeURIComponent(workspace.workspace_id)}`,
-          { method: "GET" },
-        )
+        didUpdateDefaultProject = true
       } else if (input.projectPath) {
         // Auto-create project if projectPath is provided
         const project = await ergataiFetch<BackendWorkspaceProject>(
@@ -1431,6 +1428,12 @@ export const ergataiRouter = router({
           },
         )
 
+        // Validate project_id format before using it
+        if (!project.project_id || project.project_id.startsWith('ws_')) {
+          console.error('[createWorkspace] Invalid project_id format:', project)
+          throw new Error(`Project creation returned invalid project_id: ${project.project_id}`)
+        }
+
         // Set as default project
         await ergataiFetch<BackendManagedWorkspace>(
           `/api/v1/workspaces/managed/${encodeURIComponent(workspace.workspace_id)}`,
@@ -1441,7 +1444,12 @@ export const ergataiRouter = router({
             }),
           },
         )
-        // Re-fetch workspace to get updated defaultProjectId
+        didUpdateDefaultProject = true
+      }
+
+      // Re-fetch workspace once after any default-project update to get the
+      // latest defaultProjectId. Previously this was duplicated in both branches.
+      if (didUpdateDefaultProject) {
         workspace = await ergataiFetch<BackendManagedWorkspace>(
           `/api/v1/workspaces/managed/${encodeURIComponent(workspace.workspace_id)}`,
           { method: "GET" },
@@ -1748,20 +1756,36 @@ export const ergataiRouter = router({
             state: string
             profile: string | null
             last_heartbeat: string
+            // Binding creation/update times (Unix seconds). Prefer these over
+            // last_heartbeat for createdAt/updatedAt semantics — last_heartbeat
+            // reflects agent activity, not when the binding was created.
+            created_at?: number
+            updated_at?: number
           }>
         }>(`/api/v1/chats/${encodeURIComponent(input.chatId)}/agents`)
         const agents = response.agents
-        return agents.map((agent) => ({
-          id: agent.agent_id,
-          workspaceId: "",
-          chatId: input.chatId,
-          agentId: agent.agent_id,
-          agentName: agent.profile ?? agent.agent_id,
-          agentCommand: agent.profile,
-          conversationId: agent.conversation_id ?? "",
-          createdAt: new Date(agent.last_heartbeat),
-          updatedAt: new Date(agent.last_heartbeat),
-        }))
+        return agents.map((agent) => {
+          // Use binding's created_at/updated_at when available; fall back to
+          // last_heartbeat (backwards-compatible with older backend responses).
+          // last_heartbeat arrives as an RFC 3339 string; created_at as Unix seconds.
+          const createdAtMs = agent.created_at
+            ? agent.created_at * 1000
+            : Date.parse(agent.last_heartbeat) || Date.now()
+          const updatedAtMs = agent.updated_at
+            ? agent.updated_at * 1000
+            : createdAtMs
+          return {
+            id: agent.agent_id,
+            workspaceId: "",
+            chatId: input.chatId,
+            agentId: agent.agent_id,
+            agentName: agent.profile ?? agent.agent_id,
+            agentCommand: agent.profile,
+            conversationId: agent.conversation_id ?? "",
+            createdAt: new Date(createdAtMs),
+            updatedAt: new Date(updatedAtMs),
+          }
+        })
       } catch (err) {
         console.warn("[ergatai] getAgentBindings failed:", err)
         return []

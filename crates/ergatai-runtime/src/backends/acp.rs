@@ -2568,6 +2568,20 @@ impl AcpBackendInterface for AcpBackend {
             "TERM",
             "ANTHROPIC_API_KEY",
             "CLAUDE_API_KEY",
+            // Claude Code adapter requirements
+            "CLAUDE_CONFIG_DIR",
+            "CLAUDE_CODE_EXECUTABLE",
+            "IS_SANDBOX",
+            "MAX_THINKING_TOKENS",
+            // Authentication alternatives
+            "ANTHROPIC_AUTH_TOKEN",
+            // Node.js runtime
+            "NODE_PATH",
+            "NPM_CONFIG_PREFIX",
+            "NPM_CONFIG_CACHE",
+            // Python runtime
+            "PYTHONPATH",
+            "VIRTUAL_ENV",
         ];
 
         for var in allowed_parent_vars {
@@ -2596,6 +2610,13 @@ impl AcpBackendInterface for AcpBackend {
             "ACP backend: parsed command"
         );
 
+        // Log environment variables being passed (for debugging startup failures)
+        debug!(
+            agent_id = %agent_id,
+            env_vars = ?full_env.keys().collect::<Vec<_>>(),
+            "ACP backend: environment variables being passed to agent"
+        );
+
         let acp_agent = AcpAgent::new(config).with_debug(|line, direction| {
             debug!(?direction, line = %line, "ACP wire debug");
         });
@@ -2604,11 +2625,17 @@ impl AcpBackendInterface for AcpBackend {
         // This replaces the implicit spawn inside connect_with().
         let (child_stdin, child_stdout, child_stderr, child) =
             acp_agent.spawn_process().map_err(|e| {
+                error!(
+                    agent_id = %agent_id,
+                    command = %command,
+                    error = %e,
+                    "Failed to spawn ACP agent process"
+                );
                 ErgataiError::internal(format!("Failed to spawn ACP agent process: {}", e))
             })?;
 
         let pid = child.id();
-        info!(pid = pid, agent_id = %agent_id, "Spawned ACP agent process");
+        info!(pid = pid, agent_id = %agent_id, command = %command, "Spawned ACP agent process");
 
         // Register PID mapping for file lock system.
         self.register_pid(pid, &agent_id);
@@ -3815,7 +3842,12 @@ impl AcpBackendInterface for AcpBackend {
                     *task_exit_code.write() = Some(code);
 
                     if let Err(e) = result {
-                        error!(error = %e, exit_code = code, "ACP connection task failed");
+                        error!(
+                            error = %e,
+                            exit_code = code,
+                            agent_id = %task_agent_id,
+                            "ACP connection task failed. This usually means the agent process exited before completing the ACP handshake. Check that: (1) the agent command is valid, (2) required environment variables are set, (3) the agent implements ACP protocol correctly"
+                        );
                     }
                 }
             }
@@ -3828,11 +3860,19 @@ impl AcpBackendInterface for AcpBackend {
                 Some(id)
             }
             Ok(Err(_)) => {
-                warn!("ACP connection task exited before sending session_id");
+                warn!(
+                    agent_id = %agent_id,
+                    command = %command,
+                    "ACP connection task exited before sending session_id. The agent process likely crashed during initialization."
+                );
                 None
             }
             Err(_) => {
-                warn!("Timeout waiting for ACP session_id");
+                warn!(
+                    agent_id = %agent_id,
+                    command = %command,
+                    "Timeout waiting for ACP session_id (30s). The agent may be stuck or unresponsive."
+                );
                 None
             }
         };

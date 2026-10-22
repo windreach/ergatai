@@ -13,6 +13,7 @@ import { useStreamingStatusStore } from "../stores/streaming-status-store"
 import { useMessageQueueStore } from "../stores/message-queue-store"
 import { clearConversationRuntimeCaches } from "../stores/conversation-runtime-cleanup"
 import { loadGroupAgents } from "../collaboration/group-agent-storage"
+import { conversationAgentStorage } from "../lib/conversation-agent-storage"
 
 interface UseChatInstanceFactoryProps {
   // 聊天实例信息
@@ -193,6 +194,7 @@ export function useChatInstanceFactory({
             conversationId: conversationId,
             workspaceId: chatRef.current.worktreePath || undefined,
             command:
+              conversationAgentStorage.get(conversationId) ||
               providerRef.current.conversationProviderOverrides[conversationId] ||
               providerRef.current.inferProviderFromMessages(conversationId),
             mode: conversationMode,

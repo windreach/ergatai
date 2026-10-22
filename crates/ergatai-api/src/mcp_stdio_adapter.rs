@@ -239,13 +239,17 @@ async fn forward_to_http_with_retry(
                         reqwest_err.is_connect() || reqwest_err.is_timeout()
                     }
                 } else {
-                    // Non-reqwest errors: check message for transient indicators
+                    // Non-reqwest errors: check message for transient indicators.
+                    // forward_to_http() wraps non-success HTTP responses as anyhow!("HTTP error {status}: {body}"),
+                    // so we must match on the status code substring. Include all common 5xx codes.
                     let msg = e.to_string().to_lowercase();
                     msg.contains("connection")
                         || msg.contains("timeout")
+                        || msg.contains("500")
                         || msg.contains("502")
                         || msg.contains("503")
                         || msg.contains("504")
+                        || msg.contains("507")
                 };
                 if is_retryable && attempt < max_retries {
                     tracing::debug!(
