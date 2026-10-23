@@ -115,6 +115,7 @@ export function PermissionApprovalPanel({
   const agentBindingsQuery = trpc.ergatai.getAgentBindings.useQuery(
     { chatId },
     {
+      enabled: chatId.startsWith("chat_"),
       staleTime: 0,  // Always refetch when invalidated to avoid race conditions
       gcTime: 30_000,
     },

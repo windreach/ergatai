@@ -42,10 +42,15 @@ pub struct AgentFilter {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct SendMessageParams {
-    /// ID of the target Cov (Conversation).
-    /// Cov and Agent have 1:1 binding relationship.
-    /// The system will automatically resolve it to the bound agent_id.
-    pub target_conversation_id: String,
+    /// Target agent ID or profile name from `list_agents`.
+    /// Prefer this field. The system resolves it to the bound Conversation.
+    #[serde(default)]
+    pub target_agent_id: Option<String>,
+
+    /// Optional target Conversation ID (`conv_...`).
+    /// Use only when the caller already knows the bound Conversation.
+    #[serde(default)]
+    pub target_conversation_id: Option<String>,
 
     /// Message content
     pub message: String,
@@ -72,15 +77,39 @@ pub(crate) struct SendMessageParams {
 }
 
 impl SendMessageParams {
-    /// Get the target conversation_id from the params.
+    /// Resolve the target from either `target_agent_id` or the legacy
+    /// `target_conversation_id` field.
     ///
-    /// Since `target_conversation_id` is now required, this simply returns it.
-    /// Returns `(target_conversation_id, Some(target_conversation_id))` for consistency with previous API.
+    /// Returns `(target, Option<target_conversation_id>)`. A profile/agent name
+    /// may appear in the legacy field for compatibility, but is never treated as
+    /// a valid Conversation ID.
     pub fn resolve_target(&self) -> Result<(String, Option<String>), ErrorData> {
-        Ok((
-            self.target_conversation_id.clone(),
-            Some(self.target_conversation_id.clone()),
-        ))
+        let clean = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        let target_agent_id = clean(&self.target_agent_id);
+        let target_conversation_id = clean(&self.target_conversation_id);
+
+        let target = target_agent_id
+            .clone()
+            .or_else(|| target_conversation_id.clone())
+            .ok_or_else(|| {
+                ErrorData::invalid_params(
+                    "send_message requires target_agent_id (or legacy target_conversation_id)",
+                    None,
+                )
+            })?;
+
+        // Only keep a Conversation ID if it actually has the canonical `conv_...`
+        // format. This deliberately rejects profile names such as "claude-code".
+        let resolved_conversation_id =
+            target_conversation_id.filter(|id| ergatai_error::ConversationId::decode(id).is_ok());
+
+        Ok((target, resolved_conversation_id))
     }
 }
 

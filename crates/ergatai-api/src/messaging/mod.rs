@@ -273,13 +273,16 @@ impl MessageSender {
         let resolved_target_id = match self.resolve_target_agent(&runtime, &req.to).await {
             Some(id) => id,
             None => {
-                // Target not found in running agents — check if it's a suspended agent
-                // before falling back to auto-spawn from profile
-                if let Some(auto_resumed_id) = self
+                // Target may also be identified directly by its bound Conversation.
+                if let Some(agent_id) = find_agent_by_conversation(&runtime, &req.to).await {
+                    agent_id
+                } else if let Some(auto_resumed_id) = self
                     .try_auto_resume_suspended_agent(
                         &runtime,
                         &req.to,
-                        req.conversation_id.as_deref(),
+                        req.conversation_id
+                            .as_deref()
+                            .or(req.target_conversation_id.as_deref()),
                     )
                     .await
                 {
@@ -416,6 +419,18 @@ impl MessageSender {
             }
         }
 
+        // Conversation-centric delivery requires a real Conversation ID. Never
+        // queue a message that the consumer would have to discard later.
+        let Some(target_conversation_id) = target_conversation_id else {
+            return SendMessageResult::Rejected {
+                reason: format!(
+                    "Unable to resolve a bound Conversation for target '{}'. \
+                     Bind the target to a chat/conversation before sending.",
+                    req.to
+                ),
+            };
+        };
+
         // NOTE: Message persistence to sub_chat moved to AFTER successful delivery (see below)
         // to prevent orphaned messages when delivery fails.
 
@@ -475,36 +490,8 @@ impl MessageSender {
                 timeout_ms,
                 // Message type for proper classification on the receiving end
                 message_type: req.message_type.clone(),
-                // Conversation ID for direct delivery (bypasses agent_id intermediary)
-                target_conversation_id: {
-                    let decoded = resolved_req
-                        .target_conversation_id
-                        .as_deref()
-                        .and_then(|id| {
-                            tracing::debug!(
-                                raw_conversation_id = %id,
-                                "Attempting to decode conversation_id"
-                            );
-                            match ConversationId::decode(id) {
-                                Ok(conv_id) => {
-                                    tracing::debug!(
-                                        decoded_conversation_id = ?conv_id,
-                                        "Successfully decoded conversation_id"
-                                    );
-                                    Some(conv_id)
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        raw_id = %id,
-                                        error = %e,
-                                        "Failed to decode conversation_id"
-                                    );
-                                    None
-                                }
-                            }
-                        });
-                    decoded
-                },
+                // Conversation ID for direct delivery (bypasses agent_id intermediary).
+                target_conversation_id: Some(target_conversation_id),
                 // Images (empty for agent-to-agent messages, used for user messages)
                 images: vec![],
             };
@@ -604,7 +591,8 @@ impl MessageSender {
 
                 // Persist message AFTER successful delivery. The conversation helper
                 // owns writes to the normalized `messages` table.
-                if let Some(conversation_id) = target_conversation_id {
+                {
+                    let conversation_id = target_conversation_id;
                     let message = req.message.clone();
                     let from = req.from.clone();
                     let sender_name = sender_display.clone();
@@ -674,6 +662,39 @@ impl MessageSender {
     ///
     /// The sender's binding is only used to discover the owning chat. We never
     /// persist target messages into the supervisor conversation.
+    async fn update_agent_conversation_id(&self, agent_id: &str, conversation_id: ConversationId) {
+        let runtime = crate::context::get_app_context().agent_runtime.clone();
+        let conversation_id_formatted = conversation_id.encode();
+        let conversation_id_i64 = conversation_id.as_i64().to_string();
+
+        // Use atomic update to avoid read-modify-write race conditions.
+        let updated = runtime
+            .registry()
+            .update(agent_id, |info| {
+                info.handle
+                    .metadata
+                    .insert("conversation_id".to_string(), conversation_id_formatted.clone());
+                info.handle
+                    .metadata
+                    .insert("conversation_id_i64".to_string(), conversation_id_i64.clone());
+                info.conversation_id = Some(conversation_id_formatted.clone());
+            })
+            .await;
+
+        if updated.is_some() {
+            info!(
+                agent_id = %agent_id,
+                conversation_id = %conversation_id_formatted,
+                "Updated AgentInfo with conversation_id for message routing"
+            );
+        } else {
+            warn!(
+                agent_id = %agent_id,
+                "AgentInfo not found in registry, cannot update conversation_id"
+            );
+        }
+    }
+
     async fn ensure_target_conversation(
         &self,
         sender_id: &str,
@@ -688,20 +709,52 @@ impl MessageSender {
                 return None;
             }
         };
-        let seed_conversation_id = match tokio::task::spawn_blocking(move || {
-            user_data_db::group_agent_bindings::find_conversation_id(sender_id_i64)
-        })
-        .await
-        {
-            Ok(Ok(Some(conversation_id))) => conversation_id,
-            Ok(Ok(None)) => return None,
-            Ok(Err(error)) => {
-                warn!(error = %error, "Failed to resolve sender conversation for agent target");
-                return None;
-            }
-            Err(error) => {
-                warn!(error = %error, "Failed to resolve sender conversation task");
-                return None;
+
+        // Prefer the live AgentInfo conversation. This handles the normal
+        // prompt path even if the database binding was not yet repaired.
+        let sender_runtime = crate::context::get_app_context().agent_runtime.clone();
+        let metadata_conversation_id = sender_runtime
+            .get_agent(&sender_id)
+            .await
+            .and_then(|agent_info| agent_info.handle.metadata.get("conversation_id").cloned())
+            .and_then(|id| ConversationId::decode(&id).ok());
+
+        let seed_conversation_id = if let Some(conversation_id) = metadata_conversation_id {
+            conversation_id
+        } else {
+            // Try to find sender's existing conversation_id
+            let sender_conversation_id = tokio::task::spawn_blocking(move || {
+                user_data_db::group_agent_bindings::find_conversation_id(sender_id_i64)
+            })
+            .await;
+
+            match sender_conversation_id {
+                Ok(Ok(Some(conversation_id))) => conversation_id,
+                Ok(Ok(None)) => {
+                    // Sender has no GroupAgentBinding — create a default chat and binding
+                    info!(
+                        sender = %sender_id,
+                        "Sender has no GroupAgentBinding, creating default chat and binding"
+                    );
+                    match self
+                        .create_default_chat_for_sender(&sender_id, sender_id_i64)
+                        .await
+                    {
+                        Some(conv_id) => conv_id,
+                        None => {
+                            warn!("Failed to create default chat for sender '{}'", sender_id);
+                            return None;
+                        }
+                    }
+                }
+                Ok(Err(error)) => {
+                    warn!(error = %error, "Failed to resolve sender conversation for agent target");
+                    return None;
+                }
+                Err(error) => {
+                    warn!(error = %error, "Failed to resolve sender conversation task");
+                    return None;
+                }
             }
         };
 
@@ -748,6 +801,8 @@ impl MessageSender {
         };
 
         if let Some(conversation_id) = existing_conversation_id {
+            self.update_agent_conversation_id(&target_id, conversation_id)
+                .await;
             return Some(conversation_id);
         }
 
@@ -888,6 +943,9 @@ impl MessageSender {
             }
         }
 
+        self.update_agent_conversation_id(&target_id, conversation_id)
+            .await;
+
         if let Ok(Ok(Some(session))) = tokio::task::spawn_blocking(move || {
             crate::services::collaboration_session::find_session_by_chat(&chat_id.to_string())
         })
@@ -913,6 +971,175 @@ impl MessageSender {
         }
 
         Some(conversation_id)
+    }
+
+    /// Create a default chat and binding for a sender that has no GroupAgentBinding.
+    ///
+    /// This is used when MCP agents (like opencode) send messages but don't have
+    /// a GroupAgentBinding yet. We create a default chat and conversation so that
+    /// message routing can work.
+    ///
+    /// Returns the conversation_id of the newly created conversation.
+    async fn create_default_chat_for_sender(
+        &self,
+        sender_id: &str,
+        sender_id_i64: i64,
+    ) -> Option<ConversationId> {
+        let runtime = crate::context::get_app_context().agent_runtime.clone();
+
+        // Get sender's workspace_id from runtime registry
+        let Some(agent_info) = runtime.get_agent(sender_id).await else {
+            warn!(
+                sender = %sender_id,
+                "Sender not found in runtime registry; cannot create default chat"
+            );
+            return None;
+        };
+        let Some(workspace_id_i64) = ergatai_core::id::parse_to_i64(&agent_info.workspace_id)
+        else {
+            warn!(
+                sender = %sender_id,
+                workspace_id = %agent_info.workspace_id,
+                "Failed to parse sender workspace_id; cannot create default chat"
+            );
+            return None;
+        };
+        let workspace_id = ergatai_error::WorkspaceId::new(workspace_id_i64);
+
+        let sender_id_for_label = sender_id.to_string();
+        let timestamp = chrono::Utc::now().timestamp();
+
+        // Generate IDs (all ID types implement Copy, so they can be used
+        // directly in the spawn_blocking closure without _for_xxx aliases).
+        let chat_id = ergatai_error::ChatId::generate();
+        let collaboration_session_id = ergatai_error::CollaborationSessionId::generate();
+        let root_conversation_id = ConversationId::generate();
+        let sender_conversation_id = ConversationId::generate();
+        let session_id_i64 = generate();
+
+        let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            // 1. Create default chat
+            crate::user_data_db::chats::create(crate::user_data_db::Chat {
+                chat_id,
+                workspace_id,
+                name: Some(format!("Default chat for {}", sender_id_for_label)),
+                collaboration_mode: Some("supervisor".to_string()),
+                worktree_path: None,
+                branch: None,
+                base_branch: None,
+                pr_url: None,
+                pr_number: None,
+                created_at: timestamp,
+                updated_at: timestamp,
+                archived_at: None,
+            })
+            .map_err(|e| format!("Failed to create chat: {}", e))?;
+
+            // 2. Create the collaboration session referenced by conversations.
+            crate::user_data_db::collaboration_sessions::create(
+                crate::user_data_db::CollaborationSession {
+                    collaboration_session_id,
+                    chat_id,
+                    workspace_id,
+                    mode: "supervisor".to_string(),
+                    state: "idle".to_string(),
+                    goal: None,
+                    active_plan_revision: None,
+                    created_at: timestamp,
+                    updated_at: timestamp,
+                },
+            )
+            .map_err(|e| format!("Failed to create collaboration session: {}", e))?;
+
+            // 3. Create root conversation (chat-level)
+            crate::user_data_db::conversations::create(crate::user_data_db::Conversation {
+                conversation_id: root_conversation_id,
+                collaboration_session_id,
+                chat_id,
+                parent_id: None,
+                name: Some(format!("Chat root for {}", sender_id_for_label.clone())),
+                mode: "chat".to_string(),
+                participant_role: "system".to_string(),
+                status: "ready".to_string(),
+                created_at: timestamp,
+                updated_at: timestamp,
+            })
+            .map_err(|e| format!("Failed to create root conversation: {}", e))?;
+
+            // 4. Create sender's conversation
+            crate::user_data_db::conversations::create(crate::user_data_db::Conversation {
+                conversation_id: sender_conversation_id,
+                collaboration_session_id,
+                chat_id,
+                parent_id: Some(root_conversation_id),
+                name: Some(sender_id_for_label.clone()),
+                mode: "agent".to_string(),
+                participant_role: "assistant".to_string(),
+                status: "ready".to_string(),
+                created_at: timestamp,
+                updated_at: timestamp,
+            })
+            .map_err(|e| format!("Failed to create sender conversation: {}", e))?;
+
+            // 5. Create GroupAgentBinding
+            crate::user_data_db::group_agent_bindings::upsert(
+                crate::user_data_db::GroupAgentBinding {
+                    workspace_id,
+                    chat_id,
+                    agent_id: sender_id_i64,
+                    agent_name: sender_id_for_label,
+                    agent_command: None,
+                    conversation_id: sender_conversation_id,
+                    created_at: timestamp,
+                    updated_at: timestamp,
+                },
+            )
+            .map_err(|e| format!("Failed to create binding: {}", e))?;
+
+            // 6. Create AgentSession
+            crate::user_data_db::agent_sessions::upsert(crate::user_data_db::AgentSession {
+                agent_session_id: session_id_i64,
+                conversation_id: sender_conversation_id.as_i64(),
+                acp_session_id: None,
+                mode: "agent".to_string(),
+                created_at: timestamp,
+                updated_at: timestamp,
+            })
+            .map_err(|e| format!("Failed to create agent session: {}", e))?;
+
+            Ok(())
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => {
+                self.update_agent_conversation_id(sender_id, sender_conversation_id)
+                    .await;
+                info!(
+                    sender = %sender_id,
+                    chat_id = %chat_id,
+                    conversation_id = %sender_conversation_id,
+                    "Created default chat and binding for sender"
+                );
+                Some(sender_conversation_id)
+            }
+            Ok(Err(error)) => {
+                warn!(
+                    error = %error,
+                    sender = %sender_id,
+                    "Failed to create default chat for sender"
+                );
+                None
+            }
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    sender = %sender_id,
+                    "Failed to create default chat task"
+                );
+                None
+            }
+        }
     }
 
     async fn mark_response_delivered(
@@ -1109,6 +1336,22 @@ impl MessageSender {
                     profile = %profile.name,
                     "Agent auto-spawned successfully"
                 );
+
+                // Bind the newly spawned target immediately. A message must not
+                // enter the queue without a resolvable Conversation ID.
+                if self
+                    .ensure_target_conversation(sender_runtime_id, &agent_id, target)
+                    .await
+                    .is_none()
+                {
+                    tracing::error!(
+                        agent_id = %agent_id,
+                        target = %target,
+                        "Failed to bind auto-spawned agent to a Conversation"
+                    );
+                    return None;
+                }
+
                 Some(agent_id)
             }
             Err(e) => {

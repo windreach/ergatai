@@ -288,33 +288,6 @@ impl TurnAccumulator {
             updated_at: now,
         }
     }
-
-    /// Get current snapshot (without consuming the accumulator)
-    pub fn snapshot(&self) -> AgentOutputSnapshot {
-        AgentOutputSnapshot {
-            conversation_id: self.conversation_id.to_string(),
-            sequence: 0, // Database layer uses AUTOINCREMENT, so we pass 0 as placeholder
-            thinking: self.thinking.clone(),
-            tool_calls: self.tool_calls.values().cloned().collect(),
-            text_chunks: self.text_chunks.clone(),
-            final_text: self.final_text.clone(),
-            metadata: self.metadata.clone(),
-            elapsed_ms: self.started_at.elapsed().as_millis() as u64,
-        }
-    }
-}
-
-/// Snapshot of accumulated output (for real-time queries)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentOutputSnapshot {
-    pub conversation_id: String,
-    pub sequence: i64,
-    pub thinking: Vec<ThinkingBlock>,
-    pub tool_calls: Vec<ToolCallRecord>,
-    pub text_chunks: Vec<TextChunk>,
-    pub final_text: String,
-    pub metadata: OutputMetadata,
-    pub elapsed_ms: u64,
 }
 
 /// Registry of active output accumulators

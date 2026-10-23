@@ -128,6 +128,28 @@ impl AgentRegistry {
         inner.primary.insert(info.agent_id.clone(), info);
     }
 
+    /// 原子性地更新 agent 信息的部分字段。
+    ///
+    /// 在单一写锁内执行 read-modify-write，避免并发更新丢失。
+    /// `updater` 接收当前 AgentInfo 的可变引用，修改后返回。
+    /// 若 agent 不存在，返回 `None`。
+    pub async fn update<F>(&self, agent_id: &str, updater: F) -> Option<AgentInfo>
+    where
+        F: FnOnce(&mut AgentInfo),
+    {
+        let mut inner = self.inner.write().await;
+        let mut info = inner.primary.get(agent_id)?.clone();
+        // 清理旧的反向索引
+        inner.clean_reverse_indices(&info);
+        // 应用更新
+        updater(&mut info);
+        // 重新添加反向索引
+        inner.add_reverse_indices(&info);
+        // 写回
+        inner.primary.insert(agent_id.to_string(), info.clone());
+        Some(info)
+    }
+
     /// 移除 agent，自动清理所有反向索引。
     pub async fn remove(&self, agent_id: &str) -> Option<AgentInfo> {
         let mut inner = self.inner.write().await;

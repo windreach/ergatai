@@ -54,6 +54,7 @@ pub mod permission_service;
 pub mod profile_registry;
 pub mod session_store;
 pub mod suspend_store;
+pub mod transport_probe;
 pub mod types;
 
 // Backend trait
@@ -119,7 +120,7 @@ pub fn get_current_prompt_conversation(agent_id: &str) -> Option<String> {
 
 pub use output_accumulator::{
     get_global_accumulator_registry, get_global_persist_callback, set_global_accumulator_registry,
-    set_global_persist_callback, AgentOutputData, AgentOutputSnapshot, OutputAccumulatorRegistry,
+    set_global_persist_callback, AgentOutputData, OutputAccumulatorRegistry,
     OutputMetadata, PersistCallback, TextChunk, ThinkingBlock, TokenUsage, ToolCallLocation,
     ToolCallRecord, TurnAccumulator,
 };

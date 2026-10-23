@@ -394,6 +394,36 @@ impl ProfileRegistry {
             }
         }
 
+        // Add transport_fingerprint column for probe cache invalidation.
+        // Format: "{mtime_secs}:{file_size}" of the agent binary.
+        // NULL means the transport hasn't been probed yet.
+        if let Err(e) = conn
+            .execute_batch("ALTER TABLE agent_registrations ADD COLUMN transport_fingerprint TEXT")
+        {
+            if !e.to_string().contains("duplicate column name") {
+                warn!(error = %e, "Failed to add transport_fingerprint column");
+            }
+        }
+
+        // Fix-up migration: opencode ACP uses stdio, not HTTP.
+        // Earlier versions incorrectly registered it with transport="http",
+        // which caused spawn failures (opencode's acp subcommand does not
+        // accept --port/--hostname flags).
+        let fixed = conn
+            .execute(
+                "UPDATE agent_registrations SET transport = NULL WHERE name = 'opencode' AND transport = 'http'",
+                [],
+            )
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to fix opencode transport: {}", e))
+            })?;
+        if fixed > 0 {
+            info!(
+                count = fixed,
+                "Migrated opencode profile transport from http to stdio"
+            );
+        }
+
         debug!(
             "Profile registry initialized at {} (WAL mode)",
             self.db_path
@@ -767,7 +797,7 @@ impl ProfileRegistry {
                 "opencode acp".to_string(),
                 "acp".to_string(),
                 Some("opencode-ai".to_string()),
-                Some("http".to_string()), // OpenCode uses HTTP server mode
+                None, // OpenCode ACP uses stdio, not HTTP (see https://opencode.ai/docs/acp/)
             ),
             // Gemini CLI (已验证 - https://geminicli.com/docs/cli/acp-mode/)
             AgentRegistration::with_id(
@@ -867,7 +897,7 @@ impl ProfileRegistry {
                 "opencode acp".to_string(),
                 "acp".to_string(),
                 Some("opencode-ai".to_string()),
-                Some("http".to_string()),
+                None, // OpenCode ACP uses stdio, not HTTP (see https://opencode.ai/docs/acp/)
             ),
             // Gemini CLI (已验证 - https://geminicli.com/docs/cli/acp-mode/)
             AgentRegistration::with_id(
@@ -1302,6 +1332,78 @@ impl ProfileRegistry {
         })?;
 
         agent_installer::uninstall_npm(&package_name).await
+    }
+
+    /// Resolve the effective transport for a profile by name, using the probe
+    /// cache with binary fingerprint invalidation.
+    ///
+    /// # Cache semantics
+    ///
+    /// - `transport = "stdio"` / `"http"` + matching fingerprint → return cached value (0 ms)
+    /// - `transport = NULL` or fingerprint mismatch → run probe (~1-3 s), write result
+    /// - Probe fails both transports → return `None` (caller defaults to stdio)
+    ///
+    /// This is called at spawn time (not registration) so unused profiles
+    /// are never probed.
+    pub async fn resolve_transport(&self, name: &str) -> Option<String> {
+        // Read current transport + fingerprint from DB (synchronous, fast).
+        let (cached_transport, cached_fingerprint, command) = {
+            let conn = Connection::open(&self.db_path).ok()?;
+            conn.query_row(
+                "SELECT transport, transport_fingerprint, command FROM agent_registrations WHERE name = ?1",
+                [name],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .ok()?
+        };
+
+        // Compute the current binary fingerprint.
+        let current_fingerprint = crate::transport_probe::binary_fingerprint(&command);
+
+        // Cache hit: transport is known and fingerprint matches.
+        if let Some(transport) = &cached_transport {
+            if cached_fingerprint.is_some() && cached_fingerprint == current_fingerprint {
+                debug!(
+                    profile = %name,
+                    transport = %transport,
+                    "Transport resolved from cache (fingerprint match)"
+                );
+                return Some(transport.clone());
+            }
+            // Fingerprint mismatch — binary changed, re-probe.
+            info!(
+                profile = %name,
+                old_fingerprint = ?cached_fingerprint,
+                new_fingerprint = ?current_fingerprint,
+                "Binary fingerprint changed, re-probing transport"
+            );
+        } else {
+            debug!(profile = %name, "Transport not yet probed, probing now");
+        }
+
+        // Run the probe.
+        let probed = crate::transport_probe::probe_transport(&command).await;
+
+        // Write the result back to the DB.
+        {
+            let conn = Connection::open(&self.db_path).ok()?;
+            let _ = conn.execute(
+                "UPDATE agent_registrations SET transport = ?1, transport_fingerprint = ?2 WHERE name = ?3",
+                rusqlite::params![
+                    probed,
+                    current_fingerprint,
+                    name
+                ],
+            );
+        }
+
+        probed.map(|s| s.to_string())
     }
 }
 

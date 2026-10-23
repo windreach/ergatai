@@ -393,15 +393,44 @@ impl AcpHttpBackend {
                 .connect_with(http_client, |connection: ConnectionTo<agent_client_protocol::Agent>| async move {
                     info!(agent_id = %task_agent_id, "HTTP ACP connection established");
 
-                    // Step 1: Initialize the ACP connection
-                    let init_response = connection
-                        .send_request(InitializeRequest::new(ProtocolVersion::V1))
-                        .block_task()
-                        .await
-                        .map_err(|e| {
-                            error!(error = %e, agent_id = %task_agent_id, "ACP initialize failed");
-                            e
-                        })?;
+                    // Step 1: Initialize the ACP connection with retry.
+                    // The TCP port may be up before the HTTP handler is fully
+                    // ready, so we retry a few times with backoff before
+                    // giving up.
+                    const INIT_MAX_RETRIES: u32 = 10;
+                    const INIT_RETRY_DELAY_MS: u64 = 500;
+                    let mut init_response = None;
+                    for attempt in 1..=INIT_MAX_RETRIES {
+                        match connection
+                            .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                            .block_task()
+                            .await
+                        {
+                            Ok(response) => {
+                                init_response = Some(response);
+                                break;
+                            }
+                            Err(e) if attempt < INIT_MAX_RETRIES => {
+                                warn!(
+                                    error = %e,
+                                    agent_id = %task_agent_id,
+                                    attempt = attempt,
+                                    max_retries = INIT_MAX_RETRIES,
+                                    "ACP initialize failed, retrying"
+                                );
+                                tokio::time::sleep(Duration::from_millis(
+                                    INIT_RETRY_DELAY_MS,
+                                ))
+                                .await;
+                            }
+                            Err(e) => {
+                                error!(error = %e, agent_id = %task_agent_id, "ACP initialize failed after {} attempts", INIT_MAX_RETRIES);
+                                return Err(e);
+                            }
+                        }
+                    }
+                    let init_response =
+                        init_response.expect("init_response must be set after retry loop");
 
                     info!(
                         agent_id = %task_agent_id,
@@ -812,6 +841,24 @@ impl AcpHttpBackend {
                 .await
                 .is_ok()
         {
+            // The TCP port may be briefly reachable from a dying process (kernel
+            // completes the handshake even after the peer closes). Verify the
+            // process is still alive before declaring it ready.
+            if let Ok(Some(late_exit)) = child.try_wait() {
+                let stderr_tail = stderr_tail.lock().unwrap().trim().to_string();
+                let stdout_tail = stdout_tail.lock().unwrap().trim().to_string();
+                error!(
+                    pid = ?pid,
+                    exit_status = ?late_exit,
+                    stderr = %stderr_tail,
+                    stdout = %stdout_tail,
+                    "HTTP agent process exited immediately after port became reachable"
+                );
+                return Err(ErgataiError::internal(format!(
+                    "HTTP agent process exited immediately after port {} became reachable (exit_status={:?}); stderr={}",
+                    port, late_exit, stderr_tail
+                )));
+            }
             format!("{}:{}", hostname, port)
         } else {
             // Clean up the child process on failure to prevent orphan processes

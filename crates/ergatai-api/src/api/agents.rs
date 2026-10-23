@@ -41,6 +41,22 @@ fn validate_agent_id(id: &str) -> Option<Response> {
     None
 }
 
+/// Resolve transport for a profile via probe cache (fingerprint-validated).
+///
+/// This may spawn a short-lived probe process on first use or after a binary
+/// upgrade; subsequent calls hit the cache. Falls back to the stored transport
+/// if probe fails.
+async fn resolve_profile_transport(
+    registry: &ergatai_runtime::profile_registry::ProfileRegistry,
+    profile_name: &str,
+    fallback_transport: Option<String>,
+) -> Option<String> {
+    registry
+        .resolve_transport(profile_name)
+        .await
+        .or(fallback_transport)
+}
+
 /// Create an error response for monitoring_handler errors.
 /// Returns 404 for "not found" errors, 500 for all others.
 fn monitoring_handler_error(e: &dyn std::fmt::Display) -> Response {
@@ -705,11 +721,15 @@ pub async fn spawn_agent(
                             )
                             .await;
 
-                            (
-                                profile.command,
-                                Some(profile.name),
+                            // Resolve transport via probe cache (fingerprint-validated).
+                            let resolved_transport = resolve_profile_transport(
+                                &registry,
+                                &profile.name,
                                 profile.transport.clone(),
                             )
+                            .await;
+
+                            (profile.command, Some(profile.name), resolved_transport)
                         }
                         None => {
                             tracing::warn!(
@@ -1485,11 +1505,15 @@ pub async fn send_message(
                 Ok(Ok(registry)) => {
                     if let Ok(profiles) = registry.list_with_status() {
                         match profiles.into_iter().find(|p| p.name == *target_command) {
-                            Some(profile) => (
-                                profile.command,
-                                Some(profile.name),
-                                profile.transport.clone(),
-                            ),
+                            Some(profile) => {
+                                let resolved_transport = resolve_profile_transport(
+                                    &registry,
+                                    &profile.name,
+                                    profile.transport.clone(),
+                                )
+                                .await;
+                                (profile.command, Some(profile.name), resolved_transport)
+                            }
                             None => (target_command.clone(), None, None),
                         }
                     } else {
@@ -1878,13 +1902,10 @@ pub async fn send_message(
     } else {
         // Look up the agent's conversation_id from the registry
         let runtime = crate::context::get_app_context().agent_runtime.clone();
-        let result = runtime.get_agent(&id).await.and_then(|agent_info| {
-            agent_info
-                .handle
-                .metadata
-                .get("conversation_id")
-                .cloned()
-        });
+        let result = runtime
+            .get_agent(&id)
+            .await
+            .and_then(|agent_info| agent_info.handle.metadata.get("conversation_id").cloned());
         if result.is_none() {
             tracing::debug!(
                 agent_id = %id,
@@ -2007,11 +2028,15 @@ pub async fn spawn_session(
             Ok(Ok(registry)) => {
                 if let Ok(profiles) = registry.list_with_status() {
                     match profiles.into_iter().find(|p| p.name == req.target_command) {
-                        Some(profile) => (
-                            profile.command,
-                            Some(profile.name),
-                            profile.transport.clone(),
-                        ),
+                        Some(profile) => {
+                            let resolved_transport = resolve_profile_transport(
+                                &registry,
+                                &profile.name,
+                                profile.transport.clone(),
+                            )
+                            .await;
+                            (profile.command, Some(profile.name), resolved_transport)
+                        }
                         None => (req.target_command.clone(), None, None),
                     }
                 } else {
@@ -3252,9 +3277,6 @@ pub async fn prompt_agent(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        let root_conversation_id = conversation
-            .parent_id
-            .unwrap_or(conversation.conversation_id);
         let runtime_id_i64 = match parse_to_i64(&runtime_id) {
             Some(id) => id,
             None => {
@@ -3267,7 +3289,7 @@ pub async fn prompt_agent(
         };
         let binding = crate::user_data_db::GroupAgentBinding {
             workspace_id: workspace_id_typed,
-            chat_id: ChatId::new(root_conversation_id.as_i64()),
+            chat_id: conversation.chat_id,
             agent_id: runtime_id_i64,
             agent_name: agent_name.clone(),
             agent_command: agent_profile,
@@ -3275,17 +3297,28 @@ pub async fn prompt_agent(
             created_at: now,
             updated_at: now,
         };
-        if let Err(e) = tokio::task::spawn_blocking(move || {
+        let bind_result = tokio::task::spawn_blocking(move || {
             crate::user_data_db::group_agent_bindings::upsert(binding)
         })
-        .await
-        {
-            tracing::warn!(
-                error = %e,
-                conversation_id = %conversation_id,
+        .await;
+        match bind_result {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    error = %e,
+                    conversation_id = %conversation_id,
                 runtime_id = %runtime_id,
-                "Prompt dispatched but failed to bind agent"
-            );
+                    "Prompt dispatched but failed to bind agent"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    conversation_id = %conversation_id,
+                    runtime_id = %runtime_id,
+                    "Prompt dispatched but failed to bind agent"
+                );
+            }
         }
 
         (

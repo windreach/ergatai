@@ -587,6 +587,21 @@ const AgentPlanSchema = z.object({
   updated_at: z.number(),
 })
 
+
+// ── Helpers ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Validate that a chatId has the correct format (starts with "chat_").
+ * Returns false and logs a warning if invalid, preventing unnecessary API calls.
+ */
+function isValidChatId(chatId: string, procedureName: string): boolean {
+  if (!chatId.startsWith("chat_")) {
+    console.warn(`[ergatai] ${procedureName}: invalid chatId format:`, chatId)
+    return false
+  }
+  return true
+}
+
 // ── Router ─────────────────────────────────────────────────────────────
 
 export const ergataiRouter = router({
@@ -1749,6 +1764,10 @@ export const ergataiRouter = router({
   getAgentBindings: publicProcedure
     .input(z.object({ chatId: z.string() }))
     .query(async ({ input }): Promise<AgentBinding[]> => {
+      if (!isValidChatId(input.chatId, "getAgentBindings")) {
+        return []
+      }
+
       // Use the /agents endpoint to get associated agents
       try {
         const response = await ergataiFetch<{
@@ -1798,6 +1817,10 @@ export const ergataiRouter = router({
   getChatAgents: publicProcedure
     .input(z.object({ chatId: z.string() }))
     .query(async ({ input }) => {
+      if (!isValidChatId(input.chatId, "getChatAgents")) {
+        return []
+      }
+
       try {
         const response = await ergataiFetch<{
           agents: Array<{
@@ -2690,6 +2713,10 @@ export const ergataiRouter = router({
   lookupChatWorktree: publicProcedure
     .input(z.object({ chatId: z.string() }))
     .query(async ({ input }) => {
+      if (!isValidChatId(input.chatId, "lookupChatWorktree")) {
+        return null
+      }
+
       return ergataiFetch(`/api/v1/chats/lookup-worktree?chat_id=${encodeURIComponent(input.chatId)}`)
     }),
 
@@ -2697,6 +2724,10 @@ export const ergataiRouter = router({
   getChatAgentGraph: publicProcedure
     .input(z.object({ chatId: z.string() }))
     .query(async ({ input }) => {
+      if (!isValidChatId(input.chatId, "getChatAgentGraph")) {
+        return null
+      }
+
       return ergataiFetch(`/api/v1/chats/${encodeURIComponent(input.chatId)}/agent-graph`)
     }),
 
@@ -2704,6 +2735,10 @@ export const ergataiRouter = router({
   getChatAgentsList: publicProcedure
     .input(z.object({ chatId: z.string() }))
     .query(async ({ input }) => {
+      if (!isValidChatId(input.chatId, "getChatAgentsList")) {
+        return { agents: [] }
+      }
+
       return ergataiFetch(`/api/v1/chats/${encodeURIComponent(input.chatId)}/agents`)
     }),
 

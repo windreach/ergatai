@@ -168,7 +168,7 @@ impl ErgataiMcpServer {
     }
 
     #[tool(
-        description = "Send a message to another online agent. Persists via NATS JetStream with ACP protocol fallback.\n\nWHEN TO USE:\n- Need to communicate with another agent (request help, send response, broadcast info)\n- User explicitly asks to message another agent\n- Responding to a received message\n\nWHEN NOT TO USE:\n- Target agent is offline (check list_agents first)\n- Messaging yourself (will be rejected)\n- Sending a reply that is ONLY polite acknowledgment (\"thanks\", \"ok\", \"got it\", \"thanks for the update\")\n- Responding to a broadcast that has no specific task for you\n- Responding to a \"response\" message that is clearly ending the conversation\n\nWHEN NOT TO RESPOND (ANTI-LOOP — CRITICAL):\nEvery unnecessary reply creates a loop. Follow these rules:\n- broadcast with no task/question → DO NOT reply, ignore silently\n- response that says \"thanks\", \"ok\", \"got it\" → DO NOT reply, conversation is done\n- You already replied once → STOP, do not reply again\n- Your message would just be acknowledgment → SUPPRESS IT, silence is better than a loop\n- message_type = \"request\" with real task → DO reply (this is the ONLY case you should reply)\n\nPARAMETERS:\n- target_agent_id (REQUIRED): recipient's ergatai_agent_id from list_agents (e.g., \"agent-2\"). NOT the agent_id field (e.g., \"%15\").\n- message (REQUIRED): message content\n- message_type (OPTIONAL, default \"request\"):\n  * \"request\": expects response; system auto-tracks correlation_id, uses a configurable request timeout (default 5 minutes)\n  * \"response\": reply to received request; system auto-tracks correlation_id\n  * \"broadcast\": informational; no tracking, no timeout\n- correlation_id (OPTIONAL): system auto-tracks, typically not needed\n\nRECEIVING MESSAGES:\nWhen you receive a message, it's JSON with these fields:\n- from: sender's agent ID (use as target_agent_id when replying)\n- message: the actual content\n- message_type: \"request\" | \"response\" | \"broadcast\"\n- _reply: exact send_message call to make (COPY THIS EXACTLY)\n- _rules: rules you MUST follow\n\nHOW TO RESPOND:\nIf message_type = \"request\" with a concrete task or question:\n1. Do your work\n2. Call send_message(target_agent_id=<from>, message=<reply>, message_type=\"response\")\n3. Output END in terminal\nSystem auto-tracks correlation — no need to pass correlation_id manually.\n\nIf message_type = \"response\": DO NOT reply again unless there is NEW work to do. Most \"response\" messages end the conversation. Silence = done.\n\nIf message_type = \"broadcast\": DO NOT reply unless the broadcast contains a SPECIFIC task for you. General greetings or FYI broadcasts need NO response.\n\nRESPONSE ON SUCCESS:\n{status: \"queued\"|\"direct_delivered\", target_agent: string, delivery_method: string, stream?: string, sequence?: number}\n\nRESPONSE ON ERROR:\nMCP error with reason:\n- \"target agent not found\": call list_agents to verify target is online\n- \"rate limit exceeded\": 60 msg/min/agent, back off and retry\n- \"communication policy denied\": DAG MeshPolicy forbids this pair\n- \"backpressure\": target inbox full (>=1000 pending), wait and retry\n- \"sender not bound to runtime agent\": MCP clients must be bound to ACP agents\n\nRATE LIMITS:\n- 60 messages per minute per agent (sliding window)\n- NATS backpressure: >=1000 pending messages triggers rejection\n- You CANNOT message yourself",
+        description = "Send a message to another online agent. Persists via NATS JetStream with ACP protocol fallback.\n\nWHEN TO USE:\n- Need to communicate with another agent (request help, send response, broadcast info)\n- User explicitly asks to message another agent\n- Responding to a received message\n\nWHEN NOT TO USE:\n- Target agent is offline (check list_agents first)\n- Messaging yourself (will be rejected)\n- Sending a reply that is ONLY polite acknowledgment (\"thanks\", \"ok\", \"got it\", \"thanks for the update\")\n- Responding to a broadcast that has no specific task for you\n- Responding to a \"response\" message that is clearly ending the conversation\n\nWHEN NOT TO RESPOND (ANTI-LOOP — CRITICAL):\nEvery unnecessary reply creates a loop. Follow these rules:\n- broadcast with no task/question → DO NOT reply, ignore silently\n- response that says \"thanks\", \"ok\", \"got it\" → DO NOT reply, conversation is done\n- You already replied once → STOP, do not reply again\n- Your message would just be acknowledgment → SUPPRESS IT, silence is better than a loop\n- message_type = \"request\" with real task → DO reply (this is the ONLY case you should reply)\n\nPARAMETERS:\n- target_agent_id (REQUIRED): recipient's ergatai_agent_id from list_agents (e.g., \"agent-2\"). NOT the agent_id field (e.g., \"%15\").\n- target_conversation_id (OPTIONAL): valid \"conv_...\" ID if already known; otherwise omit it.\n- message (REQUIRED): message content\n- message_type (OPTIONAL, default \"request\"):\n  * \"request\": expects response; system auto-tracks correlation_id, uses a configurable request timeout (default 5 minutes)\n  * \"response\": reply to received request; system auto-tracks correlation_id\n  * \"broadcast\": informational; no tracking, no timeout\n- correlation_id (OPTIONAL): system auto-tracks, typically not needed\n\nRECEIVING MESSAGES:\nWhen you receive a message, it's JSON with these fields:\n- from: sender's agent ID (use as target_agent_id when replying)\n- message: the actual content\n- message_type: \"request\" | \"response\" | \"broadcast\"\n- _reply: exact send_message call to make (COPY THIS EXACTLY)\n- _rules: rules you MUST follow\n\nHOW TO RESPOND:\nIf message_type = \"request\" with a concrete task or question:\n1. Do your work\n2. Call send_message(target_agent_id=<from>, message=<reply>, message_type=\"response\")\n3. Output END in terminal\nSystem auto-tracks correlation — no need to pass correlation_id manually.\n\nIf message_type = \"response\": DO NOT reply again unless there is NEW work to do. Most \"response\" messages end the conversation. Silence = done.\n\nIf message_type = \"broadcast\": DO NOT reply unless the broadcast contains a SPECIFIC task for you. General greetings or FYI broadcasts need NO response.\n\nRESPONSE ON SUCCESS:\n{status: \"queued\"|\"direct_delivered\", target_agent: string, delivery_method: string, stream?: string, sequence?: number}\n\nRESPONSE ON ERROR:\nMCP error with reason:\n- \"target agent not found\": call list_agents to verify target is online\n- \"rate limit exceeded\": 60 msg/min/agent, back off and retry\n- \"communication policy denied\": DAG MeshPolicy forbids this pair\n- \"backpressure\": target inbox full (>=1000 pending), wait and retry\n- \"sender not bound to runtime agent\": MCP clients must be bound to ACP agents\n\nRATE LIMITS:\n- 60 messages per minute per agent (sliding window)\n- NATS backpressure: >=1000 pending messages triggers rejection\n- You CANNOT message yourself",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -689,11 +689,12 @@ mod tests {
     #[test]
     fn test_send_message_params_required_fields() {
         let params: SendMessageParams = serde_json::from_value(json!({
-            "target_conversation_id": "cov-1",
+            "target_agent_id": "claude-code",
             "message": "hello"
         }))
         .unwrap();
-        assert_eq!(params.target_conversation_id, "cov-1");
+        assert_eq!(params.target_agent_id.as_deref(), Some("claude-code"));
+        assert_eq!(params.target_conversation_id, None);
         assert_eq!(params.message, "hello");
         assert_eq!(params.message_type, None);
     }
@@ -711,13 +712,11 @@ mod tests {
 
     #[test]
     fn test_send_message_params_missing_target_fails() {
-        // target_conversation_id is now required, so deserialization should fail
-        let result: Result<SendMessageParams, _> =
-            serde_json::from_value(json!({"message": "hello"}));
-        assert!(
-            result.is_err(),
-            "missing target_conversation_id should fail deserialization"
-        );
+        // Both target fields are optional at deserialization, but resolve_target
+        // rejects requests that do not provide either one.
+        let params: SendMessageParams = serde_json::from_value(json!({"message": "hello"}))
+            .expect("deserialization permits missing target");
+        assert!(params.resolve_target().is_err());
     }
 
     #[test]
