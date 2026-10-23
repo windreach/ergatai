@@ -510,9 +510,7 @@ pub async fn status(workspace_id: &str) -> Result<WorkspaceStatus, WorkspaceMana
         .list_agents()
         .await
         .iter()
-        .filter(|agent| {
-            agent.workspace_id.to_string() == workspace_id && agent.lifecycle.is_alive()
-        })
+        .filter(|agent| agent.workspace_id == workspace_id && agent.lifecycle.is_alive())
         .count();
     let workspace_id = WorkspaceId::decode(&workspace.workspace_id).map_err(|_| {
         WorkspaceManagerError::Internal(anyhow::anyhow!(
@@ -559,9 +557,7 @@ pub async fn delete(workspace_id: &str, force: bool) -> Result<(), WorkspaceMana
         .list_agents()
         .await
         .into_iter()
-        .filter(|agent| {
-            agent.workspace_id.to_string() == workspace_id && agent.lifecycle.is_alive()
-        })
+        .filter(|agent| agent.workspace_id == workspace_id && agent.lifecycle.is_alive())
         .collect();
     if !active_agents.is_empty() && !force {
         return Err(WorkspaceManagerError::Conflict(format!(

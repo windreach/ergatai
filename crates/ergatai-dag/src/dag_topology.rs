@@ -23,6 +23,7 @@
 use std::collections::HashMap;
 
 use anyhow::Context;
+use chrono;
 use ergatai_error::{ErgataiError, ErgataiResult};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
@@ -222,6 +223,18 @@ pub struct TaskNode {
     /// a profile named "code-reviewer" in `.ergatai/profiles/`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required_profile: Option<String>,
+
+    /// Timestamp when this node started executing (Unix epoch seconds)
+    ///
+    /// Set by the scheduler when the node transitions from Pending to Running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<i64>,
+
+    /// Timestamp when this node completed execution (Unix epoch seconds)
+    ///
+    /// Set by the scheduler when the node transitions to Completed, Failed, or Skipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
 }
 
 /// Task execution status
@@ -357,6 +370,21 @@ impl TaskGraph {
         let node = self
             .find_node_mut(id)
             .with_context(|| format!("Node not found: {}", id))?;
+
+        // Set started_at when transitioning to Running
+        if status == TaskStatus::Running && node.started_at.is_none() {
+            node.started_at = Some(chrono::Utc::now().timestamp());
+        }
+
+        // Set completed_at when transitioning to a terminal state
+        if matches!(
+            status,
+            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Skipped
+        ) && node.completed_at.is_none()
+        {
+            node.completed_at = Some(chrono::Utc::now().timestamp());
+        }
+
         node.status = status;
         Ok(())
     }
@@ -374,6 +402,10 @@ impl TaskGraph {
         }
         node.result_path = Some(result_path);
         node.status = TaskStatus::Completed;
+        // Set completed_at timestamp
+        if node.completed_at.is_none() {
+            node.completed_at = Some(chrono::Utc::now().timestamp());
+        }
         Ok(())
     }
 
@@ -587,6 +619,8 @@ impl TaskNode {
             state_schema: None,
             conditional_edges: None,
             required_profile: None,
+            started_at: None,
+            completed_at: None,
         }
     }
 

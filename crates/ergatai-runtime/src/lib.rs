@@ -83,6 +83,7 @@ pub use backends::acp::{
     AcpBackend, AgentOutputEvent, ElicitationResponse, TrackedElicitation, TrackedPlan,
     TrackedPlanEntry, TrackedToolCall,
 };
+pub use backends::acp_http::AcpHttpBackend;
 
 // Global conversation tracking for current prompt
 use std::collections::HashMap;
@@ -132,7 +133,9 @@ pub use permission_service::{
     global_permission_service, PermissionDecisionKind, PermissionEvent, PermissionRequestKind,
     PermissionRequestService, PermissionSource,
 };
-pub use runtime::{get_agent_runtime, init_agent_runtime, AgentRuntime};
+pub use runtime::{
+    get_agent_runtime, init_agent_runtime, init_agent_runtime_with_http, AgentRuntime,
+};
 pub use session_store::{SessionRecord, SessionStore};
 pub use suspend_store::{SuspendReason, SuspendStore, SuspendedAgentRecord};
 pub use types::{

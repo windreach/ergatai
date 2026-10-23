@@ -64,32 +64,16 @@ fn configured_agent_request_timeout_ms() -> u64 {
     }
 }
 
-/// Parse an agent ID string to i64.
+/// Parse an agent ID string to i64 for database storage.
 ///
-/// Tries to parse as a formatted Snowflake ID first (e.g., "agent_123_001_0001"),
-/// then falls back to extracting the numeric part from simple IDs like "ws1-agent-1".
-/// Returns 0 if parsing fails completely (with warning log).
+/// Only accepts formatted Snowflake IDs (e.g., "agent_123_001_0001").
+/// Returns None if the input is not a valid Snowflake ID.
 ///
-/// This is a transitional helper for the TEXT→INTEGER migration, supporting both
-/// the new formatted IDs and legacy simple IDs during the transition period.
-fn parse_agent_id_to_i64(id_str: &str) -> i64 {
-    ergatai_error::id::parse_to_i64(id_str).unwrap_or_else(|| {
-        // Fallback: extract numeric part from simple IDs like "ws1-agent-1"
-        let fallback = id_str
-            .split('-')
-            .next_back()
-            .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or(0);
-
-        if fallback == 0 {
-            tracing::warn!(
-                agent_id = id_str,
-                "Failed to parse agent ID to i64, using 0 as fallback. This may cause routing issues."
-            );
-        }
-
-        fallback
-    })
+/// Note: Legacy simple IDs like "ws1-agent-1" are NOT supported — they were
+/// a bug in early MockBackend code. All agent IDs must use the Snowflake format.
+#[inline]
+fn parse_agent_id_to_i64(id_str: &str) -> Option<i64> {
+    ergatai_error::id::parse_to_i64(id_str)
 }
 
 /// Result of a message send operation.
@@ -402,15 +386,14 @@ impl MessageSender {
                 resolved_target_id.as_str(),
                 req.to.as_str(),
             ] {
-                // Parse agent ID string to i64 for database query
-                // Uses parse_agent_id_to_i64 which supports both formatted Snowflake IDs
-                // and legacy simple IDs like "ws1-agent-1" during the TEXT→INTEGER migration
+                // Parse agent ID string to i64 for database query.
+                // Only accepts formatted Snowflake IDs (e.g., "agent_123_001_0001").
+                // Legacy "ws1-agent-1" format is not supported (was a MockBackend bug).
                 let candidate = candidate.to_string();
-                let agent_id_i64 = parse_agent_id_to_i64(&candidate);
-                if agent_id_i64 == 0 {
+                let Some(agent_id_i64) = parse_agent_id_to_i64(&candidate) else {
                     warn!("MessageSender: failed to parse agent ID '{}'", candidate);
                     continue;
-                }
+                };
 
                 // Wrap synchronous DB call in spawn_blocking to avoid blocking async runtime
                 match tokio::task::spawn_blocking(move || {
@@ -596,12 +579,12 @@ impl MessageSender {
 
                 // Persist message AFTER successful delivery. The conversation helper
                 // owns writes to the normalized `messages` table.
-                if let Some(conversation_id) = target_conversation_id.clone() {
+                if let Some(conversation_id) = target_conversation_id {
                     let message = req.message.clone();
                     let from = req.from.clone();
                     let sender_name = sender_display.clone();
                     let message_type = req.message_type.clone();
-                    let conversation_id_for_persist = conversation_id.clone();
+                    let conversation_id_for_persist = conversation_id;
                     // Wrap synchronous DB call in spawn_blocking
                     let append_result = tokio::task::spawn_blocking(move || {
                         let role = agent_message_role(&message_type);
@@ -885,7 +868,7 @@ impl MessageSender {
         })
         .await
         {
-            let participant_conversation_id = conversation_id.clone();
+            let participant_conversation_id = conversation_id;
             let participant_agent_id = target_id.clone();
             if let Err(error) = tokio::task::spawn_blocking(move || {
                 crate::services::collaboration_session::upsert_participant(

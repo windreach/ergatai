@@ -1057,31 +1057,8 @@ pub async fn kill_agent(
 ) -> impl IntoResponse {
     let runtime = crate::context::get_app_context().agent_runtime.clone();
 
-    // Unregister workspace boundary before stopping the agent.
-    // Best-effort: log but don't fail if registration removal errors.
-    // Keep the unregister key aligned with the launch-time workspace key. This is
-    // best-effort cleanup; if the runtime state has already disappeared, stop_agent
-    // still owns the authoritative error handling.
-    let unregister_key = runtime
-        .get_agent(&id)
-        .await
-        .map(|agent| {
-            ergatai_error::WorkspaceId::decode(&agent.workspace_id)
-                .map(|workspace_id| workspace_id.as_i64().to_string())
-                .unwrap_or_else(|_| agent.workspace_id.clone())
-        })
-        .unwrap_or_else(|| "default".to_string());
-
-    if let Err(e) = ergatai_lock::unregister_workspace_for_project(&unregister_key, &id).await {
-        tracing::debug!(
-            agent_id = %id,
-            workspace_project_id = %unregister_key,
-            error = %e,
-            "Failed to unregister workspace boundary (non-fatal)"
-        );
-    } else {
-        tracing::debug!(agent_id = %id, "Unregistered workspace boundary for agent");
-    }
+    // Workspace registration is now a no-op (enforcer removed).
+    // File locks are managed through ACP permission approval flow.
 
     match runtime.stop_agent(&id).await {
         Ok(_) => {
@@ -3068,7 +3045,7 @@ pub async fn prompt_agent(
                                 let conversation_id = body
                                     .conversation_id
                                     .as_deref()
-                                    .map(|id| match ConversationId::decode(id) {
+                                    .and_then(|id| match ConversationId::decode(id) {
                                         Ok(cid) => Some(cid),
                                         Err(e) => {
                                             tracing::warn!(
@@ -3078,8 +3055,7 @@ pub async fn prompt_agent(
                                             );
                                             None
                                         }
-                                    })
-                                    .flatten();
+                                    });
                                 let interrupt_event = ergatai_nats::AgentInterrupted {
                                     agent_id,
                                     paused_message_id: None,
@@ -3790,6 +3766,39 @@ pub async fn stream_agent_output(
             .into_response();
     };
 
+    // Validate workspace_id is present and has valid format — agents without a valid workspace
+    // should not expose their output stream.
+    if agent.workspace_id.is_empty() {
+        tracing::warn!(
+            agent_id = %agent_id,
+            "Rejecting output stream request: agent has no workspace_id"
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            Json(crate::api::ApiError {
+                error: "Agent has no valid workspace binding".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Validate workspace_id format (must be a valid Snowflake ID)
+    if let Err(e) = WorkspaceId::decode(&agent.workspace_id) {
+        tracing::warn!(
+            agent_id = %agent_id,
+            workspace_id = %agent.workspace_id,
+            error = %e,
+            "Rejecting output stream request: invalid workspace_id format"
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(crate::api::ApiError {
+                error: format!("Invalid workspace_id format: {}", agent.workspace_id),
+            }),
+        )
+            .into_response();
+    }
+
     let Some(conversation_id) = agent.conversation_id else {
         return (
             StatusCode::NOT_FOUND,
@@ -3799,6 +3808,13 @@ pub async fn stream_agent_output(
         )
             .into_response();
     };
+
+    tracing::info!(
+        agent_id = %agent_id,
+        conversation_id = %conversation_id,
+        workspace_id = %agent.workspace_id,
+        "Output stream started"
+    );
 
     let Some(nats_connection) = crate::context::get_app_context().nats_connection.clone() else {
         return crate::http_error::unavailable("NATS is not initialized").into_response();

@@ -535,6 +535,8 @@ pub fn parse_dag_yaml(
                 state_schema: task.state_schema, // Phase 1: State Channel
                 conditional_edges: task.conditional_edges, // Phase 2: Conditional Edges
                 required_profile: task.required_profile, // Phase 3: Agent Profile integration
+                started_at: None,
+                completed_at: None,
             })
         })
         .collect::<ErgataiResult<Vec<_>>>()?;

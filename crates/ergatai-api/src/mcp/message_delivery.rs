@@ -469,7 +469,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
     // Conversation-centric delivery: direct conversation_id → AgentInfo lookup.
     // This bypasses the agent_id intermediary lookup for better performance.
     let conversation_id = match payload.target_conversation_id.as_ref() {
-        Some(id) => id.clone(),
+        Some(id) => *id,
         None => {
             error!(
                 message_id = %payload.message_id,
@@ -568,7 +568,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                 // Persist user message to SQLite (NO SSE publish)
                 let append_result = tokio::task::spawn_blocking(move || {
                     crate::user_data_db::messages::append(
-                        conversation_id.clone(),
+                        conversation_id,
                         "user",
                         serde_json::Value::Array(parts),
                         serde_json::json!({}), // No metadata needed - role="user" already indicates source
@@ -664,7 +664,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                     };
 
                     crate::user_data_db::messages::append(
-                        conversation_id.clone(),
+                        conversation_id,
                         role,
                         serde_json::json!([{ "type": "text", "text": message_content }]), // Keep original JSON in parts for backward compatibility
                         metadata,

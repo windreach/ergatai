@@ -29,13 +29,20 @@ use parking_lot::RwLock;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use agent_client_protocol::schema::v1::{ContentBlock, SessionNotification, SessionUpdate};
-use agent_client_protocol::Client;
+use agent_client_protocol::schema::v1::{
+    ContentBlock, CreateElicitationRequest, CreateElicitationResponse, ElicitationAction,
+    InitializeRequest, McpServer, McpServerHttp, NewSessionRequest, PromptRequest,
+    RequestPermissionRequest, RequestPermissionResponse, SessionNotification, SessionUpdate,
+    TextContent,
+};
+use agent_client_protocol::schema::ProtocolVersion;
+use agent_client_protocol::{Client, ConnectionTo};
 use agent_client_protocol_http::HttpClient;
 
 use ergatai_error::{ErgataiError, ErgataiResult};
 
 use crate::backend::AcpBackendInterface;
+use crate::permission::PermissionHandler;
 use crate::types::{AgentHandle, BackendCapabilities, WaitResult, WorkspaceHandle, WorkspaceSpec};
 
 // ── Configuration constants ──
@@ -48,6 +55,18 @@ const OUTPUT_BUFFER_MAX_SIZE: usize = 256 * 1024;
 
 /// Maximum process-output tail retained for HTTP spawn diagnostics.
 const HTTP_SPAWN_OUTPUT_TAIL_MAX: usize = 8 * 1024;
+
+/// Type alias for boxed prompt future to avoid complex type warnings.
+type BoxedPromptFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<
+                    agent_client_protocol::schema::v1::PromptResponse,
+                    agent_client_protocol::Error,
+                >,
+            > + Send,
+    >,
+>;
 
 /// Consume child output and retain a bounded tail for error reporting.
 async fn capture_output_tail<R>(output: R, tail: Arc<std::sync::Mutex<String>>)
@@ -75,6 +94,7 @@ where
 // ── Internal types ──
 
 /// Per-agent output buffer: bounded rolling buffer of captured ACP output.
+#[allow(dead_code)]
 struct OutputBuffer {
     data: RwLock<Vec<u8>>,
     max_size: usize,
@@ -88,6 +108,7 @@ impl OutputBuffer {
         }
     }
 
+    #[allow(dead_code)]
     fn append(&self, chunk: &[u8]) {
         let mut data = self.data.write();
         data.extend_from_slice(chunk);
@@ -110,6 +131,11 @@ impl OutputBuffer {
 enum HttpAcpCommand {
     Prompt {
         message: String,
+        response_tx: tokio::sync::oneshot::Sender<ErgataiResult<()>>,
+    },
+    InterruptPrompt {
+        message: String,
+        message_id: String,
         response_tx: tokio::sync::oneshot::Sender<ErgataiResult<()>>,
     },
     Cancel {
@@ -145,6 +171,11 @@ struct HttpWorkspaceEntry {
 pub struct AcpHttpBackend {
     agents: RwLock<HashMap<String, HttpAgentEntry>>,
     workspaces: RwLock<HashMap<String, HttpWorkspaceEntry>>,
+    permission_handler: Option<Arc<dyn PermissionHandler>>,
+    mcp_server_factory: Option<Arc<dyn crate::mcp_over_acp::McpServerFactory>>,
+    /// Optional: URL for HTTP MCP fallback (when agent doesn't support MCP-over-ACP).
+    /// This is typically the ergatai API server's MCP endpoint, not the agent's endpoint.
+    http_mcp_url: Option<String>,
 }
 
 impl AcpHttpBackend {
@@ -153,7 +184,34 @@ impl AcpHttpBackend {
         Self {
             agents: RwLock::new(HashMap::new()),
             workspaces: RwLock::new(HashMap::new()),
+            permission_handler: None,
+            mcp_server_factory: None,
+            http_mcp_url: None,
         }
+    }
+
+    /// Set the permission handler for this backend.
+    pub fn with_permission_handler(mut self, handler: Arc<dyn PermissionHandler>) -> Self {
+        self.permission_handler = Some(handler);
+        self
+    }
+
+    /// Set the MCP server factory for this backend.
+    pub fn with_mcp_server_factory(
+        mut self,
+        factory: impl crate::mcp_over_acp::McpServerFactory,
+    ) -> Self {
+        self.mcp_server_factory = Some(Arc::new(factory));
+        self
+    }
+
+    /// Set the HTTP MCP URL for fallback (when agent doesn't support MCP-over-ACP).
+    ///
+    /// This should be the ergatai API server's MCP endpoint (e.g., `http://host:port/mcp`),
+    /// NOT the agent's endpoint. The agent's endpoint is for ACP, not MCP.
+    pub fn with_http_mcp_url(mut self, url: impl Into<String>) -> Self {
+        self.http_mcp_url = Some(url.into());
+        self
     }
 
     /// Connect to a remote ACP agent via HTTP.
@@ -175,18 +233,19 @@ impl AcpHttpBackend {
             "Connecting to remote ACP agent via HTTP"
         );
 
-        // Create HTTP client
-        let http_client = HttpClient::new(endpoint).map_err(|e| {
-            ErgataiError::internal(format!(
-                "Failed to create HTTP client for endpoint '{}': {}",
-                endpoint, e
-            ))
-        })?;
-
         // Shared state
         let output = Arc::new(OutputBuffer::new(OUTPUT_BUFFER_MAX_SIZE));
         let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let last_activity_at = Arc::new(RwLock::new(Instant::now()));
+
+        // Interrupt/cancel support (mirrors stdio backend)
+        let shared_session_id: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+        let in_thinking: Arc<std::sync::atomic::AtomicBool> =
+            Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let in_tool_call: Arc<std::sync::atomic::AtomicBool> =
+            Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let text_output_seen: Arc<std::sync::atomic::AtomicBool> =
+            Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         // Command channel
         let (command_tx, mut command_rx) = mpsc::channel::<HttpAcpCommand>(32);
@@ -196,29 +255,71 @@ impl AcpHttpBackend {
         let task_alive = alive.clone();
         let task_last_activity = last_activity_at.clone();
         let task_agent_id = agent_id.clone();
+        let task_workspace_id = workspace_id.to_string();
+        let task_endpoint = endpoint.to_string();
+        let task_permission_handler = self.permission_handler.clone();
+        let task_mcp_server_factory = self.mcp_server_factory.clone();
+        let task_http_mcp_url = self.http_mcp_url.clone();
+        let task_shared_session_id = shared_session_id.clone();
+        let task_in_thinking = in_thinking.clone();
+        let task_in_tool_call = in_tool_call.clone();
+        let task_text_output_seen = text_output_seen.clone();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-        // Spawn connection task
+        // Spawn connection task - holds the connection for the lifetime of the agent
         let join_handle = tokio::spawn(async move {
-            // Build ACP client
-            let result = Client::builder(Client)
+            // Create HTTP client
+            let http_client = match HttpClient::new(&task_endpoint) {
+                Ok(client) => client,
+                Err(e) => {
+                    error!(
+                        error = %e,
+                        agent_id = %task_agent_id,
+                        endpoint = %task_endpoint,
+                        "Failed to create HTTP client"
+                    );
+                    task_alive.store(false, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+            };
+
+            // Build ACP client with all handlers (notification, permission, elicitation)
+            let connect_result = Client::builder(Client)
                 .name(format!("ergatai-http-{}", task_agent_id))
+                // --- Notification handler ---
                 .on_receive_notification(
                     {
                         let out = task_output.clone();
                         let last_activity = task_last_activity.clone();
+                        let in_thinking = task_in_thinking.clone();
+                        let in_tool_call = task_in_tool_call.clone();
+                        let text_output_seen = task_text_output_seen.clone();
                         async move |notification: SessionNotification, _cx| {
-                            // Extract text from session notifications
                             match &notification.update {
                                 SessionUpdate::AgentMessageChunk(chunk) => {
                                     if let ContentBlock::Text(text_content) = &chunk.content {
                                         debug!(text_len = text_content.text.len(), "HTTP agent message");
                                         out.append(text_content.text.as_bytes());
+                                        text_output_seen.store(true, std::sync::atomic::Ordering::Relaxed);
                                     }
+                                    in_tool_call.store(false, std::sync::atomic::Ordering::Relaxed);
                                 }
                                 SessionUpdate::AgentThoughtChunk(chunk) => {
                                     if let ContentBlock::Text(text_content) = &chunk.content {
                                         debug!(text_len = text_content.text.len(), "HTTP agent thought");
                                     }
+                                    in_thinking.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    in_tool_call.store(false, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                SessionUpdate::ToolCall(_) => {
+                                    in_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+                                    in_tool_call.store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                SessionUpdate::ToolCallUpdate(_) => {
+                                    // Tool call update - tool is still running
+                                }
+                                SessionUpdate::SessionInfoUpdate(_info) => {
+                                    // Session info update - no state change needed
                                 }
                                 _ => {
                                     debug!(update = ?notification.update, "HTTP session notification");
@@ -230,55 +331,353 @@ impl AcpHttpBackend {
                     },
                     agent_client_protocol::on_receive_notification!(),
                 )
-                .connect_to(http_client)
+                // --- Permission handler (mirrors stdio backend) ---
+                .on_receive_request(
+                    {
+                        let handler = task_permission_handler.clone();
+                        let sid = task_shared_session_id.clone();
+                        let aid = task_agent_id.clone();
+                        async move |request: RequestPermissionRequest, responder, _connection| {
+                            let session_id_str = {
+                                let guard = sid.read();
+                                guard.clone().unwrap_or_default()
+                            };
+                            if let Some(handler) = &handler {
+                                let decision = handler.evaluate(&aid, &session_id_str, &request).await;
+                                debug!(
+                                    agent_id = %aid,
+                                    decision = ?decision,
+                                    "HTTP ACP permission decision"
+                                );
+                                let _ = responder.respond(RequestPermissionResponse::new(
+                                    decision.into_outcome(),
+                                ));
+                            } else {
+                                // No handler configured → auto-approve using YoloPermissionHandler
+                                let yolo = crate::permission::YoloPermissionHandler;
+                                let decision = yolo.evaluate(&aid, &session_id_str, &request).await;
+                                debug!(
+                                    agent_id = %aid,
+                                    decision = ?decision,
+                                    "HTTP ACP permission decision (YoloPermissionHandler)"
+                                );
+                                let _ = responder.respond(RequestPermissionResponse::new(
+                                    decision.into_outcome(),
+                                ));
+                            }
+                            Ok(())
+                        }
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                // --- Elicitation handler (mirrors stdio backend) ---
+                .on_receive_request(
+                    {
+                        let aid = task_agent_id.clone();
+                        async move |request: CreateElicitationRequest, responder, _connection| {
+                            info!(
+                                agent_id = %aid,
+                                message_bytes = request.message.len(),
+                                "HTTP ACP elicitation request received (auto-declining)"
+                            );
+                            // Auto-decline to avoid blocking the agent
+                            let _ = responder.respond(CreateElicitationResponse::new(
+                                ElicitationAction::Decline,
+                            ));
+                            Ok(())
+                        }
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                // --- Connect and run the session ---
+                .connect_with(http_client, |connection: ConnectionTo<agent_client_protocol::Agent>| async move {
+                    info!(agent_id = %task_agent_id, "HTTP ACP connection established");
+
+                    // Step 1: Initialize the ACP connection
+                    let init_response = connection
+                        .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                        .block_task()
+                        .await
+                        .map_err(|e| {
+                            error!(error = %e, agent_id = %task_agent_id, "ACP initialize failed");
+                            e
+                        })?;
+
+                    info!(
+                        agent_id = %task_agent_id,
+                        agent_info = ?init_response.agent_info,
+                        capabilities = ?init_response.agent_capabilities,
+                        "ACP agent initialized"
+                    );
+
+                    // Step 1.5: Set up MCP bridge if supported
+                    let mcp_acp_supported = init_response
+                        .agent_capabilities
+                        .mcp_capabilities
+                        .acp;
+                    let mcp_http_supported = init_response
+                        .agent_capabilities
+                        .mcp_capabilities
+                        .http;
+
+                    let (_mcp_guard, mcp_declaration) = match &task_mcp_server_factory {
+                        Some(factory) if mcp_acp_supported => {
+                            let context = crate::mcp_over_acp::McpServerContext {
+                                agent_id: Some(task_agent_id.clone()),
+                                workspace_id: Some(task_workspace_id.clone()),
+                            };
+                            let bridge = crate::mcp_over_acp::AcpMcpBridge::new(
+                                factory.clone(),
+                                context,
+                            );
+                            let declaration = bridge.declaration();
+                            let guard = connection.add_dynamic_handler(bridge)?;
+                            info!(
+                                agent_id = %task_agent_id,
+                                mcp_server_name = %factory.server_name(),
+                                "MCP-over-ACP attached to HTTP ACP connection"
+                            );
+                            (Some(guard), Some(declaration))
+                        }
+                        Some(factory) => {
+                            // Fallback: HTTP MCP (use configured http_mcp_url, not the ACP endpoint)
+                            if mcp_http_supported {
+                                // Use the configured HTTP MCP URL (ergatai API server's MCP endpoint)
+                                // instead of the agent's ACP endpoint
+                                let mcp_url = task_http_mcp_url.as_ref().unwrap_or(&task_endpoint);
+                                let http_server = McpServerHttp::new(
+                                    factory.server_name(),
+                                    mcp_url,
+                                );
+                                let declaration = McpServer::Http(http_server);
+                                info!(
+                                    agent_id = %task_agent_id,
+                                    mcp_server_name = %factory.server_name(),
+                                    mcp_url = %mcp_url,
+                                    "Agent does not support MCP-over-ACP; using HTTP MCP fallback"
+                                );
+                                (None, Some(declaration))
+                            } else {
+                                debug!(
+                                    agent_id = %task_agent_id,
+                                    mcp_server_name = %factory.server_name(),
+                                    "Agent does not support MCP-over-ACP or HTTP MCP"
+                                );
+                                (None, None)
+                            }
+                        }
+                        None => (None, None),
+                    };
+
+                    // Step 2: Create a new session
+                    let mut session_request = NewSessionRequest::new(&cwd);
+                    if let Some(declaration) = &mcp_declaration {
+                        session_request.mcp_servers.push(declaration.clone());
+                    }
+                    let session_response = connection
+                        .send_request(session_request)
+                        .block_task()
+                        .await
+                        .map_err(|e| {
+                            error!(error = %e, agent_id = %task_agent_id, "Session creation failed");
+                            e
+                        })?;
+
+                    let session_id = session_response.session_id;
+                    info!(
+                        agent_id = %task_agent_id,
+                        session_id = %session_id,
+                        "ACP session created"
+                    );
+
+                    // Share session_id with on_receive_request handlers
+                    *task_shared_session_id.write() = Some(session_id.to_string());
+
+                    // Step 3: Command loop - receive prompts and send to agent
+                    // Use tokio::select! to handle commands concurrently, allowing
+                    // Cancel/Stop to interrupt in-flight prompts.
+                    let mut current_prompt: Option<BoxedPromptFuture> = None;
+                    let mut current_response_tx: Option<tokio::sync::oneshot::Sender<ErgataiResult<()>>> = None;
+
+                    loop {
+                        // If there's a prompt in-flight, wait for it OR new commands
+                        // If no prompt is in-flight, just wait for commands
+                        if current_prompt.is_some() && current_response_tx.is_some() {
+                            // Take ownership of response_tx for sending the result
+                            let response_tx = current_response_tx.take().unwrap();
+                            tokio::select! {
+                                // Prompt completed
+                                result = current_prompt.as_mut().unwrap() => {
+                                    match result {
+                                        Ok(response) => {
+                                            info!(
+                                                agent_id = %task_agent_id,
+                                                stop_reason = ?response.stop_reason,
+                                                "Prompt completed"
+                                            );
+                                            let _ = response_tx.send(Ok(()));
+                                        }
+                                        Err(e) => {
+                                            error!(error = %e, agent_id = %task_agent_id, "Prompt failed");
+                                            let _ = response_tx.send(Err(ErgataiError::internal(
+                                                format!("Prompt failed: {}", e),
+                                            )));
+                                        }
+                                    }
+                                    current_prompt = None;
+                                }
+                                // New command arrived while prompt is in-flight
+                                cmd = command_rx.recv() => {
+                                    // Put response_tx back if we're not done
+                                    current_response_tx = Some(response_tx);
+                                    match cmd {
+                                        Some(HttpAcpCommand::Cancel { response_tx: cancel_tx }) => {
+                                            debug!("Cancel command received during prompt, sending session/cancel");
+                                            let cancel_result = connection
+                                                .send_notification(agent_client_protocol::schema::v1::CancelNotification::new(
+                                                    session_id.clone(),
+                                                ));
+                                            match cancel_result {
+                                                Ok(()) => {
+                                                    info!(agent_id = %task_agent_id, "Sent session/cancel notification");
+                                                    let _ = cancel_tx.send(Ok(()));
+                                                }
+                                                Err(e) => {
+                                                    warn!(error = %e, agent_id = %task_agent_id, "Failed to send session/cancel");
+                                                    let _ = cancel_tx.send(Err(ErgataiError::internal(
+                                                        format!("Failed to cancel: {e}"),
+                                                    )));
+                                                }
+                                            }
+                                        }
+                                        Some(HttpAcpCommand::Stop { response_tx: stop_tx }) => {
+                                            debug!("Stop command received during prompt");
+                                            task_alive.store(false, std::sync::atomic::Ordering::SeqCst);
+                                            let _ = stop_tx.send(Ok(()));
+                                            break;
+                                        }
+                                        Some(HttpAcpCommand::InterruptPrompt { message_id, response_tx: interrupt_tx, .. }) => {
+                                            info!(
+                                                agent_id = %task_agent_id,
+                                                message_id = %message_id,
+                                                "Interrupt received during prompt, queuing until prompt completes"
+                                            );
+                                            let _ = interrupt_tx.send(Ok(()));
+                                        }
+                                        Some(HttpAcpCommand::Prompt { response_tx: new_prompt_tx, .. }) => {
+                                            warn!("New prompt received while prompt is in-flight, rejecting");
+                                            let _ = new_prompt_tx.send(Err(ErgataiError::internal(
+                                                "Another prompt is already in-flight".to_string(),
+                                            )));
+                                        }
+                                        None => {
+                                            info!(agent_id = %task_agent_id, "Command channel closed, shutting down");
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                                // No prompt in-flight, just wait for commands
+                                match command_rx.recv().await {
+                                    Some(HttpAcpCommand::Prompt { message, response_tx }) => {
+                                        debug!(message_len = message.len(), "Prompt command received");
+
+                                        let content = if message.is_empty() {
+                                            vec![ContentBlock::Text(TextContent::new(String::new()))]
+                                        } else {
+                                            vec![ContentBlock::Text(TextContent::new(message))]
+                                        };
+
+                                        task_text_output_seen.store(false, std::sync::atomic::Ordering::Relaxed);
+                                        let prompt_request = PromptRequest::new(session_id.clone(), content);
+                                        let sent_request = connection.send_request(prompt_request);
+
+                                        current_prompt = Some(Box::pin(sent_request.block_task()));
+                                        current_response_tx = Some(response_tx);
+                                    }
+                                    Some(HttpAcpCommand::InterruptPrompt { message, message_id, response_tx }) => {
+                                        info!(
+                                            agent_id = %task_agent_id,
+                                            message_id = %message_id,
+                                            "Interrupt message received, waiting for safe point"
+                                        );
+
+                                        // Wait for safe point (not in thinking or tool call)
+                                        let timeout = std::time::Duration::from_secs(30);
+                                        let start = std::time::Instant::now();
+                                        loop {
+                                            let thinking = task_in_thinking.load(std::sync::atomic::Ordering::SeqCst);
+                                            let tool = task_in_tool_call.load(std::sync::atomic::Ordering::SeqCst);
+                                            if !thinking && !tool {
+                                                info!(agent_id = %task_agent_id, "Safe point reached, sending interrupt prompt");
+                                                break;
+                                            }
+                                            if start.elapsed() > timeout {
+                                                warn!(agent_id = %task_agent_id, "Interrupt timeout after 30s - forcing prompt");
+                                                break;
+                                            }
+                                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                        }
+
+                                        // Send the interrupt prompt
+                                        task_text_output_seen.store(false, std::sync::atomic::Ordering::Relaxed);
+                                        let content = if message.is_empty() {
+                                            vec![ContentBlock::Text(TextContent::new(String::new()))]
+                                        } else {
+                                            vec![ContentBlock::Text(TextContent::new(message))]
+                                        };
+
+                                        let request = PromptRequest::new(session_id.clone(), content);
+                                        let sent_request = connection.send_request(request);
+
+                                        current_prompt = Some(Box::pin(sent_request.block_task()));
+                                        current_response_tx = Some(response_tx);
+                                    }
+                                    Some(HttpAcpCommand::Cancel { response_tx }) => {
+                                        debug!("Cancel command received, sending session/cancel notification");
+                                        let cancel_result = connection
+                                            .send_notification(agent_client_protocol::schema::v1::CancelNotification::new(
+                                                session_id.clone(),
+                                            ));
+                                        match cancel_result {
+                                            Ok(()) => {
+                                                info!(agent_id = %task_agent_id, "Sent session/cancel notification");
+                                                let _ = response_tx.send(Ok(()));
+                                            }
+                                            Err(e) => {
+                                                warn!(error = %e, agent_id = %task_agent_id, "Failed to send session/cancel");
+                                                let _ = response_tx.send(Err(ErgataiError::internal(
+                                                    format!("Failed to cancel: {e}"),
+                                                )));
+                                            }
+                                        }
+                                    }
+                                    Some(HttpAcpCommand::Stop { response_tx }) => {
+                                        debug!("Stop command received");
+                                        task_alive.store(false, std::sync::atomic::Ordering::SeqCst);
+                                        let _ = response_tx.send(Ok(()));
+                                        break;
+                                    }
+                                    None => {
+                                        info!(agent_id = %task_agent_id, "Command channel closed, shutting down");
+                                        break;
+                                    }
+                                }
+                        }
+                    }
+
+                    Ok(())
+                })
                 .await;
 
-            match result {
-                Ok(()) => {
-                    info!(agent_id = %task_agent_id, "HTTP ACP connection completed");
-                }
-                Err(e) => {
-                    error!(error = %e, agent_id = %task_agent_id, "HTTP ACP connection failed");
-                    task_alive.store(false, std::sync::atomic::Ordering::SeqCst);
-                }
+            match connect_result {
+                Ok(()) => info!("HTTP ACP connection task completed successfully"),
+                Err(e) => error!(error = %e, "HTTP ACP connection task failed"),
             }
         });
 
         let abort_handle = join_handle.abort_handle();
-
-        // Spawn command handler task
-        let cmd_alive = alive.clone();
-
-        tokio::spawn(async move {
-            // Note: This is a simplified command handler.
-            // In a full implementation, we would need to maintain the connection
-            // context and send requests through it.
-            while let Some(cmd) = command_rx.recv().await {
-                match cmd {
-                    HttpAcpCommand::Prompt {
-                        message,
-                        response_tx,
-                    } => {
-                        debug!(message_len = message.len(), "Prompt command received");
-                        let _ = response_tx.send(Err(ErgataiError::internal(
-                            "ACP HTTP prompt delivery is not implemented",
-                        )));
-                    }
-                    HttpAcpCommand::Cancel { response_tx } => {
-                        debug!("Cancel command received");
-                        let _ = response_tx.send(Err(ErgataiError::internal(
-                            "ACP HTTP cancellation is not implemented",
-                        )));
-                    }
-                    HttpAcpCommand::Stop { response_tx } => {
-                        debug!("Stop command received");
-                        cmd_alive.store(false, std::sync::atomic::Ordering::SeqCst);
-                        let _ = response_tx.send(Ok(()));
-                        break;
-                    }
-                }
-            }
-        });
 
         // Create agent entry
         let entry = HttpAgentEntry {
@@ -842,9 +1241,30 @@ impl AcpBackendInterface for AcpHttpBackend {
         Err(ErgataiError::BackendUnsupported("delete_session".into()))
     }
 
-    // Control operations - not supported by AcpHttpBackend
-    async fn cancel_prompt(&self, _agent_id: &str) -> ErgataiResult<()> {
-        Err(ErgataiError::BackendUnsupported("cancel_prompt".into()))
+    // Control operations
+    async fn cancel_prompt(&self, agent_id: &str) -> ErgataiResult<()> {
+        let command_tx = {
+            let agents = self.agents.read();
+            match agents.get(agent_id) {
+                Some(entry) => entry.command_tx.clone(),
+                None => {
+                    return Err(ErgataiError::NotFound(format!(
+                        "Agent not found: {agent_id}"
+                    )));
+                }
+            }
+        };
+
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        command_tx
+            .send(HttpAcpCommand::Cancel { response_tx })
+            .await
+            .map_err(|_| ErgataiError::internal("HTTP ACP command channel closed"))?;
+
+        match response_rx.await {
+            Ok(result) => result,
+            Err(_) => Err(ErgataiError::internal("HTTP ACP response channel closed")),
+        }
     }
 
     async fn execute_command(

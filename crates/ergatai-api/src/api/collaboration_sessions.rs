@@ -769,7 +769,6 @@ pub async fn list_session_conversations(Path(collaboration_session_id): Path<Str
 
     // 1. 验证 session 存在
     let _session = match tokio::task::spawn_blocking({
-        let session_id = session_id;
         move || crate::user_data_db::collaboration_sessions::get(session_id)
     })
     .await
@@ -785,7 +784,6 @@ pub async fn list_session_conversations(Path(collaboration_session_id): Path<Str
 
     // 2. 查询该 session 下的所有 conversations
     let conversations = match tokio::task::spawn_blocking({
-        let session_id = session_id;
         move || crate::user_data_db::conversations::list_by_collaboration_session(session_id)
     })
     .await
@@ -865,7 +863,6 @@ pub async fn get_session_conversation(
 
     // 1. 验证 session 存在
     let session_exists = match tokio::task::spawn_blocking({
-        let session_id = session_id;
         move || crate::user_data_db::collaboration_sessions::get(session_id)
     })
     .await

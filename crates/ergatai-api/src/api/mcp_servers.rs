@@ -126,9 +126,7 @@ fn redact_headers(headers: &HashMap<String, String>) -> HashMap<String, String> 
 /// Redact all env values — env vars commonly contain API keys and secrets.
 /// We return the keys (for UI display) but replace values with "***".
 fn redact_env(env: &HashMap<String, String>) -> HashMap<String, String> {
-    env.iter()
-        .map(|(k, _)| (k.clone(), "***".to_string()))
-        .collect()
+    env.keys().map(|k| (k.clone(), "***".to_string())).collect()
 }
 
 impl From<McpServer> for McpServerResponse {

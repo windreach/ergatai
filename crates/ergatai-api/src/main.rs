@@ -362,9 +362,7 @@ async fn async_main(args: Args) -> Result<()> {
             })
         })
     };
-    if let Err(_) =
-        ergatai_runtime::mcp_lifecycle::set_global_mcp_session_closer(mcp_session_closer)
-    {
+    if ergatai_runtime::mcp_lifecycle::set_global_mcp_session_closer(mcp_session_closer).is_err() {
         tracing::warn!("MCP session closer already installed; keeping existing hook");
     }
 
@@ -397,9 +395,13 @@ async fn async_main(args: Args) -> Result<()> {
             )))
         };
 
+    // Configure MCP-over-ACP if enabled (create separate factories for stdio and HTTP backends)
+    let mcp_enabled = ergatai_runtime::mcp_over_acp::is_enabled();
+    let mcp_url = format!("http://{}:{}/mcp", args.host, args.port);
+
     let runtime_backend: std::sync::Arc<dyn ergatai_runtime::AcpBackendInterface> = {
         let mut backend =
-            ergatai_runtime::AcpBackend::new().with_permission_handler(permission_handler);
+            ergatai_runtime::AcpBackend::new().with_permission_handler(permission_handler.clone());
         if std::env::var("ERGATAI_AUTO_CONTINUE")
             .map(|v| v == "1" || v.to_lowercase() == "true")
             .unwrap_or(false)
@@ -407,17 +409,15 @@ async fn async_main(args: Args) -> Result<()> {
             tracing::info!("Auto-continue enabled (ERGATAI_AUTO_CONTINUE=1, max 3 retries)");
             backend = backend.with_auto_continue(3);
         }
-        // Configure MCP-over-ACP if enabled
-        if ergatai_runtime::mcp_over_acp::is_enabled() {
+        if mcp_enabled {
             tracing::info!("MCP-over-ACP enabled (set ERGATAI_MCP_OVER_ACP_ENABLED=0 to disable)");
-            // Create the MCP server factory for ACP sessions
             let mcp_factory = ergatai_api::mcp::ErgataiMcpServerFactory::new(
                 mcp_registry.clone(),
                 peer_registry.clone(),
                 "Ergatai MCP Tools".to_string(),
             );
             backend = backend.with_mcp_server_factory(mcp_factory);
-            backend = backend.with_http_mcp_url(format!("http://{}:{}/mcp", args.host, args.port));
+            backend = backend.with_http_mcp_url(mcp_url.clone());
         }
         match ergatai_runtime::SessionStore::open(".ergatai/sessions.db") {
             Ok(store) => {
@@ -431,9 +431,25 @@ async fn async_main(args: Args) -> Result<()> {
         }
     };
 
+    // Configure HTTP backend with same permission handler and MCP factory
+    let http_backend = {
+        let mut hb =
+            ergatai_runtime::AcpHttpBackend::new().with_permission_handler(permission_handler);
+        if mcp_enabled {
+            let mcp_factory = ergatai_api::mcp::ErgataiMcpServerFactory::new(
+                mcp_registry.clone(),
+                peer_registry.clone(),
+                "Ergatai MCP Tools".to_string(),
+            );
+            hb = hb.with_mcp_server_factory(mcp_factory);
+            hb = hb.with_http_mcp_url(mcp_url);
+        }
+        std::sync::Arc::new(hb)
+    };
+
     let mcp_cancellation_token = CancellationToken::new();
 
-    match ergatai_runtime::init_agent_runtime(runtime_backend) {
+    match ergatai_runtime::init_agent_runtime_with_http(runtime_backend, http_backend) {
         Ok(runtime) => {
             if let Err(e) = runtime.initialize().await {
                 tracing::warn!("AgentRuntime backend initialization warning: {}", e);
@@ -824,7 +840,7 @@ async fn async_main(args: Args) -> Result<()> {
 
     let app = api_app
         // MCP routes: dynamic agent ID support via wildcard routing
-        // /mcp/{*rest} matches all paths: /mcp, /mcp/agent-1, /mcp/ws_123-agent-0, etc.
+        // /mcp/{*rest} matches all paths: /mcp, /mcp/agent-1, /mcp/agent_502816809136_000_0001, etc.
         .route_service("/mcp/{*rest}", mcp_service)
         // SECURITY: Apply auth middleware AFTER nesting MCP services.
         // Previously, MCP endpoints were mounted outside the auth layer,

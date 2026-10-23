@@ -144,6 +144,21 @@ pub fn init_agent_runtime(
     Ok(runtime)
 }
 
+/// Initialize the global AgentRuntime with both stdio and HTTP backends.
+///
+/// Use this when you need to configure the HTTP backend (e.g., with permission
+/// handler or MCP factory). Returns `Err` if already initialized.
+pub fn init_agent_runtime_with_http(
+    backend: Arc<dyn AcpBackendInterface>,
+    http_backend: Arc<crate::backends::acp_http::AcpHttpBackend>,
+) -> ErgataiResult<Arc<AgentRuntime>> {
+    let runtime = Arc::new(AgentRuntime::with_http_backend(backend, http_backend));
+    AGENT_RUNTIME
+        .set(runtime.clone())
+        .map_err(|_| ErgataiError::internal("AgentRuntime already initialized".to_string()))?;
+    Ok(runtime)
+}
+
 // ── State Guard for Panic Safety ──
 
 /// Guard to ensure agent lifecycle state transitions back to Idle on panic/cancellation.
@@ -416,24 +431,14 @@ impl AgentRuntime {
             .map(|id| id.as_i64().to_string())
             .unwrap_or_else(|_| workspace.id.clone());
 
-        if let Err(e) = async {
-            ergatai_lock::init_file_access(&lock_project_id, &spec.work_dir).await?;
-            ergatai_lock::register_workspace_for_project(
-                &lock_project_id,
-                &agent_id,
-                &workspace_dir,
-            )
-            .await
-        }
-        .await
-        {
+        if let Err(e) = ergatai_lock::init_file_access(&lock_project_id, &spec.work_dir).await {
             warn!(
                 agent_id = %agent_id,
                 workspace_id = %workspace.id,
                 lock_project_id = %lock_project_id,
                 workspace = %workspace_dir,
                 error = %e,
-                "Failed to pre-register workspace boundary (non-fatal, continuing)"
+                "Failed to initialize file access control (non-fatal, continuing)"
             );
         } else {
             debug!(
@@ -776,7 +781,7 @@ impl AgentRuntime {
     /// The agent can later be resumed by re-launching with the saved metadata.
     ///
     /// # Arguments
-    /// * `agent_id` - Runtime agent ID (e.g., "ws1-agent-1")
+    /// * `agent_id` - Runtime agent ID (e.g., "agent_502816809136_000_0001")
     /// * `reason` - Why the agent is being suspended (Manual, Idle, or Shutdown)
     ///
     /// # Errors
@@ -2138,6 +2143,7 @@ mod tests {
     use crate::types::{
         AgentHandle, BackendCapabilities, WaitResult, WorkspaceHandle, WorkspaceSpec,
     };
+    use ergatai_error::id::{format as format_id, generate, IdType};
     use ergatai_error::{ErgataiError, ErgataiResult};
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -2204,8 +2210,8 @@ mod tests {
                 metadata: HashMap::new(),
             })
         }
-        fn next_agent_id(&self, workspace_id: &str) -> String {
-            format!("{}-agent-0", workspace_id)
+        fn next_agent_id(&self, _workspace_id: &str) -> String {
+            format_id(generate(), IdType::Agent)
         }
         async fn start_agent(
             &self,
@@ -2215,7 +2221,7 @@ mod tests {
         ) -> ErgataiResult<AgentHandle> {
             Ok(AgentHandle {
                 workspace: handle.clone(),
-                agent_id: format!("agent-{}", handle.id),
+                agent_id: format_id(generate(), IdType::Agent),
                 process_id: Some("12345".to_string()),
                 metadata: HashMap::new(),
             })
@@ -2430,20 +2436,27 @@ mod tests {
             .launch_agent(spec, "cmd", None, None, None)
             .await
             .unwrap();
-        assert_eq!(agent_id, "agent-ws-1");
+        assert!(
+            agent_id.starts_with("agent_"),
+            "agent_id should be a formatted Snowflake ID, got: {agent_id}"
+        );
+        assert!(
+            ergatai_error::id::parse_to_i64(&agent_id).is_some(),
+            "agent_id should be parseable as Snowflake i64"
+        );
     }
 
     #[tokio::test]
     async fn test_launch_agent_registers() {
         let runtime = make_runtime();
-        runtime
+        let agent_id = runtime
             .launch_agent(make_spec("ws-1"), "cmd", None, None, None)
             .await
             .unwrap();
-        let info = runtime.get_agent("agent-ws-1").await;
+        let info = runtime.get_agent(&agent_id).await;
         assert!(info.is_some());
         let info = info.unwrap();
-        assert_eq!(info.agent_id, "agent-ws-1");
+        assert_eq!(info.agent_id, agent_id);
         assert_eq!(info.workspace_id, "ws-1");
         assert!(matches!(
             info.lifecycle,
