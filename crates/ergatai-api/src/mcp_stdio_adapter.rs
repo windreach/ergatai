@@ -157,6 +157,7 @@ async fn main() -> Result<()> {
                     }),
                 };
                 let response_str = serde_json::to_string(&error_response)?;
+                // stdio 侧协议是换行分隔的 JSON
                 stdout.write_all(response_str.as_bytes()).await?;
                 stdout.write_all(b"\n").await?;
                 stdout.flush().await?;
@@ -189,7 +190,8 @@ async fn main() -> Result<()> {
             }
         };
 
-        // 输出响应到 stdout
+        // 输出响应到 stdout (line-delimited JSON-RPC)
+        // stdio 侧协议是换行分隔的 JSON，HTTP 帧格式由 reqwest 处理
         let response_str = serde_json::to_string(&response)?;
         tracing::debug!("Sending response: {}", response_str);
         stdout.write_all(response_str.as_bytes()).await?;

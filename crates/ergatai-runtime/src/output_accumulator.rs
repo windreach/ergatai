@@ -8,6 +8,24 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
+/// Token representing a specific turn in a conversation.
+///
+/// This token must be passed to all output event operations to ensure events
+/// are associated with the correct turn. This prevents stale events from a
+/// previous turn from polluting a new turn's accumulator.
+#[derive(Clone)]
+pub struct TurnToken {
+    pub conversation_id: String,
+    pub generation: u64,
+    pub accumulator: Arc<Mutex<TurnAccumulator>>,
+}
+
+/// Type alias for accumulator storage key: (conversation_id, generation)
+type AccumulatorKey = (String, u64);
+
+/// Type alias for accumulator storage value
+type AccumulatorValue = Arc<Mutex<TurnAccumulator>>;
+
 /// A single turn's output accumulator
 ///
 /// Accumulates thinking blocks, tool calls, text chunks, and metadata during an agent turn.
@@ -20,6 +38,7 @@ pub struct TurnAccumulator {
     final_text: String,
     metadata: OutputMetadata,
     started_at: std::time::Instant,
+    sealed: bool, // Once sealed, no more data can be added
 }
 
 /// A thinking block with timestamp
@@ -102,11 +121,26 @@ impl TurnAccumulator {
             final_text: String::new(),
             metadata: OutputMetadata::default(),
             started_at: std::time::Instant::now(),
+            sealed: false,
         }
+    }
+
+    /// Check if the accumulator is sealed (no more data can be added)
+    pub fn is_sealed(&self) -> bool {
+        self.sealed
+    }
+
+    /// Seal the accumulator - prevents any further data accumulation
+    /// This should be called before flush to prevent race conditions
+    pub fn seal(&mut self) {
+        self.sealed = true;
     }
 
     /// Accumulate text delta
     pub fn accumulate_text(&mut self, delta: &str) {
+        if self.sealed {
+            return; // Silently discard data after seal
+        }
         // Use unwrap_or(0) to handle clock skew gracefully: if system time is before UNIX_EPOCH,
         // we use 0 rather than panicking. This is safe because timestamps are only used for ordering.
         let now = std::time::SystemTime::now()
@@ -123,6 +157,9 @@ impl TurnAccumulator {
 
     /// Accumulate thinking delta
     pub fn accumulate_thinking(&mut self, delta: &str) {
+        if self.sealed {
+            return; // Silently discard data after seal
+        }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or(std::time::Duration::from_secs(0))
@@ -143,6 +180,9 @@ impl TurnAccumulator {
         input: serde_json::Value,
         locations: Vec<ToolCallLocation>,
     ) {
+        if self.sealed {
+            return; // Silently discard data after seal
+        }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or(std::time::Duration::from_secs(0))
@@ -173,6 +213,9 @@ impl TurnAccumulator {
         status: String,
         error: Option<String>,
     ) {
+        if self.sealed {
+            return; // Silently discard data after seal
+        }
         if let Some(tool_call) = self.tool_calls.get_mut(id) {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -188,11 +231,17 @@ impl TurnAccumulator {
 
     /// Set stop reason
     pub fn set_stop_reason(&mut self, reason: String) {
+        if self.sealed {
+            return; // Silently discard data after seal
+        }
         self.metadata.stop_reason = Some(reason);
     }
 
     /// Set session title
     pub fn set_session_title(&mut self, title: String) {
+        if self.sealed {
+            return; // Silently discard data after seal
+        }
         self.metadata.session_title = Some(title);
     }
 
@@ -273,8 +322,14 @@ pub struct AgentOutputSnapshot {
 }
 
 /// Registry of active output accumulators
+///
+/// Uses generation-based keys to prevent stale events from polluting new turns.
+/// Each conversation has a monotonically increasing generation counter.
 pub struct OutputAccumulatorRegistry {
-    accumulators: RwLock<HashMap<String, Arc<Mutex<TurnAccumulator>>>>,
+    /// Maps (conversation_id, generation) to accumulator
+    accumulators: RwLock<HashMap<AccumulatorKey, AccumulatorValue>>,
+    /// Current generation for each conversation
+    generations: RwLock<HashMap<String, u64>>,
 }
 
 impl OutputAccumulatorRegistry {
@@ -282,40 +337,98 @@ impl OutputAccumulatorRegistry {
     pub fn new() -> Self {
         Self {
             accumulators: RwLock::new(HashMap::new()),
+            generations: RwLock::new(HashMap::new()),
         }
     }
 
-    /// Get or create an accumulator for a conversation
-    pub async fn get_or_create(
-        &self,
-        conversation_id: &str,
-        sequence: i64,
-    ) -> Arc<Mutex<TurnAccumulator>> {
-        let mut accumulators = self.accumulators.write().await;
+    /// Begin a new turn for a conversation
+    /// Creates a new accumulator for this turn with an incremented generation.
+    /// Returns a TurnToken that must be used for all subsequent operations on this turn.
+    ///
+    /// Lock order: generations -> accumulators (to prevent deadlock with get_current_token)
+    pub async fn begin_turn(&self, conversation_id: &str, sequence: i64) -> TurnToken {
+        // Lock generations first to maintain consistent lock order
+        let mut generations = self.generations.write().await;
 
-        accumulators
+        // Increment generation for this conversation
+        let generation = generations
             .entry(conversation_id.to_string())
-            .or_insert_with(|| {
-                let conv_id_i64 = ergatai_error::id::parse_to_i64(conversation_id).unwrap_or(0);
-                Arc::new(Mutex::new(TurnAccumulator::new(conv_id_i64, sequence)))
-            })
-            .clone()
-    }
+            .and_modify(|g| *g += 1)
+            .or_insert(1);
+        let generation = *generation;
 
-    /// Get an accumulator if it exists
-    pub async fn get(&self, conversation_id: &str) -> Option<Arc<Mutex<TurnAccumulator>>> {
-        let accumulators = self.accumulators.read().await;
-        accumulators.get(conversation_id).cloned()
-    }
-
-    /// Flush and remove an accumulator (called when turn completes)
-    pub async fn flush(&self, conversation_id: &str) -> Option<AgentOutputData> {
+        // Now lock accumulators
         let mut accumulators = self.accumulators.write().await;
 
-        if let Some(accumulator) = accumulators.remove(conversation_id) {
+        let conv_id_i64 = ergatai_error::id::parse_to_i64(conversation_id).unwrap_or(0);
+        let accumulator = Arc::new(Mutex::new(TurnAccumulator::new(conv_id_i64, sequence)));
+        accumulators.insert(
+            (conversation_id.to_string(), generation),
+            accumulator.clone(),
+        );
+
+        TurnToken {
+            conversation_id: conversation_id.to_string(),
+            generation,
+            accumulator,
+        }
+    }
+
+    /// Get the accumulator for a specific turn token
+    /// Returns None if the token is stale (generation mismatch) or no active turn exists.
+    /// Validates that the token's generation matches the current generation for the conversation.
+    pub async fn get(&self, token: &TurnToken) -> Option<Arc<Mutex<TurnAccumulator>>> {
+        let generations = self.generations.read().await;
+
+        // Check if this token's generation matches the current generation
+        if let Some(&current_gen) = generations.get(&token.conversation_id) {
+            if current_gen != token.generation {
+                // Token is stale - this turn has been superseded
+                return None;
+            }
+        } else {
+            // No generation tracked for this conversation
+            return None;
+        }
+
+        let accumulators = self.accumulators.read().await;
+        accumulators
+            .get(&(token.conversation_id.clone(), token.generation))
+            .cloned()
+    }
+
+    /// Get a turn token for the current generation of a conversation
+    /// This is used by notification handlers that need to send events but don't have the token.
+    /// Returns None if no active turn exists for this conversation.
+    pub async fn get_current_token(&self, conversation_id: &str) -> Option<TurnToken> {
+        let generations = self.generations.read().await;
+        let accumulators = self.accumulators.read().await;
+
+        if let Some(&generation) = generations.get(conversation_id) {
+            if let Some(accumulator) = accumulators.get(&(conversation_id.to_string(), generation))
+            {
+                return Some(TurnToken {
+                    conversation_id: conversation_id.to_string(),
+                    generation,
+                    accumulator: accumulator.clone(),
+                });
+            }
+        }
+        None
+    }
+
+    /// Flush and remove an accumulator for a specific turn token
+    pub async fn flush(&self, token: &TurnToken) -> Option<AgentOutputData> {
+        let mut accumulators = self.accumulators.write().await;
+
+        if let Some(accumulator) =
+            accumulators.remove(&(token.conversation_id.clone(), token.generation))
+        {
             let mut acc = accumulator.lock().await;
+            // Seal the accumulator before extracting data to prevent race conditions
+            acc.seal();
             let sequence = acc.sequence;
-            let conv_id_i64 = ergatai_error::id::parse_to_i64(conversation_id).unwrap_or(0);
+            let conv_id_i64 = ergatai_error::id::parse_to_i64(&token.conversation_id).unwrap_or(0);
             let data = std::mem::replace(&mut *acc, TurnAccumulator::new(conv_id_i64, sequence));
             Some(data.into_output_data())
         } else {
@@ -326,7 +439,10 @@ impl OutputAccumulatorRegistry {
     /// List all active conversation IDs
     pub async fn list_active(&self) -> Vec<String> {
         let accumulators = self.accumulators.read().await;
-        accumulators.keys().cloned().collect()
+        accumulators
+            .keys()
+            .map(|(conv_id, _)| conv_id.clone())
+            .collect()
     }
 }
 

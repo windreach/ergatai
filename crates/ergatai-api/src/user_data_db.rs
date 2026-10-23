@@ -78,36 +78,36 @@ fn get_db_path() -> PathBuf {
 
 /// Initialize all required tables
 ///
-/// This function drops all existing tables and recreates them with the new schema.
-/// WARNING: This will delete all existing data!
+/// This function drops and recreates all tables on startup.
+/// This is intentional for development - old data is not preserved.
 fn initialize_tables(conn: &Connection) -> Result<()> {
-    // Disable foreign key constraints during table recreation to allow dropping tables with dependencies
+    // Enable foreign key constraints
     conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
 
-    // Drop all existing tables (in reverse dependency order)
-    // NOTE: Agent output fields are now part of the messages table (unified schema).
-    // The messages table is dropped and recreated below.
+    // Drop all tables in reverse dependency order (development mode - no data preservation)
     conn.execute_batch(
         r#"
+        DROP TABLE IF EXISTS collaboration_approvals;
+        DROP TABLE IF EXISTS collaboration_plan_revisions;
+        DROP TABLE IF EXISTS collaboration_context_events;
+        DROP TABLE IF EXISTS group_agent_bindings;
+        DROP TABLE IF EXISTS conversation_execution_contexts;
+        DROP TABLE IF EXISTS terminal_sessions;
         DROP TABLE IF EXISTS messages;
         DROP TABLE IF EXISTS agent_sessions;
         DROP TABLE IF EXISTS conversations;
         DROP TABLE IF EXISTS collaboration_session_participants;
-        DROP TABLE IF EXISTS collaboration_context_events;
-        DROP TABLE IF EXISTS collaboration_plan_revisions;
-        DROP TABLE IF EXISTS collaboration_approvals;
         DROP TABLE IF EXISTS collaboration_sessions;
-        DROP TABLE IF EXISTS chats;
-        DROP TABLE IF EXISTS workspace_projects;
-        DROP TABLE IF EXISTS workspaces;
         DROP TABLE IF EXISTS projects;
-        DROP TABLE IF EXISTS group_agent_bindings;
-        DROP TABLE IF EXISTS conversation_agent_bindings;
-        DROP TABLE IF EXISTS conversation_execution_contexts;
-        DROP TABLE IF EXISTS terminal_sessions;
+        DROP TABLE IF EXISTS chats;
+        DROP TABLE IF EXISTS workspaces;
+        DROP TABLE IF EXISTS mcp_servers;
         "#,
     )?;
 
+    conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+
+    // Create all tables
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS workspaces (
@@ -349,14 +349,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         "#,
     )?;
 
-    // Migration: Update any existing NULL parts to '[]' for consistency
-    // Note: Currently initialize_tables drops and recreates all tables on startup,
-    // so this migration is a no-op. However, if the initialization logic changes to
-    // preserve data in the future, this migration ensures existing NULL values are updated.
-    conn.execute_batch("UPDATE messages SET parts = '[]' WHERE parts IS NULL;")?;
-
-    // MCP Servers table - created separately to preserve user data across restarts
-    // This table is NOT dropped in the destructive migration above
+    // MCP Servers table
     //
     // NOTE: profile_id references agent_profiles(name) in profile_registry.db (a separate database).
     // SQLite foreign keys only work within the same database, so we cannot add a FK constraint here.
@@ -370,7 +363,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         r#"
         CREATE TABLE IF NOT EXISTS mcp_servers (
             id INTEGER PRIMARY KEY,
-            profile_id TEXT,
+            profile_id TEXT NOT NULL DEFAULT '',
             name TEXT NOT NULL,
             server_type TEXT NOT NULL CHECK (server_type IN ('stdio', 'http', 'sse')),
             command TEXT,
@@ -389,9 +382,6 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_mcp_servers_server_type ON mcp_servers(server_type);
         "#,
     )?;
-
-    // Re-enable foreign key constraints after table recreation
-    conn.execute_batch("PRAGMA foreign_keys=ON;")?;
 
     Ok(())
 }
@@ -2707,9 +2697,16 @@ pub mod mcp_servers {
             HashMap::new()
         });
 
+        let profile_id_row: String = row.get(1)?;
+        let profile_id = if profile_id_row.is_empty() {
+            None
+        } else {
+            Some(profile_id_row)
+        };
+
         Ok(McpServer {
             id: row.get(0)?,
-            profile_id: row.get(1)?,
+            profile_id,
             name: row.get(2)?,
             server_type: row.get(3)?,
             command: row.get(4)?,
@@ -2734,13 +2731,15 @@ pub mod mcp_servers {
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         let headers_json = serde_json::to_string(&server.headers)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        // Convert None to empty string for UNIQUE constraint compatibility
+        let profile_id_db = server.profile_id.as_deref().unwrap_or("");
 
         conn.execute(
             "INSERT INTO mcp_servers (id, profile_id, name, server_type, command, args, env, url, headers, enabled, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 server.id,
-                server.profile_id,
+                profile_id_db,
                 server.name,
                 server.server_type,
                 server.command,
@@ -2779,10 +2778,13 @@ pub mod mcp_servers {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
+        // Convert None to empty string for database query
+        let profile_id_db = profile_id.unwrap_or("");
+
         conn.query_row(
             "SELECT id, profile_id, name, server_type, command, args, env, url, headers, enabled, created_at, updated_at
-             FROM mcp_servers WHERE profile_id IS ?1 AND name = ?2",
-            params![profile_id, name],
+             FROM mcp_servers WHERE profile_id = ?1 AND name = ?2",
+            params![profile_id_db, name],
             deserialize_server,
         )
         .optional()
@@ -2803,14 +2805,14 @@ pub mod mcp_servers {
         servers.collect()
     }
 
-    /// List global MCP servers (profile_id IS NULL)
+    /// List global MCP servers (profile_id is empty string)
     pub fn list_global() -> Result<Vec<McpServer>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
             "SELECT id, profile_id, name, server_type, command, args, env, url, headers, enabled, created_at, updated_at
-             FROM mcp_servers WHERE profile_id IS NULL ORDER BY created_at DESC",
+             FROM mcp_servers WHERE profile_id = '' ORDER BY created_at DESC",
         )?;
 
         let servers = stmt.query_map([], deserialize_server)?;
@@ -2818,17 +2820,20 @@ pub mod mcp_servers {
         servers.collect()
     }
 
-    /// List MCP servers by profile_id (including global servers where profile_id IS NULL)
+    /// List MCP servers by profile_id (including global servers where profile_id is empty string)
     pub fn list_by_profile(profile_id: Option<&str>) -> Result<Vec<McpServer>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
+        // Convert None to empty string for database query
+        let profile_id_db = profile_id.unwrap_or("");
+
         let mut stmt = conn.prepare(
             "SELECT id, profile_id, name, server_type, command, args, env, url, headers, enabled, created_at, updated_at
-             FROM mcp_servers WHERE profile_id IS ?1 ORDER BY created_at DESC",
+             FROM mcp_servers WHERE profile_id = ?1 ORDER BY created_at DESC",
         )?;
 
-        let servers = stmt.query_map(params![profile_id], deserialize_server)?;
+        let servers = stmt.query_map(params![profile_id_db], deserialize_server)?;
 
         servers.collect()
     }
@@ -2838,13 +2843,16 @@ pub mod mcp_servers {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
+        // Convert None to empty string for database query
+        let profile_id_db = profile_id.unwrap_or("");
+
         let mut stmt = conn.prepare(
             "SELECT id, profile_id, name, server_type, command, args, env, url, headers, enabled, created_at, updated_at
-             FROM mcp_servers WHERE enabled = 1 AND (profile_id IS ?1 OR profile_id IS NULL)
-             ORDER BY profile_id DESC NULLS LAST, created_at DESC",
+             FROM mcp_servers WHERE enabled = 1 AND (profile_id = ?1 OR profile_id = '')
+             ORDER BY CASE WHEN profile_id = '' THEN 1 ELSE 0 END, created_at DESC",
         )?;
 
-        let servers = stmt.query_map(params![profile_id], deserialize_server)?;
+        let servers = stmt.query_map(params![profile_id_db], deserialize_server)?;
 
         servers.collect()
     }
@@ -2875,13 +2883,15 @@ pub mod mcp_servers {
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         let headers_json = serde_json::to_string(&server.headers)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        // Convert None to empty string for UNIQUE constraint compatibility
+        let profile_id_db = server.profile_id.as_deref().unwrap_or("");
 
         conn.execute(
             "UPDATE mcp_servers
              SET profile_id = ?1, name = ?2, server_type = ?3, command = ?4, args = ?5, env = ?6, url = ?7, headers = ?8, enabled = ?9, updated_at = ?10
              WHERE id = ?11",
             params![
-                server.profile_id,
+                profile_id_db,
                 server.name,
                 server.server_type,
                 server.command,

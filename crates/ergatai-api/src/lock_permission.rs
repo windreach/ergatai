@@ -151,7 +151,13 @@ impl LockPermissionHandler {
 
         // Look up the agent in the registry
         let result = if let Some(agent_info) = runtime.get_agent(agent_id).await {
-            let workspace_id = agent_info.workspace_id.clone();
+            let workspace_id_raw = agent_info.workspace_id.clone();
+            // Convert formatted workspace ID (e.g., "ws_123_000_0000") to plain decimal
+            // string to match the key format used in register_workspace() and the
+            // lock manager. Mirrors the conversion in backends/acp.rs.
+            let workspace_id = ergatai_error::id::parse_to_i64(&workspace_id_raw)
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| workspace_id_raw.clone());
             // Populate cache
             let mut cache = self.agent_workspace_cache.write().await;
             cache.insert(agent_id.to_string(), workspace_id.clone());

@@ -248,12 +248,31 @@ pub async fn persist_agent_output(
             // Build agent output fields
             // Note: thinking/tool_calls/text_chunks are already JSON strings in AgentOutputData,
             // so we pass them through directly without re-encoding
+            // Parse metadata to extract stop_reason and duration_ms
+            let (stop_reason, duration_ms) = if let Some(ref metadata_json) = output_data.metadata {
+                if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(metadata_json) {
+                    let sr = metadata
+                        .get("stop_reason")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let dm = metadata
+                        .get("duration_ms")
+                        .and_then(|v| v.as_u64())
+                        .map(|d| d as i64);
+                    (sr, dm)
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            };
+
             let output_fields = AgentOutputFields {
                 thinking: output_data.thinking.clone(),
                 tool_calls: output_data.tool_calls.clone(),
                 text_chunks: output_data.text_chunks.clone(),
-                stop_reason: None, // metadata is now just a JSON string, not a structured field
-                duration_ms: None, // metadata is now just a JSON string, not a structured field
+                stop_reason,
+                duration_ms,
             };
 
             // Build complete parts JSON array including thinking, tool_calls, and final_text

@@ -450,22 +450,23 @@ fn event_type_name(event: &AgentOutputEvent) -> &'static str {
 /// This is called when a task completes (interrupt, queued prompt, or normal completion).
 /// Returns true if output was flushed and persisted, false otherwise.
 async fn flush_and_persist_output(
-    conversation_id: &str,
+    token: &crate::output_accumulator::TurnToken,
     agent_id: &str,
     context_label: &str,
 ) -> bool {
     if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
-        if let Some(output_data) = registry.flush(conversation_id).await {
+        if let Some(output_data) = registry.flush(token).await {
             tracing::info!(
                 agent_id = %agent_id,
-                conversation_id = %conversation_id,
+                conversation_id = %token.conversation_id,
+                generation = token.generation,
                 "Flushed accumulated output for persistence ({})",
                 context_label
             );
             // Call persist callback if set
             if let Some(callback) = crate::output_accumulator::get_global_persist_callback() {
                 let cb = callback.clone();
-                let conv_id = conversation_id.to_string();
+                let conv_id = token.conversation_id.clone();
                 let context_label_owned = context_label.to_string();
                 tokio::spawn(async move {
                     if let Err(e) = cb(conv_id, output_data).await {
@@ -493,23 +494,72 @@ async fn flush_and_persist_output(
 
 /// Helper function to send an event to output publisher (NATS).
 /// Broadcast channel has been removed - all output goes through NATS for unified routing.
-fn send_output_event(conversation_id: &str, event: AgentOutputEvent) {
-    // Accumulate output data for persistence
-    if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
-        let registry_clone = registry.clone();
-        let conv_id = conversation_id.to_string();
-        let event_clone = event.clone();
+///
+/// This function now processes accumulation synchronously to avoid race conditions
+/// where spawned tasks might create new accumulators after flush.
+/// The TurnToken ensures events are associated with the correct turn, preventing
+/// stale events from polluting new turns.
+async fn send_output_event(token: &crate::output_accumulator::TurnToken, event: AgentOutputEvent) {
+    send_output_event_internal(Some(token), None, event).await;
+}
 
-        tokio::spawn(async move {
-            let accumulator = registry_clone.get_or_create(&conv_id, 0).await;
+/// Helper function to send an event using a turn-scoped token (for notification handlers).
+/// Uses the provided turn token if available, otherwise rejects the event.
+/// This ensures notifications are strictly attributed to the correct turn, preventing
+/// cross-turn pollution. Events without a valid token are not accumulated or published.
+async fn send_output_event_with_turn_token(
+    turn_token: &Arc<RwLock<Option<crate::output_accumulator::TurnToken>>>,
+    conversation_id: &str,
+    event: AgentOutputEvent,
+) {
+    // Get the turn-scoped token
+    let token = turn_token.read().clone();
+    let Some(t) = token else {
+        // No active turn token - reject this event
+        tracing::debug!(
+            conversation_id = %conversation_id,
+            event_type = %event_type_name(&event),
+            "No active turn token; rejecting notification accumulation"
+        );
+        return;
+    };
+
+    send_output_event_internal(Some(&t), None, event).await;
+}
+
+/// Internal implementation for send_output_event
+async fn send_output_event_internal(
+    token: Option<&crate::output_accumulator::TurnToken>,
+    conversation_id: Option<&str>,
+    event: AgentOutputEvent,
+) {
+    // Accumulate output data for persistence (synchronously to avoid race conditions)
+    // Only accumulate if there's an active turn (accumulator exists)
+    if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
+        let accumulator = if let Some(t) = token {
+            registry.get(t).await
+        } else {
+            // Look up by conversation_id (for notification handlers)
+            if let Some(conv_id) = conversation_id {
+                if let Some(t) = registry.get_current_token(conv_id).await {
+                    registry.get(&t).await
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        if let Some(accumulator) = accumulator {
             let mut acc = accumulator.lock().await;
 
-            match event_clone {
+            match &event {
                 AgentOutputEvent::Text { delta, .. } => {
-                    acc.accumulate_text(&delta);
+                    acc.accumulate_text(delta);
                 }
                 AgentOutputEvent::Thinking { delta, .. } => {
-                    acc.accumulate_thinking(&delta);
+                    acc.accumulate_thinking(delta);
                 }
                 AgentOutputEvent::ToolCallStart {
                     id,
@@ -520,47 +570,78 @@ fn send_output_event(conversation_id: &str, event: AgentOutputEvent) {
                 } => {
                     // Convert ACP ToolCallLocation to output_accumulator ToolCallLocation
                     let acc_locations: Vec<crate::output_accumulator::ToolCallLocation> = locations
-                        .into_iter()
+                        .iter()
                         .map(|loc| crate::output_accumulator::ToolCallLocation {
                             path: loc.path.to_string_lossy().into_owned(),
                             line: loc.line.map(|l| l as u64),
                         })
                         .collect();
                     acc.record_tool_call_start(
-                        id,
-                        name,
+                        id.clone(),
+                        name.clone(),
                         None,
-                        input.unwrap_or(serde_json::json!({})),
+                        input.clone().unwrap_or(serde_json::json!({})),
                         acc_locations,
                     );
                 }
                 AgentOutputEvent::ToolCallComplete { id, output, .. } => {
-                    acc.record_tool_call_update(&id, output, "completed".to_string(), None);
+                    acc.record_tool_call_update(id, output.clone(), "completed".to_string(), None);
+                }
+                AgentOutputEvent::ToolCallError { id, error, .. } => {
+                    acc.record_tool_call_update(
+                        id,
+                        None,
+                        "failed".to_string(),
+                        Some(error.clone()),
+                    );
                 }
                 AgentOutputEvent::Done { stop_reason, .. } => {
-                    acc.set_stop_reason(stop_reason);
+                    acc.set_stop_reason(stop_reason.clone());
+                }
+                AgentOutputEvent::SessionTitleUpdate { title, .. } => {
+                    acc.set_session_title(title.clone());
                 }
                 _ => {}
             }
-        });
+        } else {
+            // No active turn for this token/conversation - this is a stale event
+            let conv_id = token
+                .map(|t| t.conversation_id.as_str())
+                .or(conversation_id)
+                .unwrap_or("unknown");
+            let generation = token.map(|t| t.generation);
+            tracing::debug!(
+                conversation_id = %conv_id,
+                ?generation,
+                event_type = %event_type_name(&event),
+                "Stale output event received for old turn generation, not accumulated"
+            );
+        }
     }
 
     // Get global output publisher (set during initialization)
+    let conv_id_for_publish = token
+        .map(|t| t.conversation_id.as_str())
+        .or(conversation_id);
     if let Some(publisher) = crate::output_publisher::get_global_output_publisher() {
-        if let Err(e) = publisher.publish(conversation_id, event) {
-            tracing::warn!(
-                conversation_id = %conversation_id,
-                error = %e,
-                "Failed to publish agent output event"
-            );
+        if let Some(conv_id) = conv_id_for_publish {
+            if let Err(e) = publisher.publish(conv_id, event) {
+                tracing::warn!(
+                    conversation_id = %conv_id,
+                    error = %e,
+                    "Failed to publish agent output event"
+                );
+            }
         }
     } else {
         // Log error when publisher is not set - makes the failure visible
-        tracing::error!(
-            conversation_id = %conversation_id,
-            event_type = %event_type_name(&event),
-            "Output publisher not set - event dropped"
-        );
+        if let Some(conv_id) = conv_id_for_publish {
+            tracing::error!(
+                conversation_id = %conv_id,
+                event_type = %event_type_name(&event),
+                "Output publisher not set - event dropped"
+            );
+        }
     }
 }
 
@@ -579,7 +660,7 @@ async fn handle_standard_session_notification(
     agent_id: &str,
     conversation_id: &str,
     session_id: &parking_lot::RwLock<Option<String>>,
-    _workspace_id: &str,
+    workspace_id: &str,
     plan_state: &RwLock<Option<TrackedPlan>>,
     text_output_seen: &AtomicBool,
     session_title: &RwLock<Option<String>>,
@@ -588,6 +669,7 @@ async fn handle_standard_session_notification(
     available_cmds: &RwLock<Vec<agent_client_protocol::schema::v1::AvailableCommand>>,
     in_thinking: &std::sync::atomic::AtomicBool,
     in_tool_call: &std::sync::atomic::AtomicBool,
+    turn_token: &Arc<RwLock<Option<crate::output_accumulator::TurnToken>>>,
 ) {
     *last_activity.write() = Instant::now();
     match &notification.update {
@@ -605,13 +687,15 @@ async fn handle_standard_session_notification(
                     debug!(text_len = text.len(), "ACP agent message chunk");
                 }
                 out.append(text.as_bytes());
-                send_output_event(
+                send_output_event_with_turn_token(
+                    turn_token,
                     conversation_id,
                     AgentOutputEvent::Text {
                         role: "assistant".to_string(),
                         delta: text,
                     },
-                );
+                )
+                .await;
             }
         }
         SessionUpdate::AgentThoughtChunk(chunk) => {
@@ -632,13 +716,15 @@ async fn handle_standard_session_notification(
                         thinking.push_str(&text);
                     }
                 }
-                send_output_event(
+                send_output_event_with_turn_token(
+                    turn_token,
                     conversation_id,
                     AgentOutputEvent::Thinking {
                         role: "assistant".to_string(),
                         delta: text,
                     },
-                );
+                )
+                .await;
             }
         }
         SessionUpdate::UsageUpdate(usage_update) => {
@@ -661,15 +747,12 @@ async fn handle_standard_session_notification(
 
             // Renew locks for write operations
             if matches!(tc.kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move) {
-                if let Some(workspace_id_formatted) =
-                    agent_id.rfind("-agent-").map(|pos| &agent_id[..pos])
-                {
-                    // Convert formatted typed ID (e.g., "ws_123_000_0000") to plain decimal string
-                    // to match the key format used in lock_permission.rs register_workspace()
-                    let workspace_id_plain =
-                        ergatai_error::id::parse_to_i64(workspace_id_formatted)
-                            .map(|id| id.to_string())
-                            .unwrap_or_else(|| workspace_id_formatted.to_string());
+                // Convert formatted workspace ID (e.g., "ws_123_000_0000") to plain decimal string
+                // to match the key format used in lock_permission.rs register_workspace()
+                let workspace_id_plain = ergatai_error::id::parse_to_i64(workspace_id)
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| workspace_id.to_string());
+                if !workspace_id_plain.is_empty() {
                     if let Ok(lock_mgr) = ergatai_lock::get_lock_manager(&workspace_id_plain).await
                     {
                         let session_id_str = session_id.read().clone().unwrap_or_default();
@@ -689,7 +772,8 @@ async fn handle_standard_session_notification(
             }
 
             tool_calls.record_initial(tc);
-            send_output_event(
+            send_output_event_with_turn_token(
+                turn_token,
                 conversation_id,
                 AgentOutputEvent::ToolCallStart {
                     role: "assistant".to_string(),
@@ -698,7 +782,8 @@ async fn handle_standard_session_notification(
                     input: tc.raw_input.clone(),
                     locations: tc.locations.clone(),
                 },
-            );
+            )
+            .await;
         }
         SessionUpdate::ToolCallUpdate(update) => {
             debug!(
@@ -743,14 +828,11 @@ async fn handle_standard_session_notification(
                 // Release locks for write operations
                 if let Some(ref kind) = kind {
                     if matches!(kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move) {
-                        if let Some(workspace_id_formatted) =
-                            agent_id.rfind("-agent-").map(|pos| &agent_id[..pos])
-                        {
-                            // Convert formatted typed ID to plain decimal string
-                            let workspace_id_plain =
-                                ergatai_error::id::parse_to_i64(workspace_id_formatted)
-                                    .map(|id| id.to_string())
-                                    .unwrap_or_else(|| workspace_id_formatted.to_string());
+                        // Convert formatted workspace ID to plain decimal string
+                        let workspace_id_plain = ergatai_error::id::parse_to_i64(workspace_id)
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| workspace_id.to_string());
+                        if !workspace_id_plain.is_empty() {
                             if let Ok(lock_mgr) =
                                 ergatai_lock::get_lock_manager(&workspace_id_plain).await
                             {
@@ -779,7 +861,8 @@ async fn handle_standard_session_notification(
                 }
 
                 if is_complete {
-                    send_output_event(
+                    send_output_event_with_turn_token(
+                        turn_token,
                         conversation_id,
                         AgentOutputEvent::ToolCallComplete {
                             role: "assistant".to_string(),
@@ -789,9 +872,11 @@ async fn handle_standard_session_notification(
                             output: raw_output,
                             locations,
                         },
-                    );
+                    )
+                    .await;
                 } else {
-                    send_output_event(
+                    send_output_event_with_turn_token(
+                        turn_token,
                         conversation_id,
                         AgentOutputEvent::ToolCallError {
                             role: "assistant".to_string(),
@@ -802,7 +887,8 @@ async fn handle_standard_session_notification(
                                 .clone()
                                 .unwrap_or_else(|| "tool call failed".to_string()),
                         },
-                    );
+                    )
+                    .await;
                 }
             }
         }
@@ -816,20 +902,28 @@ async fn handle_standard_session_notification(
         }
         SessionUpdate::SessionInfoUpdate(info) => {
             if let Some(new_title) = info.title.value() {
-                let mut title_lock = session_title.write();
-                if title_lock.as_deref() != Some(new_title.as_str()) {
-                    debug!(agent_id = agent_id, title = %new_title, "ACP session title updated");
-                    *title_lock = Some(new_title.clone());
-                    title_no_change_count.store(0, Ordering::Relaxed);
-                    send_output_event(
+                let should_send = {
+                    let mut title_lock = session_title.write();
+                    if title_lock.as_deref() != Some(new_title.as_str()) {
+                        debug!(agent_id = agent_id, title = %new_title, "ACP session title updated");
+                        *title_lock = Some(new_title.clone());
+                        title_no_change_count.store(0, Ordering::Relaxed);
+                        true
+                    } else {
+                        title_no_change_count.fetch_add(1, Ordering::Relaxed);
+                        false
+                    }
+                };
+                if should_send {
+                    send_output_event_with_turn_token(
+                        turn_token,
                         conversation_id,
                         AgentOutputEvent::SessionTitleUpdate {
                             role: "assistant".to_string(),
                             title: new_title.clone(),
                         },
-                    );
-                } else {
-                    title_no_change_count.fetch_add(1, Ordering::Relaxed);
+                    )
+                    .await;
                 }
             } else if info.title.is_null() {
                 let mut title_lock = session_title.write();
@@ -1843,50 +1937,18 @@ impl AcpBackend {
                     }
                 }
                 "sse" => {
-                    // SSE MCP requires agent HTTP support (SSE is transported over HTTP)
-                    if !mcp_http_supported {
-                        debug!(
-                            mcp_name = %server.name,
-                            "Agent does not support HTTP MCP; skipping SSE user MCP server"
-                        );
-                        continue;
-                    }
-                    // NOTE: SSE capability check
-                    // The ACP schema (as of current version) does not expose a dedicated
-                    // `mcp_capabilities.sse` field. SSE transport is treated as a variant
-                    // of HTTP MCP, so we require `mcp_capabilities.http` as a prerequisite.
-                    // If the ACP spec adds a dedicated SSE capability field in the future,
-                    // it should be checked here: `init_response.agent_capabilities.mcp_capabilities.sse`
-                    if let Some(url) = &server.url {
-                        // SSE servers use the same HTTP structure for now
-                        // The actual SSE transport will be handled by the MCP client
-                        let mut sse_server = McpServerHttp::new(&server.name, url);
-
-                        // Add headers
-                        if !server.headers.is_empty() {
-                            let header_vec: Vec<HttpHeader> = server
-                                .headers
-                                .clone()
-                                .into_iter()
-                                .map(|(k, v)| HttpHeader::new(k, v))
-                                .collect();
-                            if !header_vec.is_empty() {
-                                sse_server = sse_server.headers(header_vec);
-                            }
-                        }
-
-                        declarations.push(McpServer::Http(sse_server));
-                        debug!(
-                            mcp_name = %server.name,
-                            mcp_url = %url,
-                            "User MCP server loaded (SSE as HTTP)"
-                        );
-                    } else {
-                        warn!(
-                            mcp_name = %server.name,
-                            "SSE MCP server missing URL; skipping"
-                        );
-                    }
+                    // SSE transport requires GET event stream + POST for requests,
+                    // but ACP's McpServerHttp only supports POST (request-response).
+                    // SSE servers cannot be properly configured with current ACP protocol.
+                    // Skip with a clear warning message.
+                    warn!(
+                        mcp_name = %server.name,
+                        mcp_url = ?server.url,
+                        "SSE MCP server not supported: ACP protocol does not currently support SSE transport \
+                         (requires GET event stream + POST, but McpServerHttp only does POST). \
+                         Server skipped. Consider using stdio or HTTP transport instead."
+                    );
+                    continue;
                 }
                 other => {
                     warn!(
@@ -2921,6 +2983,11 @@ impl AcpBackendInterface for AcpBackend {
             Arc::new(std::sync::atomic::AtomicBool::new(false));
         let task_in_tool_call: Arc<std::sync::atomic::AtomicBool> =
             Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Turn-scoped token for notification handlers
+        // This ensures notifications are attributed to the correct turn, preventing
+        // cross-turn pollution when late notifications arrive after the next turn starts.
+        let task_current_turn_token: Arc<RwLock<Option<crate::output_accumulator::TurnToken>>> =
+            Arc::new(RwLock::new(None));
         let cwd = handle
             .metadata
             .get("work_dir")
@@ -3075,6 +3142,7 @@ impl AcpBackendInterface for AcpBackend {
                         let notify_available_commands = task_available_commands.clone();
                         let notify_in_thinking = task_in_thinking.clone();
                         let notify_in_tool_call = task_in_tool_call.clone();
+                        let notify_turn_token = task_current_turn_token.clone();
                         async move |notification: ExtendedSessionNotification, _cx| {
                             // Handle extended session notifications (including subagent events)
                             match notification {
@@ -3087,6 +3155,7 @@ impl AcpBackendInterface for AcpBackend {
                                         &notify_session_title, &notify_title_no_change,
                                         &notify_config_options, &notify_available_commands,
                                         &notify_in_thinking, &notify_in_tool_call,
+                                        &notify_turn_token,
                                     ).await;
                                 }
                                 ExtendedSessionNotification::SubagentSpawned(event) => {
@@ -3098,7 +3167,8 @@ impl AcpBackendInterface for AcpBackend {
                                         "Subagent spawned by agent"
                                     );
                                     // Emit subagent event for upstream processing
-                                    send_output_event(
+                                    send_output_event_with_turn_token(
+                                        &notify_turn_token,
                                         &notify_conversation_id,
                                         AgentOutputEvent::SubagentSpawned {
                                             role: "assistant".to_string(),
@@ -3106,7 +3176,7 @@ impl AcpBackendInterface for AcpBackend {
                                             name: event.name.clone(),
                                             task: event.task.clone(),
                                         },
-                                    );
+                                    ).await;
                                 }
                                 ExtendedSessionNotification::SubagentStateUpdate(event) => {
                                     info!(
@@ -3115,14 +3185,15 @@ impl AcpBackendInterface for AcpBackend {
                                         "Subagent state updated"
                                     );
                                     // Emit subagent state update for upstream processing
-                                    send_output_event(
+                                    send_output_event_with_turn_token(
+                                        &notify_turn_token,
                                         &notify_conversation_id,
                                         AgentOutputEvent::SubagentStateUpdate {
                                             role: "assistant".to_string(),
                                             subagent_session_id: event.subagent_session_id.clone(),
                                             state: event.state.clone(),
                                         },
-                                    );
+                                    ).await;
                                 }
                             }
                             *last_activity.write() = Instant::now();
@@ -3529,6 +3600,18 @@ impl AcpBackendInterface for AcpBackend {
                                 // The agent will process it after the current prompt completes
                                 task_text_output_seen.store(false, Ordering::Relaxed);
                                 task_recent_thinking.lock().clear();
+
+                                // Begin a new turn for output accumulation
+                                // This creates a fresh accumulator for this interrupt prompt turn
+                                let turn_token = if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
+                                    let token = registry.begin_turn(&connection_conversation_id, 0).await;
+                                    // Set the turn-scoped token for notification handlers
+                                    *task_current_turn_token.write() = Some(token.clone());
+                                    Some(token)
+                                } else {
+                                    None
+                                };
+
                                 let prompt_started_at = Instant::now();
 
                                 let mut content = if message.is_empty() {
@@ -3570,24 +3653,52 @@ impl AcpBackendInterface for AcpBackend {
                                             .await;
                                         *task_stop_reason.write() = Some(sr.clone());
 
-                                        // Flush accumulated output and persist to database
-                                        flush_and_persist_output(
-                                            &connection_conversation_id,
-                                            &connection_agent_id,
-                                            "interrupt",
-                                        ).await;
+                                        // Send Done event first (sets stop_reason on accumulator)
+                                        if let Some(ref token) = turn_token {
+                                            send_output_event(
+                                                token,
+                                                AgentOutputEvent::Done {
+                                                    role: "assistant".to_string(),
+                                                    stop_reason: sr,
+                                                },
+                                            ).await;
+                                        }
 
-                                        send_output_event(
-                                            &connection_conversation_id,
-                                            AgentOutputEvent::Done {
-                                                role: "assistant".to_string(),
-                                                stop_reason: sr,
-                                            },
-                                        );
+                                        // Then flush accumulated output and persist to database
+                                        if let Some(ref token) = turn_token {
+                                            flush_and_persist_output(
+                                                token,
+                                                &connection_agent_id,
+                                                "interrupt",
+                                            ).await;
+                                        }
+                                        // Clear the turn-scoped token for notification handlers
+                                        *task_current_turn_token.write() = None;
+
                                         let _ = response_tx.send(Ok(()));
                                     }
                                     Err(e) => {
                                         warn!(error = %e, message_id = %message_id, "Interrupt prompt failed");
+                                        // Send error Done event before flushing
+                                        if let Some(ref token) = turn_token {
+                                            send_output_event(
+                                                token,
+                                                AgentOutputEvent::Done {
+                                                    role: "assistant".to_string(),
+                                                    stop_reason: "error".to_string(),
+                                                },
+                                            ).await;
+                                        }
+                                        // Flush the accumulator to persist any output collected before failure
+                                        if let Some(ref token) = turn_token {
+                                            flush_and_persist_output(
+                                                token,
+                                                &connection_agent_id,
+                                                "failed interrupt",
+                                            ).await;
+                                        }
+                                        // Clear the turn-scoped token for notification handlers
+                                        *task_current_turn_token.write() = None;
                                         let _ = response_tx.send(Err(ErgataiError::internal(
                                             format!("Interrupt prompt failed: {e}"),
                                         )));
@@ -3603,6 +3714,18 @@ impl AcpBackendInterface for AcpBackend {
                                 // New prompt turn — reset the thinking
                                 // accumulator so it only covers this turn.
                                 task_recent_thinking.lock().clear();
+
+                                // Begin a new turn for output accumulation
+                                // This creates a fresh accumulator for this prompt turn
+                                let turn_token = if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
+                                    let token = registry.begin_turn(&connection_conversation_id, 0).await;
+                                    // Set the turn-scoped token for notification handlers
+                                    *task_current_turn_token.write() = Some(token.clone());
+                                    Some(token)
+                                } else {
+                                    None
+                                };
+
                                 let prompt_started_at = Instant::now();
                                 info!(
                                     agent_id = %connection_agent_id,
@@ -3650,24 +3773,52 @@ impl AcpBackendInterface for AcpBackend {
                                             .await;
                                         *task_stop_reason.write() = Some(sr.clone());
 
-                                        // Flush accumulated output and persist to database
-                                        flush_and_persist_output(
-                                            &connection_conversation_id,
-                                            &connection_agent_id,
-                                            "queued prompt",
-                                        ).await;
+                                        // Send Done event first (sets stop_reason on accumulator)
+                                        if let Some(ref token) = turn_token {
+                                            send_output_event(
+                                                token,
+                                                AgentOutputEvent::Done {
+                                                    role: "assistant".to_string(),
+                                                    stop_reason: sr,
+                                                },
+                                            ).await;
+                                        }
 
-                                        send_output_event(
-                                            &connection_conversation_id,
-                                            AgentOutputEvent::Done {
-                                                role: "assistant".to_string(),
-                                                stop_reason: sr,
-                                            },
-                                        );
+                                        // Then flush accumulated output and persist to database
+                                        if let Some(ref token) = turn_token {
+                                            flush_and_persist_output(
+                                                token,
+                                                &connection_agent_id,
+                                                "queued prompt",
+                                            ).await;
+                                        // Clear the turn-scoped token for notification handlers
+                                        *task_current_turn_token.write() = None;
+                                        }
+
                                         let _ = response_tx.send(Ok(()));
                                     }
                                     Err(e) => {
                                         warn!(error = %e, "ACP queued prompt failed");
+                                        // Send error Done event before flushing
+                                        if let Some(ref token) = turn_token {
+                                            send_output_event(
+                                                token,
+                                                AgentOutputEvent::Done {
+                                                    role: "assistant".to_string(),
+                                                    stop_reason: "error".to_string(),
+                                                },
+                                            ).await;
+                                        }
+                                        // Flush the accumulator to persist any output collected before failure
+                                        if let Some(ref token) = turn_token {
+                                            flush_and_persist_output(
+                                                token,
+                                                &connection_agent_id,
+                                                "failed queued prompt",
+                                            ).await;
+                                        // Clear the turn-scoped token for notification handlers
+                                        *task_current_turn_token.write() = None;
+                                        }
                                         let _ = response_tx.send(Err(ErgataiError::internal(
                                             format!("ACP queued prompt failed: {e}"),
                                         )));
@@ -3683,6 +3834,18 @@ impl AcpBackendInterface for AcpBackend {
                                 // New prompt turn — reset the thinking
                                 // accumulator so it only covers this turn.
                                 task_recent_thinking.lock().clear();
+
+                                // Begin a new turn for output accumulation
+                                // This creates a fresh accumulator for this prompt turn
+                                let turn_token = if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
+                                    let token = registry.begin_turn(&connection_conversation_id, 0).await;
+                                    // Set the turn-scoped token for notification handlers
+                                    *task_current_turn_token.write() = Some(token.clone());
+                                    Some(token)
+                                } else {
+                                    None
+                                };
+
                                 let prompt_started_at = Instant::now();
                                 info!(
                                     agent_id = %connection_agent_id,
@@ -3733,20 +3896,28 @@ impl AcpBackendInterface for AcpBackend {
                                             .await;
                                         *task_stop_reason.write() = Some(sr.clone());
 
-                                        // Flush accumulated output and persist to database
-                                        flush_and_persist_output(
-                                            &connection_conversation_id,
-                                            &connection_agent_id,
-                                            "normal completion",
-                                        ).await;
+                                        // Send Done event first (sets stop_reason on accumulator)
+                                        if let Some(ref token) = turn_token {
+                                            send_output_event(
+                                                token,
+                                                AgentOutputEvent::Done {
+                                                    role: "assistant".to_string(),
+                                                    stop_reason: sr.clone(),
+                                                },
+                                            ).await;
+                                        }
 
-                                        send_output_event(
-                                            &connection_conversation_id,
-                                            AgentOutputEvent::Done {
-                                                role: "assistant".to_string(),
-                                                stop_reason: sr.clone(),
-                                            },
-                                        );
+                                        // Then flush accumulated output and persist to database
+                                        if let Some(ref token) = turn_token {
+                                            flush_and_persist_output(
+                                                token,
+                                                &connection_agent_id,
+                                                "normal completion",
+                                            ).await;
+                                        // Clear the turn-scoped token for notification handlers
+                                        *task_current_turn_token.write() = None;
+                                        }
+
                                         let _ = response_tx.send(Ok(()));
 
                                         // Auto-continue on max_tokens / max_turn_requests
@@ -3808,6 +3979,26 @@ impl AcpBackendInterface for AcpBackend {
                                     }
                                     Err(e) => {
                                         warn!(error = %e, "ACP prompt failed");
+                                        // Send error Done event before flushing
+                                        if let Some(ref token) = turn_token {
+                                            send_output_event(
+                                                token,
+                                                AgentOutputEvent::Done {
+                                                    role: "assistant".to_string(),
+                                                    stop_reason: "error".to_string(),
+                                                },
+                                            ).await;
+                                        }
+                                        // Flush the accumulator to persist any output collected before failure
+                                        if let Some(ref token) = turn_token {
+                                            flush_and_persist_output(
+                                                token,
+                                                &connection_agent_id,
+                                                "failed prompt",
+                                            ).await;
+                                        }
+                                        // Clear the turn-scoped token for notification handlers
+                                        *task_current_turn_token.write() = None;
                                         let _ = response_tx.send(Err(ErgataiError::internal(
                                             format!("ACP prompt failed: {e}"),
                                         )));
