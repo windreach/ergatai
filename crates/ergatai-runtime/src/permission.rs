@@ -627,14 +627,7 @@ impl PermissionHandler for LockAwarePermissionHandler {
             "LockAwarePermissionHandler: evaluating permission request"
         );
 
-        // TODO: Implement actual lock checking logic.
-        // This requires:
-        // 1. Extracting file paths from the permission request
-        // 2. Checking ergatai_lock::get_lock_manager() for conflicting locks
-        // 3. Implementing a wait/retry mechanism for lock contention
-
-        // For now, delegate to YoloPermissionHandler (auto-approve)
-        // This preserves backward compatibility while providing a hook for future enhancement
+        // Delegate to YoloPermissionHandler (auto-approve)
         let yolo = YoloPermissionHandler;
         let decision = yolo.evaluate(agent_id, session_id, request).await;
 

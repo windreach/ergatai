@@ -206,13 +206,12 @@ pub async fn agent_snapshot_batch(agent_ids: &[&str]) -> HashMap<String, AgentSn
         .collect()
 }
 
-/// Resolve an agent ID (profile name, ergatai_agent_id, or runtime ID) to a runtime ID.
+/// Resolve an agent ID (runtime ID or MCP agent ID) to a runtime ID.
 /// Returns `None` if the agent is not found or not running.
 pub async fn resolve_to_runtime_id(agent_id: &str) -> Option<String> {
-    // Delegate to the more complete resolve_agent_id which handles:
+    // Delegate to resolve_agent_id which handles:
     // 1. Direct lookup by runtime ID
     // 2. MCP agent ID lookup via bindings
-    // 3. Profile name resolution (TODO)
     resolve_agent_id(agent_id).await
 }
 
@@ -693,9 +692,11 @@ pub async fn list_agents_filtered(filter: AgentListFilter) -> Vec<AgentListItem>
 /// Resolve an agent ID to a runtime agent ID.
 ///
 /// Tries:
-/// 1. Direct lookup by runtime ID (e.g., "ws1-agent-1")
+/// 1. Direct lookup by runtime ID (e.g., "agent_502816809136_000_0001")
 /// 2. Lookup by MCP agent ID (e.g., "agent-1")
-/// 3. Profile name resolution (TODO)
+///
+/// Note: Profile names are NOT resolved here because profiles are templates,
+/// not running agent instances. Multiple agents can be created from the same profile.
 ///
 /// Returns `None` if the agent is not found or not running.
 pub async fn resolve_agent_id(agent_id: &str) -> Option<String> {
@@ -714,7 +715,6 @@ pub async fn resolve_agent_id(agent_id: &str) -> Option<String> {
             }
         }
     }
-    // TODO: Add profile name resolution
     None
 }
 

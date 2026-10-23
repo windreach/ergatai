@@ -76,17 +76,19 @@ impl ConversationService {
     }
 
     /// 更新 Conversation 状态
-    pub fn update_status(_conversation_id: ConversationId, _status: &str) -> anyhow::Result<bool> {
-        // TODO: 实现状态更新
+    pub fn update_status(conversation_id: ConversationId, status: &str) -> anyhow::Result<bool> {
+        let mut conversation = conversations::get(conversation_id)?
+            .ok_or_else(|| anyhow::anyhow!("Conversation not found: {}", conversation_id))?;
+
+        conversation.status = status.to_string();
+        conversation.updated_at = chrono::Utc::now().timestamp();
+
+        conversations::update(conversation)?;
         Ok(true)
     }
 
-    /// 删除 Conversation（级联删除 Agent 和 Message）
+    /// 删除 Conversation（数据库已配置 ON DELETE CASCADE，会自动删除关联的 Message）
     pub fn delete_conversation(conversation_id: ConversationId) -> anyhow::Result<()> {
-        // TODO: 实现级联删除
-        // 1. 删除该 conversation 下的所有 message
-        // 2. 删除该 conversation 下的 agent（如果有）
-        // 3. 删除 conversation 本身
         conversations::delete(conversation_id)?;
         Ok(())
     }

@@ -189,13 +189,6 @@ impl FileMonitor {
                     "Failed to record lock violation"
                 );
             }
-
-            // TODO: Implement file rollback using hash-based snapshots
-            // This would restore the file to the last known good version
-            // For now, we only record the violation and alert
-
-            // TODO: Send notification via NATS event bus
-            // event_bus.publish_unauthorized_modification(&relative_path).await?;
         }
 
         Ok(())

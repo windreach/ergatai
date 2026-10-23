@@ -38,7 +38,7 @@ pub struct StateTransition {
 /// - `mcp_agent_id`: **MCP connection ID** — for MCP peer binding (e.g., `opencode@abcd`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRecord {
-    /// Dynamic runtime agent ID (e.g., "ws1-agent-1", changes on restart).
+    /// Dynamic runtime agent ID (e.g., "agent_502816809136_000_0001", changes on restart).
     /// This is the primary key for NATS routing and registry lookup.
     pub agent_id: String,
 

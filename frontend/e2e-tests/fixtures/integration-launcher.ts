@@ -110,7 +110,11 @@ async function stopBackend(): Promise<void> {
 /**
  * 启动 Electron 应用（连接真实后端）
  */
-export async function launchIntegrationElectron(): Promise<{ electron: ElectronApplication; page: Page }> {
+export async function launchIntegrationElectron(): Promise<{
+  electron: ElectronApplication
+  page: Page
+  backendProcess: ChildProcess | null
+}> {
   const display = await ensureXvfb()
   await startBackend()
 
@@ -136,7 +140,7 @@ export async function launchIntegrationElectron(): Promise<{ electron: ElectronA
   await page.waitForLoadState('domcontentloaded')
   console.log('✅ Electron 已启动')
 
-  return { electron: electronApp, page }
+  return { electron: electronApp, page, backendProcess }
 }
 
 /**

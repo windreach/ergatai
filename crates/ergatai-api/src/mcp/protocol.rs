@@ -157,7 +157,7 @@ impl ServerHandler for ErgataiMcpServer {
                         }
                         None => {
                             // Identifier mismatch (e.g. URL path "agent-1" vs runtime
-                            // "ws1-agent-1"). Fall back to FIFO binding so MCP ↔ ACP
+                            // "agent_502816809136_000_0001"). Fall back to FIFO binding so MCP ↔ ACP
                             // mapping still works.
                             warn!(
                                 mcp_agent_id = unique_agent_id,
@@ -328,7 +328,7 @@ MUST distinguish user messages (free-form) from agent messages (JSON).
 }
 
 Fields:
-- `from`: Sender's MCP agent ID (e.g., "ws1-agent-1", "agent-42"). This is the unified ID format — use it as `target_agent_id` when replying. `from` and `_reply` always contain the same ID.
+- `from`: Sender's MCP agent ID (e.g., "agent_502816809136_000_0001"). This is the unified ID format — use it as `target_agent_id` when replying. `from` and `_reply` always contain the same ID.
 - `message`: Content
 - `message_type`: "request" | "response" | "broadcast"
 - `_reply`: (request only) Exact `send_message` call — MUST follow. **Absent (null) for response/broadcast** — do NOT call send_message unless there is new work or a specific task.

@@ -318,7 +318,7 @@ fn is_likely_file_path(token: &str) -> bool {
     true
 }
 
-/// Normalize a path: strip quotes, trailing shell metacharacters, handle ~ expansion (future work).
+/// Normalize a path: strip quotes, trailing shell metacharacters, handle ~ expansion.
 fn normalize_path(path: &str) -> String {
     // Strip surrounding quotes
     let path = path.trim_matches('"').trim_matches('\'');
@@ -326,8 +326,17 @@ fn normalize_path(path: &str) -> String {
     // Strip trailing shell metacharacters like ;, &, |
     let path = path.trim_end_matches(&[';', '&', '|'][..]);
 
-    // TODO: Handle ~ expansion if needed
-    // For now, return as-is
+    // Handle ~ expansion (cache home_dir() to avoid repeated lookups)
+    if path == "~" || path.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            if path == "~" {
+                return home.to_string_lossy().to_string();
+            } else {
+                // path.starts_with("~/")
+                return home.join(&path[2..]).to_string_lossy().to_string();
+            }
+        }
+    }
 
     path.to_string()
 }

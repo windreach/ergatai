@@ -692,7 +692,7 @@ pub struct FileEnforcementPayload {
 /// Subject: `ergatai.agent.lifecycle.{agent_id}`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentLifecycleEventPayload {
-    /// Dynamic agent ID (e.g., "ws1-agent-1")
+    /// Dynamic agent ID (e.g., "agent_502816809136_000_0001")
     pub agent_id: AgentId,
     /// State name before transition (lowercase, e.g., "running")
     pub from_state: String,

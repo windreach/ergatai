@@ -214,12 +214,12 @@ pub struct SessionInfo {
 ///
 /// ## ID System (Simplified)
 ///
-/// - `agent_id`: Runtime ID for NATS routing (e.g., "ws1-agent-1")
+/// - `agent_id`: Runtime ID for NATS routing (e.g., "agent_502816809136_000_0001")
 /// - `conversation_id`: Application ID for Conversation-centric routing (1:1 with agent)
 /// - `mcp_agent_id`: MCP connection ID (e.g., "opencode@abcd1234")
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
-    /// Runtime agent ID (e.g., "ws1-agent-1", used for message delivery)
+    /// Runtime agent ID (e.g., "agent_502816809136_000_0001", used for message delivery)
     /// Changes when the process dies and a new one is created.
     pub agent_id: String,
 

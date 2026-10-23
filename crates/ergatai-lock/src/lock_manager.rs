@@ -2087,8 +2087,8 @@ impl FileLockManager {
 
     /// Get all active locks for a session (for ACP disconnect reclaim).
     ///
-    /// Unlike `get_locks_by_token` which queries by file_token_id,
-    /// this queries by session_id — which is what the watchdog needs
+    /// Unlike `get_locks_by_token` which queries by per-lock `token_id` column,
+    /// this queries by `session_id` — which is what the watchdog needs
     /// when reclaiming all locks for a disconnected agent session.
     pub fn get_locks_by_session(&self, session_id: &str) -> Result<Vec<FileLock>, ErgataiError> {
         let conn = self.conn.lock();

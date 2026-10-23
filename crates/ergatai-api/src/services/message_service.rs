@@ -32,10 +32,10 @@ impl MessageService {
     }
 
     /// 获取 Message
-    pub fn get_message(_message_id: &str) -> anyhow::Result<Option<Message>> {
-        // TODO: 实现单个 message 查询
-        // 目前 messages 模块没有 get 方法，需要添加
-        Ok(None)
+    pub fn get_message(message_id: &str) -> anyhow::Result<Option<Message>> {
+        let message_id = ergatai_error::MessageId::decode(message_id)?;
+        let message = messages::get(message_id)?;
+        Ok(message)
     }
 
     /// 列出 Message（通过 conversation_id 过滤）
@@ -76,15 +76,32 @@ impl MessageService {
     }
 
     /// 更新 Message
-    pub fn update_message(_message_id: &str, _content: &str) -> anyhow::Result<bool> {
-        // TODO: 实现 message 更新
-        Ok(true)
+    pub async fn update_message(message_id: &str, content: &str) -> anyhow::Result<bool> {
+        let message_id = ergatai_error::MessageId::decode(message_id)?;
+
+        // 构建新的 parts JSON
+        let parts = Self::build_text_parts(content);
+
+        let result = messages::update(message_id, Some(parts), None).await?;
+        Ok(result.is_some())
+    }
+
+    /// 构建文本消息的 parts JSON
+    ///
+    /// 将纯文本内容转换为消息存储格式：`[{"type": "text", "text": "..."}]`
+    fn build_text_parts(content: &str) -> String {
+        serde_json::json!([{
+            "type": "text",
+            "text": content
+        }])
+        .to_string()
     }
 
     /// 删除 Message
-    pub fn delete_message(_message_id: &str) -> anyhow::Result<bool> {
-        // TODO: 实现 message 删除
-        Ok(true)
+    pub async fn delete_message(message_id: &str) -> anyhow::Result<bool> {
+        let message_id = ergatai_error::MessageId::decode(message_id)?;
+        let deleted = messages::delete(message_id).await?;
+        Ok(deleted)
     }
 
     /// 替换历史消息（用于同步）

@@ -250,6 +250,7 @@ mod tests {
         AgentHandle, BackendCapabilities, ResourceLimits, WaitResult, WorkspaceHandle,
         WorkspaceSpec,
     };
+    use ergatai_error::id::{format as format_id, generate, IdType};
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -300,8 +301,8 @@ mod tests {
             })
         }
 
-        fn next_agent_id(&self, workspace_id: &str) -> String {
-            format!("{}-agent-0", workspace_id)
+        fn next_agent_id(&self, _workspace_id: &str) -> String {
+            format_id(generate(), IdType::Agent)
         }
 
         async fn start_agent(
@@ -312,7 +313,7 @@ mod tests {
         ) -> ErgataiResult<AgentHandle> {
             Ok(AgentHandle {
                 workspace: handle.clone(),
-                agent_id: format!("{}-agent", handle.id),
+                agent_id: format_id(generate(), IdType::Agent),
                 process_id: None,
                 metadata: HashMap::new(),
             })
@@ -586,7 +587,15 @@ mod tests {
             metadata: HashMap::new(),
         };
         let agent = backend.start_agent(&ws, "echo hi", None).await.unwrap();
-        assert_eq!(agent.agent_id, "ws-1-agent");
+        assert!(
+            agent.agent_id.starts_with("agent_"),
+            "agent_id should be a formatted Snowflake ID, got: {}",
+            agent.agent_id
+        );
+        assert!(
+            ergatai_error::id::parse_to_i64(&agent.agent_id).is_some(),
+            "agent_id should be parseable as Snowflake i64"
+        );
         assert_eq!(agent.workspace.id, "ws-1");
     }
 

@@ -44,9 +44,189 @@ use agent_client_protocol::{
     UntypedMessage,
 };
 
+use super::acp_startup::{RetryExecutor, StartupPhase, StartupPhaseExecutor};
+
 /// Maximum size (in bytes) of recent thinking to retain per agent.
 /// Prevents unbounded memory growth from long-running thinking blocks.
 const RECENT_THINKING_MAX_BYTES: usize = 16 * 1024; // 16 KB
+
+// ============================================================================
+// Startup Phase Executors
+// ============================================================================
+//
+// These executors encapsulate the two async phases of ACP agent startup
+// that run inside the connection task:
+// 1. AcpInitialize: Establish ACP protocol connection
+// 2. SessionCreate: Create or load ACP session
+//
+// Each phase implements StartupPhaseExecutor trait and is executed via
+// RetryExecutor for automatic timeout, retry, and error handling.
+//
+// Note: Phase 0 (ProcessSpawn) remains inline in start_agent() as it's
+// synchronous and doesn't benefit from async retry logic.
+
+/// Phase 2: ACP Initialize
+///
+/// Sends InitializeRequest to establish ACP protocol connection.
+/// This phase runs inside the connection task.
+struct AcpInitializePhase<'a> {
+    agent_id: &'a str,
+    connection: &'a ConnectionTo<Agent>,
+    /// Output: init response (filled on success)
+    init_response:
+        Arc<tokio::sync::Mutex<Option<agent_client_protocol::schema::v1::InitializeResponse>>>,
+}
+
+#[async_trait::async_trait]
+impl StartupPhaseExecutor for AcpInitializePhase<'_> {
+    fn phase(&self) -> StartupPhase {
+        StartupPhase::AcpInitialize
+    }
+
+    async fn execute(&self) -> ergatai_error::ErgataiResult<()> {
+        let response = self
+            .connection
+            .send_request(InitializeRequest::new(ProtocolVersion::V1))
+            .block_task()
+            .await
+            .map_err(|e| {
+                ergatai_error::ErgataiError::internal(format!("ACP initialize failed: {}", e))
+            })?;
+
+        info!(
+            agent_id = %self.agent_id,
+            agent_info = ?response.agent_info,
+            capabilities = ?response.agent_capabilities,
+            "ACP agent initialized"
+        );
+
+        *self.init_response.lock().await = Some(response);
+        Ok(())
+    }
+
+    fn is_retryable(&self, _error: &ergatai_error::ErgataiError) -> bool {
+        // Initialize failures are usually retryable (agent may still be starting up)
+        true
+    }
+
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(30)
+    }
+}
+
+/// Phase 3: Session Create
+///
+/// Creates or loads an ACP session.
+/// This phase runs inside the connection task after initialization.
+struct SessionCreatePhase<'a> {
+    connection: &'a ConnectionTo<Agent>,
+    cwd: std::path::PathBuf,
+    saved_session_id: Option<String>,
+    mcp_declaration: Option<McpServer>,
+    user_mcp_declarations: Vec<McpServer>,
+    claude_code_mcp_meta: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Output: session_id (filled on success)
+    session_id: Arc<tokio::sync::Mutex<Option<String>>>,
+    /// Output: config_options (filled on success)
+    config_options: Arc<RwLock<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>>,
+}
+
+#[async_trait::async_trait]
+impl StartupPhaseExecutor for SessionCreatePhase<'_> {
+    fn phase(&self) -> StartupPhase {
+        StartupPhase::SessionCreate
+    }
+
+    async fn execute(&self) -> ergatai_error::ErgataiResult<()> {
+        let (session_id, config_opts) = if let Some(saved_sid) = &self.saved_session_id {
+            // Try to load existing session
+            let mut load_request = LoadSessionRequest::new(saved_sid.clone(), &self.cwd);
+            if let Some(decl) = &self.mcp_declaration {
+                load_request.mcp_servers.push(decl.clone());
+            }
+            for decl in &self.user_mcp_declarations {
+                load_request.mcp_servers.push(decl.clone());
+            }
+            if let Some(meta) = &self.claude_code_mcp_meta {
+                load_request.meta = Some(meta.clone());
+            }
+
+            match self
+                .connection
+                .send_request(load_request)
+                .block_task()
+                .await
+            {
+                Ok(load_resp) => {
+                    info!(session_id = %saved_sid, "Loaded existing ACP session");
+                    let config_opts = load_resp.config_options.unwrap_or_default();
+                    (saved_sid.clone(), config_opts)
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        saved_session_id = %saved_sid,
+                        "session/load failed, falling back to session/new"
+                    );
+                    self.create_new_session().await?
+                }
+            }
+        } else {
+            self.create_new_session().await?
+        };
+
+        *self.session_id.lock().await = Some(session_id);
+        *self.config_options.write() = config_opts;
+        Ok(())
+    }
+
+    fn is_retryable(&self, error: &ergatai_error::ErgataiError) -> bool {
+        // Session creation failures are usually retryable
+        // but data corruption is not
+        !matches!(
+            error,
+            ergatai_error::ErgataiError::InternalError { message, .. }
+                if message.contains("corrupt")
+        )
+    }
+
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(20)
+    }
+}
+
+impl SessionCreatePhase<'_> {
+    async fn create_new_session(
+        &self,
+    ) -> ergatai_error::ErgataiResult<(
+        String,
+        Vec<agent_client_protocol::schema::v1::SessionConfigOption>,
+    )> {
+        let mut new_request = NewSessionRequest::new(&self.cwd);
+        if let Some(decl) = &self.mcp_declaration {
+            new_request.mcp_servers.push(decl.clone());
+        }
+        for decl in &self.user_mcp_declarations {
+            new_request.mcp_servers.push(decl.clone());
+        }
+        if let Some(meta) = &self.claude_code_mcp_meta {
+            new_request.meta = Some(meta.clone());
+        }
+
+        let new_resp = self
+            .connection
+            .send_request(new_request)
+            .block_task()
+            .await
+            .map_err(|e| {
+                ergatai_error::ErgataiError::internal(format!("Session creation failed: {}", e))
+            })?;
+
+        info!(session_id = %new_resp.session_id, "Created new ACP session");
+        let config_opts = new_resp.config_options.unwrap_or_default();
+        Ok((new_resp.session_id.to_string(), config_opts))
+    }
+}
 
 /// Extended session notification that supports both standard v1 events and extension events
 /// (such as subagent_spawned and subagent_state_update from Claude/Codex adapters).
@@ -1671,9 +1851,12 @@ impl AcpBackend {
                         );
                         continue;
                     }
-                    // SSE support depends on agent capabilities declared in initialize
-                    // For now, we'll treat SSE similar to HTTP but with SSE-specific handling
-                    // TODO: Check agent's mcpCapabilities.sse before adding SSE servers
+                    // NOTE: SSE capability check
+                    // The ACP schema (as of current version) does not expose a dedicated
+                    // `mcp_capabilities.sse` field. SSE transport is treated as a variant
+                    // of HTTP MCP, so we require `mcp_capabilities.http` as a prerequisite.
+                    // If the ACP spec adds a dedicated SSE capability field in the future,
+                    // it should be checked here: `init_response.agent_capabilities.mcp_capabilities.sse`
                     if let Some(url) = &server.url {
                         // SSE servers use the same HTTP structure for now
                         // The actual SSE transport will be handled by the MCP client
@@ -2924,9 +3107,6 @@ impl AcpBackendInterface for AcpBackend {
                                             task: event.task.clone(),
                                         },
                                     );
-                                    // TODO: Create subagent conversation in database
-                                    // This requires access to user_data_db which is in ergatai-api
-                                    // For now, we emit the event and let the API layer handle persistence
                                 }
                                 ExtendedSessionNotification::SubagentStateUpdate(event) => {
                                     info!(
@@ -2943,7 +3123,6 @@ impl AcpBackendInterface for AcpBackend {
                                             state: event.state.clone(),
                                         },
                                     );
-                                    // TODO: Update subagent conversation state in database
                                 }
                             }
                             *last_activity.write() = Instant::now();
@@ -3092,16 +3271,33 @@ impl AcpBackendInterface for AcpBackend {
                     agent_client_protocol::on_receive_request!(),
                 )
                 .connect_with(transport, |connection: ConnectionTo<Agent>| async move {
-                    // Step 1: Initialize the ACP connection.
-                    let init_response = connection
-                        .send_request(InitializeRequest::new(ProtocolVersion::V1))
-                        .block_task()
-                        .await?;
+                    // Step 1: Initialize the ACP connection (with retry and timeout).
+                    let init_response_arc = Arc::new(tokio::sync::Mutex::new(None));
+                    let init_phase = AcpInitializePhase {
+                        agent_id: &task_agent_id_label,
+                        connection: &connection,
+                        init_response: init_response_arc.clone(),
+                    };
+                    RetryExecutor::execute_with_retry(&init_phase, &task_agent_id_label)
+                        .await
+                        .map_err(|e| {
+                            agent_client_protocol::Error::new(
+                                -32000,
+                                format!("ACP initialize failed: {}", e),
+                            )
+                        })?;
 
-                    info!(
-                        agent_info = ?init_response.agent_info,
-                        "ACP agent initialized"
-                    );
+                    // Retrieve the init response from the executor
+                    let init_response = init_response_arc
+                        .lock()
+                        .await
+                        .take()
+                        .ok_or_else(|| {
+                            agent_client_protocol::Error::new(
+                                -32000,
+                                "Init response not set by executor",
+                            )
+                        })?;
 
                     let mcp_acp_supported = init_response
                         .agent_capabilities
@@ -3214,95 +3410,40 @@ impl AcpBackendInterface for AcpBackend {
                     let user_mcp_declarations =
                         Self::load_user_mcp_servers(task_profile_id.as_deref(), mcp_http_supported);
 
-                    // Step 2: Create or load an ACP session.
-                    let mut session_id = if let Some(saved_sid) = saved_session_id {
-                        info!(session_id = %saved_sid, "Attempting session/load");
-                        let mut load_request =
-                            LoadSessionRequest::new(saved_sid.clone(), &cwd);
-                        // Add ergatai built-in MCP
-                        if let Some(declaration) = &mcp_declaration {
-                            load_request.mcp_servers.push(declaration.clone());
-                        }
-                        // Add user-configured MCP servers
-                        for decl in &user_mcp_declarations {
-                            load_request.mcp_servers.push(decl.clone());
-                        }
-                        // Add Claude Code MCP config via _meta field (workaround)
-                        if let Some(meta) = claude_code_mcp_meta.as_ref() {
-                            load_request.meta = Some(meta.clone());
-                        }
-                        match connection
-                            .send_request(load_request)
-                            .block_task()
-                            .await
-                        {
-                            Ok(load_resp) => {
-                                info!(session_id = %saved_sid, "Loaded existing ACP session");
-                                // LoadSessionResponse carries modes/config_options but no session_id;
-                                // the session_id we passed in is the authoritative one.
-                                // Extract config_options from response (includes model selector if supported)
-                                if let Some(config_opts) = load_resp.config_options {
-                                    debug!(count = config_opts.len(), "Captured config_options from session/load response");
-                                    *task_config_options.write() = config_opts;
-                                }
-                                agent_client_protocol::schema::v1::SessionId::from(saved_sid)
-                            }
-                            Err(e) => {
-                                warn!(
-                                    error = %e,
-                                    saved_session_id = %saved_sid,
-                                    "session/load failed, falling back to session/new"
-                                );
-                                let mut new_request = NewSessionRequest::new(&cwd);
-                                // Add ergatai built-in MCP
-                                if let Some(declaration) = &mcp_declaration {
-                                    new_request.mcp_servers.push(declaration.clone());
-                                }
-                                // Add user-configured MCP servers
-                                for decl in &user_mcp_declarations {
-                                    new_request.mcp_servers.push(decl.clone());
-                                }
-                                // Add Claude Code MCP config via _meta field (workaround)
-                                if let Some(meta) = claude_code_mcp_meta.as_ref() {
-                                    new_request.meta = Some(meta.clone());
-                                }
-                                let new_resp = connection
-                                    .send_request(new_request)
-                                    .block_task()
-                                    .await?;
-                                // Extract config_options from response (includes model selector if supported)
-                                if let Some(config_opts) = new_resp.config_options {
-                                    debug!(count = config_opts.len(), "Captured config_options from session/new response");
-                                    *task_config_options.write() = config_opts;
-                                }
-                                new_resp.session_id
-                            }
-                        }
-                    } else {
-                        let mut new_request = NewSessionRequest::new(&cwd);
-                        // Add ergatai built-in MCP
-                        if let Some(declaration) = &mcp_declaration {
-                            new_request.mcp_servers.push(declaration.clone());
-                        }
-                        // Add user-configured MCP servers
-                        for decl in &user_mcp_declarations {
-                            new_request.mcp_servers.push(decl.clone());
-                        }
-                        // Add Claude Code MCP config via _meta field (workaround)
-                        if let Some(meta) = claude_code_mcp_meta {
-                            new_request.meta = Some(meta);
-                        }
-                        let new_resp = connection
-                            .send_request(new_request)
-                            .block_task()
-                            .await?;
-                        // Extract config_options from response (includes model selector if supported)
-                        if let Some(config_opts) = new_resp.config_options {
-                            debug!(count = config_opts.len(), "Captured config_options from session/new response");
-                            *task_config_options.write() = config_opts;
-                        }
-                        new_resp.session_id
+                    // Step 2: Create or load an ACP session (with retry and timeout).
+                    let session_id_arc = Arc::new(tokio::sync::Mutex::new(None));
+                    let session_phase = SessionCreatePhase {
+                        connection: &connection,
+                        cwd: cwd.clone(),
+                        saved_session_id: saved_session_id.clone(),
+                        mcp_declaration: mcp_declaration.clone(),
+                        user_mcp_declarations: user_mcp_declarations.clone(),
+                        claude_code_mcp_meta: claude_code_mcp_meta.clone(),
+                        session_id: session_id_arc.clone(),
+                        config_options: task_config_options.clone(),
                     };
+                    RetryExecutor::execute_with_retry(&session_phase, &task_agent_id_label)
+                        .await
+                        .map_err(|e| {
+                            agent_client_protocol::Error::new(
+                                -32000,
+                                format!("Session creation failed: {}", e),
+                            )
+                        })?;
+
+                    // Retrieve the session_id from the executor
+                    let session_id_str = session_id_arc
+                        .lock()
+                        .await
+                        .take()
+                        .ok_or_else(|| {
+                            agent_client_protocol::Error::new(-32000, "Session ID not set by executor")
+                        })?;
+
+                    // Convert to SessionId type
+                    let mut session_id =
+                        agent_client_protocol::schema::v1::SessionId::from(session_id_str);
+
                     info!(session_id = %session_id, "ACP session ready");
 
                     // Publish session_id for the permission handler closure.

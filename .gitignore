@@ -104,3 +104,6 @@ frontend/dist/
 frontend/.env.local
 frontend/.env.*.local
 frontend/.codebase-memory/
+
+# Playwright test artifacts
+test-results/.last-run.json

@@ -1,17 +1,18 @@
 // Agent Launcher - Starts agents and injects tasks
 // Manages agent sessions and monitors their completion
 //
-// ARCHITECTURE NOTE (Phase 8 - File Access Control Integration):
-// This module is being migrated from git worktree isolation to file access control.
-// Current state: Hybrid mode (worktrees + file access tokens)
-// Target state: File access control only (worktrees removed)
+// ARCHITECTURE NOTE (File Access Control):
+// File locks are acquired through the ACP permission approval mechanism.
+// When an agent's tool needs file access, the ACP protocol sends a
+// `RequestPermissionRequest`, which triggers `try_pre_lock_files()` to
+// acquire locks before the tool executes. This module only registers
+// the SystemToken (session-level authorization) — file-level locks are
+// managed by the ACP backend, not here.
 //
-// Migration progress:
-// - ✅ File access control initialization
-// - ✅ System Token registration for each agent
-// - ✅ File Token request based on task scope
-// - ⏳ Remove worktree creation (pending testing)
-// - ⏳ Update agent instructions to use project root (pending testing)
+// Current state:
+// - ✅ System Token registration for each agent (session-level auth)
+// - ✅ File locks via ACP permission approval (unified with REST/CLI paths)
+// - ✅ Worktree removed — all agents use project root
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,7 +20,7 @@ use std::sync::{Arc, OnceLock};
 
 use ergatai_error::id::{format as format_id, generate, IdType};
 use ergatai_error::{ErgataiError, ErgataiResult, TaskId};
-use ergatai_lock::{FileMode, FileToken, SystemToken};
+use ergatai_lock::SystemToken;
 use ergatai_runtime::{get_agent_runtime, WorkspaceSpec};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -79,7 +80,8 @@ impl AgentSessionStatus {
 pub struct RunningAgent {
     pub task_id: String,
     pub agent_name: String,
-    pub worktree_path: PathBuf,
+    /// Working directory for the agent (typically project root)
+    pub work_dir: PathBuf,
     pub plan_file: PathBuf,
     pub result_file: PathBuf,
     pub status: AgentSessionStatus,
@@ -87,8 +89,6 @@ pub struct RunningAgent {
     pub lifecycle: Option<ergatai_runtime::AgentLifecycleState>,
     /// Runtime agent ID where the agent is running
     pub pane_id: Option<String>,
-    /// File access token ID (for file access control)
-    pub token_id: Option<i64>,
 }
 
 /// Global registry of running agents.
@@ -280,55 +280,14 @@ impl AgentLauncher {
         // Actually register the token
         lock_manager.register_system_token(&system_token)?;
 
-        // Determine file scope based on assignment
-        let scope =
-            if assignment.files_to_modify.is_empty() && assignment.files_to_create.is_empty() {
-                "**".to_string() // Full project access when no files specified
-            } else {
-                // Build scope from file list
-                let mut patterns = Vec::with_capacity(
-                    assignment.files_to_create.len() + assignment.files_to_modify.len(),
-                );
-                patterns.extend(
-                    assignment
-                        .files_to_create
-                        .iter()
-                        .map(|p| p.to_string_lossy().to_string()),
-                );
-                patterns.extend(
-                    assignment
-                        .files_to_modify
-                        .iter()
-                        .map(|p| p.to_string_lossy().to_string()),
-                );
-
-                if patterns.is_empty() {
-                    "**".to_string()
-                } else {
-                    patterns.join(",")
-                }
-            };
-
-        // Request File Token
-        let priority = ergatai_lock::priority_to_number(&assignment.priority);
-        let file_token = FileToken::with_priority(
-            assignment.agent_name.clone(),
-            session_id.clone(),
-            system_token.id.clone(),
-            scope.clone(),
-            FileMode::Write, // Agents need write access
-            Some(format!("Task: {}", assignment.objective)),
-            "system".to_string(), // System auto-approves for now
-            3600,                 // 1 hour TTL
-            30,                   // 30 second heartbeat
-            priority,
-        );
+        // File-level locks are acquired through ACP permission approval flow,
+        // not pre-allocated here. The agent's MCP tools will trigger
+        // RequestPermissionRequest → try_pre_lock_files() when file access is needed.
 
         info!(
             agent_id = agent_id,
-            token_id = %file_token.id,
-            scope = scope,
-            "File token granted"
+            token_id = %system_token.id,
+            "System token registered for agent (file locks via ACP permission approval)"
         );
 
         // Start Watchdog heartbeat for this session
@@ -348,13 +307,6 @@ impl AgentLauncher {
                 "Failed to update system token heartbeat — Watchdog may consider agent dead"
             );
         }
-        if let Err(e) = lock_manager.update_heartbeat(file_token.id.as_i64()) {
-            tracing::warn!(
-                session_id = %session_id,
-                error = %e,
-                "Failed to update file token heartbeat — Watchdog may consider agent dead"
-            );
-        }
 
         // Spawn a background heartbeat task that keeps heartbeat_at fresh for the
         // lifetime of this agent task. This is critical for reused agents: the
@@ -368,7 +320,6 @@ impl AgentLauncher {
             let heartbeat_session = session_id.clone();
             let heartbeat_project = project_id.to_string();
             let heartbeat_sys_token = system_token.id.as_i64();
-            let heartbeat_file_token = file_token.id.as_i64();
             let cancel = tokio_util::sync::CancellationToken::new();
             let cancel_inner = cancel.clone();
             // Register the token so it can be canceled when the agent completes.
@@ -392,7 +343,6 @@ impl AgentLauncher {
                         Err(_) => break,
                     };
                     let _ = lm.update_heartbeat(heartbeat_sys_token);
-                    let _ = lm.update_heartbeat(heartbeat_file_token);
                     if let Ok(wd) = ergatai_lock::get_watchdog(&heartbeat_project).await {
                         let wd_guard = wd.write().await;
                         let _ = wd_guard.mark_busy(&heartbeat_session, 3600).await;
@@ -501,13 +451,12 @@ impl AgentLauncher {
         let running_agent = RunningAgent {
             task_id: plan.task_id.clone(),
             agent_name: assignment.agent_name.clone(),
-            worktree_path: work_dir.clone(),
+            work_dir: work_dir.clone(),
             plan_file: plan.plan_file.clone(),
             result_file: result_file.clone(),
             status: AgentSessionStatus::Running,
             lifecycle: None,
             pane_id,
-            token_id: Some(file_token.id.as_i64()),
         };
 
         self.running_agents
@@ -962,7 +911,7 @@ identifiers, configuration values, etc.).
     async fn spawn_agent_session(
         &self,
         agent_id: &str,
-        worktree_path: &Path,
+        work_dir: &Path,
         agent_name: &str,
         instruction: &str,
         node_id: Option<String>,
@@ -970,7 +919,7 @@ identifiers, configuration values, etc.).
         tracing::info!(
             agent = %agent_id,
             agent_name = %agent_name,
-            worktree = %worktree_path.display(),
+            work_dir = %work_dir.display(),
             "Spawning agent via AgentRuntime"
         );
 
@@ -981,7 +930,7 @@ identifiers, configuration values, etc.).
         let workspace_id = format_id(generate(), IdType::Workspace);
         let spec = WorkspaceSpec {
             id: workspace_id.clone(),
-            work_dir: worktree_path.to_path_buf(),
+            work_dir: work_dir.to_path_buf(),
             env: std::collections::HashMap::new(),
             resources: Default::default(),
             capture_thoughts: false,
@@ -1453,29 +1402,10 @@ identifiers, configuration values, etc.).
                 let _ = watchdog.clear_busy(&session_id).await;
             }
 
-            // SECURITY: Revoke file access tokens so completed/failed agents
-            // don't retain file write permissions beyond their lifetime.
-            if let Some(ref token_id) = agent.token_id {
-                match ergatai_lock::get_lock_manager(&agent.task_id).await {
-                    Ok(lock_manager) => {
-                        if let Err(e) = lock_manager.expire_token(*token_id) {
-                            tracing::warn!(
-                                agent_id = %agent_id,
-                                token_id = %token_id,
-                                error = %e,
-                                "Failed to expire file access token during cleanup"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            agent_id = %agent_id,
-                            error = %e,
-                            "Lock manager not available for token revocation (may not be initialized)"
-                        );
-                    }
-                }
-            }
+            // File locks are now managed through ACP permission approval flow.
+            // Individual file locks are acquired/released by the agent's MCP tools
+            // via RequestPermissionRequest → try_pre_lock_files().
+            // System tokens (created with 3600s TTL in SystemToken::new()) expire naturally.
         }
         Ok(())
     }
@@ -1485,7 +1415,7 @@ identifiers, configuration values, etc.).
     /// Called at the start of each new DAG run to prevent ghost agents
     /// from previous runs appearing in `get_all_status()` results.
     pub async fn clear_stale_agents(&self) -> ErgataiResult<()> {
-        let stale_agents: Vec<(String, String, Option<i64>)> = {
+        let stale_agents: Vec<(String, String)> = {
             let mut agents = self.running_agents.lock().await;
             let stale: Vec<_> = agents
                 .iter()
@@ -1493,13 +1423,13 @@ identifiers, configuration values, etc.).
                     a.status == AgentSessionStatus::Completed
                         || a.status == AgentSessionStatus::Failed
                 })
-                .map(|(id, a)| (id.clone(), a.task_id.clone(), a.token_id))
+                .map(|(id, a)| (id.clone(), a.task_id.clone()))
                 .collect();
 
             let mut result = Vec::with_capacity(stale.len());
-            for (id, task_id, token_id) in stale {
+            for (id, task_id) in stale {
                 if agents.remove(&id).is_some() {
-                    result.push((id, task_id, token_id));
+                    result.push((id, task_id));
                 }
             }
 
@@ -1511,9 +1441,9 @@ identifiers, configuration values, etc.).
             // Lock released here
         };
 
-        // Now clean up agents + tokens without holding the lock
+        // Now clean up agents without holding the lock
         let runtime = get_agent_runtime();
-        for (agent_id, task_id, token_id) in &stale_agents {
+        for (agent_id, task_id) in &stale_agents {
             // Cancel the heartbeat task to prevent background task leak
             cancel_heartbeat(agent_id);
 
@@ -1541,29 +1471,10 @@ identifiers, configuration values, etc.).
                 let _ = watchdog.clear_busy(&session_id).await;
             }
 
-            // SECURITY: Revoke file access tokens so stale agents don't retain
-            // file write permissions beyond their lifetime (same as cleanup_agent).
-            if let Some(ref token_id) = token_id {
-                match ergatai_lock::get_lock_manager(task_id).await {
-                    Ok(lock_manager) => {
-                        if let Err(e) = lock_manager.expire_token(*token_id) {
-                            tracing::warn!(
-                                agent_id = %agent_id,
-                                token_id = %token_id,
-                                error = %e,
-                                "Failed to expire file access token during stale agent cleanup"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            agent_id = %agent_id,
-                            error = %e,
-                            "Lock manager not available for token revocation"
-                        );
-                    }
-                }
-            }
+            // File locks are now managed through ACP permission approval flow.
+            // Individual file locks are acquired/released by the agent's MCP tools
+            // via RequestPermissionRequest → try_pre_lock_files().
+            // System tokens (created with 3600s TTL in SystemToken::new()) expire naturally.
         }
 
         Ok(())
@@ -1823,14 +1734,14 @@ mod tests {
             expected_outputs: HashMap::new(),
         };
 
-        let worktree_path = project_root.join("worktree");
+        let work_dir = project_root.join("worktree");
         let plan_file = project_root.join("plan.md");
         let result_file = project_root.join("result.md");
 
         let instruction = launcher
             .create_agent_instruction(
                 "test-agent",
-                &worktree_path,
+                &work_dir,
                 &plan_file,
                 &result_file,
                 &assignment,
@@ -2026,13 +1937,12 @@ mod tests {
                 RunningAgent {
                     task_id: "task-x".to_string(),
                     agent_name: "agent-y".to_string(),
-                    worktree_path: PathBuf::from("/tmp/work"),
+                    work_dir: PathBuf::from("/tmp/work"),
                     plan_file: PathBuf::from("/tmp/plan.md"),
                     result_file: PathBuf::from("/tmp/result.md"),
                     status: AgentSessionStatus::Running,
                     lifecycle: None,
                     pane_id: None,
-                    token_id: None,
                 },
             );
         }
@@ -2060,13 +1970,12 @@ mod tests {
                 RunningAgent {
                     task_id: "task-done".to_string(),
                     agent_name: "agent-a".to_string(),
-                    worktree_path: PathBuf::from("/tmp"),
+                    work_dir: PathBuf::from("/tmp"),
                     plan_file: PathBuf::from("/tmp/p.md"),
                     result_file: PathBuf::from("/tmp/r.md"),
                     status: AgentSessionStatus::Completed,
                     lifecycle: None,
                     pane_id: None,
-                    token_id: None,
                 },
             );
         }
@@ -2086,13 +1995,12 @@ mod tests {
                 RunningAgent {
                     task_id: "task-live".to_string(),
                     agent_name: "agent-b".to_string(),
-                    worktree_path: PathBuf::from("/tmp"),
+                    work_dir: PathBuf::from("/tmp"),
                     plan_file: PathBuf::from("/tmp/p.md"),
                     result_file: PathBuf::from("/tmp/r.md"),
                     status: AgentSessionStatus::Running,
                     lifecycle: None,
                     pane_id: None,
-                    token_id: None,
                 },
             );
         }
@@ -2112,13 +2020,12 @@ mod tests {
                 RunningAgent {
                     task_id: "task-failed".to_string(),
                     agent_name: "agent-c".to_string(),
-                    worktree_path: PathBuf::from("/tmp"),
+                    work_dir: PathBuf::from("/tmp"),
                     plan_file: PathBuf::from("/tmp/p.md"),
                     result_file: PathBuf::from("/tmp/r.md"),
                     status: AgentSessionStatus::Failed,
                     lifecycle: None,
                     pane_id: None,
-                    token_id: None,
                 },
             );
         }

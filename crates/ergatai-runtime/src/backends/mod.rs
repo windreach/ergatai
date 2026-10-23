@@ -6,4 +6,5 @@
 
 pub mod acp;
 pub mod acp_http;
+pub mod acp_startup;
 pub mod proc_linux;

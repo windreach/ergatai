@@ -540,16 +540,37 @@ pub async fn get_dag_metrics(dag_id: Option<&str>) -> DagMetricsResult {
         };
     };
 
-    let statuses = extract_statuses(&scheduler).await;
+    let status_info = extract_statuses_and_times(&scheduler).await;
 
-    let total_nodes = statuses.len() as u32;
-    let completed_nodes = statuses
+    let total_nodes = status_info.statuses.len() as u32;
+    let completed_nodes = status_info
+        .statuses
         .iter()
         .filter(|s| s.as_str() == "completed")
         .count() as u32;
-    let failed_nodes = statuses.iter().filter(|s| s.as_str() == "failed").count() as u32;
-    let running_nodes = statuses.iter().filter(|s| s.as_str() == "running").count() as u32;
-    let pending_nodes = statuses.iter().filter(|s| s.as_str() == "pending").count() as u32;
+    let failed_nodes = status_info
+        .statuses
+        .iter()
+        .filter(|s| s.as_str() == "failed")
+        .count() as u32;
+    let running_nodes = status_info
+        .statuses
+        .iter()
+        .filter(|s| s.as_str() == "running")
+        .count() as u32;
+    let pending_nodes = status_info
+        .statuses
+        .iter()
+        .filter(|s| s.as_str() == "pending")
+        .count() as u32;
+
+    // 计算平均完成时间
+    let avg_completion_time_secs = if status_info.completion_times.is_empty() {
+        None
+    } else {
+        let total: f64 = status_info.completion_times.iter().sum();
+        Some((total / status_info.completion_times.len() as f64) as f32)
+    };
 
     DagMetricsResult {
         total_nodes,
@@ -557,7 +578,7 @@ pub async fn get_dag_metrics(dag_id: Option<&str>) -> DagMetricsResult {
         failed_nodes,
         running_nodes,
         pending_nodes,
-        avg_completion_time_secs: None, // TODO: 从时间戳计算
+        avg_completion_time_secs,
     }
 }
 
@@ -802,26 +823,70 @@ async fn extract_raw_nodes(
         .collect()
 }
 
+/// 节点状态提取结果（从 DAG 快照中提取的内部数据结构）
+struct StatusExtractionResult {
+    /// 所有节点的状态列表
+    statuses: Vec<String>,
+    /// 已完成节点的完成时间（秒）
+    completion_times: Vec<f64>,
+}
+
 /// 从调度器提取节点状态列表（指标用）。
-async fn extract_statuses(scheduler: &DagScheduler) -> Vec<String> {
+/// 从 DAG 快照中提取节点状态和完成时间（秒）。
+async fn extract_statuses_and_times(scheduler: &DagScheduler) -> StatusExtractionResult {
     let snapshot_json = match scheduler.graph_snapshot().await {
         Ok(s) => s,
-        Err(_) => return Vec::new(),
+        Err(_) => {
+            return StatusExtractionResult {
+                statuses: Vec::new(),
+                completion_times: Vec::new(),
+            }
+        }
     };
 
     let snapshot: Value = match serde_json::from_str(&snapshot_json) {
         Ok(v) => v,
-        Err(_) => return Vec::new(),
+        Err(_) => {
+            return StatusExtractionResult {
+                statuses: Vec::new(),
+                completion_times: Vec::new(),
+            }
+        }
     };
 
     let Some(nodes_array) = snapshot.get("nodes").and_then(|n| n.as_array()) else {
-        return Vec::new();
+        return StatusExtractionResult {
+            statuses: Vec::new(),
+            completion_times: Vec::new(),
+        };
     };
 
-    nodes_array
-        .iter()
-        .filter_map(|node| node.get("status")?.as_str().map(|s| s.to_string()))
-        .collect()
+    let mut statuses = Vec::new();
+    let mut completion_times = Vec::new();
+
+    for node in nodes_array {
+        if let Some(status) = node.get("status").and_then(|s| s.as_str()) {
+            statuses.push(status.to_string());
+
+            // 如果节点已完成，计算完成时间
+            if status == "completed" {
+                let started_at = node.get("started_at").and_then(|t| t.as_i64());
+                let completed_at = node.get("completed_at").and_then(|t| t.as_i64());
+
+                if let (Some(start), Some(end)) = (started_at, completed_at) {
+                    let duration_secs = (end - start) as f64;
+                    if duration_secs >= 0.0 {
+                        completion_times.push(duration_secs);
+                    }
+                }
+            }
+        }
+    }
+
+    StatusExtractionResult {
+        statuses,
+        completion_times,
+    }
 }
 
 /// BFS 拓扑排序计算每个节点的 layer（根节点 layer=0）。

@@ -61,12 +61,8 @@ impl ChatService {
         Ok(())
     }
 
-    /// 删除 Chat（级联删除 CollaborationSession 和 Conversation）
+    /// 删除 Chat（数据库已配置 ON DELETE CASCADE，会自动删除关联的 CollaborationSession 和 Conversation）
     pub fn delete_chat(chat_id: ChatId) -> anyhow::Result<()> {
-        // TODO: 实现级联删除
-        // 1. 删除该 chat 下的所有 collaboration_session
-        // 2. 删除该 chat 下的所有 conversation
-        // 3. 删除 chat 本身
         chats::delete(chat_id)?;
         Ok(())
     }
