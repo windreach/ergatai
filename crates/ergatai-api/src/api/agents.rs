@@ -1871,14 +1871,37 @@ pub async fn send_message(
         .conversation_id
         .as_ref()
         .and_then(|s| ergatai_error::id::parse_to_i64(s));
+
+    // If conversation_id is not provided in the request, look it up from the agent's registry
+    let target_conversation_id = if let Some(conv_id) = conversation_id_i64 {
+        Some(conv_id.to_string())
+    } else {
+        // Look up the agent's conversation_id from the registry
+        let runtime = crate::context::get_app_context().agent_runtime.clone();
+        let result = runtime.get_agent(&id).await.and_then(|agent_info| {
+            agent_info
+                .handle
+                .metadata
+                .get("conversation_id")
+                .cloned()
+        });
+        if result.is_none() {
+            tracing::debug!(
+                agent_id = %id,
+                "conversation_id not found in request or agent metadata"
+            );
+        }
+        result
+    };
+
     let send_req = SendRequest {
         from: req.from.unwrap_or_else(|| "api".to_string()),
         to: id.clone(),
-        target_conversation_id: conversation_id_i64.map(|id| id.to_string()), // Use conversation-centric routing
+        target_conversation_id: target_conversation_id.clone(), // Use conversation-centric routing
         message: req.message,
         message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
         correlation_id: req.correlation_id,
-        conversation_id: conversation_id_i64.map(|id| id.to_string()),
+        conversation_id: target_conversation_id,
     };
 
     match sender.send(send_req).await {

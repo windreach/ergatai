@@ -3604,7 +3604,7 @@ impl AcpBackendInterface for AcpBackend {
                                 // Begin a new turn for output accumulation
                                 // This creates a fresh accumulator for this interrupt prompt turn
                                 let turn_token = if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
-                                    let token = registry.begin_turn(&connection_conversation_id, 0).await;
+                                    let token = registry.begin_turn(&connection_conversation_id).await;
                                     // Set the turn-scoped token for notification handlers
                                     *task_current_turn_token.write() = Some(token.clone());
                                     Some(token)
@@ -3718,7 +3718,7 @@ impl AcpBackendInterface for AcpBackend {
                                 // Begin a new turn for output accumulation
                                 // This creates a fresh accumulator for this prompt turn
                                 let turn_token = if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
-                                    let token = registry.begin_turn(&connection_conversation_id, 0).await;
+                                    let token = registry.begin_turn(&connection_conversation_id).await;
                                     // Set the turn-scoped token for notification handlers
                                     *task_current_turn_token.write() = Some(token.clone());
                                     Some(token)
@@ -3791,9 +3791,9 @@ impl AcpBackendInterface for AcpBackend {
                                                 &connection_agent_id,
                                                 "queued prompt",
                                             ).await;
+                                        }
                                         // Clear the turn-scoped token for notification handlers
                                         *task_current_turn_token.write() = None;
-                                        }
 
                                         let _ = response_tx.send(Ok(()));
                                     }
@@ -3816,9 +3816,9 @@ impl AcpBackendInterface for AcpBackend {
                                                 &connection_agent_id,
                                                 "failed queued prompt",
                                             ).await;
+                                        }
                                         // Clear the turn-scoped token for notification handlers
                                         *task_current_turn_token.write() = None;
-                                        }
                                         let _ = response_tx.send(Err(ErgataiError::internal(
                                             format!("ACP queued prompt failed: {e}"),
                                         )));
@@ -3838,7 +3838,7 @@ impl AcpBackendInterface for AcpBackend {
                                 // Begin a new turn for output accumulation
                                 // This creates a fresh accumulator for this prompt turn
                                 let turn_token = if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
-                                    let token = registry.begin_turn(&connection_conversation_id, 0).await;
+                                    let token = registry.begin_turn(&connection_conversation_id).await;
                                     // Set the turn-scoped token for notification handlers
                                     *task_current_turn_token.write() = Some(token.clone());
                                     Some(token)
@@ -3914,9 +3914,9 @@ impl AcpBackendInterface for AcpBackend {
                                                 &connection_agent_id,
                                                 "normal completion",
                                             ).await;
+                                        }
                                         // Clear the turn-scoped token for notification handlers
                                         *task_current_turn_token.write() = None;
-                                        }
 
                                         let _ = response_tx.send(Ok(()));
 
@@ -4302,7 +4302,13 @@ impl AcpBackendInterface for AcpBackend {
                     m.insert("command".to_string(), command.to_string());
                     m.insert("transport".to_string(), "stdio-pipes".to_string());
                     // Copy conversation_id from workspace metadata for NATS routing
-                    if let Some(conversation_id) = handle.metadata.get("conversation_id") {
+                    let workspace_conversation_id = handle.metadata.get("conversation_id");
+                    tracing::debug!(
+                        agent_id = %agent_id,
+                        workspace_conversation_id = ?workspace_conversation_id,
+                        "AcpBackend::start_agent - copying conversation_id from workspace to AgentHandle"
+                    );
+                    if let Some(conversation_id) = workspace_conversation_id {
                         m.insert("conversation_id".to_string(), conversation_id.clone());
                     }
                     m

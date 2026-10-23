@@ -477,6 +477,13 @@ impl AgentRuntime {
             .metadata
             .insert("conversation_id".to_string(), conversation_id.clone());
 
+        tracing::debug!(
+            agent_id = %agent_id,
+            conversation_id = %conversation_id,
+            workspace_id = %workspace_with_id.id,
+            "conversation_id set in workspace metadata"
+        );
+
         // Inject per-agent MCP config so the spawned Claude Code connects to
         // ergatai's own MCP server and sees the built-in tools
         // (list_agents / send_message / submit_orchestration / ...).
@@ -552,9 +559,16 @@ impl AgentRuntime {
             format!("mcp_{}", snowflake_id)
         };
 
+        let conversation_id_from_handle = handle.metadata.get("conversation_id").cloned();
+        tracing::debug!(
+            agent_id = %agent_id,
+            conversation_id = ?conversation_id_from_handle,
+            "AgentInfo creation - extracting conversation_id from AgentHandle"
+        );
+
         let info = AgentInfo {
             agent_id: agent_id.clone(),
-            conversation_id: handle.metadata.get("conversation_id").cloned(),
+            conversation_id: conversation_id_from_handle,
             workspace_id: spec.id,
             handle: handle.clone(),
             lifecycle: crate::agent_lifecycle::AgentLifecycleState::Idle {

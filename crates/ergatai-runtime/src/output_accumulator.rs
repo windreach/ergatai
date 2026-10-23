@@ -31,7 +31,6 @@ type AccumulatorValue = Arc<Mutex<TurnAccumulator>>;
 /// Accumulates thinking blocks, tool calls, text chunks, and metadata during an agent turn.
 pub struct TurnAccumulator {
     pub conversation_id: i64,
-    pub sequence: i64,
     thinking: Vec<ThinkingBlock>,
     tool_calls: HashMap<String, ToolCallRecord>,
     text_chunks: Vec<TextChunk>,
@@ -98,7 +97,6 @@ pub struct TokenUsage {
 pub struct AgentOutputData {
     pub conversation_id: i64,
     pub message_id: Option<i64>,
-    pub sequence: i64,
     pub role: String,
     pub thinking: Option<String>,
     pub tool_calls: Option<String>,
@@ -111,10 +109,9 @@ pub struct AgentOutputData {
 
 impl TurnAccumulator {
     /// Create a new turn accumulator
-    pub fn new(conversation_id: i64, sequence: i64) -> Self {
+    pub fn new(conversation_id: i64) -> Self {
         Self {
             conversation_id,
-            sequence,
             thinking: Vec::new(),
             tool_calls: HashMap::new(),
             text_chunks: Vec::new(),
@@ -264,7 +261,6 @@ impl TurnAccumulator {
         AgentOutputData {
             conversation_id: self.conversation_id,
             message_id: None,
-            sequence: self.sequence,
             role: "assistant".to_string(),
             thinking: if self.thinking.is_empty() {
                 None
@@ -297,7 +293,7 @@ impl TurnAccumulator {
     pub fn snapshot(&self) -> AgentOutputSnapshot {
         AgentOutputSnapshot {
             conversation_id: self.conversation_id.to_string(),
-            sequence: self.sequence,
+            sequence: 0, // Database layer uses AUTOINCREMENT, so we pass 0 as placeholder
             thinking: self.thinking.clone(),
             tool_calls: self.tool_calls.values().cloned().collect(),
             text_chunks: self.text_chunks.clone(),
@@ -346,7 +342,7 @@ impl OutputAccumulatorRegistry {
     /// Returns a TurnToken that must be used for all subsequent operations on this turn.
     ///
     /// Lock order: generations -> accumulators (to prevent deadlock with get_current_token)
-    pub async fn begin_turn(&self, conversation_id: &str, sequence: i64) -> TurnToken {
+    pub async fn begin_turn(&self, conversation_id: &str) -> TurnToken {
         // Lock generations first to maintain consistent lock order
         let mut generations = self.generations.write().await;
 
@@ -361,7 +357,7 @@ impl OutputAccumulatorRegistry {
         let mut accumulators = self.accumulators.write().await;
 
         let conv_id_i64 = ergatai_error::id::parse_to_i64(conversation_id).unwrap_or(0);
-        let accumulator = Arc::new(Mutex::new(TurnAccumulator::new(conv_id_i64, sequence)));
+        let accumulator = Arc::new(Mutex::new(TurnAccumulator::new(conv_id_i64)));
         accumulators.insert(
             (conversation_id.to_string(), generation),
             accumulator.clone(),
@@ -427,9 +423,8 @@ impl OutputAccumulatorRegistry {
             let mut acc = accumulator.lock().await;
             // Seal the accumulator before extracting data to prevent race conditions
             acc.seal();
-            let sequence = acc.sequence;
             let conv_id_i64 = ergatai_error::id::parse_to_i64(&token.conversation_id).unwrap_or(0);
-            let data = std::mem::replace(&mut *acc, TurnAccumulator::new(conv_id_i64, sequence));
+            let data = std::mem::replace(&mut *acc, TurnAccumulator::new(conv_id_i64));
             Some(data.into_output_data())
         } else {
             None

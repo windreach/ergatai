@@ -476,10 +476,35 @@ impl MessageSender {
                 // Message type for proper classification on the receiving end
                 message_type: req.message_type.clone(),
                 // Conversation ID for direct delivery (bypasses agent_id intermediary)
-                target_conversation_id: resolved_req
-                    .target_conversation_id
-                    .as_deref()
-                    .and_then(|id| ConversationId::decode(id).ok()),
+                target_conversation_id: {
+                    let decoded = resolved_req
+                        .target_conversation_id
+                        .as_deref()
+                        .and_then(|id| {
+                            tracing::debug!(
+                                raw_conversation_id = %id,
+                                "Attempting to decode conversation_id"
+                            );
+                            match ConversationId::decode(id) {
+                                Ok(conv_id) => {
+                                    tracing::debug!(
+                                        decoded_conversation_id = ?conv_id,
+                                        "Successfully decoded conversation_id"
+                                    );
+                                    Some(conv_id)
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        raw_id = %id,
+                                        error = %e,
+                                        "Failed to decode conversation_id"
+                                    );
+                                    None
+                                }
+                            }
+                        });
+                    decoded
+                },
                 // Images (empty for agent-to-agent messages, used for user messages)
                 images: vec![],
             };
