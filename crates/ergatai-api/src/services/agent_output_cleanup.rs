@@ -1,6 +1,7 @@
 //! Agent Output TTL Cleanup Service
 //!
 //! 定期清理超过保留期限的 `messages` 记录（包含 agent 输出字段），防止存储无限增长。
+//! 同时清理 output publisher 中过期的锁引用，防止内存泄漏。
 //!
 //! # 行为
 //!
@@ -9,7 +10,9 @@
 //! * 清理失败只记录警告，不会让主服务崩溃。
 //! * 没有删除任何记录时不输出 info 日志（避免噪音）。
 
-use tracing::{info, warn};
+use crate::services::nats_output_publisher::NatsOutputPublisher;
+use std::sync::Arc;
+use tracing::{debug, info, warn};
 
 /// 默认保留天数
 const DEFAULT_TTL_DAYS: u64 = 30;
@@ -21,8 +24,14 @@ const CLEANUP_INTERVAL_SECS: u64 = 86_400;
 ///
 /// 返回的 `JoinHandle` 可以用于 graceful shutdown（当前实现中不持有，
 /// 因为清理任务是长驻且可丢弃的）。
-pub fn spawn_cleanup_task() -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async {
+///
+/// # Arguments
+///
+/// * `output_publisher` - Output publisher instance for cleaning up expired locks
+pub fn spawn_cleanup_task(
+    output_publisher: Arc<NatsOutputPublisher>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
         let ttl_days = get_ttl_days();
         info!(
             ttl_days,
@@ -33,6 +42,7 @@ pub fn spawn_cleanup_task() -> tokio::task::JoinHandle<()> {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(CLEANUP_INTERVAL_SECS)).await;
 
+            // Clean up expired agent output records from database
             match run_cleanup(ttl_days).await {
                 Ok(deleted) => {
                     if deleted > 0 {
@@ -43,6 +53,11 @@ pub fn spawn_cleanup_task() -> tokio::task::JoinHandle<()> {
                     warn!(error = %e, "Agent output cleanup failed");
                 }
             }
+
+            // Clean up expired weak references in output publisher locks
+            // This prevents memory leaks from accumulated per-conversation locks
+            output_publisher.cleanup_expired_locks();
+            debug!("Output publisher lock cleanup completed");
         }
     })
 }

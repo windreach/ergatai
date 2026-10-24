@@ -107,3 +107,4 @@ frontend/.codebase-memory/
 
 # Playwright test artifacts
 test-results/.last-run.json
+user_data.db

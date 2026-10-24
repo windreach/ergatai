@@ -159,6 +159,43 @@ export type BackendMessage = {
   updated_at: number
 }
 
+function parseJsonOr<T>(value: string | null | undefined, fallback: T): T {
+  if (value == null) return fallback
+  try {
+    return JSON.parse(value) as T
+  } catch {
+    return fallback
+  }
+}
+
+/**
+ * Normalize a backend message into the UI message shape.
+ *
+ * Backend messages use `message_id`, `from_agent_id`, etc. UI components and
+ * the optimized message cache consistently key on `id`, `fromAgentId`, etc.
+ * Every API boundary returning BackendMessage to the renderer should use this.
+ */
+export function mapBackendMessageToUiMessage(message: BackendMessage) {
+  return {
+    id: String(message.message_id),
+    conversationId: String(message.conversation_id),
+    sequence: message.sequence,
+    role: message.role,
+    parts: parseJsonOr<unknown[]>(message.parts, []),
+    metadata: parseJsonOr<Record<string, unknown> | null>(message.metadata, null),
+    fromAgentId: message.from_agent_id ?? undefined,
+    fromAgentName: message.from_agent_name ?? undefined,
+    messageType: message.message_type ?? undefined,
+    content: message.content ?? undefined,
+    createdAt: message.created_at,
+    updatedAt: message.updated_at,
+  }
+}
+
+export function mapBackendMessagesToUiMessages(messages: BackendMessage[]) {
+  return messages.map(mapBackendMessageToUiMessage)
+}
+
 /**
  * SSE 消息格式（后端 ConversationMessagePayload）
  * 与 REST API 的 BackendMessage 不同，需要在客户端转换

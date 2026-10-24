@@ -102,6 +102,10 @@ import {
   type AgentConversation,
   type AgentSummary,
 } from "../agents/lib/agent-contract-api"
+import {
+  refreshAgentRuntimeStatus,
+  useAgentRuntimeAgents,
+} from "../agents/lib/agent-runtime-status-store"
 import { getCoreAgentIcon } from "../agents/components/core-agent-selector"
 import {
   hasStoredGroupAgentIds,
@@ -311,7 +315,6 @@ const AgentConversationPanel = memo(function AgentConversationPanel({
   refreshKey?: number
   onConversationSelect?: (conversation: AgentConversation) => void
 }) {
-  const [agents, setAgents] = useState<AgentSummary[]>([])
   const [conversationsByAgent, setConversationsByAgent] = useState<
     Record<string, AgentConversation[]>
   >({})
@@ -322,29 +325,12 @@ const AgentConversationPanel = memo(function AgentConversationPanel({
     () => new Set(),
   )
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
-  const [isLoadingAgents, setIsLoadingAgents] = useState(true)
+  const agentRuntimeStatus = useAgentRuntimeAgents()
+  const agents = agentRuntimeStatus.agents
+  const isLoadingAgents = agentRuntimeStatus.status === "loading"
 
   useEffect(() => {
-    let cancelled = false
-
-    agentContractApi
-      .listAgents()
-      .then((items) => {
-        if (!cancelled) {
-          setAgents(items)
-          setIsLoadingAgents(false)
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          console.warn("Failed to load agents:", error)
-          setIsLoadingAgents(false)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
+    if (refreshKey > 0) void refreshAgentRuntimeStatus()
   }, [refreshKey])
 
   const toggleAgent = useCallback(async (agent: AgentSummary) => {

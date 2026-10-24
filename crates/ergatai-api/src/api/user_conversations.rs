@@ -5,13 +5,17 @@ use std::collections::HashMap;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     Json,
 };
 use ergatai_error::{ChatId, CollaborationSessionId, ConversationId, MessageId};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::services::conversation_runtime::{ConversationRuntimeSnapshot, RuntimeEvent};
 use crate::user_data_db::{self, Conversation};
 use crate::AppState;
 
@@ -35,6 +39,12 @@ pub struct CreateConversationMessageInput {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateConversationMessagesRequest {
     pub messages: Vec<CreateConversationMessageInput>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ConversationRuntimeQuery {
+    #[serde(default)]
+    pub after_sequence: Option<u64>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -88,6 +98,16 @@ fn now_unix_seconds() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn runtime_not_available() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrorResponse {
+            error: "Conversation runtime cache is not available".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 fn conversation_id() -> ConversationId {
@@ -685,6 +705,266 @@ pub async fn list_conversation_messages(
         )
             .into_response(),
     }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/conversations/{conversation_id}/runtime",
+    tag = "Conversations",
+    params(
+        ("conversation_id" = String, Path, description = "Conversation ID"),
+        ("after_sequence" = Option<u64>, Query, description = "Return runtime events after this sequence"),
+    ),
+    responses(
+        (status = 200, description = "Active conversation runtime snapshot"),
+        (status = 503, description = "Runtime cache unavailable"),
+    )
+)]
+pub async fn get_conversation_runtime(
+    State(_state): State<AppState>,
+    Path(conversation_id): Path<String>,
+    Query(query): Query<ConversationRuntimeQuery>,
+) -> Response {
+    if conversation_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "conversation_id cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let Some(store) = crate::services::conversation_runtime::runtime_store() else {
+        return runtime_not_available();
+    };
+    let snapshot = store.snapshot(&conversation_id, query.after_sequence).await;
+    Json(snapshot).into_response()
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/conversations/{conversation_id}/runtime/stream",
+    tag = "Conversations",
+    params(
+        ("conversation_id" = String, Path, description = "Conversation ID"),
+        ("after_sequence" = Option<u64>, Query, description = "Replay events after this sequence"),
+    ),
+    responses(
+        (status = 200, description = "SSE stream of conversation runtime events"),
+        (status = 503, description = "Runtime cache unavailable"),
+    )
+)]
+pub async fn stream_conversation_runtime(
+    State(_state): State<AppState>,
+    Path(conversation_id): Path<String>,
+    Query(query): Query<ConversationRuntimeQuery>,
+) -> Response {
+    if conversation_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "conversation_id cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let Some(store) = crate::services::conversation_runtime::runtime_store() else {
+        return runtime_not_available();
+    };
+    let receiver = store.subscribe();
+    let initial = store.snapshot(&conversation_id, query.after_sequence).await;
+    let last_sequence = initial.last_sequence;
+    let stream_conversation_id = conversation_id.clone();
+
+    enum RuntimeStreamState {
+        Initial {
+            snapshot: ConversationRuntimeSnapshot,
+            snapshot_sent: bool,
+            events: std::collections::VecDeque<RuntimeEvent>,
+            receiver: tokio::sync::broadcast::Receiver<RuntimeEvent>,
+            last_sequence: u64,
+            /// Track consecutive serialization failures to prevent infinite loops
+            consecutive_failures: u32,
+        },
+        Live {
+            receiver: tokio::sync::broadcast::Receiver<RuntimeEvent>,
+            last_sequence: u64,
+            consecutive_failures: u32,
+        },
+    }
+
+    /// Maximum consecutive serialization failures before closing the stream
+    const MAX_SERIALIZATION_FAILURES: u32 = 3;
+
+    let stream = futures::stream::unfold(
+        RuntimeStreamState::Initial {
+            snapshot: initial.clone(),
+            snapshot_sent: false,
+            events: initial.events.into(),
+            receiver,
+            last_sequence,
+            consecutive_failures: 0,
+        },
+        move |state| {
+            let conversation_id = stream_conversation_id.clone();
+            async move {
+                match state {
+                    RuntimeStreamState::Initial {
+                        snapshot,
+                        mut snapshot_sent,
+                        mut events,
+                        receiver,
+                        last_sequence,
+                        mut consecutive_failures,
+                    } => {
+                        if !snapshot_sent {
+                            snapshot_sent = true;
+                            let Ok(json) = serde_json::to_string(&snapshot) else {
+                                consecutive_failures += 1;
+                                if consecutive_failures >= MAX_SERIALIZATION_FAILURES {
+                                    tracing::error!(
+                                        conversation_id = %conversation_id,
+                                        "SSE stream closing after {} consecutive snapshot serialization failures",
+                                        consecutive_failures
+                                    );
+                                    return None;
+                                }
+                                return Some((
+                                    Ok::<Event, std::convert::Infallible>(
+                                        Event::default().comment("snapshot-error"),
+                                    ),
+                                    RuntimeStreamState::Initial {
+                                        snapshot,
+                                        snapshot_sent,
+                                        events,
+                                        receiver,
+                                        last_sequence,
+                                        consecutive_failures,
+                                    },
+                                ));
+                            };
+                            // Reset failure counter on successful serialization
+                            consecutive_failures = 0;
+                            return Some((
+                                Ok(Event::default().event("snapshot").data(json)),
+                                RuntimeStreamState::Initial {
+                                    snapshot,
+                                    snapshot_sent,
+                                    events,
+                                    receiver,
+                                    last_sequence,
+                                    consecutive_failures,
+                                },
+                            ));
+                        }
+
+                        if let Some(event) = events.pop_front() {
+                            let last_sequence = event.sequence.max(last_sequence);
+                            let Ok(json) = serde_json::to_string(&event) else {
+                                consecutive_failures += 1;
+                                if consecutive_failures >= MAX_SERIALIZATION_FAILURES {
+                                    tracing::error!(
+                                        conversation_id = %conversation_id,
+                                        "SSE stream closing after {} consecutive event serialization failures",
+                                        consecutive_failures
+                                    );
+                                    return None;
+                                }
+                                return Some((
+                                    Ok::<Event, std::convert::Infallible>(
+                                        Event::default().comment("skipped"),
+                                    ),
+                                    RuntimeStreamState::Initial {
+                                        snapshot,
+                                        snapshot_sent,
+                                        events,
+                                        receiver,
+                                        last_sequence,
+                                        consecutive_failures,
+                                    },
+                                ));
+                            };
+                            // Reset failure counter on successful serialization
+                            consecutive_failures = 0;
+                            return Some((
+                                Ok(Event::default().data(json)),
+                                RuntimeStreamState::Initial {
+                                    snapshot,
+                                    snapshot_sent,
+                                    events,
+                                    receiver,
+                                    last_sequence,
+                                    consecutive_failures,
+                                },
+                            ));
+                        }
+
+                        Some((
+                            Ok(Event::default().comment("live")),
+                            RuntimeStreamState::Live {
+                                receiver,
+                                last_sequence,
+                                consecutive_failures: 0,
+                            },
+                        ))
+                    }
+                    RuntimeStreamState::Live {
+                        mut receiver,
+                        mut last_sequence,
+                        mut consecutive_failures,
+                    } => loop {
+                        match receiver.recv().await {
+                            Ok(event) => {
+                                if event.conversation_id != conversation_id {
+                                    continue;
+                                }
+                                if event.sequence <= last_sequence {
+                                    continue;
+                                }
+                                last_sequence = event.sequence;
+                                let Ok(json) = serde_json::to_string(&event) else {
+                                    consecutive_failures += 1;
+                                    if consecutive_failures >= MAX_SERIALIZATION_FAILURES {
+                                        tracing::error!(
+                                            conversation_id = %conversation_id,
+                                            "SSE stream closing after {} consecutive live event serialization failures",
+                                            consecutive_failures
+                                        );
+                                        return None;
+                                    }
+                                    continue;
+                                };
+                                // Reset failure counter on successful serialization
+                                consecutive_failures = 0;
+                                return Some((
+                                    Ok(Event::default().data(json)),
+                                    RuntimeStreamState::Live {
+                                        receiver,
+                                        last_sequence,
+                                        consecutive_failures,
+                                    },
+                                ));
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                continue;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                        }
+                    },
+                }
+            }
+        },
+    );
+
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(std::time::Duration::from_secs(15))
+                .text("keep-alive"),
+        )
+        .into_response()
 }
 
 #[utoipa::path(

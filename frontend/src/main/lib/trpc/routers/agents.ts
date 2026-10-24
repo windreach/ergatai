@@ -6,7 +6,6 @@ import * as os from "os"
 import {
   parseAgentMd,
   generateAgentMd,
-  scanAgentsDirectory,
   VALID_AGENT_MODELS,
   type FileAgent,
 } from "./agent-utils"
@@ -57,56 +56,14 @@ const listAgentsProcedure = publicProcedure
       .optional(),
   )
   .query(async ({ input }) => {
-    const userAgentsDir = path.join(os.homedir(), ".claude", "agents")
-    const userAgentsPromise = scanAgentsDirectory(userAgentsDir, "user")
-
-    let projectAgentsPromise = Promise.resolve<FileAgent[]>([])
-    if (input?.cwd) {
-      const projectAgentsDir = path.join(input.cwd, ".claude", "agents")
-      projectAgentsPromise = scanAgentsDirectory(projectAgentsDir, "project", input.cwd)
-    }
-
-    // Discover plugin agents
-    const [enabledPluginSources, installedPlugins] = await Promise.all([
-      getEnabledPlugins(),
-      discoverInstalledPlugins(),
-    ])
-    const enabledPlugins = installedPlugins.filter(
-      (p) => enabledPluginSources.includes(p.source),
-    )
-    const pluginAgentsPromises = enabledPlugins.map(async (plugin) => {
-      const paths = getPluginComponentPaths(plugin)
-      try {
-        const agents = await scanAgentsDirectory(paths.agents, "plugin")
-        return agents.map((agent) => ({ ...agent, pluginName: plugin.source }))
-      } catch {
-        return []
-      }
-    })
-
     // Fetch backend profiles (agents registered via Ergatai API)
-    const backendAgentsPromise = fetchBackendAgents()
-
-    // Scan all directories and fetch backend in parallel
-    const [userAgents, projectAgents, backendAgents, ...pluginAgentsArrays] =
-      await Promise.all([
-        userAgentsPromise,
-        projectAgentsPromise,
-        backendAgentsPromise,
-        ...pluginAgentsPromises,
-      ])
-    const pluginAgents = pluginAgentsArrays.flat()
-
-    // Merge all sources: project + user + plugin + backend
-    // Filesystem agents take priority (they have more detailed info)
-    return [...projectAgents, ...userAgents, ...pluginAgents, ...backendAgents]
+    const backendAgents = await fetchBackendAgents()
+    return backendAgents
   })
 
 export const agentsRouter = router({
   /**
-   * List all agents from filesystem
-   * - User agents: ~/.claude/agents/
-   * - Project agents: .claude/agents/ (relative to cwd)
+   * List all agents from Ergatai backend
    */
   list: listAgentsProcedure,
 

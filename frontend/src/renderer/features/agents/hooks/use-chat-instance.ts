@@ -90,9 +90,12 @@ export function useChatInstance({
   const persistMessages = useCallback((latestMessages: UIMessage<any>[]) => {
     if (!backendConversationId || latestMessages.length === 0) return
 
-    // Backend no longer supports replacing messages
-    // Messages are now managed through agent conversations
-    console.warn("[useChatInstance] Message persistence disabled - backend endpoint removed")
+    // The client no longer replaces the whole message list. Prompt delivery,
+    // agent output accumulation, and per-conversation message persistence are
+    // owned by the backend.
+    console.debug(
+      "[useChatInstance] Skipping client-side replace persistence; backend owns message persistence",
+    )
     setIsPersistingMessages(false)
   }, [backendConversationId])
 
@@ -144,6 +147,16 @@ export function useChatInstance({
   })
 
   const isStreaming = status === "streaming" || status === "submitted"
+
+  // A side chat can be attached to a backend conversation after the chat
+  // snapshot has already loaded. Seed an empty local Chat instance once the
+  // persisted messages become available, without overwriting an active turn.
+  useEffect(() => {
+    if (isStreaming || messages.length > 0 || conversation.messages.length === 0) {
+      return
+    }
+    setMessages(conversation.messages.map(mapMessage))
+  }, [conversation.messages, isStreaming, mapMessage, messages.length, setMessages])
 
   // Working state - whether the agent is producing output for THIS conversation
   // Note: This is now fully handled by the Chat status via Transport SSE.

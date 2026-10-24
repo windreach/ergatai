@@ -107,8 +107,7 @@ function AgentReplyDisclosure({
         const metadata = message.metadata
 
         return message.role !== "system" &&
-          metadata?.source === "agent" &&
-          metadata.senderAgentId === agentId
+          metadata?.senderAgentId === agentId
       })
       .sort((left, right) => left.sequence - right.sequence)
       .map((message) => ({

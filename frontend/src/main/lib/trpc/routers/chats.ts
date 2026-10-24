@@ -37,9 +37,15 @@ import {
   type BackendMessage,
   type BackendConversation,
   type BackendChat,
+  mapBackendMessagesToUiMessages,
 } from "../../ergatai/user-data"
 import { ergataiCaller as trpcClient } from "../../ergatai/caller"
-import { projectIdSchema } from "../../validation/ids"
+import {
+  chatIdSchema,
+  conversationIdSchema,
+  messageIdSchema,
+  projectIdSchema,
+} from "../../validation/ids"
 
 type WorktreeSetupFailurePayload = {
   kind: "create-failed" | "setup-failed"
@@ -63,6 +69,19 @@ type MappedConversation = {
 }
 
 type ChatRecord = Awaited<ReturnType<typeof trpcClient.listChats>>[number]
+
+type ChatsRouterConversation = {
+  id: string
+  parentId: string | null
+  chatId: string
+  sessionId: string | null
+  name: string | null
+  mode: string
+  status: string
+  createdAt: Date
+  updatedAt: Date
+  archivedAt: Date | null
+}
 
 async function resolveChatWorkspace(
   projectId: string,
@@ -134,12 +153,25 @@ async function findChatForConversation(
 
 async function listConversationsForChat(chat: {
   id: string
-}): Promise<BackendConversation[]> {
+}): Promise<ChatsRouterConversation[]> {
   // The conversations API requires a chat_id or collaboration_session_id.
   // Let the backend filter by chat_id instead of trying to fetch all conversations.
   const conversations = await trpcClient.listConversations({ chatId: chat.id })
 
-  return conversations.filter((conversation) => conversation.status !== "archived")
+  return conversations
+    .filter((conversation) => !conversation.archivedAt)
+    .map((conversation) => ({
+      id: conversation.id,
+      parentId: conversation.parentId,
+      chatId: chat.id,
+      sessionId: null,
+      name: conversation.title,
+      mode: conversation.mode,
+      status: conversation.archivedAt ? "archived" : "active",
+      createdAt: conversation.createdAt,
+      updatedAt: conversation.updatedAt,
+      archivedAt: conversation.archivedAt,
+    }))
 }
 
 function sendWorktreeSetupFailure(
@@ -289,27 +321,25 @@ export const chatsRouter = router({
         chatConversations.map(async (conversation) => {
           const messages = await listConversationMessages(conversation.id)
           console.log(`[chats.get] Conversation ${conversation.id} name="${conversation.name}" has ${messages.length} messages`)
-          // Map BackendConversation (snake_case) to Conversation (camelCase) format
+          const uiMessages = mapBackendMessagesToUiMessages(messages)
           return {
             id: conversation.id,
-            parentId: conversation.parent_id,
-            chatId: conversation.chat_id,
-            sessionId: conversation.collaboration_session_id,
+            parentId: conversation.parentId,
+            chatId: conversation.chatId,
+            sessionId: conversation.sessionId,
             projectId: "",
             workspaceId: null,  // Backend doesn't provide workspace_id on conversations
             name: conversation.name,  // Keep as 'name' for frontend compatibility
             title: conversation.name, // Also provide 'title' for backward compatibility
             mode: conversation.mode,
-            participantRole: conversation.participant_role,
+            participantRole: null,
             status: conversation.status,
-            createdAt: new Date(conversation.created_at * 1000),
-            updatedAt: new Date(conversation.updated_at * 1000),
-            archivedAt: conversation.status === "archived"
-              ? new Date(conversation.updated_at * 1000)
-              : null,
-            created_at: conversation.created_at,
-            updated_at: conversation.updated_at,
-            messages: JSON.stringify(messages),
+            createdAt: conversation.createdAt,
+            updatedAt: conversation.updatedAt,
+            archivedAt: conversation.archivedAt,
+            created_at: conversation.createdAt.getTime() / 1000,
+            updated_at: conversation.updatedAt.getTime() / 1000,
+            messages: JSON.stringify(uiMessages),
           }
         })
       )
@@ -432,12 +462,7 @@ export const chatsRouter = router({
           conversation.id,
           initialMessagesPayload,
         )
-        initialMessages = persistedMessages.map((message) => ({
-          id: message.message_id,
-          role: message.role,
-          parts: JSON.parse(message.parts || "[]"),
-          metadata: message.metadata ? JSON.parse(message.metadata) : undefined,
-        }))
+        initialMessages = mapBackendMessagesToUiMessages(persistedMessages)
       }
       console.log("[chats.create] created initial conversation:", conversation.id)
 
@@ -748,7 +773,7 @@ export const chatsRouter = router({
       const messages = await listConversationMessages(conversation.id)
       return {
         ...mapBackendConversation(conversation),
-        messages: JSON.stringify(messages),
+        messages: JSON.stringify(mapBackendMessagesToUiMessages(messages)),
         chatId: chat.id,
         chat: { ...chat, project },
       }
@@ -760,7 +785,7 @@ export const chatsRouter = router({
   createConversation: publicProcedure
     .input(
       z.object({
-        chatId: z.string(),
+        chatId: chatIdSchema,
         name: z.string().optional(),
         mode: z.enum(["plan", "agent"]).default("agent"),
       }),
@@ -783,8 +808,8 @@ export const chatsRouter = router({
   forkConversation: publicProcedure
     .input(
       z.object({
-        conversationId: z.string(),
-        messageId: z.string(),
+        conversationId: conversationIdSchema,
+        messageId: messageIdSchema,
         messageIndex: z.number().int().nonnegative().optional(),
         name: z.string().optional(),
       }),
@@ -796,21 +821,7 @@ export const chatsRouter = router({
 
       const backendMessages = await listConversationMessages(input.conversationId)
 
-      // Reconstruct UI-format messages from BackendMessage rows
-      const allMessages = backendMessages.map((bm) => {
-        let parsedParts: unknown
-        try { parsedParts = JSON.parse(bm.parts) } catch { parsedParts = [] }
-        let parsedMetadata: Record<string, any> | null = null
-        if (bm.metadata) {
-          try { parsedMetadata = JSON.parse(bm.metadata) } catch { parsedMetadata = null }
-        }
-        return {
-          id: String(bm.message_id),
-          role: bm.role,
-          parts: parsedParts,
-          metadata: parsedMetadata,
-        }
-      })
+      const allMessages = mapBackendMessagesToUiMessages(backendMessages)
 
       // Find cutoff point — prefer messageIndex since DB IDs differ from client IDs
       let cutoffIndex = allMessages.findIndex(
@@ -884,7 +895,7 @@ export const chatsRouter = router({
   rollbackToMessage: publicProcedure
     .input(
       z.object({
-        conversationId: z.string(),
+        conversationId: conversationIdSchema,
         sdkMessageUuid: z.string(),
       }),
     )
@@ -904,11 +915,7 @@ export const chatsRouter = router({
 
       // 2. Parse messages and find the target message by sdkMessageUuid
       const backendMessages = await listConversationMessages(targetConversation.id)
-      const messages = backendMessages.map(m => ({
-        ...m,
-        parts: JSON.parse(m.parts || "[]"),
-        metadata: m.metadata ? JSON.parse(m.metadata) : null,
-      }))
+      const messages = mapBackendMessagesToUiMessages(backendMessages)
       const targetIndex = messages.findIndex(
         (m: any) => m.metadata?.sdkMessageUuid === input.sdkMessageUuid,
       )
@@ -1005,7 +1012,7 @@ export const chatsRouter = router({
    * Get git diff for a chat's worktree
    */
   getDiff: publicProcedure
-    .input(z.object({ chatId: z.string() }))
+    .input(z.object({ chatId: chatIdSchema }))
     .query(async ({ input }) => {
       const chat = await trpcClient.getChat({ id: input.chatId })
 
@@ -1031,7 +1038,7 @@ export const chatsRouter = router({
    * Uses GitCache for instant responses when diff hasn't changed
    */
   getParsedDiff: publicProcedure
-    .input(z.object({ chatId: z.string() }))
+    .input(z.object({ chatId: chatIdSchema }))
     .query(async ({ input }) => {
       const chat = await trpcClient.getChat({ id: input.chatId })
 
@@ -1146,7 +1153,7 @@ export const chatsRouter = router({
    */
   generateCommitMessage: publicProcedure
     .input(z.object({
-      chatId: z.string(),
+      chatId: chatIdSchema,
       filePaths: z.array(z.string()).optional(),
       ollamaModel: z.string().nullish(), // Optional model for offline mode
     }))
@@ -1266,7 +1273,7 @@ export const chatsRouter = router({
    * Get PR context for message generation (branch info, uncommitted changes, etc.)
    */
   getPrContext: publicProcedure
-    .input(z.object({ chatId: z.string() }))
+    .input(z.object({ chatId: chatIdSchema }))
     .query(async ({ input }) => {
       const chat = await trpcClient.getChat({ id: input.chatId })
 
@@ -1309,7 +1316,7 @@ export const chatsRouter = router({
   updatePrInfo: publicProcedure
     .input(
       z.object({
-        chatId: z.string(),
+        chatId: chatIdSchema,
         prUrl: z.string(),
         prNumber: z.number(),
       }),
@@ -1340,7 +1347,7 @@ export const chatsRouter = router({
   getPrStatus: publicProcedure
     .input(
       z.object({
-        chatId: z.string(),
+        chatId: chatIdSchema,
         worktreePath: z.string().optional(),
       }),
     )
@@ -1365,7 +1372,7 @@ export const chatsRouter = router({
   mergePr: publicProcedure
     .input(
       z.object({
-        chatId: z.string(),
+        chatId: chatIdSchema,
         method: z.enum(["merge", "squash", "rebase"]).default("squash"),
       }),
     )
@@ -1458,7 +1465,7 @@ export const chatsRouter = router({
       allChats = (await Promise.all(conversationsByChat.flatMap(({ chatId, conversations }) =>
         conversations.map(async (conversation) => {
           const messages = await listConversationMessages(conversation.id)
-          const messagesJson = JSON.stringify(messages)
+          const messagesJson = JSON.stringify(mapBackendMessagesToUiMessages(messages))
           return {
             chatId,
             conversationId: conversation.id,
@@ -1479,7 +1486,7 @@ export const chatsRouter = router({
           return {
             chatId: ownerChat.id,
             conversationId,
-            messagesJson: JSON.stringify(messages),
+          messagesJson: JSON.stringify(mapBackendMessagesToUiMessages(messages)),
           }
         }),
       )
@@ -1627,7 +1634,7 @@ export const chatsRouter = router({
           chatId: chat.id,
           conversationId: conversation.id,
           mode: conversation.mode,
-          messagesJson: JSON.stringify(messages),
+            messagesJson: JSON.stringify(mapBackendMessagesToUiMessages(messages)),
         }
       }),
     )
@@ -1696,7 +1703,7 @@ export const chatsRouter = router({
    * Returns whether workspace has a worktree and uncommitted changes count
    */
   getWorktreeStatus: publicProcedure
-    .input(z.object({ chatId: z.string() }))
+    .input(z.object({ chatId: chatIdSchema }))
     .query(async ({ input }) => {
       const chat = await trpcClient.getChat({ id: input.chatId })
 
@@ -1728,8 +1735,8 @@ export const chatsRouter = router({
   exportChat: publicProcedure
     .input(
       z.object({
-        chatId: z.string(),
-        conversationId: z.string().optional(), // If provided, export only this conversation
+        chatId: chatIdSchema,
+        conversationId: conversationIdSchema.optional(), // If provided, export only this conversation
         format: z.enum(["json", "markdown", "text"]).default("markdown"),
       }),
     )
@@ -1762,7 +1769,7 @@ export const chatsRouter = router({
         messages: Array<{
           id: string
           role: string
-          parts: Array<{ type: string; text?: string; [key: string]: any }>
+          parts: Array<any>
           metadata?: any
         }>
       }> = []
@@ -1770,12 +1777,7 @@ export const chatsRouter = router({
       for (const conversation of chatConversations) {
         try {
           const backendMessages = await listConversationMessages(conversation.id)
-          const messages = backendMessages.map(m => ({
-            id: String(m.message_id),
-            role: m.role,
-            parts: JSON.parse(m.parts || "[]"),
-            metadata: m.metadata ? JSON.parse(m.metadata) : undefined,
-          }))
+          const messages = mapBackendMessagesToUiMessages(backendMessages)
           allMessages.push({
             conversationId: conversation.id,
             conversationName: conversation.name,
@@ -1916,8 +1918,8 @@ export const chatsRouter = router({
    */
   getChatStats: publicProcedure
     .input(z.object({
-      chatId: z.string(),
-        conversationId: z.string().optional(), // If provided, return stats for only this conversation
+      chatId: chatIdSchema,
+        conversationId: conversationIdSchema.optional(), // If provided, return stats for only this conversation
     }))
     .query(async ({ input }) => {
       const chat = await trpcClient.getChat({ id: input.chatId })
@@ -1941,11 +1943,7 @@ export const chatsRouter = router({
       for (const conversation of chatConversations) {
         try {
           const backendMessages = await listConversationMessages(conversation.id)
-          const messages = backendMessages.map(m => ({
-            ...m,
-            parts: JSON.parse(m.parts || "[]"),
-            metadata: m.metadata ? JSON.parse(m.metadata) : null,
-          })) as Array<{
+          const messages = mapBackendMessagesToUiMessages(backendMessages) as Array<{
             role: string
             parts?: Array<{ type: string; toolName?: string }>
             metadata?: { usage?: { inputTokens?: number; outputTokens?: number } }

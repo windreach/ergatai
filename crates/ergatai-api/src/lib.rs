@@ -545,6 +545,14 @@ pub fn build_rest_app(state: AppState) -> Router {
                 .post(api::user_conversations::create_conversation_messages),
         )
         .route(
+            "/api/v1/conversations/{conversation_id}/runtime",
+            get(api::user_conversations::get_conversation_runtime),
+        )
+        .route(
+            "/api/v1/conversations/{conversation_id}/runtime/stream",
+            get(api::user_conversations::stream_conversation_runtime),
+        )
+        .route(
             "/api/v1/conversations/{conversation_id}/file-changes",
             get(api::user_conversations::list_conversation_file_changes),
         )

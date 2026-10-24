@@ -279,10 +279,7 @@ import {
 import { AgentPlanSidebar } from "../ui/agent-plan-sidebar"
 import { AgentPreview } from "../ui/agent-preview"
 import { AgentQueueIndicator } from "../ui/agent-queue-indicator"
-import { AgentToolCall } from "../ui/agent-tool-call"
-import { AgentToolRegistry } from "../ui/agent-tool-registry"
 import { isPlanFile } from "../ui/agent-tool-utils"
-import { AgentUserMessageBubble } from "../ui/agent-user-message-bubble"
 import { AgentUserQuestion, type AgentUserQuestionHandle } from "../ui/agent-user-question"
 import { PermissionApprovalPanel } from "../../../components/dialogs/permission-approval-dialog"
 import { AgentsHeaderControls } from "../ui/agents-header-controls"
@@ -295,7 +292,8 @@ import { SplitViewContainer } from "../ui/split-view-container"
 import { TextSelectionPopover } from "../ui/text-selection-popover"
 import { generateCommitToPrMessage, generatePrMessage, generateReviewMessage } from "../utils/pr-message"
 import { ChatInputArea } from "./chat-input-area"
-import { IsolatedMessagesSection } from "./isolated-messages-section"
+import { ChatMessagesRenderer } from "./chat-messages-renderer"
+import { MessageGroup } from "./message-group"
 const clearConversationSelectionAtom = atom(null, () => {})
 const isConversationMultiSelectModeAtom = atom(false)
 const selectedConversationIdsAtom = atom(new Set<string>())
@@ -573,63 +571,6 @@ const ScrollToBottomButton = memo(function ScrollToBottomButton({
     </AnimatePresence>
   )
 })
-
-// Message group wrapper - measures user message height for sticky todo positioning
-interface MessageGroupProps {
-  children: React.ReactNode
-  isLastGroup?: boolean
-}
-
-export function MessageGroup({ children, isLastGroup }: MessageGroupProps) {
-  const groupRef = useRef<HTMLDivElement>(null)
-  const userMessageRef = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    const groupEl = groupRef.current
-    if (!groupEl) return
-
-    // Find the actual bubble element (not the wrapper which includes gradient)
-    const bubbleEl = groupEl.querySelector('[data-user-bubble]') as HTMLDivElement | null
-    if (!bubbleEl) return
-
-    userMessageRef.current = bubbleEl
-
-    const updateHeight = () => {
-      const height = bubbleEl.offsetHeight
-      // Set CSS variable directly on DOM - no React state, no re-renders
-      groupEl.style.setProperty('--user-message-height', `${height}px`)
-    }
-
-    updateHeight()
-
-    const observer = new ResizeObserver(updateHeight)
-    observer.observe(bubbleEl)
-
-    return () => observer.disconnect()
-  }, [])
-
-  return (
-    <div
-      ref={groupRef}
-      className="relative"
-      style={{
-        // content-visibility: auto - браузер пропускает layout/paint для элементов вне viewport
-        // Это ОГРОМНАЯ оптимизация для длинных чатов - рендерится только видимое
-        // НЕ применяем к последней группе: она всегда видна и активно стримится,
-        // content-visibility на ней мешает корректному scrollHeight во время стриминга
-        ...(!isLastGroup && {
-          contentVisibility: "auto",
-          containIntrinsicSize: "auto 200px",
-        }),
-        // Последняя группа имеет минимальную высоту контейнера чата (минус отступ)
-        ...(isLastGroup && { minHeight: "calc(var(--chat-container-height) - 32px)" }),
-      }}
-      data-last-group={isLastGroup || undefined}
-    >
-      {children}
-    </div>
-  )
-}
 
 // Collapsible steps component for intermediate content before final response
 interface CollapsibleStepsProps {
@@ -1691,9 +1632,20 @@ const ChatViewInner = memo(function ChatViewInner({
         </div>
       )}
 
-      {/* Messages */}
-      <div
-        ref={(el) => {
+      {/* Messages - shared with side chat; main owns scroll policy and main-only features */}
+      <ChatMessagesRenderer
+        messages={messages}
+        status={status}
+        conversationId={conversationId}
+        chatId={parentChatId}
+        isActive={isVisiblePane}
+        isMobile={isMobile}
+        sandboxSetupStatus={sandboxSetupStatus}
+        sandboxSetupError={sandboxSetupError}
+        onRetrySetup={onRetrySetup}
+        stickyTopClass={stickyTopClass}
+        emptyState={null}
+        containerRef={(el) => {
           // Cleanup previous observer
           if (chatContainerObserverRef.current) {
             chatContainerObserverRef.current.disconnect()
@@ -1721,52 +1673,23 @@ const ChatViewInner = memo(function ChatViewInner({
             chatContainerObserverRef.current = observer
           }
         }}
+        contentWrapperRef={contentWrapperRef}
         className="flex-1 overflow-y-auto w-full relative allow-text-selection outline-none"
-        tabIndex={-1}
-        data-chat-container
-      >
-        <div
-          ref={contentWrapperRef}
-          className={cn(
-            "px-2 mx-auto -mb-4",
-            isGroupMode ? "max-w-5xl" : "max-w-2xl",
-          )}
-          style={{
-            paddingBottom: "32px",
-          }}
-        >
-          <div className="min-w-0 flex-1 space-y-4">
-            <div className="mx-auto w-full max-w-2xl">
-              <ImplicitCollaborationTaskCards
-                tasks={implicitCollaborationTasks}
-              />
-              <CollaborationSessionEventCards
-                events={collaborationSession.events}
-                session={collaborationSession.session}
-              />
-                {/* ISOLATED: Messages rendered via Jotai atom subscription
-                    Each component subscribes to specific atoms and only re-renders when those change
-                    KEY: Force remount on conversationId change to ensure fresh atom reads after syncMessages */}
-                <IsolatedMessagesSection
-                  key={conversationId}
-                  conversationId={conversationId}
-                  chatId={parentChatId}
-                  isMobile={isMobile}
-                  sandboxSetupStatus={sandboxSetupStatus}
-                  stickyTopClass={stickyTopClass}
-                  sandboxSetupError={sandboxSetupError}
-                  onRetrySetup={onRetrySetup}
-                  UserBubbleComponent={AgentUserMessageBubble}
-                  ToolCallComponent={AgentToolCall}
-                  MessageGroupWrapper={MessageGroup}
-                  toolRegistry={AgentToolRegistry}
-                  onRollback={handleRollback}
-                  onFork={handleForkFromMessage}
-                />
-              </div>
-          </div>
-        </div>
-      </div>
+        contentClassName={cn("px-2 mx-auto -mb-4 max-w-2xl pb-8")}
+        header={
+          <>
+            <ImplicitCollaborationTaskCards
+              tasks={implicitCollaborationTasks}
+            />
+            <CollaborationSessionEventCards
+              events={collaborationSession.events}
+              session={collaborationSession.session}
+            />
+          </>
+        }
+        onRollback={handleRollback}
+        onFork={handleForkFromMessage}
+      />
 
       {isVisiblePane && (
         <div className="px-4 relative z-30">

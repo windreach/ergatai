@@ -15,6 +15,8 @@ import { createPortal } from "react-dom"
 import type { SlashCommandOption } from "./types"
 import { filterBuiltinCommands } from "./builtin-commands"
 import type { AgentMode } from "../atoms"
+import { getDropdownDimensions } from "../ui/dropdown-sizes"
+import { useDropdownScale } from "../../../lib/hooks/use-dropdown-scale"
 
 interface AgentsSlashCommandProps {
   isOpen: boolean
@@ -265,19 +267,24 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
     return () => document.removeEventListener("mousedown", handleClickOutside)
   }, [isOpen, onClose])
 
+  // Get dropdown dimensions with dynamic scaling based on window size
+  const scale = useDropdownScale()
+
   if (!isOpen) return null
 
+  const dimensions = getDropdownDimensions(scale)
+
   // Calculate dropdown dimensions (matching file mention style)
-  const dropdownWidth = 320
-  const itemHeight = 28  // h-7 = 28px to match file mention
-  const headerHeight = 24
+  const dropdownWidth = dimensions.width
+  const itemHeight = dimensions.itemHeight
+  const headerHeight = dimensions.headerHeight
   // Single "Commands" header for all options
   const headersCount = options.length > 0 ? 1 : 0
   const requestedHeight = Math.min(
-    options.length * itemHeight + headersCount * headerHeight + 8,
-    200,  // Match file mention maxHeight
+    options.length * itemHeight + headersCount * headerHeight + dimensions.gap,
+    dimensions.maxHeight,
   )
-  const gap = 8
+  const gap = dimensions.gap
 
   // Decide placement like Radix Popover (auto-flip top/bottom)
   const safeMargin = 10
@@ -333,7 +340,8 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
         left: finalLeft,
         width: `${dropdownWidth}px`,
         maxHeight: `${computedMaxHeight}px`,
-        transform: transformY,
+        transform: `${transformY} scale(${scale})`,
+        transformOrigin: placeAbove ? 'bottom' : 'top',
         scrollbarWidth: 'none',
         msOverflowStyle: 'none',
       } as React.CSSProperties}

@@ -1,11 +1,16 @@
 import { z } from "zod"
 import { publicProcedure, router } from "../index"
 import { ergataiCaller } from "../../ergatai/caller"
+import {
+  agentIdSchema,
+  chatIdSchema,
+  workspaceIdSchema,
+} from "../../validation/ids"
 
 export const groupChatRouter = router({
   /** List all members of a group chat (reads from backend) */
   listMembers: publicProcedure
-    .input(z.object({ chatId: z.string() }))
+    .input(z.object({ chatId: chatIdSchema }))
     .query(async ({ input }) => {
       return ergataiCaller.getAgentBindings({ chatId: input.chatId })
     }),
@@ -14,10 +19,10 @@ export const groupChatRouter = router({
   addMember: publicProcedure
     .input(
       z.object({
-        chatId: z.string(),
+        chatId: chatIdSchema,
         agentCommand: z.string(),
         agentName: z.string(),
-        workspaceId: z.string().optional(),
+        workspaceId: workspaceIdSchema.optional(),
       }),
     )
     .mutation(async ({ input }) => {
@@ -39,7 +44,7 @@ export const groupChatRouter = router({
 
   /** Remove a member from a group chat */
   removeMember: publicProcedure
-    .input(z.object({ chatId: z.string(), agentId: z.string() }))
+    .input(z.object({ chatId: chatIdSchema, agentId: agentIdSchema }))
     .mutation(async ({ input }) => {
       // Backend no longer supports agent unbinding
       console.warn("[group-chat.removeMember] Group chat member removal disabled - backend endpoints removed")
@@ -50,7 +55,7 @@ export const groupChatRouter = router({
   sendToAgent: publicProcedure
     .input(
       z.object({
-        chatId: z.string(),
+        chatId: chatIdSchema,
         agentCommand: z.string(),
         message: z.string(),
         correlationId: z.string().nullish(),

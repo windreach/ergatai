@@ -6,6 +6,7 @@ import { app, shell } from "electron"
 import { watch, type FSWatcher } from "node:fs"
 import { observable } from "@trpc/server/observable"
 import { assertRegisteredWorktree } from "../../git/security/path-validation"
+import { conversationKeySchema } from "../../validation/ids"
 
 // Directories to ignore when scanning
 const IGNORED_DIRS = new Set([
@@ -543,7 +544,7 @@ export const filesRouter = router({
   writePastedText: publicProcedure
     .input(
       z.object({
-        conversationId: z.string(),
+        conversationId: conversationKeySchema,
         text: z.string(),
         filename: z.string().optional(),
       })

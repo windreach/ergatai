@@ -1,13 +1,13 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef } from "react"
 
 import { trpc } from "../../../lib/trpc"
 import {
   getCoreAgentProfileName,
   type AgentSummary,
 } from "../lib/agent-contract-api"
-import { agentContractApi } from "../lib/agent-contract-api"
+import { useAgentRuntimeAgents } from "../lib/agent-runtime-status-store"
 import { useAgentConversationStore } from "../stores/conversation-store"
 import { useGroupChat } from "./group-chat-context"
 import {
@@ -67,6 +67,7 @@ export function useAgentParticipants({
 }: UseAgentParticipantsInput) {
   const { agents: groupAgents, isGroupChat } = useGroupChat()
   const ensuredGroupMembersRef = useRef<Set<string>>(new Set())
+  const isPersistedChat = chatId.startsWith("chat_")
   const runtimeStatuses = useGroupAgentRuntimeStatuses(chatId)
   const { data: groupMembers, refetch: refetchGroupMembers } =
     trpc.groupChat.listMembers.useQuery(
@@ -75,7 +76,7 @@ export function useAgentParticipants({
     )
   const { data: runtimeBindings } = trpc.ergatai.getAgentBindings.useQuery(
     { chatId },
-    { enabled: !isGroupChat, refetchInterval: 5000 },
+    { enabled: !isGroupChat && isPersistedChat, refetchInterval: 5000 },
   )
   // Conversation currently displayed in the main chat. The supervisor's
   // binding points at this conversation, so it identifies the supervisor.
@@ -83,7 +84,8 @@ export function useAgentParticipants({
     (state) => state.activeConversationId,
   )
   const addGroupMember = trpc.groupChat.addMember.useMutation()
-  const [runtimeAgents, setRuntimeAgents] = useState<AgentSummary[]>([])
+  const runtimeStatus = useAgentRuntimeAgents(!isGroupChat)
+  const runtimeAgents = runtimeStatus.agents
 
   useEffect(() => {
     if (!isGroupChat || !groupMembers) return
@@ -139,32 +141,6 @@ export function useAgentParticipants({
     refetchGroupMembers,
     workspaceId,
   ])
-
-  useEffect(() => {
-    if (isGroupChat) {
-      setRuntimeAgents([])
-      return
-    }
-
-    let cancelled = false
-
-    const loadAgents = async () => {
-      try {
-        const agents = await agentContractApi.listAgents()
-        if (!cancelled) setRuntimeAgents(agents)
-      } catch {
-        if (!cancelled) setRuntimeAgents([])
-      }
-    }
-
-    void loadAgents()
-    const interval = window.setInterval(() => void loadAgents(), 5000)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(interval)
-    }
-  }, [isGroupChat])
 
   return useMemo(() => {
     if (isGroupChat) {

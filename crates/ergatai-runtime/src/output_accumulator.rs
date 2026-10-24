@@ -29,9 +29,20 @@ type AccumulatorValue = Arc<Mutex<TurnAccumulator>>;
 /// A single turn's output accumulator
 ///
 /// Accumulates thinking blocks, tool calls, text chunks, and metadata during an agent turn.
+///
+/// # Thinking Buffer Invariant
+///
+/// Thinking deltas are buffered in `thinking_buffer` and merged into a single `ThinkingBlock`.
+/// The buffer MUST be flushed (via `flush_thinking_buffer()`) before processing any non-thinking
+/// event. All public event handlers (`accumulate_text`, `record_tool_call_start`, etc.) must
+/// call `flush_thinking_buffer()` as their first operation after the `sealed` check.
+///
+/// Forgetting to flush will cause thinking data to be lost or incorrectly merged across events.
 pub struct TurnAccumulator {
     pub conversation_id: i64,
     thinking: Vec<ThinkingBlock>,
+    thinking_buffer: String, // Accumulates thinking text until a boundary
+    thinking_start_timestamp: Option<u64>, // When the current thinking block started
     tool_calls: HashMap<String, ToolCallRecord>,
     text_chunks: Vec<TextChunk>,
     final_text: String,
@@ -113,6 +124,8 @@ impl TurnAccumulator {
         Self {
             conversation_id,
             thinking: Vec::new(),
+            thinking_buffer: String::new(),
+            thinking_start_timestamp: None,
             tool_calls: HashMap::new(),
             text_chunks: Vec::new(),
             final_text: String::new(),
@@ -138,6 +151,9 @@ impl TurnAccumulator {
         if self.sealed {
             return; // Silently discard data after seal
         }
+        // Flush any pending thinking before starting text accumulation
+        self.flush_thinking_buffer();
+
         // Use unwrap_or(0) to handle clock skew gracefully: if system time is before UNIX_EPOCH,
         // we use 0 rather than panicking. This is safe because timestamps are only used for ordering.
         let now = std::time::SystemTime::now()
@@ -153,19 +169,51 @@ impl TurnAccumulator {
     }
 
     /// Accumulate thinking delta
+    ///
+    /// Thinking deltas are buffered and merged into a single thinking block.
+    /// The buffer is flushed when a non-thinking event occurs (tool call, text, etc.).
     pub fn accumulate_thinking(&mut self, delta: &str) {
         if self.sealed {
             return; // Silently discard data after seal
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or(std::time::Duration::from_secs(0))
-            .as_secs();
 
-        self.thinking.push(ThinkingBlock {
-            text: delta.to_string(),
-            timestamp: now,
-        });
+        // Record the start timestamp for the first delta in this thinking block
+        if self.thinking_buffer.is_empty() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or(std::time::Duration::from_secs(0))
+                .as_secs();
+            self.thinking_start_timestamp = Some(now);
+        }
+
+        self.thinking_buffer.push_str(delta);
+    }
+
+    /// Flush the thinking buffer to create a complete thinking block
+    ///
+    /// # Critical: When to Call
+    ///
+    /// This method MUST be called at the start of every non-thinking event handler
+    /// (e.g., `accumulate_text`, `record_tool_call_start`, `record_tool_call_update`, etc.)
+    /// to finalize the current thinking block before processing the next event.
+    ///
+    /// Forgetting to call this method will cause thinking data to be lost or incorrectly
+    /// merged with subsequent thinking blocks.
+    ///
+    /// # Why This Matters
+    ///
+    /// Thinking deltas are buffered and merged into a single block. When a non-thinking
+    /// event occurs, the buffer must be flushed to preserve the thinking boundary.
+    /// Without flushing, thinking from different phases would be incorrectly combined.
+    fn flush_thinking_buffer(&mut self) {
+        if !self.thinking_buffer.is_empty() {
+            let timestamp = self.thinking_start_timestamp.unwrap_or(0);
+            self.thinking.push(ThinkingBlock {
+                text: std::mem::take(&mut self.thinking_buffer),
+                timestamp,
+            });
+            self.thinking_start_timestamp = None;
+        }
     }
 
     /// Record tool call start
@@ -180,6 +228,9 @@ impl TurnAccumulator {
         if self.sealed {
             return; // Silently discard data after seal
         }
+        // Flush any pending thinking before recording the tool call
+        self.flush_thinking_buffer();
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or(std::time::Duration::from_secs(0))
@@ -248,7 +299,10 @@ impl TurnAccumulator {
     }
 
     /// Convert to AgentOutputData (intermediate representation)
-    pub fn into_output_data(self) -> AgentOutputData {
+    pub fn into_output_data(mut self) -> AgentOutputData {
+        // Flush any remaining thinking before converting
+        self.flush_thinking_buffer();
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or(std::time::Duration::from_secs(0))

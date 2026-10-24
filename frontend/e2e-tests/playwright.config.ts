@@ -13,9 +13,9 @@ export default defineConfig({
   ],
   timeout: 60000,
   use: {
-    trace: 'on-first-retry',
-    screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    trace: 'on',  // 始终录制 trace
+    screenshot: 'on',  // 始终截图
+    video: 'on',  // 始终录制视频
     actionTimeout: 10000,
     navigationTimeout: 30000,
   },

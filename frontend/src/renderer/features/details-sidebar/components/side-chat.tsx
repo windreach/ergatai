@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useSetAtom } from "jotai"
 import { type UIMessage } from "@ai-sdk/react"
 import { toast } from "sonner"
 import { ConversationStatusCard } from "../../agents/ui/conversation-status-card"
@@ -17,10 +18,12 @@ import {
   CORE_AGENT_OPTIONS,
   type CoreAgentId,
 } from "../../agents/lib/agent-contract-api"
+import { useAgentRuntimeAgents } from "../../agents/lib/agent-runtime-status-store"
 import { AgentUserMessageBubble } from "../../agents/ui"
 import { cn } from "@/lib/utils"
 import { trpc, trpcClient } from "@/lib/trpc"
 import { useStreamingStatusStore } from "../../agents/stores/streaming-status-store"
+import { syncMessagesWithStatusAtom } from "../../agents/stores/message-store"
 import { clearConversationRuntimeCaches } from "../../agents/stores/conversation-runtime-cleanup"
 import { useChatInstance } from "../../agents/hooks/use-chat-instance"
 
@@ -30,6 +33,12 @@ interface SideChatProps {
   chatId: string
   agentId?: string | null
   isActive?: boolean
+  /** True while the conversation snapshot is still loading. */
+  isLoadingMessages?: boolean
+  /** Live events from the backend runtime cache, used when attaching mid-turn. */
+  externalMessages?: UIMessage[]
+  runtimeStatus?: "idle" | "streaming" | "completed" | "error"
+  runtimeConnectionStatus?: "connecting" | "connected" | "reconnecting" | "stopped"
 }
 
 /**
@@ -46,6 +55,10 @@ export function SideChat({
   chatId,
   agentId,
   isActive = true,
+  isLoadingMessages = false,
+  externalMessages = [],
+  runtimeStatus,
+  runtimeConnectionStatus,
 }: SideChatProps) {
   const backendConversationId = conversation.backendConversationId
   const runtimeConversationId = backendConversationId ?? conversation.id
@@ -104,8 +117,66 @@ export function SideChat({
     isActive,
   })
 
+  // Runtime cache covers turns started outside this mounted Chat instance.
+  // While this local instance is streaming, its transport is already the live
+  // source. For an externally started turn (especially agent-to-agent), the
+  // runtime cache must be appended even when history has already loaded;
+  // otherwise the existing history hides the live turn until completion.
+  const isRuntimeStreaming = runtimeStatus === "streaming"
+  // A durable request can be present in both persisted messages and the live
+  // runtime snapshot. Runtime deltas don't have persisted IDs yet, so only
+  // remove runtime messages whose exact backend message ID is already loaded.
+  const persistedMessageIds = useMemo(
+    () => new Set(messages.map((message) => message.id)),
+    [messages],
+  )
+  const visibleExternalMessages = useMemo(
+    () => externalMessages.filter((message) => !persistedMessageIds.has(message.id)),
+    [externalMessages, persistedMessageIds],
+  )
+  const runtimeMessagesVisible =
+    visibleExternalMessages.length > 0 &&
+    !isStreaming &&
+    (isRuntimeStreaming || messages.length === 0)
+
+  // Memoize to prevent unnecessary re-renders when runtimeMessagesVisible is true
+  const displayMessages = useMemo(() => {
+    if (isStreaming) {
+      return messages
+    }
+    if (runtimeMessagesVisible) {
+      return [...messages, ...visibleExternalMessages]
+    }
+    return messages
+  }, [isStreaming, messages, runtimeMessagesVisible, visibleExternalMessages])
+
+  // ChatMessagesRenderer reads the optimized per-conversation message store,
+  // not the messages prop. Seed it from backend-generated runtime turns so a
+  // side chat attached mid-turn (or before persistence catches up) is visible.
+  const syncExternalMessages = useSetAtom(syncMessagesWithStatusAtom)
+  const externalRuntimeStatus = isRuntimeStreaming ? "streaming" : "ready"
+  useLayoutEffect(() => {
+    if (!runtimeMessagesVisible || visibleExternalMessages.length === 0) {
+      return
+    }
+
+    syncExternalMessages({
+      messages: displayMessages,
+      status: externalRuntimeStatus,
+      conversationId: runtimeConversationId,
+      updateGlobal: false,
+    })
+  }, [
+    displayMessages,
+    visibleExternalMessages,
+    externalRuntimeStatus,
+    runtimeMessagesVisible,
+    runtimeConversationId,
+    syncExternalMessages,
+  ])
+
   const { containerRef, contentWrapperRef, scrollToBottom } = useChatAutoScroll({
-    messages,
+    messages: displayMessages,
     status,
     isActive,
   })
@@ -137,13 +208,10 @@ export function SideChat({
   })
 
   // Surface a visible state when the bound agent is not running
-  const runtimeAgentsQuery = trpc.ergatai.listAgents.useQuery(undefined, {
-    enabled: Boolean(agentId) && isActive,
-    refetchInterval: 5000,
-  })
+  const agentRuntimeStatus = useAgentRuntimeAgents(Boolean(agentId) && isActive)
   const isBoundAgentAlive = agentId
-    ? (runtimeAgentsQuery.data?.some(
-        (agent) => agent.agent_id === agentId && agent.is_alive,
+    ? (agentRuntimeStatus.agents.some(
+        (agent) => agent.id === agentId && agent.isAlive,
       ) ?? true)
     : true
 
@@ -210,55 +278,71 @@ export function SideChat({
       totalOutputTokens: 0,
       totalCostUsd: 0,
       contextWindow: 200000,
-      messageCount: messages.length,
+      messageCount: displayMessages.length,
     }
-  }, [messages.length])
+  }, [displayMessages.length])
 
   const cacheFileContent = useCallback((mentionId: string, content: string) => {
     fileContentsRef.current.set(mentionId, content)
   }, [])
 
+  const sideChatLoadingState =
+    isLoadingMessages && displayMessages.length === 0 ? (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6">
+        <div className="w-full max-w-[280px] space-y-3">
+          <div className="ml-auto h-9 w-2/3 animate-pulse rounded-xl bg-muted/60" />
+          <div className="h-16 w-full animate-pulse rounded-xl bg-muted/40" />
+          <div className="ml-auto h-9 w-1/2 animate-pulse rounded-xl bg-muted/50" />
+        </div>
+        <p className="text-xs text-muted-foreground">Loading conversation…</p>
+      </div>
+    ) : undefined
+
+  const sideChatEmptyState = (
+    <div className="flex h-full flex-col items-center justify-center">
+      <div className="mb-4 text-muted-foreground/60">
+        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          <path d="M9 10h6" />
+          <path d="M12 7v6" />
+        </svg>
+      </div>
+      <h3 className="text-base font-medium text-foreground mb-2">Side Chat</h3>
+      <p className="text-sm text-muted-foreground text-center max-w-[240px]">
+        Start a conversation with an agent by typing below.
+      </p>
+    </div>
+  )
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
-        <div
-          ref={containerRef}
-          className="w-full flex-1 overflow-x-hidden overflow-y-auto px-3 pt-3 select-text"
-        >
-          <div
-            ref={contentWrapperRef}
-            className={cn(
-              "mx-auto w-full max-w-full min-w-0",
-              messages.length === 0 ? "flex h-full items-center justify-center" : "space-y-4 pb-4"
-            )}
-          >
-            {messages.length === 0 ? (
-              <div className="flex flex-col items-center justify-center">
-                <div className="mb-4 text-muted-foreground/60">
-                  <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                    <path d="M9 10h6" />
-                    <path d="M12 7v6" />
-                  </svg>
-                </div>
-                <h3 className="text-base font-medium text-foreground mb-2">Side Chat</h3>
-                <p className="text-sm text-muted-foreground text-center max-w-[240px]">
-                  Start a conversation with an agent by typing below.
-                </p>
-              </div>
-            ) : (
-              <ChatMessagesRenderer
-                messages={messages}
-                status={status}
-                conversationId={runtimeConversationId}
-                chatId={chatId}
-                isActive={isActive}
-                onRollback={handleRollback}
-                onFork={handleForkFromMessage}
-              />
-            )}
+        {runtimeConnectionStatus === "reconnecting" && (
+          <div className="px-3 pt-2">
+            <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+              Reconnecting to the live agent stream…
+            </div>
           </div>
-        </div>
+        )}
+        <ChatMessagesRenderer
+          messages={displayMessages}
+          status={status}
+          conversationId={runtimeConversationId}
+          chatId={chatId}
+          isActive={isActive}
+          containerRef={containerRef}
+          contentWrapperRef={contentWrapperRef}
+          className="w-full flex-1 overflow-x-hidden overflow-y-auto px-3 pt-3 select-text"
+          contentClassName={cn(
+            displayMessages.length === 0
+              ? "flex h-full items-center justify-center"
+              : "space-y-4 pb-4",
+          )}
+          loadingState={sideChatLoadingState}
+          emptyState={sideChatEmptyState}
+          onRollback={handleRollback}
+          onFork={handleForkFromMessage}
+        />
 
         <div className="w-full flex-shrink-0">
           {isStreaming && (

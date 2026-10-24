@@ -4,10 +4,10 @@ import { Plus, X } from "lucide-react"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import { trpc } from "@/lib/trpc"
-import { api } from "../../../lib/api-adapter"
 import { groupAgentChatRequestAtomFamily } from "../../agents/collaboration/group-chat-context"
+import { chatContractApi } from "../lib/chat-contract-api"
+import { useConversationSession } from "../lib/use-conversation-session"
 import {
-  type ChatMessage,
   type ChatConversation,
 } from "../lib/chat-contract-api"
 import {
@@ -18,110 +18,12 @@ import {
 } from "../../agents/lib/agent-contract-api"
 import { getCoreAgentIcon } from "../../agents/components/core-agent-selector"
 import { SideChat } from "./side-chat"
-import { useStreamingStatusStore } from "../../agents/stores/streaming-status-store"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-
-// ============================================================================
-// Backend message mapping
-// ============================================================================
-
-/**
- * Infer message role from metadata (source + messageType).
- * Backend doesn't manage roles - it only stores source and messageType.
- *
- * Role semantics:
- * - "user": user as sender
- * - "agent": agent as sender (active message, no thinking/tools needed)
- * - "assistant": reply to user or agent (needs thinking/tools rendering)
- */
-function inferMessageRole(
-  source: string | undefined,
-  messageType: string | undefined,
-): "user" | "assistant" | "agent" {
-  // User as sender
-  if (source === "user") return "user"
-
-  // System messages are rendered as assistant
-  if (source === "system") return "assistant"
-
-  // Agent as sender or replier
-  if (source === "agent") {
-    // Agent is sending a request → agent (sender)
-    if (messageType === "request") return "agent"
-    // Agent is replying (response/broadcast) or no messageType → assistant (replier)
-    return "assistant"
-  }
-
-  // Unknown source - default to assistant
-  return "assistant"
-}
-
-function getMessageText(parts: unknown[]) {
-  return parts
-    .map((part) => {
-      if (!part || typeof part !== "object") return ""
-      const candidate = part as { type?: unknown; text?: unknown }
-      if (candidate.type !== "text") return ""
-      return typeof candidate.text === "string" ? candidate.text : ""
-    })
-    .filter(Boolean)
-    .join("\n\n")
-}
-
-function getReasoningText(parts: unknown[]) {
-  return parts
-    .map((part) => {
-      if (!part || typeof part !== "object") return ""
-      const candidate = part as { type?: unknown; text?: unknown }
-      if (candidate.type !== "reasoning" || typeof candidate.text !== "string") return ""
-      return candidate.text
-    })
-    .filter(Boolean)
-    .join("\n\n")
-}
-
-function mapBackendMessage(message: {
-  id: string
-  role: string
-  parts: unknown[]
-  metadata?: Record<string, unknown> | null
-}): ChatMessage {
-  const metadata = message.metadata ?? undefined
-  const readString = (key: string) => {
-    const value = metadata?.[key]
-    return typeof value === "string" && value.length > 0 ? value : undefined
-  }
-  const senderAgentId = readString("senderAgentId") ?? readString("agentId")
-  const senderAgentName = readString("senderAgentName") ?? readString("agentName")
-  const messageType = readString("messageType")
-  const source = readString("source")
-
-  // Infer role from metadata (source + messageType), not from backend's role field.
-  // Backend doesn't manage roles - it only stores source and messageType.
-  // Role semantics:
-  // - "user": user as sender
-  // - "agent": agent as sender (active message, no thinking/tools needed)
-  // - "assistant": reply to user or agent (needs thinking/tools rendering)
-  const role = inferMessageRole(source, messageType)
-
-  const result: ChatMessage = {
-    id: message.id,
-    role,
-    content: getMessageText(message.parts),
-    reasoning: getReasoningText(message.parts) || undefined,
-    senderAgentId,
-    senderAgentName,
-    metadata,
-    parts: message.parts,
-  }
-
-  return result
-}
 
 // ============================================================================
 // SideChatView
@@ -169,26 +71,16 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
     return new Set(agentBindingsQuery.data?.map((b) => b.agentId) ?? [])
   }, [agentBindingsQuery.data])
 
-  // Get all conversations for this chat to find agent's actual conversation
-  const agentChatQuery = api.agents.getAgentChat.useQuery(
-    { chatId },
-    { enabled: isActive && chatId.startsWith("chat_") },
-  )
-
-  // Get streaming status to conditionally enable/disable message refetching
-  const streamingStatus = useStreamingStatusStore(
-    (state) => state.statuses[activeBackendConversationId ?? ""] ?? "ready"
-  )
-
-  const isStreaming = streamingStatus === "streaming" || streamingStatus === "submitted"
-
-  // Get messages from agentChatQuery (same as main chat) - no polling needed!
-  const activeConversation = useMemo(() => {
-    if (!activeBackendConversationId || !agentChatQuery.data?.conversations) return null
-    return agentChatQuery.data.conversations.find(
-      (conv: any) => conv.id === activeBackendConversationId
-    ) ?? null
-  }, [activeBackendConversationId, agentChatQuery.data])
+  const {
+    messages: activeConversationMessages,
+    isLoadingMessages: isSideChatMessagesLoading,
+    runtime,
+    runtimeMessages,
+  } = useConversationSession({
+    chatId,
+    conversationId: activeBackendConversationId,
+    isActive,
+  })
 
   const activeAgentBinding = useMemo(
     () => agentBindingsQuery.data?.find(
@@ -241,11 +133,30 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
     agent: CoreAgentOption,
     backendConversationId?: string,
   ) => {
-    // Backend no longer supports creating child conversations and binding agents
-    // This feature has been removed
-    console.warn("[side-chat-view] createChildConversation and bindAgent are no longer supported")
-    toast.error("Side chat feature is no longer supported")
-    return
+    // The backend creates and binds target-agent conversations during
+    // agent-to-agent routing. The side chat only needs to attach to the
+    // existing conversation; creating brand-new side conversations is not
+    // supported here.
+    if (!backendConversationId) {
+      toast.error("This agent has no bound conversation yet")
+      return
+    }
+
+    const conversation = await chatContractApi.createConversation(
+      agent,
+      backendConversationId,
+    )
+
+    setSideChats((current) =>
+      current.some(
+        (item) =>
+          item.backendConversationId === backendConversationId ||
+          item.agent.id === agent.id,
+      )
+        ? current
+        : [...current, conversation],
+    )
+    setActiveSideChatId(conversation.id)
   }, [])
 
   // Stable ref for useEffect — doesn't change across renders
@@ -271,25 +182,20 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
         )
 
     if (existingConversation) {
-      // Messages will be updated via agentChatQuery - no manual refetch needed
+      // Messages come from the conversation session/runtime, not the parent snapshot.
       setAgentChatRequest(null)
       setActiveSideChatId(existingConversation.id)
       return
     }
 
-    // Try to find agent in loaded agents first, then fallback to CORE_AGENT_OPTIONS
-    let groupAgent = allAgentsRef.current.find((agent) => agent.id === request.agentId)
-
-    if (!groupAgent && chatAgentsLoaded) {
-      // Fallback: get agent from CORE_AGENT_OPTIONS
-      const fallbackAgent = CORE_AGENT_OPTIONS.find((agent) => agent.id === request.agentId)
-      if (fallbackAgent) {
-        groupAgent = fallbackAgent
-      }
-    }
+    // Core agents can be attached without waiting for profile discovery.
+    // Loaded runtime profiles are still preferred because they carry the
+    // user's display name and command overrides.
+    const groupAgent =
+      allAgentsRef.current.find((agent) => agent.id === request.agentId) ??
+      CORE_AGENT_OPTIONS.find((agent) => agent.id === request.agentId)
 
     if (!groupAgent) {
-      if (!chatAgentsLoaded) return
       // Runtime agents spawned by the backend (e.g. answering a supervisor
       // question) may not resolve to a core agent id. Fall back to the
       // binding's display name instead of silently dropping the request.
@@ -321,14 +227,13 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
     agentChatRequest,
     sideChats,
     chatAgentsLoaded,
-    agentChatQuery.data,
     agentBindingsQuery.data,
   ])
 
-  // Side chat uses the same data flow as main chat:
-  // 1. agentChatQuery loads conversations with messages (no polling)
-  // 2. useChatInstance hook handles real-time updates via Transport
-  // 3. Messages are synced to Chat instance via conversation.messages prop
+  // Side chat is conversation-session first:
+  // 1. useConversationSession loads persisted messages and runtime events
+  // 2. useChatInstance handles local streaming via Transport
+  // 3. runtimeMessages cover turns started outside the mounted Chat instance
 
   const handleCloseSideChat = useCallback((conversationId: string) => {
     const closingIndex = sideChats.findIndex((conversation) => conversation.id === conversationId)
@@ -421,11 +326,15 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
           key={activeSideChat.id}
           conversation={{
             ...activeSideChat,
-            messages: activeConversation?.messages ?? [],
+            messages: activeConversationMessages,
           }}
           chatId={chatId}
           isActive={isActive}
           agentId={activeAgentBinding?.agentId ?? null}
+          isLoadingMessages={isSideChatMessagesLoading}
+          externalMessages={runtimeMessages}
+          runtimeStatus={runtime?.status}
+          runtimeConnectionStatus={runtime?.connectionStatus}
         />
       ) : (
         <div className="flex flex-1 items-center justify-center">

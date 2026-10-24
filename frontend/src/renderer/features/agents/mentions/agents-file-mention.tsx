@@ -23,18 +23,12 @@ import { sessionInfoAtom } from "../../../lib/atoms"
 import type { CoreAgentOption } from "../lib/agent-contract-api"
 import {
   FilesIcon,
-  IconSpinner,
   SkillIcon,
   CustomAgentIcon,
   OriginalMCPIcon,
 } from "../../../components/ui/icons"
-import { ChevronRight } from "lucide-react"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "../../../components/ui/tooltip"
+import { getDropdownDimensions } from "../ui/dropdown-sizes"
+import { useDropdownScale } from "../../../lib/hooks/use-dropdown-scale"
 
 // Custom folder icon matching design
 function FolderOpenIcon({ className }: { className?: string }) {
@@ -720,8 +714,6 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   const placementRef = useRef<"above" | "below" | null>(null)
   const [debouncedSearchText, setDebouncedSearchText] = useState(searchText)
 
-  const [hoverIndex, setHoverIndex] = useState<number | null>(null)
-
   // Get session info (MCP servers, tools) from atom
   const sessionInfo = useAtomValue(sessionInfoAtom)
 
@@ -1139,36 +1131,32 @@ export const AgentsFileMention = memo(function AgentsFileMention({
     return () => document.removeEventListener("mousedown", handleClickOutside)
   }, [isOpen, onClose])
 
+  // Get dropdown dimensions with dynamic scaling based on window size
+  const scale = useDropdownScale()
+
   if (!isOpen) return null
 
-  // Calculate dropdown dimensions (matching canvas style)
-  // Narrower dropdown when showing only categories (no changed files)
-  const hasChangedFiles = changedFileOptions.length > 0
-  const isRootView = !showingFilesList && !showingSkillsList && !showingAgentsList && !showingToolsList && !hasOnlyFiles
-  // Narrow dropdown for root view (categories only) and skills/agents/tools subpages
-  // Wide dropdown for files (showingFilesList or hasOnlyFiles)
-  const useNarrowWidth = (isRootView && !hasChangedFiles && !debouncedSearchText) || showingSkillsList || showingAgentsList || showingToolsList
-  const dropdownWidth = useNarrowWidth ? 200 : 320
-  const itemHeight = 28
-  const headerHeight = 28 // header with py-1.5 and text-xs
-  // Only add header height when header is actually shown (in subpages or when searching)
-  const showsHeader = !isRootView || !!debouncedSearchText
-  const paddingHeight = 8 // py-1 on container = 4px top + 4px bottom
+  const dimensions = getDropdownDimensions(scale)
+
+  // Calculate dropdown dimensions (matching / command style)
+  const dropdownWidth = dimensions.width
+  const itemHeight = dimensions.itemHeight
+  const headerHeight = dimensions.headerHeight
+  const headersCount = options.length > 0 ? 1 : 0
   const requestedHeight = Math.min(
-    options.length * itemHeight + (showsHeader ? headerHeight : 0) + paddingHeight,
-    200,
+    options.length * itemHeight + headersCount * headerHeight + dimensions.gap,
+    dimensions.maxHeight,
   )
-  const gap = 8
+  const gap = dimensions.gap
 
   // Decide placement like Radix Popover (auto-flip top/bottom)
   const safeMargin = 10
-  const lineHeight = 20 // approximate line height for better positioning
+  const caretOffsetBelow = 20
   const availableBelow =
-    window.innerHeight - (position.top + lineHeight) - safeMargin
+    window.innerHeight - (position.top + caretOffsetBelow) - safeMargin
   const availableAbove = position.top - safeMargin
 
   // Compute desired placement, but lock it for the duration of the open state
-  // Prefer above if there's more space above, or if below doesn't fit
   if (placementRef.current === null) {
     const condition1 =
       availableAbove >= requestedHeight && availableBelow < requestedHeight
@@ -1180,13 +1168,13 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   const placeAbove = placementRef.current === "above"
 
   // Compute final top based on placement
-  // Use line height for better positioning relative to cursor
   let finalTop = placeAbove
     ? position.top - gap
-    : position.top + lineHeight + gap
+    : position.top + gap + caretOffsetBelow
 
-  // Position is already aligned to editor left edge, no offset needed
-  let finalLeft = position.left
+  // Slight left bias to better align with '@'
+  const leftOffset = -4
+  let finalLeft = position.left + leftOffset
 
 
   // Adjust horizontal overflow
@@ -1208,162 +1196,88 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   const transformY = placeAbove ? "translateY(-100%)" : "translateY(0)"
 
   return createPortal(
-    <TooltipProvider delayDuration={300}>
-      <div
-        ref={dropdownRef}
-        className="fixed z-[99999] overflow-y-auto rounded-[10px] border border-border bg-popover py-1 text-xs text-popover-foreground shadow-lg dark [&::-webkit-scrollbar]:hidden"
-        style={{
-          top: finalTop,
-          left: finalLeft,
-          width: `${dropdownWidth}px`,
-          maxHeight: `${computedMaxHeight}px`,
-          transform: transformY,
-          scrollbarWidth: 'none',
-          msOverflowStyle: 'none',
-        } as React.CSSProperties}
-      >
-        {/* Initial loading state (no previous data) */}
-        {isLoading && options.length === 0 && (
-          <div className="flex items-center gap-1.5 h-7 px-1.5 mx-1 text-xs text-muted-foreground">
-            <IconSpinner className="h-3.5 w-3.5" />
-            <span>Loading files...</span>
+    <div
+      ref={dropdownRef}
+      className="fixed z-[99999] overflow-y-auto rounded-[10px] border border-border bg-popover py-1 text-xs text-popover-foreground shadow-lg dark [&::-webkit-scrollbar]:hidden"
+      style={{
+        top: finalTop,
+        left: finalLeft,
+        width: `${dropdownWidth}px`,
+        maxHeight: `${computedMaxHeight}px`,
+        transform: `${transformY} scale(${scale})`,
+        transformOrigin: placeAbove ? 'bottom' : 'top',
+        scrollbarWidth: 'none',
+        msOverflowStyle: 'none',
+      } as React.CSSProperties}
+    >
+      {/* All mentions in one section */}
+      {options.length > 0 && (
+        <>
+          <div className="px-2.5 py-1.5 mx-1 text-xs font-medium text-muted-foreground">
+            Mentions
           </div>
-        )}
-
-        {/* Error state */}
-        {error && (
-          <div className="h-7 px-1.5 mx-1 flex items-center text-xs text-muted-foreground">
-            Error loading files
-          </div>
-        )}
-
-        {/* Empty state (only show when not fetching) */}
-        {!isLoading && !isFetching && !error && options.length === 0 && (
-          <div className="h-7 px-1.5 mx-1 flex items-center text-xs text-muted-foreground">
-            {debouncedSearchText
-              ? (scope === "agents"
-                  ? `No agents matching "${debouncedSearchText}"`
-                  : `No items matching "${debouncedSearchText}"`)
-              : (scope === "agents" ? "No agents found" : "No items found")}
-          </div>
-        )}
-
-        {/* File list */}
-        {!isLoading && !error && options.length > 0 && (
-          <>
-            {/* Flat list sorted by relevance */}
-            <>
-              {/* Header - only show in subpages or when searching, not in root view */}
-                {(isInSubpage || debouncedSearchText) && (
-                  <div className="px-2.5 py-1.5 mx-1 text-xs font-medium text-muted-foreground flex items-center gap-1.5">
-                    <span>
-                      {(showingFilesList || hasOnlyFiles) ? "Files & Folders" :
-                       showingSkillsList ? "Skills" :
-                       showingAgentsList ? "Agents" :
-                       showingToolsList ? "MCP Servers" :
-                       "Results"}
-                    </span>
-                    {isFetching && !isLoading && (
-                      <IconSpinner className="h-2.5 w-2.5" />
-                    )}
-                  </div>
+          {options.map((option, index) => {
+            const isSelected = selectedIndex === index
+            return (
+              <div
+                key={option.id}
+                data-option-index={index}
+                onClick={() => onSelect(option)}
+                onMouseEnter={() => setSelectedIndex(index)}
+                className={cn(
+                  "group inline-flex w-[calc(100%-8px)] mx-1 items-center whitespace-nowrap outline-none",
+                  "h-7 px-1.5 justify-start text-xs rounded-md",
+                  "transition-colors cursor-pointer select-none",
+                  isSelected
+                    ? "dark:bg-neutral-800 bg-accent text-foreground"
+                    : "text-muted-foreground dark:hover:bg-neutral-800 hover:bg-accent hover:text-foreground",
                 )}
-                {options.map((option, index) => {
-                  const isSelected = selectedIndex === index
-                  const OptionIcon = getOptionIcon(option)
-                  const isCategory = option.type === "category"
-                  const showTooltip = !isCategory && option.type !== "tool" && option.path
-
-                  const itemContent = (
-                    <div
-                      data-option-index={index}
-                      onClick={() => onSelect(option)}
-                      onMouseEnter={() => {
-                        setHoverIndex(index)
-                        setSelectedIndex(index)
-                      }}
-                      onMouseLeave={() => {
-                        setHoverIndex((prev) => (prev === index ? null : prev))
-                      }}
-                      className={cn(
-                        "group inline-flex w-[calc(100%-8px)] mx-1 items-center whitespace-nowrap outline-none",
-                        "h-7 px-1.5 justify-start text-xs rounded-md",
-                        "transition-colors cursor-pointer select-none gap-1.5",
-                        isSelected
-                          ? "dark:bg-neutral-800 bg-accent text-foreground"
-                          : "text-muted-foreground dark:hover:bg-neutral-800 hover:bg-accent hover:text-foreground",
-                      )}
+              >
+                <span className="flex items-center gap-1 w-full min-w-0">
+                  <span className="shrink-0 whitespace-nowrap font-medium">
+                    {option.label}
+                  </span>
+                  {/* Show path for files, description for others */}
+                  {(option.path || option.description) && (
+                    <span
+                      className="text-muted-foreground flex-1 min-w-0 ml-2 overflow-hidden text-[10px] truncate"
                     >
-                      <OptionIcon className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-                      <span className="flex items-center gap-1 w-full min-w-0">
-                        <span className={cn("shrink-0 whitespace-nowrap", isCategory && "font-medium")}>
-                          {option.label}
+                      {option.type === "file" || option.type === "folder"
+                        ? option.path
+                        : option.description}
+                    </span>
+                  )}
+                  {/* Diff stats for changed files */}
+                  {(option.additions || option.deletions) && (
+                    <span className="shrink-0 flex items-center gap-1 text-[10px] font-mono ml-2">
+                      {option.additions ? (
+                        <span className="text-green-500">
+                          +{option.additions}
                         </span>
-                        {/* Diff stats for changed files */}
-                        {(option.additions || option.deletions) && (
-                          <span className="shrink-0 flex items-center gap-1 text-[10px] font-mono">
-                            {option.additions ? (
-                              <span className="text-green-500">
-                                +{option.additions}
-                              </span>
-                            ) : null}
-                            {option.deletions ? (
-                              <span className="text-red-500">
-                                -{option.deletions}
-                              </span>
-                            ) : null}
-                          </span>
-                        )}
-                        {/* Show truncated path for files only, not for skills/agents (they show in tooltip) */}
-                        {option.truncatedPath && !isCategory && option.type !== "skill" && option.type !== "agent" && (
-                          <span
-                            className="text-muted-foreground flex-1 min-w-0 ml-2 font-mono overflow-hidden text-[10px]"
-                            style={{
-                              direction: "rtl",
-                              textAlign: "left",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            <span style={{ direction: "ltr" }}>
-                              {option.truncatedPath}
-                            </span>
-                          </span>
-                        )}
-                      </span>
-                      {/* ChevronRight for category items (navigate to subpage) */}
-                      {isCategory && (
-                        <ChevronRight className="ml-auto h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
-                      )}
-                    </div>
-                  )
+                      ) : null}
+                      {option.deletions ? (
+                        <span className="text-red-500">
+                          -{option.deletions}
+                        </span>
+                      ) : null}
+                    </span>
+                  )}
+                </span>
+              </div>
+            )
+          })}
+        </>
+      )}
 
-                  if (showTooltip) {
-                    return (
-                      <Tooltip key={option.id} open={isSelected}>
-                        <TooltipTrigger asChild>
-                          {itemContent}
-                        </TooltipTrigger>
-                        <TooltipContent
-                          side="left"
-                          align="start"
-                          sideOffset={8}
-                          collisionPadding={16}
-                          avoidCollisions
-                          className="overflow-hidden"
-                        >
-                          {renderTooltipContent(option)}
-                        </TooltipContent>
-                      </Tooltip>
-                    )
-                  }
-
-                  return <div key={option.id}>{itemContent}</div>
-                })}
-              </>
-          </>
-        )}
-      </div>
-    </TooltipProvider>,
+      {/* Empty state */}
+      {options.length === 0 && (
+        <div className="h-7 px-1.5 mx-1 flex items-center text-xs text-muted-foreground">
+          {debouncedSearchText
+            ? `No items matching "${debouncedSearchText}"`
+            : "No items available"}
+        </div>
+      )}
+    </div>,
     document.body
   )
 })

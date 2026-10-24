@@ -6,7 +6,11 @@ import { GroupAgentMessageHeader } from "../collaboration/group-agent-message-he
 import { MemoizedTextPart } from "./memoized-text-part"
 import { CopyButton } from "../ui/message-action-buttons"
 import { InterAgentRepliesDisclosure } from "./inter-agent-replies-disclosure"
-import { CORE_AGENT_OPTIONS, type CoreAgentId } from "../lib/agent-contract-api"
+import {
+  CORE_AGENT_OPTIONS,
+  getCoreAgentDisplayName,
+  type CoreAgentId,
+} from "../lib/agent-contract-api"
 
 interface AgentMessageItemProps {
   message: UIMessage<any>
@@ -42,7 +46,6 @@ export const AgentMessageItem = memo(function AgentMessageItem({
   const messageId = message.id
   const metadata = message.metadata as
     | {
-        source?: string
         senderAgentId?: string
         senderAgentName?: string
         agentId?: string
@@ -88,13 +91,14 @@ export const AgentMessageItem = memo(function AgentMessageItem({
     metadata?.senderAgentId
 
   const showAgentSenderHeader =
-    metadata?.source === "agent" && Boolean(agentSenderName)
+    (message.role as string) === "agent" && Boolean(agentSenderName)
 
   // Check if this is a persisted chat (has chat_ prefix) — needed for InterAgentRepliesDisclosure
   const isPersistedChat = chatId.startsWith("chat_")
 
   // Use provided displaySenderName or fall back to metadata
-  const finalSenderName = displaySenderName ?? agentSenderName
+  const finalSenderName =
+    displaySenderName ?? (getCoreAgentDisplayName(agentSenderName) ?? agentSenderName)
 
   return (
     <div

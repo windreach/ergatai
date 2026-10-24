@@ -81,7 +81,7 @@ export function useChatInstanceFactory({
 
       // Backend no longer supports replacing messages
       if ((chatInstance as any)?.transport instanceof ErgataiChatTransport) {
-        console.warn("[AgentChat] Message persistence disabled - backend endpoint removed")
+        console.debug("[AgentChat] Backend owns message persistence; skipping client-side replace")
       }
 
       const latestMessagesJson = JSON.stringify(latestMessages)

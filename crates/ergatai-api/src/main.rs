@@ -572,11 +572,22 @@ async fn async_main(args: Args) -> Result<()> {
                     conn.clone(),
                 ),
             );
+            // Keep a reference for cleanup task
+            let publisher_for_cleanup = output_publisher.clone();
             if ergatai_runtime::set_global_output_publisher(output_publisher).is_err() {
                 tracing::warn!("Global output publisher already set (skipping)");
             } else {
                 tracing::info!("✅ Global output publisher set (agent output → NATS)");
             }
+
+            let runtime_cancel = mcp_cancellation_token.clone();
+            let runtime_conn = conn.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = runtime_cancel.cancelled() => {}
+                    _ = ergatai_api::services::conversation_runtime::start(runtime_conn) => {}
+                }
+            });
 
             let delivery_handle =
                 start_message_delivery_consumer(conn.clone(), mcp_cancellation_token.clone());
@@ -672,7 +683,10 @@ async fn async_main(args: Args) -> Result<()> {
 
             // Spawn agent output TTL cleanup task (bounds storage growth).
             // Runs daily; failures are logged but do not affect the main service.
-            let _cleanup_handle = ergatai_api::services::agent_output_cleanup::spawn_cleanup_task();
+            // Also cleans up expired output publisher locks to prevent memory leaks.
+            let _cleanup_handle = ergatai_api::services::agent_output_cleanup::spawn_cleanup_task(
+                publisher_for_cleanup,
+            );
 
             // Register existing workspaces with the permission handler so file access control
             // works after server restart. Without this, pre-existing workspaces would have no

@@ -86,6 +86,7 @@ uuid.workspace = true
 chrono.workspace = true
 percent-encoding.workspace = true
 once_cell.workspace = true
+dashmap = "6"
 
 [dev-dependencies]
 http-body-util = "0.1"

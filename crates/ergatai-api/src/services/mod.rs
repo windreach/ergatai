@@ -12,6 +12,7 @@ pub mod collaboration_planner;
 pub mod collaboration_session;
 pub mod collaboration_session_dag;
 pub mod collaboration_session_service;
+pub mod conversation_runtime;
 pub mod conversation_service;
 pub mod dag_service;
 pub mod lock_service;
