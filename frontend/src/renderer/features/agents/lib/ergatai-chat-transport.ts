@@ -41,6 +41,20 @@ type AgentOutputEvent =
   | ({ type: "tool_call_complete" } & ToolCallEventData)
   | { type: "tool_call_error"; id: string; error: string }
   | { type: "session_title_update"; title: string }
+  | { type: "subagent_spawned"; role?: string | null; subagent_session_id: string; name: string; task: string }
+  | { type: "subagent_state_update"; role?: string | null; subagent_session_id: string; state: string }
+  | {
+      type: "conversation_message"
+      message_id: string
+      role: string
+      message_type?: string | null
+      content: string
+      parts?: unknown
+      metadata?: unknown
+      timestamp_ms: number
+      sender_agent_id?: string | null
+      sender_agent_name?: string | null
+    }
   | { type: "done"; stop_reason: string }
   | { type: "error"; message: string }
 
@@ -344,6 +358,8 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
 
             if (isAgentToAgent) {
               // Agent-to-agent communication
+              // Generate clientRequestId for optimistic → durable replacement
+              const clientRequestId = crypto.randomUUID()
               const result = await trpcClient.ergatai.sendMessage.mutate({
                 agentId,
                 message: prompt,
@@ -353,10 +369,13 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                 forceNewSession: this.config.forceNewSession,
                 correlationId: this.config.correlationId,
                 conversationId: this.config.conversationId,
+                clientRequestId,
               })
               // Try to extract prompt_id from response if available
               promptId = (result as any)?.prompt_id ?? (result as any)?.stream ?? null
             } else {
+              // Generate clientRequestId for optimistic → durable replacement
+              const clientRequestId = crypto.randomUUID()
               const promptResult = await trpcClient.ergatai.promptAgent.mutate({
                 agentId,
                 message: prompt,
@@ -367,6 +386,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                   filename: image.filename,
                 })),
                 waitForStream: true,
+                clientRequestId,
               })
               promptId = promptResult.prompt_id
             }

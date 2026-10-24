@@ -30,8 +30,36 @@ const agentOutputEventSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("tool_call_error"), id: z.string(), error: z.string(), conversation_id: z.string().nullish() }),
   z.object({ type: z.literal("session_title_update"), title: z.string(), conversation_id: z.string().nullish() }),
+  z.object({
+    type: z.literal("subagent_spawned"),
+    role: z.string().nullish(),
+    subagent_session_id: z.string(),
+    name: z.string(),
+    task: z.string(),
+    conversation_id: z.string().nullish(),
+  }),
+  z.object({
+    type: z.literal("subagent_state_update"),
+    role: z.string().nullish(),
+    subagent_session_id: z.string(),
+    state: z.string(),
+    conversation_id: z.string().nullish(),
+  }),
   z.object({ type: z.literal("done"), stop_reason: z.string(), conversation_id: z.string().nullish() }),
+  z.object({ type: z.literal("turn_started"), role: z.string().nullish(), conversation_id: z.string().nullish() }),
   z.object({ type: z.literal("error"), message: z.string(), conversation_id: z.string().nullish() }),
+  z.object({
+    type: z.literal("conversation_message"),
+    message_id: z.string(),
+    role: z.string(),
+    message_type: z.string().nullish(),
+    content: z.string(),
+    parts: z.unknown().nullish(),
+    metadata: z.unknown().nullish(),
+    timestamp_ms: z.number(),
+    sender_agent_id: z.string().nullish(),
+    sender_agent_name: z.string().nullish(),
+  }),
 ])
 
 /**
@@ -50,6 +78,32 @@ const backendSseMessageSchema = z.object({
   sender_agent_id: z.string().optional(),
   sender_agent_name: z.string().optional(),
 })
+
+const conversationRuntimeEventSchema = z.object({
+  conversationId: z.string(),
+  turnId: z.string(),
+  sequence: z.number(),
+  timestampMs: z.number(),
+  event: agentOutputEventSchema,
+})
+
+const conversationRuntimeSnapshotSchema = z.object({
+  epoch: z.string(),
+  conversationId: z.string(),
+  status: z.enum(["idle", "streaming", "completed", "error"]),
+  turnId: z.string().nullish(),
+  lastSequence: z.number(),
+  firstSequence: z.number().nullish(),
+  events: z.array(conversationRuntimeEventSchema).default([]),
+  startedAtMs: z.number().nullish(),
+  updatedAtMs: z.number().nullish(),
+})
+
+export type ConversationRuntimeEvent = z.infer<typeof conversationRuntimeEventSchema>
+export type ConversationRuntimeSnapshot = z.infer<typeof conversationRuntimeSnapshotSchema>
+export type ConversationRuntimeStreamEvent =
+  | { kind: "snapshot"; snapshot: ConversationRuntimeSnapshot }
+  | { kind: "event"; event: ConversationRuntimeEvent }
 
 export type ToolCallLocation = {
   path: string
@@ -77,8 +131,22 @@ export type AgentOutputEvent =
   | ({ type: "tool_call_complete" } & ToolCallEventData & AgentOutputEventContext)
   | ({ type: "tool_call_error"; id: string; error: string } & AgentOutputEventContext)
   | ({ type: "session_title_update"; title: string } & AgentOutputEventContext)
+  | ({ type: "subagent_spawned"; subagent_session_id: string; name: string; task: string; role?: string | null } & AgentOutputEventContext)
+  | ({ type: "subagent_state_update"; subagent_session_id: string; state: string; role?: string | null } & AgentOutputEventContext)
   | ({ type: "done"; stop_reason: string } & AgentOutputEventContext)
   | ({ type: "error"; message: string } & AgentOutputEventContext)
+  | ({
+      type: "conversation_message"
+      message_id: string
+      role: string
+      message_type?: string | null
+      content: string
+      parts?: unknown
+      metadata?: unknown
+      timestamp_ms: number
+      sender_agent_id?: string | null
+      sender_agent_name?: string | null
+    } & AgentOutputEventContext)
 
 export type UIMessageChunk =
   | { type: "text-start" }
@@ -642,4 +710,102 @@ export async function cancelPrompt(agentId: string): Promise<void> {
     const error = await response.text()
     throw new Error(`Failed to cancel prompt: ${response.status} ${error}`)
   }
+}
+
+export function subscribeConversationRuntime(
+  conversationId: string,
+  afterSequence: number | undefined,
+  onSnapshot: (snapshot: ConversationRuntimeSnapshot) => void,
+  onEvent: (event: ConversationRuntimeEvent) => void,
+  onError?: (error: Error) => void,
+  onComplete?: () => void,
+): () => void {
+  const { apiUrl, token } = getErgataiAuthConfig()
+  const query = new URLSearchParams()
+  if (afterSequence !== undefined) query.set("after_sequence", String(afterSequence))
+  const querySuffix = query.toString() ? `?${query.toString()}` : ""
+  const url = `${apiUrl}/api/v1/conversations/${encodeURIComponent(conversationId)}/runtime/stream${querySuffix}`
+  const controller = new AbortController()
+  let cleanedUp = false
+
+  const cleanup = (completedSuccessfully = true) => {
+    if (cleanedUp) return
+    cleanedUp = true
+    controller.abort()
+    // Only call onComplete on successful completion, not on errors
+    if (completedSuccessfully) {
+      onComplete?.()
+    }
+  }
+
+  const parseEvent = (rawEvent: string) => {
+    let eventName = "message"
+    let data = ""
+    for (const line of rawEvent.split(/\r?\n/)) {
+      if (line.startsWith(":")) continue
+      const colonIndex = line.indexOf(":")
+      if (colonIndex === -1) continue
+      const field = line.slice(0, colonIndex)
+      const value = line.slice(colonIndex + 1)
+      const normalizedValue = value.startsWith(" ") ? value.slice(1) : value
+      if (field === "event") eventName = normalizedValue
+      else if (field === "data") data += data ? `\n${normalizedValue}` : normalizedValue
+    }
+    if (!data) return
+
+    try {
+      const parsed = JSON.parse(data)
+      if (eventName === "snapshot") {
+        onSnapshot(conversationRuntimeSnapshotSchema.parse(parsed))
+      } else {
+        onEvent(conversationRuntimeEventSchema.parse(parsed))
+      }
+    } catch (error) {
+      console.error("[ConversationRuntime] Failed to parse SSE event:", error)
+    }
+  }
+
+  void (async () => {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          Accept: "text/event-stream",
+          Authorization: `Bearer ${token}`,
+        },
+        signal: controller.signal,
+      })
+      if (!response.ok) {
+        const detail = await response.text().catch(() => "unknown error")
+        throw new Error(`Conversation runtime stream failed (${response.status}): ${detail}`)
+      }
+      if (!response.body) throw new Error("Conversation runtime stream has no readable body")
+
+      let buffer = ""
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      while (!cleanedUp) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        buffer = buffer.replaceAll("\r\n", "\n").replaceAll("\r", "\n")
+        while (true) {
+          const boundary = buffer.indexOf("\n\n")
+          if (boundary === -1) break
+          parseEvent(buffer.slice(0, boundary))
+          buffer = buffer.slice(boundary + 2)
+        }
+      }
+      buffer += decoder.decode()
+      if (buffer.trim()) parseEvent(buffer)
+      cleanup(true) // Successful completion
+    } catch (error) {
+      const hadCleanedUp = cleanedUp
+      cleanup(false) // Error occurred, don't call onComplete
+      if (!hadCleanedUp && !controller.signal.aborted) {
+        onError?.(error instanceof Error ? error : new Error("Conversation runtime SSE failed"))
+      }
+    }
+  })()
+
+  return cleanup
 }

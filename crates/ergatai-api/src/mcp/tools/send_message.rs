@@ -56,6 +56,7 @@ pub(crate) async fn handle(
         message_type: message_type.to_string(),
         correlation_id,
         conversation_id: None,
+        client_request_id: None,
     };
 
     match sender.send(send_req).await {

@@ -1865,6 +1865,30 @@ pub mod messages {
         }
     }
 
+    /// Check if a message with the given external (NATS) message_id already exists
+    /// in the specified conversation. Used for idempotent persistence when NATS
+    /// redelivers after early persistence.
+    ///
+    /// The external message_id is stored in the metadata JSON field as `externalMessageId`.
+    pub fn exists_by_external_message_id(
+        conversation_id: ConversationId,
+        external_message_id: &str,
+    ) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        // Use JSON extraction to check metadata.externalMessageId
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM messages
+                WHERE conversation_id = ?1
+                  AND json_extract(metadata, '$.externalMessageId') = ?2
+            )",
+            params![conversation_id, external_message_id],
+            |row| row.get(0),
+        )?;
+        Ok(exists)
+    }
+
     /// Agent 消息专用字段（用于结构化存储 agent 间通信）
     #[derive(Debug, Clone, Default)]
     pub struct AgentMessageFields {

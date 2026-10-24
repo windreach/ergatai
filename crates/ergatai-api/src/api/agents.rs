@@ -364,9 +364,13 @@ pub struct SendMessageRequest {
     /// When present, the backend will route to an agent with this command bound to the same chat.
     #[serde(default)]
     pub target_agent_command: Option<String>,
-    /// Force spawn a new agent session instead of reusing an existing one.
+    /// Force spawn a new agent session instead of reusing existing one.
     #[serde(default)]
     pub force_new_session: Option<bool>,
+    /// Frontend-generated request ID for optimistic → durable message replacement.
+    /// Stored in message metadata as `externalMessageId` for dedup matching.
+    #[serde(default)]
+    pub client_request_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1391,6 +1395,7 @@ pub async fn send_message(
                                         .unwrap_or_else(|| "request".to_string()),
                                     correlation_id: req.correlation_id,
                                     conversation_id: Some(target_conversation_id.to_string()),
+                                    client_request_id: req.client_request_id,
                                 };
 
                                 match sender.send(send_req).await {
@@ -1841,6 +1846,7 @@ pub async fn send_message(
                     message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
                     correlation_id: req.correlation_id,
                     conversation_id: Some(agent_conversation_id_i64.to_string()),
+                    client_request_id: req.client_request_id,
                 };
 
                 return match sender.send(send_req).await {
@@ -1923,6 +1929,7 @@ pub async fn send_message(
         message_type: req.message_type.unwrap_or_else(|| "request".to_string()),
         correlation_id: req.correlation_id,
         conversation_id: target_conversation_id,
+        client_request_id: req.client_request_id,
     };
 
     match sender.send(send_req).await {
@@ -2845,6 +2852,10 @@ pub struct PromptAgentRequest {
     /// rather than waiting in FIFO queue. Default: false.
     #[serde(default)]
     pub interrupt: bool,
+    /// Frontend-generated request ID for optimistic → durable message replacement.
+    /// Stored in message metadata as `externalMessageId` for dedup matching.
+    #[serde(default)]
+    pub client_request_id: Option<String>,
 }
 
 fn default_true() -> bool {

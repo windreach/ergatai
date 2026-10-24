@@ -117,6 +117,9 @@ pub struct SendRequest {
     pub correlation_id: Option<String>,
     /// Optional UI thread to persist/render this external message.
     pub conversation_id: Option<String>,
+    /// Frontend-generated request ID for optimistic → durable message replacement.
+    /// Stored in NATS payload metadata and persisted as `externalMessageId` in SQLite.
+    pub client_request_id: Option<String>,
 }
 
 /// Context retained while waiting for an agent's response.
@@ -330,6 +333,7 @@ impl MessageSender {
             message_type: req.message_type.clone(),
             correlation_id: req.correlation_id.clone(),
             conversation_id: req.conversation_id.clone(),
+            client_request_id: req.client_request_id.clone(),
         };
 
         // ── Step 2: Admission control (AFTER agent resolution) ──
@@ -472,7 +476,11 @@ impl MessageSender {
             crate::context::try_get_app_context().and_then(|ctx| ctx.nats_connection.clone())
         {
             let bus = ergatai_nats::EventBus::new(conn);
-            let metadata = std::collections::HashMap::new();
+            let mut metadata = std::collections::HashMap::new();
+            // Store frontend-generated client_request_id in metadata for dedup matching
+            if let Some(client_request_id) = &req.client_request_id {
+                metadata.insert("clientRequestId".to_string(), client_request_id.clone());
+            }
 
             let payload = ergatai_nats::AgentMessagePayload {
                 from_agent: resolved_sender_id.clone(),

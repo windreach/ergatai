@@ -9,8 +9,20 @@ import { z } from "zod"
 import { observable } from "@trpc/server/observable"
 import { publicProcedure, router } from "../index"
 import { ergataiFetch, getErgataiAuthConfig, isErgataiApiError, ErgataiApiError } from "../../ergatai/api"
-import { projectIdSchema } from "../../validation/ids"
-import { subscribeRawAgentStream, subscribeConversationMessages, type AgentOutputEvent } from "../../ergatai/sse-client"
+import {
+  agentIdSchema,
+  chatIdSchema,
+  conversationKeySchema,
+  messageIdSchema,
+  projectIdSchema,
+} from "../../validation/ids"
+import {
+  subscribeRawAgentStream,
+  subscribeConversationMessages,
+  subscribeConversationRuntime,
+  type AgentOutputEvent,
+  type ConversationRuntimeStreamEvent,
+} from "../../ergatai/sse-client"
 import { getModelSnapshotManager } from "../../model-snapshot-manager"
 import { terminalManager } from "../../terminal"
 import { mkdir } from "fs/promises"
@@ -612,7 +624,7 @@ export const ergataiRouter = router({
 
   /** Get a single agent by ID */
   getAgent: publicProcedure
-    .input(z.object({ agentId: z.string() }))
+    .input(z.object({ agentId: agentIdSchema }))
     .query(async ({ input }) => {
       const agents = await ergataiFetch<z.infer<typeof AgentInfoSchema>[]>("/api/v1/agents")
       return agents.find((a) => a.agent_id === input.agentId) ?? null
@@ -623,7 +635,7 @@ export const ergataiRouter = router({
     .input(
       z.object({
         workspaceId: z.string().optional(),
-        conversationId: z.string().optional(),
+        conversationId: conversationKeySchema.optional(),
         temporaryAgent: z.boolean().optional(),
         command: z.string(),
         instruction: z.string().optional(),
@@ -674,7 +686,7 @@ export const ergataiRouter = router({
 
   /** Kill an agent */
   killAgent: publicProcedure
-    .input(z.object({ agentId: z.string() }))
+    .input(z.object({ agentId: agentIdSchema }))
     .mutation(async ({ input }) => {
       await ergataiFetch(`/api/v1/agents/${input.agentId}`, {
         method: "DELETE",
@@ -686,7 +698,7 @@ export const ergataiRouter = router({
   sendMessage: publicProcedure
     .input(
       z.object({
-        agentId: z.string(),
+        agentId: agentIdSchema,
         message: z.string(),
         from: z.string().optional(),
         messageType: z.enum(["request", "response", "broadcast"]).optional(),
@@ -694,7 +706,8 @@ export const ergataiRouter = router({
         // Agent-to-agent routing fields
         targetAgentCommand: z.string().optional(),  // Target agent type (e.g., "claude", "codex")
         forceNewSession: z.boolean().optional(),    // Force spawn new session
-        conversationId: z.string().optional(),      // Required for agent-to-agent routing
+        conversationId: conversationKeySchema.optional(),      // Required for agent-to-agent routing
+        clientRequestId: z.string().optional(),    // Frontend-generated ID for optimistic → durable replacement
       }),
     )
     .mutation(async ({ input }) => {
@@ -714,6 +727,9 @@ export const ergataiRouter = router({
       }
       if (input.conversationId) {
         body.conversation_id = input.conversationId
+      }
+      if (input.clientRequestId) {
+        body.client_request_id = input.clientRequestId
       }
 
       return ergataiFetch(`/api/v1/agents/${input.agentId}/send`, {
@@ -736,7 +752,7 @@ export const ergataiRouter = router({
   createConversation: publicProcedure
     .input(
       z.object({
-        chatId: z.string(),
+        chatId: chatIdSchema,
         collaborationSessionId: z.string().optional(),
         title: z.string().optional(),
         mode: z.string().optional(),
@@ -762,7 +778,7 @@ export const ergataiRouter = router({
 
   /** Get a persisted conversation */
   getConversation: publicProcedure
-    .input(z.object({ conversationId: z.string() }))
+    .input(z.object({ conversationId: conversationKeySchema }))
     .query(async ({ input }) => {
       try {
         const conversation = await ergataiFetch<BackendConversation>(
@@ -779,7 +795,7 @@ export const ergataiRouter = router({
   updateConversation: publicProcedure
     .input(
       z.object({
-        conversationId: z.string(),
+        conversationId: conversationKeySchema,
         title: z.string().optional(),
         mode: z.string().optional(),
       }),
@@ -814,7 +830,7 @@ export const ergataiRouter = router({
 
   /** Delete a persisted conversation */
   deleteConversation: publicProcedure
-    .input(z.object({ conversationId: z.string() }))
+    .input(z.object({ conversationId: conversationKeySchema }))
     .mutation(async ({ input }) => {
       await ergataiFetch(
         `/api/v1/conversations/${encodeURIComponent(input.conversationId)}`,
@@ -825,7 +841,7 @@ export const ergataiRouter = router({
 
   /** Archive a persisted conversation */
   archiveConversation: publicProcedure
-    .input(z.object({ conversationId: z.string() }))
+    .input(z.object({ conversationId: conversationKeySchema }))
     .mutation(async ({ input }) => {
       const conversation = await ergataiFetch<BackendConversation>(
         `/api/v1/conversations/${encodeURIComponent(input.conversationId)}/archive`,
@@ -836,7 +852,7 @@ export const ergataiRouter = router({
 
   /** Unarchive a persisted conversation */
   unarchiveConversation: publicProcedure
-    .input(z.object({ conversationId: z.string() }))
+    .input(z.object({ conversationId: conversationKeySchema }))
     .mutation(async ({ input }) => {
       const conversation = await ergataiFetch<BackendConversation>(
         `/api/v1/conversations/${encodeURIComponent(input.conversationId)}/unarchive`,
@@ -847,7 +863,7 @@ export const ergataiRouter = router({
 
   /** List messages in a conversation */
   listConversationMessages: publicProcedure
-    .input(z.object({ conversationId: z.string() }))
+    .input(z.object({ conversationId: conversationKeySchema }))
     .query(async ({ input }) => {
       const messages = await ergataiFetch<BackendMessage[]>(
         `/api/v1/conversations/${encodeURIComponent(input.conversationId)}/messages`,
@@ -862,7 +878,7 @@ export const ergataiRouter = router({
   subscribeConversationMessages: publicProcedure
     .input(
       z.object({
-        conversationId: z.string(),
+        conversationId: conversationKeySchema,
         afterSequence: z.number().optional(),
       }),
     )
@@ -890,7 +906,7 @@ export const ergataiRouter = router({
 
   /** List file changes derived from persisted conversation messages */
   listConversationFileChanges: publicProcedure
-    .input(z.object({ conversationId: z.string() }))
+    .input(z.object({ conversationId: conversationKeySchema }))
     .query(async ({ input }) => {
       return ergataiFetch<BackendConversationFileChange[]>(
         `/api/v1/conversations/${encodeURIComponent(input.conversationId)}/file-changes`,
@@ -901,7 +917,7 @@ export const ergataiRouter = router({
   listConversations: publicProcedure
     .input(z.object({
       workspaceId: z.string().optional(),
-      chatId: z.string().optional(),
+      chatId: chatIdSchema.optional(),
       collaborationSessionId: z.string().optional(),
     }).optional())
     .query(async ({ input }) => {
@@ -910,14 +926,16 @@ export const ergataiRouter = router({
       if (input?.chatId) params.set("chat_id", input.chatId)
       if (input?.collaborationSessionId) params.set("collaboration_session_id", input.collaborationSessionId)
       const query = params.toString() ? `?${params.toString()}` : ""
-      return ergataiFetch<BackendConversation[]>(`/api/v1/conversations${query}`)
+      const conversations = await ergataiFetch<BackendConversation[]>(`/api/v1/conversations${query}`)
+      return conversations.map(mapConversation)
     }),
 
   /** Get conversation detail (替代旧的 runtime/conversations/{id}) */
   getConversationDetail: publicProcedure
-    .input(z.object({ conversationId: z.string() }))
+    .input(z.object({ conversationId: conversationKeySchema }))
     .query(async ({ input }) => {
-      return ergataiFetch<BackendConversation>(`/api/v1/conversations/${encodeURIComponent(input.conversationId)}`)
+      const conversation = await ergataiFetch<BackendConversation>(`/api/v1/conversations/${encodeURIComponent(input.conversationId)}`)
+      return mapConversation(conversation)
     }),
 
   /** List agent profiles (templates) */
@@ -1319,7 +1337,7 @@ export const ergataiRouter = router({
 
   /** Get agent plan */
   getAgentPlan: publicProcedure
-    .input(z.object({ agentId: z.string() }))
+    .input(z.object({ agentId: agentIdSchema }))
     .query(async ({ input }): Promise<AgentPlan | null> => {
       try {
         return await ergataiFetch<AgentPlan>(`/api/v1/agents/${input.agentId}/plan`)
@@ -1762,7 +1780,7 @@ export const ergataiRouter = router({
 
   /** List all agent bindings for a chat (use /agents endpoint) */
   getAgentBindings: publicProcedure
-    .input(z.object({ chatId: z.string() }))
+    .input(z.object({ chatId: chatIdSchema }))
     .query(async ({ input }): Promise<AgentBinding[]> => {
       if (!isValidChatId(input.chatId, "getAgentBindings")) {
         return []
@@ -1815,7 +1833,7 @@ export const ergataiRouter = router({
 
   /** Get all agents bound to a chat (for agent-to-agent routing) */
   getChatAgents: publicProcedure
-    .input(z.object({ chatId: z.string() }))
+    .input(z.object({ chatId: chatIdSchema }))
     .query(async ({ input }) => {
       if (!isValidChatId(input.chatId, "getChatAgents")) {
         return []
@@ -1843,7 +1861,7 @@ export const ergataiRouter = router({
   spawnAgentSession: publicProcedure
     .input(
       z.object({
-        agentId: z.string(),
+        agentId: agentIdSchema,
         targetCommand: z.string(),
         reason: z.enum(["explicit_request", "context_overflow", "task_separation"]).optional(),
         inheritContext: z.boolean().optional(),
@@ -1876,9 +1894,9 @@ export const ergataiRouter = router({
   promptAgent: publicProcedure
     .input(
       z.object({
-        agentId: z.string(),
+        agentId: agentIdSchema,
         message: z.string(),
-        conversationId: z.string().optional(),
+        conversationId: conversationKeySchema.optional(),
         senderAgentId: z.string().optional(),
         senderAgentName: z.string().optional(),
         images: z
@@ -1891,6 +1909,7 @@ export const ergataiRouter = router({
           )
           .optional(),
         waitForStream: z.boolean().optional(),
+        clientRequestId: z.string().optional(),  // Frontend-generated ID for optimistic → durable replacement
       }),
     )
     .mutation(async ({ input }) => {
@@ -1905,6 +1924,7 @@ export const ergataiRouter = router({
             sender_agent_name: input.senderAgentName,
             images: input.images ?? [],
             wait_for_stream: input.waitForStream ?? true,
+            client_request_id: input.clientRequestId,
           }),
         },
       )
@@ -1912,7 +1932,7 @@ export const ergataiRouter = router({
 
   /** Cancel an active prompt for an agent */
   cancelPrompt: publicProcedure
-    .input(z.object({ agentId: z.string() }))
+    .input(z.object({ agentId: agentIdSchema }))
     .mutation(async ({ input }) => {
       await ergataiFetch(`/api/v1/agents/${input.agentId}/cancel`, {
         method: "POST",
@@ -1924,7 +1944,7 @@ export const ergataiRouter = router({
   subscribeAgentStream: publicProcedure
     .input(
       z.object({
-        agentId: z.string(),
+        agentId: agentIdSchema,
         promptId: z.string().optional(),
       }),
     )
@@ -1945,11 +1965,50 @@ export const ergataiRouter = router({
       })
     }),
 
+  /** Get the backend's live cache for an active conversation turn */
+  getConversationRuntime: publicProcedure
+    .input(
+      z.object({
+        conversationId: conversationKeySchema,
+        afterSequence: z.number().int().nonnegative().optional(),
+      }),
+    )
+    .query(async ({ input }) => {
+      const query = new URLSearchParams()
+      if (input.afterSequence !== undefined) {
+        query.set("after_sequence", String(input.afterSequence))
+      }
+      const suffix = query.toString() ? `?${query.toString()}` : ""
+      return ergataiFetch<Record<string, unknown>>(
+        `/api/v1/conversations/${encodeURIComponent(input.conversationId)}/runtime${suffix}`,
+      )
+    }),
+
+  /** Stream the backend conversation runtime cache with snapshot + live events */
+  subscribeConversationRuntime: publicProcedure
+    .input(
+      z.object({
+        conversationId: conversationKeySchema,
+        afterSequence: z.number().int().nonnegative().optional(),
+      }),
+    )
+    .subscription(({ input }) => {
+      return observable<ConversationRuntimeStreamEvent>((emit) => {
+        return subscribeConversationRuntime(
+          input.conversationId,
+          input.afterSequence,
+          (snapshot) => emit.next({ kind: "snapshot", snapshot }),
+          (event) => emit.next({ kind: "event", event }),
+          (error) => emit.error(error),
+        )
+      })
+    }),
+
   // ── Agent Introspection Endpoints ────────────────────────────────────────
 
   /** Get agent elicitations (pending interactive requests) */
   getAgentElicitations: publicProcedure
-    .input(z.object({ agentId: z.string() }))
+    .input(z.object({ agentId: agentIdSchema }))
     .query(async ({ input }) => {
       return ergataiFetch(`/api/v1/agents/${input.agentId}/elicitations`)
     }),
@@ -1958,7 +2017,7 @@ export const ergataiRouter = router({
   respondToElicitation: publicProcedure
     .input(
       z.object({
-        agentId: z.string(),
+        agentId: agentIdSchema,
         elicitationId: z.string(),
         response: z.any(),
       }),
@@ -2124,14 +2183,14 @@ export const ergataiRouter = router({
 
   /** Get agent config options */
   getAgentConfigOptions: publicProcedure
-    .input(z.object({ agentId: z.string() }))
+    .input(z.object({ agentId: agentIdSchema }))
     .query(async ({ input }) => {
       return ergataiFetch(`/api/v1/agents/${input.agentId}/config-options`)
     }),
 
   /** Get agent available commands */
   getAgentCommands: publicProcedure
-    .input(z.object({ agentId: z.string() }))
+    .input(z.object({ agentId: agentIdSchema }))
     .query(async ({ input }) => {
       return ergataiFetch(`/api/v1/agents/${input.agentId}/commands`)
     }),
@@ -2140,7 +2199,7 @@ export const ergataiRouter = router({
   executeAgentCommand: publicProcedure
     .input(
       z.object({
-        agentId: z.string(),
+        agentId: agentIdSchema,
         command: z.string(),
         args: z.array(z.string()).optional(),
       }),
@@ -2199,7 +2258,7 @@ export const ergataiRouter = router({
   getAgentModelsWithCache: publicProcedure
     .input(
       z.object({
-        agentId: z.string(),
+        agentId: agentIdSchema,
         forceRefresh: z.boolean().optional(),
       }),
     )
@@ -2229,14 +2288,14 @@ export const ergataiRouter = router({
 
   /** Get agent sessions */
   listAgentSessions: publicProcedure
-    .input(z.object({ agentId: z.string() }))
+    .input(z.object({ agentId: agentIdSchema }))
     .query(async ({ input }) => {
       return ergataiFetch(`/api/v1/agents/${input.agentId}/sessions`)
     }),
 
   /** Create an agent session */
   createAgentSession: publicProcedure
-    .input(z.object({ agentId: z.string() }))
+    .input(z.object({ agentId: agentIdSchema }))
     .mutation(async ({ input }) => {
       return ergataiFetch(`/api/v1/agents/${input.agentId}/sessions`, {
         method: "POST",
@@ -2245,7 +2304,7 @@ export const ergataiRouter = router({
 
   /** Load a specific agent session */
   loadAgentSession: publicProcedure
-    .input(z.object({ agentId: z.string(), sessionId: z.string() }))
+    .input(z.object({ agentId: agentIdSchema, sessionId: z.string() }))
     .mutation(async ({ input }) => {
       return ergataiFetch(
         `/api/v1/agents/${input.agentId}/sessions/${input.sessionId}`,
@@ -2255,7 +2314,7 @@ export const ergataiRouter = router({
 
   /** Delete a specific agent session */
   deleteAgentSession: publicProcedure
-    .input(z.object({ agentId: z.string(), sessionId: z.string() }))
+    .input(z.object({ agentId: agentIdSchema, sessionId: z.string() }))
     .mutation(async ({ input }) => {
       await ergataiFetch(
         `/api/v1/agents/${input.agentId}/sessions/${input.sessionId}`,
@@ -2275,7 +2334,7 @@ export const ergataiRouter = router({
   listLockAudit: publicProcedure
     .input(
       z.object({
-        agentId: z.string().optional(),
+        agentId: agentIdSchema.optional(),
         action: z.string().optional(),
         filePath: z.string().optional(),
         limit: z.number().optional(),
@@ -2330,7 +2389,7 @@ export const ergataiRouter = router({
 
   /** Find the authoritative collaboration session for a chat */
   findCollaborationSessionByChat: publicProcedure
-    .input(z.object({ chatId: z.string() }))
+    .input(z.object({ chatId: chatIdSchema }))
     .query(async ({ input }) => {
       try {
         const sessions = await ergataiFetch<CollaborationSessionDetail[]>(
@@ -2347,7 +2406,7 @@ export const ergataiRouter = router({
   createCollaborationSession: publicProcedure
     .input(
       z.object({
-        chatId: z.string(),
+        chatId: chatIdSchema,
         workspaceId: z.string().optional(),
         projectId: projectIdSchema.optional(),
         mode: z.enum(["supervisor", "group"]),
@@ -2355,8 +2414,8 @@ export const ergataiRouter = router({
         participants: z
           .array(
             z.object({
-              conversationId: z.string(),
-              agentId: z.string(),
+              conversationId: conversationKeySchema,
+              agentId: agentIdSchema,
               role: z.string().optional(),
               status: z.string().optional(),
             }),
@@ -2448,7 +2507,7 @@ export const ergataiRouter = router({
         sessionId: z.string(),
         interaction: z.object({
           type: z.literal("message_submitted"),
-          chatId: z.string(),
+          chatId: chatIdSchema,
           text: z.string(),
           mentions: z.array(z.string()).optional(),
           workspaceId: z.string().optional(),
@@ -2662,7 +2721,7 @@ export const ergataiRouter = router({
 
   /** Get agent events stream */
   getAgentEvents: publicProcedure
-    .input(z.object({ agentId: z.string() }))
+    .input(z.object({ agentId: agentIdSchema }))
     .query(async ({ input }) => {
       return ergataiFetch(`/api/v1/agents/${input.agentId}/events`)
     }),
@@ -2670,7 +2729,7 @@ export const ergataiRouter = router({
   /** Send prompt to agent */
   sendPrompt: publicProcedure
     .input(z.object({
-      agentId: z.string(),
+      agentId: agentIdSchema,
       prompt: z.string(),
     }))
     .mutation(async ({ input }) => {
@@ -2682,7 +2741,7 @@ export const ergataiRouter = router({
 
   /** Resume agent */
   resumeAgent: publicProcedure
-    .input(z.object({ agentId: z.string() }))
+    .input(z.object({ agentId: agentIdSchema }))
     .mutation(async ({ input }) => {
       return ergataiFetch(`/api/v1/agents/${input.agentId}/resume`, {
         method: "POST",
@@ -2691,7 +2750,7 @@ export const ergataiRouter = router({
 
   /** Spawn new agent session */
   spawnNewAgentSession: publicProcedure
-    .input(z.object({ agentId: z.string() }))
+    .input(z.object({ agentId: agentIdSchema }))
     .mutation(async ({ input }) => {
       return ergataiFetch(`/api/v1/agents/${input.agentId}/fork`, {
         method: "POST",
@@ -2700,7 +2759,7 @@ export const ergataiRouter = router({
 
   /** Suspend agent */
   suspendAgent: publicProcedure
-    .input(z.object({ agentId: z.string() }))
+    .input(z.object({ agentId: agentIdSchema }))
     .mutation(async ({ input }) => {
       return ergataiFetch(`/api/v1/agents/${input.agentId}/suspend`, {
         method: "POST",
@@ -2711,7 +2770,7 @@ export const ergataiRouter = router({
 
   /** Lookup worktree for chat */
   lookupChatWorktree: publicProcedure
-    .input(z.object({ chatId: z.string() }))
+    .input(z.object({ chatId: chatIdSchema }))
     .query(async ({ input }) => {
       if (!isValidChatId(input.chatId, "lookupChatWorktree")) {
         return null
@@ -2722,7 +2781,7 @@ export const ergataiRouter = router({
 
   /** Get chat agent graph */
   getChatAgentGraph: publicProcedure
-    .input(z.object({ chatId: z.string() }))
+    .input(z.object({ chatId: chatIdSchema }))
     .query(async ({ input }) => {
       if (!isValidChatId(input.chatId, "getChatAgentGraph")) {
         return null
@@ -2733,7 +2792,7 @@ export const ergataiRouter = router({
 
   /** Get chat agents (alias for existing getChatAgents) */
   getChatAgentsList: publicProcedure
-    .input(z.object({ chatId: z.string() }))
+    .input(z.object({ chatId: chatIdSchema }))
     .query(async ({ input }) => {
       if (!isValidChatId(input.chatId, "getChatAgentsList")) {
         return { agents: [] }
@@ -2746,7 +2805,7 @@ export const ergataiRouter = router({
 
   /** Get collaboration session by chat */
   getCollaborationSessionByChat: publicProcedure
-    .input(z.object({ chatId: z.string() }))
+    .input(z.object({ chatId: chatIdSchema }))
     .query(async ({ input }) => {
       const sessions = await ergataiFetch<CollaborationSessionDetail[]>(
         `/api/v1/collaboration-sessions?chat_id=${encodeURIComponent(input.chatId)}`,
@@ -2830,7 +2889,7 @@ export const ergataiRouter = router({
   getCollaborationSessionConversation: publicProcedure
     .input(z.object({
       sessionId: z.string(),
-      conversationId: z.string(),
+      conversationId: conversationKeySchema,
     }))
     .query(async ({ input }) => {
       return ergataiFetch(`/api/v1/collaboration-sessions/${encodeURIComponent(input.sessionId)}/conversations/${encodeURIComponent(input.conversationId)}`)
@@ -2965,7 +3024,7 @@ export const ergataiRouter = router({
 
   /** Get conversation outputs */
   getConversationOutputs: publicProcedure
-    .input(z.object({ conversationId: z.string() }))
+    .input(z.object({ conversationId: conversationKeySchema }))
     .query(async ({ input }) => {
       return ergataiFetch(`/api/v1/conversations/${encodeURIComponent(input.conversationId)}/outputs`)
     }),
@@ -2973,7 +3032,7 @@ export const ergataiRouter = router({
   /** Get specific conversation output */
   getConversationOutput: publicProcedure
     .input(z.object({
-      conversationId: z.string(),
+      conversationId: conversationKeySchema,
       outputId: z.string(),
     }))
     .query(async ({ input }) => {
@@ -2982,7 +3041,7 @@ export const ergataiRouter = router({
 
   /** Get conversation file changes */
   getConversationFileChanges: publicProcedure
-    .input(z.object({ conversationId: z.string() }))
+    .input(z.object({ conversationId: conversationKeySchema }))
     .query(async ({ input }) => {
       return ergataiFetch(`/api/v1/conversations/${encodeURIComponent(input.conversationId)}/file-changes`)
     }),

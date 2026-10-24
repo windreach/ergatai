@@ -441,7 +441,9 @@ fn event_type_name(event: &AgentOutputEvent) -> &'static str {
         AgentOutputEvent::SubagentSpawned { .. } => "SubagentSpawned",
         AgentOutputEvent::SubagentStateUpdate { .. } => "SubagentStateUpdate",
         AgentOutputEvent::Done { .. } => "Done",
+        AgentOutputEvent::TurnStarted { .. } => "TurnStarted",
         AgentOutputEvent::Error { .. } => "Error",
+        AgentOutputEvent::ConversationMessage { .. } => "ConversationMessage",
         _ => "Unknown",
     }
 }
@@ -1233,6 +1235,13 @@ pub enum AgentOutputEvent {
         role: String,
         stop_reason: String,
     },
+    /// A new agent turn has started. This makes turn boundaries explicit
+    /// so the frontend can clearly distinguish between turns without
+    /// inferring from the first delta event.
+    TurnStarted {
+        /// Message role: "assistant" for local agent, "agent" for inter-agent
+        role: String,
+    },
     /// An error occurred during prompt execution.
     Error {
         /// Message role: "assistant" for local agent, "agent" for inter-agent
@@ -1244,6 +1253,21 @@ pub enum AgentOutputEvent {
     /// This event is NOT forwarded to SSE clients — it is consumed internally
     /// by the SSE persistence layer.
     ConversationId { id: Option<String> },
+    /// A durable conversation message published on the unified conversation
+    /// subject. Agent-to-agent requests arrive as complete messages rather
+    /// than incremental AgentOutputEvent deltas, so this variant lets the
+    /// runtime cache expose them to UIs attached to the conversation.
+    ConversationMessage {
+        message_id: String,
+        role: String,
+        message_type: Option<String>,
+        content: String,
+        parts: Option<serde_json::Value>,
+        metadata: Option<serde_json::Value>,
+        timestamp_ms: u64,
+        sender_agent_id: Option<String>,
+        sender_agent_name: Option<String>,
+    },
 }
 
 /// Helper function to evict oldest entries when a tracker reaches capacity.
@@ -3612,6 +3636,17 @@ impl AcpBackendInterface for AcpBackend {
                                     None
                                 };
 
+                                // Emit explicit TurnStarted event to make turn boundaries visible
+                                // to the frontend (so it doesn't have to infer from first delta)
+                                send_output_event_with_turn_token(
+                                    &task_current_turn_token,
+                                    &connection_conversation_id,
+                                    AgentOutputEvent::TurnStarted {
+                                        role: "assistant".to_string(),
+                                    },
+                                )
+                                .await;
+
                                 let prompt_started_at = Instant::now();
 
                                 let mut content = if message.is_empty() {
@@ -3725,6 +3760,16 @@ impl AcpBackendInterface for AcpBackend {
                                 } else {
                                     None
                                 };
+
+                                // Emit explicit TurnStarted event to make turn boundaries visible
+                                send_output_event_with_turn_token(
+                                    &task_current_turn_token,
+                                    &connection_conversation_id,
+                                    AgentOutputEvent::TurnStarted {
+                                        role: "assistant".to_string(),
+                                    },
+                                )
+                                .await;
 
                                 let prompt_started_at = Instant::now();
                                 info!(
@@ -3845,6 +3890,16 @@ impl AcpBackendInterface for AcpBackend {
                                 } else {
                                     None
                                 };
+
+                                // Emit explicit TurnStarted event to make turn boundaries visible
+                                send_output_event_with_turn_token(
+                                    &task_current_turn_token,
+                                    &connection_conversation_id,
+                                    AgentOutputEvent::TurnStarted {
+                                        role: "assistant".to_string(),
+                                    },
+                                )
+                                .await;
 
                                 let prompt_started_at = Instant::now();
                                 info!(

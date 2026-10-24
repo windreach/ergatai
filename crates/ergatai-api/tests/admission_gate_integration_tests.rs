@@ -19,6 +19,7 @@ async fn test_self_message_gate_denies_self_send() {
         message_type: "request".to_string(),
         correlation_id: None,
         conversation_id: None,
+        client_request_id: None,
     };
 
     let result = gate.check(&request, &runtime).await;
@@ -42,6 +43,7 @@ async fn test_self_message_gate_allows_different_agents() {
         message_type: "request".to_string(),
         correlation_id: None,
         conversation_id: None,
+        client_request_id: None,
     };
 
     let result = gate.check(&request, &runtime).await;
@@ -66,6 +68,7 @@ async fn test_composite_gate_short_circuits() {
         message_type: "request".to_string(),
         correlation_id: None,
         conversation_id: None,
+        client_request_id: None,
     };
 
     let result = gate.check(&request, &runtime).await;
@@ -89,6 +92,7 @@ async fn test_composite_gate_empty_allows_all() {
         message_type: "request".to_string(),
         correlation_id: None,
         conversation_id: None,
+        client_request_id: None,
     };
 
     let result = gate.check(&request, &runtime).await;
