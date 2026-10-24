@@ -385,8 +385,8 @@ export function KanbanView() {
     toggleChatSelection(chatId)
   }, [toggleChatSelection])
 
-  // Rename mutation
-  const renameChatMutation = trpc.ergatai.updateConversation.useMutation({
+  // Rename mutation - use updateChat for chat container, not updateConversation
+  const renameChatMutation = trpc.ergatai.updateChat.useMutation({
     onSuccess: () => {
       utils.chats.list.invalidate()
     },
@@ -403,7 +403,7 @@ export function KanbanView() {
 
   const handleRenameSave = async (newName: string) => {
     if (!renamingChat) return
-    await renameChatMutation.mutateAsync({ conversationId: renamingChat.id, title: newName })
+    await renameChatMutation.mutateAsync({ id: renamingChat.id, name: newName })
     setRenameDialogOpen(false)
     setRenamingChat(null)
   }

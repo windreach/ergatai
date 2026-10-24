@@ -273,10 +273,9 @@ export const ArchivePopover = memo(function ArchivePopover({ trigger }: ArchiveP
     return new Map(fileStatsData.map((s) => [s.chatId, { additions: s.additions, deletions: s.deletions }]))
   }, [fileStatsData])
 
-  // Local restore mutation
-  const localRestoreMutation = trpc.ergatai.unarchiveConversation.useMutation({
+  // Local restore mutation - use unarchiveChat for chat container
+  const localRestoreMutation = trpc.ergatai.unarchiveChat.useMutation({
     onSuccess: () => {
-      // The restored record is a conversation; let the runtime list reload.
       utils.chats.list.invalidate()
       utils.ergatai.listManagedWorkspaces.invalidate()
       void utils.ergatai.workspaceStatus.invalidate()
@@ -356,7 +355,7 @@ export const ArchivePopover = memo(function ArchivePopover({ trigger }: ArchiveP
       e.preventDefault()
       const chat = filteredChats[selectedIndex]
       if (chat) {
-        localRestoreMutation.mutate({ conversationId: chat.id })
+        localRestoreMutation.mutate({ id: chat.id })
         setSelectedChatId(chat.id)
         setOpen(false)
       }
@@ -393,7 +392,7 @@ export const ArchivePopover = memo(function ArchivePopover({ trigger }: ArchiveP
   }, [setSelectedChatId])
 
   const handleRestoreChat = useCallback((id: string) => {
-    localRestoreMutation.mutate({ conversationId: id })
+    localRestoreMutation.mutate({ id })
     setSelectedChatId(id)
   }, [localRestoreMutation, setSelectedChatId])
 

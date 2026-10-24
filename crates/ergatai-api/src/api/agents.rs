@@ -723,7 +723,7 @@ pub async fn spawn_agent(
 
                             // Resolve transport via probe cache (fingerprint-validated).
                             let resolved_transport = resolve_profile_transport(
-                                &registry,
+                                registry,
                                 &profile.name,
                                 profile.transport.clone(),
                             )
@@ -1507,7 +1507,7 @@ pub async fn send_message(
                         match profiles.into_iter().find(|p| p.name == *target_command) {
                             Some(profile) => {
                                 let resolved_transport = resolve_profile_transport(
-                                    &registry,
+                                    registry,
                                     &profile.name,
                                     profile.transport.clone(),
                                 )
@@ -2030,7 +2030,7 @@ pub async fn spawn_session(
                     match profiles.into_iter().find(|p| p.name == req.target_command) {
                         Some(profile) => {
                             let resolved_transport = resolve_profile_transport(
-                                &registry,
+                                registry,
                                 &profile.name,
                                 profile.transport.clone(),
                             )

@@ -2932,6 +2932,155 @@ pub mod mcp_servers {
     }
 }
 
+// ── Batch Operations ─────────────────────────────────────────────────────────
+
+/// Create a default chat with all associated records in a single transaction.
+///
+/// This ensures atomicity: either all 6 records are created, or none are.
+/// Prevents orphaned records when creating the default chat/binding structure
+/// for an agent that has no GroupAgentBinding yet.
+///
+/// Records created:
+/// 1. Chat
+/// 2. CollaborationSession
+/// 3. Root Conversation (chat-level)
+/// 4. Agent Conversation (child of root)
+/// 5. GroupAgentBinding
+/// 6. AgentSession
+pub fn create_default_chat_with_binding(
+    chat: Chat,
+    collaboration_session: CollaborationSession,
+    root_conversation: Conversation,
+    agent_conversation: Conversation,
+    binding: GroupAgentBinding,
+    agent_session: AgentSession,
+) -> Result<ConversationId> {
+    let db = get_user_data_db();
+    let mut conn = db.lock().unwrap();
+
+    // Begin transaction
+    let transaction = conn.transaction()?;
+
+    // 1. Create chat
+    transaction.execute(
+        "INSERT INTO chats (chat_id, workspace_id, name, collaboration_mode, worktree_path, branch, base_branch, pr_url, pr_number, created_at, updated_at, archived_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            chat.chat_id,
+            chat.workspace_id,
+            chat.name,
+            chat.collaboration_mode,
+            chat.worktree_path,
+            chat.branch,
+            chat.base_branch,
+            chat.pr_url,
+            chat.pr_number,
+            chat.created_at,
+            chat.updated_at,
+            chat.archived_at,
+        ],
+    )?;
+
+    // 2. Create collaboration session
+    transaction.execute(
+        "INSERT INTO collaboration_sessions (collaboration_session_id, chat_id, workspace_id, mode, state, goal, active_plan_revision, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            collaboration_session.collaboration_session_id,
+            collaboration_session.chat_id,
+            collaboration_session.workspace_id,
+            collaboration_session.mode,
+            collaboration_session.state,
+            collaboration_session.goal,
+            collaboration_session.active_plan_revision,
+            collaboration_session.created_at,
+            collaboration_session.updated_at,
+        ],
+    )?;
+
+    // 3. Create root conversation
+    transaction.execute(
+        "INSERT INTO conversations (conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            root_conversation.conversation_id,
+            root_conversation.collaboration_session_id,
+            root_conversation.chat_id,
+            root_conversation.parent_id,
+            root_conversation.name,
+            root_conversation.mode,
+            root_conversation.participant_role,
+            root_conversation.status,
+            root_conversation.created_at,
+            root_conversation.updated_at,
+        ],
+    )?;
+
+    // 4. Create agent conversation
+    transaction.execute(
+        "INSERT INTO conversations (conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            agent_conversation.conversation_id,
+            agent_conversation.collaboration_session_id,
+            agent_conversation.chat_id,
+            agent_conversation.parent_id,
+            agent_conversation.name,
+            agent_conversation.mode,
+            agent_conversation.participant_role,
+            agent_conversation.status,
+            agent_conversation.created_at,
+            agent_conversation.updated_at,
+        ],
+    )?;
+
+    // 5. Create GroupAgentBinding
+    transaction.execute(
+        "INSERT INTO group_agent_bindings (workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
+           chat_id = excluded.chat_id,
+           agent_name = excluded.agent_name,
+           agent_command = excluded.agent_command,
+           conversation_id = excluded.conversation_id,
+           updated_at = excluded.updated_at",
+        params![
+            binding.workspace_id,
+            binding.chat_id,
+            binding.agent_id,
+            binding.agent_name,
+            binding.agent_command,
+            binding.conversation_id,
+            binding.created_at,
+            binding.updated_at,
+        ],
+    )?;
+
+    // 6. Create AgentSession
+    transaction.execute(
+        "INSERT INTO agent_sessions (agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(agent_session_id) DO UPDATE SET
+           conversation_id = excluded.conversation_id,
+           acp_session_id = excluded.acp_session_id,
+           mode = excluded.mode,
+           updated_at = excluded.updated_at",
+        params![
+            agent_session.agent_session_id,
+            agent_session.conversation_id,
+            agent_session.acp_session_id,
+            agent_session.mode,
+            agent_session.created_at,
+            agent_session.updated_at,
+        ],
+    )?;
+
+    // Commit transaction
+    transaction.commit()?;
+
+    Ok(agent_conversation.conversation_id)
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

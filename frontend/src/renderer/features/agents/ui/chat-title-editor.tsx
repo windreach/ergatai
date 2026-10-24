@@ -12,7 +12,7 @@ interface ChatTitleEditorProps {
   onSave: (newName: string) => Promise<void>
   isMobile?: boolean
   disabled?: boolean
-  chatId?: string
+  entityId?: string
   hasMessages?: boolean
 }
 
@@ -26,7 +26,7 @@ function areTitlePropsEqual(
     prev.placeholder === next.placeholder &&
     prev.isMobile === next.isMobile &&
     prev.disabled === next.disabled &&
-    prev.chatId === next.chatId &&
+    prev.entityId === next.entityId &&
     prev.hasMessages === next.hasMessages
   )
 }
@@ -37,7 +37,7 @@ export const ChatTitleEditor = memo(function ChatTitleEditor({
   onSave,
   isMobile = false,
   disabled = false,
-  chatId,
+  entityId,
   hasMessages = false,
 }: ChatTitleEditorProps) {
   const [isEditing, setIsEditing] = useState(false)
@@ -131,7 +131,7 @@ export const ChatTitleEditor = memo(function ChatTitleEditor({
     }
   }
 
-  const isJustCreated = chatId ? justCreatedIds.has(chatId) : false
+  const isJustCreated = entityId ? justCreatedIds.has(entityId) : false
   const hasRealName = name && name !== placeholder
 
   const handleClick = () => {
@@ -178,7 +178,7 @@ export const ChatTitleEditor = memo(function ChatTitleEditor({
             <TypewriterText
               text={name}
               placeholder={placeholder}
-              id={chatId}
+              id={entityId}
               isJustCreated={isJustCreated}
               showPlaceholder={hasMessages}
             />

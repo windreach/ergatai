@@ -1819,15 +1819,15 @@ export function AgentsSidebar({
   // Unified undo stack for workspaces and conversations (Jotai atom)
   const [undoStack, setUndoStack] = useAtom(undoStackAtom)
 
-  // Restore chat mutation (for undo)
-  const restoreChatMutation = trpc.ergatai.unarchiveConversation.useMutation({
+  // Restore chat mutation (for undo) - use unarchiveChat for chat container, not unarchiveConversation
+  const restoreChatMutation = trpc.ergatai.unarchiveChat.useMutation({
     onSuccess: (_, variables) => {
       utils.chats.list.invalidate()
       utils.ergatai.listManagedWorkspaces.invalidate()
       void utils.ergatai.workspaceStatus.invalidate()
       utils.chats.listArchived.invalidate()
       // Select the restored chat
-      setSelectedChatId(variables.conversationId)
+      setSelectedChatId(variables.id)
     },
   })
 
@@ -1920,8 +1920,8 @@ export function AgentsSidebar({
         setUndoStack((prev) => prev.slice(0, -1))
 
         if (lastItem.type === "workspace") {
-          // Restore workspace from archive
-          restoreChatMutation.mutate({ conversationId: lastItem.chatId })
+          // Restore workspace from archive - use id parameter for unarchiveChat
+          restoreChatMutation.mutate({ id: lastItem.chatId })
         } else if (lastItem.type === "conversation") {
           // Restore conversation tab (re-add to open tabs)
           const store = useAgentConversationStore.getState()
@@ -2013,8 +2013,8 @@ export function AgentsSidebar({
     prevPinnedRef.current = pinnedChatIds
   }, [pinnedChatIds, selectedWorkspace?.id])
 
-  // Rename mutation
-  const renameChatMutation = trpc.ergatai.updateConversation.useMutation({
+  // Rename mutation - use updateChat for chat container, not updateConversation
+  const renameChatMutation = trpc.ergatai.updateChat.useMutation({
     onSuccess: () => {
       utils.chats.list.invalidate()
       utils.ergatai.listManagedWorkspaces.invalidate()
@@ -2057,8 +2057,8 @@ export function AgentsSidebar({
 
       try {
         await renameChatMutation.mutateAsync({
-          conversationId: chatId,
-          title: newName,
+          id: chatId,
+          name: newName,
         })
       } catch {
         utils.chats.list.setData({}, (old) => {

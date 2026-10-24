@@ -671,12 +671,14 @@ impl MessageSender {
         let updated = runtime
             .registry()
             .update(agent_id, |info| {
-                info.handle
-                    .metadata
-                    .insert("conversation_id".to_string(), conversation_id_formatted.clone());
-                info.handle
-                    .metadata
-                    .insert("conversation_id_i64".to_string(), conversation_id_i64.clone());
+                info.handle.metadata.insert(
+                    "conversation_id".to_string(),
+                    conversation_id_formatted.clone(),
+                );
+                info.handle.metadata.insert(
+                    "conversation_id_i64".to_string(),
+                    conversation_id_i64.clone(),
+                );
                 info.conversation_id = Some(conversation_id_formatted.clone());
             })
             .await;
@@ -1017,26 +1019,24 @@ impl MessageSender {
         let sender_conversation_id = ConversationId::generate();
         let session_id_i64 = generate();
 
-        let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
-            // 1. Create default chat
-            crate::user_data_db::chats::create(crate::user_data_db::Chat {
-                chat_id,
-                workspace_id,
-                name: Some(format!("Default chat for {}", sender_id_for_label)),
-                collaboration_mode: Some("supervisor".to_string()),
-                worktree_path: None,
-                branch: None,
-                base_branch: None,
-                pr_url: None,
-                pr_number: None,
-                created_at: timestamp,
-                updated_at: timestamp,
-                archived_at: None,
-            })
-            .map_err(|e| format!("Failed to create chat: {}", e))?;
-
-            // 2. Create the collaboration session referenced by conversations.
-            crate::user_data_db::collaboration_sessions::create(
+        let result = tokio::task::spawn_blocking(move || {
+            // Create all 6 records in a single transaction for atomicity.
+            // This prevents orphaned records if any step fails.
+            crate::user_data_db::create_default_chat_with_binding(
+                crate::user_data_db::Chat {
+                    chat_id,
+                    workspace_id,
+                    name: Some(format!("Default chat for {}", sender_id_for_label)),
+                    collaboration_mode: Some("supervisor".to_string()),
+                    worktree_path: None,
+                    branch: None,
+                    base_branch: None,
+                    pr_url: None,
+                    pr_number: None,
+                    created_at: timestamp,
+                    updated_at: timestamp,
+                    archived_at: None,
+                },
                 crate::user_data_db::CollaborationSession {
                     collaboration_session_id,
                     chat_id,
@@ -1048,41 +1048,30 @@ impl MessageSender {
                     created_at: timestamp,
                     updated_at: timestamp,
                 },
-            )
-            .map_err(|e| format!("Failed to create collaboration session: {}", e))?;
-
-            // 3. Create root conversation (chat-level)
-            crate::user_data_db::conversations::create(crate::user_data_db::Conversation {
-                conversation_id: root_conversation_id,
-                collaboration_session_id,
-                chat_id,
-                parent_id: None,
-                name: Some(format!("Chat root for {}", sender_id_for_label.clone())),
-                mode: "chat".to_string(),
-                participant_role: "system".to_string(),
-                status: "ready".to_string(),
-                created_at: timestamp,
-                updated_at: timestamp,
-            })
-            .map_err(|e| format!("Failed to create root conversation: {}", e))?;
-
-            // 4. Create sender's conversation
-            crate::user_data_db::conversations::create(crate::user_data_db::Conversation {
-                conversation_id: sender_conversation_id,
-                collaboration_session_id,
-                chat_id,
-                parent_id: Some(root_conversation_id),
-                name: Some(sender_id_for_label.clone()),
-                mode: "agent".to_string(),
-                participant_role: "assistant".to_string(),
-                status: "ready".to_string(),
-                created_at: timestamp,
-                updated_at: timestamp,
-            })
-            .map_err(|e| format!("Failed to create sender conversation: {}", e))?;
-
-            // 5. Create GroupAgentBinding
-            crate::user_data_db::group_agent_bindings::upsert(
+                crate::user_data_db::Conversation {
+                    conversation_id: root_conversation_id,
+                    collaboration_session_id,
+                    chat_id,
+                    parent_id: None,
+                    name: Some(format!("Chat root for {}", sender_id_for_label.clone())),
+                    mode: "chat".to_string(),
+                    participant_role: "system".to_string(),
+                    status: "ready".to_string(),
+                    created_at: timestamp,
+                    updated_at: timestamp,
+                },
+                crate::user_data_db::Conversation {
+                    conversation_id: sender_conversation_id,
+                    collaboration_session_id,
+                    chat_id,
+                    parent_id: Some(root_conversation_id),
+                    name: Some(sender_id_for_label.clone()),
+                    mode: "agent".to_string(),
+                    participant_role: "assistant".to_string(),
+                    status: "ready".to_string(),
+                    created_at: timestamp,
+                    updated_at: timestamp,
+                },
                 crate::user_data_db::GroupAgentBinding {
                     workspace_id,
                     chat_id,
@@ -1093,21 +1082,17 @@ impl MessageSender {
                     created_at: timestamp,
                     updated_at: timestamp,
                 },
+                crate::user_data_db::AgentSession {
+                    agent_session_id: session_id_i64,
+                    conversation_id: sender_conversation_id.as_i64(),
+                    acp_session_id: None,
+                    mode: "agent".to_string(),
+                    created_at: timestamp,
+                    updated_at: timestamp,
+                },
             )
-            .map_err(|e| format!("Failed to create binding: {}", e))?;
-
-            // 6. Create AgentSession
-            crate::user_data_db::agent_sessions::upsert(crate::user_data_db::AgentSession {
-                agent_session_id: session_id_i64,
-                conversation_id: sender_conversation_id.as_i64(),
-                acp_session_id: None,
-                mode: "agent".to_string(),
-                created_at: timestamp,
-                updated_at: timestamp,
-            })
-            .map_err(|e| format!("Failed to create agent session: {}", e))?;
-
-            Ok(())
+            .map(|_| ()) // Discard the returned ConversationId, we already have it
+            .map_err(|e| e.to_string())
         })
         .await;
 

@@ -120,9 +120,9 @@ pub fn get_current_prompt_conversation(agent_id: &str) -> Option<String> {
 
 pub use output_accumulator::{
     get_global_accumulator_registry, get_global_persist_callback, set_global_accumulator_registry,
-    set_global_persist_callback, AgentOutputData, OutputAccumulatorRegistry,
-    OutputMetadata, PersistCallback, TextChunk, ThinkingBlock, TokenUsage, ToolCallLocation,
-    ToolCallRecord, TurnAccumulator,
+    set_global_persist_callback, AgentOutputData, OutputAccumulatorRegistry, OutputMetadata,
+    PersistCallback, TextChunk, ThinkingBlock, TokenUsage, ToolCallLocation, ToolCallRecord,
+    TurnAccumulator,
 };
 pub use output_publisher::{
     get_global_output_publisher, set_global_output_publisher, NoOpOutputPublisher, OutputPublisher,

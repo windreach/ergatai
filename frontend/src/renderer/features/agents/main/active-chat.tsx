@@ -1677,7 +1677,7 @@ const ChatViewInner = memo(function ChatViewInner({
             placeholder="New Chat"
             onSave={handleRenameConversation}
             isMobile={false}
-            chatId={conversationId}
+            entityId={conversationId}
             hasMessages={true} /* Always show "New Chat" placeholder when name is empty */
           />
           {/* Workspace subtitle: repo • branch */}
@@ -2138,7 +2138,6 @@ export function ChatView({
 
   // tRPC mutations for renaming
   const renameConversationMutation = api.agents.renameConversation.useMutation()
-  const renameChatMutation = api.agents.renameChat.useMutation()
 
   // PR creation loading state - using atom to allow ChatViewInner to reset it
   const [isCreatingPr, setIsCreatingPr] = useAtom(isCreatingPrAtom)
@@ -2294,10 +2293,9 @@ export function ChatView({
     mergePrMutation.mutate({ chatId, method: "squash" })
   }, [chatId, mergePrMutation])
 
-  // Restore archived workspace mutation (silent - no toast)
-  const restoreWorkspaceMutation = trpc.ergatai.unarchiveConversation.useMutation({
+  // Restore archived workspace mutation (silent - no toast) - use unarchiveChat for chat container
+  const restoreWorkspaceMutation = trpc.ergatai.unarchiveChat.useMutation({
     onSuccess: () => {
-      // The restored record is a conversation; let the runtime list reload.
       trpcUtils.chats.list.invalidate()
       trpcUtils.ergatai.listManagedWorkspaces.invalidate()
       void trpcUtils.ergatai.workspaceStatus.invalidate()
@@ -2308,7 +2306,7 @@ export function ChatView({
   })
 
   const handleRestoreWorkspace = useCallback(() => {
-    restoreWorkspaceMutation.mutate({ conversationId: chatId })
+    restoreWorkspaceMutation.mutate({ id: chatId })
   }, [chatId, restoreWorkspaceMutation])
 
   // Check if this workspace is archived

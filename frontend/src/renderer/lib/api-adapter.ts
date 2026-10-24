@@ -256,7 +256,7 @@ export const api = {
         onError?: AnyFn
         onSettled?: AnyFn
       }) => {
-        const mutation = trpc.ergatai.archiveConversation.useMutation({
+        const mutation = trpc.ergatai.archiveChat.useMutation({
           onSuccess: () => {
             invalidateChatLists()
             opts?.onSettled?.()
@@ -264,10 +264,10 @@ export const api = {
           onError: (err) => opts?.onError?.(err),
         })
         return {
-          mutate: async (args?: { chatId: string }) => {
+          mutate: async (args?: { id: string }) => {
             const context = await opts?.onMutate?.(args)
-            if (!args?.chatId) throw new Error("chatId is required")
-            await mutation.mutateAsync({ conversationId: args.chatId })
+            if (!args?.id) throw new Error("id is required")
+            await mutation.mutateAsync({ id: args.id })
             return context
           },
           isPending: mutation.isPending,
@@ -280,7 +280,7 @@ export const api = {
         onError?: AnyFn
         onSettled?: AnyFn
       }) => {
-        const mutation = trpc.ergatai.unarchiveConversation.useMutation({
+        const mutation = trpc.ergatai.unarchiveChat.useMutation({
           onSuccess: () => {
             invalidateChatLists()
             opts?.onSettled?.()
@@ -288,10 +288,10 @@ export const api = {
           onError: (err) => opts?.onError?.(err),
         })
         return {
-          mutate: async (args?: { conversationId: string }) => {
+          mutate: async (args?: { id: string }) => {
             const context = await opts?.onMutate?.(args)
-            if (!args?.conversationId) throw new Error("conversationId is required")
-            await mutation.mutateAsync({ conversationId: args.conversationId })
+            if (!args?.id) throw new Error("id is required")
+            await mutation.mutateAsync({ id: args.id })
             return context
           },
           isPending: mutation.isPending,
@@ -300,7 +300,7 @@ export const api = {
     },
     renameChat: {
       useMutation: (opts?: { onSuccess?: AnyFn; onError?: AnyFn }) => {
-        const mutation = trpc.ergatai.updateConversation.useMutation({
+        const mutation = trpc.ergatai.updateChat.useMutation({
           onSuccess: (data) => {
             invalidateChatLists()
             opts?.onSuccess?.(data)
@@ -308,13 +308,13 @@ export const api = {
           onError: (err) => opts?.onError?.(err),
         })
         return {
-          mutate: (args?: { conversationId: string; title: string }) => {
-            if (!args?.conversationId || !args.title) throw new Error("conversationId and title are required")
-            mutation.mutate({ conversationId: args.conversationId, title: args.title })
+          mutate: (args?: { id: string; name: string }) => {
+            if (!args?.id || !args.name) throw new Error("id and name are required")
+            mutation.mutate({ id: args.id, name: args.name })
           },
-          mutateAsync: async (args?: { conversationId: string; title: string }) => {
-            if (!args?.conversationId || !args.title) throw new Error("conversationId and title are required")
-            return mutation.mutateAsync({ conversationId: args.conversationId, title: args.title })
+          mutateAsync: async (args?: { id: string; name: string }) => {
+            if (!args?.id || !args.name) throw new Error("id and name are required")
+            return mutation.mutateAsync({ id: args.id, name: args.name })
           },
         }
       },

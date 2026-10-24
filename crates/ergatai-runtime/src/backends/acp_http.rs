@@ -69,6 +69,8 @@ type BoxedPromptFuture = std::pin::Pin<
 >;
 
 /// Consume child output and retain a bounded tail for error reporting.
+/// Uses line-by-line reading to preserve line boundaries for log readability.
+/// Optimized to minimize mutex contention with local buffering.
 async fn capture_output_tail<R>(output: R, tail: Arc<std::sync::Mutex<String>>)
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -76,17 +78,46 @@ where
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     let mut lines = BufReader::new(output).lines();
+    // Use a local buffer to batch updates and reduce mutex contention
+    let mut local_buffer = String::with_capacity(HTTP_SPAWN_OUTPUT_TAIL_MAX);
+
     while let Ok(Some(line)) = lines.next_line().await {
-        let mut tail = tail.lock().unwrap();
-        tail.push_str(line.trim_end());
-        tail.push('\n');
-        if tail.len() > HTTP_SPAWN_OUTPUT_TAIL_MAX {
-            let cut = tail.len() - HTTP_SPAWN_OUTPUT_TAIL_MAX;
-            let cut = (0..=cut)
+        // Build up local buffer first (no lock needed)
+        local_buffer.push_str(line.trim_end());
+        local_buffer.push('\n');
+
+        // Only sync to shared buffer when local buffer is reasonably large
+        // This reduces mutex lock frequency from every line to every ~1KB
+        if local_buffer.len() >= 1024 {
+            let mut tail_guard = tail.lock().unwrap();
+            tail_guard.push_str(&local_buffer);
+            local_buffer.clear();
+
+            // Trim from front if we've exceeded the limit
+            if tail_guard.len() > HTTP_SPAWN_OUTPUT_TAIL_MAX {
+                let excess = tail_guard.len() - HTTP_SPAWN_OUTPUT_TAIL_MAX;
+                // Find a valid UTF-8 boundary to avoid splitting characters
+                let cut = (0..=excess)
+                    .rev()
+                    .find(|&index| tail_guard.is_char_boundary(index))
+                    .unwrap_or(0);
+                tail_guard.drain(..cut);
+            }
+        }
+    }
+
+    // Flush any remaining content in local buffer
+    if !local_buffer.is_empty() {
+        let mut tail_guard = tail.lock().unwrap();
+        tail_guard.push_str(&local_buffer);
+
+        if tail_guard.len() > HTTP_SPAWN_OUTPUT_TAIL_MAX {
+            let excess = tail_guard.len() - HTTP_SPAWN_OUTPUT_TAIL_MAX;
+            let cut = (0..=excess)
                 .rev()
-                .find(|&index| tail.is_char_boundary(index))
+                .find(|&index| tail_guard.is_char_boundary(index))
                 .unwrap_or(0);
-            tail.drain(..cut);
+            tail_guard.drain(..cut);
         }
     }
 }
@@ -354,6 +385,12 @@ impl AcpHttpBackend {
                                 ));
                             } else {
                                 // No handler configured → auto-approve using YoloPermissionHandler
+                                // WARNING: This bypasses file access control. Configure a permission
+                                // handler (e.g., ergatai_lock-backed) for production use.
+                                tracing::warn!(
+                                    agent_id = %aid,
+                                    "No permission handler configured for HTTP backend, using YoloPermissionHandler (auto-approve all). This is a security risk in production."
+                                );
                                 let yolo = crate::permission::YoloPermissionHandler;
                                 let decision = yolo.evaluate(&aid, &session_id_str, &request).await;
                                 debug!(

@@ -68,8 +68,15 @@ fn spawn_stdio(command: &str) -> std::io::Result<Child> {
 }
 
 /// Kill a child process and wait for it to exit (best-effort cleanup).
+/// Logs a warning if the kill fails, as this may result in an orphan process.
 async fn kill_child(mut child: Child) {
-    let _ = child.start_kill();
+    if let Err(e) = child.start_kill() {
+        // Process may have already exited, which is fine
+        if e.kind() != std::io::ErrorKind::InvalidInput {
+            warn!(error = %e, "Transport probe: failed to kill child process, may be orphaned");
+        }
+    }
+    // Always wait to reap the zombie, even if start_kill failed
     let _ = child.wait().await;
 }
 
@@ -89,9 +96,7 @@ async fn probe_stdio(command: &str) -> bool {
     let init_body = initialize_request_json();
     if let Some(mut stdin) = child.stdin.take() {
         let write_result = async {
-            stdin
-                .write_all(format!("{init_body}\n").as_bytes())
-                .await?;
+            stdin.write_all(format!("{init_body}\n").as_bytes()).await?;
             stdin.flush().await
         }
         .await;
@@ -200,7 +205,9 @@ async fn probe_http(command: &str) -> bool {
             init_body.len()
         );
 
-        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.ok()?;
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .ok()?;
         stream.write_all(request.as_bytes()).await.ok()?;
 
         // Read the response (headers + body).
@@ -208,8 +215,14 @@ async fn probe_http(command: &str) -> bool {
         let n = stream.read(&mut buf).await.ok()?;
         let response = String::from_utf8_lossy(&buf[..n]);
 
-        // Accept HTTP 200 or a JSON-RPC response in the body.
-        Some(response.contains("200") || response.contains("\"result\""))
+        // Accept HTTP 200 status line or a JSON-RPC response in the body.
+        // Check for proper HTTP status lines to avoid false positives from
+        // error pages that happen to contain "200" in the body.
+        Some(
+            response.contains("HTTP/1.1 200")
+                || response.contains("HTTP/2 200")
+                || response.contains("\"result\""),
+        )
     })
     .await
     .unwrap_or(None)
@@ -278,8 +291,12 @@ mod tests {
 
     #[test]
     fn test_is_jsonrpc_response() {
-        assert!(is_jsonrpc_response(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#));
-        assert!(is_jsonrpc_response(r#"{"jsonrpc":"2.0","id":1,"error":{"code":-1}}"#));
+        assert!(is_jsonrpc_response(
+            r#"{"jsonrpc":"2.0","id":1,"result":{}}"#
+        ));
+        assert!(is_jsonrpc_response(
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-1}}"#
+        ));
         assert!(!is_jsonrpc_response("some random log line"));
         assert!(!is_jsonrpc_response(""));
     }

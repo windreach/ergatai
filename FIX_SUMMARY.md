@@ -35,6 +35,37 @@
 **Files Modified**:
 - `crates/ergatai-runtime/src/backends/acp.rs`: Updated failure paths to send Done event before flush
 
+### P4: Workspace ID Format Conversion (Lock Permission)
+**Problem**: Workspace IDs were stored in different formats between the lock manager and permission checks. The lock manager uses plain decimal strings (e.g., "123"), but permission checks used formatted strings (e.g., "ws_123_000_0000"), causing lock permission lookups to fail.
+
+**Solution**: Convert workspace_id to plain decimal string format in lock_permission.rs to match the lock manager's key format, using `ergatai_error::id::parse_to_i64()` with fallback to original string if parsing fails.
+
+**Files Modified**:
+- `crates/ergatai-api/src/lock_permission.rs`: Added workspace ID format conversion
+
+### P5: Code Quality - Turn Token Clearing Consistency
+**Problem**: Turn token clearing (`*task_current_turn_token.write() = None;`) was placed inconsistently across different prompt handlers. Some handlers cleared the token inside the `if let Some(token)` block, while others cleared it outside. This inconsistency violated the principle of least surprise and could lead to bugs if initialization logic changed.
+
+**Solution**: Standardized all prompt handlers to clear the turn token OUTSIDE the `if let Some(token)` block, matching the pattern used in interrupt handlers. This ensures the token is always cleared regardless of whether a token exists.
+
+**Files Modified**:
+- `crates/ergatai-runtime/src/backends/acp.rs`: Fixed token clearing in QueuePrompt success/error paths and Prompt success path
+
+### P6: Documentation Improvements
+**Files Modified**:
+- `crates/ergatai-api/src/mcp_stdio_adapter.rs`: Added clarifying comments about stdio protocol using line-delimited JSON-RPC
+- `crates/ergatai-api/src/services/agent_output_persistence.rs`: Minor improvements to output persistence logic
+
+## All Files Changed in This Commit
+
+1. `FIX_SUMMARY.md` (new file) - This documentation
+2. `crates/ergatai-api/src/lock_permission.rs` - Workspace ID format conversion (P4)
+3. `crates/ergatai-api/src/mcp_stdio_adapter.rs` - Documentation comments (P6)
+4. `crates/ergatai-api/src/services/agent_output_persistence.rs` - Output persistence improvements (P6)
+5. `crates/ergatai-api/src/user_data_db.rs` - Database schema migration (P1)
+6. `crates/ergatai-runtime/src/backends/acp.rs` - Turn generation (P2), failure paths (P3), token clearing consistency (P5)
+7. `crates/ergatai-runtime/src/output_accumulator.rs` - Turn generation mechanism (P2)
+
 ## Implementation Details
 
 ### Turn Generation Mechanism

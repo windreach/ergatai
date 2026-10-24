@@ -585,8 +585,8 @@ export const chatsRouter = router({
       // Get chat to check for worktree (before archiving)
       const chat = await trpcClient.getChat({ id: input.id })
 
-      // Archive immediately (optimistic)
-      await archiveConversation(input.id)
+      // Archive immediately (optimistic) - use archiveChat for chat container, not archiveConversation
+      await trpcClient.archiveChat({ id: input.id })
 
       // Track workspace archived
       trackWorkspaceArchived(input.id)
@@ -657,10 +657,10 @@ export const chatsRouter = router({
       const chatsToArchive = allChats.filter((c: any) => input.chatIds.includes(c.id))
       const worktreeChats = chatsToArchive.filter((c: any) => c.branch != null)
 
-      // Archive all chats
+      // Archive all chats - use archiveChat for chat containers, not archiveConversation
       const results = []
       for (const chatId of input.chatIds) {
-        await archiveConversation(chatId)
+        await trpcClient.archiveChat({ id: chatId })
         const chat = chatsToArchive.find((c: any) => c.id === chatId)
         if (chat) results.push(chat)
       }
