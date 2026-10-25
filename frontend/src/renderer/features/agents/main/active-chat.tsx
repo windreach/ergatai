@@ -763,8 +763,8 @@ const ChatViewInner = memo(function ChatViewInner({
   }, [isActive, pendingMention, setPendingMention])
 
 
-  // Rollback state
-  const [isRollingBack, setIsRollingBack] = useState(false)
+  // Rollback state (global atom to prevent multiple rollbacks across chats)
+  const [isRollingBack, setIsRollingBack] = useAtom(isRollingBackAtom)
 
   // tRPC utils for cache invalidation
   const utils = api.useUtils()
@@ -1334,12 +1334,6 @@ const ChatViewInner = memo(function ChatViewInner({
     messages,
     utils,
   })
-
-  // Sync local isRollingBack state to global atom (prevents multiple rollbacks across chats)
-  const setIsRollingBackAtom = useSetAtom(isRollingBackAtom)
-  useEffect(() => {
-    setIsRollingBackAtom(isRollingBack)
-  }, [isRollingBack, setIsRollingBackAtom])
 
   // Keyboard shortcuts for stopping stream (ESC, Ctrl+C, Cmd+Shift+Backspace)
   useKeyboardStop({

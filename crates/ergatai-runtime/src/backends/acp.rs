@@ -159,7 +159,17 @@ impl StartupPhaseExecutor for SessionCreatePhase<'_> {
             {
                 Ok(load_resp) => {
                     info!(session_id = %saved_sid, "Loaded existing ACP session");
-                    let config_opts = load_resp.config_options.unwrap_or_default();
+                    // Extract config_options from response, or use empty Vec if not provided
+                    let config_opts = if let Some(opts) = load_resp.config_options {
+                        debug!(
+                            count = opts.len(),
+                            "Captured config_options from load_session response"
+                        );
+                        opts
+                    } else {
+                        debug!("No config_options in load_session response, using empty vec");
+                        Vec::new()
+                    };
                     (saved_sid.clone(), config_opts)
                 }
                 Err(e) => {
@@ -492,6 +502,68 @@ async fn flush_and_persist_output(
     } else {
         false
     }
+}
+
+/// Begin a new turn lifecycle: creates accumulator, registers token, emits TurnStarted.
+///
+/// Encapsulates the duplicated turn setup logic used by interrupt, queued-prompt,
+/// and normal-prompt handlers. Returns the turn token (None if no registry available).
+async fn begin_turn_lifecycle(
+    task_current_turn_token: &Arc<RwLock<Option<crate::output_accumulator::TurnToken>>>,
+    conversation_id: &str,
+) -> Option<crate::output_accumulator::TurnToken> {
+    let turn_token =
+        if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
+            let token = registry.begin_turn(conversation_id).await;
+            *task_current_turn_token.write() = Some(token.clone());
+            Some(token)
+        } else {
+            None
+        };
+
+    // Emit explicit TurnStarted event to make turn boundaries visible to the frontend
+    send_output_event_with_turn_token(
+        task_current_turn_token,
+        conversation_id,
+        AgentOutputEvent::TurnStarted {
+            role: "assistant".to_string(),
+        },
+    )
+    .await;
+
+    turn_token
+}
+
+/// End a turn lifecycle: emits Done, flushes output, clears token.
+///
+/// Encapsulates the duplicated turn teardown logic used by all prompt handlers
+/// (interrupt, queued-prompt, normal-prompt) for both success and error paths.
+async fn end_turn_lifecycle(
+    turn_token: &Option<crate::output_accumulator::TurnToken>,
+    task_current_turn_token: &Arc<RwLock<Option<crate::output_accumulator::TurnToken>>>,
+    agent_id: &str,
+    stop_reason: &str,
+    context_label: &str,
+) {
+    // Send Done event first (sets stop_reason on accumulator)
+    if let Some(ref token) = turn_token {
+        send_output_event(
+            token,
+            AgentOutputEvent::Done {
+                role: "assistant".to_string(),
+                stop_reason: stop_reason.to_string(),
+            },
+        )
+        .await;
+    }
+
+    // Flush accumulated output and persist to database
+    if let Some(ref token) = turn_token {
+        flush_and_persist_output(token, agent_id, context_label).await;
+    }
+
+    // Clear the turn-scoped token for notification handlers
+    *task_current_turn_token.write() = None;
 }
 
 /// Helper function to send an event to output publisher (NATS).
@@ -3627,25 +3699,10 @@ impl AcpBackendInterface for AcpBackend {
 
                                 // Begin a new turn for output accumulation
                                 // This creates a fresh accumulator for this interrupt prompt turn
-                                let turn_token = if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
-                                    let token = registry.begin_turn(&connection_conversation_id).await;
-                                    // Set the turn-scoped token for notification handlers
-                                    *task_current_turn_token.write() = Some(token.clone());
-                                    Some(token)
-                                } else {
-                                    None
-                                };
-
-                                // Emit explicit TurnStarted event to make turn boundaries visible
-                                // to the frontend (so it doesn't have to infer from first delta)
-                                send_output_event_with_turn_token(
+                                let turn_token = begin_turn_lifecycle(
                                     &task_current_turn_token,
                                     &connection_conversation_id,
-                                    AgentOutputEvent::TurnStarted {
-                                        role: "assistant".to_string(),
-                                    },
-                                )
-                                .await;
+                                ).await;
 
                                 let prompt_started_at = Instant::now();
 
@@ -3688,52 +3745,27 @@ impl AcpBackendInterface for AcpBackend {
                                             .await;
                                         *task_stop_reason.write() = Some(sr.clone());
 
-                                        // Send Done event first (sets stop_reason on accumulator)
-                                        if let Some(ref token) = turn_token {
-                                            send_output_event(
-                                                token,
-                                                AgentOutputEvent::Done {
-                                                    role: "assistant".to_string(),
-                                                    stop_reason: sr,
-                                                },
-                                            ).await;
-                                        }
-
-                                        // Then flush accumulated output and persist to database
-                                        if let Some(ref token) = turn_token {
-                                            flush_and_persist_output(
-                                                token,
-                                                &connection_agent_id,
-                                                "interrupt",
-                                            ).await;
-                                        }
-                                        // Clear the turn-scoped token for notification handlers
-                                        *task_current_turn_token.write() = None;
+                                        // End turn lifecycle: Done event + flush + clear token
+                                        end_turn_lifecycle(
+                                            &turn_token,
+                                            &task_current_turn_token,
+                                            &connection_agent_id,
+                                            &sr,
+                                            "interrupt",
+                                        ).await;
 
                                         let _ = response_tx.send(Ok(()));
                                     }
                                     Err(e) => {
                                         warn!(error = %e, message_id = %message_id, "Interrupt prompt failed");
-                                        // Send error Done event before flushing
-                                        if let Some(ref token) = turn_token {
-                                            send_output_event(
-                                                token,
-                                                AgentOutputEvent::Done {
-                                                    role: "assistant".to_string(),
-                                                    stop_reason: "error".to_string(),
-                                                },
-                                            ).await;
-                                        }
-                                        // Flush the accumulator to persist any output collected before failure
-                                        if let Some(ref token) = turn_token {
-                                            flush_and_persist_output(
-                                                token,
-                                                &connection_agent_id,
-                                                "failed interrupt",
-                                            ).await;
-                                        }
-                                        // Clear the turn-scoped token for notification handlers
-                                        *task_current_turn_token.write() = None;
+                                        // End turn lifecycle with error: Done(error) + flush + clear token
+                                        end_turn_lifecycle(
+                                            &turn_token,
+                                            &task_current_turn_token,
+                                            &connection_agent_id,
+                                            "error",
+                                            "failed interrupt",
+                                        ).await;
                                         let _ = response_tx.send(Err(ErgataiError::internal(
                                             format!("Interrupt prompt failed: {e}"),
                                         )));
@@ -3752,24 +3784,10 @@ impl AcpBackendInterface for AcpBackend {
 
                                 // Begin a new turn for output accumulation
                                 // This creates a fresh accumulator for this prompt turn
-                                let turn_token = if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
-                                    let token = registry.begin_turn(&connection_conversation_id).await;
-                                    // Set the turn-scoped token for notification handlers
-                                    *task_current_turn_token.write() = Some(token.clone());
-                                    Some(token)
-                                } else {
-                                    None
-                                };
-
-                                // Emit explicit TurnStarted event to make turn boundaries visible
-                                send_output_event_with_turn_token(
+                                let turn_token = begin_turn_lifecycle(
                                     &task_current_turn_token,
                                     &connection_conversation_id,
-                                    AgentOutputEvent::TurnStarted {
-                                        role: "assistant".to_string(),
-                                    },
-                                )
-                                .await;
+                                ).await;
 
                                 let prompt_started_at = Instant::now();
                                 info!(
@@ -3818,52 +3836,27 @@ impl AcpBackendInterface for AcpBackend {
                                             .await;
                                         *task_stop_reason.write() = Some(sr.clone());
 
-                                        // Send Done event first (sets stop_reason on accumulator)
-                                        if let Some(ref token) = turn_token {
-                                            send_output_event(
-                                                token,
-                                                AgentOutputEvent::Done {
-                                                    role: "assistant".to_string(),
-                                                    stop_reason: sr,
-                                                },
-                                            ).await;
-                                        }
-
-                                        // Then flush accumulated output and persist to database
-                                        if let Some(ref token) = turn_token {
-                                            flush_and_persist_output(
-                                                token,
-                                                &connection_agent_id,
-                                                "queued prompt",
-                                            ).await;
-                                        }
-                                        // Clear the turn-scoped token for notification handlers
-                                        *task_current_turn_token.write() = None;
+                                        // End turn lifecycle: Done event + flush + clear token
+                                        end_turn_lifecycle(
+                                            &turn_token,
+                                            &task_current_turn_token,
+                                            &connection_agent_id,
+                                            &sr,
+                                            "queued prompt",
+                                        ).await;
 
                                         let _ = response_tx.send(Ok(()));
                                     }
                                     Err(e) => {
                                         warn!(error = %e, "ACP queued prompt failed");
-                                        // Send error Done event before flushing
-                                        if let Some(ref token) = turn_token {
-                                            send_output_event(
-                                                token,
-                                                AgentOutputEvent::Done {
-                                                    role: "assistant".to_string(),
-                                                    stop_reason: "error".to_string(),
-                                                },
-                                            ).await;
-                                        }
-                                        // Flush the accumulator to persist any output collected before failure
-                                        if let Some(ref token) = turn_token {
-                                            flush_and_persist_output(
-                                                token,
-                                                &connection_agent_id,
-                                                "failed queued prompt",
-                                            ).await;
-                                        }
-                                        // Clear the turn-scoped token for notification handlers
-                                        *task_current_turn_token.write() = None;
+                                        // End turn lifecycle with error: Done(error) + flush + clear token
+                                        end_turn_lifecycle(
+                                            &turn_token,
+                                            &task_current_turn_token,
+                                            &connection_agent_id,
+                                            "error",
+                                            "failed queued prompt",
+                                        ).await;
                                         let _ = response_tx.send(Err(ErgataiError::internal(
                                             format!("ACP queued prompt failed: {e}"),
                                         )));
@@ -3882,24 +3875,10 @@ impl AcpBackendInterface for AcpBackend {
 
                                 // Begin a new turn for output accumulation
                                 // This creates a fresh accumulator for this prompt turn
-                                let turn_token = if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
-                                    let token = registry.begin_turn(&connection_conversation_id).await;
-                                    // Set the turn-scoped token for notification handlers
-                                    *task_current_turn_token.write() = Some(token.clone());
-                                    Some(token)
-                                } else {
-                                    None
-                                };
-
-                                // Emit explicit TurnStarted event to make turn boundaries visible
-                                send_output_event_with_turn_token(
+                                let turn_token = begin_turn_lifecycle(
                                     &task_current_turn_token,
                                     &connection_conversation_id,
-                                    AgentOutputEvent::TurnStarted {
-                                        role: "assistant".to_string(),
-                                    },
-                                )
-                                .await;
+                                ).await;
 
                                 let prompt_started_at = Instant::now();
                                 info!(
@@ -3951,27 +3930,14 @@ impl AcpBackendInterface for AcpBackend {
                                             .await;
                                         *task_stop_reason.write() = Some(sr.clone());
 
-                                        // Send Done event first (sets stop_reason on accumulator)
-                                        if let Some(ref token) = turn_token {
-                                            send_output_event(
-                                                token,
-                                                AgentOutputEvent::Done {
-                                                    role: "assistant".to_string(),
-                                                    stop_reason: sr.clone(),
-                                                },
-                                            ).await;
-                                        }
-
-                                        // Then flush accumulated output and persist to database
-                                        if let Some(ref token) = turn_token {
-                                            flush_and_persist_output(
-                                                token,
-                                                &connection_agent_id,
-                                                "normal completion",
-                                            ).await;
-                                        }
-                                        // Clear the turn-scoped token for notification handlers
-                                        *task_current_turn_token.write() = None;
+                                        // End turn lifecycle: Done event + flush + clear token
+                                        end_turn_lifecycle(
+                                            &turn_token,
+                                            &task_current_turn_token,
+                                            &connection_agent_id,
+                                            &sr,
+                                            "normal completion",
+                                        ).await;
 
                                         let _ = response_tx.send(Ok(()));
 
@@ -4034,26 +4000,14 @@ impl AcpBackendInterface for AcpBackend {
                                     }
                                     Err(e) => {
                                         warn!(error = %e, "ACP prompt failed");
-                                        // Send error Done event before flushing
-                                        if let Some(ref token) = turn_token {
-                                            send_output_event(
-                                                token,
-                                                AgentOutputEvent::Done {
-                                                    role: "assistant".to_string(),
-                                                    stop_reason: "error".to_string(),
-                                                },
-                                            ).await;
-                                        }
-                                        // Flush the accumulator to persist any output collected before failure
-                                        if let Some(ref token) = turn_token {
-                                            flush_and_persist_output(
-                                                token,
-                                                &connection_agent_id,
-                                                "failed prompt",
-                                            ).await;
-                                        }
-                                        // Clear the turn-scoped token for notification handlers
-                                        *task_current_turn_token.write() = None;
+                                        // End turn lifecycle with error: Done(error) + flush + clear token
+                                        end_turn_lifecycle(
+                                            &turn_token,
+                                            &task_current_turn_token,
+                                            &connection_agent_id,
+                                            "error",
+                                            "failed prompt",
+                                        ).await;
                                         let _ = response_tx.send(Err(ErgataiError::internal(
                                             format!("ACP prompt failed: {e}"),
                                         )));

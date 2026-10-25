@@ -17,8 +17,8 @@
 **解决方案**：将消息持久化从 `inject_message_to_conversation()` 之后移到之前。
 
 **改动文件**：
-- `crates/ergatai-api/src/mcp/message_delivery.rs` — 将持久化逻辑从 `Ok(())` 分支移到 inject 调用之前
-- `crates/ergatai-api/src/user_data_db.rs` — 新增 `exists_by_external_message_id()` 用于 SQLite 级去重
+- `crates/ergatai-api/src/mcp/message_delivery.rs` — 将持久化逻辑从 `Ok(())` 分支移到 inject 调用之前；新增 `deliveryStatus` 字段追踪投递状态
+- `crates/ergatai-api/src/user_data_db.rs` — 新增 `exists_by_external_message_id()` 用于 SQLite 级去重；新增 `update_delivery_status()` 更新投递状态
 
 **时序对比**：
 
@@ -27,8 +27,23 @@
   NATS publish → consumer 拉取 → inject_message (阻塞) → ack → 持久化 → SSE 推送
   
 新流程：
-  NATS publish → consumer 拉取 → 持久化 → SSE 推送 → inject_message (阻塞) → ack
+  NATS publish → consumer 拉取 → 持久化 (deliveryStatus="pending") → SSE 推送 → inject_message (阻塞) → ack → 更新 deliveryStatus
 ```
+
+**投递状态追踪**：
+
+由于消息在投递前就持久化，通过 metadata 中的 `deliveryStatus` 字段追踪投递状态：
+
+```json
+{
+  "externalMessageId": "uuid-from-frontend",
+  "deliveryStatus": "pending" | "delivered" | "failed"
+}
+```
+
+- `pending`：消息已持久化，等待投递（初始状态）
+- `delivered`：消息成功投递到 agent（inject 成功后更新）
+- `failed`：消息投递失败（inject 失败后更新）
 
 **去重机制**（防止 NATS redelivery 重复写入）：
 1. 内存级去重：`is_duplicate_message()` + `mark_message_processed()`（已有）

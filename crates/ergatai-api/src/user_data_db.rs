@@ -78,9 +78,34 @@ fn get_db_path() -> PathBuf {
 
 /// Initialize all required tables
 ///
-/// This function drops and recreates all tables on startup.
-/// This is intentional for development - old data is not preserved.
+/// This function drops and recreates all tables on startup ONLY in development mode.
+/// Set ERGATAI_PRESERVE_DATA=1 or ERGATAI_PRODUCTION_MODE=1 to preserve existing data.
 fn initialize_tables(conn: &Connection) -> Result<()> {
+    // Helper to check if an environment variable is truthy (accepts "1" or "true", case-insensitive)
+    let is_truthy_env = |var_name: &str| -> bool {
+        std::env::var(var_name)
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false)
+    };
+
+    // Check if we should preserve existing data (production mode)
+    let preserve_data = is_truthy_env("ERGATAI_PRESERVE_DATA") || is_truthy_env("ERGATAI_PRODUCTION_MODE");
+
+    if preserve_data {
+        // Production mode: create tables if they don't exist, preserve existing data
+        tracing::info!(
+            "ERGATAI_PRESERVE_DATA or ERGATAI_PRODUCTION_MODE is set - preserving existing data"
+        );
+        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        return create_tables_if_not_exists(conn);
+    }
+
+    // Development mode: drop and recreate all tables
+    tracing::warn!(
+        "Development mode: dropping all user data tables. \
+         Set ERGATAI_PRESERVE_DATA=1 to preserve data across restarts."
+    );
+
     // Enable foreign key constraints
     conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
 
@@ -107,7 +132,11 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
 
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
 
-    // Create all tables
+    create_tables_if_not_exists(conn)
+}
+
+/// Create all tables if they don't already exist (safe for production)
+fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS workspaces (
@@ -1887,6 +1916,74 @@ pub mod messages {
             |row| row.get(0),
         )?;
         Ok(exists)
+    }
+
+    /// Update the delivery status of a message identified by external message ID.
+    ///
+    /// This updates the `deliveryStatus` field in the message's metadata JSON.
+    /// Status values: "pending", "delivered", "failed"
+    pub fn update_delivery_status(
+        conversation_id: ConversationId,
+        external_message_id: &str,
+        status: &str,
+    ) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        // First check if the message exists
+        let message_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM messages
+                WHERE conversation_id = ?1
+                  AND json_extract(metadata, '$.externalMessageId') = ?2
+            )",
+            params![conversation_id, external_message_id],
+            |row| row.get(0),
+        )?;
+
+        if !message_exists {
+            tracing::debug!(
+                conversation_id = %conversation_id,
+                external_message_id = %external_message_id,
+                status = %status,
+                "No message found to update delivery status (may have been deleted)"
+            );
+            return Ok(());
+        }
+
+        // Message exists, attempt to update delivery status
+        // Use JSON patch to update the deliveryStatus field in metadata
+        let rows_affected = conn.execute(
+            "UPDATE messages
+             SET metadata = json_set(
+                 COALESCE(metadata, '{}'),
+                 '$.deliveryStatus',
+                 ?3
+             ),
+             updated_at = strftime('%s', 'now')
+             WHERE conversation_id = ?1
+               AND json_extract(metadata, '$.externalMessageId') = ?2",
+            params![conversation_id, external_message_id, status],
+        )?;
+
+        if rows_affected == 0 {
+            // Message exists but update failed - likely due to malformed metadata
+            tracing::info!(
+                conversation_id = %conversation_id,
+                external_message_id = %external_message_id,
+                status = %status,
+                "Message exists but delivery status update failed (metadata may be malformed)"
+            );
+        } else {
+            tracing::debug!(
+                conversation_id = %conversation_id,
+                external_message_id = %external_message_id,
+                status = %status,
+                "Updated message delivery status"
+            );
+        }
+
+        Ok(())
     }
 
     /// Agent 消息专用字段（用于结构化存储 agent 间通信）

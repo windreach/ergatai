@@ -66,14 +66,41 @@ fn configured_agent_request_timeout_ms() -> u64 {
 
 /// Parse an agent ID string to i64 for database storage.
 ///
-/// Only accepts formatted Snowflake IDs (e.g., "agent_123_001_0001").
-/// Returns None if the input is not a valid Snowflake ID.
+/// Accepts both:
+/// - Snowflake IDs (e.g., "agent_123_001_0001") - preferred format
+/// - Legacy simple IDs (e.g., "ws1-agent-1") - extracts trailing counter for backward compatibility
 ///
-/// Note: Legacy simple IDs like "ws1-agent-1" are NOT supported — they were
-/// a bug in early MockBackend code. All agent IDs must use the Snowflake format.
+/// Returns None if the input cannot be parsed to a valid i64.
 #[inline]
 fn parse_agent_id_to_i64(id_str: &str) -> Option<i64> {
-    ergatai_error::id::parse_to_i64(id_str)
+    // Try Snowflake format first
+    if let Some(id) = ergatai_error::id::parse_to_i64(id_str) {
+        return Some(id);
+    }
+
+    // Fallback: try to extract numeric counter from legacy format (e.g., "ws1-agent-1" → 1)
+    // This maintains backward compatibility with old data in the database
+    // Only accept IDs that match the pattern "*-agent-{counter}" to avoid incorrect parsing
+    if id_str.contains("-agent-") {
+        if let Some(last_dash_pos) = id_str.rfind('-') {
+            if let Some(counter_str) = id_str.get((last_dash_pos + 1)..) {
+                if let Ok(counter) = counter_str.parse::<i64>() {
+                    tracing::debug!(
+                        original_id = %id_str,
+                        parsed_counter = counter,
+                        "Parsed legacy agent ID format, extracted trailing counter"
+                    );
+                    return Some(counter);
+                }
+            }
+        }
+    }
+
+    tracing::debug!(
+        id_str = %id_str,
+        "Failed to parse agent ID: not a Snowflake ID and no trailing numeric counter found"
+    );
+    None
 }
 
 /// Result of a message send operation.
@@ -394,8 +421,7 @@ impl MessageSender {
                 req.to.as_str(),
             ] {
                 // Parse agent ID string to i64 for database query.
-                // Only accepts formatted Snowflake IDs (e.g., "agent_123_001_0001").
-                // Legacy "ws1-agent-1" format is not supported (was a MockBackend bug).
+                // Accepts both Snowflake IDs (e.g., "agent_123_001_0001") and legacy format (e.g., "ws1-agent-1").
                 let candidate = candidate.to_string();
                 let Some(agent_id_i64) = parse_agent_id_to_i64(&candidate) else {
                     warn!("MessageSender: failed to parse agent ID '{}'", candidate);
@@ -835,14 +861,54 @@ impl MessageSender {
 
         // If not in metadata, query database for existing binding
         let conversation_id = if let Some(id) = conversation_id_from_metadata {
-            ConversationId::decode(&id).unwrap_or_else(|_| {
-                tracing::warn!(
-                    target_agent = %target_id,
-                    conversation_id = %id,
-                    "Invalid conversation_id in agent metadata; generating a new one"
-                );
-                ConversationId::generate()
-            })
+            match ConversationId::decode(&id) {
+                Ok(conversation_id) => conversation_id,
+                Err(e) => {
+                    // ConversationId decode failed - try to recover from database before generating new ID
+                    tracing::error!(
+                        target_agent = %target_id,
+                        conversation_id = %id,
+                        error = %e,
+                        "Failed to decode conversation_id from agent metadata; \
+                         attempting database recovery before generating new ID"
+                    );
+
+                    // Try to recover from database
+                    let target_id_for_lookup = target_id.clone();
+                    let chat_id_for_query = chat_id;
+                    let recovered = tokio::task::spawn_blocking(move || {
+                        user_data_db::group_agent_bindings::list(chat_id_for_query)
+                            .ok()
+                            .and_then(|bindings| {
+                                let target_id_i64 =
+                                    ergatai_core::id::parse_to_i64(&target_id_for_lookup);
+                                bindings
+                                    .into_iter()
+                                    .find(|b| Some(b.agent_id) == target_id_i64)
+                                    .map(|b| b.conversation_id)
+                            })
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+
+                    if let Some(recovered_id) = recovered {
+                        tracing::info!(
+                            target_agent = %target_id,
+                            recovered_conversation_id = %recovered_id,
+                            "Recovered conversation_id from database after metadata decode failure"
+                        );
+                        recovered_id
+                    } else {
+                        // No recovery possible, generate new ID as last resort
+                        tracing::warn!(
+                            target_agent = %target_id,
+                            "Could not recover conversation_id from database, generating new ID"
+                        );
+                        ConversationId::generate()
+                    }
+                }
+            }
         } else {
             // Query database for existing conversation binding
             let target_id_for_lookup = target_id.clone();

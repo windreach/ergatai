@@ -373,6 +373,9 @@ impl OutputAccumulatorRegistry {
         // Lock generations first to maintain consistent lock order
         let mut generations = self.generations.write().await;
 
+        // Get the previous generation before incrementing
+        let prev_generation = generations.get(conversation_id).copied();
+
         // Increment generation for this conversation
         let generation = generations
             .entry(conversation_id.to_string())
@@ -382,6 +385,22 @@ impl OutputAccumulatorRegistry {
 
         // Now lock accumulators
         let mut accumulators = self.accumulators.write().await;
+
+        // Clean up the previous generation's accumulator to prevent memory leak
+        if let Some(prev_gen) = prev_generation {
+            if let Some(_old_accumulator) =
+                accumulators.remove(&(conversation_id.to_string(), prev_gen))
+            {
+                // The old accumulator is dropped here. The caller should have called flush()
+                // before starting a new turn. If they didn't, the data is lost - this is
+                // acceptable because the turn was abandoned or crashed.
+                tracing::debug!(
+                    conversation_id = %conversation_id,
+                    generation = prev_gen,
+                    "Cleaned up previous generation's accumulator"
+                );
+            }
+        }
 
         let conv_id_i64 = ergatai_error::id::parse_to_i64(conversation_id).unwrap_or(0);
         let accumulator = Arc::new(Mutex::new(TurnAccumulator::new(conv_id_i64)));

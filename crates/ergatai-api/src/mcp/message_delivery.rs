@@ -532,170 +532,169 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
         );
         // Skip persistence but continue to inject (the message still needs to be delivered)
     } else {
+        if from == "user" {
+            // ── User message persistence (NO SSE push - frontend already has it) ──
+            let message_content = payload.content.clone();
 
-    if from == "user" {
-        // ── User message persistence (NO SSE push - frontend already has it) ──
-        let message_content = payload.content.clone();
-        let message_id_for_persist = payload.message_id.clone();
-
-        // Build parts array with text and images
-        let mut parts = vec![serde_json::json!({
-            "type": "text",
-            "text": message_content,
-        })];
-        for image in &payload.images {
+            // Build parts array with text and images
+            let mut parts = Vec::with_capacity(1 + payload.images.len());
             parts.push(serde_json::json!({
-                "type": "data-image",
-                "data": image.base64_data,
-                "media_type": image.media_type,
+                "type": "text",
+                "text": message_content,
             }));
+            for image in &payload.images {
+                parts.push(serde_json::json!({
+                    "type": "data-image",
+                    "data": image.base64_data,
+                    "media_type": image.media_type,
+                }));
+            }
+
+            // Persist user message to SQLite (NO SSE publish)
+            let external_id_for_meta = external_message_id.clone();
+            let append_result = tokio::task::spawn_blocking(move || {
+                let metadata = serde_json::json!({
+                    "externalMessageId": external_id_for_meta,
+                    "deliveryStatus": "pending",  // Will be updated to "delivered" or "failed" after injection
+                });
+                crate::user_data_db::messages::append(
+                    conversation_id,
+                    "user",
+                    serde_json::Value::Array(parts),
+                    metadata,
+                    None, // User messages don't need agent-specific fields
+                )
+            })
+            .await;
+
+            match append_result {
+                Ok(Ok(_persisted_msg)) => {
+                    info!(
+                        message_id = %external_message_id,
+                        "User message persisted to database (early, before inject)"
+                    );
+                }
+                Ok(Err(e)) => {
+                    warn!(
+                        message_id = %external_message_id,
+                        conversation_id = %conversation_id,
+                        error = %e,
+                        "Failed to persist user message to SQLite (will still attempt delivery)"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        message_id = %external_message_id,
+                        conversation_id = %conversation_id,
+                        error = %e,
+                        "Failed to persist user message (task join error, will still attempt delivery)"
+                    );
+                }
+            }
         }
 
-        // Persist user message to SQLite (NO SSE publish)
-        let message_id_for_meta = message_id_for_persist.clone();
-        let append_result = tokio::task::spawn_blocking(move || {
-            let metadata = serde_json::json!({
-                "externalMessageId": message_id_for_meta,
-            });
-            crate::user_data_db::messages::append(
-                conversation_id,
-                "user",
-                serde_json::Value::Array(parts),
-                metadata,
-                None,                  // User messages don't need agent-specific fields
-            )
-        })
-        .await;
+        if from != "user" {
+            // ── Agent message persistence + SSE push (early, before inject) ──
+            let message_content = payload.content.clone();
+            let from_agent = from.to_string();
+            let message_type = payload.message_type.clone();
 
-        match append_result {
-            Ok(Ok(_persisted_msg)) => {
-                info!(
-                    message_id = %message_id_for_persist,
-                    "User message persisted to database (early, before inject)"
-                );
-            }
-            Ok(Err(e)) => {
-                warn!(
-                    message_id = %message_id_for_persist,
-                    conversation_id = %conversation_id,
-                    error = %e,
-                    "Failed to persist user message to SQLite (will still attempt delivery)"
-                );
-            }
-            Err(e) => {
-                warn!(
-                    message_id = %message_id_for_persist,
-                    conversation_id = %conversation_id,
-                    error = %e,
-                    "Failed to persist user message (task join error, will still attempt delivery)"
-                );
-            }
-        }
-    }
-
-    if from != "user" {
-        // ── Agent message persistence + SSE push (early, before inject) ──
-        let message_content = payload.content.clone();
-        let message_id_for_persist = payload.message_id.clone();
-        let from_agent = from.to_string();
-        let message_type = payload.message_type.clone();
-
-        // Determine role based on message type
-        let role = match message_type.as_str() {
-            "request" => "agent",
-            "response" | "broadcast" => "assistant",
-            _ => "agent",
-        };
-
-        // Parse the JSON message to extract structured data
-        let parsed_content: Option<serde_json::Value> =
-            serde_json::from_str(&message_content).ok();
-
-        if parsed_content.is_none() && message_content.trim().starts_with('{') {
-            warn!(
-                message_id = %message_id_for_persist,
-                from_agent = %from,
-                "Agent message appears to be malformed JSON"
-            );
-        }
-
-        let actual_message = parsed_content
-            .as_ref()
-            .and_then(|v| v.get("message"))
-            .and_then(|m| m.as_str())
-            .unwrap_or(&message_content)
-            .to_string();
-
-        let from_agent_name = parsed_content
-            .as_ref()
-            .and_then(|v| v.get("from"))
-            .and_then(|f| f.as_str())
-            .unwrap_or(&from_agent)
-            .to_string();
-
-        // Persist agent message to SQLite with structured fields
-        let message_id_for_meta = message_id_for_persist.clone();
-        let append_result = tokio::task::spawn_blocking(move || {
-            let metadata = serde_json::json!({
-                "externalMessageId": message_id_for_meta,
-                "senderAgentId": from_agent,
-                "senderAgentName": from_agent_name,
-                "messageType": message_type,
-            });
-
-            let agent_fields = crate::user_data_db::messages::AgentMessageFields {
-                from_agent_id: parse_to_i64(&from_agent),
-                from_agent_name: Some(from_agent_name),
-                message_type: Some(message_type),
-                content: Some(actual_message),
+            // Determine role based on message type
+            let role = match message_type.as_str() {
+                "request" => "agent",
+                "response" | "broadcast" => "assistant",
+                _ => "agent",
             };
 
-            crate::user_data_db::messages::append(
-                conversation_id,
-                role,
-                serde_json::json!([{ "type": "text", "text": message_content }]),
-                metadata,
-                Some(agent_fields),
-            )
-        })
-        .await;
+            // Parse the JSON message to extract structured data
+            let parsed_content: Option<serde_json::Value> =
+                serde_json::from_str(&message_content).ok();
 
-        match append_result {
-            Ok(Ok(persisted_msg)) => {
-                // Publish to conversation subject for SSE streaming
-                crate::messaging::publish_to_conversation_subject_with_message(
-                    persisted_msg,
-                    Some(from.to_string()),
-                    Some(from.to_string()),
+            if parsed_content.is_none() && message_content.trim().starts_with('{') {
+                warn!(
+                    message_id = %external_message_id,
+                    from_agent = %from,
+                    "Agent message appears to be malformed JSON"
+                );
+            }
+
+            let actual_message = parsed_content
+                .as_ref()
+                .and_then(|v| v.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or(&message_content)
+                .to_string();
+
+            let from_agent_name = parsed_content
+                .as_ref()
+                .and_then(|v| v.get("from"))
+                .and_then(|f| f.as_str())
+                .unwrap_or(&from_agent)
+                .to_string();
+
+            // Persist agent message to SQLite with structured fields
+            let external_id_for_meta = external_message_id.clone();
+            let append_result = tokio::task::spawn_blocking(move || {
+                let metadata = serde_json::json!({
+                    "externalMessageId": external_id_for_meta,
+                    "senderAgentId": from_agent,
+                    "senderAgentName": from_agent_name,
+                    "messageType": message_type,
+                    "deliveryStatus": "pending",  // Will be updated to "delivered" or "failed" after injection
+                });
+
+                let agent_fields = crate::user_data_db::messages::AgentMessageFields {
+                    from_agent_id: parse_to_i64(&from_agent),
+                    from_agent_name: Some(from_agent_name),
+                    message_type: Some(message_type),
+                    content: Some(actual_message),
+                };
+
+                crate::user_data_db::messages::append(
+                    conversation_id,
+                    role,
+                    serde_json::json!([{ "type": "text", "text": message_content }]),
+                    metadata,
+                    Some(agent_fields),
                 )
-                .await;
-                info!(
-                    message_id = %message_id_for_persist,
-                    role = role,
-                    "Agent message persisted and published to SSE (early, before inject)"
-                );
-            }
-            Ok(Err(e)) => {
-                warn!(
-                    message_id = %message_id_for_persist,
-                    conversation_id = %conversation_id,
-                    from_agent = %from,
-                    error = %e,
-                    "Failed to persist agent message to SQLite (will still attempt delivery)"
-                );
-            }
-            Err(e) => {
-                warn!(
-                    message_id = %message_id_for_persist,
-                    conversation_id = %conversation_id,
-                    from_agent = %from,
-                    error = %e,
-                    "Failed to persist agent message (task join error, will still attempt delivery)"
-                );
+            })
+            .await;
+
+            match append_result {
+                Ok(Ok(persisted_msg)) => {
+                    // Publish to conversation subject for SSE streaming
+                    crate::messaging::publish_to_conversation_subject_with_message(
+                        persisted_msg,
+                        Some(from.to_string()),
+                        Some(from.to_string()),
+                    )
+                    .await;
+                    info!(
+                        message_id = %external_message_id,
+                        role = role,
+                        "Agent message persisted and published to SSE (early, before inject)"
+                    );
+                }
+                Ok(Err(e)) => {
+                    warn!(
+                        message_id = %external_message_id,
+                        conversation_id = %conversation_id,
+                        from_agent = %from,
+                        error = %e,
+                        "Failed to persist agent message to SQLite (will still attempt delivery)"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        message_id = %external_message_id,
+                        conversation_id = %conversation_id,
+                        from_agent = %from,
+                        error = %e,
+                        "Failed to persist agent message (task join error, will still attempt delivery)"
+                    );
+                }
             }
         }
-    }
-
     } // end of else block (not already_persisted)
 
     // ── Deliver via AgentRuntime injection (ACP protocol) ──
@@ -725,6 +724,14 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
             .await
     };
 
+    // Extract external_message_id once for delivery status tracking (used in both success and error paths)
+    let external_message_id = payload
+        .metadata
+        .get("clientRequestId")
+        .cloned()
+        .unwrap_or_else(|| payload.message_id.clone());
+    let conversation_id_for_update = conversation_id;
+
     match delivery_result {
         Ok(()) => {
             info!(
@@ -733,6 +740,14 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                 message_id = %payload.message_id,
                 "Message delivered via AgentRuntime injection"
             );
+
+            // Update delivery status to "delivered" in the database
+            let ext_id = external_message_id;
+            let conv_id = conversation_id_for_update;
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::user_data_db::messages::update_delivery_status(conv_id, &ext_id, "delivered")
+            })
+            .await;
 
             // Ack FIRST to prevent duplicates on redelivery
             match msg.ack().await {
@@ -804,6 +819,14 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
             // to avoid race condition where agent responds before inject_message returns.
         }
         Err(e) => {
+            // Update delivery status to "failed" in the database
+            let ext_id = external_message_id;
+            let conv_id = conversation_id_for_update;
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::user_data_db::messages::update_delivery_status(conv_id, &ext_id, "failed")
+            })
+            .await;
+
             // Clean up pending response if delivery failed (to avoid leak)
             if payload.requires_receipt {
                 if let Some(corr_id) = &payload.correlation_id {
