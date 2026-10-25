@@ -21,6 +21,9 @@ Thumbs.db
 *.log
 npm-debug.log*
 
+# Test artifacts
+.vitest/
+
 # Environment
 .env
 .env.local

@@ -16,7 +16,7 @@ import {
   selectedDiffFilePathAtom,
   type ConversationFileChange,
 } from "../atoms"
-import { getFileIconByExtension } from "../mentions/agents-file-mention"
+import { getFileIconByExtension } from "../mentions/file-icon-utils"
 
 // Animated dots component that cycles through ., .., ...
 function AnimatedDots() {

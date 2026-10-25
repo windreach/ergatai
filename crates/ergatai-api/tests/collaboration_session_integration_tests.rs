@@ -23,6 +23,58 @@ use serde_json::json;
 static TEST_DB_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static TEST_DB_DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
+// Test agent IDs (snowflake format)
+// Generated on first access and cached for reuse
+fn agent_recovery() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| format_id(generate(), IdType::Agent))
+}
+
+fn agent_concurrent_a() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| format_id(generate(), IdType::Agent))
+}
+
+fn agent_concurrent_b() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| format_id(generate(), IdType::Agent))
+}
+
+fn agent_inactive() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| format_id(generate(), IdType::Agent))
+}
+
+fn peer_a() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| format_id(generate(), IdType::Agent))
+}
+
+fn peer_b() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| format_id(generate(), IdType::Agent))
+}
+
+fn agent_stream() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| format_id(generate(), IdType::Agent))
+}
+
+fn agent_1() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| format_id(generate(), IdType::Agent))
+}
+
+fn agent_lifecycle() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| format_id(generate(), IdType::Agent))
+}
+
+fn agent_preserve() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| format_id(generate(), IdType::Agent))
+}
+
 fn lock_user_data_db_for_tests() -> tokio::sync::MutexGuard<'static, ()> {
     let guard = TEST_DB_MUTEX.blocking_lock();
     TEST_DB_DATA_DIR.get_or_init(|| {
@@ -141,7 +193,7 @@ fn recovery_queries_track_active_sessions_plans_and_approvals() {
         goal: Some("Recover after restart".to_string()),
         participants: vec![ParticipantInput {
             conversation_id: conversation_id.to_string(),
-            agent_id: "agent-recovery".to_string(),
+            agent_id: agent_recovery().to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
         }],
@@ -168,7 +220,7 @@ fn recovery_queries_track_active_sessions_plans_and_approvals() {
         &created.session.collaboration_session_id,
         CreatePlanRevisionRequest {
             dag_snapshot: json!({
-                "nodes": [{ "id": "recover", "agent": "agent-recovery" }]
+                "nodes": [{ "id": "recover", "agent": agent_recovery() }]
             }),
             summary: Some("Recovery plan".to_string()),
             source_event_id: None,
@@ -224,7 +276,7 @@ fn recovery_queries_track_active_sessions_plans_and_approvals() {
 async fn concurrent_session_dag_registries_stay_isolated() {
     let _database_guard = lock_user_data_db_for_tests_async().await;
 
-    let make_active_session = |agent_id: &'static str| async move {
+    let make_active_session = |agent_id: String| async move {
         let workspace_id_raw = generate();
         let chat_id_raw = generate();
         let conversation_id = ensure_workspace_and_chat_exist(workspace_id_raw, chat_id_raw);
@@ -235,7 +287,7 @@ async fn concurrent_session_dag_registries_stay_isolated() {
             goal: Some("Execute concurrent session DAGs".to_string()),
             participants: vec![ParticipantInput {
                 conversation_id: conversation_id.to_string(),
-                agent_id: agent_id.to_string(),
+                agent_id: agent_id.clone(),
                 role: "peer".to_string(),
                 status: "ready".to_string(),
             }],
@@ -267,14 +319,14 @@ async fn concurrent_session_dag_registries_stay_isolated() {
     };
 
     let (first, second) = tokio::join!(
-        make_active_session("agent-concurrent-a"),
-        make_active_session("agent-concurrent-b"),
+        make_active_session(agent_concurrent_a().to_string()),
+        make_active_session(agent_concurrent_b().to_string()),
     );
     let first_temp = tempfile::tempdir().unwrap();
     let first_scheduler = ergatai_core::cross_agent::DagScheduler::new(
         first_temp.path().to_path_buf(),
         ergatai_core::orchestration::TaskGraph::new(vec![
-            ergatai_core::orchestration::TaskNode::new("work", "agent-concurrent-a", "Work A"),
+            ergatai_core::orchestration::TaskNode::new("work", agent_concurrent_a(), "Work A"),
         ]),
     )
     .with_collaboration_scope(ergatai_core::cross_agent::CollaborationExecutionScope::new(
@@ -286,7 +338,7 @@ async fn concurrent_session_dag_registries_stay_isolated() {
     let second_scheduler = ergatai_core::cross_agent::DagScheduler::new(
         second_temp.path().to_path_buf(),
         ergatai_core::orchestration::TaskGraph::new(vec![
-            ergatai_core::orchestration::TaskNode::new("work", "agent-concurrent-b", "Work B"),
+            ergatai_core::orchestration::TaskNode::new("work", agent_concurrent_b(), "Work B"),
         ]),
     )
     .with_collaboration_scope(ergatai_core::cross_agent::CollaborationExecutionScope::new(
@@ -346,7 +398,7 @@ async fn inactive_session_plan_is_not_recovered() {
         goal: Some("Do not recover inactive plan".to_string()),
         participants: vec![ParticipantInput {
             conversation_id: conversation_id.to_string(),
-            agent_id: "agent-inactive".to_string(),
+            agent_id: agent_inactive().to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
         }],
@@ -356,7 +408,7 @@ async fn inactive_session_plan_is_not_recovered() {
         &created.session.collaboration_session_id,
         CreatePlanRevisionRequest {
             dag_snapshot: json!({
-                "nodes": [{ "id": "work", "agent": "agent-inactive" }]
+                "nodes": [{ "id": "work", "agent": agent_inactive() }]
             }),
             summary: None,
             source_event_id: None,
@@ -367,7 +419,7 @@ async fn inactive_session_plan_is_not_recovered() {
     let scheduler = ergatai_core::cross_agent::DagScheduler::new(
         temp_dir.path().to_path_buf(),
         ergatai_core::orchestration::TaskGraph::new(vec![
-            ergatai_core::orchestration::TaskNode::new("work", "agent-inactive", "Work"),
+            ergatai_core::orchestration::TaskNode::new("work", agent_inactive(), "Work"),
         ]),
     )
     .with_collaboration_scope(ergatai_core::cross_agent::CollaborationExecutionScope::new(
@@ -393,7 +445,7 @@ async fn executing_user_message_hot_swaps_active_revision() {
         goal: Some("Hot-swap the active plan".to_string()),
         participants: vec![ParticipantInput {
             conversation_id: conversation_id.to_string(),
-            agent_id: "peer-a".to_string(),
+            agent_id: peer_a().to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
         }],
@@ -411,7 +463,7 @@ async fn executing_user_message_hot_swaps_active_revision() {
         &created.session.collaboration_session_id,
         CreatePlanRevisionRequest {
             dag_snapshot: json!({
-                "nodes": [{ "id": "peer-1", "agent": "peer-a", "task": "First work" }]
+                "nodes": [{ "id": "peer-1", "agent": peer_a(), "task": "First work" }]
             }),
             summary: Some("First revision".to_string()),
             source_event_id: None,
@@ -430,11 +482,11 @@ async fn executing_user_message_hot_swaps_active_revision() {
         &created.session.collaboration_session_id,
         "task_completed",
         "agent",
-        Some("peer-a"),
+        Some(peer_a()),
         &json!({
             "planRevisionId": first.plan_revision.id,
             "nodeId": "peer-1",
-            "agent": "peer-a",
+            "agent": peer_a(),
             "resultPath": "/tmp/hot-swap-output.md",
             "summary": "First work completed"
         }),
@@ -444,7 +496,7 @@ async fn executing_user_message_hot_swaps_active_revision() {
     .unwrap();
 
     let mut first_graph = ergatai_core::orchestration::TaskGraph::new(vec![
-        ergatai_core::orchestration::TaskNode::new("peer-1", "peer-a", "First work"),
+        ergatai_core::orchestration::TaskNode::new("peer-1", peer_a(), "First work"),
     ]);
     first_graph.nodes[0].status = ergatai_core::orchestration::TaskStatus::Completed;
     first_graph.nodes[0].result_path = Some("/tmp/hot-swap-output.md".to_string());
@@ -532,13 +584,13 @@ fn collaboration_interaction_routes_lightweight_and_plans() {
         participants: vec![
             ParticipantInput {
                 conversation_id: conversation_id.to_string(),
-                agent_id: "peer-a".to_string(),
+                agent_id: peer_a().to_string(),
                 role: "peer".to_string(),
                 status: "ready".to_string(),
             },
             ParticipantInput {
                 conversation_id: peer_b_conversation_id.to_string(),
-                agent_id: "peer-b".to_string(),
+                agent_id: peer_b().to_string(),
                 role: "peer".to_string(),
                 status: "ready".to_string(),
             },
@@ -553,7 +605,7 @@ fn collaboration_interaction_routes_lightweight_and_plans() {
             kind: SessionInteractionKind::Message,
             actor_type: "user".to_string(),
             actor_id: Some("user-1".to_string()),
-            mentioned_agent_ids: vec!["peer-a".to_string()],
+            mentioned_agent_ids: vec![peer_a().to_string()],
             selected_agent_ids: Vec::new(),
             constraints: vec!["Use the session runtime".to_string()],
             artifact_refs: Vec::new(),
@@ -573,7 +625,7 @@ fn collaboration_interaction_routes_lightweight_and_plans() {
     );
     let nodes = plan.plan_revision.dag_snapshot["nodes"].as_array().unwrap();
     assert_eq!(nodes.len(), 1);
-    assert_eq!(nodes[0]["agent"], "peer-a");
+    assert_eq!(nodes[0]["agent"], peer_a());
 
     let lightweight = submit_session_interaction(
         &created.session.collaboration_session_id,
@@ -613,7 +665,7 @@ async fn collaboration_session_stream_replays_requested_events() {
         goal: Some("Stream replay".to_string()),
         participants: vec![ParticipantInput {
             conversation_id: conversation_id.to_string(),
-            agent_id: "agent-stream".to_string(),
+            agent_id: agent_stream().to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
         }],
@@ -661,7 +713,7 @@ fn collaboration_session_persists_context_plans_and_approvals() {
         goal: Some("Fix the failing test".to_string()),
         participants: vec![ParticipantInput {
             conversation_id: conversation_id.to_string(),
-            agent_id: "agent-1".to_string(),
+            agent_id: agent_1().to_string(),
             role: "worker".to_string(),
             status: "ready".to_string(),
         }],
@@ -704,7 +756,7 @@ fn collaboration_session_persists_context_plans_and_approvals() {
         &created.session.collaboration_session_id,
         CreatePlanRevisionRequest {
             dag_snapshot: json!({
-                "nodes": [{ "id": "investigate", "agent": "agent-1" }]
+                "nodes": [{ "id": "investigate", "agent": agent_1() }]
             }),
             summary: Some("Investigate the failure".to_string()),
             source_event_id: None,
@@ -787,7 +839,7 @@ async fn approval_rejection_and_cancellation_cancel_pending_work() {
         goal: Some("Cancel rejected and pending work".to_string()),
         participants: vec![ParticipantInput {
             conversation_id: conversation_id.to_string(),
-            agent_id: "agent-lifecycle".to_string(),
+            agent_id: agent_lifecycle().to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
         }],
@@ -805,7 +857,7 @@ async fn approval_rejection_and_cancellation_cancel_pending_work() {
         &created.session.collaboration_session_id,
         CreatePlanRevisionRequest {
             dag_snapshot: json!({
-                "nodes": [{ "id": "work", "agent": "agent-lifecycle", "task": "Work" }]
+                "nodes": [{ "id": "work", "agent": agent_lifecycle(), "task": "Work" }]
             }),
             summary: Some("Lifecycle plan".to_string()),
             source_event_id: None,
@@ -825,7 +877,7 @@ async fn approval_rejection_and_cancellation_cancel_pending_work() {
     let scheduler = ergatai_core::cross_agent::DagScheduler::new(
         scheduler_project_root.path().to_path_buf(),
         ergatai_core::orchestration::TaskGraph::new(vec![
-            ergatai_core::orchestration::TaskNode::new("work", "agent-lifecycle", "Work"),
+            ergatai_core::orchestration::TaskNode::new("work", agent_lifecycle(), "Work"),
         ]),
     )
     .with_collaboration_scope(ergatai_core::cross_agent::CollaborationExecutionScope::new(
@@ -931,7 +983,7 @@ fn plan_revision_preserves_completed_outputs() {
         goal: Some("Preserve outputs across revisions".to_string()),
         participants: vec![ParticipantInput {
             conversation_id: conversation_id.to_string(),
-            agent_id: "agent-preserve".to_string(),
+            agent_id: agent_preserve().to_string(),
             role: "peer".to_string(),
             status: "ready".to_string(),
         }],
@@ -950,7 +1002,7 @@ fn plan_revision_preserves_completed_outputs() {
         &created.session.collaboration_session_id,
         CreatePlanRevisionRequest {
             dag_snapshot: json!({
-                "nodes": [{ "id": "work", "agent": "agent-preserve", "task": "Do work" }]
+                "nodes": [{ "id": "work", "agent": agent_preserve(), "task": "Do work" }]
             }),
             summary: Some("First revision".to_string()),
             source_event_id: None,
@@ -961,11 +1013,11 @@ fn plan_revision_preserves_completed_outputs() {
         &created.session.collaboration_session_id,
         "task_completed",
         "agent",
-        Some("agent-preserve"),
+        Some(agent_preserve()),
         &json!({
             "planRevisionId": first.plan_revision.id,
             "nodeId": "work",
-            "agent": "agent-preserve",
+            "agent": agent_preserve(),
             "resultPath": "/tmp/preserved-work.md",
             "summary": "Work completed"
         }),
@@ -978,7 +1030,7 @@ fn plan_revision_preserves_completed_outputs() {
         &created.session.collaboration_session_id,
         CreatePlanRevisionRequest {
             dag_snapshot: json!({
-                "nodes": [{ "id": "work", "agent": "agent-preserve", "task": "Continue work" }]
+                "nodes": [{ "id": "work", "agent": agent_preserve(), "task": "Continue work" }]
             }),
             summary: Some("Second revision".to_string()),
             source_event_id: None,

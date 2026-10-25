@@ -89,7 +89,8 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
     };
 
     // Check if we should preserve existing data (production mode)
-    let preserve_data = is_truthy_env("ERGATAI_PRESERVE_DATA") || is_truthy_env("ERGATAI_PRODUCTION_MODE");
+    let preserve_data =
+        is_truthy_env("ERGATAI_PRESERVE_DATA") || is_truthy_env("ERGATAI_PRODUCTION_MODE");
 
     if preserve_data {
         // Production mode: create tables if they don't exist, preserve existing data

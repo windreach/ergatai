@@ -31,8 +31,8 @@ import { cn } from "../../../lib/utils"
 import { useStreamingStatusStore } from "../stores/streaming-status-store"
 import { CopyButton } from "../ui/message-action-buttons"
 
-// Context for fork callback - avoids threading props through MemoizedAssistantMessages
-export const ForkContext = createContext<((messageId: string) => void) | null>(null)
+// Note: ForkContext moved to fork-context.ts for Fast Refresh compatibility.
+import { ForkContext } from "./fork-context"
 
 // ============================================================================
 // ISOLATED MESSAGE GROUP (LAYER 4)
@@ -319,6 +319,14 @@ export const IsolatedMessageGroup = memo(function IsolatedMessageGroup({
                   }
                   if (codeCount > 0) {
                     parts.push(codeCount === 1 ? "code selection" : `${codeCount} code selections`)
+                  }
+                  const fileCount = textMentions.filter(m => m.type === "file").length
+                  const folderCount = textMentions.filter(m => m.type === "folder").length
+                  if (fileCount > 0) {
+                    parts.push(fileCount === 1 ? "file" : `${fileCount} files`)
+                  }
+                  if (folderCount > 0) {
+                    parts.push(folderCount === 1 ? "folder" : `${folderCount} folders`)
                   }
                   return `Using ${parts.join(", ")}`
                 })()}

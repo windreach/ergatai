@@ -14,9 +14,12 @@ export interface UploadedFile {
   id: string
   filename: string
   url: string
+  base64Data?: string // base64 encoded data for API
   isLoading: boolean
   size?: number
   type?: string
+  isFolder?: boolean // Whether this is a folder (shows folder icon)
+  folderFiles?: string[] // List of file paths inside the folder (for display)
 }
 
 /**
@@ -93,14 +96,25 @@ export function useAgentsFileUpload() {
       })
     )
 
-    const newFiles: UploadedFile[] = otherFiles.map((file) => ({
-      id: crypto.randomUUID(),
-      filename: file.name,
-      url: URL.createObjectURL(file),
-      isLoading: false,
-      size: file.size,
-      type: file.type,
-    }))
+    const newFiles: UploadedFile[] = await Promise.all(
+      otherFiles.map(async (file) => {
+        let base64Data: string | undefined
+        try {
+          base64Data = await fileToBase64(file)
+        } catch (err) {
+          console.error("[useAgentsFileUpload] Failed to convert file to base64:", err)
+        }
+        return {
+          id: crypto.randomUUID(),
+          filename: file.name,
+          url: URL.createObjectURL(file),
+          base64Data,
+          isLoading: false,
+          size: file.size,
+          type: file.type,
+        }
+      })
+    )
 
     setImages((prev) => [...prev, ...newImages])
     setFiles((prev) => [...prev, ...newFiles])
@@ -123,6 +137,22 @@ export function useAgentsFileUpload() {
     setFiles([])
   }, [])
 
+  // Handle folder upload - creates a virtual folder attachment
+  const handleAddFolder = useCallback((folderName: string, folderFilePaths: string[]) => {
+    const folderFile: UploadedFile = {
+      id: crypto.randomUUID(),
+      filename: folderName,
+      url: "", // No blob URL for folders
+      isLoading: false,
+      size: 0,
+      type: "folder",
+      isFolder: true,
+      folderFiles: folderFilePaths,
+    }
+    setFiles((prev) => [...prev, folderFile])
+  }, [])
+
+
   const clearAll = useCallback(() => {
     setImages([])
     setFiles([])
@@ -141,6 +171,7 @@ export function useAgentsFileUpload() {
     images,
     files,
     handleAddAttachments,
+    handleAddFolder,
     removeImage,
     removeFile,
     clearImages,

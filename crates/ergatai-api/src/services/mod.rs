@@ -17,6 +17,7 @@ pub mod conversation_service;
 pub mod dag_service;
 pub mod lock_service;
 pub mod message_service;
+pub mod nats_interrupt_event_publisher;
 pub mod nats_output_publisher;
 pub mod profile_service;
 pub mod terminal_sessions;

@@ -6,6 +6,7 @@ import { MemoizedMarkdown } from "../../../components/chat-markdown-renderer"
 import { getPerChatMessageKey, messageAtomFamily, isMessageStreamingAtomFamily } from "../stores/message-store"
 import { useSearchHighlight, useSearchQuery } from "../search"
 import { appStore } from "../../../lib/jotai-store"
+import { textPartStore, textPartSubscribers } from "./text-part-store"
 
 // ============================================================================
 // TEXT PART STORE - External store for text parts to avoid re-renders
@@ -16,40 +17,9 @@ import { appStore } from "../../../lib/jotai-store"
 //
 // Solution: Use useSyncExternalStore with a custom store that only triggers
 // re-renders when the specific text part actually changes.
-
-// Cache for text content per part
-const textPartStore = new Map<string, string>()
-
-// Subscribers per part key
-const textPartSubscribers = new Map<string, Set<() => void>>()
-
-export function clearTextPartStoreByMessageIds(conversationId: string, messageIds: string[]) {
-  if (messageIds.length === 0) return
-  const conversationPrefix = `${conversationId}:`
-  const messageIdSet = new Set(messageIds)
-
-  for (const key of Array.from(textPartStore.keys())) {
-    if (!key.startsWith(conversationPrefix)) continue
-    const suffix = key.slice(conversationPrefix.length)
-    const separatorIndex = suffix.lastIndexOf(":")
-    if (separatorIndex === -1) continue
-    const messageId = suffix.slice(0, separatorIndex)
-    if (messageIdSet.has(messageId)) {
-      textPartStore.delete(key)
-    }
-  }
-
-  for (const key of Array.from(textPartSubscribers.keys())) {
-    if (!key.startsWith(conversationPrefix)) continue
-    const suffix = key.slice(conversationPrefix.length)
-    const separatorIndex = suffix.lastIndexOf(":")
-    if (separatorIndex === -1) continue
-    const messageId = suffix.slice(0, separatorIndex)
-    if (messageIdSet.has(messageId)) {
-      textPartSubscribers.delete(key)
-    }
-  }
-}
+//
+// Note: Store and clearTextPartStoreByMessageIds moved to text-part-store.ts
+// for Fast Refresh compatibility.
 
 // Get text from a specific part
 function getTextPart(conversationId: string, messageId: string, partIndex: number): string {

@@ -56,6 +56,8 @@ export interface Message {
   parts?: MessagePart[]
   metadata?: any
   createdAt?: Date
+  /** Local sequence number for stable ordering (added by runtime) */
+  sequence?: number
 }
 
 // ============================================================================

@@ -51,7 +51,7 @@ import {
 } from "../ui/message-action-buttons"
 import { useFileOpen } from "../mentions"
 import { GitActivityBadges } from "../ui/git-activity-badges"
-import { ForkContext } from "./isolated-message-group"
+import { ForkContext } from "./fork-context"
 import { MemoizedTextPart } from "./memoized-text-part"
 import { InterAgentRepliesDisclosure } from "./inter-agent-replies-disclosure"
 

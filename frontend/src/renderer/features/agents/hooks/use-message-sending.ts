@@ -88,6 +88,13 @@ interface UseMessageSendingOptions {
     trackMessageSent: (data: any) => void
     submitImplicitInteraction: (text: string) => void
   }
+
+  // Phase 17: Service-based sending (unified queue system)
+  service: {
+    send: (parts: any[]) => Promise<void>
+    enqueue: (item: any) => Promise<void>
+    sendQueuedItem: (itemId: string) => Promise<void>
+  }
 }
 
 export function useMessageSending({
@@ -98,6 +105,7 @@ export function useMessageSending({
   actions,
   queue,
   messaging,
+  service,
 }: UseMessageSendingOptions) {
   // Get tRPC utils for optimistic updates
   const utils = trpc.useUtils()
@@ -121,6 +129,7 @@ export function useMessageSending({
   const workspaceRef = useRef(workspace)
   const conversationRef = useRef(conversation)
   const collaborationRef = useRef(collaboration)
+  const serviceRef = useRef(service)
 
   // Sync refs on every render (not in useEffect) so callbacks always have latest values
   // This is the recommended pattern for "latest value" refs
@@ -131,6 +140,7 @@ export function useMessageSending({
   workspaceRef.current = workspace
   conversationRef.current = conversation
   collaborationRef.current = collaboration
+  serviceRef.current = service
 
   const handleSend = useCallback(async () => {
     // Block sending while sandbox is still being set up
@@ -189,7 +199,9 @@ export function useMessageSending({
         queuedDiffTextContexts.length > 0 ? queuedDiffTextContexts : undefined,
         queuedPastedTexts.length > 0 ? queuedPastedTexts : undefined,
       )
-      queueRef.current.addToQueue(conversationRef.current.id, item)
+
+      // Enqueue via service
+      await serviceRef.current!.enqueue(item)
 
       // Clear input and attachments
       inputRefsRef.current.editor.current?.clear()
@@ -524,85 +536,27 @@ export function useMessageSending({
     }
 
     messagingRef.current.submitImplicitInteraction(text)
-    await messagingRef.current.sendMessageRef.current({ role: "user", parts })
+
+    // Send via service
+    await serviceRef.current!.send(parts)
   }, [])
 
   // Queue handlers for sending queued messages
   const handleSendFromQueue = useCallback(async (itemId: string) => {
-    const item = queueRef.current.popItemFromQueue(conversationRef.current.id, itemId)
-    if (!item) return
-
     try {
-      // Stop current stream if streaming and wait for status to become ready.
-      // The server-side save block preserves sessionId on abort, so the next
-      // message can resume the session with full conversation context.
+      // Stop current stream if streaming
       if (inputRefsRef.current.isStreaming.current) {
         await messagingRef.current.handleStop()
         await waitForStreamingReady(conversationRef.current.id)
       }
 
-      // Build message parts from queued item
-      const parts: any[] = [
-        ...(item.images || []).map((img: any) => ({
-          type: "data-image" as const,
-          data: {
-            url: img.url,
-            mediaType: img.mediaType,
-            filename: img.filename,
-            base64Data: img.base64Data,
-          },
-        })),
-        ...(item.files || []).map((f: any) => ({
-          type: "data-file" as const,
-          data: {
-            url: f.url,
-            mediaType: f.mediaType,
-            filename: f.filename,
-            size: f.size,
-          },
-        })),
-      ]
-
-      // Add text contexts as mention tokens
-      let mentionPrefix = ""
-      if (item.textContexts && item.textContexts.length > 0) {
-        const quoteMentions = item.textContexts.map((tc: any) => {
-          const preview = tc.text.slice(0, 50).replace(/[:\[\]]/g, "") // Create and sanitize preview
-          const encodedText = utf8ToBase64(tc.text) // Base64 encode full text
-          return `@[${MENTION_PREFIXES.QUOTE}${preview}:${encodedText}]`
-        })
-        mentionPrefix = quoteMentions.join(" ") + " "
-      }
-
-      // Add diff text contexts as mention tokens
-      if (item.diffTextContexts && item.diffTextContexts.length > 0) {
-        const diffMentions = item.diffTextContexts.map((dtc: any) => {
-          const preview = dtc.text.slice(0, 50).replace(/[:\[\]]/g, "") // Create and sanitize preview
-          const encodedText = utf8ToBase64(dtc.text) // Base64 encode full text
-          const lineNum = dtc.lineNumber || 0
-          return `@[${MENTION_PREFIXES.DIFF}${dtc.filePath}:${lineNum}:${preview}:${encodedText}]`
-        })
-        mentionPrefix += diffMentions.join(" ") + " "
-      }
-
-      // Add pasted text / chat history as mentions
-      if (item.pastedTexts && item.pastedTexts.length > 0) {
-        const pastedMentions = item.pastedTexts.map((pt: any) => {
-          const sanitizedPreview = pt.preview.replace(/[:\[\]|]/g, "")
-          const prefix = pt.kind === "chatHistory" ? MENTION_PREFIXES.CHAT_HISTORY : MENTION_PREFIXES.PASTED
-          return `@[${prefix}${pt.size}:${sanitizedPreview}|${pt.filePath}]`
-        })
-        mentionPrefix += pastedMentions.join(" ") + " "
-      }
-
-      if (item.message || mentionPrefix) {
-        parts.push({ type: "text", text: mentionPrefix + (item.message || "") })
-      }
+      // Send queued item via service
+      await serviceRef.current!.sendQueuedItem!(itemId)
 
       // Track message sent
       messagingRef.current.trackMessageSent({
         workspaceId: conversationRef.current.id,
-        messageLength: item.message.length,
+        messageLength: 0,
         mode: conversationModeRef.current,
       })
 
@@ -611,12 +565,8 @@ export function useMessageSending({
 
       // Enable auto-scroll and immediately scroll to bottom
       actionsRef.current.scrollToBottom()
-
-      await messagingRef.current.sendMessageRef.current({ role: "user", parts })
     } catch (error) {
       console.error("[handleSendFromQueue] Error sending queued message:", error)
-      // Requeue the item at the front so it isn't lost
-      useMessageQueueStore.getState().prependItem(conversationRef.current.id, item)
     }
   }, [])
 
@@ -690,6 +640,7 @@ export function useMessageSending({
             url: f.url,
             mediaType: f.type,
             filename: f.filename,
+            base64Data: f.base64Data,
             size: f.size,
           },
         })),
@@ -709,7 +660,12 @@ export function useMessageSending({
     actionsRef.current.scrollToBottom()
 
     try {
-      await messagingRef.current.sendMessageRef.current({ role: "user", parts })
+      // Phase 17: Use service.send if provided (unified send)
+      if (serviceRef.current) {
+        await serviceRef.current.send(parts)
+      } else {
+        await messagingRef.current.sendMessageRef.current({ role: "user", parts })
+      }
     } catch (error) {
       console.error("[handleForceSend] Error sending message:", error)
       // Restore editor content so the user can retry

@@ -24,7 +24,7 @@ import {
   selectedDiffFilePathAtom,
 } from "../atoms"
 import { cn } from "../../../lib/utils"
-import { getFileIconByExtension } from "../mentions/agents-file-mention"
+import { getFileIconByExtension } from "../mentions/file-icon-utils"
 import { useFileOpen } from "../mentions"
 
 interface GitActivityBadgesProps {

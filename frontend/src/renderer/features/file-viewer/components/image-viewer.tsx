@@ -26,7 +26,7 @@ import {
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu"
 import { fileViewerDisplayModeAtom } from "../../agents/atoms"
-import { getFileIconByExtension } from "../../agents/mentions/agents-file-mention"
+import { getFileIconByExtension } from "../../agents/mentions/file-icon-utils"
 import { getFileName } from "../utils/file-utils"
 
 const FILE_VIEWER_MODES = [

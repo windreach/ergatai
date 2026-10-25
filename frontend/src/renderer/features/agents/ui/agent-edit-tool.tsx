@@ -18,7 +18,7 @@ import {
 import { getDisplayPath, getToolStatus } from "./agent-tool-registry"
 import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areToolPropsEqual } from "./agent-tool-utils"
-import { getFileIconByExtension } from "../mentions/agents-file-mention"
+import { getFileIconByExtension } from "../mentions/file-icon-utils"
 import { useFileOpen } from "../mentions"
 import { agentsDiffSidebarOpenAtom, agentsFocusedDiffFileAtom, selectedWorkspaceAtom } from "../atoms"
 import { cn } from "../../../lib/utils"

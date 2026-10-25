@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { X, FileText, FileCode, FileJson } from "lucide-react"
+import { X, FileText, FileCode, FileJson, FolderIcon } from "lucide-react"
 import { IconSpinner } from "../../../components/ui/icons"
 
 interface AgentFileItemProps {
@@ -11,6 +11,8 @@ interface AgentFileItemProps {
   size?: number
   isLoading?: boolean
   onRemove?: () => void
+  isFolder?: boolean
+  folderFiles?: string[]
 }
 
 function formatFileSize(bytes: number): string {
@@ -42,9 +44,11 @@ export function AgentFileItem({
   size,
   isLoading = false,
   onRemove,
+  isFolder = false,
+  folderFiles,
 }: AgentFileItemProps) {
   const [isHovered, setIsHovered] = useState(false)
-  const Icon = getFileIcon(filename)
+  const Icon = isFolder ? FolderIcon : getFileIcon(filename)
 
   return (
     <div
@@ -64,11 +68,15 @@ export function AgentFileItem({
         <span className="text-sm font-medium text-foreground truncate" title={filename}>
           {filename}
         </span>
-        {size !== undefined && (
+        {isFolder ? (
+          <span className="text-[10px] text-muted-foreground">
+            {folderFiles?.length || 0} files
+          </span>
+        ) : size !== undefined ? (
           <span className="text-[10px] text-muted-foreground">
             {formatFileSize(size)}
           </span>
-        )}
+        ) : null}
       </div>
 
       {onRemove && (

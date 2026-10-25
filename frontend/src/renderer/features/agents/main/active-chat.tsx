@@ -102,6 +102,7 @@ import { useDiffSidebarConflicts } from "../hooks/use-diff-sidebar-conflicts"
 import { useScrollToBottomShortcut } from "../hooks/use-scroll-to-bottom-shortcut"
 import { useMessageSync } from "../hooks/use-message-sync"
 import { useDiffCache } from "../hooks/use-diff-cache"
+import { useMainChatInvocation } from "../hooks/use-main-chat-invocation"
 import {
   DiffStateProvider,
   DiffSidebarRenderer,
@@ -724,6 +725,26 @@ const ChatViewInner = memo(function ChatViewInner({
   const isVisiblePaneRef = useRef(isVisiblePane)
   isVisiblePaneRef.current = isVisiblePane
 
+  // Phase 10.3: Bridge hook for progressive migration to ConversationInvocationService
+  // This hook combines the existing Chat instance (for message rendering) with
+  // useConversationInvocation (for queue management)
+  // Phase 16: Pass existing chat instance to avoid creating duplicate
+  const conversationForBridge = useMemo(() => ({
+    id: conversationId,
+    backendConversationId: conversationId,
+  }), [conversationId])
+
+  const chatInvocation = useMainChatInvocation({
+    conversation: conversationForBridge as any,
+    chatId: parentChatId,
+    agentId: provider,
+    isActive,
+    existingChat: chat, // Pass existing Chat instance to avoid duplicate
+  })
+
+  // Extract session state for future migration
+  const { sessionState, invocationQueue } = chatInvocation
+
   // Scroll management - handles auto-scroll, position tracking, and animation
   const {
     shouldAutoScrollRef,
@@ -923,6 +944,7 @@ const ChatViewInner = memo(function ChatViewInner({
     images,
     files,
     handleAddAttachments,
+    handleAddFolder,
     removeImage,
     removeFile,
     clearAll,
@@ -982,11 +1004,70 @@ const ChatViewInner = memo(function ChatViewInner({
     fileContentsRef.current.clear()
   }, [conversationId])
 
-  // Message queue for sending messages while streaming
-  const queue = useMessageQueueStore((s) => s.queues[conversationId] ?? EMPTY_QUEUE)
-  const addToQueue = useMessageQueueStore((s) => s.addToQueue)
-  const removeFromQueue = useMessageQueueStore((s) => s.removeFromQueue)
-  const popItemFromQueue = useMessageQueueStore((s) => s.popItem)
+  // Phase 18: Use service-based queue system
+  // Convert ConversationQueueItem[] to AgentQueueItem[] for UI compatibility
+  // Use a ref to cache the previous conversion and only update when content actually changes
+  const queueCacheRef = useRef<{
+    items: typeof invocationQueue
+    result: any[]
+  } | null>(null)
+
+  const queue = useMemo(() => {
+    // Check if we can reuse the cached result
+    if (
+      queueCacheRef.current &&
+      queueCacheRef.current.items === invocationQueue &&
+      queueCacheRef.current.items.length === invocationQueue.length
+    ) {
+      return queueCacheRef.current.result
+    }
+
+    // Convert items
+    const result = invocationQueue.map((item) => {
+      // Extract data from parts to reconstruct AgentQueueItem
+      const parts = item.originalInput.parts || []
+
+      const textPart = parts.find((p: any) => p.type === "text")
+      const imageParts = parts.filter((p: any) => p.type === "data-image")
+      const fileParts = parts.filter((p: any) => p.type === "data-file")
+
+      return {
+        id: item.id,
+        message: textPart?.text || "",
+        images: imageParts.map((p: any, idx: number) => ({
+          id: `img_${item.id}_${idx}`,
+          url: p.data?.url || "",
+          mediaType: p.data?.mediaType || "image/png",
+          filename: p.data?.filename || "image.png",
+          base64Data: p.data?.base64Data,
+          isLoading: false,
+          preview: p.data?.url || "",
+        })),
+        files: fileParts.map((p: any, idx: number) => ({
+          id: `file_${item.id}_${idx}`,
+          url: p.data?.url || "",
+          mediaType: p.data?.mediaType || "application/octet-stream",
+          filename: p.data?.filename || "file",
+          size: p.data?.size || 0,
+          isLoading: false,
+          preview: p.data?.filename || "file",
+        })),
+        // Note: textContexts, diffText contexts, pastedTexts are encoded as mention tokens in message
+        // They will be decoded by the backend when processing the message
+        timestamp: item.queuedAt,
+        status: item.status,
+      }
+    })
+
+    // Cache the result
+    queueCacheRef.current = { items: invocationQueue, result }
+
+    return result
+  }, [invocationQueue])
+
+  const addToQueue = chatInvocation.service?.enqueue
+  const removeFromQueue = chatInvocation.removeQueuedItem
+  const popItemFromQueue = chatInvocation.removeQueuedItem // Same as remove for now
 
   // Plan approval pending state (for tool approval loading)
   const [planApprovalPending, setPlanApprovalPending] = useState<
@@ -1392,6 +1473,9 @@ const ChatViewInner = memo(function ChatViewInner({
   })
 
   // Message sending handlers
+  // Phase 10.3: Currently using useMessageSending for complex logic (inputRefs, actions, queue, messaging).
+  // Future phases will migrate to chatInvocation.handleSend and chatInvocation.handleSendFromQueue
+  // as the bridge hook matures to support all the required features.
   const {
     handleSend,
     handleSendFromQueue,
@@ -1469,6 +1553,9 @@ const ChatViewInner = memo(function ChatViewInner({
           })
       },
     },
+    // Phase 18: Migrate to service-based queue system
+    // Old logic commented out below, new logic uses chatInvocation.service
+    service: chatInvocation.service,
   })
 
   // NOTE: Auto-processing of queue is now handled globally by QueueProcessor
@@ -1762,6 +1849,7 @@ const ChatViewInner = memo(function ChatViewInner({
         images={images}
         files={files}
         onAddAttachments={handleAddAttachments}
+        onAddFolder={handleAddFolder}
         onRemoveImage={removeImage}
         onRemoveFile={removeFile}
         isUploading={isUploading}

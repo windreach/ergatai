@@ -26,6 +26,7 @@ import { useStreamingStatusStore } from "../../agents/stores/streaming-status-st
 import { syncMessagesWithStatusAtom } from "../../agents/stores/message-store"
 import { clearConversationRuntimeCaches } from "../../agents/stores/conversation-runtime-cleanup"
 import { useChatInstance } from "../../agents/hooks/use-chat-instance"
+import { useSideChatInvocation } from "../hooks/use-side-chat-invocation"
 
 interface SideChatProps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- messages type is dynamic from backend
@@ -49,6 +50,12 @@ interface SideChatProps {
  * 2. Consistent behavior with main chat
  * 3. Automatic handling of message sync, queue, persistence
  * 4. Built-in agent-to-agent support via sendAgentMessage
+ *
+ * Phase 9 Migration:
+ * - Introduced useSideChatInvocation bridge hook
+ * - Uses new ConversationInvocationService for queue management
+ * - Keeps useChatInstance for message rendering and streaming
+ * - Progressive migration: can fall back to old behavior
  */
 export function SideChat({
   conversation,
@@ -97,7 +104,17 @@ export function SideChat({
     removePastedText,
   } = usePastedTextFiles(runtimeConversationId)
 
-  // Use shared Chat instance hook - eliminates duplicate code!
+  // Phase 9: Use bridge hook for progressive migration
+  // This hook combines useChatInstance (for message rendering) with
+  // useConversationInvocation (for queue management)
+  const chatInvocation = useSideChatInvocation({
+    conversation,
+    chatId,
+    agentId,
+    isActive,
+  })
+
+  // Destructure from bridge hook
   const {
     chat,
     messages,
@@ -107,15 +124,14 @@ export function SideChat({
     stop,
     setMessages,
     isStreaming,
-    queue,
+    // Phase 16: Use invocationQueue from new service instead of old queue
+    // invocationQueue is the source of truth for queued messages
+    invocationQueue,
     handleSend: sendUserMessage,
     handleSendFromQueue,
-  } = useChatInstance({
-    conversation,
-    chatId,
-    agentId,
-    isActive,
-  })
+    // New: session state from ConversationInvocationService
+    sessionState,
+  } = chatInvocation
 
   // Runtime cache covers turns started outside this mounted Chat instance.
   // While this local instance is streaming, its transport is already the live
@@ -399,9 +415,9 @@ export function SideChat({
             provider={conversation.agent.id === "codex" ? "codex" : "claude-code"}
             changedFiles={[]}
             isMobile={false}
-            queueLength={queue.length}
+            queueLength={invocationQueue.length}
             onSendFromQueue={handleSendFromQueue}
-            firstQueueItemId={queue[0]?.id}
+            firstQueueItemId={invocationQueue[0]?.id}
             isActive={isActive}
             isGroupMode={false}
           />

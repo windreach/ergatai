@@ -15,6 +15,7 @@ import type { ChatTransport, UIMessage } from "ai"
 import { getOrCreateActiveAgent, fetchAgentModels } from "./ergatai-agent-manager"
 import { trpcClient } from "../../../lib/trpc"
 import { useAgentConversationStore } from "../stores/conversation-store"
+import { getRuntimeSessionStore } from "../../conversation/runtime/runtime-session-store"
 
 type UIMessageChunk = any
 
@@ -56,6 +57,7 @@ type AgentOutputEvent =
       sender_agent_name?: string | null
     }
   | { type: "done"; stop_reason: string }
+  | { type: "turn_started"; role?: string | null }
   | { type: "error"; message: string }
 
 type ErgataiChatTransportConfig = {
@@ -77,6 +79,14 @@ type ImageAttachment = {
   base64Data: string
   mediaType: string
   filename?: string
+}
+
+// ── File attachment ──
+type FileAttachment = {
+  base64Data: string
+  mediaType?: string
+  filename: string
+  size?: number
 }
 
 type Unsubscribable = {
@@ -220,9 +230,19 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
       .find((m) => m.role === "user" || (m.role as string) === "agent")
     const prompt = this.extractPrompt(lastUser)
     const images = this.extractImages(lastUser)
+    const files = this.extractFiles(lastUser)
 
-    if (!prompt && images.length === 0) {
-      throw new Error("No prompt or images found in last user message")
+    // Phase 19: Extract interrupt flag and correlationId from message metadata
+    const interrupt = (lastUser as any)?.metadata?.interrupt ?? false
+    const messageCorrelationId = (lastUser as any)?.metadata?.correlationId
+
+    // Update config.correlationId if provided in message metadata (for interrupt queue matching)
+    if (messageCorrelationId) {
+      this.config.correlationId = messageCorrelationId
+    }
+
+    if (!prompt && images.length === 0 && files.length === 0) {
+      throw new Error("No prompt, images, or files found in last user message")
     }
 
     // Stable text block ID for this response turn
@@ -266,10 +286,8 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
 
         const handleAbort = () => {
           if (finished) return
-          const { agentId } = this.config
-          if (agentId) {
-            void trpcClient.ergatai.cancelPrompt.mutate({ agentId }).catch(() => {})
-          }
+          // Backend cancel API is called by service.stop() - unified entry point
+          // Transport layer should NOT call cancelPrompt here to avoid duplicate calls
           close([{ type: "finish" }])
         }
 
@@ -375,7 +393,8 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               promptId = (result as any)?.prompt_id ?? (result as any)?.stream ?? null
             } else {
               // Generate clientRequestId for optimistic → durable replacement
-              const clientRequestId = crypto.randomUUID()
+              // Use config.correlationId if provided (for interrupt queue matching), otherwise generate new
+              const clientRequestId = this.config.correlationId ?? crypto.randomUUID()
               const promptResult = await trpcClient.ergatai.promptAgent.mutate({
                 agentId,
                 message: prompt,
@@ -385,10 +404,25 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                   mediaType: image.mediaType,
                   filename: image.filename,
                 })),
+                files: files.map((file) => ({
+                  base64Data: file.base64Data,
+                  mediaType: file.mediaType,
+                  filename: file.filename,
+                  size: file.size,
+                })),
                 waitForStream: true,
                 clientRequestId,
+                interrupt,  // Phase 19: Pass interrupt flag to backend
               })
               promptId = promptResult.prompt_id
+
+              // Phase 19: Store clientRequestId in last message metadata for queue matching
+              if (interrupt && lastUser) {
+                ;(lastUser as any).metadata = {
+                  ...(lastUser as any).metadata,
+                  clientRequestId,
+                }
+              }
             }
 
             console.log("[ErgataiChatTransport] Subscribing to agent stream", {
@@ -405,6 +439,28 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               {
                 onData: (event) => {
                   if (finished) {
+                    return
+                  }
+
+                  // Phase 19: Handle message_inserted event for interrupt queue management
+                  if (event.type === "message_inserted") {
+                    // Notify TurnOrchestrator to remove the message from queue
+                    // The message has been successfully inserted at a safe point
+                    const sessionStore = getRuntimeSessionStore()
+                    const conversationId = this.config.conversationId
+
+                    // Find and remove the queue item by clientRequestId
+                    // Store clientRequestId in queue item's transportOverrides for matching
+                    const session = sessionStore.getSession(conversationId)
+                    if (session && event.client_request_id) {
+                      const queueItem = session.queue.find(
+                        (item) => item.originalInput.transportOverrides?.correlationId === event.client_request_id
+                      )
+                      if (queueItem) {
+                        sessionStore.removeQueueItem(conversationId, queueItem.id)
+                        console.log("[ErgataiChatTransport] Message inserted at safe point, removed from queue:", event.client_request_id)
+                      }
+                    }
                     return
                   }
 
@@ -515,10 +571,8 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
       },
       cancel: () => {
         if (!finished) {
-          const { agentId } = this.config
-          if (agentId) {
-            void trpcClient.ergatai.cancelPrompt.mutate({ agentId }).catch(() => {})
-          }
+          // Backend cancel API is called by service.stop() - unified entry point
+          // Transport layer should NOT call cancelPrompt here to avoid duplicate calls
         }
         subscription?.unsubscribe()
         finished = true
@@ -589,6 +643,31 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
     }
 
     return images
+  }
+
+  /**
+   * Extract file attachments from a UIMessage.
+   */
+  private extractFiles(message: UIMessage | undefined): FileAttachment[] {
+    if (!message?.parts) return []
+
+    const files: FileAttachment[] = []
+
+    for (const part of message.parts) {
+      if (part.type === "data-file" && (part as any).data) {
+        const data = (part as any).data
+        if (data.base64Data && data.filename) {
+          files.push({
+            base64Data: data.base64Data,
+            mediaType: data.mediaType,
+            filename: data.filename,
+            size: data.size,
+          })
+        }
+      }
+    }
+
+    return files
   }
 }
 

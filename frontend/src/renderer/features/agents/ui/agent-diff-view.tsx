@@ -41,7 +41,7 @@ import {
   UndoIcon,
 } from "../../../components/ui/icons"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { getFileIconByExtension } from "../mentions/agents-file-mention"
+import { getFileIconByExtension } from "../mentions/file-icon-utils"
 import {
   AlertDialog,
   AlertDialogContent,

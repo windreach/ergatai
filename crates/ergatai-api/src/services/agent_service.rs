@@ -228,6 +228,7 @@ pub struct PendingPrompt {
     pub agent_id: String,
     pub message: String,
     pub images: Vec<ergatai_runtime::AgentImage>,
+    pub files: Vec<ergatai_runtime::AgentFile>,
     pub conversation_id: Option<String>,
     pub agent_name: String,
     pub created_at: std::time::Instant,
@@ -360,6 +361,7 @@ pub async fn run_pending_prompt(agent_id: &str, prompt_id: Option<&str>) -> anyh
         &prompt.agent_id,
         &prompt.message,
         prompt.images,
+        prompt.files,
         prompt.conversation_id,
     )
     .await
@@ -387,17 +389,36 @@ pub async fn flush_pending_prompt(agent_id: &str) {
     }
 }
 
-/// Prompt an agent with images.
+/// Prompt an agent with images and file attachments.
+///
+/// Files are decoded from base64, saved to the attachments directory, and
+/// the resulting file paths are appended to the message so the agent can
+/// read them with its own file tools.
 pub async fn prompt_agent_with_images(
     agent_id: &str,
     message: &str,
     images: Vec<ergatai_runtime::AgentImage>,
+    files: Vec<ergatai_runtime::AgentFile>,
     conversation_id: Option<String>,
 ) -> anyhow::Result<()> {
+    let message = if files.is_empty() {
+        message.to_string()
+    } else {
+        let saved_paths = save_file_attachments(&files, conversation_id.as_deref())?;
+        let mut msg = message.to_string();
+        for (filename, path) in &saved_paths {
+            msg.push_str(&format!(
+                "\n\n[用户上传了文件: {}，已保存到路径 {}，请用文件工具读取]",
+                filename, path
+            ));
+        }
+        msg
+    };
+
     set_current_prompt_conversation(agent_id, conversation_id.clone());
     crate::context::get_app_context()
         .agent_runtime
-        .inject_message_with_images(agent_id, message, images)
+        .inject_message_with_images(agent_id, &message, images)
         .await?;
     Ok(())
 }
@@ -412,9 +433,175 @@ pub async fn prompt_agent_with_persistence(
         agent_id,
         &prompt.message,
         prompt.images,
+        prompt.files,
         prompt.conversation_id,
     )
     .await
+}
+
+/// Save base64 file attachments to the local attachments directory.
+///
+/// Files are written to `~/.local/share/ergatai/attachments/{conversation_id or "default"}/`
+/// and the (filename, absolute_path) pairs are returned.
+pub fn save_file_attachments(
+    files: &[ergatai_runtime::AgentFile],
+    conversation_id: Option<&str>,
+) -> anyhow::Result<Vec<(String, String)>> {
+    use base64::Engine;
+
+    let dir = dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("ergatai")
+        .join("attachments")
+        .join(conversation_id.unwrap_or("default"));
+    std::fs::create_dir_all(&dir)?;
+
+    let mut results = Vec::new();
+    let mut used_names = std::collections::HashSet::new();
+    for file in files {
+        file.validate()?;
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(&file.base64_data)
+            .map_err(|e| anyhow::anyhow!("Failed to decode file '{}': {}", file.filename, e))?;
+
+        // Sanitize filename to prevent path traversal and other attacks
+        let base_safe_name = sanitize_filename(&file.filename);
+
+        // Deduplicate: if the same sanitized name is used by multiple files
+        // (e.g. "a/report.csv" and "b/report.csv" both sanitize to "report.csv"),
+        // append a counter to avoid silent overwrites.
+        let safe_name = deduplicate_filename(&base_safe_name, &used_names);
+        used_names.insert(safe_name.clone());
+
+        let path = dir.join(&safe_name);
+        std::fs::write(&path, &data)?;
+        results.push((file.filename.clone(), path.to_string_lossy().to_string()));
+        tracing::info!(
+            filename = %file.filename,
+            path = %path.display(),
+            size_bytes = data.len(),
+            "Saved file attachment for agent prompt"
+        );
+    }
+    Ok(results)
+}
+
+/// Deduplicate a filename by appending a counter if the name is already in use.
+///
+/// E.g., "report.csv" → "report (1).csv" → "report (2).csv"
+///
+/// When many files collide (counter > 10,000), falls back to a millisecond-timestamp
+/// suffix to avoid an unbounded loop.
+fn deduplicate_filename(base_name: &str, used_names: &std::collections::HashSet<String>) -> String {
+    if !used_names.contains(base_name) {
+        return base_name.to_string();
+    }
+
+    // Split into stem and extension at the LAST dot (preserve compound extensions like .tar.gz)
+    let (stem, ext) = match base_name.rfind('.') {
+        Some(0) | None => (base_name.as_bytes(), b"".as_slice()),
+        Some(dot_pos) => (
+            &base_name.as_bytes()[..dot_pos],
+            &base_name.as_bytes()[dot_pos..],
+        ),
+    };
+
+    // Try counter suffixes until we find an unused name
+    let mut counter = 1u64;
+    loop {
+        let candidate = format!(
+            "{} ({}){}",
+            String::from_utf8_lossy(stem),
+            counter,
+            String::from_utf8_lossy(ext)
+        );
+        if !used_names.contains(&candidate) {
+            tracing::warn!(
+                original = %base_name,
+                deduplicated = %candidate,
+                "File name collision detected; deduplicated with counter suffix"
+            );
+            return candidate;
+        }
+        counter += 1;
+        // Safety bound: avoid unbounded loop in pathological cases
+        if counter > 10_000 {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let fallback = format!(
+                "{}_{}{}",
+                String::from_utf8_lossy(stem),
+                ts,
+                String::from_utf8_lossy(ext)
+            );
+            tracing::warn!(
+                original = %base_name,
+                deduplicated = %fallback,
+                "File name collision detected (>10k collisions); deduplicated with timestamp suffix"
+            );
+            return fallback;
+        }
+    }
+}
+
+/// Sanitize a filename to prevent path traversal and other attacks.
+/// Removes or replaces dangerous characters and limits length.
+fn sanitize_filename(filename: &str) -> String {
+    // Replace path separators and dangerous characters
+    let sanitized: String = filename
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect();
+
+    // Remove leading dots and spaces (prevent hidden files and trailing spaces on Windows)
+    let sanitized = sanitized.trim_start_matches(['.', ' ']);
+
+    // Remove all path traversal sequences (.., ..., etc.)
+    // Use a loop to handle cases like "...//..." which become "////" after first pass
+    let mut prev = String::new();
+    let mut current = sanitized.to_string();
+    while prev != current {
+        prev = current.clone();
+        current = current.replace("..", "");
+    }
+    let sanitized = current;
+
+    // Remove any remaining path separators that might have been created
+    let sanitized = sanitized.replace(['/', '\\'], "");
+
+    // Check for reserved Windows filenames (case-insensitive)
+    let reserved_names = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    let sanitized_upper = sanitized.to_uppercase();
+    let base_name = sanitized_upper.split('.').next().unwrap_or("");
+    let sanitized = if reserved_names.contains(&base_name) {
+        // Prefix with underscore to make it safe
+        format!("_{}", sanitized)
+    } else {
+        sanitized
+    };
+
+    // Limit length to 255 characters (common filesystem limit)
+    // Use chars().take() instead of byte slicing to avoid splitting multi-byte UTF-8 characters
+    let sanitized: String = if sanitized.chars().count() > 255 {
+        sanitized.chars().take(255).collect()
+    } else {
+        sanitized
+    };
+
+    // If filename is empty after sanitization, use a default name
+    if sanitized.is_empty() {
+        "unnamed_file".to_string()
+    } else {
+        sanitized
+    }
 }
 
 /// Cancel the current prompt turn for an agent (sends ACP `session/cancel`).

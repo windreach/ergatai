@@ -80,8 +80,10 @@ export function handlePasteEvent(
   handleAddAttachments: (files: File[]) => void,
   addPastedText?: AddPastedTextFn,
 ): void {
+  // Extract all file items from clipboard (images AND other files like PDFs, zips, etc.)
+  // OS file-manager copies (Finder/Explorer) expose files as clipboard items with kind="file"
   const files = Array.from(e.clipboardData.items)
-    .filter((item) => item.type.startsWith("image/"))
+    .filter((item) => item.kind === "file")
     .map((item) => item.getAsFile())
     .filter(Boolean) as File[]
 

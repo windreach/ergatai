@@ -1558,6 +1558,7 @@ enum AcpCommand {
         message: String,
         images: Vec<crate::types::AgentImage>,
         message_id: String,
+        client_request_id: Option<String>,
         response_tx: oneshot::Sender<ErgataiResult<()>>,
     },
     /// Cancel the current prompt turn (sends `session/cancel` notification).
@@ -2728,6 +2729,7 @@ impl AcpBackend {
         message: &str,
         images: &[crate::types::AgentImage],
         message_id: &str,
+        client_request_id: Option<String>,
     ) -> ErgataiResult<()> {
         self.reap_dead();
         let command_tx = {
@@ -2749,6 +2751,7 @@ impl AcpBackend {
                 message: message.to_string(),
                 images: images.to_vec(),
                 message_id: message_id.to_string(),
+                client_request_id,
                 response_tx,
             })
             .await
@@ -3638,6 +3641,7 @@ impl AcpBackendInterface for AcpBackend {
                                 message,
                                 images,
                                 message_id,
+                                client_request_id,
                                 response_tx,
                             }) => {
                                 // Interrupt message: wait for safe point before processing
@@ -3719,6 +3723,24 @@ impl AcpBackendInterface for AcpBackend {
                                 }));
                                 if content.is_empty() {
                                     content.push(ContentBlock::Text(TextContent::new(String::new())));
+                                }
+
+                                // Publish AgentMessageInserted event before sending the prompt
+                                // This notifies the frontend that the message has been inserted at a safe point
+                                if let Some(publisher) = crate::interrupt_event_publisher::get_global_interrupt_event_publisher() {
+                                    let payload = crate::interrupt_event_publisher::AgentMessageInsertedPayload {
+                                        agent_id: connection_agent_id.clone(),
+                                        message_id: message_id.clone(),
+                                        inserted_at: std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .map(|d| d.as_secs())
+                                            .unwrap_or(0),
+                                        conversation_id: Some(connection_conversation_id.clone()),
+                                        client_request_id: client_request_id.clone(),
+                                    };
+                                    if let Err(e) = publisher.publish_message_inserted(payload) {
+                                        tracing::warn!(error = %e, "Failed to publish message_inserted event");
+                                    }
                                 }
 
                                 let request = connection.send_request(PromptRequest::new(

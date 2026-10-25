@@ -50,6 +50,7 @@ utoipa.workspace = true
 # Error handling
 anyhow.workspace = true
 dirs.workspace = true
+base64.workspace = true
 nix.workspace = true
 libc.workspace = true
 

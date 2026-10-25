@@ -57,6 +57,58 @@ impl AgentImage {
     }
 }
 
+/// A file attachment delivered with an agent prompt.
+///
+/// Unlike images (which are embedded as ACP image content blocks),
+/// files are decoded and saved to disk; the agent receives the file path
+/// so it can read the content with its own file tools.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentFile {
+    /// Base64-encoded file payload without the data-URI prefix.
+    #[serde(default)]
+    pub base64_data: String,
+
+    /// MIME type of the file payload (e.g. "text/csv", "application/pdf").
+    #[serde(default)]
+    pub media_type: Option<String>,
+
+    /// Filename used for the on-disk path and agent context.
+    #[serde(default)]
+    pub filename: String,
+
+    /// Original file size in bytes (for validation).
+    #[serde(default)]
+    pub size: Option<u64>,
+}
+
+impl AgentFile {
+    /// Maximum allowed size for base64-encoded file data (100 MB).
+    pub const MAX_BASE64_SIZE: usize = 100 * 1024 * 1024;
+
+    /// Validate file attachment size.
+    pub fn validate(&self) -> Result<(), ErgataiError> {
+        if self.base64_data.is_empty() {
+            return Err(ErgataiError::InvalidArgument(
+                "File base64 data is empty".to_string(),
+            ));
+        }
+        if self.base64_data.len() > Self::MAX_BASE64_SIZE {
+            return Err(ErgataiError::InvalidArgument(format!(
+                "File too large: {} bytes (max: {} bytes)",
+                self.base64_data.len(),
+                Self::MAX_BASE64_SIZE
+            )));
+        }
+        if self.filename.trim().is_empty() {
+            return Err(ErgataiError::InvalidArgument(
+                "File filename is empty".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Specification for creating a new agent workspace.
 ///
 /// A workspace is the execution environment for an agent — it is a process-based

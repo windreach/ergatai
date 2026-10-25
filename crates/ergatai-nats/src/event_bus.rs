@@ -217,6 +217,23 @@ impl EventBus {
         self.publish(&subject, payload).await
     }
 
+    /// Publish an agent message inserted event.
+    ///
+    /// Routes to `ergatai.agent.message_inserted.{agent_id}`.
+    /// SSE clients subscribe to this subject for real-time notifications
+    /// when an interrupt message is actually inserted at a safe point.
+    /// No JetStream persistence — this is a transient event.
+    pub async fn publish_message_inserted_event(
+        &self,
+        payload: &crate::events::AgentMessageInserted,
+    ) -> ErgataiResult<()> {
+        let subject = format!(
+            "ergatai.agent.message_inserted.{}",
+            sanitize_agent_name(&payload.agent_id.to_string())
+        );
+        self.publish(&subject, payload).await
+    }
+
     /// Check whether the AGENT_MESSAGES stream is under the backpressure threshold.
     /// Returns Ok(()) if under threshold, or Err if the stream is overloaded.
     /// Caches the last check result for 5s to avoid per-message NATS round-trips.

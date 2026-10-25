@@ -7,7 +7,7 @@ interface UseRollbackOptions {
   setIsRollingBack: (value: boolean) => void
   isStreaming: boolean
   messages: any[]
-  setMessages: (messages: any[]) => void
+  setMessages: (messages: any[] | ((current: any[]) => any[])) => void
   conversationId: string
   recomputeChangedFiles: () => void
   refreshDiff?: () => void

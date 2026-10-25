@@ -14,7 +14,7 @@ import {
   CodeIcon,
 } from "@/components/ui/icons"
 import { Kbd } from "@/components/ui/kbd"
-import { getFileIconByExtension } from "../../agents/mentions/agents-file-mention"
+import { getFileIconByExtension } from "../../agents/mentions/file-icon-utils"
 import {
   Tooltip,
   TooltipContent,

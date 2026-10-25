@@ -18,7 +18,7 @@ import {
 import { RenameDialog } from "@/components/rename-dialog"
 import { preferredEditorAtom } from "@/lib/atoms"
 import { getAppOption } from "@/components/open-in-button"
-import { getFileIconByExtension } from "../../agents/mentions/agents-file-mention"
+import { getFileIconByExtension } from "../../agents/mentions/file-icon-utils"
 import { fileSearchDialogOpenAtom } from "../../agents/atoms"
 import { fileTreeExpandedAtomFamily } from "../atoms"
 

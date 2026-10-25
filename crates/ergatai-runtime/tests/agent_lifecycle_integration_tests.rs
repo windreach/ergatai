@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use parking_lot::Mutex;
 
 use ergatai_error::ErgataiResult;
 use ergatai_runtime::{
@@ -33,12 +34,15 @@ use ergatai_runtime::{
 
 struct MockBackend {
     workspace_count: AtomicUsize,
+    /// Tracks active agents: agent_id -> notify channel for wait_for_exit
+    active_agents: Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>>,
 }
 
 impl MockBackend {
     fn new() -> Self {
         Self {
             workspace_count: AtomicUsize::new(0),
+            active_agents: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -95,6 +99,10 @@ impl AcpBackendInterface for MockBackend {
                 ergatai_error::id::format(id, ergatai_error::id::IdType::Agent)
             });
 
+        // Register the agent as active
+        let notify = Arc::new(tokio::sync::Notify::new());
+        self.active_agents.lock().insert(agent_id.clone(), notify);
+
         Ok(AgentHandle {
             workspace: handle.clone(),
             agent_id,
@@ -119,19 +127,39 @@ impl AcpBackendInterface for MockBackend {
         Ok(true)
     }
 
-    async fn stop_agent(&self, _handle: &AgentHandle) -> ErgataiResult<()> {
+    async fn stop_agent(&self, handle: &AgentHandle) -> ErgataiResult<()> {
+        // Signal the agent to exit
+        if let Some(notify) = self.active_agents.lock().remove(&handle.agent_id) {
+            notify.notify_waiters();
+        }
         Ok(())
     }
 
-    async fn kill_agent(&self, _handle: &AgentHandle) -> ErgataiResult<()> {
+    async fn kill_agent(&self, handle: &AgentHandle) -> ErgataiResult<()> {
+        // Signal the agent to exit
+        if let Some(notify) = self.active_agents.lock().remove(&handle.agent_id) {
+            notify.notify_waiters();
+        }
         Ok(())
     }
 
     async fn wait_for_exit(
         &self,
-        _handle: &AgentHandle,
+        handle: &AgentHandle,
         _timeout: Option<Duration>,
     ) -> ErgataiResult<WaitResult> {
+        // Get the notify channel for this agent
+        let notify = {
+            let guard = self.active_agents.lock();
+            guard.get(&handle.agent_id).cloned()
+        };
+
+        // If the agent is still active, wait for it to be stopped
+        if let Some(notify) = notify {
+            notify.notified().await;
+        }
+
+        // Agent has exited (was stopped/killed)
         Ok(WaitResult::Exited { code: 0 })
     }
 

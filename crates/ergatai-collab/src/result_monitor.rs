@@ -144,6 +144,7 @@ impl ResultFileMonitor {
     fn start_linux(results_dir: &Path) -> Result<Self, String> {
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
         use tokio::io::unix::AsyncFd;
 
         // FAN_CLASS_NOTIF: notification-only, no CAP_SYS_ADMIN required.
@@ -163,11 +164,12 @@ impl ResultFileMonitor {
             ));
         }
 
+        // Wrap raw_fd in OwnedFd for I/O safety (auto-close on drop)
+        // SAFETY: raw_fd is valid and we own it exclusively
+        let owned_fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+
         let c_path = CString::new(results_dir.as_os_str().as_bytes()).map_err(|e| {
-            // SAFETY: raw_fd is valid and unowned; close before returning.
-            unsafe {
-                libc::close(raw_fd);
-            }
+            // owned_fd will be closed automatically on drop
             format!("invalid path: {e}")
         })?;
 
@@ -176,7 +178,7 @@ impl ResultFileMonitor {
         // SAFETY: raw_fd valid; flags valid; c_path lives through syscall.
         let rc = unsafe {
             libc::fanotify_mark(
-                raw_fd,
+                owned_fd.as_raw_fd(),
                 libc::FAN_MARK_ADD,
                 libc::FAN_CLOSE_WRITE,
                 libc::AT_FDCWD,
@@ -185,20 +187,14 @@ impl ResultFileMonitor {
         };
         if rc < 0 {
             let err = std::io::Error::last_os_error();
-            // SAFETY: raw_fd valid and unowned.
-            unsafe {
-                libc::close(raw_fd);
-            }
             return Err(format!("fanotify_mark failed: {err}"));
         }
 
-        let async_fd = AsyncFd::new(raw_fd).map_err(|e| {
-            // SAFETY: raw_fd valid and unowned.
-            unsafe {
-                libc::close(raw_fd);
-            }
-            format!("AsyncFd::new failed: {e}")
-        })?;
+        // AsyncFd::new is deprecated for RawFd due to I/O safety concerns, but we're
+        // using OwnedFd which provides I/O safety. Allow the deprecation warning since
+        // this is the correct migration path (see tokio-rs/tokio#8587).
+        #[allow(deprecated)]
+        let async_fd = AsyncFd::new(owned_fd).map_err(|e| format!("AsyncFd::new failed: {e}"))?;
 
         let cancel = tokio_util::sync::CancellationToken::new();
         let watchers: Mutex<HashMap<String, oneshot::Sender<PathBuf>>> = Mutex::new(HashMap::new());
@@ -224,7 +220,7 @@ impl ResultFileMonitor {
 
     #[cfg(target_os = "linux")]
     async fn event_loop(
-        async_fd: tokio::io::unix::AsyncFd<i32>,
+        async_fd: tokio::io::unix::AsyncFd<std::os::unix::io::OwnedFd>,
         inner: Arc<Inner>,
         cancel: tokio_util::sync::CancellationToken,
     ) {

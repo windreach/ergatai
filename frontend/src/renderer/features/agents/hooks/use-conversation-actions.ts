@@ -2,6 +2,7 @@ import { useCallback, useRef } from "react"
 import { trpcClient } from "../../../lib/trpc"
 import { useAgentConversationStore } from "../stores/conversation-store"
 import { appStore } from "../../../lib/jotai-store"
+import { toast } from "sonner"
 import {
   conversationModeAtomFamily,
   conversationModelIdAtomFamily,

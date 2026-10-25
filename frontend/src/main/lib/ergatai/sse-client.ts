@@ -60,6 +60,15 @@ const agentOutputEventSchema = z.discriminatedUnion("type", [
     sender_agent_id: z.string().nullish(),
     sender_agent_name: z.string().nullish(),
   }),
+  // Phase 19: Message inserted at safe point (for interrupt queue management)
+  z.object({
+    type: z.literal("message_inserted"),
+    agent_id: z.string(),
+    message_id: z.string(),
+    inserted_at: z.number(),
+    conversation_id: z.string().nullish(),
+    client_request_id: z.string().nullish(),
+  }),
 ])
 
 /**
@@ -134,6 +143,7 @@ export type AgentOutputEvent =
   | ({ type: "subagent_spawned"; subagent_session_id: string; name: string; task: string; role?: string | null } & AgentOutputEventContext)
   | ({ type: "subagent_state_update"; subagent_session_id: string; state: string; role?: string | null } & AgentOutputEventContext)
   | ({ type: "done"; stop_reason: string } & AgentOutputEventContext)
+  | ({ type: "turn_started"; role?: string | null } & AgentOutputEventContext)
   | ({ type: "error"; message: string } & AgentOutputEventContext)
   | ({
       type: "conversation_message"
@@ -146,6 +156,14 @@ export type AgentOutputEvent =
       timestamp_ms: number
       sender_agent_id?: string | null
       sender_agent_name?: string | null
+    } & AgentOutputEventContext)
+  // Phase 19: Message inserted at safe point (for interrupt queue management)
+  | ({
+      type: "message_inserted"
+      agent_id: string
+      message_id: string
+      inserted_at: number
+      client_request_id?: string | null
     } & AgentOutputEventContext)
 
 export type UIMessageChunk =

@@ -39,6 +39,7 @@ serde = { version = "1.0", features = ["derive"] }
 # 注意：此特性影响整个工作区的所有 JSON 序列化操作，会增加少量性能开销
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_yaml = "0.9"
+base64 = "0.22"
 
 # Error handling
 anyhow = "1.0"

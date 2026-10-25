@@ -8,7 +8,7 @@ import { trpc } from "@/lib/trpc"
 import { Input } from "@/components/ui/input"
 import { SearchIcon } from "@/components/ui/icons"
 import { UnknownFileIcon } from "@/icons/framework-icons"
-import { getFileIconByExtension } from "../../agents/mentions/agents-file-mention"
+import { getFileIconByExtension } from "../../agents/mentions/file-icon-utils"
 import { recentlyOpenedFilesAtom } from "../../agents/atoms"
 
 // ============================================================================

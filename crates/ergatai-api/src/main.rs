@@ -580,6 +580,22 @@ async fn async_main(args: Args) -> Result<()> {
                 tracing::info!("✅ Global output publisher set (agent output → NATS)");
             }
 
+            // Set up global interrupt event publisher for real-time interrupt notifications
+            let interrupt_event_publisher = std::sync::Arc::new(
+                ergatai_api::services::nats_interrupt_event_publisher::NatsInterruptEventPublisher::new(
+                    conn.clone(),
+                ),
+            );
+            if ergatai_runtime::interrupt_event_publisher::set_global_interrupt_event_publisher(
+                interrupt_event_publisher,
+            )
+            .is_err()
+            {
+                tracing::warn!("Global interrupt event publisher already set (skipping)");
+            } else {
+                tracing::info!("✅ Global interrupt event publisher set (interrupt events → NATS)");
+            }
+
             let runtime_cancel = mcp_cancellation_token.clone();
             let runtime_conn = conn.clone();
             tokio::spawn(async move {

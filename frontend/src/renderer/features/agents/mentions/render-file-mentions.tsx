@@ -1,7 +1,7 @@
 "use client"
 
 import { createContext, useContext, useMemo } from "react"
-import { getFileIconByExtension } from "./agents-file-mention"
+import { getFileIconByExtension } from "./file-icon-utils"
 import { SkillIcon, CustomAgentIcon, OriginalMCPIcon } from "../../../components/ui/icons"
 import { UnknownFileIcon } from "../../../icons/framework-icons"
 import { MENTION_PREFIXES } from "./agents-mentions-editor"
@@ -10,6 +10,12 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "../../../components/ui/hover-card"
+// Import utilities from separate file for Fast Refresh compatibility
+import { extractFileMentions, hasFileMentions, parseMention, extractTextMentions, type ParsedMention } from "./mentions-utils"
+
+// Re-export for backward compatibility
+export { extractFileMentions, hasFileMentions, extractTextMentions }
+export type { ParsedMention }
 
 /**
  * Context for opening files in the file viewer sidebar.
@@ -76,243 +82,26 @@ function ChatHistoryIcon({ className }: { className?: string }) {
   )
 }
 
-// Custom folder icon matching design
-function FolderOpenIcon({ className }: { className?: string }) {
+// Closed folder icon (collapsed style)
+function FolderClosedIcon({ className }: { className?: string }) {
   return (
-    <svg 
-      xmlns="http://www.w3.org/2000/svg" 
-      viewBox="0 0 24 24" 
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
       fill="none"
       className={className}
     >
-      <path 
-        d="M4 8V6C4 4.89543 4.89543 4 6 4H14C15.1046 4 16 4.89543 16 6M4 8H8.17548C8.70591 8 9.21462 8.21071 9.58969 8.58579L11.4181 10.4142C11.7932 10.7893 12.3019 11 12.8323 11H16M4 8C3.44987 8 3.00391 8.44597 3.00391 8.99609V18C3.00391 19.1046 3.89934 20 5.00391 20H19.0039C20.1085 20 21.0039 19.1046 21.0039 18V12.0039C21.0039 11.4495 20.5544 11 20 11M16 11V6M16 11H20M16 6H18C19.1046 6 20 6.89543 20 8V11" 
-        stroke="currentColor" 
-        strokeWidth="2" 
+      <path
+        d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
         strokeLinejoin="round"
       />
     </svg>
   )
 }
 
-interface ParsedMention {
-  id: string
-  label: string
-  path: string
-  repository: string
-  type: "file" | "folder" | "skill" | "agent" | "tool" | "quote" | "diff" | "pasted" | "chatHistory"
-  // Extra data for quote/diff/pasted mentions
-  fullText?: string
-  lineNumber?: number
-  size?: number // Size in bytes for pasted mentions
-}
-
-/**
- * Parse file/folder/skill/agent/tool/quote/diff/pasted mention ID into its components
- * Format: file:owner/repo:path/to/file.tsx or folder:owner/repo:path/to/folder or skill:skill-name or agent:agent-name or tool:servername
- * Quote format: quote:preview_text:full_text (base64 encoded full text)
- * Diff format: diff:filepath:lineNumber:preview_text:full_text (base64 encoded full text)
- * Pasted format: pasted:size:preview|filepath
- * ChatHistory format: chatHistory:size:preview|filepath
- */
-function parseMention(id: string): ParsedMention | null {
-  const isFile = id.startsWith(MENTION_PREFIXES.FILE)
-  const isFolder = id.startsWith(MENTION_PREFIXES.FOLDER)
-  const isSkill = id.startsWith(MENTION_PREFIXES.SKILL)
-  const isAgent = id.startsWith(MENTION_PREFIXES.AGENT)
-  const isTool = id.startsWith(MENTION_PREFIXES.TOOL)
-  const isQuote = id.startsWith(MENTION_PREFIXES.QUOTE)
-  const isDiff = id.startsWith(MENTION_PREFIXES.DIFF)
-  const isPasted = id.startsWith(MENTION_PREFIXES.PASTED)
-  const isChatHistory = id.startsWith(MENTION_PREFIXES.CHAT_HISTORY)
-
-  if (!isFile && !isFolder && !isSkill && !isAgent && !isTool && !isQuote && !isDiff && !isPasted && !isChatHistory) return null
-
-  // Handle quote mentions (format: quote:preview_text:base64_full_text)
-  if (isQuote) {
-    const content = id.slice(MENTION_PREFIXES.QUOTE.length)
-    const separatorIdx = content.indexOf(":")
-    if (separatorIdx === -1) {
-      // Simple format without full text
-      return {
-        id,
-        label: content.slice(0, 50) + (content.length > 50 ? "..." : ""),
-        path: "",
-        repository: "",
-        type: "quote",
-        fullText: content,
-      }
-    }
-    const preview = content.slice(0, separatorIdx)
-    const encodedText = content.slice(separatorIdx + 1)
-    let fullText = preview
-    try {
-      fullText = base64ToUtf8(encodedText)
-    } catch {
-      fullText = preview
-    }
-    return {
-      id,
-      label: preview,
-      path: "",
-      repository: "",
-      type: "quote",
-      fullText,
-    }
-  }
-
-  // Handle diff mentions (format: diff:filepath:lineNumber:preview_text:base64_full_text)
-  if (isDiff) {
-    const content = id.slice(MENTION_PREFIXES.DIFF.length)
-    const parts = content.split(":")
-    if (parts.length < 3) return null
-
-    const filePath = parts[0] || ""
-    const lineNumber = parseInt(parts[1] || "0", 10) || undefined
-    const preview = parts[2] || ""
-    const encodedText = parts.slice(3).join(":") // Handle colons in base64
-
-    let fullText = preview
-    try {
-      if (encodedText) {
-        fullText = base64ToUtf8(encodedText)
-      }
-    } catch {
-      fullText = preview
-    }
-
-    const fileName = filePath.split("/").pop() || filePath
-    const lineInfo = lineNumber ? `:${lineNumber}` : ""
-
-    return {
-      id,
-      label: `${fileName}${lineInfo}`,
-      path: filePath,
-      repository: "",
-      type: "diff",
-      fullText,
-      lineNumber,
-    }
-  }
-
-  // Handle pasted mentions (format: pasted:size:preview|filepath)
-  // Using | as separator between preview and filepath since filepath can contain colons
-  if (isPasted) {
-    const content = id.slice(MENTION_PREFIXES.PASTED.length)
-    const pipeIndex = content.lastIndexOf("|")
-    if (pipeIndex === -1) return null
-
-    const beforePipe = content.slice(0, pipeIndex)
-    const filePath = content.slice(pipeIndex + 1)
-
-    const colonIndex = beforePipe.indexOf(":")
-    if (colonIndex === -1) return null
-
-    const size = parseInt(beforePipe.slice(0, colonIndex) || "0", 10)
-    const preview = beforePipe.slice(colonIndex + 1)
-
-    return {
-      id,
-      label: preview,
-      path: filePath,
-      repository: "",
-      type: "pasted",
-      size,
-    }
-  }
-
-  // Handle chat history mentions (same format as pasted: chatHistory:size:preview|filepath)
-  if (isChatHistory) {
-    const content = id.slice(MENTION_PREFIXES.CHAT_HISTORY.length)
-    const pipeIndex = content.lastIndexOf("|")
-    if (pipeIndex === -1) return null
-
-    const beforePipe = content.slice(0, pipeIndex)
-    const filePath = content.slice(pipeIndex + 1)
-
-    const colonIndex = beforePipe.indexOf(":")
-    if (colonIndex === -1) return null
-
-    const size = parseInt(beforePipe.slice(0, colonIndex) || "0", 10)
-    const preview = beforePipe.slice(colonIndex + 1)
-
-    return {
-      id,
-      label: preview,
-      path: filePath,
-      repository: "",
-      type: "chatHistory",
-      size,
-    }
-  }
-
-  // Handle skill mentions (simpler format: skill:name)
-  if (isSkill) {
-    const skillName = id.slice(MENTION_PREFIXES.SKILL.length)
-    return {
-      id,
-      label: skillName,
-      path: "",
-      repository: "",
-      type: "skill",
-    }
-  }
-
-  // Handle agent mentions (simpler format: agent:name)
-  if (isAgent) {
-    const agentName = id.slice(MENTION_PREFIXES.AGENT.length)
-    return {
-      id,
-      label: agentName,
-      path: "",
-      repository: "",
-      type: "agent",
-    }
-  }
-
-  // Handle tool mentions: tool:servername (MCP server) or tool:mcp__server__toolname (individual tool)
-  if (isTool) {
-    const toolPath = id.slice(MENTION_PREFIXES.TOOL.length)
-    if (toolPath.startsWith("mcp__")) {
-      const parts = toolPath.split("__")
-      const toolName = parts.length >= 3 ? parts.slice(2).join("__") : toolPath
-      const displayName = toolName
-        .replace(/_/g, " ")
-        .replace(/\b\w/g, (c) => c.toUpperCase())
-        .trim()
-      return {
-        id,
-        label: displayName,
-        path: toolPath,
-        repository: "",
-        type: "tool",
-      }
-    }
-    return {
-      id,
-      label: toolPath,
-      path: toolPath,
-      repository: "",
-      type: "tool",
-    }
-  }
-
-  const parts = id.split(":")
-  if (parts.length < 3) return null
-
-  const type = parts[0] as "file" | "folder"
-  const repository = parts[1]
-  const path = parts.slice(2).join(":") // Handle paths with colons
-  const name = path.split("/").pop() || path
-
-  return {
-    id,
-    label: name,
-    path,
-    repository,
-    type,
-  }
-}
 
 /**
  * Component to render a single file/folder/skill/agent/tool/quote/diff mention chip (matching canvas style)
@@ -375,7 +164,7 @@ function MentionChip({ mention }: { mention: ParsedMention }) {
       : mention.type === "tool"
         ? OriginalMCPIcon
         : mention.type === "folder"
-          ? FolderOpenIcon
+          ? FolderClosedIcon
           : (getFileIconByExtension(mention.label) ?? UnknownFileIcon)
 
   const title = mention.type === "skill"
@@ -483,76 +272,7 @@ export function RenderFileMentions({
  * Extract all file/folder mentions from text
  * Returns array of parsed mentions
  */
-export function extractFileMentions(text: string): ParsedMention[] {
-  const mentions: ParsedMention[] = []
-  const regex = /@\[([^\]]+)\]/g
-  let match: RegExpExecArray | null
 
-  while ((match = regex.exec(text)) !== null) {
-    const mention = parseMention(match[1])
-    if (mention) {
-      mentions.push(mention)
-    }
-  }
-
-  return mentions
-}
-
-/**
- * Check if text contains any file, folder, skill, agent, tool, quote, diff, or pasted mentions
- */
-export function hasFileMentions(text: string): boolean {
-  return /@\[(file|folder|skill|agent|tool|quote|diff|pasted|chatHistory):[^\]]+\]/.test(text)
-}
-
-/**
- * Extract quote/diff/pasted mentions from text and return them separately with cleaned text
- * Used for rendering these mentions as blocks above the message bubble
- */
-export function extractTextMentions(text: string): {
-  textMentions: ParsedMention[]
-  cleanedText: string
-} {
-  const textMentions: ParsedMention[] = []
-  let cleanedText = text
-
-  const regex = /@\[([^\]]+)\]/g
-  let match: RegExpExecArray | null
-  const mentionsToRemove: string[] = []
-
-  while ((match = regex.exec(text)) !== null) {
-    const id = match[1]
-    if (
-      id.startsWith(MENTION_PREFIXES.QUOTE) ||
-      id.startsWith(MENTION_PREFIXES.DIFF) ||
-      id.startsWith(MENTION_PREFIXES.PASTED) ||
-      id.startsWith(MENTION_PREFIXES.CHAT_HISTORY)
-    ) {
-      const parsed = parseMention(id)
-      if (parsed) {
-        textMentions.push(parsed)
-        mentionsToRemove.push(match[0])
-      }
-    }
-  }
-
-  // Remove the mentions from text
-  for (const mentionStr of mentionsToRemove) {
-    cleanedText = cleanedText.replace(mentionStr, "")
-  }
-
-  // Clean up extra whitespace but preserve newlines
-  // Only collapse multiple spaces (not newlines) into one space
-  // and trim leading/trailing whitespace from each line
-  cleanedText = cleanedText
-    .split("\n")
-    .map(line => line.trim())
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n") // Collapse 3+ newlines to 2
-    .trim()
-
-  return { textMentions, cleanedText }
-}
 
 /**
  * Format bytes to human readable size
@@ -565,11 +285,60 @@ function formatSize(bytes: number): string {
 }
 
 /**
- * Component to render a single text mention block (quote/diff/pasted)
+ * Component to render a single text mention block (file/folder/quote/diff/pasted)
  * Used for displaying above message bubbles, not inline
  */
 export function TextMentionBlock({ mention }: { mention: ParsedMention }) {
-  if (mention.type !== "quote" && mention.type !== "diff" && mention.type !== "pasted" && mention.type !== "chatHistory") return null
+  const onOpenFile = useContext(FileOpenContext)
+
+  if (mention.type !== "file" && mention.type !== "quote" && mention.type !== "diff" && mention.type !== "pasted" && mention.type !== "chatHistory" && mention.type !== "folder") return null
+
+  // File mentions render in the upload-card style: icon block on the left,
+  // file name on the right (same look as uploaded file attachments)
+  if (mention.type === "file") {
+    const FileIcon = getFileIconByExtension(mention.label) ?? UnknownFileIcon
+    const isClickable = !!onOpenFile
+
+    return (
+      <div
+        className={`flex items-center gap-2 pl-1 pr-2 py-1 rounded-lg bg-muted/50 min-w-[120px] max-w-[200px]${isClickable ? " cursor-pointer hover:bg-muted transition-colors" : " cursor-default"}`}
+        title={`${mention.repository}:${mention.path}`}
+        onClick={isClickable ? () => onOpenFile?.(mention.path) : undefined}
+      >
+        <div className="flex items-center justify-center w-8 self-stretch rounded-md bg-muted shrink-0">
+          <FileIcon className="size-4 text-muted-foreground" />
+        </div>
+        <div className="flex flex-col min-w-0">
+          <span className="text-sm font-medium text-foreground truncate">
+            {mention.label}
+          </span>
+          <span className="text-xs text-muted-foreground truncate">
+            {mention.path}
+          </span>
+        </div>
+      </div>
+    )
+  }
+
+  // Folder mentions render in the upload-card style: icon block on the left,
+  // folder name on the right (same look as uploaded file attachments)
+  if (mention.type === "folder") {
+    return (
+      <div className="flex items-center gap-2 pl-1 pr-2 py-1 rounded-lg bg-muted/50 cursor-default min-w-[120px] max-w-[200px]">
+        <div className="flex items-center justify-center w-8 self-stretch rounded-md bg-muted shrink-0">
+          <FolderClosedIcon className="size-4 text-muted-foreground" />
+        </div>
+        <div className="flex flex-col min-w-0">
+          <span className="text-sm font-medium text-foreground truncate">
+            {mention.label}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            Folder
+          </span>
+        </div>
+      </div>
+    )
+  }
 
   const displayTitle = mention.type === "chatHistory"
     ? (mention.label?.trim() || "Previous Chat")
@@ -618,7 +387,7 @@ export function TextMentionBlock({ mention }: { mention: ParsedMention }) {
  * Component to render multiple text mention blocks
  */
 export function TextMentionBlocks({ mentions }: { mentions: ParsedMention[] }) {
-  const textMentions = mentions.filter(m => m.type === "quote" || m.type === "diff" || m.type === "pasted" || m.type === "chatHistory")
+  const textMentions = mentions.filter(m => m.type === "file" || m.type === "quote" || m.type === "diff" || m.type === "pasted" || m.type === "chatHistory" || m.type === "folder")
   if (textMentions.length === 0) return null
 
   return (

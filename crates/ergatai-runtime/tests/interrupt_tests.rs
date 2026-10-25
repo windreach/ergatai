@@ -61,6 +61,7 @@ async fn test_interrupt_with_images() {
             "Test interrupt with image",
             &images,
             "test-message-id",
+            None,
         )
         .await;
 

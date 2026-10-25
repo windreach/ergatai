@@ -1908,8 +1908,19 @@ export const ergataiRouter = router({
             }),
           )
           .optional(),
+        files: z
+          .array(
+            z.object({
+              base64Data: z.string(),
+              mediaType: z.string().optional(),
+              filename: z.string(),
+              size: z.number().optional(),
+            }),
+          )
+          .optional(),
         waitForStream: z.boolean().optional(),
         clientRequestId: z.string().optional(),  // Frontend-generated ID for optimistic → durable replacement
+        interrupt: z.boolean().optional(),  // Insert at safe point instead of FIFO queue
       }),
     )
     .mutation(async ({ input }) => {
@@ -1923,8 +1934,10 @@ export const ergataiRouter = router({
             sender_agent_id: input.senderAgentId,
             sender_agent_name: input.senderAgentName,
             images: input.images ?? [],
+            files: input.files ?? [],
             wait_for_stream: input.waitForStream ?? true,
             client_request_id: input.clientRequestId,
+            interrupt: input.interrupt ?? false,
           }),
         },
       )

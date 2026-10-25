@@ -271,6 +271,14 @@ export const AgentUserMessageBubble = memo(function AgentUserMessageBubble({
                 if (codeCount > 0) {
                   parts.push(codeCount === 1 ? "code selection" : `${codeCount} code selections`)
                 }
+                const fileCount = textMentions.filter(m => m.type === "file").length
+                const folderCount = textMentions.filter(m => m.type === "folder").length
+                if (fileCount > 0) {
+                  parts.push(fileCount === 1 ? "file" : `${fileCount} files`)
+                }
+                if (folderCount > 0) {
+                  parts.push(folderCount === 1 ? "folder" : `${folderCount} folders`)
+                }
 
                 return `Using ${parts.join(", ")}`
               })()}

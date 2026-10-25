@@ -1,5 +1,5 @@
 import { clearMessageStateCacheByMessageIds } from "../main/assistant-message-item"
-import { clearTextPartStoreByMessageIds } from "../main/isolated-text-part"
+import { clearTextPartStoreByMessageIds } from "../main/text-part-store"
 import { clearToolStateCachesByToolCallIds } from "../ui/agent-tool-utils"
 import { clearConversationCaches } from "./message-store"
 

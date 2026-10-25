@@ -1539,7 +1539,9 @@ mod tests {
     #[tokio::test]
     async fn pty_transport_allocates_controlling_terminal_and_resizes() {
         let mut command = tokio::process::Command::new("/bin/bash");
-        command.args(["-c", "if [ -t 0 ]; then stty size; fi"]);
+        // Sleep briefly to give the test time to call resize() before stty runs.
+        // Without this, the process exits before resize() takes effect.
+        command.args(["-c", "sleep 0.2; if [ -t 0 ]; then stty size; fi"]);
         let mut spawned = spawn_terminal(command, TerminalTransport::Pty).unwrap();
 
         spawned.executor.resize(101, 31).await.unwrap();

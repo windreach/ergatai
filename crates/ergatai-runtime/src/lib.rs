@@ -64,6 +64,7 @@ pub mod backend;
 pub mod backends;
 
 // Output publisher trait
+pub mod interrupt_event_publisher;
 pub mod output_publisher;
 
 // Runtime facade
@@ -140,6 +141,6 @@ pub use runtime::{
 pub use session_store::{SessionRecord, SessionStore};
 pub use suspend_store::{SuspendReason, SuspendStore, SuspendedAgentRecord};
 pub use types::{
-    AgentHandle, AgentImage, AgentInfo, BackendCapabilities, ResourceLimits, SessionInfo,
-    WaitResult, WorkspaceHandle, WorkspaceSpec,
+    AgentFile, AgentHandle, AgentImage, AgentInfo, BackendCapabilities, ResourceLimits,
+    SessionInfo, WaitResult, WorkspaceHandle, WorkspaceSpec,
 };

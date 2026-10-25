@@ -325,6 +325,35 @@ pub struct AgentInterrupted {
     pub conversation_id: Option<ConversationId>,
 }
 
+/// Event published when an interrupt message is actually inserted at a safe point.
+///
+/// This is different from `AgentInterrupted` which is published immediately when
+/// the interrupt request is received. `AgentMessageInserted` is published after
+/// the backend has waited for a safe point and actually inserted the message.
+///
+/// Flow:
+/// 1. Frontend calls interrupt API → Backend receives request
+/// 2. Backend waits for safe point (thinking/tool completion)
+/// 3. Backend inserts interrupt message → Publish `AgentMessageInserted`
+/// 4. Frontend receives event → Removes message from queue
+///
+/// Published to: `ergatai.agent.message_inserted.{agent_id}`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMessageInserted {
+    /// Agent ID that processed the interrupt
+    pub agent_id: AgentId,
+    /// Message ID of the inserted message
+    pub message_id: String,
+    /// Timestamp when the message was inserted (Unix epoch seconds)
+    pub inserted_at: u64,
+    /// Conversation ID (if applicable)
+    #[serde(default)]
+    pub conversation_id: Option<ConversationId>,
+    /// Client request ID (for frontend queue matching)
+    #[serde(default)]
+    pub client_request_id: Option<String>,
+}
+
 /// Conversation message: published to conversation subject for SSE streaming
 ///
 /// Fire-and-forget via core NATS (no JetStream persistence).

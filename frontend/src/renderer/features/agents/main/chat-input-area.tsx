@@ -107,6 +107,29 @@ import { getResolvedHotkey } from "../../../lib/hotkeys"
 import { customHotkeysAtom } from "../../../lib/atoms"
 import { toast } from "sonner"
 
+// Text file extensions that should have content read and cached for agent
+const TEXT_FILE_EXTENSIONS = new Set([
+  // Code
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+  ".py", ".rb", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".cpp", ".h", ".hpp",
+  ".cs", ".php", ".lua", ".r", ".m", ".mm", ".scala", ".clj", ".ex", ".exs",
+  ".hs", ".elm", ".erl", ".fs", ".fsx", ".ml", ".v", ".vhdl", ".zig",
+  // Config/Data
+  ".json", ".yaml", ".yml", ".toml", ".xml", ".ini", ".env", ".conf", ".cfg",
+  ".properties", ".plist",
+  // Web
+  ".html", ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".astro",
+  // Documentation
+  ".md", ".mdx", ".rst", ".txt", ".text",
+  // Graphics (text-based)
+  ".svg",
+  // Shell/Scripts
+  ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd",
+  // Other
+  ".sql", ".graphql", ".gql", ".prisma", ".dockerfile", ".makefile",
+  ".gitignore", ".gitattributes", ".editorconfig", ".eslintrc", ".prettierrc",
+])
+
 export interface ChatInputAreaProps {
   // Editor ref - passed from parent for external access
   editorRef: React.RefObject<AgentsMentionsEditorHandle | null>
@@ -126,6 +149,7 @@ export interface ChatInputAreaProps {
   images: UploadedImage[]
   files: UploadedFile[]
   onAddAttachments: (files: File[]) => void
+  onAddFolder?: (folderName: string, filePaths: string[]) => void
   onRemoveImage: (id: string) => void
   onRemoveFile: (id: string) => void
   isUploading: boolean
@@ -139,7 +163,7 @@ export interface ChatInputAreaProps {
   pastedTexts?: PastedTextFile[]
   onAddPastedText?: (text: string) => Promise<void>
   onRemovePastedText?: (id: string) => void
-  // Callback to cache file content for dropped text files (content added to prompt on send)
+  // Callback to cache file content for sending (maps mentionId -> content)
   onCacheFileContent?: (mentionId: string, content: string) => void
   // Pre-computed token data for context indicator (avoids passing messages array)
   messageTokenData: MessageTokenData
@@ -226,7 +250,6 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
     prevProps.onRemoveTextContext !== nextProps.onRemoveTextContext ||
     prevProps.onAddPastedText !== nextProps.onAddPastedText ||
     prevProps.onRemovePastedText !== nextProps.onRemovePastedText ||
-    prevProps.onCacheFileContent !== nextProps.onCacheFileContent ||
     prevProps.onInputContentChange !== nextProps.onInputContentChange ||
     prevProps.onSubmitWithQuestionAnswer !== nextProps.onSubmitWithQuestionAnswer ||
     prevProps.onProviderChange !== nextProps.onProviderChange ||
@@ -360,6 +383,7 @@ export const ChatInputArea = memo(function ChatInputArea({
   images,
   files,
   onAddAttachments,
+  onAddFolder,
   onRemoveImage,
   onRemoveFile,
   isUploading,
@@ -749,6 +773,7 @@ export const ChatInputArea = memo(function ChatInputArea({
   const currentConversationIdRef = useRef<string>(conversationId)
   const currentChatIdRef = useRef<string | null>(parentChatId)
   const currentDraftTextRef = useRef<string>("")
+  const folderInputRef = useRef<HTMLInputElement>(null)
   currentConversationIdRef.current = conversationId
   currentChatIdRef.current = parentChatId
 
@@ -1085,121 +1110,216 @@ export const ChatInputArea = memo(function ChatInputArea({
     setIsDragOver(false)
   }, [])
 
-  // Text file extensions that should have content read and attached
-  const TEXT_FILE_EXTENSIONS = new Set([
-    // Code
-    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
-    ".py", ".rb", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".cpp", ".h", ".hpp",
-    ".cs", ".php", ".lua", ".r", ".m", ".mm", ".scala", ".clj", ".ex", ".exs",
-    ".hs", ".elm", ".erl", ".fs", ".fsx", ".ml", ".v", ".vhdl", ".zig",
-    // Config/Data
-    ".json", ".yaml", ".yml", ".toml", ".xml", ".ini", ".env", ".conf", ".cfg",
-    ".properties", ".plist",
-    // Web
-    ".html", ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".astro",
-    // Documentation
-    ".md", ".mdx", ".rst", ".txt", ".text",
-    // Graphics (text-based)
-    ".svg",
-    // Shell/Scripts
-    ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd",
-    // Other
-    ".sql", ".graphql", ".gql", ".prisma", ".dockerfile", ".makefile",
-    ".gitignore", ".gitattributes", ".editorconfig", ".eslintrc", ".prettierrc",
-  ])
 
-  const MAX_FILE_SIZE_FOR_CONTENT = 100 * 1024 // 100KB - files larger than this only get path mention
 
-  // Image extensions that should be handled as attachments (base64)
-  const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"])
+  // Pick a folder via the native file input with webkitdirectory
+  const handlePickFolder = useCallback(() => {
+    folderInputRef.current?.click()
+  }, [])
 
-  const trpcUtils = trpc.useUtils()
+  // Handle folder selection from the file input
+  // Creates a folder attachment card instead of expanding all files
+  const handleFolderSelected = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const inputFiles = Array.from(e.target.files || [])
+    if (inputFiles.length === 0) return
+
+    // Extract folder name from the first file's relative path
+    const firstFile = inputFiles[0]
+    const relativePath = (firstFile as File & { webkitRelativePath?: string }).webkitRelativePath || ""
+    const folderName = relativePath.split("/")[0] || firstFile.name
+
+    // Collect all file paths in the folder
+    const filePaths = inputFiles.map(f =>
+      (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name
+    )
+
+    // Create a folder attachment card
+    if (onAddFolder) {
+      onAddFolder(folderName, filePaths)
+    } else {
+      // Fallback: add all files as attachments
+      onAddAttachments(inputFiles)
+    }
+
+    // Reset the input so it can be used again
+    e.target.value = ""
+
+    // Focus the editor
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        editorRef.current?.focus()
+      })
+    })
+  }, [editorRef, onAddAttachments, onAddFolder])
 
   const handleDrop = useCallback(
     async (e: React.DragEvent) => {
       e.preventDefault()
       setIsDragOver(false)
-      const droppedFiles = Array.from(e.dataTransfer.files)
 
-      // Separate images from other files
-      const imageFiles: File[] = []
-      const otherFiles: File[] = []
+      // Detect directories (webkitGetAsEntry is available in Chromium/Electron).
+      // Dropped folders become a single folder mention chip (like file chips
+      // but with a folder icon); files continue through existing logic.
+      const items = Array.from(e.dataTransfer.items)
+      const rawFiles = Array.from(e.dataTransfer.files)
+      const droppedFiles: File[] = []
+      const droppedFolderPaths: string[] = []
 
-      for (const file of droppedFiles) {
-        const ext = file.name.includes(".") ? "." + file.name.split(".").pop()?.toLowerCase() : ""
-        if (IMAGE_EXTENSIONS.has(ext)) {
-          imageFiles.push(file)
-        } else {
-          otherFiles.push(file)
+      for (let i = 0; i < items.length; i++) {
+        const entry = items[i]?.webkitGetAsEntry?.()
+        const file = rawFiles[i]
+        if (entry?.isDirectory && file) {
+          const path =
+            window.webUtils?.getPathForFile?.(file) ||
+            (file as File & { path?: string }).path ||
+            entry.name
+          droppedFolderPaths.push(path)
+        } else if (file) {
+          droppedFiles.push(file)
         }
       }
 
-      // Handle images via existing attachment system (base64)
-      if (imageFiles.length > 0) {
-        onAddAttachments(imageFiles)
-      }
+      // Helper function to recursively read all files from a directory entry
+      const readDirectoryFiles = (entry: FileSystemDirectoryEntry): Promise<File[]> => {
+        return new Promise((resolve, reject) => {
+          const files: File[] = []
+          const reader = entry.createReader()
 
-      // Process other files - for text files, read content and add as file mention
-      for (const file of otherFiles) {
-        // Get file path using Electron's webUtils API (more reliable than file.path)
-        const filePath: string | undefined = window.webUtils?.getPathForFile?.(file) || (file as File & { path?: string }).path
+          const readEntries = () => {
+            reader.readEntries(async (entries) => {
+              if (entries.length === 0) {
+                resolve(files)
+                return
+              }
 
-        let mentionId: string
-        let mentionPath: string
+              for (const ent of entries) {
+                if (ent.isFile) {
+                  const fileEntry = ent as FileSystemFileEntry
+                  try {
+                    const file = await new Promise<File>((res, rej) => {
+                      fileEntry.file(res, rej)
+                    })
+                    files.push(file)
+                  } catch (err) {
+                    console.error(`[handleDrop] Failed to read file:`, err)
+                  }
+                } else if (ent.isDirectory) {
+                  const subFiles = await readDirectoryFiles(ent as FileSystemDirectoryEntry)
+                  files.push(...subFiles)
+                }
+              }
 
-        if (projectPath && filePath && filePath.startsWith(projectPath)) {
-          // File is inside project - use relative path
-          const relativePath = filePath.slice(projectPath.length).replace(/^\//, "")
-          mentionId = `file:local:${relativePath}`
-          mentionPath = relativePath
-        } else if (filePath) {
-          // External file - use absolute path
-          mentionId = `file:external:${filePath}`
-          mentionPath = filePath
-        } else {
-          // No path available (shouldn't happen in Electron) - use filename
-          mentionId = `file:external:${file.name}`
-          mentionPath = file.name
-        }
-
-        const fileName = file.name
-        const ext = fileName.includes(".") ? "." + fileName.split(".").pop()?.toLowerCase() : ""
-        // Files without extension are likely directories or special files - skip content reading
-        const hasExtension = ext !== ""
-        const isTextFile = hasExtension && TEXT_FILE_EXTENSIONS.has(ext)
-        const isSmallEnough = file.size <= MAX_FILE_SIZE_FOR_CONTENT
-
-        // For text files that are small enough, read content and cache it
-        // Show file chip, content will be added to prompt on send
-        if (isTextFile && isSmallEnough && filePath) {
-          // Add file chip for visual representation
-          editorRef.current?.insertMention({
-            id: mentionId,
-            label: fileName,
-            path: mentionPath,
-            repository: "local",
-            type: "file",
-          })
-
-          // Read and cache content (will be added to prompt on send)
-          try {
-            const content = await trpcUtils.files.readFile.fetch({ filePath })
-            onCacheFileContent?.(mentionId, content)
-          } catch (err) {
-            // If reading fails, chip is still there - agent can try to read via path
-            console.error(`[handleDrop] Failed to read file content ${filePath}:`, err)
+              // Continue reading (readEntries returns up to 100 entries at a time)
+              readEntries()
+            }, reject)
           }
-        } else {
-          // For binary files, large files - add as mention only
-          // mentionPath contains full absolute path for external files
-          editorRef.current?.insertMention({
-            id: mentionId,
-            label: fileName,
-            path: mentionPath,
-            repository: "local",
-            type: "file",
-          })
+
+          readEntries()
+        })
+      }
+
+      // Separate folders from individual files
+      const droppedFolders: { name: string; files: File[] }[] = []
+      const droppedIndividualFiles: File[] = []
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        if (!item) continue
+
+        const entry = item.webkitGetAsEntry?.()
+        if (entry?.isDirectory) {
+          // It's a folder - read all files and store as folder card
+          try {
+            const files = await readDirectoryFiles(entry as FileSystemDirectoryEntry)
+            const folderName = entry.name
+            droppedFolders.push({ name: folderName, files })
+          } catch (err) {
+            console.error(`[handleDrop] Failed to read directory:`, err)
+          }
+        } else if (entry?.isFile) {
+          // It's a regular file
+          const file = item.getAsFile()
+          if (file) {
+            droppedIndividualFiles.push(file)
+          }
         }
+      }
+
+      // Handle individual files (non-folder drops)
+      if (droppedIndividualFiles.length > 0) {
+        // Cache text file content for agent
+        for (const file of droppedIndividualFiles) {
+          const ext = file.name.includes(".") ? "." + file.name.split(".").pop()?.toLowerCase() : ""
+          const hasExtension = ext !== ""
+          const isTextFile = hasExtension && TEXT_FILE_EXTENSIONS.has(ext)
+          const isSmallEnough = file.size <= 100 * 1024 // 100KB
+
+          if (isTextFile && isSmallEnough && onCacheFileContent) {
+            const filePath = window.webUtils?.getPathForFile?.(file) || (file as File & { path?: string }).path
+            let mentionId: string
+            if (projectPath && filePath && filePath.startsWith(projectPath)) {
+              const relativePath = filePath.slice(projectPath.length).replace(/^\//, "")
+              mentionId = `file:local:${relativePath}`
+            } else if (filePath) {
+              mentionId = `file:external:${filePath}`
+            } else {
+              mentionId = `file:external:${file.name}`
+            }
+
+            // Read and cache content asynchronously (don't block attachment UI)
+            file.text().then(content => {
+              onCacheFileContent(mentionId, content)
+            }).catch(err => {
+              console.error(`[handleDrop] Failed to read file content ${filePath}:`, err)
+            })
+          }
+        }
+
+        onAddAttachments(droppedIndividualFiles)
+      }
+
+      // Handle folders - create folder cards
+      if (droppedFolders.length > 0 && onAddFolder) {
+        for (const folder of droppedFolders) {
+          // Extract file paths relative to the folder
+          const filePaths = folder.files.map(f => {
+            // For dropped folders, we don't have webkitRelativePath, so use file.name
+            // The folder name is already captured in folder.name
+            return f.name
+          })
+          onAddFolder(folder.name, filePaths)
+
+          // Cache text file content for files inside the folder
+          for (const file of folder.files) {
+            const ext = file.name.includes(".") ? "." + file.name.split(".").pop()?.toLowerCase() : ""
+            const hasExtension = ext !== ""
+            const isTextFile = hasExtension && TEXT_FILE_EXTENSIONS.has(ext)
+            const isSmallEnough = file.size <= 100 * 1024 // 100KB
+
+            if (isTextFile && isSmallEnough && onCacheFileContent) {
+              const filePath = window.webUtils?.getPathForFile?.(file) || (file as File & { path?: string }).path
+              let mentionId: string
+              if (projectPath && filePath && filePath.startsWith(projectPath)) {
+                const relativePath = filePath.slice(projectPath.length).replace(/^\//, "")
+                mentionId = `file:local:${relativePath}`
+              } else if (filePath) {
+                mentionId = `file:external:${filePath}`
+              } else {
+                mentionId = `file:external:${file.name}`
+              }
+
+              file.text().then(content => {
+                onCacheFileContent(mentionId, content)
+              }).catch(err => {
+                console.error(`[handleDrop] Failed to read file content ${filePath}:`, err)
+              })
+            }
+          }
+        }
+      } else if (droppedFolders.length > 0) {
+        // Fallback: if onAddFolder is not available, expand folders into individual files
+        const allFolderFiles = droppedFolders.flatMap(f => f.files)
+        onAddAttachments(allFolderFiles)
       }
 
       // Focus after state update - use double rAF to wait for React render
@@ -1209,7 +1329,7 @@ export const ChatInputArea = memo(function ChatInputArea({
         })
       })
     },
-    [editorRef, projectPath, onCacheFileContent, onAddAttachments, trpcUtils],
+    [editorRef, projectPath, onAddAttachments, onAddFolder, onCacheFileContent],
   )
 
   return (
@@ -1287,6 +1407,8 @@ export const ChatInputArea = memo(function ChatInputArea({
                         size={f.size}
                         isLoading={f.isLoading}
                         onRemove={() => onRemoveFile(f.id)}
+                        isFolder={f.isFolder}
+                        folderFiles={f.folderFiles}
                       />
                     ))}
                     {textContexts.map((tc) => (
@@ -1445,7 +1567,14 @@ export const ChatInputArea = memo(function ChatInputArea({
                       e.target.value = ""
                     }}
                   />
-
+                  {/* Hidden folder input - accepts folders */}
+                  <input
+                    type="file"
+                    ref={folderInputRef}
+                    hidden
+                    {...({ webkitdirectory: "", directory: "" } as any)}
+                    onChange={handleFolderSelected}
+                  />
                   {/* Voice wave indicator / transcribing state / normal toolbar */}
                   {isVoiceRecording ? (
                     <VoiceWaveIndicator isRecording={isVoiceRecording} audioLevel={voiceAudioLevel} />
@@ -1464,15 +1593,36 @@ export const ChatInputArea = memo(function ChatInputArea({
                       />
 
                       {/* Attachment button */}
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 rounded-sm outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70"
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={images.length >= 5 && files.length >= 10}
-                      >
-                        <AttachIcon className="h-4 w-4" />
-                      </Button>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 rounded-sm outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70"
+                            disabled={images.length >= 5 && files.length >= 10}
+                          >
+                            <AttachIcon className="h-4 w-4" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent align="end" className="w-auto p-1">
+                          <button
+                            type="button"
+                            className="flex w-full items-center gap-2 rounded-sm px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+                            onClick={() => {
+                              fileInputRef.current?.click()
+                            }}
+                          >
+                            上传文件
+                          </button>
+                          <button
+                            type="button"
+                            className="flex w-full items-center gap-2 rounded-sm px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+                            onClick={handlePickFolder}
+                          >
+                            上传文件夹
+                          </button>
+                        </PopoverContent>
+                      </Popover>
                     </>
                   )}
 

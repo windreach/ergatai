@@ -2844,6 +2844,11 @@ pub struct PromptAgentRequest {
     #[serde(default)]
     #[schema(value_type = Vec<Object>)]
     pub images: Vec<ergatai_runtime::AgentImage>,
+    /// Optional file attachments decoded and saved to disk; the agent
+    /// receives file paths so it can read them with its own file tools.
+    #[serde(default)]
+    #[schema(value_type = Vec<Object>)]
+    pub files: Vec<ergatai_runtime::AgentFile>,
     /// Server-side dispatchers can execute immediately; chat transports wait
     /// for their paired SSE stream to subscribe first.
     #[serde(default = "default_true")]
@@ -2910,6 +2915,22 @@ pub async fn prompt_agent(
                 .into_response();
         }
     }
+
+    // Validate file attachments early for better error messages
+    // The actual saving is done by the service layer to avoid duplication
+    for (i, file) in body.files.iter().enumerate() {
+        if let Err(reason) = file.validate() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid file attachment at index {}: {}", i, reason),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    let message = body.message;
 
     // Resolve the agent ID to a runtime ID (handles profile names, ergatai_agent_id, etc.)
     let runtime_id = match crate::services::agent_service::resolve_to_runtime_id(&id).await {
@@ -3068,7 +3089,7 @@ pub async fn prompt_agent(
                     match acp_backend
                         .inject_interrupt(
                             &runtime_id,
-                            &body.message,
+                            &message,
                             &body
                                 .images
                                 .into_iter()
@@ -3079,6 +3100,7 @@ pub async fn prompt_agent(
                                 })
                                 .collect::<Vec<_>>(),
                             &prompt_id,
+                            body.client_request_id.clone(),
                         )
                         .await
                     {
@@ -3186,7 +3208,7 @@ pub async fn prompt_agent(
                 let payload = ergatai_nats::AgentMessagePayload {
                     from_agent: "user".to_string(),
                     to_agent: runtime_id.clone(),
-                    content: body.message.clone(),
+                    content: message.clone(),
                     timestamp: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs())
@@ -3379,8 +3401,9 @@ pub async fn prompt_agent(
 
         match crate::services::agent_service::prompt_agent_with_images(
             &runtime_id,
-            &body.message,
+            &message,
             body.images,
+            body.files,
             Some(conversation_id_str.clone()),
         )
         .await
@@ -3893,6 +3916,10 @@ pub async fn stream_agent_output(
             return crate::http_error::internal(&e, "agent_output_stream_subject").into_response()
         }
     };
+
+    // Also subscribe to message_inserted events for interrupt queue management
+    let message_inserted_subject = format!("ergatai.agent.message_inserted.{}", agent_id);
+
     let subscriber = match nats_connection.subscribe(&subject).await {
         Ok(subscriber) => subscriber,
         Err(e) => {
@@ -3900,25 +3927,63 @@ pub async fn stream_agent_output(
         }
     };
 
-    let output_stream = stream::unfold(subscriber, move |mut subscriber| async move {
-        loop {
-            match subscriber.next().await {
-                Some(message) => {
-                    let data = String::from_utf8_lossy(&message.payload).into_owned();
-                    // The frontend validates these payloads as AgentOutputEvent;
-                    // skip malformed internal messages instead of breaking the stream.
-                    if serde_json::from_str::<serde_json::Value>(&data).is_err() {
-                        continue;
-                    }
-                    return Some((
-                        Ok::<Event, Infallible>(Event::default().data(data)),
-                        subscriber,
-                    ));
-                }
-                None => return None,
+    let message_inserted_subscriber =
+        match nats_connection.subscribe(&message_inserted_subject).await {
+            Ok(subscriber) => Some(subscriber),
+            Err(e) => {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    error = %e,
+                    "Failed to subscribe to message_inserted subject (non-fatal)"
+                );
+                // Continue without message_inserted subscription
+                None
             }
+        };
+
+    // Convert subscribers to streams
+    let conversation_stream = stream::unfold(subscriber, |mut sub| async move {
+        sub.next().await.map(|msg| (msg, sub))
+    })
+    .map(|msg| {
+        let data = String::from_utf8_lossy(&msg.payload).into_owned();
+        if serde_json::from_str::<serde_json::Value>(&data).is_err() {
+            None
+        } else {
+            Some(Ok::<Event, Infallible>(
+                Event::default().event("message").data(data),
+            ))
         }
-    });
+    })
+    .filter_map(|opt| async move { opt });
+
+    let message_inserted_stream = if let Some(sub) = message_inserted_subscriber {
+        let s = stream::unfold(sub, |mut sub| async move {
+            sub.next().await.map(|msg| (msg, sub))
+        })
+        .map(|msg| {
+            let data = String::from_utf8_lossy(&msg.payload).into_owned();
+            if serde_json::from_str::<serde_json::Value>(&data).is_err() {
+                None
+            } else {
+                Some(Ok::<Event, Infallible>(
+                    Event::default().event("message_inserted").data(data),
+                ))
+            }
+        })
+        .filter_map(|opt| async move { opt })
+        .boxed();
+        Some(s)
+    } else {
+        None
+    };
+
+    // Merge the two streams
+    let output_stream = if let Some(inserted_stream) = message_inserted_stream {
+        stream::select(conversation_stream, inserted_stream).boxed()
+    } else {
+        conversation_stream.boxed()
+    };
 
     let boxed_stream: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
         Box::pin(output_stream);

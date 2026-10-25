@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { trpc, trpcClient as vanillaTrpcClient } from "../lib/trpc"
 import { ipcLink } from "../lib/ipc-link"
@@ -56,6 +56,18 @@ export function TRPCProvider({ children }: TRPCProviderProps) {
     }
     return client
   })
+
+  // Cleanup trpc client on unmount to prevent IPC listener leaks during HMR
+  useEffect(() => {
+    return () => {
+      // trpc-electron's ipcLink registers IPC listeners that need to be cleaned up.
+      // When HMR reloads the module, the old client's listeners accumulate if not cleaned.
+      // Note: trpc client doesn't expose a destroy() method, but unsubscribing all
+      // queries/mutations will cause ipcLink to remove its IPC listeners.
+      queryClient.clear()
+      globalQueryClient = null
+    }
+  }, [queryClient])
 
   return (
     <trpc.Provider client={trpcClient} queryClient={queryClient}>

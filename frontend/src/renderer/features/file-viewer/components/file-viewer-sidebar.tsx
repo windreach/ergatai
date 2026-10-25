@@ -14,7 +14,7 @@ import {
   Check,
   X,
 } from "lucide-react"
-import { getFileIconByExtension } from "../../agents/mentions/agents-file-mention"
+import { getFileIconByExtension } from "../../agents/mentions/file-icon-utils"
 import {
   IconCloseSidebarRight,
   IconSidePeek,

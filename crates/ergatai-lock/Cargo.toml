@@ -26,7 +26,6 @@ futures-util.workspace = true
 libc.workspace = true
 tokio-util.workspace = true
 parking_lot.workspace = true
-async-trait.workspace = true
 
 [features]
 default = []

@@ -145,8 +145,8 @@ function createMessageStore(): MessageStore {
   }
 }
 
-// Context for the store
-const MessageStoreContext = createContext<MessageStore | null>(null)
+// Context for the store - exported for use in use-all-messages.ts
+export const MessageStoreContext = createContext<MessageStore | null>(null)
 
 // Hook to sync messages to global store - NOT USED, keeping for reference
 export function useMessageStoreSync(_messages: Message[], _status: string) {
@@ -603,29 +603,6 @@ export const MemoizedAssistantMessages = memo(function MemoizedAssistantMessages
 // HOOKS FOR ISOLATED RENDERING
 // ============================================================================
 
-// Hook to get ALL messages (user + assistant) with stable references
-export function useAllMessages() {
-  const store = useContext(MessageStoreContext)
-  if (!store) throw new Error("useAllMessages must be used within MessageStoreProvider")
-
-  const cacheRef = useRef<Message[]>([])
-
-  const subscribe = useCallback((onStoreChange: () => void) => {
-    return store.subscribe(onStoreChange)
-  }, [store])
-
-  const getSnapshot = useCallback(() => {
-    // Return cached array if messages haven't changed
-    if (cacheRef.current === store.messages) {
-      return cacheRef.current
-    }
-    cacheRef.current = store.messages
-    return cacheRef.current
-  }, [store])
-
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
-}
-
 // Hook to get message groups - computed from store, only updates when messages change
 // Returns stable references for groups that haven't changed
 interface MessageGroup {
@@ -1073,6 +1050,14 @@ export const SimpleIsolatedGroup = memo(function SimpleIsolatedGroup({
                   }
                   if (codeCount > 0) {
                     parts.push(codeCount === 1 ? "code selection" : `${codeCount} code selections`)
+                  }
+                  const fileCount = textMentions.filter(m => m.type === "file").length
+                  const folderCount = textMentions.filter(m => m.type === "folder").length
+                  if (fileCount > 0) {
+                    parts.push(fileCount === 1 ? "file" : `${fileCount} files`)
+                  }
+                  if (folderCount > 0) {
+                    parts.push(folderCount === 1 ? "folder" : `${folderCount} folders`)
                   }
                   return `Using ${parts.join(", ")}`
                 })()}

@@ -10,7 +10,7 @@ import {
   useState,
   memo,
 } from "react"
-import { createFileIconElement } from "./agents-file-mention"
+import { createFileIconElement } from "./file-icon-utils"
 
 // Threshold for skipping expensive trigger detection (characters)
 // Should be >= MAX_PASTE_LENGTH from paste-text.ts to avoid processing large pasted content
