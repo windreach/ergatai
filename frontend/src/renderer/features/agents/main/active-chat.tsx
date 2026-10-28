@@ -625,7 +625,7 @@ function CollapsibleSteps({
           </div>
         </button>
       </div>
-      {children}
+      {isExpanded && children}
     </div>
   )
 }
@@ -1114,6 +1114,52 @@ const ChatViewInner = memo(function ChatViewInner({
   const isStreamingRef = useRef(isStreaming)
   isStreamingRef.current = isStreaming
 
+  // Fetch plan from backend API instead of scanning messages
+  const currentPlanPathAtom = useMemo(
+    () => currentPlanPathAtomFamily(conversationId),
+    [conversationId],
+  )
+  const [, setCurrentPlanPath] = useAtom(currentPlanPathAtom)
+
+  const {
+    planPath: apiPlanPath,
+    isLoading: planLoading,
+    refetch: refetchPlan,
+  } = useAgentPlan({
+    chatId: parentChatId,
+    conversationId,
+    enabled: !!conversationId,
+  })
+
+  // Update atom when API returns plan path
+  useEffect(() => {
+    if (apiPlanPath) {
+      setCurrentPlanPath(apiPlanPath)
+    } else if (!planLoading) {
+      setCurrentPlanPath(null)
+    }
+  }, [apiPlanPath, planLoading, setCurrentPlanPath])
+
+  // Refetch plan when streaming completes
+  useEffect(() => {
+    if (status === "ready" && conversationId) {
+      refetchPlan()
+    }
+  }, [status, conversationId, refetchPlan])
+
+  // Listen for plan update events from AgentPlanFileTool
+  useEffect(() => {
+    const handlePlanUpdate = (event: Event) => {
+      const customEvent = event as CustomEvent<{ conversationId: string; filePath: string }>
+      if (customEvent.detail.conversationId === conversationId) {
+        refetchPlan()
+      }
+    }
+
+    window.addEventListener("plan-updated", handlePlanUpdate)
+    return () => window.removeEventListener("plan-updated", handlePlanUpdate)
+  }, [conversationId, refetchPlan])
+
   // Collaboration participants - creates conversations for each agent in group mode
   const {
     collaborationParticipants,
@@ -1212,7 +1258,7 @@ const ChatViewInner = memo(function ChatViewInner({
   // been triggered. We use sendMessage to trigger the agent with real-time streaming.
   // To avoid duplicate user messages, we clear messages first, then trigger sendMessage
   // after the state update completes.
-  const { autoTriggeredRef, autoTriggerReceivedContentRef } = useAutoTrigger({
+  const { autoTriggeredRef } = useAutoTrigger({
     conversationId,
     isStreaming,
     isGroupMode,
@@ -1231,16 +1277,15 @@ const ChatViewInner = memo(function ChatViewInner({
     const storedParentChatId = agentChatStore.getParentChatId(conversationId)
     if (!storedParentChatId) return
 
-    // For auto-triggered chats, keep loading state until we receive actual content
-    // or until the chat has assistant messages (stream completed)
+    // For auto-triggered chats, keep loading state until the chat has assistant
+    // messages (stream completed)
     const isAutoTriggered = autoTriggeredRef.current.has(conversationId)
-    const hasReceivedContent = autoTriggerReceivedContentRef.current.has(conversationId)
     const hasAssistantMessages = messages.some((m) => m.role === "assistant")
 
     if (isStreaming) {
       setLoading(setLoadingConversations, conversationId, storedParentChatId)
-    } else if (isAutoTriggered && !hasReceivedContent && !hasAssistantMessages) {
-      // Auto-triggered but no content yet - keep loading state
+    } else if (isAutoTriggered && !hasAssistantMessages) {
+      // Auto-triggered but no assistant messages yet - keep loading state
       setLoading(setLoadingConversations, conversationId, storedParentChatId)
     } else {
       clearLoading(setLoadingConversations, conversationId)
@@ -1436,8 +1481,7 @@ const ChatViewInner = memo(function ChatViewInner({
   // Also trigger auto-rename for initial conversation with pre-populated message
   useEffect(() => {
     if (
-      isGroupMode ||
-      messages.length === 1 &&
+      (isGroupMode || messages.length === 1) &&
       status === "ready" &&
       !hasTriggeredAutoGenerateRef.current
     ) {
@@ -1465,6 +1509,7 @@ const ChatViewInner = memo(function ChatViewInner({
     isAutoScrollingRef,
     isInitializingScrollRef,
     scrollInitializedRef,
+    prevScrollTopRef,
     scrollToBottom,
     handleScroll,
     status,
@@ -1812,7 +1857,6 @@ const ChatViewInner = memo(function ChatViewInner({
                 queue={queue}
                 onRemoveItem={handleRemoveFromQueue}
                 onSendNow={handleSendFromQueue}
-                isStreaming={isStreaming}
                 hasStatusCardBelow={shouldShowStatusCard}
               />
             )}
@@ -2586,46 +2630,6 @@ export function ChatView({
     chatId,
   })
 
-  // Fetch plan from backend API instead of scanning messages
-  const {
-    planPath: apiPlanPath,
-    isLoading: planLoading,
-    refetch: refetchPlan,
-  } = useAgentPlan({
-    chatId,
-    conversationId: activeConversationId,
-    enabled: !!activeConversationId,
-  })
-
-  // Update atom when API returns plan path
-  useEffect(() => {
-    if (apiPlanPath) {
-      setCurrentPlanPath(apiPlanPath)
-    } else if (!planLoading) {
-      setCurrentPlanPath(null)
-    }
-  }, [apiPlanPath, planLoading, setCurrentPlanPath])
-
-  // Refetch plan when streaming completes
-  useEffect(() => {
-    if (status === "ready" && activeConversationId) {
-      refetchPlan()
-    }
-  }, [status, activeConversationId, refetchPlan])
-
-  // Listen for plan update events from AgentPlanFileTool
-  useEffect(() => {
-    const handlePlanUpdate = (event: Event) => {
-      const customEvent = event as CustomEvent<{ conversationId: string; filePath: string }>
-      if (customEvent.detail.conversationId === activeConversationId) {
-        refetchPlan()
-      }
-    }
-
-    window.addEventListener("plan-updated", handlePlanUpdate)
-    return () => window.removeEventListener("plan-updated", handlePlanUpdate)
-  }, [activeConversationId, refetchPlan])
-
   const inferProviderFromMessages = useCallback(
     (conversationId?: string): "claude-code" | "codex" => {
       if (!conversationId) return "claude-code"
@@ -2959,8 +2963,6 @@ export function ChatView({
                             : undefined
                         }
                         canOpenDiff={canShowDiffButton}
-                        isDiffSidebarOpen={isDiffSidebarOpen}
-                        diffStats={diffStats}
                         onOpenTerminal={() => setIsTerminalSidebarOpen(true)}
                         canOpenTerminal={!!worktreePath}
                         isTerminalOpen={isTerminalSidebarOpen}
@@ -3514,7 +3516,6 @@ export function ChatView({
                 chatId={chatId}
                 sandboxId={sandboxId}
                 port={previewPort}
-                repository={repository}
                 hideHeader={false}
                 onClose={() => setIsPreviewSidebarOpen(false)}
               />

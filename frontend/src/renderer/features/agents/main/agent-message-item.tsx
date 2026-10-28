@@ -128,7 +128,6 @@ export const AgentMessageItem = memo(function AgentMessageItem({
           <div className="flex items-center gap-0.5">
             <CopyButton
               text={textContent}
-              isMobile={isMobile}
             />
           </div>
         </div>

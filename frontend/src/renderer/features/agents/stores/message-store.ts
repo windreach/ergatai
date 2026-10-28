@@ -137,11 +137,11 @@ export const isLastMessageAtomFamily = atomFamily((messageId: string) =>
 )
 
 // Per-conversation version for split panes.
-// Key format: "conversationId:messageId"
+// Key format: "conversationId:::messageId"
 export const isLastMessagePerChatAtomFamily = atomFamily((key: string) => {
-  const sepIdx = key.indexOf(":")
+  const sepIdx = key.indexOf(":::")
   const conversationId = key.slice(0, sepIdx)
-  const messageId = key.slice(sepIdx + 1)
+  const messageId = key.slice(sepIdx + 3)
   return atom((get) => {
     const ids = get(messageIdsPerChatAtom(conversationId))
     return ids.length > 0 && ids[ids.length - 1] === messageId
@@ -467,12 +467,12 @@ const messageGroupsPerChatAtom = atomFamily((conversationId: string) =>
 // ============================================================================
 
 // Per-conversation versions for split panes
-// Key format: "conversationId:userMsgId"
+// Key format: "conversationId:::userMsgId"
 const assistantIdsPerChatCache = new Map<string, string[]>()
 export const assistantIdsPerChatAtomFamily = atomFamily((key: string) => {
-  const sepIdx = key.indexOf(":")
+  const sepIdx = key.indexOf(":::")
   const conversationId = key.slice(0, sepIdx)
-  const userMsgId = key.slice(sepIdx + 1)
+  const userMsgId = key.slice(sepIdx + 3)
   return atom((get) => {
     const groups = get(messageGroupsPerChatAtom(conversationId))
     const group = groups.find((g) => g.userMsgId === userMsgId)
@@ -493,9 +493,9 @@ export const assistantIdsPerChatAtomFamily = atomFamily((key: string) => {
 })
 
 export const isLastUserMessagePerChatAtomFamily = atomFamily((key: string) => {
-  const sepIdx = key.indexOf(":")
+  const sepIdx = key.indexOf(":::")
   const conversationId = key.slice(0, sepIdx)
-  const userMsgId = key.slice(sepIdx + 1)
+  const userMsgId = key.slice(sepIdx + 3)
   return atom((get) => {
     const userIds = get(userMessageIdsPerChatAtom(conversationId))
     return userIds[userIds.length - 1] === userMsgId
@@ -590,11 +590,11 @@ export function findRollbackTargetSdkUuidForUserIndex(
 }
 
 // Per-conversation rollback target for split panes.
-// Key format: "conversationId:userMsgId"
+// Key format: "conversationId:::userMsgId"
 export const rollbackTargetPerChatAtomFamily = atomFamily((key: string) => {
-  const sepIdx = key.indexOf(":")
+  const sepIdx = key.indexOf(":::")
   const conversationId = key.slice(0, sepIdx)
-  const userMsgId = key.slice(sepIdx + 1)
+  const userMsgId = key.slice(sepIdx + 3)
   return atom((get) => {
     const ids = get(messageIdsPerChatAtom(conversationId))
     const roles = get(messageRolesPerChatAtom(conversationId))
@@ -1008,14 +1008,31 @@ export const syncMessagesWithStatusAtom = atom(
     for (const oldId of previousIds) {
       if (!newIdsSet.has(oldId)) {
         // Message was removed - cleanup its atom and caches
-        messageAtomFamily.remove(getPerChatMessageKey(currentConversationId, oldId))
+        const messageKey = getPerChatMessageKey(currentConversationId, oldId)
+        messageAtomFamily.remove(messageKey)
         previousMessageState.delete(`${currentConversationId}:${oldId}`)
         assistantIdsCacheByChat.delete(`${currentConversationId}:${oldId}`)
-        assistantIdsPerChatCache.delete(`${currentConversationId}:${oldId}`)
-        isLastMessagePerChatAtomFamily.remove(`${currentConversationId}:${oldId}`)
-        assistantIdsPerChatAtomFamily.remove(`${currentConversationId}:${oldId}`)
-        isLastUserMessagePerChatAtomFamily.remove(`${currentConversationId}:${oldId}`)
-        rollbackTargetPerChatAtomFamily.remove(`${currentConversationId}:${oldId}`)
+        assistantIdsPerChatCache.delete(`${currentConversationId}:::${oldId}`)
+        isLastMessagePerChatAtomFamily.remove(`${currentConversationId}:::${oldId}`)
+        assistantIdsPerChatAtomFamily.remove(`${currentConversationId}:::${oldId}`)
+        isLastUserMessagePerChatAtomFamily.remove(`${currentConversationId}:::${oldId}`)
+        rollbackTargetPerChatAtomFamily.remove(`${currentConversationId}:::${oldId}`)
+
+        // Also clean module-level structure/text caches to prevent unbounded growth
+        messageStructureCache.delete(messageKey)
+        messageStructureAtomFamily.remove(messageKey)
+
+        const partPrefix = `${messageKey}:`
+        const textPartKeysToDelete: string[] = []
+        for (const key of textPartCache.keys()) {
+          if (key.startsWith(partPrefix)) {
+            textPartKeysToDelete.push(key)
+          }
+        }
+        for (const key of textPartKeysToDelete) {
+          textPartCache.delete(key)
+          textPartAtomFamily.remove(key)
+        }
       }
     }
 
@@ -1072,11 +1089,11 @@ export function clearConversationCaches(conversationId: string): {
       messageAtomFamily.remove(messageKey)
       previousMessageState.delete(`${conversationId}:${id}`)
       assistantIdsCacheByChat.delete(`${conversationId}:${id}`)
-      assistantIdsPerChatCache.delete(`${conversationId}:${id}`)
-      isLastMessagePerChatAtomFamily.remove(`${conversationId}:${id}`)
-      assistantIdsPerChatAtomFamily.remove(`${conversationId}:${id}`)
-      isLastUserMessagePerChatAtomFamily.remove(`${conversationId}:${id}`)
-      rollbackTargetPerChatAtomFamily.remove(`${conversationId}:${id}`)
+      assistantIdsPerChatCache.delete(`${conversationId}:::${id}`)
+      isLastMessagePerChatAtomFamily.remove(`${conversationId}:::${id}`)
+      assistantIdsPerChatAtomFamily.remove(`${conversationId}:::${id}`)
+      isLastUserMessagePerChatAtomFamily.remove(`${conversationId}:::${id}`)
+      rollbackTargetPerChatAtomFamily.remove(`${conversationId}:::${id}`)
 
       messageStructureCache.delete(messageKey)
       messageStructureAtomFamily.remove(messageKey)

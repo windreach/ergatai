@@ -77,7 +77,7 @@ const QueueItemRow = memo(function QueueItemRow({
           Using {attachmentParts.join(", ")}
         </span>
       ) : null}
-      {attachmentParts.length > 0 && (
+      {item.message && attachmentParts.length > 0 && (
         <span className="flex-shrink-0 text-muted-foreground text-[10px]">
           +{attachmentParts.join(", ")}
         </span>
@@ -118,7 +118,6 @@ interface AgentQueueIndicatorProps {
   queue: AgentQueueItem[]
   onRemoveItem?: (itemId: string) => void
   onSendNow?: (itemId: string) => void
-  isStreaming?: boolean
   /** Whether there's a status card below this one - affects border radius */
   hasStatusCardBelow?: boolean
 }
@@ -127,19 +126,27 @@ export const AgentQueueIndicator = memo(function AgentQueueIndicator({
   queue,
   onRemoveItem,
   onSendNow,
-  isStreaming = false,
   hasStatusCardBelow = false,
 }: AgentQueueIndicatorProps) {
   // Load expanded state from localStorage (window-scoped)
   const [isExpanded, setIsExpanded] = useState(() => {
     if (typeof window === "undefined") return true
-    const saved = localStorage.getItem(getQueueExpandedKey())
-    return saved !== null ? saved === "true" : true // Default to expanded
+    try {
+      const saved = localStorage.getItem(getQueueExpandedKey())
+      return saved !== null ? saved === "true" : true // Default to expanded
+    } catch {
+      // localStorage may be unavailable (private browsing, quota exceeded, etc.)
+      return true
+    }
   })
 
   // Save expanded state to localStorage (window-scoped)
   useEffect(() => {
-    localStorage.setItem(getQueueExpandedKey(), String(isExpanded))
+    try {
+      localStorage.setItem(getQueueExpandedKey(), String(isExpanded))
+    } catch {
+      // Silently ignore localStorage write errors
+    }
   }, [isExpanded])
 
   if (queue.length === 0) {
@@ -149,10 +156,9 @@ export const AgentQueueIndicator = memo(function AgentQueueIndicator({
   return (
     <div
       className={cn(
-        "border border-border bg-muted/30 overflow-hidden flex flex-col rounded-t-xl",
-        // If status card below - no bottom border/radius, no padding
+        "border border-border bg-muted/30 overflow-hidden flex flex-col rounded-t-xl border-b-0",
         // If no status card - need pb-6 for input overlap
-        hasStatusCardBelow ? "border-b-0" : "border-b-0 pb-6"
+        !hasStatusCardBelow && "pb-6"
       )}
     >
       {/* Header - at top */}

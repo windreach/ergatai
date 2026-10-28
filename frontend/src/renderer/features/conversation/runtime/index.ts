@@ -94,5 +94,6 @@ export {
 
 export {
   useConversationInvocation,
+  useSessionState,
   type UseConversationInvocationReturn,
 } from "./use-conversation-invocation"

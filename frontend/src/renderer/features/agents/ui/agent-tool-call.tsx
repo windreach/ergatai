@@ -9,24 +9,22 @@ import {
 } from "../../../components/ui/tooltip"
 
 interface AgentToolCallProps {
-  icon: React.ComponentType<{ className?: string }>
+  icon?: React.ComponentType<{ className?: string }>
   title: string
   subtitle?: string
   tooltipContent?: string
   isPending: boolean
-  isError: boolean
+  isError?: boolean
   isNested?: boolean
   onClick?: () => void
 }
 
 export const AgentToolCall = memo(
   function AgentToolCall({
-    icon: _Icon,
     title,
     subtitle,
     tooltipContent,
     isPending,
-    isError: _isError,
     isNested,
     onClick,
   }: AgentToolCallProps) {
@@ -39,27 +37,31 @@ export const AgentToolCall = memo(
       ? " cursor-pointer hover:text-muted-foreground transition-colors"
       : ""
 
-    const subtitleElement = subtitleStr ? (
-      tooltipContent ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span
-              className={`text-muted-foreground/60 font-normal truncate min-w-0${clickableClass}`}
-              onClick={onClick}
+    const subtitleElement = (() => {
+      if (!subtitleStr) return null
+      if (tooltipContent) {
+        return (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                className={`text-muted-foreground/60 font-normal truncate min-w-0${clickableClass}`}
+                onClick={onClick}
+              >
+                {subtitleStr}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent
+              side="top"
+              className="px-2 py-1.5 max-w-none flex items-center justify-center"
             >
-              {subtitleStr}
-            </span>
-          </TooltipTrigger>
-          <TooltipContent
-            side="top"
-            className="px-2 py-1.5 max-w-none flex items-center justify-center"
-          >
-            <span className="font-mono text-[10px] text-muted-foreground whitespace-nowrap leading-none">
-              {tooltipContent}
-            </span>
-          </TooltipContent>
-        </Tooltip>
-      ) : (
+              <span className="font-mono text-[10px] text-muted-foreground whitespace-nowrap leading-none">
+                {tooltipContent}
+              </span>
+            </TooltipContent>
+          </Tooltip>
+        )
+      }
+      return (
         <span
           className={`text-muted-foreground/60 font-normal truncate min-w-0${clickableClass}`}
           onClick={onClick}
@@ -67,7 +69,7 @@ export const AgentToolCall = memo(
           {subtitleStr}
         </span>
       )
-    ) : null
+    })()
 
     return (
       <div
@@ -75,11 +77,6 @@ export const AgentToolCall = memo(
           isNested ? "px-2.5" : "rounded-md px-2"
         }`}
       >
-        {/* Icon container - commented out like canvas, uncomment to show icons */}
-        {/* <div className="flex-shrink-0 flex text-muted-foreground items-start pt-[1px]">
-          <_Icon className="w-3.5 h-3.5" />
-        </div> */}
-
         {/* Content container - matches canvas exactly */}
         <div className="flex-1 min-w-0 flex items-center gap-1.5">
           <div className="text-xs text-muted-foreground flex items-center gap-1.5 min-w-0">
@@ -101,17 +98,5 @@ export const AgentToolCall = memo(
         </div>
       </div>
     )
-  },
-  (prevProps, nextProps) => {
-    // Custom comparison for memoization (copied from canvas)
-    return (
-      prevProps.title === nextProps.title &&
-      prevProps.subtitle === nextProps.subtitle &&
-      prevProps.tooltipContent === nextProps.tooltipContent &&
-      prevProps.isPending === nextProps.isPending &&
-      prevProps.isError === nextProps.isError &&
-      prevProps.isNested === nextProps.isNested &&
-      prevProps.onClick === nextProps.onClick
-    )
-  },
+  }
 )

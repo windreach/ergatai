@@ -30,6 +30,7 @@ import { getConversationResolver } from "./conversation-resolver"
 import { getAgentRuntimeResolver } from "./agent-runtime-resolver"
 import { getRuntimeSessionStore } from "./runtime-session-store"
 import { getAdapterRegistry } from "./runtime-adapter"
+import { generateTicketId, generateQueueItemId } from "./id-generators"
 
 // ============================================================================
 // ORCHESTRATOR INTERFACE - Public API
@@ -62,20 +63,6 @@ export interface TurnOrchestrator {
 // ============================================================================
 
 /**
- * Generate a unique ticket ID.
- */
-function generateTicketId(): string {
-  return `ticket_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`
-}
-
-/**
- * Generate a unique queue item ID.
- */
-function generateQueueItemId(): string {
-  return `queue_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`
-}
-
-/**
  * Turn Orchestrator implementation.
  *
  * Phase 7: This orchestrator coordinates the complete send flow:
@@ -89,6 +76,32 @@ function generateQueueItemId(): string {
  */
 class TurnOrchestratorImpl implements TurnOrchestrator {
   /**
+   * Handle send errors by updating session state.
+   * Extracted to avoid duplication between .catch() and outer catch blocks.
+   *
+   * @param conversationId - Conversation ID
+   * @param error - Error that occurred
+   * @param turnId - Optional turn ID to clear if it matches current turn
+   */
+  private handleSendError(
+    conversationId: string,
+    error: unknown,
+    turnId?: string,
+  ): void {
+    const sessionStore = getRuntimeSessionStore()
+    sessionStore.setError(conversationId, {
+      code: "SEND_FAILED",
+      message: error instanceof Error ? error.message : "Unknown error",
+      details: error,
+      timestamp: new Date(),
+    })
+    sessionStore.setStatus(conversationId, "error")
+    if (turnId && sessionStore.getCurrentTurnId(conversationId) === turnId) {
+      sessionStore.setCurrentTurnId(conversationId, null)
+    }
+  }
+
+  /**
    * Execute a send operation.
    * Phase 16: Refactored to use adapter instead of directly calling transport.
    * This allows leveraging existing Chat implementations for stream handling.
@@ -101,6 +114,10 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
   async send(input: ConversationSendMessageInput): Promise<ConversationSendTicket> {
     const conversationId = input.conversation.conversationId
     const sessionStore = getRuntimeSessionStore()
+
+    // Fix: Declare unsubscribeFromAdapter outside try block so it's accessible in catch
+    // This prevents subscription leaks when exceptions occur between subscribe and sendMessage
+    let unsubscribeFromAdapter: (() => void) | undefined
 
     try {
       // Step 1: Resolve conversation
@@ -164,7 +181,6 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
 
       // Step 6: Subscribe to adapter state changes (if supported)
       // This allows service to track external turns (e.g., agent-to-agent messages)
-      let unsubscribeFromAdapter: (() => void) | undefined
       if (adapter.subscribe) {
         unsubscribeFromAdapter = adapter.subscribe((state) => {
           // Synchronize adapter state with session store
@@ -221,28 +237,23 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
             // Process next queue item
             this.processQueue(conversationId)
           }
-          // Unsubscribe from adapter state changes
-          unsubscribeFromAdapter?.()
         })
         .catch((error) => {
-          // Only update state if this is still the current turn
-          if (sessionStore.getCurrentTurnId(conversationId) === turnId) {
-            // Stream failed
-            sessionStore.setError(conversationId, {
-              code: "SEND_FAILED",
-              message: error instanceof Error ? error.message : "Unknown error",
-              details: error,
-              timestamp: new Date(),
-            })
-            sessionStore.setStatus(conversationId, "error")
-            sessionStore.setCurrentTurnId(conversationId, null)
-            // Remove interrupt queue item if present (failed send should not leave stale queue item)
-            if (interruptQueueItemId) {
-              sessionStore.removeQueueItem(conversationId, interruptQueueItemId)
-            }
+          // Use shared error handler
+          this.handleSendError(conversationId, error, turnId)
+          // Remove interrupt queue item if present (failed send should not leave stale queue item)
+          if (interruptQueueItemId) {
+            sessionStore.removeQueueItem(conversationId, interruptQueueItemId)
           }
-          // Unsubscribe from adapter state changes
-          unsubscribeFromAdapter?.()
+        })
+        .finally(() => {
+          // Fix: Always unsubscribe from adapter state changes to prevent memory leaks
+          // This ensures cleanup even if sendMessage() hangs or has unexpected behavior
+          try {
+            unsubscribeFromAdapter?.()
+          } catch (error) {
+            console.warn("[TurnOrchestrator] Failed to unsubscribe from adapter:", error)
+          }
         })
 
       // Step 9: Return ticket immediately (don't wait for stream to complete)
@@ -252,15 +263,16 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
         queued: false,
       }
     } catch (error) {
-      // Update session state with error
-      sessionStore.setError(conversationId, {
-        code: "SEND_FAILED",
-        message: error instanceof Error ? error.message : "Unknown error",
-        details: error,
-        timestamp: new Date(),
-      })
+      // Fix: Clean up subscription on early error (before sendMessage started)
+      // This prevents subscription leaks when exceptions occur between subscribe and sendMessage
+      try {
+        unsubscribeFromAdapter?.()
+      } catch (unsubscribeError) {
+        console.warn("[TurnOrchestrator] Failed to unsubscribe:", unsubscribeError)
+      }
 
-      sessionStore.setStatus(conversationId, "error")
+      // Use shared error handler
+      this.handleSendError(conversationId, error)
 
       throw error
     }
@@ -286,11 +298,22 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
       throw new Error(`Queue item not found: ${itemId}`)
     }
 
-    // Remove from queue
-    sessionStore.removeQueueItem(conversationId, itemId)
-
-    // Send the message
-    return await this.send(queueItem.originalInput)
+    // Fix: Try to send first, only remove from queue if successful
+    // This prevents data loss if send() fails
+    try {
+      const ticket = await this.send(queueItem.originalInput)
+      // Only remove from queue after successful send
+      sessionStore.removeQueueItem(conversationId, itemId)
+      return ticket
+    } catch (error) {
+      // Update queue item status to failed instead of losing it
+      sessionStore.updateQueueItem(conversationId, itemId, (item) => ({
+        ...item,
+        status: "pending" as const, // Keep in queue for retry
+        error: error instanceof Error ? error.message : "Unknown error",
+      }))
+      throw error
+    }
   }
 
   /**
@@ -336,7 +359,9 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
   /**
    * Process the queue after a turn completes.
    * Sends the next pending item if any.
-   * If send fails, the item is requeued for retry.
+   * If send fails, the item remains in queue for retry.
+   * If send re-enqueues (e.g., session still streaming), the old item is removed
+   * to avoid duplicates (send() creates a new item with a new ID).
    *
    * @param conversationId - Conversation ID
    */
@@ -354,22 +379,27 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
       return
     }
 
-    // Remove from queue
-    sessionStore.removeQueueItem(conversationId, nextItem.id)
-
-    // Send the message
+    // Fix: Don't remove from queue before sending.
+    // send() can internally call enqueue() which creates a NEW item with a NEW ID.
+    // If we remove first, the original item is lost and we can't track it.
+    // Instead, send first, then remove based on the result.
     try {
-      await this.send(nextItem.originalInput)
+      const ticket = await this.send(nextItem.originalInput)
+
+      // Remove the old item from queue in all success cases:
+      // - If ticket.queued === true: send() re-enqueued with a new ID, so remove old item to avoid duplicates
+      // - If ticket.queued === false: send succeeded, so we're done with this item
+      sessionStore.removeQueueItem(conversationId, nextItem.id)
     } catch (error) {
       console.error("[TurnOrchestrator] Failed to send queued item:", error)
 
-      // Requeue the item for retry
-      // Add it back to the front of the queue
-      sessionStore.addQueueItem(conversationId, {
-        ...nextItem,
-        status: "pending",
-        queuedAt: new Date(),
-      })
+      // Fix: Item is still in queue (we didn't remove it before sending).
+      // Update its status to indicate the failure, but keep it in queue for retry.
+      sessionStore.updateQueueItem(conversationId, nextItem.id, (item) => ({
+        ...item,
+        status: "pending" as const,
+        error: error instanceof Error ? error.message : "Unknown error",
+      }))
     }
   }
 }

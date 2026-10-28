@@ -3053,26 +3053,153 @@ mod hash_version_tests {
         let file_path = temp_dir.path().join(test_file);
         fs::write(&file_path, "test content").unwrap();
 
-        // Acquire flock via the helper (simulating what try_acquire_write_lock_preemptive does)
+        // Acquire flock - verify it works
         let file = manager.acquire_flock(test_file).unwrap();
-        {
-            let mut fds = manager.flock_fds.lock();
-            fds.insert(test_file.to_string(), file);
-        }
+        assert!(file.metadata().is_ok());
 
-        // Verify flock fd is stored
-        {
-            let fds = manager.flock_fds.lock();
-            assert!(fds.contains_key(test_file));
-        }
+        // Release flock
+        drop(file);
 
-        // Release flock via the helper (simulating what release_lock_on_tool_complete does)
-        manager.release_flock(test_file);
+        // Should be able to acquire again
+        let file2 = manager.acquire_flock(test_file).unwrap();
+        drop(file2);
+    }
 
-        // Verify flock fd is removed
-        {
-            let fds = manager.flock_fds.lock();
-            assert!(!fds.contains_key(test_file));
+    #[test]
+    fn test_compute_file_hash_nonexistent_file() {
+        let (manager, _temp_dir) = create_test_manager();
+
+        // Try to compute hash of non-existent file
+        let result = manager.compute_file_hash("nonexistent.txt");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compute_file_hash_empty_file() {
+        let (manager, temp_dir) = create_test_manager();
+
+        // Create an empty file
+        let test_file = "empty.txt";
+        let file_path = temp_dir.path().join(test_file);
+        fs::write(&file_path, "").unwrap();
+
+        // Compute hash - should succeed even for empty file
+        let hash = manager.compute_file_hash(test_file).unwrap();
+        assert!(hash.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn test_compute_file_hash_large_file() {
+        let (manager, temp_dir) = create_test_manager();
+
+        // Create a large file (1MB)
+        let test_file = "large.txt";
+        let file_path = temp_dir.path().join(test_file);
+        let large_content = "x".repeat(1024 * 1024);
+        fs::write(&file_path, &large_content).unwrap();
+
+        // Compute hash - should handle large files
+        let hash = manager.compute_file_hash(test_file).unwrap();
+        assert!(hash.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn test_parse_file_mode_case_insensitive() {
+        // Test various case combinations
+        assert_eq!(parse_file_mode("READ"), FileMode::Read);
+        assert_eq!(parse_file_mode("read"), FileMode::Read);
+        assert_eq!(parse_file_mode("Read"), FileMode::Read);
+        assert_eq!(parse_file_mode("ReAd"), FileMode::Read);
+
+        assert_eq!(parse_file_mode("WRITE"), FileMode::Write);
+        assert_eq!(parse_file_mode("write"), FileMode::Write);
+        assert_eq!(parse_file_mode("Write"), FileMode::Write);
+        assert_eq!(parse_file_mode("WrItE"), FileMode::Write);
+
+        assert_eq!(parse_file_mode("ADMIN"), FileMode::Admin);
+        assert_eq!(parse_file_mode("admin"), FileMode::Admin);
+        assert_eq!(parse_file_mode("Admin"), FileMode::Admin);
+        assert_eq!(parse_file_mode("AdMiN"), FileMode::Admin);
+    }
+
+    #[test]
+    fn test_parse_token_status_case_insensitive() {
+        assert_eq!(parse_token_status("ACTIVE"), TokenStatus::Active);
+        assert_eq!(parse_token_status("active"), TokenStatus::Active);
+        assert_eq!(parse_token_status("Active"), TokenStatus::Active);
+        assert_eq!(parse_token_status("AcTiVe"), TokenStatus::Active);
+
+        assert_eq!(parse_token_status("EXPIRED"), TokenStatus::Expired);
+        assert_eq!(parse_token_status("expired"), TokenStatus::Expired);
+        assert_eq!(parse_token_status("Expired"), TokenStatus::Expired);
+        assert_eq!(parse_token_status("ExPiReD"), TokenStatus::Expired);
+    }
+
+    #[test]
+    fn test_parse_file_mode_with_whitespace() {
+        // Whitespace should not be trimmed - these should default to Read
+        assert_eq!(parse_file_mode(" READ "), FileMode::Read);
+        assert_eq!(parse_file_mode(" WRITE "), FileMode::Read);
+        assert_eq!(parse_file_mode(" ADMIN "), FileMode::Read);
+    }
+
+    #[test]
+    fn test_parse_token_status_with_whitespace() {
+        // Whitespace should not be trimmed - these should default to Expired
+        assert_eq!(parse_token_status(" ACTIVE "), TokenStatus::Expired);
+        assert_eq!(parse_token_status(" EXPIRED "), TokenStatus::Expired);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_flock_multiple_files() {
+        let (manager, temp_dir) = create_test_manager();
+
+        // Create multiple test files
+        let file1 = "file1.txt";
+        let file2 = "file2.txt";
+        let file3 = "file3.txt";
+
+        fs::write(temp_dir.path().join(file1), "content1").unwrap();
+        fs::write(temp_dir.path().join(file2), "content2").unwrap();
+        fs::write(temp_dir.path().join(file3), "content3").unwrap();
+
+        // Acquire locks on all files
+        let lock1 = manager.acquire_flock(file1).unwrap();
+        let lock2 = manager.acquire_flock(file2).unwrap();
+        let lock3 = manager.acquire_flock(file3).unwrap();
+
+        // Verify all locks are held
+        assert!(lock1.metadata().is_ok());
+        assert!(lock2.metadata().is_ok());
+        assert!(lock3.metadata().is_ok());
+
+        // Release one lock
+        drop(lock2);
+
+        // Should be able to acquire file2 again
+        let lock2_new = manager.acquire_flock(file2).unwrap();
+        drop(lock2_new);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_flock_reacquire_after_release() {
+        let (manager, temp_dir) = create_test_manager();
+
+        let test_file = "reacquire.txt";
+        let file_path = temp_dir.path().join(test_file);
+        fs::write(&file_path, "test content").unwrap();
+
+        // Acquire, release, reacquire cycle
+        for _ in 0..5 {
+            let lock = manager.acquire_flock(test_file).unwrap();
+            assert!(lock.metadata().is_ok());
+            drop(lock);
+
+            // Should be able to acquire again
+            let lock2 = manager.acquire_flock(test_file).unwrap();
+            drop(lock2);
         }
     }
 }

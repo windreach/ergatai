@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useState, useCallback, useEffect } from "react"
+import { memo, useState, useCallback, useEffect, useMemo } from "react"
 import {
   Collapsible,
   CollapsibleTrigger,
@@ -12,7 +12,9 @@ import { highlightCode } from "../../../lib/themes/shiki-theme-loader"
 import { useCodeTheme } from "../../../lib/hooks/use-code-theme"
 
 interface MessageJsonDisplayProps {
-  message: any
+  // Using unknown because the message shape varies across different tool outputs
+  // and providers. JSON.stringify handles any JSON-serializable value.
+  message: unknown
   label?: string
 }
 
@@ -25,14 +27,25 @@ export const MessageJsonDisplay = memo(function MessageJsonDisplay({
   const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null)
   const themeId = useCodeTheme()
 
-  const jsonString = JSON.stringify(message, null, 2)
+  // Escape HTML entities to prevent XSS when using dangerouslySetInnerHTML
+  const escapeHtml = (str: string): string => {
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;")
+  }
+
+  const jsonString = useMemo(() => JSON.stringify(message, null, 2), [message])
+  const escapedString = useMemo(() => escapeHtml(jsonString), [jsonString])
 
   // Highlight JSON when expanded
   useEffect(() => {
     if (!isOpen) return
 
     let cancelled = false
-    highlightCode(jsonString, "json", themeId)
+    highlightCode(escapedString, "json", themeId)
       .then((html) => {
         if (!cancelled) setHighlightedHtml(html)
       })
@@ -41,12 +54,16 @@ export const MessageJsonDisplay = memo(function MessageJsonDisplay({
     return () => {
       cancelled = true
     }
-  }, [jsonString, themeId, isOpen])
+  }, [escapedString, themeId, isOpen])
 
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(jsonString)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(jsonString)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch (error) {
+      console.error("Failed to copy JSON to clipboard:", error)
+    }
   }, [jsonString])
 
   return (

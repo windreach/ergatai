@@ -13,6 +13,13 @@
  * - Cached public state to ensure stable snapshots for useSyncExternalStore
  * - Use sequence-based sorting instead of createdAt
  * - Store transport handle for proper stop() implementation
+ *
+ * Phase 19: Added localStorage persistence for runtime sequence numbers.
+ * - Enables stream resumption after UI reload by persisting lastRuntimeSequence
+ * - On ensureSession(), restores sequence from localStorage
+ * - On setLastRuntimeSequence() and incrementLocalSequence(), persists to localStorage
+ * - On releaseSession(), cleans up localStorage
+ * - Uses safe try-catch wrappers to handle localStorage errors gracefully
  */
 
 import type {
@@ -23,6 +30,12 @@ import type {
 } from "./contracts"
 
 import type { Message } from "../../agents/stores/message-store"
+
+import {
+  readPersistedSequence,
+  persistSequence,
+  removePersistedSequence,
+} from "./runtime-sequence-persistence"
 
 // ============================================================================
 // SESSION STATE - Internal state structure
@@ -71,9 +84,6 @@ export type RuntimeSessionState = {
   /** Cached public state (for stable snapshots) */
   cachedPublicState: ConversationRuntimeState | null
 
-  /** Abort controller for current turn (for stop()) */
-  currentAbortController: AbortController | null
-
   /** Current turn ID (for preventing stale callbacks from updating state) */
   currentTurnId: string | null
 }
@@ -93,6 +103,9 @@ class RuntimeSessionStoreImpl {
   // State change listeners
   private listeners = new Map<string, Set<(state: ConversationRuntimeState) => void>>()
 
+  // Re-entrancy guard for notifyListeners
+  private notifying = new Set<string>()
+
   /**
    * Ensure a session exists for the given conversation ID.
    * Creates a new session if it doesn't exist.
@@ -104,6 +117,12 @@ class RuntimeSessionStoreImpl {
     let session = this.sessions.get(conversationId)
     if (!session) {
       session = this.createSession(conversationId)
+      // Restore lastRuntimeSequence from localStorage to enable stream resumption after UI reload
+      const persistedSequence = readPersistedSequence(conversationId)
+      if (persistedSequence !== null) {
+        session.lastRuntimeSequence = persistedSequence
+        session.localSequence = persistedSequence
+      }
       this.sessions.set(conversationId, session)
     }
     return session
@@ -139,33 +158,6 @@ class RuntimeSessionStoreImpl {
     const state = this.toRuntimeState(session)
     session.cachedPublicState = state
     return state
-  }
-
-  /**
-   * Set the abort controller for the current turn.
-   * Used by stop() to abort the transport stream.
-   *
-   * @param conversationId - Conversation ID
-   * @param controller - Abort controller or null to clear
-   */
-  setAbortController(conversationId: string, controller: AbortController | null): void {
-    const session = this.ensureSession(conversationId)
-    session.currentAbortController = controller
-    session.cachedPublicState = null // Invalidate cache
-    session.updatedAt = new Date()
-
-    this.notifyListeners(conversationId)
-  }
-
-  /**
-   * Get the abort controller for the current turn.
-   *
-   * @param conversationId - Conversation ID
-   * @returns Abort controller or null
-   */
-  getAbortController(conversationId: string): AbortController | null {
-    const session = this.getSession(conversationId)
-    return session?.currentAbortController ?? null
   }
 
   /**
@@ -206,6 +198,10 @@ class RuntimeSessionStoreImpl {
     const session = this.ensureSession(conversationId)
     session.localSequence += 1
     session.cachedPublicState = null // Invalidate cache
+
+    // Persist sequence to localStorage for stream resumption after UI reload
+    persistSequence(conversationId, session.localSequence)
+
     return session.localSequence
   }
 
@@ -265,10 +261,11 @@ class RuntimeSessionStoreImpl {
   addRuntimeMessage(conversationId: string, message: Message): void {
     const session = this.ensureSession(conversationId)
     // Assign sequence number for stable ordering
+    // Note: incrementLocalSequence already invalidates cachedPublicState
     const sequence = this.incrementLocalSequence(conversationId)
-    session.runtimeMessages.push({ ...message, sequence } as Message)
+    session.runtimeMessages.push({ ...message, sequence })
     session.visibleMessages = this.mergeMessages(session)
-    session.cachedPublicState = null // Invalidate cache
+    // Cache invalidation already handled by incrementLocalSequence() above
     session.updatedAt = new Date()
 
     this.notifyListeners(conversationId)
@@ -324,6 +321,9 @@ class RuntimeSessionStoreImpl {
     session.lastRuntimeSequence = sequence
     session.cachedPublicState = null // Invalidate cache
     session.updatedAt = new Date()
+
+    // Persist sequence to localStorage for stream resumption after UI reload
+    persistSequence(conversationId, sequence)
 
     this.notifyListeners(conversationId)
   }
@@ -404,6 +404,8 @@ class RuntimeSessionStoreImpl {
   releaseSession(conversationId: string): void {
     this.sessions.delete(conversationId)
     this.listeners.delete(conversationId)
+    // Clean up persisted sequence from localStorage
+    removePersistedSequence(conversationId)
   }
 
   /**
@@ -462,7 +464,6 @@ class RuntimeSessionStoreImpl {
       createdAt: now,
       updatedAt: now,
       cachedPublicState: null,
-      currentAbortController: null,
       currentTurnId: null,
     }
   }
@@ -501,7 +502,14 @@ class RuntimeSessionStoreImpl {
       // Fallback to createdAt for persisted messages
       const aTime = a.createdAt?.getTime() ?? 0
       const bTime = b.createdAt?.getTime() ?? 0
-      return aTime - bTime
+
+      if (aTime !== bTime) {
+        return aTime - bTime
+      }
+
+      // Final fallback: sort by ID for deterministic ordering
+      // This ensures stable sort when both sequence and timestamp are identical
+      return a.id.localeCompare(b.id)
     })
   }
 
@@ -528,22 +536,32 @@ class RuntimeSessionStoreImpl {
 
   /**
    * Notify listeners of state changes.
+   * Uses a re-entrancy guard to prevent recursive notifications when a listener
+   * triggers state changes.
    *
    * @param conversationId - Conversation ID
    */
   private notifyListeners(conversationId: string): void {
-    const listeners = this.listeners.get(conversationId)
-    if (!listeners) return
+    // Prevent re-entrant notifications
+    if (this.notifying.has(conversationId)) return
+    this.notifying.add(conversationId)
 
-    const state = this.getRuntimeState(conversationId)
-    if (!state) return
+    try {
+      const listeners = this.listeners.get(conversationId)
+      if (!listeners) return
 
-    for (const listener of listeners) {
-      try {
-        listener(state)
-      } catch (error) {
-        console.error("Error in session state listener:", error)
+      const state = this.getRuntimeState(conversationId)
+      if (!state) return
+
+      for (const listener of listeners) {
+        try {
+          listener(state)
+        } catch (error) {
+          console.error("Error in session state listener:", error)
+        }
       }
+    } finally {
+      this.notifying.delete(conversationId)
     }
   }
 }

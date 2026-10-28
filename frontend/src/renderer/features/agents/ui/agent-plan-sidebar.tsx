@@ -1,14 +1,12 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { useAtomValue } from "jotai"
+import { useCallback, useMemo, useState } from "react"
 import { Button } from "../../../components/ui/button"
 import { IconDoubleChevronRight, IconSpinner, PlanIcon, MarkdownIcon, CodeIcon } from "../../../components/ui/icons"
 import { Kbd } from "../../../components/ui/kbd"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip"
 import { ChatMarkdownRenderer } from "../../../components/chat-markdown-renderer"
 import { cn } from "../../../lib/utils"
-import { trpc } from "../../../lib/trpc"
 import { useAgentPlan } from "../hooks/use-agent-plan"
 import { CopyButton } from "./message-action-buttons"
 import type { AgentMode } from "../atoms"
@@ -35,12 +33,12 @@ export function AgentPlanSidebar({
   const [viewMode, setViewMode] = useState<"rendered" | "plaintext">("rendered")
 
   // Toggle view mode
-  const handleToggleViewMode = useCallback(() => {
+  const handleToggleViewMode = () => {
     setViewMode((prev) => (prev === "rendered" ? "plaintext" : "rendered"))
-  }, [])
+  }
 
   // Fetch plan content from backend API
-  const { planContent, isLoading, error, refetch } = useAgentPlan({
+  const { planContent, isLoading, error } = useAgentPlan({
     chatId,
     conversationId,
     enabled: !!planPath,
@@ -162,7 +160,7 @@ export function AgentPlanSidebar({
               Failed to load plan
             </p>
             <p className="text-xs text-muted-foreground/70 max-w-[300px]">
-              {error.message || "The plan file could not be read"}
+              {(error instanceof Error ? error.message : null) || "The plan file could not be read"}
             </p>
           </div>
         ) : !planPath ? (

@@ -12,9 +12,8 @@ interface StreamingStatusState {
   getStatus: (conversationId: string) => StreamingStatus
   isStreaming: (conversationId: string) => boolean
   clearStatus: (conversationId: string) => void
-
-  // Get all conversations that are ready (not streaming)
-  getReadyConversations: () => string[]
+  // Clear all statuses (call on app reset/logout to prevent unbounded growth)
+  clearAllStatuses: () => void
 }
 
 export const useStreamingStatusStore = create<StreamingStatusState>()(
@@ -22,12 +21,17 @@ export const useStreamingStatusStore = create<StreamingStatusState>()(
     statuses: {},
 
     setStatus: (conversationId, status) => {
-      set((state) => ({
-        statuses: {
-          ...state.statuses,
-          [conversationId]: status,
-        },
-      }))
+      if (status === "ready") {
+        // Ready is the default state, no need to track explicitly
+        set((state) => {
+          const { [conversationId]: _, ...rest } = state.statuses
+          return { statuses: rest }
+        })
+      } else {
+        set((state) => ({
+          statuses: { ...state.statuses, [conversationId]: status },
+        }))
+      }
     },
 
     getStatus: (conversationId) => {
@@ -47,11 +51,9 @@ export const useStreamingStatusStore = create<StreamingStatusState>()(
       })
     },
 
-    getReadyConversations: () => {
-      const { statuses } = get()
-      return Object.entries(statuses)
-        .filter(([_, status]) => status === "ready")
-        .map(([conversationId]) => conversationId)
+    // Clear all statuses to prevent unbounded memory growth in long-running sessions
+    clearAllStatuses: () => {
+      set({ statuses: {} })
     },
   }))
 )

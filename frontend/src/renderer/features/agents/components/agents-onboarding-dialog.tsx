@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback } from "react"
 import { AnimatePresence, motion } from "motion/react"
 import { createPortal } from "react-dom"
 // Desktop: stub for next/image
-const Image = ({ src, alt, width, height, className }: any) => <img src={src} alt={alt} width={width} height={height} className={className} />
+const Image = ({ src, alt, width, height, className, style, ...rest }: any) => <img src={src} alt={alt} width={width} height={height} className={className} style={style} {...rest} />
 import { useTheme } from "next-themes"
 import { X } from "lucide-react"
 import { useAtom } from "jotai"
@@ -27,19 +27,22 @@ export function AgentsOnboardingDialog() {
   useEffect(() => {
     setMounted(true)
 
-    // Check if debug mode wants to reset onboarding
-    if (debugMode.enabled && debugMode.resetOnboarding) {
-      localStorage.removeItem(ONBOARDING_STORAGE_KEY)
-      // Reset the flag to prevent infinite loops
-      setDebugMode((prev) => ({ ...prev, resetOnboarding: false }))
-    }
-
     // Check localStorage on mount
     const hasSeenOnboarding = localStorage.getItem(ONBOARDING_STORAGE_KEY)
     if (!hasSeenOnboarding) {
       setIsOpen(true)
     }
-  }, [debugMode.enabled, debugMode.resetOnboarding, setDebugMode])
+  }, [])
+
+  useEffect(() => {
+    // Check if debug mode wants to reset onboarding
+    if (debugMode.resetOnboarding) {
+      localStorage.removeItem(ONBOARDING_STORAGE_KEY)
+      // Reset the flag to prevent infinite loops
+      setDebugMode((prev) => ({ ...prev, resetOnboarding: false }))
+      setIsOpen(true)
+    }
+  }, [debugMode.resetOnboarding, setDebugMode])
 
   useEffect(() => {
     if (isOpen) {
@@ -102,7 +105,7 @@ export function AgentsOnboardingDialog() {
           />
 
           {/* Main Dialog */}
-          <div className="fixed top-[50%] left-[50%] translate-x-[-50%] translate-y-[-50%] z-[46] pointer-events-none">
+          <div role="dialog" aria-modal="true" aria-label="Onboarding" className="fixed top-[50%] left-[50%] translate-x-[-50%] translate-y-[-50%] z-[46] pointer-events-none">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}

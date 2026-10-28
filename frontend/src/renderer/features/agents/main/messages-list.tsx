@@ -499,7 +499,7 @@ export const MessageItemWrapper = memo(function MessageItemWrapper({
 
   // Only subscribe to isLast - NOT to message content!
   // StreamingMessageItem and NonStreamingMessageItem will subscribe to message themselves
-  const perChatKey = `${conversationId}:${messageId}`
+  const perChatKey = `${conversationId}:::${messageId}`
   const isLast = useAtomValue(isLastMessagePerChatAtomFamily(perChatKey))
 
   // Only the last message subscribes to streaming status

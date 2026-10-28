@@ -32,20 +32,34 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
   const [isSubmitting, setIsSubmitting] = useState(false)
   const prevIndexRef = useRef(currentQuestionIndex)
   const prevToolUseIdRef = useRef(toolUseId)
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // Helper function to format answers for submission
+  const formatAnswers = useCallback((questions: typeof pendingQuestions.questions, answers: Record<string, string[]>) => {
+    const formattedAnswers: Record<string, string> = {}
+    for (const question of questions) {
+      const selected = answers[question.question] || []
+      if (selected.length > 0) {
+        formattedAnswers[question.question] = selected.join(", ")
+      }
+    }
+    return formattedAnswers
+  }, [])
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current)
+      }
+    }
+  }, [])
 
   // Expose getAnswers method to parent via ref
   useImperativeHandle(ref, () => ({
-    getAnswers: () => {
-      const formattedAnswers: Record<string, string> = {}
-      for (const question of questions) {
-        const selected = answers[question.question] || []
-        if (selected.length > 0) {
-          formattedAnswers[question.question] = selected.join(", ")
-        }
-      }
-      return formattedAnswers
-    }
-  }), [answers, questions])
+    getAnswers: () => formatAnswers(questions, answers)
+  }), [answers, questions, formatAnswers])
 
   // Reset when toolUseId changes (new question set)
   useEffect(() => {
@@ -58,15 +72,16 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
     }
   }, [toolUseId])
 
-  // Animate on question change
+  // Animate on question change - using key prop on container for clean remount
   useEffect(() => {
     if (prevIndexRef.current !== currentQuestionIndex) {
       setIsVisible(false)
-      const timer = setTimeout(() => {
+      // Use requestAnimationFrame for smoother animation
+      const rafId = requestAnimationFrame(() => {
         setIsVisible(true)
-      }, 50)
+      })
       prevIndexRef.current = currentQuestionIndex
-      return () => clearTimeout(timer)
+      return () => cancelAnimationFrame(rafId)
     }
   }, [currentQuestionIndex])
 
@@ -113,9 +128,13 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
 
       // For single-select questions, auto-advance to next question
       if (!allowMultiple && !isLastQuestion) {
-        setTimeout(() => {
+        if (timeoutRef.current) {
+          clearTimeout(timeoutRef.current)
+        }
+        timeoutRef.current = setTimeout(() => {
           setCurrentQuestionIndex(questionIndex + 1)
           setFocusedOptionIndex(0)
+          timeoutRef.current = null
         }, 150)
       }
     },
@@ -152,13 +171,7 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
       )
       if (allAnswered) {
         setIsSubmitting(true)
-        // Convert answers to SDK format: { questionText: label } or { questionText: "label1, label2" } for multiSelect
-        const formattedAnswers: Record<string, string> = {}
-        for (const question of questions) {
-          const selected = answers[question.question] || []
-          formattedAnswers[question.question] = selected.join(", ")
-        }
-        onAnswer(formattedAnswers)
+        onAnswer(formatAnswers(questions, answers))
       }
     }
   }, [
@@ -168,7 +181,7 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
     questions,
     currentQuestion?.question,
     isSubmitting,
-    pendingQuestions.toolUseId,
+    formatAnswers,
   ])
 
   const handleSkipWithGuard = useCallback(() => {
@@ -192,6 +205,11 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (isSubmitting) return
+
+      // Only intercept events within this component's DOM tree
+      if (!containerRef.current?.contains(e.target as Node)) {
+        return
+      }
 
       const activeEl = document.activeElement
       if (
@@ -260,7 +278,7 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
   ])
 
   return (
-    <div className="border rounded-t-xl border-b-0 border-border bg-muted/30 overflow-hidden">
+    <div ref={containerRef} className="border rounded-t-xl border-b-0 border-border bg-muted/30 overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-1.5">
         <div className="flex items-center gap-1.5">
@@ -299,6 +317,7 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
 
       {/* Current Question */}
       <div
+        key={currentQuestionIndex}
         className={cn(
           "px-1 pb-2 transition-opacity duration-150 ease-out",
           isVisible ? "opacity-100" : "opacity-0",
@@ -348,12 +367,7 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
                   {number}
                 </div>
                 <div className="flex flex-col gap-0.5">
-                  <span
-                    className={cn(
-                      "text-[13px] transition-colors font-medium",
-                      isSelected ? "text-foreground" : "text-foreground",
-                    )}
-                  >
+                  <span className="text-[13px] transition-colors font-medium text-foreground">
                     {option.label}
                   </span>
                   {option.description && (

@@ -5,90 +5,22 @@ import { api } from "../../../lib/api-adapter"
 import { trpc } from "../../../lib/trpc"
 import { keepPreviousData } from "@tanstack/react-query"
 import {
-  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  createElement,
   memo,
 } from "react"
-import { flushSync, createPortal } from "react-dom"
-import { createRoot } from "react-dom/client"
+import { createPortal } from "react-dom"
 import { useAtomValue } from "jotai"
 import type { FileMentionOption } from "./agents-mentions-editor"
 import { MENTION_PREFIXES } from "./agents-mentions-editor"
 import { sessionInfoAtom } from "../../../lib/atoms"
 import type { CoreAgentOption } from "../lib/agent-contract-api"
-import {
-  FilesIcon,
-  SkillIcon,
-  CustomAgentIcon,
-  OriginalMCPIcon,
-} from "../../../components/ui/icons"
 import { getDropdownDimensions } from "../ui/dropdown-sizes"
 import { useDropdownScale } from "../../../lib/hooks/use-dropdown-scale"
-import { FolderClosedIcon, getFileIconByExtension, createFileIconElement, getOptionIcon } from "./file-icon-utils"
 
-// Custom folder icon matching design (open folder)
-function FolderOpenIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      className={className}
-    >
-      <path
-        d="M4 8V6C4 4.89543 4.89543 4 6 4H14C15.1046 4 16 4.89543 16 6M4 8H8.17548C8.70591 8 9.21462 8.21071 9.58969 8.58579L11.4181 10.4142C11.7932 10.7893 12.3019 11 12.8323 11H16M4 8C3.44987 8 3.00391 8.44597 3.00391 8.99609V18C3.00391 19.1046 3.89934 20 5.00391 20H19.0039C20.1085 20 21.0039 19.1046 21.0039 18V12.0039C21.0039 11.4495 20.5544 11 20 11M16 11V6M16 11H20M16 6H18C19.1046 6 20 6.89543 20 8V11"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
-}
-
-import {
-  TypeScriptIcon,
-  JavaScriptIcon,
-  PythonIcon,
-  GoIcon,
-  RustIcon,
-  CodeIcon,
-  ReactIcon,
-  MarkdownInfoIcon,
-  MarkdownIcon,
-  CSSIcon,
-  HTMLIcon,
-  SCSSIcon,
-  JSONIcon,
-  YAMLIcon,
-  ShellIcon,
-  SQLIcon,
-  GraphQLIcon,
-  PrismaIcon,
-  DockerIcon,
-  TOMLIcon,
-  JavaIcon,
-  CIcon,
-  CppIcon,
-  CSharpIcon,
-  PHPIcon,
-  RubyIcon,
-  KotlinIcon,
-  VueIcon,
-  SvelteIcon,
-  AstroIcon,
-  SwiftIcon,
-  PDFIcon,
-  SVGIcon,
-  TxtIcon,
-  GitIcon,
-  NpmIcon,
-  UnknownFileIcon,
-} from "../../../icons/framework-icons"
 
 interface ChangedFile {
   filePath: string
@@ -126,61 +58,6 @@ const CATEGORY_OPTIONS: FileMentionOption[] = [
   { id: "tools", label: "MCP", type: "category", path: "", repository: "" },
 ]
 
-// Known file extensions with icons
-const KNOWN_FILE_ICON_EXTENSIONS = new Set([
-  "tsx",
-  "ts",
-  "js",
-  "mjs",
-  "cjs",
-  "jsx",
-  "py",
-  "pyw",
-  "pyi",
-  "go",
-  "rs",
-  "md",
-  "mdx",
-  "css",
-  "html",
-  "htm",
-  "scss",
-  "sass",
-  "json",
-  "jsonc",
-  "yaml",
-  "yml",
-  "sh",
-  "bash",
-  "zsh",
-  "sql",
-  "graphql",
-  "gql",
-  "prisma",
-  "dockerfile",
-  "toml",
-  "env",
-  "java",
-  "c",
-  "h",
-  "cpp",
-  "cc",
-  "cxx",
-  "hpp",
-  "cs",
-  "php",
-  "rb",
-  "kt",
-  "vue",
-  "svelte",
-  "astro",
-  "swift",
-  "pdf",
-  "svg",
-  "txt",
-])
-
-
 // Tool icon component (MCP icon) - slightly larger for visibility
 
 
@@ -198,40 +75,6 @@ const KNOWN_FILE_ICON_EXTENSIONS = new Set([
  * Get icon component for a file, folder, skill, agent, tool, or category option
  */
 
-/**
- * Render folder path as a tree structure for tooltip
- * e.g., "apps/web/app" becomes:
- *   📁 apps
- *     📁 web
- *       📁 app
- */
-function renderFolderTree(path: string) {
-  const parts = path.split("/").filter(Boolean)
-  const lastIndex = parts.length - 1
-  return (
-    <div className="flex flex-col gap-1 min-w-[220px]">
-      {parts.map((part, index) => {
-        const isLast = index === lastIndex
-        return (
-          <div
-            key={index}
-            className={cn(
-              "flex items-center gap-1.5 text-xs",
-              isLast ? "text-foreground" : "text-muted-foreground"
-            )}
-            style={{ paddingLeft: `${index * 20}px` }}
-          >
-            <FolderOpenIcon className={cn(
-              "h-3.5 w-3.5 flex-shrink-0",
-              isLast ? "text-foreground/70" : "text-muted-foreground"
-            )} />
-            <span className={isLast ? "font-medium" : ""}>{part}</span>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
 
 /**
  * Check if a string matches all search words (multi-word search)
@@ -327,53 +170,6 @@ function sortFilesByRelevance<T extends { label: string; path?: string }>(
   })
 }
 
-/**
- * Render tooltip content for a mention option
- * Skills/agents show description, tools, model info
- * Tools show MCP server name
- * Files/folders show path
- */
-function renderTooltipContent(option: FileMentionOption) {
-  if (option.type === "folder") {
-    return renderFolderTree(option.path)
-  }
-
-  if (option.type === "skill" || option.type === "agent") {
-    return (
-      <div className="flex flex-col gap-1.5 w-full overflow-hidden">
-        {option.description && (
-          <p className="text-xs text-muted-foreground break-words">
-            {option.description}
-          </p>
-        )}
-        {option.model && (
-          <div className="text-xs text-muted-foreground">
-            Model: {option.model}
-          </div>
-        )}
-        {option.tools && option.tools.length > 0 && (
-          <div className="text-xs text-muted-foreground break-words">
-            Tools: {option.tools.join(", ")}
-          </div>
-        )}
-        <div className="text-[10px] text-muted-foreground/70 font-mono truncate w-full">
-          {option.path}
-        </div>
-      </div>
-    )
-  }
-
-  if (option.type === "tool") {
-    return null
-  }
-
-  // Files - just path
-  return (
-    <div className="text-xs text-muted-foreground font-mono truncate w-full">
-      {option.path}
-    </div>
-  )
-}
 
 // Memoized to prevent re-renders when parent re-renders
 export const AgentsFileMention = memo(function AgentsFileMention({
@@ -521,7 +317,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
           path: file.path,
           repository: file.repository,
           truncatedPath: dirPath,
-          type: (file as { type?: "file" | "folder" }).type,
+          type: (file as { type?: "file" | "folder" }).type ?? "file",
         }
       })
 
@@ -587,7 +383,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
         model: agent.model,
         source: agent.source,
       }))
-  }, [customAgents, debouncedSearchText])
+  }, [customAgents, debouncedSearchText, scope, boundAgents])
 
   // Convert MCP servers to mention options (show servers, not individual tools)
   const allToolOptions: FileMentionOption[] = useMemo(() => {
@@ -744,6 +540,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
     if (!isOpen) return
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (options.length === 0) return
       switch (e.key) {
         case "ArrowDown":
           e.preventDefault()
@@ -902,6 +699,11 @@ export const AgentsFileMention = memo(function AgentsFileMention({
           <div className="px-2.5 py-1.5 mx-1 text-xs font-medium text-muted-foreground">
             Mentions
           </div>
+          {error && (
+            <div className="h-7 px-1.5 mx-1 flex items-center text-xs text-red-500">
+              Failed to load files
+            </div>
+          )}
           {options.map((option, index) => {
             const isSelected = selectedIndex === index
             return (
@@ -958,7 +760,9 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       {/* Empty state */}
       {options.length === 0 && (
         <div className="h-7 px-1.5 mx-1 flex items-center text-xs text-muted-foreground">
-          {debouncedSearchText
+          {error
+            ? `Error loading files: ${error.message}`
+            : debouncedSearchText
             ? `No items matching "${debouncedSearchText}"`
             : "No items available"}
         </div>

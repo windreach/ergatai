@@ -12,6 +12,11 @@ import { areTaskToolPropsEqual } from "./agent-tool-utils"
 import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { cn } from "../../../lib/utils"
 
+// NOTE: Using `any` for part/nestedTools because the AI SDK emits dynamic tool structures
+// that vary by tool type. The AgentToolRegistry handles type-specific rendering, so we
+// avoid extensive type assertions here. A minimal interface would be:
+// interface AgentTaskPart { input?: { description?: string }; output?: any; ... }
+// but the full shape is too dynamic to capture concisely.
 interface AgentTaskToolProps {
   part: any
   nestedTools: any[]
@@ -21,6 +26,7 @@ interface AgentTaskToolProps {
 // Constants for rendering
 const MAX_VISIBLE_TOOLS = 5
 const TOOL_HEIGHT_PX = 24
+const TOOL_TYPE_PREFIX = "tool-"
 
 // Format elapsed time in a human-readable format
 function formatElapsedTime(ms: number): string {
@@ -83,11 +89,15 @@ export const AgentTaskTool = memo(function AgentTaskTool({
   const elapsedTimeDisplay = formatElapsedTime(displayMs)
 
   // Auto-scroll to bottom when streaming and new nested tools added
+  // Depend on last tool's identity (toolCallId + state) to catch content updates, not just length changes
+  const lastToolKey = nestedTools.length > 0
+    ? `${nestedTools[nestedTools.length - 1]?.toolCallId ?? ''}-${nestedTools[nestedTools.length - 1]?.state ?? ''}`
+    : ''
   useEffect(() => {
     if (isPending && isExpanded && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [nestedTools.length, isPending, isExpanded])
+  }, [lastToolKey, isPending, isExpanded])
 
   const hasNestedTools = nestedTools.length > 0
 
@@ -189,13 +199,8 @@ export const AgentTaskTool = memo(function AgentTaskTool({
               "space-y-1.5",
               isPending &&
                 nestedTools.length > MAX_VISIBLE_TOOLS &&
-                "overflow-y-auto scrollbar-hide",
+                "overflow-y-auto scrollbar-hide max-h-[120px]",
             )}
-            style={
-              isPending && nestedTools.length > MAX_VISIBLE_TOOLS
-                ? { maxHeight: `${MAX_VISIBLE_TOOLS * TOOL_HEIGHT_PX}px` }
-                : undefined
-            }
           >
             {nestedTools.map((nestedPart, idx) => {
               const nestedMeta = AgentToolRegistry[nestedPart.type]
@@ -205,7 +210,9 @@ export const AgentTaskTool = memo(function AgentTaskTool({
                     key={idx}
                     className="text-xs text-muted-foreground py-0.5 px-2"
                   >
-                    {nestedPart.type?.replace("tool-", "")}
+                    {nestedPart.type?.startsWith(TOOL_TYPE_PREFIX)
+                      ? nestedPart.type.slice(TOOL_TYPE_PREFIX.length)
+                      : nestedPart.type}
                   </div>
                 )
               }

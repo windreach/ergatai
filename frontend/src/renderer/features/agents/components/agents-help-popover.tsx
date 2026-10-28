@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -69,15 +69,15 @@ export function AgentsHelpPopover({
   const setOpen = controlledOnOpenChange ?? setInternalOpen
 
   const handleCommunityClick = () => {
-    window.desktopApi.openExternal("https://discord.gg/8ektTZGnj4")
+    window.desktopApi?.openExternal("https://discord.gg/8ektTZGnj4")
   }
 
   const handleChangelogClick = () => {
-    window.desktopApi.openExternal("https://github.com/windreach/ergatai-ui/releases")
+    window.desktopApi?.openExternal("https://github.com/windreach/ergatai-ui/releases")
   }
 
   const handleReleaseClick = (version: string) => {
-    window.desktopApi.openExternal(
+    window.desktopApi?.openExternal(
       `https://github.com/windreach/ergatai-ui/releases#${version}`,
     )
   }

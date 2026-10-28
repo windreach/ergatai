@@ -127,7 +127,8 @@ const loadFromLS = <T>(chatId: string, type: "open" | "active" | "pinned" | "spl
     }
 
     return stored ? JSON.parse(stored) : fallback
-  } catch {
+  } catch (e) {
+    console.warn(`[ConversationStore] Failed to load key=${getStorageKey(chatId, type)}, using fallback:`, e)
     return fallback
   }
 }
@@ -241,11 +242,16 @@ export const useAgentConversationStore = create<AgentConversationStore>((set, ge
 
     // Cleanup queue, streaming status, Chat instance, and task snapshot cache
     // to prevent memory leaks and race conditions (QueueProcessor sending to closed conversation?)
-    useMessageQueueStore.getState().clearQueue(conversationId)
-    useStreamingStatusStore.getState().clearStatus(conversationId)
-    clearConversationRuntimeCaches(conversationId)
-    agentChatStore.delete(conversationId)
-    clearTaskSnapshotCache(conversationId)
+    const cleanups = [
+      () => useMessageQueueStore.getState().removeConversation(conversationId),
+      () => useStreamingStatusStore.getState().clearStatus(conversationId),
+      () => clearConversationRuntimeCaches(conversationId),
+      () => agentChatStore.delete(conversationId),
+      () => clearTaskSnapshotCache(conversationId),
+    ]
+    for (const cleanup of cleanups) {
+      try { cleanup() } catch (e) { console.error('[ConversationStore] Cleanup failed:', e) }
+    }
   },
 
   togglePinConversation: (conversationId) => {

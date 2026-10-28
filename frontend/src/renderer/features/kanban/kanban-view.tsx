@@ -428,32 +428,37 @@ export function KanbanView() {
 
   // Archive handler with confirmation for active processes
   const handleArchive = useCallback(async (chatId: string) => {
-    // Check for active processes and worktree
-    const chat = chats?.find((c) => c.id === chatId)
-    const isLocalMode = !chat?.branch
-    const [sessionCount, worktreeStatus] = await Promise.all([
-      // Local mode: terminals are shared and won't be killed on archive, so skip count
-      isLocalMode
-        ? Promise.resolve(0)
-        : utils.terminal.getActiveSessionCount.fetch({ workspaceId: chatId }),
-      utils.chats.getWorktreeStatus.fetch({ chatId }),
-    ])
+    try {
+      // Check for active processes and worktree
+      const chat = chats?.find((c) => c.id === chatId)
+      const isLocalMode = !chat?.branch
+      const [sessionCount, worktreeStatus] = await Promise.all([
+        // Local mode: terminals are shared and won't be killed on archive, so skip count
+        isLocalMode
+          ? Promise.resolve(0)
+          : utils.terminal.getActiveSessionCount.fetch({ workspaceId: chatId }),
+        utils.chats.getWorktreeStatus.fetch({ chatId }),
+      ])
 
-    const needsConfirmation = sessionCount > 0 || worktreeStatus.hasWorktree
+      const needsConfirmation = sessionCount > 0 || worktreeStatus.hasWorktree
 
-    if (needsConfirmation) {
-      setArchivingChatId(chatId)
-      setActiveProcessCount(sessionCount)
-      setHasWorktree(worktreeStatus.hasWorktree)
-      setUncommittedCount(worktreeStatus.uncommittedCount)
-      setConfirmArchiveDialogOpen(true)
-    } else {
-      await archiveChatMutation.mutateAsync({ id: chatId })
-      if (backendChats?.some((chat) => chat.id === chatId)) {
-        await archiveBackendChatMutation.mutateAsync({ id: chatId }).catch(() => {
-          toast.warning("Workspace archived locally, but backend sync failed")
-        })
+      if (needsConfirmation) {
+        setArchivingChatId(chatId)
+        setActiveProcessCount(sessionCount)
+        setHasWorktree(worktreeStatus.hasWorktree)
+        setUncommittedCount(worktreeStatus.uncommittedCount)
+        setConfirmArchiveDialogOpen(true)
+      } else {
+        await archiveChatMutation.mutateAsync({ id: chatId })
+        if (backendChats?.some((chat) => chat.id === chatId)) {
+          await archiveBackendChatMutation.mutateAsync({ id: chatId }).catch(() => {
+            toast.warning("Workspace archived locally, but backend sync failed")
+          })
+        }
       }
+    } catch (error) {
+      console.error("Failed to check workspace status before archiving:", error)
+      toast.error("Failed to check workspace status")
     }
   }, [utils, archiveChatMutation, archiveBackendChatMutation, chats, backendChats])
 

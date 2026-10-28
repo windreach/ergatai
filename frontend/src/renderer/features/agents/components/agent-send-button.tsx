@@ -98,7 +98,7 @@ export function AgentSendButton({
   // Determine if button should be disabled
   // During streaming with content, enable the button for queue
   // In voice mode, button should always be enabled (unless transcribing)
-  const isDisabled = isVoiceMode ? false : (isStreaming ? false : disabled)
+  const isDisabled = disabled && !isVoiceMode && !isStreaming
 
   // Determine icon to show
   const getIcon = () => {
@@ -230,11 +230,6 @@ export function AgentSendButton({
     }
   }
 
-  const handleMouseUp = () => {
-    // Only handle mouseUp for hold-to-talk if we started recording on mouseDown
-    // Click-to-toggle is handled in handleButtonClick
-  }
-
   const handleMouseLeave = () => {
     if (isVoiceMode && isRecording && onVoiceMouseLeave) {
       onVoiceMouseLeave()
@@ -267,8 +262,10 @@ export function AgentSendButton({
           type="button"
           onClick={handleButtonClick}
           onMouseDown={handleMouseDown}
-          onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseLeave}
+          onTouchStart={handleMouseDown}
+          onTouchEnd={handleMouseLeave}
+          onTouchCancel={handleMouseLeave}
           aria-label={getAriaLabel()}
         >
           {getIcon()}

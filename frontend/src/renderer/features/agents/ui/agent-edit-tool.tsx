@@ -23,14 +23,20 @@ import { useFileOpen } from "../mentions"
 import { agentsDiffSidebarOpenAtom, agentsFocusedDiffFileAtom, selectedWorkspaceAtom } from "../atoms"
 import { cn } from "../../../lib/utils"
 
+// Magic number constants for streaming and display behavior
+const THROTTLE_INTERVAL_MS = 100
+const MAX_STREAMING_LINES = 15
+const MIN_STREAMING_LINES_THRESHOLD = 3
+const STREAMING_FALLBACK_CHAR_LIMIT = 500
+const HIGHLIGHT_DEBOUNCE_MS = 50
+
 interface AgentEditToolProps {
-  part: any
+  // AI SDK tool part shape varies by provider and version; no stable public type
+  part: any // eslint-disable-line @typescript-eslint/no-explicit-any
   messageId?: string
   partIndex?: number
   chatStatus?: string
 }
-
-// Removed local highlighter - using centralized loader from lib/themes/shiki-theme-loader
 
 // Get language from filename
 function getLanguageFromFilename(filename: string): string {
@@ -131,19 +137,18 @@ function useBatchHighlight(
 
     const highlightAll = async () => {
       try {
-        const results = new Map<number, string>()
+        // Highlight all lines in parallel using Promise.all
+        const results = await Promise.all(
+          lines.map(async (line, index) => {
+            const content = line.content || " "
+            const highlighted = await highlightCode(content, language, themeId)
+            return { index, highlighted }
+          })
+        )
 
-        // Highlight all lines in one batch using centralized loader
-        for (let i = 0; i < lines.length; i++) {
-          // Check if cancelled between iterations to allow early exit
-          if (cancelled) return
-          const content = lines[i].content || " "
-          const highlighted = await highlightCode(content, language, themeId)
-          results.set(i, highlighted)
-        }
-
+        const highlightedMap = new Map(results.map(r => [r.index, r.highlighted]))
         if (!cancelled) {
-          setHighlightedMap(results)
+          setHighlightedMap(highlightedMap)
         }
       } catch (error) {
         console.error("Failed to highlight code:", error)
@@ -155,7 +160,7 @@ function useBatchHighlight(
     }
 
     // Debounce highlighting after streaming completes
-    const timer = setTimeout(highlightAll, 50)
+    const timer = setTimeout(highlightAll, HIGHLIGHT_DEBOUNCE_MS)
     return () => {
       cancelled = true
       clearTimeout(timer)
@@ -187,6 +192,11 @@ const DiffLineRow = memo(
         )}
       >
         {highlightedHtml ? (
+          /*
+           * XSS safety: highlightedHtml comes from highlightCode() which uses shiki's
+           * codeToHtml() — a trusted syntax highlighter that escapes all user input.
+           * The fallback path in highlightCode() explicitly calls escapeHtml() on raw code.
+           */
           <span
             className="whitespace-pre-wrap break-all [&_.shiki]:bg-transparent [&_pre]:bg-transparent [&_code]:bg-transparent"
             dangerouslySetInnerHTML={{ __html: highlightedHtml }}
@@ -374,8 +384,8 @@ export const AgentEditTool = memo(function AgentEditTool({
     const now = Date.now()
     const timeSinceLastUpdate = now - lastStreamingUpdateRef.current
 
-    // Throttle to ~10 updates per second (100ms intervals)
-    if (timeSinceLastUpdate >= 100) {
+    // Throttle to ~10 updates per second (THROTTLE_INTERVAL_MS intervals)
+    if (timeSinceLastUpdate >= THROTTLE_INTERVAL_MS) {
       lastStreamingUpdateRef.current = now
       setThrottledStreamingContent(streamingContent)
     } else {
@@ -383,7 +393,7 @@ export const AgentEditTool = memo(function AgentEditTool({
       const timer = setTimeout(() => {
         lastStreamingUpdateRef.current = Date.now()
         setThrottledStreamingContent(streamingContent)
-      }, 100 - timeSinceLastUpdate)
+      }, THROTTLE_INTERVAL_MS - timeSinceLastUpdate)
       return () => clearTimeout(timer)
     }
   }, [streamingContent, isInputStreaming])
@@ -396,15 +406,15 @@ export const AgentEditTool = memo(function AgentEditTool({
       return { streamingLines: [], shouldAlignBottom: false }
     const lines = content.split("\n")
     const totalLines = lines.length
-    // If 3 or fewer lines, show all from top
-    // If more than 3, show last 15 lines for autoscroll effect
-    const displayedLines = totalLines <= 3 ? lines : lines.slice(-15)
+    // If MIN_STREAMING_LINES_THRESHOLD or fewer lines, show all from top
+    // If more, show last MAX_STREAMING_LINES lines for autoscroll effect
+    const displayedLines = totalLines <= MIN_STREAMING_LINES_THRESHOLD ? lines : lines.slice(-MAX_STREAMING_LINES)
     return {
       streamingLines: displayedLines.map((line: string) => ({
         type: "added" as const,
         content: line,
       })),
-      shouldAlignBottom: totalLines > 3,
+      shouldAlignBottom: totalLines > MIN_STREAMING_LINES_THRESHOLD,
     }
   }, [throttledStreamingContent])
 
@@ -629,8 +639,8 @@ export const AgentEditTool = memo(function AgentEditTool({
               )}
             >
               {isInputStreaming && !isOutputExpanded
-                ? // Show last ~500 chars during streaming (use throttled for FPS)
-                  (throttledStreamingContent || newString).slice(-500)
+                ? // Show last STREAMING_FALLBACK_CHAR_LIMIT chars during streaming (use throttled for FPS)
+                  (throttledStreamingContent || newString).slice(-STREAMING_FALLBACK_CHAR_LIMIT)
                 : throttledStreamingContent || newString}
             </div>
           ) : null}

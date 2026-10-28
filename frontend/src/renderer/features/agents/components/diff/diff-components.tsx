@@ -111,10 +111,8 @@ interface DiffSidebarContentProps {
 // Memoized commit file item for History tab
 const CommitFileItem = memo(function CommitFileItem({
   file,
-  onClick,
 }: {
   file: { path: string; status: FileStatus }
-  onClick: () => void
 }) {
   const fileName = file.path.split('/').pop() || file.path
   const dirPath = file.path.includes('/') ? file.path.substring(0, file.path.lastIndexOf('/')) : ''
@@ -122,10 +120,9 @@ const CommitFileItem = memo(function CommitFileItem({
   return (
     <div
       className={cn(
-        "flex items-center gap-2 px-2 py-1 cursor-pointer transition-colors",
+        "flex items-center gap-2 px-2 py-1 transition-colors",
         "hover:bg-muted/80"
       )}
-      onClick={onClick}
     >
       <div className="flex-1 min-w-0 flex items-center overflow-hidden">
         {dirPath && (
@@ -277,7 +274,7 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
   // Fetch commit files when a commit is selected
   const { data: commitFiles } = trpc.changes.getCommitFiles.useQuery(
     {
-      worktreePath: worktreePath!,
+      worktreePath: worktreePath ?? "",
       commitHash: selectedCommit?.hash ?? "",
     },
     {
@@ -289,7 +286,7 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
   // Fetch commit file diff when a commit is selected
   const { data: commitFileDiff } = trpc.changes.getCommitFileDiff.useQuery(
     {
-      worktreePath: worktreePath!,
+      worktreePath: worktreePath ?? "",
       commitHash: selectedCommit?.hash ?? "",
       filePath: selectedFilePath!,
     },
@@ -307,12 +304,6 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
   const effectivePrefetchedContents = shouldUseCommitDiff ? {} : prefetchedFileContents
 
   if (isNarrow) {
-    // Count changed files for collapsed header
-    const changedFilesCount = diffStatus
-      ? (diffStatus.staged?.length || 0) + (diffStatus.unstaged?.length || 0) + (diffStatus.untracked?.length || 0)
-      : 0
-    const stagedCount = diffStatus?.staged?.length || 0
-
     // Vertical layout: ChangesPanel on top, diff/file list below
     return (
       <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
@@ -368,9 +359,13 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
                         {selectedCommit.message}
                       </div>
                       <button
-                        onClick={() => {
-                          navigator.clipboard.writeText(selectedCommit.hash)
-                          toast.success('Copied SHA to clipboard')
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(selectedCommit.hash)
+                            toast.success('Copied SHA to clipboard')
+                          } catch {
+                            toast.error('Failed to copy SHA to clipboard')
+                          }
                         }}
                         className="text-xs font-mono text-muted-foreground hover:text-foreground underline cursor-pointer shrink-0"
                       >
@@ -394,7 +389,6 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
                     <CommitFileItem
                       key={file.path}
                       file={file}
-                      onClick={() => {}}
                     />
                   ))}
                 </>
@@ -492,9 +486,13 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
                       {selectedCommit.message}
                     </div>
                     <button
-                      onClick={() => {
-                        navigator.clipboard.writeText(selectedCommit.hash)
-                        toast.success('Copied SHA to clipboard')
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(selectedCommit.hash)
+                          toast.success('Copied SHA to clipboard')
+                        } catch {
+                          toast.error('Failed to copy SHA to clipboard')
+                        }
                       }}
                       className="text-xs font-mono text-muted-foreground hover:text-foreground underline cursor-pointer shrink-0"
                     >
@@ -518,7 +516,6 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
                   <CommitFileItem
                     key={file.path}
                     file={file}
-                    onClick={() => {}}
                   />
                 ))}
               </>

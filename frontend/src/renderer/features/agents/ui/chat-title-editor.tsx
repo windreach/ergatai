@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback, memo } from "react"
 import { useAtomValue } from "jotai"
+import { toast } from "sonner"
 import { cn } from "../../../lib/utils"
 import { TypewriterText } from "../../../components/ui/typewriter-text"
 import { justCreatedIdsAtom } from "../atoms"
@@ -27,7 +28,8 @@ function areTitlePropsEqual(
     prev.isMobile === next.isMobile &&
     prev.disabled === next.disabled &&
     prev.entityId === next.entityId &&
-    prev.hasMessages === next.hasMessages
+    prev.hasMessages === next.hasMessages &&
+    prev.onSave === next.onSave
   )
 }
 
@@ -47,7 +49,12 @@ export const ChatTitleEditor = memo(function ChatTitleEditor({
   const containerRef = useRef<HTMLDivElement>(null)
   const justCreatedIds = useAtomValue(justCreatedIdsAtom)
 
-  // Sync editValue when name changes externally
+  // Sync editValue when name changes externally.
+  // Stale-data note: while the user is editing, we intentionally do NOT sync
+  // incoming name changes into editValue — doing so would clobber in-flight
+  // user input. If another tab/process renames the chat while this user is
+  // mid-edit, the user's save will race that external rename; the server-side
+  // update is the source of truth and the next re-render will reflect it.
   useEffect(() => {
     if (!isEditing) {
       setEditValue(name)
@@ -81,8 +88,12 @@ export const ChatTitleEditor = memo(function ChatTitleEditor({
     try {
       await onSave(trimmedValue)
       setIsEditing(false)
-    } catch {
-      // On error, revert to original name
+    } catch (error) {
+      // On error, revert to original name and notify user
+      console.error("Failed to save title:", error)
+      toast.error("Failed to save title", {
+        description: error instanceof Error ? error.message : "Please try again"
+      })
       setEditValue(name)
       setIsEditing(false)
     } finally {
@@ -119,17 +130,20 @@ export const ChatTitleEditor = memo(function ChatTitleEditor({
     }
   }, [isEditing, handleSave])
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      e.preventDefault()
-      e.stopPropagation()
-      handleSave()
-    } else if (e.key === "Escape") {
-      e.preventDefault()
-      e.stopPropagation()
-      handleCancel()
-    }
-  }
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Enter") {
+        e.preventDefault()
+        e.stopPropagation()
+        handleSave()
+      } else if (e.key === "Escape") {
+        e.preventDefault()
+        e.stopPropagation()
+        handleCancel()
+      }
+    },
+    [handleSave, handleCancel],
+  )
 
   const isJustCreated = entityId ? justCreatedIds.has(entityId) : false
   const hasRealName = name && name !== placeholder
@@ -142,7 +156,7 @@ export const ChatTitleEditor = memo(function ChatTitleEditor({
   }
 
   // Fixed height to prevent layout shift when switching between view/edit modes
-  const heightClass = isMobile ? "h-7" : "h-7"
+  const heightClass = "h-7"
 
   return (
     <div

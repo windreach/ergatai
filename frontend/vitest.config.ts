@@ -5,11 +5,12 @@ export default defineConfig({
   test: {
     environment: "happy-dom",
     globals: true,
+    setupFiles: ["./tests/setup.ts"],
     include: ["tests/renderer/**/*.test.ts", "tests/renderer/**/*.test.tsx"],
   },
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      "@": path.resolve(__dirname, "./src/renderer"),
     },
   },
 })

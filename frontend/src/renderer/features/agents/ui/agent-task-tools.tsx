@@ -2,7 +2,7 @@
 
 import { ChevronsUpDown } from "lucide-react"
 import { useSetAtom } from "jotai"
-import { memo, useEffect, useMemo, useState } from "react"
+import { memo, useEffect, useMemo, useState, useRef } from "react"
 import { CheckIcon, PlanIcon } from "../../../components/ui/icons"
 import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { cn } from "../../../lib/utils"
@@ -35,7 +35,7 @@ interface TaskChange {
   newStatus?: "pending" | "in_progress" | "completed"
   updatedFields?: string[]
   blockedByIds?: string[]
-  blocksIds?: string[]
+  blockingIds?: string[]
 }
 
 // Full task state at a point in time (for snapshot history)
@@ -48,6 +48,29 @@ interface TaskSnapshot {
   blockedBy?: string[]
   blocks?: string[]
 }
+
+// Shape of a single tool-use part from the SDK message stream.
+// Typed permissively because SDK emits several tool types (TaskCreate, TaskUpdate,
+// TaskList, TaskGet) with different input/output shapes. Helper functions narrow
+// by `part.type` and read specific fields.
+//
+// JUSTIFICATION for `any` on input/output:
+// The AI SDK's tool-use parts have a dynamic structure that varies by tool type.
+// Each tool (TaskCreate, TaskUpdate, TaskList, TaskGet) has a unique input/output schema.
+// Defining a union type would require exhaustive matching on `part.type` at every usage site,
+// adding significant complexity without meaningful safety (the SDK doesn't enforce these types).
+// Instead, we use `any` here and rely on runtime checks in helper functions like
+// `extractChangesFromParts` and `updateTaskSnapshotFromParts` to safely access fields.
+// A minimal interface capturing common fields:
+// interface ToolPart { type?: string; state?: string; toolCallId?: string; input?: unknown; output?: unknown }
+// but `input`/`output` would still require type assertions or guards at every access.
+type TaskToolPart = {
+  type?: string
+  state?: string
+  toolCallId?: string
+  input?: any
+  output?: any
+} | null | undefined
 
 // ============================================================================
 // Task Snapshot History Cache
@@ -62,6 +85,12 @@ const snapshotHistoryCache = new Map<string, Map<string, Map<string, TaskSnapsho
 // Map<conversationId, groupKey[]>
 const groupOrderCache = new Map<string, string[]>()
 
+// Track which (conversationId, groupKey) pairs have been cached,
+// ensuring mutations are idempotent (safe under StrictMode double-invoke).
+// Using a Map of Sets instead of magic-string encoding (e.g., "conversationId|groupKey")
+// for better type safety and clarity.
+const cachedGroupKeys = new Map<string, Set<string>>()
+
 const MAX_CACHED_CONVERSATIONS = 20
 
 function evictOldestCaches() {
@@ -70,6 +99,8 @@ function evictOldestCaches() {
     for (const key of keys.slice(0, keys.length - MAX_CACHED_CONVERSATIONS)) {
       snapshotHistoryCache.delete(key)
       groupOrderCache.delete(key)
+      // Also clean up tracking set entries for evicted conversation
+      cachedGroupKeys.delete(key)
     }
   }
 }
@@ -81,6 +112,7 @@ function evictOldestCaches() {
 export function clearTaskSnapshotCache(conversationId: string) {
   snapshotHistoryCache.delete(conversationId)
   groupOrderCache.delete(conversationId)
+  cachedGroupKeys.delete(conversationId)
 }
 
 // Task info for read-only display (TaskList, TaskGet)
@@ -96,7 +128,7 @@ interface TaskInfo {
 }
 
 interface AgentTaskToolsGroupProps {
-  parts: any[]
+  parts: TaskToolPart[]
   chatStatus?: string
   isStreaming: boolean
   conversationId: string
@@ -117,13 +149,67 @@ function mergeArrays(existing?: string[], toAdd?: string[]): string[] | undefine
 }
 
 /**
+ * Create or update a TaskSnapshot from raw task data
+ * Shared helper for TaskList and TaskGet processing
+ */
+function createOrUpdateTaskSnapshot(
+  task: any,
+  existing: TaskSnapshot | undefined
+): TaskSnapshot {
+  const id = task.id
+  return {
+    id,
+    subject: task.subject ?? "Task",
+    description: task.description ?? existing?.description,
+    activeForm: task.activeForm ?? existing?.activeForm,
+    status: task.status ?? "pending",
+    blockedBy: task.blockedBy,
+    blocks: task.blocks,
+  }
+}
+
+/**
+ * Build a TaskInfo from raw task data (for TaskList/TaskGet display).
+ * Shared helper to avoid duplicating the TaskInfo construction logic.
+ */
+function buildTaskInfo(task: any): TaskInfo {
+  const id = task.id ?? ""
+  const rawSubject = task.subject ?? "Task"
+  return {
+    id,
+    subject: id ? formatTaskSubject(id, rawSubject) : rawSubject,
+    rawSubject,
+    description: task.description,
+    status: task.status ?? "pending",
+    blockedBy: task.blockedBy,
+    blocks: task.blocks,
+    owner: task.owner,
+  }
+}
+
+/**
+ * Yield all tasks referenced by a read-only tool part (TaskList, TaskGet).
+ * Shared helper to avoid duplicating the extraction logic across functions.
+ */
+function* iterateReadOnlyTasks(part: TaskToolPart): Generator<any> {
+  if (!part || part.state === "input-streaming") return
+  if (part.type === "tool-TaskList" && Array.isArray(part.output?.tasks)) {
+    for (const task of part.output.tasks) {
+      if (task.id) yield task
+    }
+  } else if (part.type === "tool-TaskGet" && part.output?.task?.id) {
+    yield part.output.task
+  }
+}
+
+/**
  * Build/update task snapshot from parts
  * Incrementally updates the snapshot with data from the current group
  * Only processes TaskCreate and TaskUpdate - these are the source of truth for task state.
  * TaskList/TaskGet are read operations that don't add new state information.
  */
 function updateTaskSnapshotFromParts(
-  parts: any[],
+  parts: TaskToolPart[],
   existingSnapshot: Map<string, TaskSnapshot>
 ): Map<string, TaskSnapshot> {
   const tasks = new Map(existingSnapshot)
@@ -170,41 +256,11 @@ function updateTaskSnapshotFromParts(
       })
     }
 
-    // TaskList - update snapshot with all listed tasks (authoritative source of truth)
-    if (part?.type === "tool-TaskList" && Array.isArray(part.output?.tasks)) {
-      for (const task of part.output.tasks) {
-        const id = task.id
-        if (id) {
-          const existing = tasks.get(id)
-          tasks.set(id, {
-            id,
-            subject: task.subject ?? "Task",
-            description: task.description ?? existing?.description,
-            activeForm: task.activeForm ?? existing?.activeForm,  // Preserve UI-only field
-            status: task.status ?? "pending",
-            blockedBy: task.blockedBy,
-            blocks: task.blocks,
-          })
-        }
-      }
-    }
-
-    // TaskGet - update snapshot with the retrieved task (authoritative source of truth)
-    if (part?.type === "tool-TaskGet" && part.output?.task) {
-      const task = part.output.task
+    // TaskList and TaskGet - update snapshot with retrieved tasks (authoritative source of truth)
+    for (const task of iterateReadOnlyTasks(part)) {
       const id = task.id
-      if (id) {
-        const existing = tasks.get(id)
-        tasks.set(id, {
-          id,
-          subject: task.subject ?? "Task",
-          description: task.description ?? existing?.description,
-          activeForm: task.activeForm ?? existing?.activeForm,  // Preserve UI-only field
-          status: task.status ?? "pending",
-          blockedBy: task.blockedBy,
-          blocks: task.blocks,
-        })
-      }
+      const existing = tasks.get(id)
+      tasks.set(id, createOrUpdateTaskSnapshot(task, existing))
     }
   }
 
@@ -241,7 +297,7 @@ interface ExtractedReadData {
  * @param snapshotSubjects - Optional map of task subjects from snapshot history (for cross-group resolution)
  */
 function extractChangesFromParts(
-  parts: any[],
+  parts: TaskToolPart[],
   snapshotSubjects?: Map<string, string>
 ): ExtractedChanges {
   if (!parts || !Array.isArray(parts)) return { changes: [], taskSubjects: new Map() }
@@ -376,7 +432,7 @@ function extractChangesFromParts(
           newChange.updatedFields = updatedFields
         }
         if (blockedBy) newChange.blockedByIds = blockedBy
-        if (blocks) newChange.blocksIds = blocks
+        if (blocks) newChange.blockingIds = blocks
 
         changes.push(newChange)
       } else {
@@ -399,7 +455,7 @@ function extractChangesFromParts(
 
         // Add dependency info
         if (blockedBy) existing.blockedByIds = blockedBy
-        if (blocks) existing.blocksIds = blocks
+        if (blocks) existing.blockingIds = blocks
       }
     }
 
@@ -412,7 +468,7 @@ function extractChangesFromParts(
 /**
  * Extract read-only task data from TaskList and TaskGet parts
  */
-function extractReadDataFromParts(parts: any[]): ExtractedReadData {
+function extractReadDataFromParts(parts: TaskToolPart[]): ExtractedReadData {
   if (!parts || !Array.isArray(parts)) return { taskList: null, taskGet: null }
 
   let taskList: TaskInfo[] | null = null
@@ -423,36 +479,12 @@ function extractReadDataFromParts(parts: any[]): ExtractedReadData {
 
     // TaskList - extract all tasks
     if (part.type === "tool-TaskList" && Array.isArray(part.output?.tasks)) {
-      taskList = part.output.tasks.map((task: any) => {
-        const id = task.id ?? ""
-        const rawSubject = task.subject ?? "Task"
-        return {
-          id,
-          subject: id ? formatTaskSubject(id, rawSubject) : rawSubject,
-          description: task.description,
-          status: task.status ?? "pending",
-          blockedBy: task.blockedBy,
-          blocks: task.blocks,
-          owner: task.owner,
-        }
-      })
+      taskList = part.output.tasks.map(buildTaskInfo)
     }
 
     // TaskGet - extract single task
     if (part.type === "tool-TaskGet" && part.output?.task) {
-      const task = part.output.task
-      const id = task.id ?? ""
-      const rawSubject = task.subject ?? "Task"
-      taskGet = {
-        id,
-        subject: id ? formatTaskSubject(id, rawSubject) : rawSubject,
-        rawSubject,
-        description: task.description,
-        status: task.status ?? "pending",
-        blockedBy: task.blockedBy,
-        blocks: task.blocks,
-        owner: task.owner,
-      }
+      taskGet = buildTaskInfo(part.output.task)
     }
   }
 
@@ -725,8 +757,8 @@ const ChangeItem = memo(function ChangeItem({
 
   // Build "blocks" text (keep as text since it's less important)
   let blocksDesc: string | null = null
-  if (change.blocksIds && change.blocksIds.length > 0) {
-    const deps = change.blocksIds
+  if (change.blockingIds && change.blockingIds.length > 0) {
+    const deps = change.blockingIds
       .map(id => taskSubjects.get(id) ?? `#${id}`)
       .join(", ")
     blocksDesc = `blocks ${deps}`
@@ -788,6 +820,14 @@ export const AgentTaskToolsGroup = memo(function AgentTaskToolsGroup({
   // Build snapshots using linear history
   // Each group gets its own snapshot keyed by groupKey (first toolCallId)
   // previousSnapshot = state before this group, currentSnapshot = state after
+
+  // Ref to track pending cache mutations (avoids stale reads in useEffect)
+  const pendingMutationRef = useRef<{
+    conversationId: string
+    groupKey: string
+    currentSnapshot: Map<string, TaskSnapshot>
+  } | null>(null)
+
   const { previousSnapshot, currentSnapshot } = useMemo(() => {
     const emptySnapshot = new Map<string, TaskSnapshot>()
 
@@ -800,48 +840,81 @@ export const AgentTaskToolsGroup = memo(function AgentTaskToolsGroup({
       return { previousSnapshot: emptySnapshot, currentSnapshot: emptySnapshot }
     }
 
-    // Get or create caches for this conversation
-    let historyMap = snapshotHistoryCache.get(conversationId)
-    if (!historyMap) {
-      historyMap = new Map()
-      snapshotHistoryCache.set(conversationId, historyMap)
-    }
-
-    let groupOrder = groupOrderCache.get(conversationId)
-    if (!groupOrder) {
-      groupOrder = []
-      groupOrderCache.set(conversationId, groupOrder)
-    }
+    // Read from caches (pure operation - no mutations)
+    const historyMap = snapshotHistoryCache.get(conversationId)
+    const groupOrder = groupOrderCache.get(conversationId)
 
     // Find previous snapshot based on group order
     let previousSnapshot = emptySnapshot
-    const groupIndex = groupOrder.indexOf(groupKey)
+    if (historyMap && groupOrder) {
+      const groupIndex = groupOrder.indexOf(groupKey)
 
-    if (groupIndex > 0) {
-      // This group exists in order, get the one before it
-      const prevGroupKey = groupOrder[groupIndex - 1]
-      previousSnapshot = historyMap.get(prevGroupKey) ?? emptySnapshot
-    } else if (groupIndex === -1 && groupOrder.length > 0) {
-      // New group, use the last group's snapshot as previous
-      const lastGroupKey = groupOrder[groupOrder.length - 1]
-      previousSnapshot = historyMap.get(lastGroupKey) ?? emptySnapshot
+      if (groupIndex > 0) {
+        // This group exists in order, get the one before it
+        const prevGroupKey = groupOrder[groupIndex - 1]
+        previousSnapshot = historyMap.get(prevGroupKey) ?? emptySnapshot
+      } else if (groupIndex === -1 && groupOrder.length > 0) {
+        // New group, use the last group's snapshot as previous
+        const lastGroupKey = groupOrder[groupOrder.length - 1]
+        previousSnapshot = historyMap.get(lastGroupKey) ?? emptySnapshot
+      }
     }
 
     // Build current snapshot from previous + this group's parts
     const currentSnapshot = updateTaskSnapshotFromParts(parts, previousSnapshot)
 
-    // Store in history
-    historyMap.set(groupKey, currentSnapshot)
-
-    // Add to order if not present
-    if (groupIndex === -1) {
-      groupOrder.push(groupKey)
-    }
-
-    evictOldestCaches()
+    // Store pending mutation for useEffect to apply (pure assignment)
+    pendingMutationRef.current = { conversationId, groupKey, currentSnapshot }
 
     return { previousSnapshot, currentSnapshot }
   }, [parts, conversationId])
+
+  // Apply cache mutations in useEffect (not in useMemo)
+  // This ensures useMemo is pure and mutations happen after render
+  useEffect(() => {
+    const mutation = pendingMutationRef.current
+    if (!mutation) return
+
+    const { conversationId: convId, groupKey, currentSnapshot: snapshot } = mutation
+
+    // Get or create caches for this conversation
+    let historyMap = snapshotHistoryCache.get(convId)
+    if (!historyMap) {
+      historyMap = new Map()
+      snapshotHistoryCache.set(convId, historyMap)
+    }
+
+    let groupOrder = groupOrderCache.get(convId)
+    if (!groupOrder) {
+      groupOrder = []
+      groupOrderCache.set(convId, groupOrder)
+    }
+
+    // Check if this (conversationId, groupKey) has been cached
+    let groupKeys = cachedGroupKeys.get(convId)
+    if (!groupKeys) {
+      groupKeys = new Set()
+      cachedGroupKeys.set(convId, groupKeys)
+    }
+
+    if (!groupKeys.has(groupKey)) {
+      // New entry - add to tracking and caches
+      groupKeys.add(groupKey)
+      historyMap.set(groupKey, snapshot)
+
+      // Add to order if not present
+      const groupIndex = groupOrder.indexOf(groupKey)
+      if (groupIndex === -1) {
+        groupOrder.push(groupKey)
+      }
+
+      evictOldestCaches()
+    } else {
+      // Already tracked — still update the snapshot in case parts changed
+      // (e.g. new streaming data arrived for the same groupKey)
+      historyMap.set(groupKey, snapshot)
+    }
+  }, [currentSnapshot, conversationId])
 
   // Sync the FULL accumulated task snapshot to Jotai atom for details sidebar.
   // We read the last group's snapshot from the cache (which accumulates all previous groups)
@@ -925,6 +998,7 @@ export const AgentTaskToolsGroup = memo(function AgentTaskToolsGroup({
   // Check if any part is still pending (for shimmer effects)
   const anyPending = useMemo(() => {
     return parts.some((part) => {
+      if (!part) return false
       const { isPending } = getToolStatus(part, chatStatus)
       return isPending
     })
@@ -965,8 +1039,13 @@ export const AgentTaskToolsGroup = memo(function AgentTaskToolsGroup({
     return null
   }
 
-  // Generate header text based on what we're showing
-  let headerText = "Tasks"
+  // Generate header descriptor based on what we're showing.
+  // Using a discriminated union instead of a magic-string encoding.
+  type HeaderDescriptor =
+    | { kind: "text"; text: string }
+    | { kind: "task_get"; id: string; subject: string }
+
+  let header: HeaderDescriptor = { kind: "text", text: "Tasks" }
 
   if (hasChanges) {
     // Count changes by type for header
@@ -975,20 +1054,22 @@ export const AgentTaskToolsGroup = memo(function AgentTaskToolsGroup({
     const startedCount = changes.filter(c => c.newStatus === "in_progress").length
 
     if (createdCount > 0 && createdCount === changes.length) {
-      headerText = `Created ${createdCount} task${createdCount > 1 ? "s" : ""}`
+      header = { kind: "text", text: `Created ${createdCount} task${createdCount > 1 ? "s" : ""}` }
     } else if (completedCount > 0 && completedCount === changes.length) {
-      headerText = `Completed ${completedCount} task${completedCount > 1 ? "s" : ""}`
+      header = { kind: "text", text: `Completed ${completedCount} task${completedCount > 1 ? "s" : ""}` }
     } else if (startedCount > 0 && startedCount === changes.length) {
-      headerText = `Started ${startedCount} task${startedCount > 1 ? "s" : ""}`
+      header = { kind: "text", text: `Started ${startedCount} task${startedCount > 1 ? "s" : ""}` }
     } else {
-      headerText = `${changes.length} task update${changes.length > 1 ? "s" : ""}`
+      header = { kind: "text", text: `${changes.length} task update${changes.length > 1 ? "s" : ""}` }
     }
   } else if (hasTaskList) {
-    headerText = `List ${taskList!.length} task${taskList!.length > 1 ? "s" : ""}`
+    header = { kind: "text", text: `List ${taskList!.length} task${taskList!.length > 1 ? "s" : ""}` }
   } else if (hasTaskGet) {
-    // For TaskGet, we'll use a custom header with bold "Read task" prefix
-    // The headerText will be used as a flag to trigger special rendering
-    headerText = `__TASK_GET__${taskGet!.id}__${taskGet!.rawSubject ?? taskGet!.subject}`
+    header = {
+      kind: "task_get",
+      id: taskGet!.id,
+      subject: taskGet!.rawSubject ?? taskGet!.subject,
+    }
   }
 
   // Determine items to render
@@ -1036,21 +1117,16 @@ export const AgentTaskToolsGroup = memo(function AgentTaskToolsGroup({
       >
         <div className="flex items-center gap-1.5">
           <PlanIcon className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
-          {headerText.startsWith("__TASK_GET__") ? (
+          {header.kind === "task_get" ? (
             <span className="text-xs flex-1">
               <span className="font-medium text-foreground">Read task</span>
               <span className="text-muted-foreground ml-1">
-                {(() => {
-                  const parts = headerText.replace("__TASK_GET__", "").split("__")
-                  const taskId = parts[0]
-                  const taskSubject = parts.slice(1).join("__")
-                  return `${taskId}. ${taskSubject}`
-                })()}
+                {`${header.id}. ${header.subject}`}
               </span>
             </span>
           ) : (
             <span className="text-xs font-medium text-foreground flex-1">
-              {headerText}
+              {header.text}
             </span>
           )}
           {isReadOnly && (

@@ -1358,4 +1358,104 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cooldown"));
     }
+
+    #[tokio::test]
+    async fn test_cleanup_old_conversations() {
+        use std::time::Duration;
+
+        let manager = ConversationManager::new(ConversationConfig::default());
+
+        // Create a conversation
+        manager.check_and_record("a", "b", "msg1").await.unwrap();
+
+        // Verify it exists
+        let all = manager.list_all_conversations().await;
+        assert_eq!(all.len(), 1);
+
+        // Cleanup with very short max_age (should remove it)
+        manager
+            .cleanup_old_conversations(Duration::from_secs(0))
+            .await;
+
+        let all = manager.list_all_conversations().await;
+        assert_eq!(all.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_preserves_recent_conversations() {
+        use std::time::Duration;
+
+        let manager = ConversationManager::new(ConversationConfig::default());
+
+        // Create a conversation
+        manager.check_and_record("a", "b", "msg1").await.unwrap();
+
+        // Cleanup with long max_age (should preserve it)
+        manager
+            .cleanup_old_conversations(Duration::from_secs(3600))
+            .await;
+
+        let all = manager.list_all_conversations().await;
+        assert_eq!(all.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_conversation_manager_is_empty() {
+        let manager = ConversationManager::new(ConversationConfig::default());
+
+        assert!(manager.is_empty().await);
+
+        manager.check_and_record("a", "b", "msg1").await.unwrap();
+
+        assert!(!manager.is_empty().await);
+    }
+
+    #[tokio::test]
+    async fn test_conversation_manager_len() {
+        let manager = ConversationManager::new(ConversationConfig::default());
+
+        assert_eq!(manager.len().await, 0);
+
+        manager.check_and_record("a", "b", "msg1").await.unwrap();
+        assert_eq!(manager.len().await, 1);
+
+        manager.check_and_record("c", "d", "msg2").await.unwrap();
+        assert_eq!(manager.len().await, 2);
+    }
+
+    #[tokio::test]
+    async fn test_terminate_already_terminated() {
+        let manager = ConversationManager::new(ConversationConfig::default());
+
+        manager.check_and_record("a", "b", "msg1").await.unwrap();
+
+        // First termination should succeed
+        manager
+            .terminate_conversation("conv-a-b", TerminationReason::Completed)
+            .await
+            .unwrap();
+
+        // Second termination should fail
+        let result = manager
+            .terminate_conversation("conv-a-b", TerminationReason::Completed)
+            .await;
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("already terminated"));
+    }
+
+    #[tokio::test]
+    async fn test_terminate_nonexistent_conversation() {
+        let manager = ConversationManager::new(ConversationConfig::default());
+
+        let result = manager
+            .terminate_conversation("nonexistent", TerminationReason::Completed)
+            .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
 }

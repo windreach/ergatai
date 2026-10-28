@@ -1,6 +1,5 @@
 "use client"
 
-import { useState } from "react"
 import { X } from "lucide-react"
 
 // Text selection icon - "A" with text cursor
@@ -24,17 +23,14 @@ export function AgentTextContextItem({
   preview,
   onRemove,
 }: AgentTextContextItemProps) {
-  const [isHovered, setIsHovered] = useState(false)
-
-  // Get a short title from the preview (first line or first ~15 chars)
-  const title = preview.split('\n')[0]?.slice(0, 20) || preview.slice(0, 20)
-  const displayTitle = title.length < preview.length ? `${title}...` : title
+  // Get a short title from the preview (first line, truncated at 20 chars)
+  const firstLine = preview.split('\n')[0] ?? preview
+  const title = firstLine.slice(0, 20)
+  const displayTitle = firstLine.length > 20 ? `${title}...` : title
 
   return (
     <div
-      className="relative flex items-center gap-2 pl-1 pr-2 py-1 rounded-lg bg-muted/50 cursor-default min-w-[120px] max-w-[200px]"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
+      className="group relative flex items-center gap-2 pl-1 pr-2 py-1 rounded-lg bg-muted/50 cursor-default min-w-[120px] max-w-[200px]"
     >
       {/* Icon container */}
       <div className="flex items-center justify-center w-8 self-stretch rounded-md bg-muted shrink-0">
@@ -61,8 +57,9 @@ export function AgentTextContextItem({
           className={`absolute -top-1.5 -right-1.5 size-4 rounded-full bg-background border border-border
                      flex items-center justify-center transition-[opacity,transform] duration-150 ease-out active:scale-[0.97] z-10
                      text-muted-foreground hover:text-foreground
-                     ${isHovered ? "opacity-100" : "opacity-0"}`}
+                     opacity-0 group-hover:opacity-100`}
           type="button"
+          aria-label="Remove text context"
         >
           <X className="size-3" />
         </button>

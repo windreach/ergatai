@@ -7,7 +7,7 @@ import { useMessageQueueStore, EMPTY_QUEUE } from "../stores/message-queue-store
 import { syncMessagesWithStatusAtom } from "../stores/message-store"
 import { useStreamingStatusStore } from "../stores/streaming-status-store"
 import { clearConversationRuntimeCaches } from "../stores/conversation-runtime-cleanup"
-import { trpc, trpcClient } from "@/lib/trpc"
+import { trpc } from "@/lib/trpc"
 import type { ChatConversation, ChatMessage } from "@/features/details-sidebar/lib/chat-contract-api"
 
 /**
@@ -37,15 +37,14 @@ export function useChatInstance({
   const backendConversationId = conversation.backendConversationId
   const runtimeConversationId = backendConversationId ?? conversation.id
 
-  const trpcUtils = trpc.useUtils()
-  const [isPersistingMessages, setIsPersistingMessages] = useState(false)
-
   // Message queue
   const queue = useMessageQueueStore((s) => s.queues[runtimeConversationId] ?? EMPTY_QUEUE)
   const addToQueue = useMessageQueueStore((s) => s.addToQueue)
   const removeFromQueue = useMessageQueueStore((s) => s.removeFromQueue)
 
   // Map backend messages to UI messages
+  // UIMessage<any> is used because the AI SDK's UIMessage type is generic over message
+  // metadata/extra fields, which vary across different message types (text, images, files, custom parts)
   const mapMessage = useCallback((message: ChatMessage): UIMessage<any> => {
     const parts = (message.parts?.length
       ? message.parts
@@ -86,17 +85,13 @@ export function useChatInstance({
     }
   }, [])
 
-  // Persist messages to backend
-  const persistMessages = useCallback((latestMessages: UIMessage<any>[]) => {
-    if (!backendConversationId || latestMessages.length === 0) return
-
-    // The client no longer replaces the whole message list. Prompt delivery,
-    // agent output accumulation, and per-conversation message persistence are
-    // owned by the backend.
+  // Intentional no-op: backend owns message persistence via SSE-driven accumulation.
+  // Kept as a hook point in case client-side persistence is re-introduced later.
+  const noopPersist = useCallback((_latestMessages: UIMessage<any>[]) => {
+    if (!backendConversationId || _latestMessages.length === 0) return
     console.debug(
       "[useChatInstance] Skipping client-side replace persistence; backend owns message persistence",
     )
-    setIsPersistingMessages(false)
   }, [backendConversationId])
 
   // Create Chat instance with appropriate transport and initial messages
@@ -121,6 +116,8 @@ export function useChatInstance({
           mode: "agent",
         })
 
+    // Chat<any> is used because the AI SDK's Chat type is generic over message shape,
+    // and our messages contain heterogeneous parts (text, images, files, custom metadata)
     return new Chat<any>({
       id: runtimeConversationId,
       messages: conversation.messages.map(mapMessage),
@@ -129,7 +126,7 @@ export function useChatInstance({
         toast.error(error.message || "Failed to send message")
       },
       onFinish: () => {
-        persistMessages(chat.messages)
+        noopPersist(chat.messages)
       },
     })
   })
@@ -157,11 +154,6 @@ export function useChatInstance({
     }
     setMessages(conversation.messages.map(mapMessage))
   }, [conversation.messages, isStreaming, mapMessage, messages.length, setMessages])
-
-  // Working state - whether the agent is producing output for THIS conversation
-  // Note: This is now fully handled by the Chat status via Transport SSE.
-  // No separate subscription needed - the complete rendering channel handles all agent output events.
-  const agentWorking = false // Deprecated: kept for API compatibility, always false
 
   // Sync messages with store
   const syncMessages = useSetAtom(syncMessagesWithStatusAtom)
@@ -199,6 +191,7 @@ export function useChatInstance({
         addToQueue(runtimeConversationId, {
           id: `queue_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`,
           message: parts.find((p) => p.type === "text")?.text || "",
+          parts, // Store full parts array to preserve images/files/other content
           timestamp: new Date(),
           status: "pending",
         })
@@ -210,16 +203,19 @@ export function useChatInstance({
   )
 
   // Send message on behalf of an agent (agent-to-agent communication)
+  // Destructure specific primitive properties to avoid unnecessary re-creation
+  // when transportConfig object reference changes
+  const fromAgentId = transportConfig?.fromAgentId
   const sendAgentMessage = useCallback(
     (parts: UIMessage<any>["parts"]) => {
-      if (!backendConversationId || !agentId || !transportConfig?.fromAgentId) {
+      if (!backendConversationId || !agentId || !fromAgentId) {
         toast.error("Agent-to-agent communication not configured.")
         return
       }
 
       void sendMessage({ role: "agent", parts })
     },
-    [backendConversationId, agentId, transportConfig, sendMessage]
+    [backendConversationId, agentId, fromAgentId, sendMessage]
   )
 
   const handleSendFromQueue = useCallback(
@@ -227,9 +223,13 @@ export function useChatInstance({
       const item = queue.find((q) => q.id === itemId)
       if (!item) return
       removeFromQueue(runtimeConversationId, itemId)
+      // Use stored parts if available (preserves images/files), otherwise reconstruct from message string
+      const parts = item.parts && item.parts.length > 0
+        ? item.parts
+        : [{ type: "text", text: item.message }]
       void sendMessage({
         role: "user",
-        parts: [{ type: "text", text: item.message }],
+        parts,
       })
     },
     [queue, removeFromQueue, runtimeConversationId, sendMessage]
@@ -244,10 +244,9 @@ export function useChatInstance({
     stop,
     setMessages,
     isStreaming,
-    agentWorking,
     queue,
     handleSend,
     handleSendFromQueue,
-    persistMessages,
+    noopPersist,
   }
 }

@@ -236,7 +236,10 @@ export function parseMention(id: string): ParsedMention | null {
  */
 export function extractFileMentionIds(text: string): string[] {
   const ids: string[] = []
-  const regex = /@\[([^\]]+)\]/g
+  // Use a robust pattern that handles escaped brackets in mention IDs.
+  // Mentions are formatted as @[id], where id may contain paths with colons.
+  // The pattern matches either non-bracket/non-backslash chars, or escaped sequences (\.).
+  const regex = /@\[((?:[^\]\\]|\\.)+)\]/g
   let match: RegExpExecArray | null
 
   while ((match = regex.exec(text)) !== null) {
@@ -252,7 +255,8 @@ export function extractFileMentionIds(text: string): string[] {
  */
 export function extractFileMentions(text: string): ParsedMention[] {
   const mentions: ParsedMention[] = []
-  const regex = /@\[([^\]]+)\]/g
+  // See extractFileMentionIds for regex pattern explanation
+  const regex = /@\[((?:[^\]\\]|\\.)+)\]/g
   let match: RegExpExecArray | null
 
   while ((match = regex.exec(text)) !== null) {
@@ -269,7 +273,8 @@ export function extractFileMentions(text: string): ParsedMention[] {
  * Check if text contains any file, folder, skill, agent, tool, quote, diff, or pasted mentions
  */
 export function hasFileMentions(text: string): boolean {
-  return /@\[(file|folder|skill|agent|tool|quote|diff|pasted|chatHistory):[^\]]+\]/.test(text)
+  // See extractFileMentionIds for regex pattern explanation
+  return /@\[(file|folder|skill|agent|tool|quote|diff|pasted|chatHistory):(?:[^\]\\]|\\.)+\]/.test(text)
 }
 
 /**
@@ -283,7 +288,8 @@ export function extractTextMentions(text: string): {
   const textMentions: ParsedMention[] = []
   let cleanedText = text
 
-  const regex = /@\[([^\]]+)\]/g
+  // See extractFileMentionIds for regex pattern explanation
+  const regex = /@\[((?:[^\]\\]|\\.)+)\]/g
   let match: RegExpExecArray | null
   const mentionsToRemove: string[] = []
 

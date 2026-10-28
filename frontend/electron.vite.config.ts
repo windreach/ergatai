@@ -52,7 +52,6 @@ export default defineConfig({
   renderer: {
     plugins: [
       react({
-        // In dev mode, use WDYR as JSX import source to track ALL component re-renders
         jsxImportSource: isDev
           ? "@welldone-software/why-did-you-render"
           : undefined,
@@ -64,12 +63,34 @@ export default defineConfig({
       },
     },
     build: {
+      sourcemap: true,
+      minify: "oxc",
+      chunkSizeWarningLimit: 1000,
+      target: "es2020",
+      cssCodeSplit: false,
+      experimental: {
+        rolldown: true,  // Use Rolldown (Rust-based, highly memory efficient)
+      },
       rollupOptions: {
+        treeshake: {
+          moduleSideEffects: false,
+        },
         input: {
           index: resolve(__dirname, "src/renderer/index.html"),
           login: resolve(__dirname, "src/renderer/login.html"),
         },
+        output: {
+          chunkFileNames: "chunks/[name]-[hash].js",
+          manualChunks(id) {
+            if (id.includes("node_modules")) {
+              return "vendor"
+            }
+          },
+        },
       },
+    },
+    optimizeDeps: {
+      include: ["react", "react-dom"],
     },
     css: {
       postcss: {

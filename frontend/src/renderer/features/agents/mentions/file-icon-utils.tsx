@@ -2,7 +2,7 @@
  * Utility functions for creating file icon elements.
  * Separated from agents-file-mention.tsx to maintain Fast Refresh compatibility.
  */
-import { createElement } from "react"
+import { createElement, type ComponentType } from "react"
 import { flushSync } from "react-dom"
 import { createRoot } from "react-dom/client"
 import {
@@ -135,10 +135,6 @@ export function getFileIconByExtension(
       return ReactIcon
     case "ts":
       return TypeScriptIcon
-    case "js":
-    case "mjs":
-    case "cjs":
-      return JavaScriptIcon
     case "jsx":
       return ReactIcon
     case "py":
@@ -149,15 +145,6 @@ export function getFileIconByExtension(
       return GoIcon
     case "rs":
       return RustIcon
-    case "md":
-    case "mdx":
-      // This case is handled above in special handling, but kept as fallback
-      // Check if it's README
-      const nameWithoutExt = filenameLower.replace(/\.(md|mdx)$/, "")
-      if (nameWithoutExt === "readme") {
-        return MarkdownInfoIcon
-      }
-      return MarkdownIcon
     case "css":
       return CSSIcon
     case "html":
@@ -261,42 +248,45 @@ export function createFileIconElement(filename: string, type?: "file" | "folder"
     return createMCPIconElement()
   }
 
-  const IconComponent = type === "skill"
-    ? SkillIcon
-    : type === "agent"
-      ? CustomAgentIcon
-    : type === "folder"
-      ? FolderClosedIcon
-      : (getFileIconByExtension(filename) ?? UnknownFileIcon)
+  const getIconComponent = () => {
+    if (type === "skill") return SkillIcon
+    if (type === "agent") return CustomAgentIcon
+    if (type === "folder") return FolderClosedIcon
+    return getFileIconByExtension(filename) ?? UnknownFileIcon
+  }
+  const IconComponent = getIconComponent()
   // Note: "category" type will use the default file icon based on filename, which is fine since
   // categories won't be inserted as mentions in the editor (they navigate to subpages)
 
   // Create a temporary container
   const container = document.createElement("div")
-  container.style.display = "none"
-  container.style.position = "absolute"
-  container.style.visibility = "hidden"
+  container.className = "sr-only"
   document.body.appendChild(container)
 
-  // Create React element
-  const iconElement = createElement(IconComponent, {
-    className: "h-3 w-3 text-muted-foreground flex-shrink-0",
-  })
+  let svgElement: SVGElement | null = null
+  try {
+    // Create React element
+    const iconElement = createElement(IconComponent, {
+      className: "h-3 w-3 text-muted-foreground flex-shrink-0",
+    })
 
-  const root = createRoot(container)
+    const root = createRoot(container)
 
-  // Render synchronously using flushSync
-  flushSync(() => {
-    root.render(iconElement)
-  })
+    // Render synchronously using flushSync
+    flushSync(() => {
+      root.render(iconElement)
+    })
 
-  // Extract the SVG element
-  const svgElement = container.querySelector("svg")
+    // Extract the SVG element
+    svgElement = container.querySelector("svg")
 
-  // Clean up
-  root.unmount()
-  if (container.parentNode) {
-    document.body.removeChild(container)
+    // Unmount before removing container
+    root.unmount()
+  } finally {
+    // Always remove container to prevent DOM node leak
+    if (container.parentNode) {
+      document.body.removeChild(container)
+    }
   }
 
   if (!svgElement || !(svgElement instanceof SVGSVGElement)) {
@@ -397,15 +387,26 @@ function CategoryIcon({ className, categoryId }: { className?: string; categoryI
   return <FilesIcon className={className} />
 }
 
+// Cache for category icon wrappers to avoid creating new component references on every call
+const categoryIconCache = new Map<string, ComponentType<{ className?: string }>>()
+
+function getCategoryIconWrapper(categoryId: string): ComponentType<{ className?: string }> {
+  let wrapper = categoryIconCache.get(categoryId)
+  if (!wrapper) {
+    wrapper = function CategoryIconWrapper({ className }: { className?: string }) {
+      return <CategoryIcon className={className} categoryId={categoryId} />
+    }
+    categoryIconCache.set(categoryId, wrapper)
+  }
+  return wrapper
+}
+
 /**
  * Get icon component for a file, folder, skill, agent, tool, or category option
  */
 export function getOptionIcon(option: { id?: string; label: string; type?: "file" | "folder" | "skill" | "agent" | "category" | "tool" }) {
   if (option.type === "category") {
-    // Return a wrapper component for categories
-    return function CategoryIconWrapper({ className }: { className?: string }) {
-      return <CategoryIcon className={className} categoryId={option.id || ""} />
-    }
+    return getCategoryIconWrapper(option.id || "")
   }
   if (option.type === "skill") {
     return SkillIconWrapper

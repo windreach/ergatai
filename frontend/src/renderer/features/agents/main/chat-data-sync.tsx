@@ -1,6 +1,6 @@
 "use client"
 
-import { createContext, useContext, useLayoutEffect, useRef, type ReactNode } from "react"
+import { createContext, useContext, useEffect, useRef, type ReactNode } from "react"
 import { Chat, useChat } from "@ai-sdk/react"
 import { useSetAtom } from "jotai"
 import { syncMessagesWithStatusAtom } from "../stores/message-store"
@@ -50,7 +50,7 @@ export function ChatDataSync({
   children,
 }: ChatDataSyncProps) {
   // Call useChat - this causes re-renders on every chunk
-  const { messages, sendMessage, status, stop, regenerate } = useChat({
+  const { messages, sendMessage, status, stop, regenerate, error } = useChat({
     id: conversationId,
     chat,
     experimental_throttle: 50,
@@ -60,14 +60,21 @@ export function ChatDataSync({
   const syncMessages = useSetAtom(syncMessagesWithStatusAtom)
 
   // Sync to Jotai store - this is the ONLY thing we do with messages
-  // Using useLayoutEffect to sync before paint
+  // Using useEffect instead of useLayoutEffect to avoid blocking paint during high-frequency streaming
   // CRITICAL: Must pass conversationId to correctly key caches per chat
   // NOTE: updateGlobal=false because global atoms (messageIdsAtom, chatStatusAtom,
   // currentConversationIdAtom) are legacy and never read by components.
   // All rendering uses per-conversation atoms (messageIdsPerChatAtom, etc.)
-  useLayoutEffect(() => {
+  useEffect(() => {
     syncMessages({ messages, status, conversationId, updateGlobal: false })
   }, [messages, status, conversationId, syncMessages])
+
+  // Log streaming errors for debugging
+  useEffect(() => {
+    if (error) {
+      console.error("[ChatDataSync] Streaming error:", error)
+    }
+  }, [error])
 
   // Stable refs for actions to prevent context recreation
   const actionsRef = useRef<ChatActionsContextValue>({

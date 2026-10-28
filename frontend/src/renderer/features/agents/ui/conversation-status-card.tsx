@@ -74,8 +74,15 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
   useFileChangeListener(worktreePath)
 
   // Fetch git status to filter out committed files
+  const { data: branchData } = trpc.changes.getBranches.useQuery(
+    { worktreePath: worktreePath || "" },
+    { enabled: !!worktreePath && changedFiles.length > 0 }
+  )
+
+  const effectiveBaseBranch = branchData?.defaultBranch ?? "main"
+
   const { data: gitStatus } = trpc.changes.getStatus.useQuery(
-    { worktreePath: worktreePath || "", defaultBranch: "main" },
+    { worktreePath: worktreePath || "", defaultBranch: effectiveBaseBranch },
     {
       enabled: !!worktreePath && changedFiles.length > 0 && !isBusy,
       // No polling - updates triggered by file-changed events from Claude tools
@@ -94,20 +101,13 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
     // Build set of all uncommitted file paths from git status
     const uncommittedPaths = new Set<string>()
     // Safely iterate - arrays might be undefined in edge cases
-    if (gitStatus.staged) {
-      for (const file of gitStatus.staged) {
-        uncommittedPaths.add(file.path)
-      }
-    }
-    if (gitStatus.unstaged) {
-      for (const file of gitStatus.unstaged) {
-        uncommittedPaths.add(file.path)
-      }
-    }
-    if (gitStatus.untracked) {
-      for (const file of gitStatus.untracked) {
-        uncommittedPaths.add(file.path)
-      }
+    const allChangedFiles = [
+      ...(gitStatus.staged ?? []),
+      ...(gitStatus.unstaged ?? []),
+      ...(gitStatus.untracked ?? []),
+    ]
+    for (const file of allChangedFiles) {
+      uncommittedPaths.add(file.path)
     }
 
     // Filter changedFiles to only include files that are still uncommitted
@@ -136,8 +136,9 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
   const handleReview = () => {
     // Set filter to only show files from this conversation
     // Use displayPath (relative path) to match git diff paths
+    // filePaths is guaranteed non-empty: Review button only renders when uncommittedFiles.length > 0
     const filePaths = uncommittedFiles.map((f) => f.displayPath)
-    setFilteredDiffFiles(filePaths.length > 0 ? filePaths : null)
+    setFilteredDiffFiles(filePaths)
     // Also set conversation ID filter for ChangesPanel - use the prop, not activeConversationId from store
     setFilteredConversationId(conversationId)
     setDiffSidebarOpen(true)

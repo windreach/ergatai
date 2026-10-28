@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
+import { toast } from "sonner"
 import { Button } from "../../../components/ui/button"
 import {
   LinkIcon,
@@ -16,15 +17,44 @@ interface MobileCopyLinkButtonProps {
 export function MobileCopyLinkButton({ url }: MobileCopyLinkButtonProps) {
   const [copied, setCopied] = useState(false)
   const { trigger: triggerHaptic } = useHaptic()
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current)
+    }
+  }, [])
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(url)
+      // Feature detection: check if Clipboard API is available
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(url)
+      } else {
+        // Fallback: use legacy execCommand method
+        const textArea = document.createElement("textarea")
+        textArea.value = url
+        textArea.style.position = "fixed"
+        textArea.style.left = "-999999px"
+        document.body.appendChild(textArea)
+        textArea.select()
+
+        try {
+          document.execCommand("copy")
+        } finally {
+          document.body.removeChild(textArea)
+        }
+      }
+
       triggerHaptic("medium")
       setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+      // Clear any existing timer before setting a new one
+      if (timerRef.current) clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(() => setCopied(false), 2000)
     } catch (error) {
       console.error("Failed to copy:", error)
+      toast.error("Failed to copy link")
     }
   }
 

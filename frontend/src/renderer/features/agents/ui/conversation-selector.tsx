@@ -52,14 +52,6 @@ import { SearchCombobox } from "../../../components/ui/search-combobox"
 import { ConversationContextMenu } from "./conversation-context-menu"
 import { formatTimeAgo } from "../utils/format-time-ago"
 
-interface DiffStats {
-  fileCount: number
-  additions: number
-  deletions: number
-  isLoading: boolean
-  hasChanges: boolean
-}
-
 // Isolated Search History Popover - prevents parent re-renders when popover opens/closes
 interface SearchHistoryPopoverProps {
   sortedConversations: ConversationMeta[]
@@ -172,8 +164,6 @@ interface ConversationSelectorProps {
   canOpenPreview?: boolean
   onOpenDiff?: () => void
   canOpenDiff?: boolean
-  isDiffSidebarOpen?: boolean
-  diffStats?: DiffStats
   onOpenTerminal?: () => void
   canOpenTerminal?: boolean
   isTerminalOpen?: boolean
@@ -188,8 +178,6 @@ export function ConversationSelector({
   canOpenPreview = false,
   onOpenDiff,
   canOpenDiff = false,
-  isDiffSidebarOpen = false,
-  diffStats,
   onOpenTerminal,
   canOpenTerminal = false,
   isTerminalOpen = false,
@@ -498,7 +486,6 @@ export function ConversationSelector({
       window.removeEventListener("keydown", handleHistoryHotkey, true)
   }, [conversationsSidebarMode])
 
-  // Keyboard shortcut: Cmd+Shift+T / Ctrl+Shift+T for new conversation
   // Scroll to active tab when it changes
   useEffect(() => {
     if (!activeConversationId || !tabsContainerRef.current) return
@@ -974,7 +961,7 @@ export function ConversationSelector({
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => onOpenDiff?.()}
+                onClick={() => onOpenDiff()}
                 className="h-6 w-6 p-0 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md flex items-center justify-center hover:bg-foreground/10"
               >
                 <DiffIcon className="h-4 w-4" />
@@ -990,7 +977,7 @@ export function ConversationSelector({
       )}
 
       {/* Terminal button - visible on desktop when unified sidebar is disabled OR terminal widget is hidden, and terminal is not already open */}
-      {!isMobile && canOpenTerminal && showTerminalButton && !isTerminalOpen && (
+      {!isMobile && canOpenTerminal && showTerminalButton && !isTerminalOpen && onOpenTerminal && (
         <div
           className="rounded-md bg-background/10 backdrop-blur-[10px] flex items-center justify-center"
           style={{
@@ -1003,7 +990,7 @@ export function ConversationSelector({
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => onOpenTerminal?.()}
+                onClick={() => onOpenTerminal()}
                 className="h-6 w-6 p-0 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md flex items-center justify-center hover:bg-foreground/10"
               >
                 <TerminalSquare className="h-4 w-4" />
@@ -1019,6 +1006,7 @@ export function ConversationSelector({
       )}
 
       {/* Diff button - only on mobile when diff is available */}
+      {/* TODO: Extract shared diff button helper with desktop variant (lines ~964-990) to reduce duplication */}
       {isMobile && onOpenDiff && canOpenDiff && (
         <div
           className="rounded-md bg-background/10 backdrop-blur-[10px] flex items-center justify-center"

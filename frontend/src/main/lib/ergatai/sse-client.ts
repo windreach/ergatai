@@ -1,6 +1,133 @@
 import { z } from "zod"
 import { getErgataiAuthConfig } from "./api"
 import type { BackendMessage, BackendSseMessage } from "./user-data"
+import { createLogger } from "../logger"
+
+const log = createLogger("SSE")
+
+// ============================================================================
+// GENERIC SSE STREAM PARSER - Shared infrastructure
+// ============================================================================
+
+/**
+ * Generic SSE stream parser that handles connection, buffering, and event dispatch.
+ * Reduces duplication across multiple SSE subscription functions.
+ *
+ * @param url - SSE endpoint URL
+ * @param onEvent - Callback for each parsed event (raw SSE event string)
+ * @param onError - Optional error callback
+ * @param onComplete - Optional completion callback
+ * @returns Cleanup function to abort the stream
+ */
+function createSseStream(
+  url: string,
+  onEvent: (rawEvent: string) => void,
+  onError?: (error: Error) => void,
+  onComplete?: () => void,
+): () => void {
+  const { apiUrl, token } = getErgataiAuthConfig()
+  const controller = new AbortController()
+  let cleanedUp = false
+
+  const cleanup = () => {
+    if (cleanedUp) return
+    cleanedUp = true
+    controller.abort()
+    onComplete?.()
+  }
+
+  void (async () => {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          Accept: "text/event-stream",
+          Authorization: `Bearer ${token}`,
+        },
+        signal: controller.signal,
+      })
+
+      if (!response.ok) {
+        const detail = await response.text().catch(() => "unknown error")
+        throw new Error(`SSE request failed: ${response.status} ${detail.trim()}`)
+      }
+
+      if (!response.body) {
+        throw new Error("SSE response has no readable body")
+      }
+
+      let buffer = ""
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+
+      while (!cleanedUp) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        // Normalize line endings: convert \r\n and \r to \n
+        buffer = buffer.replace(/\r\n|\r/g, "\n")
+
+        // Parse complete events (separated by double newline)
+        while (true) {
+          const boundary = buffer.indexOf("\n\n")
+          if (boundary === -1) break
+          const rawEvent = buffer.slice(0, boundary)
+          buffer = buffer.slice(boundary + 2)
+          onEvent(rawEvent)
+        }
+      }
+
+      // Flush any remaining data in the buffer
+      buffer += decoder.decode()
+      if (buffer.trim()) {
+        onEvent(buffer)
+      }
+
+      cleanup()
+    } catch (error) {
+      const hadCleanedUp = cleanedUp
+      cleanup()
+      if (!hadCleanedUp && !controller.signal.aborted) {
+        onError?.(error instanceof Error ? error : new Error("SSE connection failed"))
+      }
+    }
+  })()
+
+  return cleanup
+}
+
+/**
+ * Parse SSE event fields (event name and data) from raw event string.
+ */
+function parseSseEventFields(rawEvent: string): { eventName: string; data: string } {
+  let eventName = "message"
+  let data = ""
+
+  for (const line of rawEvent.split(/\r?\n/)) {
+    if (line.startsWith(":")) {
+      // SSE comment (often keep-alives) — skip silently in production
+      if (process.env.NODE_ENV === "development") {
+        log.debug("Comment received", undefined, { line })
+      }
+      continue
+    }
+
+    const colonIndex = line.indexOf(":")
+    if (colonIndex === -1) continue
+
+    const field = line.slice(0, colonIndex)
+    const value = line.slice(colonIndex + 1)
+    const normalizedValue = value.startsWith(" ") ? value.slice(1) : value
+
+    if (field === "event") {
+      eventName = normalizedValue
+    } else if (field === "data") {
+      data += data ? `\n${normalizedValue}` : normalizedValue
+    }
+  }
+
+  return { eventName, data }
+}
 
 /**
  * Zod schema for runtime validation of SSE events.
@@ -122,8 +249,8 @@ export type ToolCallLocation = {
 type ToolCallEventData = {
   id: string
   name: string
-  input?: any
-  output?: any
+  input?: unknown
+  output?: unknown
   locations?: ToolCallLocation[]
 }
 
@@ -173,9 +300,9 @@ export type UIMessageChunk =
   | { type: "thinking-start" }
   | { type: "thinking-delta"; thinkingDelta: string }
   | { type: "thinking-end" }
-  | { type: "tool-use"; toolUse: { id: string; name: string; input?: any } }
+  | { type: "tool-use"; toolUse: { id: string; name: string; input?: unknown } }
   | { type: "tool-input-delta"; toolInputDelta: { id: string; delta: string } }
-  | { type: "tool-result"; toolResult: { id: string; output: any } }
+  | { type: "tool-result"; toolResult: { id: string; output: unknown } }
   | { type: "finish"; finishReason: string }
   | { type: "error"; errorText: string }
 
@@ -210,7 +337,7 @@ export function convertEventToChunk(event: AgentOutputEvent): UIMessageChunk | n
     case "error":
       return { type: "error", errorText: event.message }
     default:
-      console.warn("[SSE] Unknown event type:", event)
+      log.warn("Unknown event type", undefined, { event })
       return null
   }
 }
@@ -317,16 +444,20 @@ export function subscribeAgentStream(
           "done",
           "error",
           "session_title_update",
+          "subagent_spawned",
+          "subagent_state_update",
+          "conversation_message",
+          "message_inserted",
+          "turn_started",
         ].includes(currentEventName)) return
 
         try {
           const data = JSON.parse(rawData)
-          if (!data || typeof data !== "object" || typeof data.type !== "string") {
-            throw new Error("SSE event is not an AgentOutputEvent")
-          }
-          handleEvent(data as AgentOutputEvent)
+          // Validate using Zod schema to ensure type safety
+          const event = agentOutputEventSchema.parse(data)
+          handleEvent(event)
         } catch (error) {
-          console.error("[SSE] Failed to parse event:", currentEventName, error)
+          log.error("Failed to parse event", error as Error, { currentEventName })
         }
       }
 
@@ -394,7 +525,7 @@ export function subscribeAgentStream(
       cleanup()
     } catch (error) {
       if (controller.signal.aborted) return
-      console.error("[SSE] Connection error:", error)
+      log.error("Connection error", error as Error)
       onError?.(error instanceof Error ? error : new Error("SSE connection failed"))
       cleanup()
     }
@@ -410,128 +541,47 @@ export function subscribeRawAgentStream(
   onError?: (error: Error) => void,
   onComplete?: () => void,
 ): () => void {
-  const { apiUrl, token } = getErgataiAuthConfig()
+  const { apiUrl } = getErgataiAuthConfig()
   const streamQuery = new URLSearchParams()
   if (promptId) streamQuery.set("prompt_id", promptId)
   const streamSuffix = streamQuery.toString() ? `?${streamQuery.toString()}` : ""
   const url = `${apiUrl}/api/v1/agents/${encodeURIComponent(agentId)}/stream${streamSuffix}`
-  const controller = new AbortController()
-  let cleanedUp = false
 
-  const cleanup = () => {
-    if (cleanedUp) return
-    cleanedUp = true
-    controller.abort()
-    onComplete?.()
-  }
+  let cleanupRef: (() => void) | null = null
 
-  void (async () => {
+  const parseAndDispatch = (rawEvent: string) => {
+    const { eventName, data } = parseSseEventFields(rawEvent)
+    if (!data) return
+
+    // Log raw event data for debugging (dev only — may contain sensitive payloads)
+    if (process.env.NODE_ENV === "development") {
+      log.debug("Raw event received", undefined, { eventName, data })
+    }
+
+    let event: AgentOutputEvent
     try {
-      const response = await fetch(url, {
-        headers: {
-          Accept: "text/event-stream",
-          Authorization: `Bearer ${token}`,
-        },
-        signal: controller.signal,
-      })
+      event = agentOutputEventSchema.parse(JSON.parse(data))
+    } catch (parseError) {
+      log.error("Failed to parse or validate event data", parseError as Error)
+      return
+    }
 
-      if (!response.ok) {
-        const detail = await response.text().catch(() => "unknown error")
-        throw new Error(`SSE request failed: ${response.status} ${detail.trim()}`)
-      }
-      if (!response.body) {
-        throw new Error("SSE response has no readable body")
-      }
-
-      let buffer = ""
-      const parseEvent = (rawEvent: string) => {
-        let eventName = "message"
-        let data = ""
-        for (const line of rawEvent.split(/\r?\n/)) {
-          if (line.startsWith(":")) {
-            // SSE comments (often keep-alives) — skip silently in production
-            if (process.env.NODE_ENV === "development") {
-              console.log("[SSE] Comment received:", line)
-            }
-            continue
-          }
-          const colonIndex = line.indexOf(":")
-          if (colonIndex === -1) continue
-          const field = line.slice(0, colonIndex)
-          const value = line.slice(colonIndex + 1)
-          const normalizedValue = value.startsWith(" ") ? value.slice(1) : value
-          if (field === "event") {
-            eventName = normalizedValue
-          } else if (field === "data") {
-            data += data ? `\n${normalizedValue}` : normalizedValue
-          }
-        }
-
-        if (!data) return
-
-        // Log raw event data for debugging (dev only — may contain sensitive payloads)
-        if (process.env.NODE_ENV === "development") {
-          console.log("[SSE] Raw event received:", { eventName, data })
-        }
-
-        let event: AgentOutputEvent
-        try {
-          event = agentOutputEventSchema.parse(JSON.parse(data))
-        } catch (parseError) {
-          console.error("[SSE] Failed to parse or validate event data:", parseError)
-          return
-        }
-
-        if (eventName !== "message" && event.type && eventName !== event.type) {
-          if (process.env.NODE_ENV === "development") {
-            console.warn("[SSE] Event type mismatch:", eventName, event.type)
-          }
-        }
-        onEvent(event)
-        if (event.type === "done" || event.type === "error") {
-          cleanup()
-        }
-      }
-
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let chunkCount = 0
-      while (!cleanedUp) {
-        const { done, value } = await reader.read()
-        if (done) break
-        const text = decoder.decode(value, { stream: true })
-        chunkCount++
-        if (process.env.NODE_ENV === "development") {
-          console.log(`[SSE] Chunk ${chunkCount} received:`, JSON.stringify(text))
-        }
-        buffer += text
-        buffer = buffer.replaceAll("\r\n", "\n").replaceAll("\r", "\n")
-
-        while (true) {
-          const boundary = buffer.indexOf("\n\n")
-          if (boundary === -1) break
-          const rawEvent = buffer.slice(0, boundary)
-          buffer = buffer.slice(boundary + 2)
-          if (process.env.NODE_ENV === "development") {
-            console.log("[SSE] Complete event parsed:", JSON.stringify(rawEvent))
-          }
-          parseEvent(rawEvent)
-        }
-      }
-
-      buffer += decoder.decode()
-      if (buffer.trim()) parseEvent(buffer)
-      cleanup()
-    } catch (error) {
-      const hadCleanedUp = cleanedUp
-      cleanup()
-      if (!hadCleanedUp && !controller.signal.aborted) {
-        onError?.(error instanceof Error ? error : new Error("SSE connection failed"))
+    if (eventName !== "message" && event.type && eventName !== event.type) {
+      if (process.env.NODE_ENV === "development") {
+        log.warn("Event type mismatch", undefined, { eventName, eventType: event.type })
       }
     }
-  })()
 
-  return cleanup
+    onEvent(event)
+
+    // Auto-cleanup on done/error events
+    if ((event.type === "done" || event.type === "error") && cleanupRef) {
+      cleanupRef()
+    }
+  }
+
+  cleanupRef = createSseStream(url, parseAndDispatch, onError, onComplete)
+  return cleanupRef
 }
 
 /**
@@ -573,33 +623,11 @@ export function subscribeConversationMessages(
   onError?: (error: Error) => void,
   onComplete?: () => void,
 ): () => void {
-  const { apiUrl, token } = getErgataiAuthConfig()
+  const { apiUrl } = getErgataiAuthConfig()
   const url = `${apiUrl}/api/v1/conversations/${encodeURIComponent(conversationId)}/sse?after_sequence=${afterSequence ?? 0}`
-  const controller = new AbortController()
-  let cleanedUp = false
 
-  const cleanup = () => {
-    if (cleanedUp) return
-    cleanedUp = true
-    controller.abort()
-    onComplete?.()
-  }
-
-  // Helper: parse a single raw SSE event and invoke onMessage if valid
-  const parseEvent = (rawEvent: string) => {
-    let data = ""
-    for (const line of rawEvent.split(/\r?\n/)) {
-      if (line.startsWith(":")) continue // SSE comment (often keep-alives)
-      const colonIndex = line.indexOf(":")
-      if (colonIndex === -1) continue
-      const field = line.slice(0, colonIndex)
-      const value = line.slice(colonIndex + 1)
-      const normalizedValue = value.startsWith(" ") ? value.slice(1) : value
-      if (field === "data") {
-        data += data ? `\n${normalizedValue}` : normalizedValue
-      }
-    }
-
+  const parseAndDispatch = (rawEvent: string) => {
+    const { data } = parseSseEventFields(rawEvent)
     if (!data) return
 
     try {
@@ -610,66 +638,11 @@ export function subscribeConversationMessages(
       const message = convertSseMessageToBackend(sseMessage)
       onMessage(message)
     } catch (error) {
-      console.error("[SSE] Failed to parse or validate message:", error)
+      log.error("Failed to parse or validate message", error as Error)
     }
   }
 
-  void (async () => {
-    try {
-      const response = await fetch(url, {
-        headers: {
-          Accept: "text/event-stream",
-          Authorization: `Bearer ${token}`,
-        },
-        signal: controller.signal,
-      })
-
-      if (!response.ok) {
-        const detail = await response.text().catch(() => "unknown error")
-        throw new Error(`SSE request failed: ${response.status} ${detail.trim()}`)
-      }
-
-      if (!response.body) {
-        throw new Error("SSE response has no readable body")
-      }
-
-      let buffer = ""
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-
-      while (!cleanedUp) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        buffer = buffer.replaceAll("\r\n", "\n").replaceAll("\r", "\n")
-
-        while (true) {
-          const boundary = buffer.indexOf("\n\n")
-          if (boundary === -1) break
-          const rawEvent = buffer.slice(0, boundary)
-          buffer = buffer.slice(boundary + 2)
-          parseEvent(rawEvent)
-        }
-      }
-
-      // Flush any remaining data in the buffer
-      buffer += decoder.decode()
-      if (buffer.trim()) {
-        parseEvent(buffer)
-      }
-
-      cleanup()
-    } catch (error) {
-      const hadCleanedUp = cleanedUp
-      cleanup()
-      if (!hadCleanedUp && !controller.signal.aborted) {
-        console.error("[SSE] Connection error:", error)
-        onError?.(error instanceof Error ? error : new Error("SSE connection failed"))
-      }
-    }
-  })()
-
-  return cleanup
+  return createSseStream(url, parseAndDispatch, onError, onComplete)
 }
 
 export async function promptAgent(
@@ -738,37 +711,14 @@ export function subscribeConversationRuntime(
   onError?: (error: Error) => void,
   onComplete?: () => void,
 ): () => void {
-  const { apiUrl, token } = getErgataiAuthConfig()
+  const { apiUrl } = getErgataiAuthConfig()
   const query = new URLSearchParams()
   if (afterSequence !== undefined) query.set("after_sequence", String(afterSequence))
   const querySuffix = query.toString() ? `?${query.toString()}` : ""
   const url = `${apiUrl}/api/v1/conversations/${encodeURIComponent(conversationId)}/runtime/stream${querySuffix}`
-  const controller = new AbortController()
-  let cleanedUp = false
 
-  const cleanup = (completedSuccessfully = true) => {
-    if (cleanedUp) return
-    cleanedUp = true
-    controller.abort()
-    // Only call onComplete on successful completion, not on errors
-    if (completedSuccessfully) {
-      onComplete?.()
-    }
-  }
-
-  const parseEvent = (rawEvent: string) => {
-    let eventName = "message"
-    let data = ""
-    for (const line of rawEvent.split(/\r?\n/)) {
-      if (line.startsWith(":")) continue
-      const colonIndex = line.indexOf(":")
-      if (colonIndex === -1) continue
-      const field = line.slice(0, colonIndex)
-      const value = line.slice(colonIndex + 1)
-      const normalizedValue = value.startsWith(" ") ? value.slice(1) : value
-      if (field === "event") eventName = normalizedValue
-      else if (field === "data") data += data ? `\n${normalizedValue}` : normalizedValue
-    }
+  const parseAndDispatch = (rawEvent: string) => {
+    const { eventName, data } = parseSseEventFields(rawEvent)
     if (!data) return
 
     try {
@@ -779,51 +729,9 @@ export function subscribeConversationRuntime(
         onEvent(conversationRuntimeEventSchema.parse(parsed))
       }
     } catch (error) {
-      console.error("[ConversationRuntime] Failed to parse SSE event:", error)
+      log.error("Failed to parse SSE event", error as Error)
     }
   }
 
-  void (async () => {
-    try {
-      const response = await fetch(url, {
-        headers: {
-          Accept: "text/event-stream",
-          Authorization: `Bearer ${token}`,
-        },
-        signal: controller.signal,
-      })
-      if (!response.ok) {
-        const detail = await response.text().catch(() => "unknown error")
-        throw new Error(`Conversation runtime stream failed (${response.status}): ${detail}`)
-      }
-      if (!response.body) throw new Error("Conversation runtime stream has no readable body")
-
-      let buffer = ""
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      while (!cleanedUp) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        buffer = buffer.replaceAll("\r\n", "\n").replaceAll("\r", "\n")
-        while (true) {
-          const boundary = buffer.indexOf("\n\n")
-          if (boundary === -1) break
-          parseEvent(buffer.slice(0, boundary))
-          buffer = buffer.slice(boundary + 2)
-        }
-      }
-      buffer += decoder.decode()
-      if (buffer.trim()) parseEvent(buffer)
-      cleanup(true) // Successful completion
-    } catch (error) {
-      const hadCleanedUp = cleanedUp
-      cleanup(false) // Error occurred, don't call onComplete
-      if (!hadCleanedUp && !controller.signal.aborted) {
-        onError?.(error instanceof Error ? error : new Error("Conversation runtime SSE failed"))
-      }
-    }
-  })()
-
-  return cleanup
+  return createSseStream(url, parseAndDispatch, onError, onComplete)
 }

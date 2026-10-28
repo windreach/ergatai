@@ -51,6 +51,9 @@ export function useChatAutoScroll({
   const isInitializingScrollRef = useRef(false)
   const scrollInitializedRef = useRef(false)
   const prevScrollTopRef = useRef(0)
+  const animationFrameRef = useRef<number | null>(null)
+  const resizeObserverFrameRef = useRef<number | null>(null)
+  const streamingFrameRef = useRef<number | null>(null)
 
   const isAtBottom = useCallback(() => {
     const container = containerRef.current
@@ -66,6 +69,10 @@ export function useChatAutoScroll({
     const container = containerRef.current
     if (!container) return
 
+    // Skip direction detection during auto-scroll to avoid corrupting
+    // prevScrollTopRef with programmatic scroll positions
+    if (isAutoScrollingRef.current) return
+
     const currentScrollTop = container.scrollTop
     const prevScrollTop = prevScrollTopRef.current
     prevScrollTopRef.current = currentScrollTop
@@ -78,8 +85,6 @@ export function useChatAutoScroll({
       return
     }
 
-    if (isAutoScrollingRef.current) return
-
     // User scrolled DOWN — re-enable only when back at the bottom
     shouldAutoScrollRef.current = isAtBottom()
   }, [isAtBottom])
@@ -87,6 +92,11 @@ export function useChatAutoScroll({
   const scrollToBottom = useCallback(() => {
     const container = containerRef.current
     if (!container) return
+
+    // Cancel any previous animation to prevent concurrent animations
+    if (animationFrameRef.current !== null) {
+      cancelAnimationFrame(animationFrameRef.current)
+    }
 
     isAutoScrollingRef.current = true
     shouldAutoScrollRef.current = true
@@ -107,14 +117,15 @@ export function useChatAutoScroll({
       container.scrollTop = start + (end - start) * easedProgress
 
       if (progress < 1) {
-        requestAnimationFrame(animateScroll)
+        animationFrameRef.current = requestAnimationFrame(animateScroll)
       } else {
-        container.scrollTop = container.scrollHeight
+        container.scrollTop = container.scrollHeight - container.clientHeight
         isAutoScrollingRef.current = false
+        animationFrameRef.current = null
       }
     }
 
-    requestAnimationFrame(animateScroll)
+    animationFrameRef.current = requestAnimationFrame(animateScroll)
   }, [])
 
   // Initialize scroll position when the pane becomes visible.
@@ -161,11 +172,16 @@ export function useChatAutoScroll({
       lastContentHeight = newContentHeight
 
       if (shouldAutoScrollRef.current) {
-        requestAnimationFrame(() => {
+        // Cancel any previous animation frame before starting a new one
+        if (resizeObserverFrameRef.current !== null) {
+          cancelAnimationFrame(resizeObserverFrameRef.current)
+        }
+        resizeObserverFrameRef.current = requestAnimationFrame(() => {
           isAutoScrollingRef.current = true
-          container.scrollTop = container.scrollHeight
-          requestAnimationFrame(() => {
+          container.scrollTop = container.scrollHeight - container.clientHeight
+          resizeObserverFrameRef.current = requestAnimationFrame(() => {
             isAutoScrollingRef.current = false
+            resizeObserverFrameRef.current = null
           })
         })
       } else {
@@ -181,7 +197,14 @@ export function useChatAutoScroll({
 
     resizeObserver.observe(contentWrapper)
     resizeObserver.observe(container)
-    return () => resizeObserver.disconnect()
+    return () => {
+      resizeObserver.disconnect()
+      // Cancel any pending animation frames
+      if (resizeObserverFrameRef.current !== null) {
+        cancelAnimationFrame(resizeObserverFrameRef.current)
+        resizeObserverFrameRef.current = null
+      }
+    }
   }, [isActive])
 
   // Scroll direction detection
@@ -189,7 +212,15 @@ export function useChatAutoScroll({
     const container = containerRef.current
     if (!container) return
     container.addEventListener("scroll", handleScroll, { passive: true })
-    return () => container.removeEventListener("scroll", handleScroll)
+    return () => {
+      container.removeEventListener("scroll", handleScroll)
+      // Cancel any pending animation frame on cleanup
+      if (animationFrameRef.current !== null) {
+        cancelAnimationFrame(animationFrameRef.current)
+        animationFrameRef.current = null
+      }
+      isAutoScrollingRef.current = false
+    }
   }, [handleScroll])
 
   // Follow streamed content while auto-scroll is enabled
@@ -201,13 +232,27 @@ export function useChatAutoScroll({
 
     const container = containerRef.current
     if (!container) return
-    requestAnimationFrame(() => {
+
+    // Cancel any previous animation frame before starting a new one
+    if (streamingFrameRef.current !== null) {
+      cancelAnimationFrame(streamingFrameRef.current)
+    }
+    streamingFrameRef.current = requestAnimationFrame(() => {
       isAutoScrollingRef.current = true
-      container.scrollTop = container.scrollHeight
-      requestAnimationFrame(() => {
+      container.scrollTop = container.scrollHeight - container.clientHeight
+      streamingFrameRef.current = requestAnimationFrame(() => {
         isAutoScrollingRef.current = false
+        streamingFrameRef.current = null
       })
     })
+
+    return () => {
+      // Cancel any pending animation frames on cleanup
+      if (streamingFrameRef.current !== null) {
+        cancelAnimationFrame(streamingFrameRef.current)
+        streamingFrameRef.current = null
+      }
+    }
   }, [isActive, messages, status])
 
   return { containerRef, contentWrapperRef, scrollToBottom }

@@ -550,3 +550,265 @@ pub fn set_global_persist_callback(callback: PersistCallback) {
 pub fn get_global_persist_callback() -> Option<&'static Arc<PersistCallback>> {
     GLOBAL_PERSIST_CALLBACK.get()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_accumulator() -> TurnAccumulator {
+        TurnAccumulator::new(12345)
+    }
+
+    #[test]
+    fn test_turn_accumulator_creation() {
+        let acc = create_test_accumulator();
+        assert_eq!(acc.conversation_id, 12345);
+        assert!(acc.thinking.is_empty());
+        assert!(acc.thinking_buffer.is_empty());
+        assert!(acc.tool_calls.is_empty());
+        assert!(acc.text_chunks.is_empty());
+        assert!(acc.final_text.is_empty());
+        assert!(!acc.sealed);
+    }
+
+    #[test]
+    fn test_accumulate_thinking() {
+        let mut acc = create_test_accumulator();
+
+        acc.accumulate_thinking("Thinking part 1");
+        acc.accumulate_thinking(" Thinking part 2");
+
+        // Should be in buffer, not yet flushed
+        assert_eq!(acc.thinking_buffer, "Thinking part 1 Thinking part 2");
+        assert!(acc.thinking.is_empty());
+    }
+
+    #[test]
+    fn test_accumulate_text() {
+        let mut acc = create_test_accumulator();
+
+        acc.accumulate_text("Hello");
+        acc.accumulate_text(" World");
+
+        assert_eq!(acc.final_text, "Hello World");
+    }
+
+    #[test]
+    fn test_record_tool_call_start() {
+        let mut acc = create_test_accumulator();
+
+        acc.record_tool_call_start(
+            "tool-1".to_string(),
+            "edit_file".to_string(),
+            Some("write".to_string()),
+            serde_json::json!({"path": "test.rs"}),
+            vec![],
+        );
+
+        assert_eq!(acc.tool_calls.len(), 1);
+        let tool = acc.tool_calls.get("tool-1").unwrap();
+        assert_eq!(tool.name, "edit_file");
+        assert_eq!(tool.kind, Some("write".to_string()));
+        assert_eq!(tool.status, "pending");
+    }
+
+    #[test]
+    fn test_record_tool_call_update() {
+        let mut acc = create_test_accumulator();
+
+        acc.record_tool_call_start(
+            "tool-1".to_string(),
+            "edit_file".to_string(),
+            None,
+            serde_json::json!({}),
+            vec![],
+        );
+
+        acc.record_tool_call_update(
+            "tool-1",
+            Some(serde_json::json!({"success": true})),
+            "completed".to_string(),
+            None,
+        );
+
+        let tool = acc.tool_calls.get("tool-1").unwrap();
+        assert_eq!(tool.status, "completed");
+        assert!(tool.output.is_some());
+        assert!(tool.error.is_none());
+    }
+
+    #[test]
+    fn test_record_tool_call_failed() {
+        let mut acc = create_test_accumulator();
+
+        acc.record_tool_call_start(
+            "tool-1".to_string(),
+            "edit_file".to_string(),
+            None,
+            serde_json::json!({}),
+            vec![],
+        );
+
+        acc.record_tool_call_update(
+            "tool-1",
+            None,
+            "failed".to_string(),
+            Some("File not found".to_string()),
+        );
+
+        let tool = acc.tool_calls.get("tool-1").unwrap();
+        assert_eq!(tool.status, "failed");
+        assert_eq!(tool.error, Some("File not found".to_string()));
+    }
+
+    #[test]
+    fn test_record_tool_call_update_nonexistent() {
+        let mut acc = create_test_accumulator();
+
+        // Updating a non-existent tool call should not panic
+        acc.record_tool_call_update("nonexistent", None, "completed".to_string(), None);
+
+        assert!(acc.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn test_set_metadata() {
+        let mut acc = create_test_accumulator();
+
+        acc.set_stop_reason("end_turn".to_string());
+        acc.set_session_title("Test Session".to_string());
+
+        assert_eq!(acc.metadata.stop_reason, Some("end_turn".to_string()));
+        assert_eq!(acc.metadata.session_title, Some("Test Session".to_string()));
+    }
+
+    #[test]
+    fn test_seal_accumulator() {
+        let mut acc = create_test_accumulator();
+
+        acc.accumulate_text("Some text");
+        acc.seal();
+
+        assert!(acc.sealed);
+
+        // Further operations should be no-ops after sealing
+        acc.accumulate_text("More text");
+        assert_eq!(acc.final_text, "Some text");
+    }
+
+    #[test]
+    fn test_seal_prevents_further_accumulation() {
+        let mut acc = create_test_accumulator();
+
+        acc.accumulate_text("Some text");
+        acc.seal();
+
+        assert!(acc.is_sealed());
+
+        // Further operations should be no-ops after sealing
+        acc.accumulate_text("More text");
+        assert_eq!(acc.final_text, "Some text");
+    }
+
+    #[test]
+    fn test_into_output_data_flushes_thinking() {
+        let mut acc = create_test_accumulator();
+
+        acc.accumulate_thinking("Unflushed thinking");
+
+        // Before into_output_data, thinking is in buffer
+        assert_eq!(acc.thinking_buffer, "Unflushed thinking");
+
+        let output = acc.into_output_data();
+
+        // After into_output_data, thinking should be flushed and in output
+        assert!(output.thinking.is_some());
+        assert!(output.thinking.unwrap().contains("Unflushed thinking"));
+    }
+
+    #[test]
+    fn test_into_output_data() {
+        let mut acc = create_test_accumulator();
+
+        acc.accumulate_thinking("Thinking");
+        acc.accumulate_text("Response text");
+        acc.record_tool_call_start(
+            "tool-1".to_string(),
+            "edit".to_string(),
+            None,
+            serde_json::json!({}),
+            vec![],
+        );
+        acc.set_stop_reason("end_turn".to_string());
+
+        let output = acc.into_output_data();
+
+        assert_eq!(output.conversation_id, 12345);
+        assert_eq!(output.final_text, Some("Response text".to_string()));
+        assert!(output.thinking.is_some());
+        assert!(output.tool_calls.is_some());
+        assert!(output.metadata.as_ref().unwrap().contains("end_turn"));
+    }
+
+    #[test]
+    fn test_token_usage_tracking() {
+        let mut acc = create_test_accumulator();
+
+        acc.set_token_usage(100, 50);
+
+        assert_eq!(acc.metadata.total_tokens.as_ref().unwrap().input, 100);
+        assert_eq!(acc.metadata.total_tokens.as_ref().unwrap().output, 50);
+    }
+
+    #[test]
+    fn test_multiple_thinking_blocks() {
+        let mut acc = create_test_accumulator();
+
+        acc.accumulate_thinking("First thinking");
+        acc.accumulate_text("Text between thinking");
+
+        acc.accumulate_thinking("Second thinking");
+        acc.accumulate_text("More text");
+
+        let output = acc.into_output_data();
+        // Thinking should be Some (JSON string containing both blocks)
+        assert!(output.thinking.is_some());
+        let thinking_json = output.thinking.unwrap();
+        // Should contain both thinking blocks
+        assert!(thinking_json.contains("First thinking"));
+        assert!(thinking_json.contains("Second thinking"));
+    }
+
+    #[test]
+    fn test_text_auto_flushes_thinking() {
+        let mut acc = create_test_accumulator();
+
+        acc.accumulate_thinking("Thinking");
+
+        // Accumulating text should auto-flush thinking buffer
+        acc.accumulate_text("Response");
+
+        assert!(acc.thinking_buffer.is_empty());
+        assert_eq!(acc.thinking.len(), 1);
+        assert_eq!(acc.final_text, "Response");
+    }
+
+    #[test]
+    fn test_tool_call_auto_flushes_thinking() {
+        let mut acc = create_test_accumulator();
+
+        acc.accumulate_thinking("Thinking");
+
+        // Recording tool call should auto-flush thinking buffer
+        acc.record_tool_call_start(
+            "tool-1".to_string(),
+            "edit".to_string(),
+            None,
+            serde_json::json!({}),
+            vec![],
+        );
+
+        assert!(acc.thinking_buffer.is_empty());
+        assert_eq!(acc.thinking.len(), 1);
+    }
+}

@@ -17,6 +17,7 @@ import { conversationAgentStorage } from "../lib/conversation-agent-storage"
 
 interface UseChatInstanceFactoryProps {
   // 聊天实例信息
+  // `any` used here because agentChat shape varies across call sites and is not centrally typed
   chat: {
     agentChat: any
     chatWorkingDir: string | null
@@ -42,6 +43,8 @@ interface UseChatInstanceFactoryProps {
   }
 
   // 工具函数
+  // `utils` and `trpcUtils` are typed as `any` because they are injected trpc helper
+  // objects whose concrete type is generated per-router and not easy to thread here.
   utils: {
     utils: any
     trpcUtils: any
@@ -123,6 +126,16 @@ export function useChatInstanceFactory({
     })
   }
 
+  // Common teardown logic shared by onError and onFinish callbacks
+  const finalizeConversation = useCallback(
+    (conversationId: string, chatInstance: Chat<any>) => {
+      useStreamingStatusStore.getState().setStatus(conversationId, "ready")
+      syncFinishedMessagesToChatCache(conversationId, chatInstance)
+      pruneIfDetachedAndIdle(conversationId, chatRef.current.chatId)
+    },
+    [syncFinishedMessagesToChatCache, pruneIfDetachedAndIdle],
+  )
+
   // Factory function to create or retrieve Chat instances
   const getOrCreateChat = useCallback(
     (conversationId: string): Chat<any> | null => {
@@ -143,31 +156,25 @@ export function useChatInstanceFactory({
         const existingIsMock = existingTransport instanceof MockChatTransport
         if (existingIsMock !== isMockChatEnabled()) {
           agentChatStore.delete(conversationId)
+        } else {
+          return existing
         }
-
-        const overrideProvider = providerRef.current.conversationProviderOverrides[conversationId]
-        if (!overrideProvider) return existing ?? null
-
-        // All traffic goes through Ergatai backend now — provider overrides
-        // are a no-op (the backend decides which agent handles the chat).
-        return existing
       }
 
       // Find conversation data
       const conversation = stateRef.current.agentConversations.find((sc) => sc.id === conversationId)
-      const rawMessages = conversation?. messages
-      const messages = Array.isArray(rawMessages)
-        ? rawMessages
-        : typeof rawMessages === "string"
-          ? (() => {
-              try {
-                const parsed = JSON.parse(rawMessages)
-                return Array.isArray(parsed) ? parsed : []
-              } catch {
-                return []
-              }
-            })()
-          : []
+      const rawMessages = conversation?.messages
+      let messages: any[] = []
+      if (Array.isArray(rawMessages)) {
+        messages = rawMessages
+      } else if (typeof rawMessages === "string") {
+        try {
+          const parsed = JSON.parse(rawMessages)
+          messages = Array.isArray(parsed) ? parsed : []
+        } catch {
+          messages = []
+        }
+      }
 
       // Get mode from store metadata (falls back to chat.currentMode)
       const conversationMeta = useAgentConversationStore
@@ -214,18 +221,11 @@ export function useChatInstanceFactory({
           toast.error("Message failed", {
             description: error?.message || "Unknown error",
           })
-          // Sync status to global store on error (allows queue to continue)
-          useStreamingStatusStore.getState().setStatus(conversationId, "ready")
-          syncFinishedMessagesToChatCache(conversationId, newChat)
-          pruneIfDetachedAndIdle(conversationId, chatRef.current.chatId)
+          finalizeConversation(conversationId, newChat)
         },
         // Clear loading when streaming completes (works even if component unmounted)
         onFinish: () => {
           clearLoading(stateRef.current.setLoadingConversations, conversationId)
-
-          // Sync status to global store for queue processing (even when component unmounted)
-          useStreamingStatusStore.getState().setStatus(conversationId, "ready")
-          syncFinishedMessagesToChatCache(conversationId, newChat)
 
           // Check if this was a manual abort (ESC/Ctrl+C) - skip sound if so
           const wasManuallyAborted =
@@ -261,7 +261,7 @@ export function useChatInstanceFactory({
               const isSoundEnabled = appStore.get(soundNotificationsEnabledAtom)
               if (isSoundEnabled) {
                 try {
-                  const audio = new Audio("./sound.mp3")
+                  const audio = new Audio("/sound.mp3")
                   audio.volume = 1.0
                   audio.play().catch(() => {})
                 } catch {
@@ -271,19 +271,10 @@ export function useChatInstanceFactory({
             }
           }
 
-          // Show native notification if not manually aborted
-          // TODO: Re-enable desktop notifications
-          // if (!wasManuallyAborted) {
-          //   notifyAgentComplete(chat.agentChat?.name || "Agent")
-          // }
-
           // Refresh diff stats after agent finishes making changes
           utilsRef.current.fetchDiffStatsRef.current()
 
-          pruneIfDetachedAndIdle(conversationId, chatRef.current.chatId)
-
-          // Note: sidebar timestamp update is handled via optimistic update in handleSend
-          // No need to refetch here as it would overwrite the optimistic update with stale data
+          finalizeConversation(conversationId, newChat)
         },
       })
 

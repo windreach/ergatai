@@ -17,7 +17,7 @@
 
 import { useCallback, useMemo } from "react"
 import { useChatInstance } from "../hooks/use-chat-instance"
-import { useConversationInvocation } from "../../conversation/runtime/use-conversation-invocation"
+import { useConversationInvocation, useSessionState } from "../../conversation/runtime/use-conversation-invocation"
 import { useGroupChat } from "./group-chat-context"
 import type { ChatConversation } from "@/features/details-sidebar/lib/chat-contract-api"
 import type { UIMessage } from "@ai-sdk/react"
@@ -101,7 +101,7 @@ export function useGroupChatInvocation({
   const invocation = useConversationInvocation()
 
   // Get session state from new service
-  const sessionState = invocation.useSessionState(runtimeConversationId)
+  const sessionState = useSessionState(runtimeConversationId)
 
   // Wrap send handler to use new service
   // For group chat, we may need to route messages to specific agents
@@ -123,23 +123,35 @@ export function useGroupChatInvocation({
   // Wrap send from queue to use new service
   const handleSendFromQueue = useCallback(
     async (itemId: string) => {
-      // Use new service to send queued item
-      await invocation.sendQueuedItem(runtimeConversationId, itemId)
+      try {
+        // Use new service to send queued item
+        await invocation.sendQueuedItem(runtimeConversationId, itemId)
+      } catch (error) {
+        console.error('[GroupChat] Send from queue failed:', error)
+      }
     },
     [invocation, runtimeConversationId],
   )
 
   // Wrap stop handler to use new service
   const handleStop = useCallback(async () => {
-    // Use new service to stop
-    await invocation.stop({
-      conversationId: runtimeConversationId,
-      chatId,
-    })
+    // Extract all agent IDs from group context for backend cancel API
+    const agentIds = groupContext.agents.map((agent) => agent.id)
 
-    // Also stop the chat instance
-    chatInstance.stop()
-  }, [invocation, runtimeConversationId, chatId, chatInstance])
+    try {
+      // Use new service to stop with all participating agents
+      await invocation.stop({
+        conversationId: runtimeConversationId,
+        chatId,
+        agentIds, // Pass all agent IDs to cancel backend processing for each
+      })
+    } catch (error) {
+      console.error('[GroupChat] Stop failed:', error)
+    } finally {
+      // Also stop the chat instance - always execute even if invocation.stop() throws
+      chatInstance.stop()
+    }
+  }, [invocation, runtimeConversationId, chatId, chatInstance, groupContext.agents])
 
   // Group-specific: Send message to a specific agent in the group
   // This is useful for @mention routing and direct agent communication

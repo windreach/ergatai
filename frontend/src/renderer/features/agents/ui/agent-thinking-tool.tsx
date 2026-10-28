@@ -60,6 +60,10 @@ export const AgentThinkingTool = memo(function AgentThinkingTool({
 
   // Elapsed time — ticks every second while streaming
   const startedAtRef = useRef(part.startedAt || Date.now())
+  // Keep startedAtRef in sync if the server provides a real startedAt later
+  if (part.startedAt && part.startedAt !== startedAtRef.current) {
+    startedAtRef.current = part.startedAt
+  }
   const [elapsedMs, setElapsedMs] = useState(0)
 
   useEffect(() => {
@@ -74,11 +78,21 @@ export const AgentThinkingTool = memo(function AgentThinkingTool({
   const [isOverflowing, setIsOverflowing] = useState(false)
 
   // Auto-scroll when expanded during streaming + check overflow
+  // Use requestAnimationFrame to avoid layout thrashing during rapid streaming updates
   useEffect(() => {
-    if (isStreaming && isExpanded && scrollRef.current) {
-      const el = scrollRef.current
-      setIsOverflowing(el.scrollHeight > el.clientHeight)
-      el.scrollTop = el.scrollHeight
+    if (!isStreaming || !isExpanded || !scrollRef.current) return
+    const el = scrollRef.current
+    let rafId: number | null = null
+    const check = () => {
+      rafId = requestAnimationFrame(() => {
+        const overflowing = el.scrollHeight > el.clientHeight
+        setIsOverflowing(prev => (prev !== overflowing ? overflowing : prev))
+        el.scrollTop = el.scrollHeight
+      })
+    }
+    check()
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId)
     }
   }, [part.input?.text, isStreaming, isExpanded])
 

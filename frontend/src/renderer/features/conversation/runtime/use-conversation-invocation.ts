@@ -65,14 +65,58 @@ export type UseConversationInvocationReturn = {
   getSessionState: (conversationId: string) => ConversationRuntimeState | null
 
   /**
-   * Subscribe to runtime state changes for a conversation.
-   */
-  useSessionState: (conversationId: string) => ConversationRuntimeState | null
-
-  /**
    * Release a session (cleanup when conversation is closed).
    */
   releaseSession: (conversationId: string) => void
+}
+
+// ============================================================================
+// MODULE-LEVEL HOOKS
+// ============================================================================
+
+/**
+ * Subscribe to runtime state changes for a conversation.
+ *
+ * This is a standalone hook that should be called at the top level of a
+ * React component or custom hook. It uses useSyncExternalStore to subscribe
+ * to state changes from the RuntimeSessionStore.
+ *
+ * @param conversationId - The conversation ID to subscribe to
+ * @returns The current runtime state, or null if not initialized
+ *
+ * @example
+ * ```tsx
+ * function ChatInput({ conversationId }) {
+ *   const sessionState = useSessionState(conversationId)
+ *
+ *   return (
+ *     <div>
+ *       {sessionState?.isStreaming && <span>Streaming...</span>}
+ *     </div>
+ *   )
+ * }
+ * ```
+ */
+export function useSessionState(conversationId: string): ConversationRuntimeState | null {
+  const sessionStore = getRuntimeSessionStore()
+
+  // Subscribe function for useSyncExternalStore
+  const subscribe = useCallback(
+    (callback: () => void) => {
+      return sessionStore.subscribe(conversationId, () => {
+        callback()
+      })
+    },
+    [sessionStore, conversationId],
+  )
+
+  // Get snapshot function for useSyncExternalStore
+  const getSnapshot = useCallback(() => {
+    return sessionStore.getRuntimeState(conversationId)
+  }, [sessionStore, conversationId])
+
+  // Use useSyncExternalStore for reactive state
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
 // ============================================================================
@@ -91,7 +135,7 @@ export type UseConversationInvocationReturn = {
  * ```tsx
  * function ChatInput({ conversationId }) {
  *   const invocation = useConversationInvocation()
- *   const sessionState = invocation.useSessionState(conversationId)
+ *   const sessionState = useSessionState(conversationId)
  *
  *   const handleSend = async (message: string) => {
  *     await invocation.send({
@@ -162,32 +206,6 @@ export function useConversationInvocation(): UseConversationInvocationReturn {
     [service],
   )
 
-  // Create useSessionState hook using useSyncExternalStore
-  const useSessionState = useCallback(
-    (conversationId: string) => {
-      const sessionStore = getRuntimeSessionStore()
-
-      // Subscribe function for useSyncExternalStore
-      const subscribe = useCallback(
-        (callback: () => void) => {
-          return sessionStore.subscribe(conversationId, () => {
-            callback()
-          })
-        },
-        [sessionStore, conversationId],
-      )
-
-      // Get snapshot function for useSyncExternalStore
-      const getSnapshot = useCallback(() => {
-        return sessionStore.getRuntimeState(conversationId)
-      }, [sessionStore, conversationId])
-
-      // Use useSyncExternalStore for reactive state
-      return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
-    },
-    [],
-  )
-
   // Return hook API
   return useMemo(
     () => ({
@@ -197,7 +215,6 @@ export function useConversationInvocation(): UseConversationInvocationReturn {
       removeQueuedItem,
       sendQueuedItem,
       getSessionState,
-      useSessionState,
       releaseSession,
     }),
     [
@@ -207,7 +224,6 @@ export function useConversationInvocation(): UseConversationInvocationReturn {
       removeQueuedItem,
       sendQueuedItem,
       getSessionState,
-      useSessionState,
       releaseSession,
     ],
   )

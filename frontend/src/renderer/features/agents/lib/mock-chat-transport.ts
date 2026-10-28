@@ -1,12 +1,10 @@
-import type { ChatTransport, UIMessage } from "ai"
+import type { ChatTransport, UIMessage, UIMessageChunk } from "ai"
 
 import type { CoreAgentOption } from "./agent-contract-api"
 import type { GroupAgentRuntimeStatuses } from "../collaboration/group-agent-runtime"
 import type { GroupAgentRuntimeStatus } from "../collaboration/group-agent-runtime"
 import { setGroupAgentRuntimeStatuses } from "../collaboration/group-agent-runtime"
 import { loadGroupAgents } from "../collaboration/group-agent-storage"
-
-type UIMessageChunk = any
 
 type MockChatTransportConfig = {
   chatId: string
@@ -64,8 +62,11 @@ export function getMockGroupAgentTasks(
 function extractLastUserPrompt(messages: UIMessage[]): string {
   const lastUserMessage = [...messages].reverse().find((message) => message.role === "user")
   const text = lastUserMessage?.parts
-    ?.filter((part: any) => part.type === "text" && part.text?.trim())
-    .map((part: any) => part.text.trim())
+    ?.filter((part): part is Extract<typeof part, { type: "text"; text?: string }> =>
+      part.type === "text" && typeof (part as { text?: unknown }).text === "string" &&
+      ((part as { text?: string }).text?.trim() ?? "").length > 0,
+    )
+    .map((part) => (part.text as string).trim())
     .join("\n") ?? ""
 
   return text.slice(0, 80)
@@ -79,8 +80,10 @@ function extractMentionedGroupAgents(
     .reverse()
     .find((message) => message.role === "user")
   const text = lastUserMessage?.parts
-    ?.filter((part: any) => part.type === "text" && typeof part.text === "string")
-    .map((part: any) => part.text)
+    ?.filter((part): part is Extract<typeof part, { type: "text"; text?: string }> =>
+      part.type === "text" && typeof (part as { text?: unknown }).text === "string",
+    )
+    .map((part) => part.text as string)
     .join("\n") ?? ""
 
   const mentionedNames = new Set<string>()
@@ -140,15 +143,6 @@ export class MockChatTransport implements ChatTransport<UIMessage> {
       ? `${responseAgent.name}: 收到，任务正在执行。详细情况点击下方 ${responseAgent.name} 查看完整信息。`
       : `收到：${prompt || "空消息"}。这是统一 mock 通道返回的回复，用于验证真实消息链路。`
     const finalText = conversation?.response ?? acknowledgmentText
-    if (chatId && taskAgents.length > 0) {
-      setGroupAgentRuntimeStatuses(
-        chatId,
-        Object.fromEntries(
-          taskAgents.map((agent) => [agent.id, "pending" as const]),
-        ),
-      )
-    }
-
     if (chatId && taskAgents.length > 0) {
       setGroupAgentRuntimeStatuses(chatId, {
         ...Object.fromEntries(
@@ -225,6 +219,9 @@ export class MockChatTransport implements ChatTransport<UIMessage> {
         try {
           controller.enqueue({ type: "finish", finishReason: "stop" })
           controller.close()
+        } catch (err) {
+          controller.error(err)
+          throw err
         } finally {
           if (chatId) {
             setGroupAgentRuntimeStatuses(chatId, {

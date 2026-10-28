@@ -5,6 +5,18 @@ import {
   createTextPreview,
 } from "../lib/queue-utils"
 
+/**
+ * Generate a unique ID using crypto.randomUUID() when available,
+ * falling back to Date.now() + random for older browsers.
+ */
+function generateUniqueId(prefix: string): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}_${crypto.randomUUID()}`
+  }
+  // Fallback: timestamp + random suffix
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
+}
+
 export interface UseTextContextSelectionReturn {
   textContexts: SelectedTextContext[]
   diffTextContexts: DiffTextContext[]
@@ -37,22 +49,27 @@ export function useTextContextSelection(): UseTextContextSelectionReturn {
       const trimmedText = text.trim()
       if (!trimmedText) return
 
-      // Prevent duplicates - check if same text from same message already exists
-      const isDuplicate = textContextsRef.current.some(
-        (ctx) =>
-          ctx.text === trimmedText && ctx.sourceMessageId === sourceMessageId
-      )
-      if (isDuplicate) return
+      // Perform duplicate check AND state update inside the updater function
+      // so we always see the latest pending state, even across synchronous calls.
+      setTextContexts((prev) => {
+        const isDuplicate = prev.some(
+          (ctx) =>
+            ctx.text === trimmedText && ctx.sourceMessageId === sourceMessageId
+        )
+        if (isDuplicate) return prev
 
-      const newContext: SelectedTextContext = {
-        id: `tc_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-        text: trimmedText,
-        sourceMessageId,
-        preview: createTextPreview(trimmedText),
-        createdAt: new Date(),
-      }
+        const newContext: SelectedTextContext = {
+          id: generateUniqueId("tc"),
+          text: trimmedText,
+          sourceMessageId,
+          preview: createTextPreview(trimmedText),
+          createdAt: new Date(),
+        }
 
-      setTextContexts((prev) => [...prev, newContext])
+        // Keep ref in sync so subsequent calls in the same batch see the addition
+        textContextsRef.current = [...prev, newContext]
+        return textContextsRef.current
+      })
     },
     []
   )
@@ -62,24 +79,33 @@ export function useTextContextSelection(): UseTextContextSelectionReturn {
       const trimmedText = text.trim()
       if (!trimmedText) return
 
-      // Prevent duplicates
-      const isDuplicate = diffTextContextsRef.current.some(
-        (ctx) =>
-          ctx.text === trimmedText && ctx.filePath === filePath
-      )
-      if (isDuplicate) return
+      // Perform duplicate check AND state update inside the updater function.
+      // Include lineNumber and lineType in uniqueness check so the same text
+      // from different locations in the same file can be selected independently.
+      setDiffTextContexts((prev) => {
+        const isDuplicate = prev.some(
+          (ctx) =>
+            ctx.text === trimmedText &&
+            ctx.filePath === filePath &&
+            ctx.lineNumber === lineNumber &&
+            ctx.lineType === lineType
+        )
+        if (isDuplicate) return prev
 
-      const newContext: DiffTextContext = {
-        id: `dtc_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-        text: trimmedText,
-        filePath,
-        lineNumber,
-        lineType,
-        preview: createTextPreview(trimmedText),
-        createdAt: new Date(),
-      }
+        const newContext: DiffTextContext = {
+          id: generateUniqueId("dtc"),
+          text: trimmedText,
+          filePath,
+          lineNumber,
+          lineType,
+          preview: createTextPreview(trimmedText),
+          createdAt: new Date(),
+        }
 
-      setDiffTextContexts((prev) => [...prev, newContext])
+        // Keep ref in sync so subsequent calls in the same batch see the addition
+        diffTextContextsRef.current = [...prev, newContext]
+        return diffTextContextsRef.current
+      })
     },
     []
   )

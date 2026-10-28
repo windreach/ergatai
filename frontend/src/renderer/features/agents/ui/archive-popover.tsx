@@ -2,6 +2,7 @@
 
 import React, { useMemo, useRef, useEffect, useState, useCallback, memo } from "react"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
+import { toast } from "sonner"
 import { trpc } from "../../../lib/trpc"
 import {
   archivePopoverOpenAtom,
@@ -22,6 +23,10 @@ import {
   PopoverTrigger,
 } from "../../../components/ui/popover"
 import { cn } from "../../../lib/utils"
+
+// GitHub avatar base URL — kept as a constant so it can be swapped in tests or
+// if the avatar host ever changes (e.g. proxied through a CDN).
+const GITHUB_AVATAR_BASE_URL = "https://github.com"
 
 // GitHub avatar with loading placeholder
 function GitHubAvatar({
@@ -48,7 +53,7 @@ function GitHubAvatar({
         <div className="absolute inset-0 rounded-sm bg-muted" />
       )}
       <img
-        src={`https://github.com/${gitOwner}.png?size=64`}
+        src={`${GITHUB_AVATAR_BASE_URL}/${gitOwner}.png?size=64`}
         alt={gitOwner}
         className={cn(className, "rounded-sm flex-shrink-0", isLoaded ? 'opacity-100' : 'opacity-0')}
         onLoad={handleLoad}
@@ -124,11 +129,14 @@ const ArchiveChatItem = memo(function ArchiveChatItem({
   const isGitHubRepo = gitProvider === "github" && !!gitOwner
 
   const repoName = gitRepo || project?.name
-  const displayText = branch
-    ? repoName
-      ? `${repoName} • ${branch}`
-      : branch
-    : repoName || "Local project"
+  let displayText: string
+  if (branch && repoName) {
+    displayText = `${repoName} • ${branch}`
+  } else if (branch) {
+    displayText = branch
+  } else {
+    displayText = repoName || "Local project"
+  }
 
   const handleClick = useCallback(() => {
     onSelect(chat.id)
@@ -245,6 +253,14 @@ export const ArchivePopover = memo(function ArchivePopover({ trigger }: ArchiveP
   // Fetch all projects for git info (for local chats)
   const { data: projects } = trpc.projects.list.useQuery(undefined, { staleTime: Infinity })
 
+  // Fetch all managed workspaces to map chat.workspaceId → defaultProjectId.
+  // This is what wires archived chats back to their project's git metadata
+  // (owner/repo/provider) for the GitHub avatar and repo-name display.
+  const { data: managedWorkspaces } = trpc.ergatai.listManagedWorkspaces.useQuery(
+    undefined,
+    { staleTime: 60 * 1000 },
+  )
+
   // Collect chat IDs for file stats query (only local chats)
   const archivedChatIds = useMemo(() => {
     if (!localArchivedChats) return []
@@ -267,6 +283,21 @@ export const ArchivePopover = memo(function ArchivePopover({ trigger }: ArchiveP
     return new Map(projects.map((p) => [p.id, p]))
   }, [projects])
 
+  // Create map for quick workspace → defaultProjectId lookup.
+  // This is how we resolve a chat's workspaceId back to a concrete project
+  // whose git metadata (owner/repo/provider) drives the GitHub avatar and
+  // repo-name display in each archived-chat row.
+  const workspaceProjectMap = useMemo(() => {
+    const map = new Map<string, string>()
+    if (!managedWorkspaces) return map
+    for (const ws of managedWorkspaces) {
+      if (ws.defaultProjectId) {
+        map.set(ws.id, ws.defaultProjectId)
+      }
+    }
+    return map
+  }, [managedWorkspaces])
+
   // Create map for quick file stats lookup by chat id
   const fileStatsMap = useMemo(() => {
     if (!fileStatsData) return new Map<string, { additions: number; deletions: number }>()
@@ -281,22 +312,36 @@ export const ArchivePopover = memo(function ArchivePopover({ trigger }: ArchiveP
       void utils.ergatai.workspaceStatus.invalidate()
       utils.chats.listArchived.invalidate()
     },
+    onError: (error) => {
+      console.error("Failed to restore chat:", error)
+      toast.error("Failed to restore chat", {
+        description: error instanceof Error ? error.message : "Please try again"
+      })
+    },
   })
 
   // Normalize and merge archived chats from both sources
   const normalizedChats = useMemo((): NormalizedArchivedChat[] => {
-    return (localArchivedChats ?? []).map((chat) => ({
-      id: chat.id,
-      name: chat.name,
-      branch: chat.branch,
-      projectId: null,
-      repository: null,
-      gitOwner: null,
-      gitProvider: null,
-      updatedAt: chat.updatedAt,
-      archivedAt: chat.archivedAt,
-    }))
-  }, [localArchivedChats])
+    return (localArchivedChats ?? []).map((chat) => {
+      // Resolve project via chat.workspaceId → workspace.defaultProjectId.
+      // repository/gitOwner/gitProvider on the chat itself aren't populated by
+      // the backend; the project lookup is the live path to git metadata.
+      const projectId = chat.workspaceId
+        ? workspaceProjectMap.get(chat.workspaceId) ?? null
+        : null
+      return {
+        id: chat.id,
+        name: chat.name,
+        branch: chat.branch,
+        projectId,
+        repository: null,
+        gitOwner: null,
+        gitProvider: null,
+        updatedAt: chat.updatedAt,
+        archivedAt: chat.archivedAt,
+      }
+    })
+  }, [localArchivedChats, workspaceProjectMap])
 
   // Filter and sort archived chats (always newest first)
   const filteredChats = useMemo(() => {
@@ -322,9 +367,10 @@ export const ArchivePopover = memo(function ArchivePopover({ trigger }: ArchiveP
   useEffect(() => {
     if (open) {
       setSearchQuery("")
-      setTimeout(() => {
+      const timerId = setTimeout(() => {
         searchInputRef.current?.focus()
       }, 0)
+      return () => clearTimeout(timerId)
     }
   }, [open, setSearchQuery])
 

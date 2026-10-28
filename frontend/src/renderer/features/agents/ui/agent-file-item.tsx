@@ -5,14 +5,12 @@ import { X, FileText, FileCode, FileJson, FolderIcon } from "lucide-react"
 import { IconSpinner } from "../../../components/ui/icons"
 
 interface AgentFileItemProps {
-  id: string
   filename: string
-  url: string
   size?: number
   isLoading?: boolean
   onRemove?: () => void
   isFolder?: boolean
-  folderFiles?: string[]
+  fileCount?: number
 }
 
 function formatFileSize(bytes: number): string {
@@ -38,17 +36,33 @@ function getFileIcon(filename: string) {
 }
 
 export function AgentFileItem({
-  id,
   filename,
-  url,
   size,
   isLoading = false,
   onRemove,
   isFolder = false,
-  folderFiles,
+  fileCount,
 }: AgentFileItemProps) {
   const [isHovered, setIsHovered] = useState(false)
   const Icon = isFolder ? FolderIcon : getFileIcon(filename)
+
+  const renderFileInfo = () => {
+    if (isFolder) {
+      return (
+        <span className="text-[10px] text-muted-foreground">
+          {fileCount || 0} files
+        </span>
+      )
+    }
+    if (size !== undefined) {
+      return (
+        <span className="text-[10px] text-muted-foreground">
+          {formatFileSize(size)}
+        </span>
+      )
+    }
+    return null
+  }
 
   return (
     <div
@@ -68,15 +82,7 @@ export function AgentFileItem({
         <span className="text-sm font-medium text-foreground truncate" title={filename}>
           {filename}
         </span>
-        {isFolder ? (
-          <span className="text-[10px] text-muted-foreground">
-            {folderFiles?.length || 0} files
-          </span>
-        ) : size !== undefined ? (
-          <span className="text-[10px] text-muted-foreground">
-            {formatFileSize(size)}
-          </span>
-        ) : null}
+        {renderFileInfo()}
       </div>
 
       {onRemove && (
@@ -90,6 +96,7 @@ export function AgentFileItem({
                      text-muted-foreground hover:text-foreground
                      ${isHovered ? "opacity-100" : "opacity-0"}`}
           type="button"
+          aria-label={`Remove ${filename}`}
         >
           <X className="size-3" />
         </button>

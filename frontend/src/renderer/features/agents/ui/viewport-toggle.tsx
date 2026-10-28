@@ -1,7 +1,7 @@
 "use client"
 
 import { cn } from "../../../lib/utils"
-import { Monitor, Smartphone } from "lucide-react"
+import { Monitor, Smartphone, type LucideIcon } from "lucide-react"
 import { motion } from "motion/react"
 
 interface ViewportToggleProps {
@@ -9,6 +9,22 @@ interface ViewportToggleProps {
   onChange: (mode: "desktop" | "mobile") => void
   className?: string
 }
+
+type ViewportMode = "desktop" | "mobile"
+
+interface ViewportOption {
+  mode: ViewportMode
+  Icon: LucideIcon
+  label: string
+}
+
+const VIEWPORT_OPTIONS: readonly ViewportOption[] = [
+  { mode: "desktop", Icon: Monitor, label: "Desktop viewport" },
+  { mode: "mobile", Icon: Smartphone, label: "Mobile viewport" },
+] as const
+
+const buttonClassName =
+  "relative z-[2] px-2 flex-1 flex items-center justify-center transition-colors duration-200 rounded-md outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70 text-muted-foreground"
 
 export function ViewportToggle({
   value,
@@ -42,50 +58,23 @@ export function ViewportToggle({
             ease: "easeInOut",
           }}
         />
-        <button
-          onClick={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            onChange("desktop")
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
+        {VIEWPORT_OPTIONS.map(({ mode, Icon, label }) => (
+          <button
+            key={mode}
+            type="button"
+            onClick={(e) => {
               e.preventDefault()
               e.stopPropagation()
-              onChange("desktop")
-            }
-          }}
-          aria-label="Desktop viewport"
-          aria-pressed={value === "desktop"}
-          className={cn(
-            "relative z-[2] px-2 flex-1 flex items-center justify-center transition-colors duration-200 rounded-md outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70 text-muted-foreground",
-          )}
-        >
-          <Monitor className="h-3.5 w-3.5" />
-        </button>
-        <button
-          onClick={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            onChange("mobile")
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault()
-              e.stopPropagation()
-              onChange("mobile")
-            }
-          }}
-          aria-label="Mobile viewport"
-          aria-pressed={value === "mobile"}
-          className={cn(
-            "relative z-[2] px-2 flex-1 flex items-center justify-center transition-colors duration-200 rounded-md outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70 text-muted-foreground",
-          )}
-        >
-          <Smartphone className="h-3.5 w-3.5" />
-        </button>
+              onChange(mode)
+            }}
+            aria-label={label}
+            aria-pressed={value === mode}
+            className={buttonClassName}
+          >
+            <Icon className="h-3.5 w-3.5" />
+          </button>
+        ))}
       </motion.div>
     </motion.div>
   )
 }
-

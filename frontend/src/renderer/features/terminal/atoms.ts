@@ -15,9 +15,11 @@ const terminalSidebarOpenStorageAtom = atomWithWindowStorage<Record<string, bool
 export const terminalSidebarOpenAtomFamily = atomFamily((chatId: string) =>
   atom(
     (get) => get(terminalSidebarOpenStorageAtom)[chatId] ?? false,
-    (get, set, isOpen: boolean) => {
+    (get, set, isOpen: boolean | ((prev: boolean) => boolean)) => {
       const current = get(terminalSidebarOpenStorageAtom)
-      set(terminalSidebarOpenStorageAtom, { ...current, [chatId]: isOpen })
+      const currentValue = current[chatId] ?? false
+      const newValue = typeof isOpen === "function" ? isOpen(currentValue) : isOpen
+      set(terminalSidebarOpenStorageAtom, { ...current, [chatId]: newValue })
     },
   ),
 )

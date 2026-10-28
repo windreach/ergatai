@@ -1,11 +1,37 @@
 import { useEffect, useRef, useCallback } from "react"
 
+// Threshold in pixels for "at bottom" detection
+const AUTO_SCROLL_THRESHOLD = 50
+
+// Max entries in scroll position cache (LRU eviction)
+const MAX_SCROLL_CACHE_SIZE = 50
+
 // Module-level scroll position cache (per conversationId, session-only)
 // Stores { scrollTop, scrollHeight, wasAtBottom } so we can restore position on tab switch
+// Uses LRU eviction to prevent unbounded memory growth in long-running sessions
 export const scrollPositionCache = new Map<
   string,
   { scrollTop: number; scrollHeight: number; wasAtBottom: boolean }
 >()
+
+// Helper to enforce LRU eviction on the scroll position cache
+function setScrollPositionCacheEntry(
+  key: string,
+  value: { scrollTop: number; scrollHeight: number; wasAtBottom: boolean },
+) {
+  // If key already exists, delete it first so it becomes the most recent
+  if (scrollPositionCache.has(key)) {
+    scrollPositionCache.delete(key)
+  }
+  // Evict oldest entry if at capacity
+  if (scrollPositionCache.size >= MAX_SCROLL_CACHE_SIZE) {
+    const oldestKey = scrollPositionCache.keys().next().value
+    if (oldestKey !== undefined) {
+      scrollPositionCache.delete(oldestKey)
+    }
+  }
+  scrollPositionCache.set(key, value)
+}
 
 // Export function to get saved scroll position
 export function getSavedScrollPosition(conversationId: string) {
@@ -31,11 +57,17 @@ export function useScrollManagement({
   const scrollInitializedRef = useRef(false) // Track whether initial scroll setup has run for this pane
   const hasUnapprovedPlanRef = useRef(false) // Track unapproved plan state for scroll initialization
   const chatContainerRef = useRef<HTMLElement | null>(null)
+  const animationFrameRef = useRef<number | null>(null) // Track animation frame ID for cancellation
 
   // Cleanup isAutoScrollingRef on unmount to prevent stuck state
   useEffect(() => {
     return () => {
       isAutoScrollingRef.current = false
+      // Cancel any pending animation frame on cleanup
+      if (animationFrameRef.current !== null) {
+        cancelAnimationFrame(animationFrameRef.current)
+        animationFrameRef.current = null
+      }
     }
   }, [])
 
@@ -47,10 +79,9 @@ export function useScrollManagement({
     const container = chatContainerRef.current
     if (!container) return
 
-    const threshold = 50
     const wasAtBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight <= threshold
-    scrollPositionCache.set(conversationId, {
+      container.scrollHeight - container.scrollTop - container.clientHeight <= AUTO_SCROLL_THRESHOLD
+    setScrollPositionCacheEntry(conversationId, {
       scrollTop: container.scrollTop,
       scrollHeight: container.scrollHeight,
       wasAtBottom,
@@ -77,10 +108,9 @@ export function useScrollManagement({
   const isAtBottom = useCallback(() => {
     const container = chatContainerRef.current
     if (!container) return true
-    const threshold = 50 // pixels from bottom
     return (
       container.scrollHeight - container.scrollTop - container.clientHeight <=
-      threshold
+      AUTO_SCROLL_THRESHOLD
     )
   }, [])
 
@@ -98,11 +128,23 @@ export function useScrollManagement({
     if (!container) return
 
     const currentScrollTop = container.scrollTop
-    const prevScrollTop = prevScrollTopRef.current
-    prevScrollTopRef.current = currentScrollTop
 
     // Ignore scroll events during initialization (content loading)
-    if (isInitializingScrollRef.current) return
+    if (isInitializingScrollRef.current) {
+      prevScrollTopRef.current = currentScrollTop
+      return
+    }
+
+    // Ignore programmatic scroll events during auto-scroll animation
+    // CRITICAL: Check this BEFORE updating prevScrollTopRef to prevent
+    // programmatic scrolls from corrupting the baseline for direction detection
+    if (isAutoScrollingRef.current) {
+      prevScrollTopRef.current = currentScrollTop
+      return
+    }
+
+    const prevScrollTop = prevScrollTopRef.current
+    prevScrollTopRef.current = currentScrollTop
 
     // If user scrolls UP - disable auto-scroll immediately
     // This works even during auto-scroll animation (user intent takes priority)
@@ -110,9 +152,6 @@ export function useScrollManagement({
       shouldAutoScrollRef.current = false
       return
     }
-
-    // Ignore other scroll direction checks during auto-scroll animation
-    if (isAutoScrollingRef.current) return
 
     // If user scrolls DOWN and reaches bottom - enable auto-scroll
     shouldAutoScrollRef.current = isAtBottom()
@@ -122,6 +161,11 @@ export function useScrollManagement({
   const scrollToBottom = useCallback(() => {
     const container = chatContainerRef.current
     if (!container) return
+
+    // Cancel any previous animation to prevent concurrent animations
+    if (animationFrameRef.current !== null) {
+      cancelAnimationFrame(animationFrameRef.current)
+    }
 
     isAutoScrollingRef.current = true
     shouldAutoScrollRef.current = true
@@ -144,15 +188,16 @@ export function useScrollManagement({
       container.scrollTop = start + (end - start) * easedProgress
 
       if (progress < 1) {
-        requestAnimationFrame(animateScroll)
+        animationFrameRef.current = requestAnimationFrame(animateScroll)
       } else {
         // Ensure we're at the absolute bottom
         container.scrollTop = container.scrollHeight
         isAutoScrollingRef.current = false
+        animationFrameRef.current = null
       }
     }
 
-    requestAnimationFrame(animateScroll)
+    animationFrameRef.current = requestAnimationFrame(animateScroll)
   }, [])
 
   return {

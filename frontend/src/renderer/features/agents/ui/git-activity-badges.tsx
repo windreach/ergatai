@@ -27,7 +27,17 @@ import { cn } from "../../../lib/utils"
 import { getFileIconByExtension } from "../mentions/file-icon-utils"
 import { useFileOpen } from "../mentions"
 
+// Utility to build GitHub commit URL
+function buildGitHubCommitUrl(owner: string, repo: string, hash: string): string {
+  return `https://github.com/${owner}/${repo}/commit/${hash}`
+}
+
+// Shared button styling for git activity badges
+const BADGE_BUTTON_CLASSES =
+  "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border bg-muted/30 text-xs text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors cursor-pointer overflow-hidden min-w-0"
+
 interface GitActivityBadgesProps {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- part shape varies across providers
   parts: any[]
   chatId: string
   conversationId: string
@@ -71,7 +81,7 @@ export const GitActivityBadges = memo(function GitActivityBadges({
     const repo = selectedWorkspace?.gitRepo
     if (activity.pushed && activity.hash && owner && repo) {
       window.desktopApi.openExternal(
-        `https://github.com/${owner}/${repo}/commit/${activity.hash}`,
+        buildGitHubCommitUrl(owner, repo, activity.hash),
       )
       return
     }
@@ -117,6 +127,14 @@ export const GitActivityBadges = memo(function GitActivityBadges({
           {/* Header */}
           <div
             onClick={() => setIsExpanded(!isExpanded)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault()
+                setIsExpanded(!isExpanded)
+              }
+            }}
+            role="button"
+            tabIndex={0}
             className="flex items-center justify-between pl-2.5 pr-0.5 h-7 cursor-pointer hover:bg-muted/50 transition-colors duration-150"
           >
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground min-w-0">
@@ -206,7 +224,7 @@ export const GitActivityBadges = memo(function GitActivityBadges({
       {activity?.type === "commit" && (
         <button
           onClick={handleOpenCommit}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border bg-muted/30 text-xs text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors cursor-pointer overflow-hidden min-w-0"
+          className={BADGE_BUTTON_CLASSES}
         >
           <GitCommit className="w-3.5 h-3.5 flex-shrink-0" />
           <span className="truncate">{activity.message}</span>
@@ -216,7 +234,7 @@ export const GitActivityBadges = memo(function GitActivityBadges({
       {activity?.type === "pr" && (
         <button
           onClick={() => window.desktopApi.openExternal(activity.url)}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border bg-muted/30 text-xs text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors cursor-pointer overflow-hidden min-w-0"
+          className={BADGE_BUTTON_CLASSES}
         >
           <GitPullRequest className="w-3.5 h-3.5 flex-shrink-0 text-emerald-500" />
           <span className="truncate">{activity.title}</span>

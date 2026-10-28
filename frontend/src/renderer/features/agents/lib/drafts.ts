@@ -238,7 +238,7 @@ export function useNewChatDrafts(): NewChatDraft[] {
       // For storage events, only react to draft-related keys
       // This prevents re-renders when other localStorage keys change (e.g., conversation active state)
       if (e instanceof StorageEvent) {
-        if (!e.key?.startsWith("new-chat-draft-")) {
+        if (e.key !== DRAFTS_STORAGE_KEY) {
           return
         }
       }
@@ -450,9 +450,12 @@ export function fromDraftImage(draft: DraftImage): UploadedImage | null {
     const blob = new Blob([byteArray], { type: draft.mediaType })
     const url = URL.createObjectURL(blob)
 
-    // Track blob URL for cleanup
-    const existing = draftBlobUrls.get(draft.id) || []
-    draftBlobUrls.set(draft.id, [...existing, url])
+    // Track blob URL for cleanup (revoke old URLs first to prevent memory leaks)
+    const existing = draftBlobUrls.get(draft.id)
+    if (existing) {
+      existing.forEach((u) => URL.revokeObjectURL(u))
+    }
+    draftBlobUrls.set(draft.id, [url])
 
     return {
       id: draft.id,
@@ -486,9 +489,12 @@ export function fromDraftFile(draft: DraftFile): UploadedFile | null {
     })
     const url = URL.createObjectURL(blob)
 
-    // Track blob URL for cleanup
-    const existing = draftBlobUrls.get(draft.id) || []
-    draftBlobUrls.set(draft.id, [...existing, url])
+    // Track blob URL for cleanup (revoke old URLs first to prevent memory leaks)
+    const existing = draftBlobUrls.get(draft.id)
+    if (existing) {
+      existing.forEach((u) => URL.revokeObjectURL(u))
+    }
+    draftBlobUrls.set(draft.id, [url])
 
     return {
       id: draft.id,

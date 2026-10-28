@@ -5,6 +5,9 @@ import { getDefaultRatios } from "../atoms"
 import { useAgentConversationStore } from "../stores/conversation-store"
 
 const MIN_PANE_WIDTH = 350
+const DRAG_ACTIVATION_THRESHOLD = 3
+const DIVIDER_HIT_AREA_OFFSET = -4
+const DIVIDER_HIT_AREA_WIDTH = 9
 
 interface SplitViewContainerProps {
   panes: Array<{ id: string; content: React.ReactNode }>
@@ -108,6 +111,7 @@ function SplitDivider({
       const startX = event.clientX
       const startRatios = [...ratiosRef.current]
       const containerWidth = container.getBoundingClientRect().width
+      if (containerWidth <= 0) return
       const pointerId = event.pointerId
       const target = event.currentTarget
 
@@ -128,7 +132,7 @@ function SplitDivider({
 
       const onMove = (e: PointerEvent) => {
         const deltaX = e.clientX - startX
-        if (!hasMoved && Math.abs(deltaX) < 3) return
+        if (!hasMoved && Math.abs(deltaX) < DRAG_ACTIVATION_THRESHOLD) return
         hasMoved = true
 
         const deltaRatio = deltaX / containerWidth
@@ -165,17 +169,17 @@ function SplitDivider({
   )
 
   return (
-    <div
-      className="relative flex-shrink-0 z-10"
-      style={{ width: "1px", touchAction: "none" }}
-    >
+    <div className="relative flex-shrink-0 z-10 w-px touch-none">
       {/* Visible 1px border */}
       <div className="absolute inset-0 transition-colors duration-100 bg-border" />
 
       {/* Hit area */}
       <div
         className="absolute top-0 bottom-0 cursor-col-resize"
-        style={{ left: "-4px", width: "9px" }}
+        style={{
+          left: `${DIVIDER_HIT_AREA_OFFSET}px`,
+          width: `${DIVIDER_HIT_AREA_WIDTH}px`,
+        }}
         onPointerDown={handlePointerDown}
       />
     </div>

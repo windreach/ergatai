@@ -79,12 +79,24 @@ Agent B 的 ACP session 中显示消息
 
 ### Agent ID 体系
 
-| ID 来源 | 格式 | 说明 |
-|---------|------|------|
-| ACP workspace | `ws1-agent-1`, `ws1-agent-2` | **确定性 ID**，由 workspace 计数器生成，workspace 内唯一 |
-| MCP client | `opencode@a1b2c3d4` | MCP 连接时自动生成，仅用于 MCP peer registry |
+**⚠️ 重要**: 项目使用两套 Agent ID 系统，详见 [`docs/AGENT_ID_GUIDE.md`](docs/AGENT_ID_GUIDE.md)
 
-**关键**: agent 之间发消息使用 workspace agent ID（如 `ws1-agent-1`）作为 target_agent_id。
+| ID 类型 | 格式示例 | 存储位置 | 用途 |
+|---------|---------|---------|------|
+| **Runtime Agent ID** | `agent_502816809136_000_0000` | `AgentHandle.agent_id` | 内部追踪、数据库存储（Snowflake i64） |
+| **Cross-restart Agent ID** | `agent-1`, `ws1-agent-1` | `AgentHandle.metadata["ergatai_agent_id"]` | 消息路由、MCP 调用、API 标识（跨重启稳定） |
+
+**快速决策**:
+- ✅ **对外 API**（`send_message`, `list_agents`）: 使用 `ergatai_agent_id`
+- ✅ **数据库存储**（`messages.from_agent_id`）: 使用 Snowflake `agent_id` (i64)
+- ✅ **日志追踪**: 同时记录两种 ID
+
+**历史演进**:
+- 旧格式: `ws{x}-agent-{n}` (workspace 计数器，确定性 ID)
+- 新格式: Snowflake ID + metadata 中的稳定标识
+- 兼容层: `parse_agent_id_to_i64()` 支持两种格式转换
+
+**关键**: agent 之间发消息使用 `ergatai_agent_id`（如 `agent-1`）作为 `target_agent_id`，**不是** Snowflake `agent_id`。
 
 ---
 

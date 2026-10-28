@@ -9,6 +9,19 @@ interface UseTabsToRenderOptions {
   agentConversations: Array<{ id: string }>
 }
 
+/**
+ * Maximum number of conversation tabs to keep mounted in the DOM.
+ *
+ * This is a **soft cap** that applies only to *recent* (background) tabs.
+ * The active tab, pinned tabs, and split-pane tabs are always mounted
+ * regardless of this limit, since they represent explicit user intent or
+ * concurrent work that must remain live.
+ *
+ * Tuning this value trades memory/render cost against how many background
+ * conversations stay warm for fast switching.
+ */
+const MAX_MOUNTED_TABS = 3
+
 export function useTabsToRender({
   activeConversationId,
   splitPaneIds,
@@ -19,7 +32,10 @@ export function useTabsToRender({
 }: UseTabsToRenderOptions) {
   // CRITICAL: Filter by workspace to prevent rendering conversations from other workspaces
   // Always render: active + pinned, then fill with recent up to limit
-  const MAX_MOUNTED_TABS = 3
+  //
+  // NOTE: `allConversations` and `agentConversations` MUST be referentially stable
+  // (e.g., memoized by the caller) — otherwise this `useMemo` recomputes every render,
+  // defeating its purpose. Callers should wrap these arrays in `useMemo` or a stable selector.
   const tabsToRender = useMemo(() => {
     if (!activeConversationId) return []
 
@@ -79,6 +95,15 @@ export function useTabsToRender({
     }
 
     for (const id of validSplitPaneIds) {
+      if (!result.includes(id)) {
+        result.push(id)
+      }
+    }
+
+    // Pinned tabs must always be mounted, even if they're not in validOpenIds.
+    // This mirrors the fallback above for activeConversationId and splitPaneIds,
+    // ensuring a pinned conversation that isn't in the "open" list is still rendered.
+    for (const id of validPinnedIds) {
       if (!result.includes(id)) {
         result.push(id)
       }

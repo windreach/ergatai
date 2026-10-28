@@ -22,7 +22,7 @@
 
 import { useCallback, useEffect, useMemo } from "react"
 import { useChatInstance } from "../../agents/hooks/use-chat-instance"
-import { useConversationInvocation } from "../../conversation/runtime/use-conversation-invocation"
+import { useConversationInvocation, useSessionState } from "../../conversation/runtime/use-conversation-invocation"
 import { getAdapterRegistry } from "../../conversation/runtime/runtime-adapter"
 import type { ChatConversation } from "../lib/chat-contract-api"
 import type { UIMessage } from "@ai-sdk/react"
@@ -62,7 +62,7 @@ export function useSideChatInvocation({
   const invocation = useConversationInvocation()
 
   // Get session state from new service
-  const sessionState = invocation.useSessionState(runtimeConversationId)
+  const sessionState = useSessionState(runtimeConversationId)
 
   // Phase 16: Register runtime adapter that delegates to existing Chat instance
   // This allows the service to leverage AI SDK's stream handling

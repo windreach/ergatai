@@ -13,7 +13,15 @@ import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areToolPropsEqual } from "./agent-tool-utils"
 import { cn } from "../../../lib/utils"
 
+/**
+ * Props for AgentWebSearchTool component.
+ * Note: `part` is typed as `any` because it represents a tool-specific part structure
+ * from the AI SDK that varies by tool type. The web search tool has its own input/output
+ * shape (query, results) that doesn't fit a generic interface. The AI SDK's tool part
+ * structure is dynamic and tool-specific, making a shared interface impractical.
+ */
 interface AgentWebSearchToolProps {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   part: any
   chatStatus?: string
 }
@@ -21,6 +29,15 @@ interface AgentWebSearchToolProps {
 interface SearchResult {
   title: string
   url: string
+}
+
+const isValidHttpUrl = (url: string): boolean => {
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+  } catch {
+    return false
+  }
 }
 
 export const AgentWebSearchTool = memo(function AgentWebSearchTool({
@@ -64,6 +81,9 @@ export const AgentWebSearchTool = memo(function AgentWebSearchTool({
     return <AgentToolInterrupted toolName="Search" subtitle={truncatedQuery} />
   }
 
+  // Show error indication when results displayed alongside error state
+  const showError = isError && hasResults
+
   return (
     <div className="rounded-lg border border-border bg-muted/30 overflow-hidden mx-2">
       {/* Header - clickable to toggle expand */}
@@ -106,6 +126,9 @@ export const AgentWebSearchTool = memo(function AgentWebSearchTool({
                 {resultCount} {resultCount === 1 ? "result" : "results"}
               </span>
             )}
+            {showError && (
+              <span className="text-destructive text-xs">· Error</span>
+            )}
           </div>
 
           {/* Expand/Collapse icon */}
@@ -131,17 +154,20 @@ export const AgentWebSearchTool = memo(function AgentWebSearchTool({
       {/* Results list - expandable */}
       {hasResults && isExpanded && (
         <div className="border-t border-border max-h-[200px] overflow-y-auto">
-          {results.map((result, idx) => (
-            <a
-              key={idx}
-              href={result.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block px-2.5 py-1 text-xs text-foreground truncate hover:bg-muted/50 transition-colors"
-            >
-              {result.title}
-            </a>
-          ))}
+          {results.map((result) => {
+            const safeUrl = isValidHttpUrl(result.url) ? result.url : undefined
+            return (
+              <a
+                key={result.url}
+                href={safeUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block px-2.5 py-1 text-xs text-foreground truncate hover:bg-muted/50 transition-colors"
+              >
+                {result.title}
+              </a>
+            )
+          })}
         </div>
       )}
     </div>

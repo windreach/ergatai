@@ -11,6 +11,20 @@
 import type { Message, MessagePart } from "../../agents/stores/message-store"
 
 // ============================================================================
+// CONVERSATION PROVIDER - Provider type aliases
+// ============================================================================
+
+/**
+ * Supported conversation providers.
+ */
+export type ConversationProvider = "claude-code" | "codex"
+
+/**
+ * Conversation mode types.
+ */
+export type ConversationMode = "normal" | "group" | "agent"
+
+// ============================================================================
 // CONVERSATION SOURCE - Where the conversation is being initiated
 // ============================================================================
 
@@ -59,7 +73,7 @@ export type ConversationInvocationSource = {
   agentId?: string | null
 
   /** Provider type (claude-code or codex) */
-  provider?: "claude-code" | "codex"
+  provider?: ConversationProvider
 
   /** Source pane type */
   source: ConversationSource
@@ -98,7 +112,7 @@ export type ConversationSendMessageInput = {
   /** Transport overrides */
   transportOverrides?: {
     /** Conversation mode */
-    mode?: "normal" | "group" | "agent"
+    mode?: ConversationMode
 
     /** Workspace ID (for workspace-specific transports) */
     workspaceId?: string
@@ -128,8 +142,11 @@ export type ConversationStopInput = {
   /** Chat instance ID */
   chatId: string
 
-  /** Agent ID (for calling backend cancel API) */
+  /** Agent ID (for calling backend cancel API) - single agent case */
   agentId?: string | null
+
+  /** Agent IDs (for calling backend cancel API) - multiple agents case (group chat) */
+  agentIds?: string[]
 }
 
 // ============================================================================
@@ -169,7 +186,7 @@ export type ConversationQueueItem = {
   originalInput: ConversationSendMessageInput
 
   /** Queue status */
-  status: "pending" | "processing"
+  status: "pending" | "processing" | "completed" | "failed"
 
   /** Queue timestamp */
   queuedAt: Date
@@ -224,7 +241,11 @@ export type ConversationRuntimeState = {
   /** Visible messages (merged persisted + runtime, deduplicated) */
   visibleMessages: Message[]
 
-  /** Whether currently streaming */
+  /**
+   * Whether currently streaming.
+   * INVARIANT: MUST equal `status === 'streaming'`.
+   * Kept for convenience but must stay in sync with status field.
+   */
   isStreaming: boolean
 
   /** Queued messages */
@@ -287,10 +308,10 @@ export type ResolvedConversation = {
   agentId?: string | null
 
   /** Provider type */
-  provider: "claude-code" | "codex"
+  provider: ConversationProvider
 
   /** Conversation mode */
-  mode: "normal" | "group" | "agent"
+  mode: ConversationMode
 
   /** Workspace ID (if workspace-specific) */
   workspaceId?: string
@@ -318,7 +339,7 @@ export type ResolvedAgentRuntime = {
   fromAgentId?: string | null
 
   /** Provider type */
-  provider: "claude-code" | "codex"
+  provider: ConversationProvider
 
   /** Whether agent is alive and ready */
   isAlive: boolean

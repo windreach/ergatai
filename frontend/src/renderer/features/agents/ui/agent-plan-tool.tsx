@@ -11,7 +11,7 @@ import {
 import { getToolStatus } from "./agent-tool-registry"
 import { areToolPropsEqual } from "./agent-tool-utils"
 import { cn } from "../../../lib/utils"
-import { Circle, SkipForward, FileCode2 } from "lucide-react"
+import { SkipForward, FileCode2 } from "lucide-react"
 
 interface PlanStep {
   id: string
@@ -30,69 +30,55 @@ interface Plan {
   status: "draft" | "awaiting_approval" | "approved" | "in_progress" | "completed"
 }
 
-interface AgentPlanToolProps {
-  part: {
-    type: string
-    toolCallId: string
-    state?: string
-    input?: {
-      action?: "create" | "update" | "approve" | "complete"
-      plan?: Plan
-    }
-    output?: {
-      success?: boolean
-      message?: string
-    }
+interface PlanToolPart {
+  type: string
+  toolCallId: string
+  state?: string
+  input?: {
+    action?: "create" | "update" | "approve" | "complete"
+    plan?: Plan
   }
+  output?: {
+    success?: boolean
+    message?: string
+  }
+}
+
+interface AgentPlanToolProps {
+  part: PlanToolPart
   chatStatus?: string
 }
 
-const StepStatusIcon = ({ status, isPending }: { status: PlanStep["status"]; isPending?: boolean }) => {
-  // During loading, show spinner for in_progress items
-  if (isPending && status === "in_progress") {
-    return (
-      <div 
-        className="w-3.5 h-3.5 rounded-full flex items-center justify-center flex-shrink-0"
-        style={{ border: '0.5px solid hsl(var(--muted-foreground) / 0.3)' }}
-      >
-        <IconSpinner className="w-2.5 h-2.5" />
-      </div>
-    )
-  }
-
+const StepStatusIcon = ({ status }: { status: PlanStep["status"]; isPending?: boolean }) => {
   switch (status) {
     case "completed":
       return (
-        <div 
-          className="w-3.5 h-3.5 rounded-full bg-muted flex items-center justify-center flex-shrink-0"
-          style={{ border: '0.5px solid hsl(var(--border))' }}
+        <div
+          className="w-3.5 h-3.5 rounded-full bg-muted flex items-center justify-center flex-shrink-0 border-[0.5px] border-border"
         >
           <CheckIcon className="w-2 h-2 text-muted-foreground" />
         </div>
       )
     case "in_progress":
       return (
-        <div 
-          className="w-3.5 h-3.5 rounded-full flex items-center justify-center flex-shrink-0"
-          style={{ border: '0.5px solid hsl(var(--muted-foreground) / 0.3)' }}
+        <div
+          className="w-3.5 h-3.5 rounded-full flex items-center justify-center flex-shrink-0 border-[0.5px] border-muted-foreground/30"
         >
           <IconSpinner className="w-2.5 h-2.5" />
         </div>
       )
     case "skipped":
       return (
-        <div 
-          className="w-3.5 h-3.5 rounded-full bg-muted flex items-center justify-center flex-shrink-0"
-          style={{ border: '0.5px solid hsl(var(--border))' }}
+        <div
+          className="w-3.5 h-3.5 rounded-full bg-muted flex items-center justify-center flex-shrink-0 border-[0.5px] border-border"
         >
           <SkipForward className="w-2 h-2 text-muted-foreground" />
         </div>
       )
     default:
       return (
-        <div 
-          className="w-3.5 h-3.5 rounded-full flex items-center justify-center flex-shrink-0"
-          style={{ border: '0.5px solid hsl(var(--muted-foreground) / 0.3)' }}
+        <div
+          className="w-3.5 h-3.5 rounded-full flex items-center justify-center flex-shrink-0 border-[0.5px] border-muted-foreground/30"
         />
       )
   }
@@ -273,9 +259,9 @@ export const AgentPlanTool = memo(function AgentPlanTool({
                     {/* Files */}
                     {step.files && step.files.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-1.5">
-                        {step.files.map((file, fileIdx) => (
+                        {step.files.map((file) => (
                           <span
-                            key={fileIdx}
+                            key={file}
                             className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground"
                           >
                             <FileCode2 className="w-2.5 h-2.5" />

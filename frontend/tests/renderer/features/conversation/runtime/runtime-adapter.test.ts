@@ -9,7 +9,7 @@ import {
   getAdapterRegistry,
   resetAdapterRegistry,
   type ConversationRuntimeAdapter,
-} from "@/renderer/features/conversation/runtime/runtime-adapter"
+} from "@/features/conversation/runtime/runtime-adapter"
 
 describe("AdapterRegistry", () => {
   beforeEach(() => {

@@ -3,17 +3,27 @@ import { toast } from "sonner"
 
 const MAX_HISTORY_CHARS = 50_000
 
+const ROLE_LABELS: Record<string, string> = {
+  user: "User",
+  assistant: "Assistant",
+  agent: "Agent",
+}
+
+function formatRole(role: string): string {
+  return ROLE_LABELS[role] || role
+}
+
 /**
  * Format chat messages as concise markdown for attaching as context to a new conversation.
  * Tool calls are summarized as one-liners. Truncates at ~50k chars, dropping oldest first.
  */
 export function formatHistoryForContext(
-  messages: Array<{ role: string; parts?: Array<{ type: string; text?: string; toolName?: string; result?: any; args?: any }> }>,
+  messages: Array<{ role: string; parts?: Array<{ type: string; text?: string; toolName?: string; result?: unknown; args?: unknown }> }>,
 ): string {
   const formatted: string[] = []
 
   for (const msg of messages) {
-    const role = msg.role === "user" ? "User" : msg.role === "assistant" ? "Assistant" : msg.role === "agent" ? "Agent" : msg.role
+    const role = formatRole(msg.role)
     const lines: string[] = []
 
     for (const part of msg.parts || []) {
@@ -52,55 +62,6 @@ interface ExportOptions {
   chatId: string
   conversationId?: string
   format: ExportFormat
-  isRemote?: boolean
-}
-
-interface Message {
-  role: string
-  content: string | Array<{ type: string; text?: string }>
-}
-
-/**
- * Format messages for export
- */
-function formatMessages(messages: Message[], format: ExportFormat, chatName: string): { content: string; filename: string } {
-  const timestamp = new Date().toISOString().split('T')[0]
-  const safeName = chatName.replace(/[^a-z0-9]/gi, '-').toLowerCase()
-
-  if (format === "json") {
-    return {
-      content: JSON.stringify(messages, null, 2),
-      filename: `${safeName}-${timestamp}.json`,
-    }
-  }
-
-  const formattedMessages = messages.map((msg) => {
-    const role = msg.role === "user" ? "User" : msg.role === "assistant" ? "Assistant" : msg.role === "agent" ? "Agent" : msg.role
-    let content = ""
-
-    if (typeof msg.content === "string") {
-      content = msg.content
-    } else if (Array.isArray(msg.content)) {
-      content = msg.content
-        .filter((part) => part.type === "text" && part.text)
-        .map((part) => part.text)
-        .join("\n")
-    }
-
-    if (format === "markdown") {
-      return `## ${role}\n\n${content}`
-    } else {
-      return `${role}:\n${content}`
-    }
-  })
-
-  const ext = format === "markdown" ? "md" : "txt"
-  const separator = format === "markdown" ? "\n\n---\n\n" : "\n\n"
-
-  return {
-    content: formattedMessages.join(separator),
-    filename: `${safeName}-${timestamp}.${ext}`,
-  }
 }
 
 /**

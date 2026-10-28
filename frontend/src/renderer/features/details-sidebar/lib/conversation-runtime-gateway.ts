@@ -2,6 +2,11 @@ import { useCallback, useSyncExternalStore } from "react"
 
 import { trpcClient } from "../../../lib/trpc"
 
+import {
+  readPersistedSequence,
+  persistSequence,
+} from "../../conversation/runtime/runtime-sequence-persistence"
+
 export type RuntimeAgentEvent = {
   type: string
   role?: string | null
@@ -177,6 +182,8 @@ function connect(conversationId: string) {
         if (message.kind === "snapshot") {
           channel.state = mergeSnapshot(conversationId, channel.state, message.snapshot)
           channel.retryAttempt = 0
+          // Persist lastSequence after snapshot merge for stream resumption
+          persistSequence(conversationId, channel.state.lastSequence)
         } else {
           const event = message.event
           if (event.conversationId !== conversationId) return
@@ -190,6 +197,8 @@ function connect(conversationId: string) {
               startedAtMs: event.timestampMs,
               updatedAtMs: event.timestampMs,
             }
+            // Persist lastSequence for new turn
+            persistSequence(conversationId, channel.state.lastSequence)
             notify(channel)
             return
           }
@@ -213,6 +222,8 @@ function connect(conversationId: string) {
             events: [...channel.state.events, event].slice(-MAX_EVENTS),
             updatedAtMs: event.timestampMs,
           }
+          // Persist lastSequence after receiving new event
+          persistSequence(conversationId, channel.state.lastSequence)
         }
 
         notify(channel)
@@ -279,12 +290,14 @@ export function subscribeConversationRuntime(
 ): () => void {
   let channel = channels.get(conversationId)
   if (!channel) {
+    // Restore lastSequence from localStorage to enable stream resumption after UI reload
+    const persistedSequence = readPersistedSequence(conversationId) ?? 0
     channel = {
       state: {
         conversationId,
         status: "idle",
         connectionStatus: "connecting",
-        lastSequence: 0,
+        lastSequence: persistedSequence,
         events: [],
       },
       listeners: new Set(),

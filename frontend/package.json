@@ -11,7 +11,7 @@
   "scripts": {
     "dev": "bash ../scripts/dev.sh",
     "dev:frontend": "electron-vite dev",
-    "build": "NODE_OPTIONS='--max-old-space-size=3072' electron-vite build",
+    "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "electron-builder --dir",
     "package:mac": "electron-builder --mac",
@@ -84,6 +84,7 @@
     "diff": "^8.0.3",
     "electron-log": "^5.4.3",
     "electron-updater": "^6.7.3",
+    "es-toolkit": "^1.53.0",
     "gray-matter": "^4.0.3",
     "jotai": "^2.11.1",
     "jsonc-parser": "^3.3.1",
@@ -121,6 +122,7 @@
     "@playwright/test": "^1.64.1",
     "@tailwindcss/container-queries": "^0.1.1",
     "@testing-library/dom": "^10.4.2",
+    "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@types/diff": "^8.0.0",
     "@types/node": "^20.17.50",
@@ -138,6 +140,7 @@
     "tailwindcss": "^3.4.17",
     "typescript": "^5.4.5",
     "vite": "^6.3.4",
+    "vite-plugin-monaco-editor-esm": "^2.0.3",
     "vitest": "^5.0.3"
   },
   "build": {

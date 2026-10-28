@@ -1014,4 +1014,220 @@ mod tests {
         assert!(!cache.contains_key("old-msg-1"));
         assert!(!cache.contains_key("old-msg-2"));
     }
+
+    #[test]
+    fn test_unmark_message_processed() {
+        let test_msg_id = format!(
+            "test-unmark-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        // Mark as processed
+        mark_message_processed(&test_msg_id);
+        assert!(is_duplicate_message(&test_msg_id));
+
+        // Unmark should remove from cache
+        unmark_message_processed(&test_msg_id);
+        assert!(!is_duplicate_message(&test_msg_id));
+    }
+
+    #[test]
+    fn test_message_type_counters_initial_state() {
+        // Counters should start at 0 (or whatever they were from previous tests)
+        let stats = get_message_type_stats();
+        assert_eq!(stats.len(), 4);
+
+        // Verify all message types are present
+        let types: Vec<&String> = stats.iter().map(|(t, _)| t).collect();
+        assert!(types.contains(&&"request".to_string()));
+        assert!(types.contains(&&"response".to_string()));
+        assert!(types.contains(&&"broadcast".to_string()));
+        assert!(types.contains(&&"notification".to_string()));
+    }
+
+    #[test]
+    fn test_increment_message_count_request() {
+        let initial_count = MSG_COUNT_REQUEST.load(Ordering::Relaxed);
+        increment_message_count("request");
+        let new_count = MSG_COUNT_REQUEST.load(Ordering::Relaxed);
+        assert_eq!(new_count, initial_count + 1);
+    }
+
+    #[test]
+    fn test_increment_message_count_response() {
+        let initial_count = MSG_COUNT_RESPONSE.load(Ordering::Relaxed);
+        increment_message_count("response");
+        let new_count = MSG_COUNT_RESPONSE.load(Ordering::Relaxed);
+        assert_eq!(new_count, initial_count + 1);
+    }
+
+    #[test]
+    fn test_increment_message_count_broadcast() {
+        let initial_count = MSG_COUNT_BROADCAST.load(Ordering::Relaxed);
+        increment_message_count("broadcast");
+        let new_count = MSG_COUNT_BROADCAST.load(Ordering::Relaxed);
+        assert_eq!(new_count, initial_count + 1);
+    }
+
+    #[test]
+    fn test_increment_message_count_notification() {
+        let initial_count = MSG_COUNT_NOTIFICATION.load(Ordering::Relaxed);
+        increment_message_count("notification");
+        let new_count = MSG_COUNT_NOTIFICATION.load(Ordering::Relaxed);
+        assert_eq!(new_count, initial_count + 1);
+    }
+
+    #[test]
+    fn test_increment_message_count_unknown_type() {
+        // Unknown message types should not panic
+        increment_message_count("unknown_type");
+        increment_message_count("");
+        // If we get here without panic, the test passes
+    }
+
+    #[test]
+    fn test_dedup_cache_concurrent_access() {
+        use std::thread;
+
+        let test_msg_id = format!(
+            "test-concurrent-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        // Spawn multiple threads accessing the cache
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let msg_id = test_msg_id.clone();
+                thread::spawn(move || {
+                    mark_message_processed(&msg_id);
+                    is_duplicate_message(&msg_id);
+                })
+            })
+            .collect();
+
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Should still be able to check the message
+        assert!(is_duplicate_message(&test_msg_id));
+    }
+
+    #[test]
+    fn test_cleanup_preserves_recent_entries() {
+        let mut cache = HashMap::new();
+        let now = Instant::now();
+
+        // Add entries at different ages
+        cache.insert("very-old".to_string(), now - Duration::from_secs(600));
+        cache.insert("old".to_string(), now - Duration::from_secs(350));
+        cache.insert("recent".to_string(), now - Duration::from_secs(100));
+        cache.insert("brand-new".to_string(), now);
+
+        cleanup_stale_entries(&mut cache);
+
+        // Only entries within TTL should remain
+        assert_eq!(cache.len(), 2);
+        assert!(cache.contains_key("recent"));
+        assert!(cache.contains_key("brand-new"));
+    }
+
+    #[test]
+    fn test_mark_message_processed_triggers_cleanup() {
+        let cache = get_processed_messages();
+        let mut guard = cache.lock().unwrap();
+
+        // Fill cache beyond MAX_CACHE_SIZE threshold
+        // (We'll use a smaller number for testing)
+        for i in 0..100 {
+            guard.insert(format!("msg-{}", i), Instant::now());
+        }
+
+        // Mark a new message - this should trigger cleanup if cache is large
+        drop(guard);
+        mark_message_processed("trigger-cleanup-test");
+
+        // Cache should still be accessible
+        assert!(cache.lock().is_ok());
+    }
+
+    #[test]
+    fn test_get_message_type_stats_returns_all_types() {
+        let stats = get_message_type_stats();
+
+        assert_eq!(stats.len(), 4);
+
+        // Verify structure
+        for (msg_type, count) in stats {
+            assert!(!msg_type.is_empty());
+            // Count should be non-negative (u64 is always >= 0)
+            let _ = count;
+        }
+    }
+
+    #[test]
+    fn test_dedup_ttl_boundary() {
+        let mut cache = HashMap::new();
+        let now = Instant::now();
+
+        // Add entry exactly at TTL boundary
+        cache.insert("at-boundary".to_string(), now - DEDUP_TTL);
+
+        // Add entry just within TTL
+        cache.insert(
+            "within-ttl".to_string(),
+            now - (DEDUP_TTL - Duration::from_secs(1)),
+        );
+
+        // Add entry just beyond TTL
+        cache.insert(
+            "beyond-ttl".to_string(),
+            now - (DEDUP_TTL + Duration::from_secs(1)),
+        );
+
+        cleanup_stale_entries(&mut cache);
+
+        // Only entries within TTL should remain
+        assert_eq!(cache.len(), 1);
+        assert!(cache.contains_key("within-ttl"));
+    }
+
+    #[test]
+    fn test_processed_messages_cache_isolation() {
+        // Test that different message IDs are tracked independently
+        let msg_id_1 = format!(
+            "test-isolation-1-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let msg_id_2 = format!(
+            "test-isolation-2-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        assert!(!is_duplicate_message(&msg_id_1));
+        assert!(!is_duplicate_message(&msg_id_2));
+
+        mark_message_processed(&msg_id_1);
+
+        assert!(is_duplicate_message(&msg_id_1));
+        assert!(!is_duplicate_message(&msg_id_2));
+
+        mark_message_processed(&msg_id_2);
+
+        assert!(is_duplicate_message(&msg_id_1));
+        assert!(is_duplicate_message(&msg_id_2));
+    }
 }

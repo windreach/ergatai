@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import { trpc } from "../../../lib/trpc"
 import {
@@ -11,6 +11,11 @@ import {
 
 export function useImplicitCollaborationTasks(chatId: string) {
   const [tasks, setTasks] = useState<ImplicitCollaborationTask[]>([])
+
+  // Clear tasks when chatId changes to prevent showing stale tasks from other conversations
+  useEffect(() => {
+    setTasks([])
+  }, [chatId])
 
   trpc.ergatai.subscribeCollaborationRuntime.useSubscription({ sessionId: chatId }, {
     onData(rawEvent) {

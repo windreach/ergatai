@@ -14,8 +14,12 @@ import { appStore } from "../../../lib/jotai-store"
 import { useEffect, useMemo } from "react"
 import { showOfflineModeFeaturesAtom } from "../../../lib/atoms"
 import { trpc, trpcClient } from "../../../lib/trpc"
-import { ergataiAgentModelInfoAtom } from "../lib/ergatai-agent-manager"
+import { ergataiAgentModelInfoAtom, ergataiActiveAgentIdAtom } from "../lib/ergatai-agent-manager"
 import { CLAUDE_MODELS } from "../lib/models"
+
+// ── Constants ──
+
+const OLLAMA_STATUS_POLL_INTERVAL_MS = 30_000
 
 // ── Types ──
 
@@ -32,35 +36,14 @@ interface UseAvailableModelsReturn {
   recommendedModel: string | undefined
   isOffline: boolean
   hasOllama: boolean
-  isCached: boolean
-  isStale: boolean
 }
 
 // ── Helper ──
 
 /**
- * Map backend model name to UI format.
- * Uses the normalized name (without context window suffix) as the ID for deduplication.
+ * Normalize a model name to a stable lowercase ID.
+ * Strips common prefixes (models/, claude-), date suffixes, and context window tags.
  */
-function mapBackendModelToUI(modelName: string): ModelItem | null {
-  const raw = modelName.trim()
-  if (!raw || raw.toLowerCase() === "default") return null
-
-  let normalized = raw
-    .replace(/^models\//, "")
-    .replace(/^claude-/i, "")
-    .replace(/-\d{8,}$/i, "")
-    .replace(/\[\d+m\]$/, "")
-
-  const id = normalized.toLowerCase()
-  let displayName = normalized
-    .split(/[-_\s]/)
-    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
-    .join(" ")
-
-  return { id, name: displayName, version: "" }
-}
-
 function normalizeModelId(modelName: string): string {
   return modelName
     .replace(/^models\//, "")
@@ -70,6 +53,32 @@ function normalizeModelId(modelName: string): string {
     .toLowerCase()
 }
 
+/**
+ * Map backend model name to UI format.
+ * Uses the normalized name (without context window suffix) as the ID for deduplication.
+ */
+function mapBackendModelToUI(modelName: string): ModelItem | null {
+  const raw = modelName.trim()
+  if (!raw || raw.toLowerCase() === "default") return null
+
+  const id = normalizeModelId(raw)
+  if (!id) return null
+
+  // Build display name from the original input (before normalization)
+  const normalized = raw
+    .replace(/^models\//, "")
+    .replace(/^claude-/i, "")
+    .replace(/-\d{8,}$/i, "")
+    .replace(/\[\d+m\]$/, "")
+
+  const displayName = normalized
+    .split(/[-_\s]/)
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join(" ")
+
+  return { id, name: displayName, version: "" }
+}
+
 // ── Hook ──
 
 export function useAvailableModels(): UseAvailableModelsReturn {
@@ -77,15 +86,22 @@ export function useAvailableModels(): UseAvailableModelsReturn {
 
   // PRIMARY source: read from Jotai atom (updated by fetchAgentModels in chat transport)
   const agentModelInfo = useAtomValue(ergataiAgentModelInfoAtom)
+  const activeAgentId = useAtomValue(ergataiActiveAgentIdAtom)
 
-  // Derive models from atom — pick the most recently updated entry
+  // Derive models from atom — prefer active agent, fall back to most recently updated
   const atomModels = useMemo(() => {
     const entries = Object.values(agentModelInfo)
     if (entries.length === 0) return null
 
-    // Use the most recently fetched agent's models
-    const latest = entries.reduce((a, b) => (a.fetchedAt > b.fetchedAt ? a : b))
-    if (latest.models.length === 0) return null
+    // Prefer the active agent's models if available
+    let latest: typeof entries[0] | null = null
+    if (activeAgentId && agentModelInfo[activeAgentId]) {
+      latest = agentModelInfo[activeAgentId]
+    } else {
+      // Fall back to most recently updated entry
+      latest = entries.reduce((a, b) => (a.fetchedAt > b.fetchedAt ? a : b))
+    }
+    if (!latest || latest.models.length === 0) return null
 
     const mapped = latest.models
       .map(mapBackendModelToUI)
@@ -103,14 +119,18 @@ export function useAvailableModels(): UseAvailableModelsReturn {
       models: unique,
       current: latest.current ? normalizeModelId(latest.current) : null,
     }
-  }, [agentModelInfo])
+  }, [agentModelInfo, activeAgentId])
 
   // If atom is empty, load from SQLite database into atom (populate cache)
   useEffect(() => {
     if (atomModels) return
 
+    let cancelled = false
+
     // Read from SQLite database (source of truth) and populate Jotai atom (cache)
     trpcClient.ergatai.getLatestCachedModels.query().then((result) => {
+      if (cancelled) return
+
       if (result.models.length > 0) {
         const store = appStore
         const current = store.get(ergataiAgentModelInfoAtom)
@@ -127,7 +147,15 @@ export function useAvailableModels(): UseAvailableModelsReturn {
       // fetchAgentModels will write to SQLite, then we can read from DB.
       // We intentionally do NOT fetch here without an agentId, as the
       // backend requires a real one and would return 404 otherwise.
-    }).catch(() => {})
+    }).catch((error) => {
+      if (!cancelled) {
+        console.warn("[useAvailableModels] Failed to load cached models:", error)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
   }, [atomModels])
 
   // Use atom-derived models, fall back to hardcoded
@@ -138,7 +166,7 @@ export function useAvailableModels(): UseAvailableModelsReturn {
 
   // Ollama status
   const { data: ollamaStatus } = trpc.ollama.getStatus.useQuery(undefined, {
-    refetchInterval: showOfflineFeatures ? 30000 : false,
+    refetchInterval: showOfflineFeatures ? OLLAMA_STATUS_POLL_INTERVAL_MS : false,
     enabled: showOfflineFeatures,
   })
 
@@ -156,19 +184,15 @@ export function useAvailableModels(): UseAvailableModelsReturn {
       recommendedModel,
       isOffline,
       hasOllama: true,
-      isCached: false,
-      isStale: false,
     }
   }
 
   return {
     models: baseModels,
     currentModelId,
-    ollamaModels: [] as string[],
-    recommendedModel: undefined as string | undefined,
+    ollamaModels,
+    recommendedModel,
     isOffline,
     hasOllama: false,
-    isCached: false,
-    isStale: false,
   }
 }

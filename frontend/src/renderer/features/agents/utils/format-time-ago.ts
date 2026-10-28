@@ -36,8 +36,16 @@ export function formatTimeAgo(date: Date | number | string | undefined | null): 
   } else if (diffWeek < 4) {
     return `${diffWeek} week${diffWeek === 1 ? '' : 's'} ago`
   } else if (diffMonth < 12) {
+    if (diffMonth === 0) {
+      // Fall back to weeks when months is 0 (e.g., 28-29 days)
+      return `${diffWeek} week${diffWeek === 1 ? '' : 's'} ago`
+    }
     return `${diffMonth} month${diffMonth === 1 ? '' : 's'} ago`
   } else {
+    if (diffYear === 0) {
+      // Fall back to months when years is 0 (e.g., 330-364 days)
+      return `${diffMonth} month${diffMonth === 1 ? '' : 's'} ago`
+    }
     return `${diffYear} year${diffYear === 1 ? '' : 's'} ago`
   }
 }
@@ -80,8 +88,14 @@ export function formatTimeAgoShort(date: Date | number | string | undefined | nu
   } else if (diffWeek < 4) {
     return `${diffWeek}w`
   } else if (diffMonth < 12) {
+    if (diffMonth === 0) {
+      return `${diffWeek}w`
+    }
     return `${diffMonth}mo`
   } else {
+    if (diffYear === 0) {
+      return `${diffMonth}mo`
+    }
     return `${diffYear}y`
   }
 }

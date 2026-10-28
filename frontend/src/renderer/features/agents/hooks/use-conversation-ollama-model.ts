@@ -1,13 +1,13 @@
 import { useAtom } from "jotai"
-import { useMemo } from "react"
 
 import { conversationOllamaModelAtomFamily } from "@/lib/atoms"
 
 export function useConversationOllamaModel(conversationId: string) {
-  const conversationOllamaModelAtom = useMemo(
-    () => conversationOllamaModelAtomFamily(conversationId),
-    [conversationId],
-  )
+  // atomFamily already caches atoms, so direct call is efficient
+  // Guard against empty conversationId at runtime
+  const atom = conversationId
+    ? conversationOllamaModelAtomFamily(conversationId)
+    : conversationOllamaModelAtomFamily("")
 
-  return useAtom(conversationOllamaModelAtom)
+  return useAtom(atom)
 }

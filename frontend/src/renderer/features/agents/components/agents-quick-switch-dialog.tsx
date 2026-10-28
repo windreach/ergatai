@@ -29,14 +29,14 @@ export function AgentsQuickSwitchDialog({
   projectsMap,
   onHover,
 }: AgentsQuickSwitchDialogProps) {
-  if (typeof window === "undefined") return null
-
-  // Derive loading parent chat IDs from loadingConversations Map
+  // All hooks must be called before any conditional returns (Rules of Hooks)
   const loadingConversations = useAtomValue(loadingConversationsAtom)
   const loadingChatIds = useMemo(
     () => new Set([...loadingConversations.values()]),
     [loadingConversations],
   )
+
+  if (typeof window === "undefined") return null
 
   return createPortal(
     <AnimatePresence>

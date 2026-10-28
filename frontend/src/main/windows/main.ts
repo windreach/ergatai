@@ -18,6 +18,7 @@ import { getAuthManager, getBaseUrl } from "../index"
 import { registerGitWatcherIPC } from "../lib/git/watcher"
 import { hasActiveClaudeSessions, abortAllClaudeSessions } from "../lib/trpc/routers/mcp"
 import { getErgataiAuthConfig } from "../lib/ergatai/api"
+import { setOptOut } from "../lib/analytics"
 import { registerThemeScannerIPC } from "../lib/vscode-theme-scanner"
 import { validateHttpUrl } from "../lib/url-utils"
 import { unlockDevTools } from "../lib/devtools-state"
@@ -286,7 +287,6 @@ function registerIpcHandlers(): void {
 
   // Analytics
   ipcMain.handle("analytics:set-opt-out", async (_event, optedOut: boolean) => {
-    const { setOptOut } = await import("../lib/analytics")
     void optedOut
     setOptOut()
   })

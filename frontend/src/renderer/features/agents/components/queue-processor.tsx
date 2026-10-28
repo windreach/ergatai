@@ -12,9 +12,14 @@ import { loadingConversationsAtom, setLoading, clearLoading } from "../atoms"
 import { MENTION_PREFIXES } from "../mentions/agents-mentions-editor"
 import { utf8ToBase64 } from "../utils/base64"
 import type { AgentQueueItem } from "../lib/queue-utils"
+import type { MessagePart } from "../stores/message-store"
 
 // Delay between processing queue items (ms)
 const QUEUE_PROCESS_DELAY = 1000
+// Maximum number of retry attempts before giving up
+const MAX_RETRY_ATTEMPTS = 3
+// Base delay multiplier for exponential backoff (ms)
+const RETRY_BACKOFF_BASE_MS = 1000
 
 /**
  * Global queue processor component.
@@ -31,6 +36,8 @@ export function QueueProcessor() {
   const processingRef = useRef<Set<string>>(new Set())
   // Track timers for cleanup
   const timersRef = useRef<Map<string, NodeJS.Timeout>>(new Map())
+  // Track conversations currently in backoff — checkAllQueues skips these
+  const backoffUntilRef = useRef<Map<string, number>>(new Map())
 
   useEffect(() => {
     // Function to process queue for a specific conversation
@@ -70,7 +77,7 @@ export function QueueProcessor() {
 
       try {
         // Build message parts from queued item
-        const parts: any[] = [
+        const parts: MessagePart[] = [
           ...(item.images || []).map((img) => ({
             type: "data-image" as const,
             data: {
@@ -131,12 +138,16 @@ export function QueueProcessor() {
           .allConversations.find((sc) => sc.id === conversationId)
         const mode = conversationMeta?.mode || "agent"
 
-        // Track message sent
-        trackMessageSent({
-          workspaceId: conversationId,
-          messageLength: item.message.length,
-          mode,
-        })
+        // Track message sent (isolated to prevent analytics failures from blocking sends)
+        try {
+          trackMessageSent({
+            workspaceId: conversationId,
+            messageLength: item.message.length,
+            mode,
+          })
+        } catch (analyticsError) {
+          console.warn('[QueueProcessor] Analytics tracking failed:', analyticsError)
+        }
 
         // Update timestamps
         useAgentConversationStore.getState().updateConversationTimestamp(conversationId)
@@ -163,11 +174,36 @@ export function QueueProcessor() {
       } catch (error) {
         console.error(`[QueueProcessor] Error processing queue:`, error)
 
-        // Requeue the item at the front so it can be retried
-        useMessageQueueStore.getState().prependItem(conversationId, item)
+        // Check retry count and enforce max attempts
+        const retryCount = (item.retryCount ?? 0) + 1
+        if (retryCount >= MAX_RETRY_ATTEMPTS) {
+          // Max retries exceeded — drop the message and notify user
+          console.error(
+            `[QueueProcessor] Max retry attempts (${MAX_RETRY_ATTEMPTS}) exceeded for item ${item.id}. Giving up.`
+          )
+          toast.error(
+            `Failed to send queued message after ${MAX_RETRY_ATTEMPTS} attempts. The message has been removed from the queue.`
+          )
+          // Clear loading state since we're dropping the message
+          clearLoading(
+            (fn) => appStore.set(loadingConversationsAtom, fn(appStore.get(loadingConversationsAtom))),
+            conversationId
+          )
+          processingRef.current.delete(conversationId)
+          setTimeout(checkAllQueues, 0)
+          return
+        }
+
+        // Requeue the item at the front with incremented retry count and exponential backoff
+        const backoffDelay = RETRY_BACKOFF_BASE_MS * Math.pow(2, retryCount - 1)
+        const itemWithRetry = { ...item, retryCount }
+        useMessageQueueStore.getState().prependItem(conversationId, itemWithRetry)
 
         // Set error status (will be cleared on next successful send or manual retry)
         useStreamingStatusStore.getState().setStatus(conversationId, "error")
+
+        // Mark this conversation as in backoff so checkAllQueues won't interfere
+        backoffUntilRef.current.set(conversationId, Date.now() + backoffDelay)
 
         // Clear loading state since send failed
         clearLoading(
@@ -175,8 +211,26 @@ export function QueueProcessor() {
           conversationId
         )
 
-        // Notify user
-        toast.error("Failed to send queued message. It will be retried.")
+        // Notify user with retry count
+        toast.error(
+          `Failed to send queued message. Retrying in ${Math.round(backoffDelay / 1000)}s (attempt ${retryCount}/${MAX_RETRY_ATTEMPTS}).`
+        )
+
+        // Schedule retry with exponential backoff instead of immediate re-check
+        const existingTimer = timersRef.current.get(conversationId)
+        if (existingTimer) {
+          clearTimeout(existingTimer)
+        }
+        const retryTimer = setTimeout(() => {
+          timersRef.current.delete(conversationId)
+          backoffUntilRef.current.delete(conversationId)
+          // Clear error status so processQueue will pick it up
+          useStreamingStatusStore.getState().setStatus(conversationId, "ready")
+          processQueue(conversationId)
+        }, backoffDelay)
+        timersRef.current.set(conversationId, retryTimer)
+        processingRef.current.delete(conversationId)
+        return
       } finally {
         processingRef.current.delete(conversationId)
         // Re-kick after releasing lock to avoid lost wakeups
@@ -204,10 +258,15 @@ export function QueueProcessor() {
     // Check all queues and schedule processing for ready conversations
     function checkAllQueues() {
       const queues = useMessageQueueStore.getState().queues
+      const now = Date.now()
 
       for (const conversationId of Object.keys(queues)) {
         const queue = queues[conversationId]
         if (!queue || queue.length === 0) continue
+
+        // Skip conversations in backoff — their retry timer will handle them
+        const backoffUntil = backoffUntilRef.current.get(conversationId)
+        if (backoffUntil !== undefined && now < backoffUntil) continue
 
         const status = useStreamingStatusStore.getState().getStatus(conversationId)
 

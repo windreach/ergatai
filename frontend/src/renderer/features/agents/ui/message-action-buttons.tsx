@@ -1,13 +1,12 @@
 "use client"
 
-import { memo, useState, useCallback } from "react"
+import { memo, useState, useCallback, useRef, useEffect } from "react"
 import { CheckIcon, CopyIcon } from "../../../components/ui/icons"
 import { cn } from "../../../lib/utils"
 import { useHaptic } from "../hooks/use-haptic"
 
 interface CopyButtonProps {
   text: string
-  isMobile?: boolean
 }
 
 export const CopyButton = memo(function CopyButton({
@@ -15,13 +14,31 @@ export const CopyButton = memo(function CopyButton({
 }: CopyButtonProps) {
   const [copied, setCopied] = useState(false)
   const { trigger: triggerHaptic } = useHaptic()
+  const timerRef = useRef<NodeJS.Timeout | null>(null)
 
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(text)
-    triggerHaptic("medium")
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(text)
+      triggerHaptic("medium")
+      setCopied(true)
+      // Clear any existing timer
+      if (timerRef.current) {
+        clearTimeout(timerRef.current)
+      }
+      timerRef.current = setTimeout(() => setCopied(false), 2000)
+    } catch (error) {
+      console.error("Failed to copy to clipboard:", error)
+    }
   }, [text, triggerHaptic])
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current)
+      }
+    }
+  }, [])
 
   return (
     <button
@@ -47,10 +64,13 @@ export const CopyButton = memo(function CopyButton({
   )
 })
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- message shape varies across providers
 export function getMessageTextContent(msg: any): string {
   if (!msg?.parts) return ""
   return msg.parts
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- part shape varies
     .filter((p: any) => p.type === "text")
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- part shape varies
     .map((p: any) => p.text || "")
     .join("\n")
 }

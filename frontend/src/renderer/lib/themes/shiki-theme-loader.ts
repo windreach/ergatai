@@ -244,6 +244,19 @@ function isThemeAvailable(themeId: string): boolean {
 }
 
 /**
+ * Escape HTML special characters to prevent XSS
+ * Used when code cannot be highlighted and must be displayed as-is
+ */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;")
+}
+
+/**
  * Highlight code with a specific theme
  * Uses custom themes with tokenColors when available, otherwise maps to bundled themes
  * Results are cached to prevent re-highlighting when switching tabs
@@ -280,7 +293,7 @@ export async function highlightCode(
 
   // Extract just the code content from shiki's output (remove wrapper)
   const match = html.match(/<code[^>]*>([\s\S]*?)<\/code>/)
-  const result = match ? match[1] : code
+  const result = match ? match[1] : escapeHtml(code)
 
   // Cache the result
   highlightCache.set(cacheKey, result)

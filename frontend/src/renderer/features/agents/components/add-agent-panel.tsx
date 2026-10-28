@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils"
 import {
   type AgentProfileWithStatus,
   type AgentRegistration,
+  type CoreAgentId,
 } from "../lib/agent-contract-api"
 import { registeredAgentsAtom } from "../atoms"
 import { getCoreAgentIcon } from "./core-agent-selector"
@@ -41,13 +42,13 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
       const cleaned = current.filter(
         (r) => !(r.startupCommand.startsWith("node") && r.startupCommand.includes("/adapters/")),
       )
-      const existingIds = new Set(current.map((r) => r.id))
+      const existingIds = new Set(cleaned.map((r) => r.id))
       const toAdd = installed
         .filter((p: AgentProfileWithStatus) => !existingIds.has(p.id))
         .map((p: AgentProfileWithStatus) => ({
           id: p.id,  // Use backend's stable ID
           name: p.name,
-          runtimeId: p.name as any,
+          runtimeId: p.name as CoreAgentId, // backend profile names are a superset of CoreAgentId
           startupCommand: p.command,
           avatarUrl: p.avatar_url || undefined,  // Sync avatar from backend
         }))
@@ -126,11 +127,10 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
         )
         toast.success(`${agent.name} registration removed`)
       } catch (error) {
-        // Backend deletion failed, but still remove from local state
-        setRegisteredAgents((current) =>
-          current.filter((registration) => registration.id !== agent.id),
-        )
-        toast.success(`${agent.name} removed locally (backend deletion failed)`)
+        // Backend deletion failed — keep local state in sync with backend and surface the error
+        toast.error(`Failed to delete ${agent.name}`, {
+          description: "The registration was not removed. Please try again.",
+        })
       }
     },
     [setRegisteredAgents, deleteProfileMutation],
@@ -165,7 +165,7 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border bg-muted/40 text-foreground">
-                      {agent.avatarUrl ? (
+                      {agent.avatarUrl && /^https?:\/\//i.test(agent.avatarUrl) ? (
                         <img
                           src={agent.avatarUrl}
                           alt=""
@@ -238,7 +238,7 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
               </div>
             ) : (
               profiles.map((profile: AgentProfileWithStatus) => {
-                const Icon = getCoreAgentIcon(profile.name as any)
+                const Icon = getCoreAgentIcon(profile.name as CoreAgentId)
                 const isInstalled = profile.installed
                 const isInstalling =
                   installMutation.isPending &&
@@ -299,13 +299,11 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
                         ) : (
                           <Download className="h-3.5 w-3.5" />
                         )}
-                        {isInstalling
-                          ? "Installing"
-                          : isUninstalling
-                            ? "Uninstalling"
-                            : isInstalled
-                              ? "Uninstall"
-                              : "Install"}
+                        {(() => {
+                          if (isInstalling) return "Installing"
+                          if (isUninstalling) return "Uninstalling"
+                          return isInstalled ? "Uninstall" : "Install"
+                        })()}
                       </Button>
                     </div>
                   </div>

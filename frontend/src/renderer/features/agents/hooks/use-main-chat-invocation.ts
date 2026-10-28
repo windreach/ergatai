@@ -16,7 +16,7 @@
  */
 
 import { useCallback, useEffect, useMemo } from "react"
-import { useConversationInvocation } from "../../conversation/runtime/use-conversation-invocation"
+import { useConversationInvocation, useSessionState } from "../../conversation/runtime/use-conversation-invocation"
 import { getAdapterRegistry, type AdapterState } from "../../conversation/runtime/runtime-adapter"
 import type { ConversationStatus } from "../../conversation/runtime/contracts"
 import { MENTION_PREFIXES } from "../../mentions/types"
@@ -64,7 +64,7 @@ export function useMainChatInvocation({
   const invocation = useConversationInvocation()
 
   // Get session state from new service
-  const sessionState = invocation.useSessionState(runtimeConversationId)
+  const sessionState = useSessionState(runtimeConversationId)
 
   // Phase 16: Register runtime adapter that delegates to existing Chat instance
   // This allows the service to leverage AI SDK's stream handling
@@ -243,8 +243,9 @@ export function useMainChatInvocation({
       // Convert textContexts to mention tokens
       if (item.textContexts && item.textContexts.length > 0) {
         const quoteMentions = item.textContexts.map((tc: any) => {
-          const preview = (tc.preview || tc.text.slice(0, 50)).replace(/[:\[\]]/g, "")
-          const encodedText = utf8ToBase64(tc.text)
+          const text = tc.text || "" // defensive default
+          const preview = (tc.preview || text.slice(0, 50)).replace(/[:\[\]]/g, "")
+          const encodedText = utf8ToBase64(text)
           return `@[${MENTION_PREFIXES.QUOTE}${preview}:${encodedText}]`
         })
         mentionPrefix += quoteMentions.join(" ") + " "
@@ -253,8 +254,9 @@ export function useMainChatInvocation({
       // Convert diffTextContexts to mention tokens
       if (item.diffTextContexts && item.diffTextContexts.length > 0) {
         const diffMentions = item.diffTextContexts.map((dtc: any) => {
-          const preview = (dtc.preview || dtc.text.slice(0, 50)).replace(/[:\[\]]/g, "")
-          const encodedText = utf8ToBase64(dtc.text)
+          const text = dtc.text || "" // defensive default
+          const preview = (dtc.preview || text.slice(0, 50)).replace(/[:\[\]]/g, "")
+          const encodedText = utf8ToBase64(text)
           const lineNum = dtc.lineNumber || 0
           return `@[${MENTION_PREFIXES.DIFF}${dtc.filePath}:${lineNum}:${preview}:${encodedText}]`
         })
@@ -264,7 +266,8 @@ export function useMainChatInvocation({
       // Convert pastedTexts to mention tokens
       if (item.pastedTexts && item.pastedTexts.length > 0) {
         const pastedMentions = item.pastedTexts.map((pt: any) => {
-          const sanitizedPreview = pt.preview.replace(/[:\[\]|]/g, "")
+          const preview = pt.preview || "" // defensive default
+          const sanitizedPreview = preview.replace(/[:\[\]|]/g, "")
           const prefix = pt.kind === "chatHistory" ? MENTION_PREFIXES.CHAT_HISTORY : MENTION_PREFIXES.PASTED
           return `@[${prefix}${pt.size}:${sanitizedPreview}|${pt.filePath}]`
         })

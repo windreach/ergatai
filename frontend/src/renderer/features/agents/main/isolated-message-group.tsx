@@ -2,6 +2,7 @@
 
 import { createContext, memo, useCallback, useMemo } from "react"
 import { useAtomValue } from "jotai"
+import type { UIMessage } from "@ai-sdk/react"
 import {
   getPerChatMessageKey,
   messageAtomFamily,
@@ -9,6 +10,8 @@ import {
   isLastUserMessagePerChatAtomFamily,
   rollbackTargetPerChatAtomFamily,
   isRollingBackAtom,
+  type Message,
+  type MessagePart,
 } from "../stores/message-store"
 import { MemoizedAssistantMessages } from "./messages-list"
 import { AgentMessageItem } from "./agent-message-item"
@@ -23,7 +26,9 @@ import {
 } from "../lib/agent-contract-api"
 import { useAgentRuntimeAgents } from "../lib/agent-runtime-status-store"
 import { trpc } from "../../../lib/trpc"
-import { extractTextMentions, TextMentionBlocks, TextMentionBlock } from "../mentions/render-file-mentions"
+import { extractTextMentions, TextMentionBlock } from "../mentions/render-file-mentions"
+import type { ParsedMention } from "../mentions/mentions-utils"
+import type { ToolPart } from "../ui/agent-tool-registry"
 import { AgentImageItem } from "../ui/agent-image-item"
 import { IconTextUndo } from "../../../components/ui/icons"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip"
@@ -51,6 +56,150 @@ import { ForkContext } from "./fork-context"
 // - Streaming starts/stops (for planning indicator)
 // ============================================================================
 
+// Helper: Build attachment summary text for attachment-only messages
+function buildAttachmentSummary(
+  imageParts: ImagePart[],
+  textMentions: ParsedMention[]
+): string {
+  const parts: string[] = []
+  if (imageParts.length > 0) {
+    parts.push(imageParts.length === 1 ? "image" : `${imageParts.length} images`)
+  }
+  const quoteCount = textMentions.filter(m => m.type === "quote").length
+  const pastedCount = textMentions.filter(m => m.type === "pasted").length
+  const codeCount = textMentions.filter(m => m.type === "diff").length
+  if (quoteCount > 0) {
+    parts.push(quoteCount === 1 ? "selected text" : `${quoteCount} text selections`)
+  }
+  if (pastedCount > 0) {
+    parts.push(pastedCount === 1 ? "pasted text" : `${pastedCount} pasted texts`)
+  }
+  if (codeCount > 0) {
+    parts.push(codeCount === 1 ? "code selection" : `${codeCount} code selections`)
+  }
+  const fileCount = textMentions.filter(m => m.type === "file").length
+  const folderCount = textMentions.filter(m => m.type === "folder").length
+  if (fileCount > 0) {
+    parts.push(fileCount === 1 ? "file" : `${fileCount} files`)
+  }
+  if (folderCount > 0) {
+    parts.push(folderCount === 1 ? "folder" : `${folderCount} folders`)
+  }
+  return `Using ${parts.join(", ")}`
+}
+
+// Helper: Resolve image URL from image part data
+function resolveImageUrl(img: ImagePart): string {
+  return img.data?.base64Data && img.data?.mediaType
+    ? `data:${img.data.mediaType};base64,${img.data.base64Data}`
+    : img.data?.url || ""
+}
+
+// Helper: Build image items array for AgentImageItem rendering
+function buildImageItems(
+  imageParts: ImagePart[],
+  userMsgId: string
+): Array<{ id: string; filename: string; url: string }> {
+  return imageParts
+    .filter((img: ImagePart) => img.data?.url || img.data?.base64Data)
+    .map((img: ImagePart, idx: number) => ({
+      id: `${userMsgId}-img-${idx}`,
+      filename: img.data?.filename || "image",
+      url: resolveImageUrl(img),
+    }))
+}
+
+// Helper: Render user message content based on message type
+function renderUserMessageContent(
+  isAttachmentOnlyMessage: boolean,
+  isImageOnlyMessage: boolean,
+  isAgentSourcedMessage: boolean,
+  props: {
+    imageParts: ImagePart[]
+    textMentions: ParsedMention[]
+    userMsg: Message
+    userMsgId: string
+    chatId: string
+    isMobile: boolean
+    displaySenderName?: string
+    senderCoreAgentId?: CoreAgentId
+    UserBubbleComponent: React.ComponentType<{
+      messageId: string
+      textContent: string
+      imageParts: ImagePart[]
+      skipTextMentionBlocks?: boolean
+    }>
+    textContent: string
+  }
+): React.ReactNode {
+  const {
+    imageParts,
+    textMentions,
+    userMsg,
+    userMsgId,
+    chatId,
+    isMobile,
+    displaySenderName,
+    senderCoreAgentId,
+    UserBubbleComponent,
+    textContent,
+  } = props
+
+  if (isAttachmentOnlyMessage && !isImageOnlyMessage) {
+    return (
+      <div className="flex justify-end drop-shadow-[0_10px_20px_hsl(var(--background))]" data-user-bubble>
+        <div className="w-fit max-w-[85%] space-y-2">
+          <div className="w-fit bg-muted px-3 py-2 rounded-xl text-sm text-muted-foreground italic">
+            {buildAttachmentSummary(imageParts, textMentions)}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (isAgentSourcedMessage) {
+    // Agent-sourced messages (role: "agent") are inter-agent requests
+    // Render with agent header, not as user bubble
+    // Note: Message type is cast to UIMessage for compatibility with AgentMessageItem
+    // Both types have compatible structure (id, role, parts, metadata)
+    return (
+      <AgentMessageItem
+        message={userMsg as unknown as UIMessage}
+        chatId={chatId}
+        isMobile={isMobile}
+        displaySenderName={displaySenderName}
+        senderCoreAgentId={senderCoreAgentId ?? undefined}
+      />
+    )
+  }
+
+  return (
+    <UserBubbleComponent
+      messageId={userMsgId}
+      textContent={textContent}
+      imageParts={isImageOnlyMessage ? imageParts : []}
+      skipTextMentionBlocks={!isImageOnlyMessage}
+    />
+  )
+}
+
+/**
+ * Image part shape produced by `@ai-sdk/react` for inline image attachments.
+ * Mirrors the prop shape accepted by `AgentUserMessageBubble`.
+ */
+type ImagePart = {
+  type?: "data-image" | string
+  data?: {
+    filename?: string
+    url?: string
+    base64Data?: string
+    mediaType?: string
+  }
+}
+
+/** Icon component accepted by `ToolCallComponent` — matches `ToolMeta.icon`. */
+type ToolIcon = React.ComponentType<{ className?: string }>
+
 interface IsolatedMessageGroupProps {
   userMsgId: string
   conversationId: string
@@ -60,23 +209,23 @@ interface IsolatedMessageGroupProps {
   stickyTopClass: string
   sandboxSetupError?: string
   onRetrySetup?: () => void
-  onRollback?: (msg: any) => void
+  onRollback?: (msg: UIMessage) => void
   onFork?: (messageId: string) => void
   // Components passed from parent - must be stable references
   UserBubbleComponent: React.ComponentType<{
     messageId: string
     textContent: string
-    imageParts: any[]
+    imageParts: ImagePart[]
     skipTextMentionBlocks?: boolean
   }>
   ToolCallComponent: React.ComponentType<{
-    icon: any
+    icon: ToolIcon
     title: string
     isPending: boolean
     isError: boolean
   }>
   MessageGroupWrapper: React.ComponentType<{ children: React.ReactNode; isLastGroup?: boolean }>
-  toolRegistry: Record<string, { icon: any; title: (args: any) => string }>
+  toolRegistry: Record<string, { icon: ToolIcon; title: (args: ToolPart) => string }>
 }
 
 function areGroupPropsEqual(
@@ -118,7 +267,7 @@ export const IsolatedMessageGroup = memo(function IsolatedMessageGroup({
   toolRegistry,
 }: IsolatedMessageGroupProps) {
   // Subscribe to specific atoms - NOT the whole messages array
-  const perChatKey = `${conversationId}:${userMsgId}`
+  const perChatKey = `${conversationId}:::${userMsgId}`
   const userMsg = useAtomValue(messageAtomFamily(getPerChatMessageKey(conversationId, userMsgId)))
   const assistantIds = useAtomValue(assistantIdsPerChatAtomFamily(perChatKey))
   const isLastGroup = useAtomValue(isLastUserMessagePerChatAtomFamily(perChatKey))
@@ -137,18 +286,24 @@ export const IsolatedMessageGroup = memo(function IsolatedMessageGroup({
   // Note: file-content parts are hidden from UI but sent to agent
   const rawTextContent =
     userMsg?.parts
-      ?.filter((p: any) => p.type === "text")
-      .map((p: any) => p.text)
+      ?.filter((p: MessagePart) => p.type === "text")
+      .map((p: MessagePart) => p.text)
       .join("\n") || ""
 
   const imageParts =
-    userMsg?.parts?.filter((p: any) => p.type === "data-image") || []
+    (userMsg?.parts?.filter((p: MessagePart) => p.type === "data-image") as ImagePart[]) || []
 
   // Extract text mentions (quote/diff) to render separately above sticky block
   // NOTE: useMemo must be called before any early returns to follow Rules of Hooks
   const { textMentions, cleanedText: textContent } = useMemo(
     () => extractTextMentions(rawTextContent),
     [rawTextContent]
+  )
+
+  // Build image items array for rendering (memoized to avoid recomputation)
+  const imageItems = useMemo(
+    () => buildImageItems(imageParts, userMsgId),
+    [imageParts, userMsgId]
   )
 
   // Resolve auto-generated runtime sender ids (ws_…-agent-N) to a real
@@ -166,9 +321,6 @@ export const IsolatedMessageGroup = memo(function IsolatedMessageGroup({
   // Determine if this is an agent-sourced message (should be rendered as user bubble with agent name)
   // or a user message (should be rendered as user bubble)
   const isAgentSourcedMessage = userMsg.role === "agent"
-
-  // Check if this is a persisted chat (has chat_ prefix) — needed for InterAgentRepliesDisclosure
-  const isPersistedChat = chatId.startsWith("chat_")
 
   // Show cloning when sandbox is being set up
   const shouldShowCloning =
@@ -263,29 +415,16 @@ export const IsolatedMessageGroup = memo(function IsolatedMessageGroup({
       {/* All attachments in one row - NOT sticky (only when there's also text) */}
       {((!isImageOnlyMessage && imageParts.length > 0) || textMentions.length > 0) && (
         <div className="mb-2 pointer-events-auto flex flex-wrap items-end gap-1.5">
-          {imageParts.length > 0 && !isImageOnlyMessage && (() => {
-            const resolveImgUrl = (img: any) =>
-              img.data?.base64Data && img.data?.mediaType
-                ? `data:${img.data.mediaType};base64,${img.data.base64Data}`
-                : img.data?.url || ""
-            const allImages = imageParts
-              .filter((img: any) => img.data?.url || img.data?.base64Data)
-              .map((img: any, idx: number) => ({
-                id: `${userMsgId}-img-${idx}`,
-                filename: img.data?.filename || "image",
-                url: resolveImgUrl(img),
-              }))
-            return imageParts.map((img: any, idx: number) => (
-              <AgentImageItem
-                key={`${userMsgId}-img-${idx}`}
-                id={`${userMsgId}-img-${idx}`}
-                filename={img.data?.filename || "image"}
-                url={resolveImgUrl(img)}
-                allImages={allImages}
-                imageIndex={idx}
-              />
-            ))
-          })()}
+          {imageParts.length > 0 && !isImageOnlyMessage && imageItems.map((item, idx) => (
+            <AgentImageItem
+              key={item.id}
+              id={item.id}
+              filename={item.filename}
+              url={item.url}
+              allImages={imageItems}
+              imageIndex={idx}
+            />
+          ))}
           {textMentions.map((mention, idx) => (
             <TextMentionBlock key={`mention-${idx}`} mention={mention} />
           ))}
@@ -299,82 +438,45 @@ export const IsolatedMessageGroup = memo(function IsolatedMessageGroup({
       >
         {/* Show "Using X" summary when no text but have attachments */}
         <div className="relative">
-          {isAttachmentOnlyMessage && !isImageOnlyMessage ? (
-            <div className="flex justify-end drop-shadow-[0_10px_20px_hsl(var(--background))]" data-user-bubble>
-              <div className="w-fit max-w-[85%] space-y-2">
-                <div className="w-fit bg-muted px-3 py-2 rounded-xl text-sm text-muted-foreground italic">
-                {(() => {
-                  const parts: string[] = []
-                  if (imageParts.length > 0) {
-                    parts.push(imageParts.length === 1 ? "image" : `${imageParts.length} images`)
-                  }
-                  const quoteCount = textMentions.filter(m => m.type === "quote").length
-                  const pastedCount = textMentions.filter(m => m.type === "pasted").length
-                  const codeCount = textMentions.filter(m => m.type === "diff").length
-                  if (quoteCount > 0) {
-                    parts.push(quoteCount === 1 ? "selected text" : `${quoteCount} text selections`)
-                  }
-                  if (pastedCount > 0) {
-                    parts.push(pastedCount === 1 ? "pasted text" : `${pastedCount} pasted texts`)
-                  }
-                  if (codeCount > 0) {
-                    parts.push(codeCount === 1 ? "code selection" : `${codeCount} code selections`)
-                  }
-                  const fileCount = textMentions.filter(m => m.type === "file").length
-                  const folderCount = textMentions.filter(m => m.type === "folder").length
-                  if (fileCount > 0) {
-                    parts.push(fileCount === 1 ? "file" : `${fileCount} files`)
-                  }
-                  if (folderCount > 0) {
-                    parts.push(folderCount === 1 ? "folder" : `${folderCount} folders`)
-                  }
-                  return `Using ${parts.join(", ")}`
-                })()}
-                </div>
-              </div>
-            </div>
-          ) : isAgentSourcedMessage ? (
-            // Agent-sourced messages (role: "agent") are inter-agent requests
-            // Render with agent header, not as user bubble
-            <AgentMessageItem
-              message={userMsg as any}
-              chatId={chatId}
-              isMobile={isMobile}
-              displaySenderName={displaySenderName}
-              senderCoreAgentId={senderCoreAgentId ?? undefined}
-            />
-          ) : (
-            <UserBubbleComponent
-              messageId={userMsgId}
-              textContent={textContent}
-              imageParts={isImageOnlyMessage ? imageParts : []}
-              skipTextMentionBlocks={!isImageOnlyMessage}
-            />
+          {renderUserMessageContent(
+            isAttachmentOnlyMessage,
+            isImageOnlyMessage,
+            isAgentSourcedMessage,
+            {
+              imageParts,
+              textMentions,
+              userMsg,
+              userMsgId,
+              chatId,
+              isMobile,
+              displaySenderName,
+              senderCoreAgentId: senderCoreAgentId ?? undefined,
+              UserBubbleComponent,
+              textContent,
+            }
           )}
 
           {/* Rollback button - overlay bottom-right of user bubble */}
           {canRollback && (
             <div className="absolute bottom-1 right-1 z-20 flex items-center gap-0.5">
-              {canRollback && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      onClick={() => onRollback(userMsg)}
-                      disabled={isRollingBack}
-                      tabIndex={-1}
-                      className={cn(
-                        "p-1 rounded-md transition-all duration-150 ease-out hover:bg-accent/80 active:scale-[0.97] opacity-0 group-hover/user-message:opacity-100",
-                        isRollingBack && "!opacity-50 cursor-not-allowed",
-                      )}
-                    >
-                      <IconTextUndo className="w-3.5 h-3.5 text-muted-foreground" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom">
-                    {isRollingBack ? "Rolling back..." : "Rollback to here"}
-                  </TooltipContent>
-                </Tooltip>
-              )}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => onRollback(userMsg as UIMessage)}
+                    disabled={isRollingBack}
+                    tabIndex={-1}
+                    className={cn(
+                      "p-1 rounded-md transition-all duration-150 ease-out hover:bg-accent/80 active:scale-[0.97] opacity-0 group-hover/user-message:opacity-100",
+                      isRollingBack && "!opacity-50 cursor-not-allowed",
+                    )}
+                  >
+                    <IconTextUndo className="w-3.5 h-3.5 text-muted-foreground" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  {isRollingBack ? "Rolling back..." : "Rollback to here"}
+                </TooltipContent>
+              </Tooltip>
             </div>
           )}
         </div>

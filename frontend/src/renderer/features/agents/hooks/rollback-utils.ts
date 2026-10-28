@@ -62,6 +62,13 @@ export async function executeRollback(
     return
   }
 
+  // Validate userMsg before accessing its properties
+  if (!userMsg) {
+    console.error('[Rollback] userMsg is null/undefined')
+    toast.error('Cannot rollback: message not found')
+    return
+  }
+
   // Find the index of this user message
   const userMsgIndex = messages.findIndex((m) => m.id === userMsg.id)
   if (userMsgIndex === -1) {
@@ -72,8 +79,7 @@ export async function executeRollback(
   const sdkUuid = findRollbackTargetSdkUuidForUserIndex(
     userMsgIndex,
     messages.length,
-    // any justified: findRollbackTargetSdkUuidForUserIndex expects a generic accessor function
-    (index) => messages[index] as any,
+    (index) => messages[index],
   )
 
   if (!sdkUuid) {
@@ -109,23 +115,40 @@ export async function executeRollback(
       mediaType: p.data.mediaType,
       isLoading: false,
     }))
+    .filter((img: UploadedImage) => img.url && img.url.length > 0)
 
   setIsRollingBack(true)
 
+  // Phase 1: API call - handle rollback on server
+  let result
   try {
-    // Single call handles both message truncation and git rollback
-    const result = await trpcClient.chats.rollbackToMessage.mutate({
+    result = await trpcClient.chats.rollbackToMessage.mutate({
       conversationId,
       sdkMessageUuid: sdkUuid,
     })
+  } catch (error) {
+    console.error("[executeRollback] API call failed:", error)
+    toast.error("Failed to rollback")
+    setIsRollingBack(false)
+    return
+  }
 
-    if (!result.success) {
-      toast.error(`Failed to rollback: ${result.error}`)
-      setIsRollingBack(false)
-      return
-    }
+  if (!result.success) {
+    toast.error(`Failed to rollback: ${result.error}`)
+    setIsRollingBack(false)
+    return
+  }
 
-    // Update local state with truncated messages from server
+  // Validate response shape before updating state
+  if (!Array.isArray(result.messages)) {
+    console.error('[Rollback] Invalid response: messages is not an array', result)
+    toast.error('Rollback failed: invalid response from server')
+    setIsRollingBack(false)
+    return
+  }
+
+  // Phase 2: UI restoration - update local state (errors here are non-fatal)
+  try {
     setMessages(result.messages)
     recomputeChangedFiles()
     refreshDiff?.()
@@ -148,9 +171,8 @@ export async function executeRollback(
     }
     editorRef.current?.focus()
   } catch (error) {
-    console.error("[executeRollback] Error:", error)
-    toast.error("Failed to rollback")
-  } finally {
+    console.error("[executeRollback] UI restoration failed (rollback succeeded):", error)
     setIsRollingBack(false)
+    return
   }
 }

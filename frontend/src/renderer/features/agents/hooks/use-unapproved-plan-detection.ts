@@ -1,9 +1,10 @@
-import { useEffect, useMemo } from "react"
+import { useEffect, useLayoutEffect, useMemo } from "react"
 import { useSetAtom } from "jotai"
 import { pendingPlanApprovalsAtom } from "../../../lib/atoms"
+import type { Message, MessagePart } from "../stores/message-store"
 
 interface UseUnapprovedPlanDetectionOptions {
-  messages: any[]
+  messages: Message[]
   conversationMode: "plan" | "agent"
   conversationId: string
   parentChatId: string | null
@@ -35,7 +36,7 @@ export function useUnapprovedPlanDetection({
       // If assistant message with completed ExitPlanMode, we found an unapproved plan
       if (msg.role === "assistant" && msg.parts) {
         const exitPlanPart = msg.parts.find(
-          (p: any) => p.type === "tool-ExitPlanMode"
+          (p: MessagePart) => p.type === "tool-ExitPlanMode"
         )
         // Check if ExitPlanMode is completed (has output, even if empty)
         if (exitPlanPart && exitPlanPart.output !== undefined) {
@@ -46,8 +47,12 @@ export function useUnapprovedPlanDetection({
     return false
   }, [messages, conversationMode])
 
-  // Keep ref in sync for use in initializeScroll (which runs in useLayoutEffect)
-  hasUnapprovedPlanRef.current = hasUnapprovedPlan
+  // Keep ref in sync for use in initializeScroll (which runs in useLayoutEffect).
+  // Synchronize via useLayoutEffect so the ref is consistent before the browser paints,
+  // avoiding unsafe ref mutations during the render phase (which React may interrupt).
+  useLayoutEffect(() => {
+    hasUnapprovedPlanRef.current = hasUnapprovedPlan
+  }, [hasUnapprovedPlan, hasUnapprovedPlanRef])
 
   // Update pending plan approvals atom for sidebar indicators
   const setPendingPlanApprovals = useSetAtom(pendingPlanApprovalsAtom)
@@ -59,22 +64,25 @@ export function useUnapprovedPlanDetection({
       } else {
         newMap.delete(conversationId)
       }
-      // Only return new map if it changed
-      if (newMap.size !== prev.size || ![...newMap.keys()].every((id) => prev.has(id))) {
+      // Only return new map if keys OR values changed (e.g., a conversation's parentChatId moved)
+      if (
+        newMap.size !== prev.size ||
+        ![...newMap.entries()].every(([id, val]) => prev.get(id) === val)
+      ) {
         return newMap
       }
       return prev
     })
   }, [hasUnapprovedPlan, conversationId, parentChatId, setPendingPlanApprovals])
 
-  // Keyboard shortcut: Cmd+Enter to approve plan
+  // Keyboard shortcut: Cmd+Enter (macOS) or Ctrl+Enter (Windows/Linux) to approve plan
   useEffect(() => {
     if (!isActive) return
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
         e.key === "Enter" &&
-        e.metaKey &&
+        (e.metaKey || e.ctrlKey) &&
         !e.shiftKey &&
         hasUnapprovedPlan &&
         !isStreaming

@@ -6,26 +6,34 @@ export const CLAUDE_MODELS = [
 
 export type CodexThinkingLevel = "low" | "medium" | "high" | "xhigh"
 
-export const CODEX_MODELS = [
+const ALL_THINKING_LEVELS: CodexThinkingLevel[] = ["low", "medium", "high", "xhigh"]
+
+interface CodexModel {
+  id: string
+  name: string
+  thinkings: CodexThinkingLevel[]
+}
+
+export const CODEX_MODELS: CodexModel[] = [
   {
     id: "gpt-5.3-codex",
     name: "Codex 5.3",
-    thinkings: ["low", "medium", "high", "xhigh"] as CodexThinkingLevel[],
+    thinkings: ALL_THINKING_LEVELS,
   },
   {
     id: "gpt-5.2-codex",
     name: "Codex 5.2",
-    thinkings: ["low", "medium", "high", "xhigh"] as CodexThinkingLevel[],
+    thinkings: ALL_THINKING_LEVELS,
   },
   {
     id: "gpt-5.1-codex-max",
     name: "Codex 5.1 Max",
-    thinkings: ["low", "medium", "high", "xhigh"] as CodexThinkingLevel[],
+    thinkings: ALL_THINKING_LEVELS,
   },
   {
     id: "gpt-5.1-codex-mini",
     name: "Codex 5.1 Mini",
-    thinkings: ["medium", "high"] as CodexThinkingLevel[],
+    thinkings: ["medium", "high"],
   },
 ]
 

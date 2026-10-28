@@ -4,12 +4,6 @@ import { createContext, useContext, useMemo } from "react"
 import { getFileIconByExtension } from "./file-icon-utils"
 import { SkillIcon, CustomAgentIcon, OriginalMCPIcon } from "../../../components/ui/icons"
 import { UnknownFileIcon } from "../../../icons/framework-icons"
-import { MENTION_PREFIXES } from "./agents-mentions-editor"
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "../../../components/ui/hover-card"
 // Import utilities from separate file for Fast Refresh compatibility
 import { extractFileMentions, hasFileMentions, parseMention, extractTextMentions, type ParsedMention } from "./mentions-utils"
 
@@ -44,13 +38,6 @@ export function FileOpenProvider({
  */
 export function useFileOpen(): FileOpenHandler | null {
   return useContext(FileOpenContext)
-}
-
-// UTF-8 safe base64 decoding (atob doesn't support Unicode)
-function base64ToUtf8(base64: string): string {
-  const binString = atob(base64)
-  const bytes = Uint8Array.from(binString, (char) => char.codePointAt(0)!)
-  return new TextDecoder().decode(bytes)
 }
 
 // Text selection icon - "A" with text cursor
@@ -107,6 +94,8 @@ function FolderClosedIcon({ className }: { className?: string }) {
  * Component to render a single file/folder/skill/agent/tool/quote/diff mention chip (matching canvas style)
  */
 function MentionChip({ mention }: { mention: ParsedMention }) {
+  const onOpenFile = useContext(FileOpenContext)
+
   // Quote and diff mentions render as block cards
   if (mention.type === "quote") {
     // Get a short title from the label
@@ -154,26 +143,24 @@ function MentionChip({ mention }: { mention: ParsedMention }) {
     )
   }
 
-  const onOpenFile = useContext(FileOpenContext)
   const isClickable = (mention.type === "file" || mention.type === "folder") && !!onOpenFile
 
-  const Icon = mention.type === "skill"
-    ? SkillIcon
-    : mention.type === "agent"
-      ? CustomAgentIcon
-      : mention.type === "tool"
-        ? OriginalMCPIcon
-        : mention.type === "folder"
-          ? FolderClosedIcon
-          : (getFileIconByExtension(mention.label) ?? UnknownFileIcon)
+  const getIcon = () => {
+    if (mention.type === "skill") return SkillIcon
+    if (mention.type === "agent") return CustomAgentIcon
+    if (mention.type === "tool") return OriginalMCPIcon
+    if (mention.type === "folder") return FolderClosedIcon
+    return getFileIconByExtension(mention.label) ?? UnknownFileIcon
+  }
+  const Icon = getIcon()
 
-  const title = mention.type === "skill"
-    ? `Skill: ${mention.label}`
-    : mention.type === "agent"
-      ? `Agent: ${mention.label}`
-      : mention.type === "tool"
-        ? `MCP Tool: ${mention.path}`
-        : `${mention.repository}:${mention.path}`
+  const getTitle = () => {
+    if (mention.type === "skill") return `Skill: ${mention.label}`
+    if (mention.type === "agent") return `Agent: ${mention.label}`
+    if (mention.type === "tool") return `MCP Tool: ${mention.path}`
+    return `${mention.repository}:${mention.path}`
+  }
+  const title = getTitle()
 
   return (
     <span
@@ -269,12 +256,6 @@ export function RenderFileMentions({
 }
 
 /**
- * Extract all file/folder mentions from text
- * Returns array of parsed mentions
- */
-
-
-/**
  * Format bytes to human readable size
  */
 function formatSize(bytes: number): string {
@@ -340,31 +321,38 @@ export function TextMentionBlock({ mention }: { mention: ParsedMention }) {
     )
   }
 
-  const displayTitle = mention.type === "chatHistory"
-    ? (mention.label?.trim() || "Previous Chat")
-    : mention.type === "quote"
-      ? (mention.label.split('\n')[0]?.slice(0, 20) || mention.label.slice(0, 20))
-      : mention.type === "pasted"
-        ? (mention.label.split('\n')[0]?.slice(0, 20) || mention.label.slice(0, 20))
-        : (mention.path?.split("/").pop() || "Code")
+  const getDisplayTitle = () => {
+    if (mention.type === "chatHistory") {
+      return mention.label?.trim() || "Previous Chat"
+    }
+    if (mention.type === "quote" || mention.type === "pasted") {
+      return mention.label.split('\n')[0]?.slice(0, 20) || mention.label.slice(0, 20)
+    }
+    return mention.path?.split("/").pop() || "Code"
+  }
+  const displayTitle = getDisplayTitle()
 
   const title = displayTitle.length < 20 ? displayTitle : `${displayTitle}...`
 
-  const subtitle = mention.type === "chatHistory"
-    ? "Past chat"
-    : mention.type === "quote"
-      ? "Selected Text"
-      : mention.type === "pasted"
-        ? `Pasted Text · ${formatSize(mention.size || 0)}`
-        : mention.lineNumber
-          ? `Line ${mention.lineNumber}`
-          : "Code selection"
+  const getSubtitle = () => {
+    if (mention.type === "chatHistory") return "Past chat"
+    if (mention.type === "quote") return "Selected Text"
+    if (mention.type === "pasted") return `Pasted Text · ${formatSize(mention.size || 0)}`
+    if (mention.lineNumber) return `Line ${mention.lineNumber}`
+    return "Code selection"
+  }
+  const subtitle = getSubtitle()
 
-  const icon = mention.type === "chatHistory"
-    ? <ChatHistoryIcon className="size-4 text-muted-foreground" />
-    : mention.type === "quote" || mention.type === "pasted"
-      ? <TextSelectIcon className="size-4 text-muted-foreground" />
-      : <CodeSelectIcon className="size-4 text-muted-foreground" />
+  const getIcon = () => {
+    if (mention.type === "chatHistory") {
+      return <ChatHistoryIcon className="size-4 text-muted-foreground" />
+    }
+    if (mention.type === "quote" || mention.type === "pasted") {
+      return <TextSelectIcon className="size-4 text-muted-foreground" />
+    }
+    return <CodeSelectIcon className="size-4 text-muted-foreground" />
+  }
+  const icon = getIcon()
 
   return (
     <div className="flex items-center gap-2 pl-1 pr-2 py-1 rounded-lg bg-muted/50 cursor-default min-w-[120px] max-w-[200px]">

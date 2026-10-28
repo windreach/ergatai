@@ -1,4 +1,4 @@
-import { memo, useState } from "react"
+import { memo, useMemo, useState } from "react"
 import { ChevronDown, MoreVertical, RotateCcw, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -49,12 +49,16 @@ const ArchivedWorkspaceItem = memo(({
   const utils = trpc.useUtils()
   const isSelected = selectedWorkspaceId === workspace.id
 
+  const invalidateArchivedWorkspaceCaches = () => {
+    void utils.ergatai.listArchivedWorkspaces.invalidate()
+    void utils.ergatai.listManagedWorkspaces.invalidate()
+  }
+
   const restoreMutation = trpc.ergatai.restoreManagedWorkspace.useMutation({
     onSuccess: () => {
       toast.success("Workspace restored")
       onWorkspaceRestored?.(workspace.id)
-      void utils.ergatai.listArchivedWorkspaces.invalidate()
-      void utils.ergatai.listManagedWorkspaces.invalidate()
+      invalidateArchivedWorkspaceCaches()
     },
     onError: error => toast.error("Failed to restore workspace", {
       description: error.message,
@@ -66,8 +70,7 @@ const ArchivedWorkspaceItem = memo(({
       toast.success("Workspace deleted")
       setDeleteDialogOpen(false)
       onWorkspaceDeleted?.(workspace.id)
-      void utils.ergatai.listArchivedWorkspaces.invalidate()
-      void utils.ergatai.listManagedWorkspaces.invalidate()
+      invalidateArchivedWorkspaceCaches()
       void utils.chats.list.invalidate()
     },
     onError: error => toast.error("Failed to delete workspace", {
@@ -165,21 +168,21 @@ export const ArchivedWorkspaceList = memo(({
   onWorkspaceDeleted,
   selectedWorkspaceId,
 }: ArchivedWorkspaceListProps) => {
-  const [isOpen, setIsOpen] = useState(false) // 默认折叠
+  const [isOpen, setIsOpen] = useState(false) // collapsed by default
 
   const { data: workspaces, isLoading } =
     trpc.ergatai.listArchivedWorkspaces.useQuery({ collaborationMode })
 
-  const filteredWorkspaces = (workspaces ?? []).filter((workspace) => {
-    // Only show archived workspaces
-    if (workspace.status !== "archived") return false
-    if (workspace.collaborationMode !== collaborationMode) return false
+  // Backend already filters by `status` and `collaborationMode`, so only the
+  // search query needs client-side matching. Wrapped in `useMemo` to avoid
+  // recomputing on every render.
+  const filteredWorkspaces = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
-    if (!query) return true
-    return `${workspace.name ?? ""} ${workspace.workDir}`
-      .toLowerCase()
-      .includes(query)
-  })
+    if (!query) return workspaces ?? []
+    return (workspaces ?? []).filter((workspace) =>
+      `${workspace.name ?? ""} ${workspace.workDir}`.toLowerCase().includes(query),
+    )
+  }, [workspaces, searchQuery])
 
   return (
     <div className="space-y-1.5">

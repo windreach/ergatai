@@ -55,10 +55,12 @@ export function CreateBranchDialog({
   const [baseBranchOpen, setBaseBranchOpen] = useState(false)
   const [baseBranchSearch, setBaseBranchSearch] = useState("")
 
-  // Reset baseBranch when defaultBranch changes
+  // Reset baseBranch when dialog opens or defaultBranch changes
   useEffect(() => {
-    setBaseBranch(defaultBranch)
-  }, [defaultBranch])
+    if (open) {
+      setBaseBranch(defaultBranch)
+    }
+  }, [defaultBranch, open])
 
   // Reset search when popover closes
   useEffect(() => {
@@ -90,29 +92,45 @@ export function CreateBranchDialog({
       setBaseBranch(defaultBranch)
     },
     onError: (error) => {
-      toast.error(`Failed to create branch: ${error.message}`)
+      const friendlyMessage =
+        error.message?.includes("already exists")
+          ? "A branch with this name already exists."
+          : error.message?.includes("not found")
+            ? "The base branch could not be found."
+            : "An unexpected error occurred. Please try again."
+      toast.error(`Failed to create branch: ${friendlyMessage}`)
     },
   })
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-
+  const handleSubmit = () => {
     if (!branchName.trim()) {
       toast.error("Branch name is required")
       return
     }
 
-    // Basic validation for branch name
-    if (!/^[a-zA-Z0-9._/-]+$/.test(branchName)) {
+    // Validate branch name - reject patterns Git does not allow
+    const trimmedName = branchName.trim()
+    if (
+      !trimmedName ||
+      !/^[a-zA-Z0-9._/-]+$/.test(trimmedName) ||
+      trimmedName.startsWith("-") ||
+      trimmedName.startsWith(".") ||
+      trimmedName.endsWith("/") ||
+      trimmedName.endsWith(".lock") ||
+      /\.\./.test(trimmedName) ||
+      /\/\//.test(trimmedName) ||
+      /@\{/.test(trimmedName) ||
+      /[~^:?*\[]/.test(trimmedName)
+    ) {
       toast.error(
-        "Branch name can only contain letters, numbers, dots, hyphens, underscores, and slashes",
+        "Invalid branch name. Avoid leading/trailing dots or slashes, consecutive dots/slashes, and names ending with .lock",
       )
       return
     }
 
     createBranchMutation.mutate({
       projectPath,
-      branchName: branchName.trim(),
+      branchName: trimmedName,
       baseBranch,
     })
   }
@@ -142,7 +160,7 @@ export function CreateBranchDialog({
                   !createBranchMutation.isPending
                 ) {
                   e.preventDefault()
-                  handleSubmit(e)
+                  handleSubmit()
                 }
               }}
               autoFocus
@@ -235,7 +253,7 @@ export function CreateBranchDialog({
           </Button>
           <Button
             type="button"
-            onClick={(e) => handleSubmit(e)}
+            onClick={() => handleSubmit()}
             disabled={!branchName.trim() || createBranchMutation.isPending}
             className="transition-transform duration-150 active:scale-[0.97] rounded-md"
           >

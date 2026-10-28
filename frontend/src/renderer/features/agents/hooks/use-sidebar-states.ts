@@ -10,6 +10,7 @@ import {
   fileSearchDialogOpenAtom,
   selectedDiffFilePathAtom,
 } from "../atoms"
+import { customHotkeysAtom } from "../../../lib/atoms"
 import {
   terminalSidebarOpenAtomFamily,
   terminalDisplayModeAtom,
@@ -22,7 +23,7 @@ import {
 } from "../../details-sidebar/atoms"
 import { useAgentConversationStore } from "../stores/conversation-store"
 import { pendingBuildPlanConversationIdAtom } from "../atoms"
-import { useResolvedHotkeyDisplay } from "../../../lib/hotkeys"
+import { useResolvedHotkeyDisplay, getResolvedKeys } from "../../../lib/hotkeys"
 
 export function useSidebarStates(chatId: string) {
   // Preview sidebar
@@ -41,14 +42,17 @@ export function useSidebarStates(chatId: string) {
   const activeConversationIdForPlan = useAgentConversationStore(
     (state) => state.activeConversationId,
   )
+  // Use a unique sentinel key per hook instance to avoid state leakage across null-conversation contexts
+  const nullConversationSentinelRef = useRef(`__null_conv_${Math.random().toString(36).slice(2)}`)
+  const planSidebarKey = activeConversationIdForPlan || nullConversationSentinelRef.current
   const planSidebarAtom = useMemo(
-    () => planSidebarOpenAtomFamily(activeConversationIdForPlan || ""),
-    [activeConversationIdForPlan],
+    () => planSidebarOpenAtomFamily(planSidebarKey),
+    [planSidebarKey],
   )
   const [isPlanSidebarOpen, setIsPlanSidebarOpen] = useAtom(planSidebarAtom)
   const currentPlanPathAtom = useMemo(
-    () => currentPlanPathAtomFamily(activeConversationIdForPlan || ""),
-    [activeConversationIdForPlan],
+    () => currentPlanPathAtomFamily(planSidebarKey),
+    [planSidebarKey],
   )
   const [currentPlanPath, setCurrentPlanPath] = useAtom(currentPlanPathAtom)
 
@@ -95,6 +99,13 @@ export function useSidebarStates(chatId: string) {
   const toggleDetailsHotkey = useResolvedHotkeyDisplay("toggle-details")
   const toggleTerminalHotkey = useResolvedHotkeyDisplay("toggle-terminal")
 
+  // Get the actual resolved keys for the toggle-terminal action
+  const customHotkeysConfig = useAtomValue(customHotkeysAtom)
+  const toggleTerminalKeys = useMemo(
+    () => getResolvedKeys("toggle-terminal", customHotkeysConfig),
+    [customHotkeysConfig],
+  )
+
   // Close plan sidebar when switching conversations
   const prevConversationIdRef = useRef(activeConversationIdForPlan)
   useEffect(() => {
@@ -115,25 +126,53 @@ export function useSidebarStates(chatId: string) {
     }
   }, [setPendingBuildPlanConversationId])
 
-  // Terminal keyboard shortcut (Cmd+J)
+  // Terminal keyboard shortcut (respects custom hotkey bindings)
   useEffect(() => {
+    if (!toggleTerminalKeys) return
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (
-        e.metaKey &&
-        !e.altKey &&
-        !e.shiftKey &&
-        !e.ctrlKey &&
-        e.code === "KeyJ"
-      ) {
+      // Check if the pressed keys match the configured toggle-terminal hotkey
+      const hasMeta = e.metaKey
+      const hasCtrl = e.ctrlKey
+      const hasAlt = e.altKey
+      const hasShift = e.shiftKey
+
+      // Build the pressed key combination
+      const pressedKeys: string[] = []
+      if (hasMeta) pressedKeys.push("cmd")
+      if (hasCtrl) pressedKeys.push("ctrl")
+      if (hasAlt) pressedKeys.push("alt")
+      if (hasShift) pressedKeys.push("shift")
+
+      // Add the main key (convert e.code to lowercase key name)
+      const mainKey = e.code.replace("Key", "").toLowerCase()
+      if (mainKey !== e.code.toLowerCase()) {
+        pressedKeys.push(mainKey)
+      } else {
+        // For special keys, use the code as-is
+        pressedKeys.push(e.code.toLowerCase())
+      }
+
+      // Check if pressed keys match the configured hotkey
+      const matches = toggleTerminalKeys.every((key) => {
+        if (key === "cmd") return hasMeta
+        if (key === "ctrl") return hasCtrl
+        if (key === "alt") return hasAlt
+        if (key === "shift") return hasShift
+        // Check if the main key matches
+        return pressedKeys.includes(key.toLowerCase())
+      }) && pressedKeys.length === toggleTerminalKeys.length
+
+      if (matches) {
         e.preventDefault()
         e.stopPropagation()
-        setIsTerminalSidebarOpen(!isTerminalSidebarOpen)
+        setIsTerminalSidebarOpen((prev) => !prev)
       }
     }
 
     window.addEventListener("keydown", handleKeyDown, true)
     return () => window.removeEventListener("keydown", handleKeyDown, true)
-  }, [isTerminalSidebarOpen, setIsTerminalSidebarOpen])
+  }, [toggleTerminalKeys, setIsTerminalSidebarOpen])
 
   return {
     // Preview

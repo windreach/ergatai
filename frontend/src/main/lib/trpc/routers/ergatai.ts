@@ -24,6 +24,7 @@ import {
   type ConversationRuntimeStreamEvent,
 } from "../../ergatai/sse-client"
 import { getModelSnapshotManager } from "../../model-snapshot-manager"
+import { loadSnapshots } from "../../model-snapshot-store"
 import { terminalManager } from "../../terminal"
 import { mkdir } from "fs/promises"
 import { tmpdir } from "os"
@@ -2233,7 +2234,7 @@ export const ergataiRouter = router({
     await manager.initialize()
 
     // Get the most recent snapshot from the store
-    const snapshots = await (await import("../../model-snapshot-store")).loadSnapshots()
+    const snapshots = await loadSnapshots()
     const entries = Object.entries(snapshots)
 
     if (entries.length === 0) {

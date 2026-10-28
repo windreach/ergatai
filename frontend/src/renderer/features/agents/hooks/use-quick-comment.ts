@@ -2,14 +2,19 @@ import { useCallback, useState } from "react"
 import { toast } from "sonner"
 import { MENTION_PREFIXES } from "../../mentions/types"
 import { utf8ToBase64 } from "../utils/base64"
-import { createQueueItem, generateQueueId } from "../lib/queue-utils"
+import { createQueueItem, generateQueueId, type AgentQueueItem } from "../lib/queue-utils"
 import type { TextSelectionSource } from "../types"
+
+interface UserMessage {
+  role: string
+  parts: Array<{ type: string; text: string }>
+}
 
 interface UseQuickCommentOptions {
   conversationId: string
   isStreamingRef: React.RefObject<boolean>
-  addToQueue: (conversationId: string, item: any) => void
-  sendMessageRef: React.RefObject<(message: any) => Promise<void>>
+  addToQueue: (conversationId: string, item: AgentQueueItem) => void
+  sendMessageRef: React.RefObject<(message: UserMessage) => Promise<void>>
 }
 
 export function useQuickComment({
@@ -32,16 +37,14 @@ export function useQuickComment({
   // Handler for quick comment submission
   const handleQuickCommentSubmit = useCallback((comment: string, selectedText: string, source: TextSelectionSource) => {
     // Format message with mention token + comment
-    const preview = selectedText.slice(0, 50).replace(/[:\[\]]/g, "")
+    const MAX_PREVIEW_LENGTH = 50
+    const preview = selectedText.slice(0, MAX_PREVIEW_LENGTH).replace(/[:\[\]]/g, "")
     const encodedText = utf8ToBase64(selectedText)
 
     let mentionToken: string
-    if (source.type === "diff") {
-      const lineNum = source.lineNumber || 0
+    if (source.type === "diff" || source.type === "tool-edit") {
+      const lineNum = source.type === "diff" ? (source.lineNumber || 0) : 0
       mentionToken = `@[${MENTION_PREFIXES.DIFF}${source.filePath}:${lineNum}:${preview}:${encodedText}]`
-    } else if (source.type === "tool-edit") {
-      // Tool edit is treated as code/diff context
-      mentionToken = `@[${MENTION_PREFIXES.DIFF}${source.filePath}:0:${preview}:${encodedText}]`
     } else {
       mentionToken = `@[${MENTION_PREFIXES.QUOTE}${preview}:${encodedText}]`
     }
@@ -54,12 +57,19 @@ export function useQuickComment({
       addToQueue(conversationId, item)
       toast.success("Reply queued", { description: "Will be sent when current response completes" })
     } else {
-      // Send directly
-      sendMessageRef.current({
-        role: "user",
-        parts: [{ type: "text", text: message }],
-      })
-      toast.success("Reply sent")
+      // Send directly with proper error handling
+      ;(async () => {
+        try {
+          await sendMessageRef.current?.({
+            role: "user",
+            parts: [{ type: "text", text: message }],
+          })
+          toast.success("Reply sent")
+        } catch (error) {
+          console.error("[useQuickComment] Failed to send reply:", error)
+          toast.error("Failed to send reply", { description: "Please try again" })
+        }
+      })()
     }
 
     // Clear state and selection

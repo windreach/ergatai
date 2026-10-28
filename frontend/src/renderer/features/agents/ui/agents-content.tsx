@@ -3,13 +3,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 // import { useSearchParams, useRouter } from "next/navigation" // Desktop doesn't use next/navigation
-// Desktop: mock Next.js navigation hooks
+// TODO(ergatai#1201): Implement desktop navigation state management
+// Desktop doesn't use next/navigation, so we mock these hooks.
+// URL synchronization is disabled in desktop builds.
+// Tracking issue: https://github.com/ergatai/ergatai/issues/1201
 const useSearchParams = () => ({ get: (_key: string) => null })
 const useRouter = () => ({
   push: (_path: string) => {},
   replace: (_path: string, _options?: { scroll?: boolean }) => {},
 })
-// Desktop: mock Clerk hooks
+// TODO(ergatai#1202): Implement desktop auth system
+// Desktop doesn't use Clerk, so we mock these hooks.
+// User/authentication features are disabled in desktop builds.
+// Tracking issue: https://github.com/ergatai/ergatai/issues/1202
 const useUser = () => ({ user: null })
 const useClerk = () => ({ signOut: () => {} })
 import {
@@ -60,7 +66,9 @@ import { motion, AnimatePresence } from "motion/react"
 import { ResizableSidebar } from "../../../components/ui/resizable-sidebar"
 // import { useClerk, useUser } from "@clerk/nextjs"
 // import { useCombinedAuth } from "@/lib/hooks/use-combined-auth"
-const useCombinedAuth = () => ({ userId: null }) // Desktop mock
+// TODO(ergatai#1202): Replace with real desktop auth hook
+// Desktop mock — returns null userId, disabling user-specific features.
+const useCombinedAuth = () => ({ userId: null })
 import { Button } from "../../../components/ui/button"
 import { AlignJustify } from "lucide-react"
 import { AgentsQuickSwitchDialog } from "../components/agents-quick-switch-dialog"
@@ -68,7 +76,9 @@ import { ConversationsQuickSwitchDialog } from "../components/conversations-quic
 import { isDesktopApp } from "../../../lib/utils/platform"
 import { SettingsContent } from "../../settings/settings-content"
 import { useCollaborationMode } from "../collaboration/use-collaboration-mode"
-// Desktop mock
+// TODO(ergatai#1203): Implement real admin role check for desktop
+// Desktop mock — always returns false, hiding admin-only UI in production.
+// In DEV mode, the sandbox debugger is shown via `import.meta.env.DEV` fallback.
 const useIsAdmin = () => false
 
 // Main Component
@@ -306,7 +316,7 @@ export function AgentsContent() {
       }
       router.replace(url.pathname + url.search, { scroll: false })
     }
-  }, [selectedChatId, searchParams, router, quickSwitchOpen])
+  }, [selectedChatId, searchParams, router])
 
   // Auto-close sidebars on mobile devices
   useEffect(() => {
@@ -372,6 +382,11 @@ export function AgentsContent() {
   } else {
     recentChats = sortedChats.slice(0, 5)
   }
+
+  // TODO(ergatai#1204): Extract duplicate keyboard handler logic into a custom hook
+  // The workspace quick-switch (below) and agent/conversation quick-switch (further down)
+  // share nearly identical hold-timer + frozen-snapshot + keyup navigation logic.
+  // Consider extracting into `useQuickSwitchKeyboard({ items, onSelect, shortcut, ... })`.
 
   // Keyboard navigation: Quick switch between workspaces
   // Shortcut depends on ctrlTabTarget preference:
@@ -789,7 +804,7 @@ export function AgentsContent() {
     setBillingMethod(null)
     setAnthropicOnboardingCompleted(false)
     setApiKeyOnboardingCompleted(false)
-
+    await signOut()
   }
 
   // Check if conversations data is loaded (use separate selectors to avoid object creation)
@@ -896,18 +911,23 @@ export function AgentsContent() {
   const canShowDiff = !!chatData?.sandbox_id
 
   // Check if terminal can be shown (worktree exists - desktop only)
-  const worktreePath = (chatData as any)?.worktreePath as string | undefined
+  // chatData type from getAgentChat query doesn't include worktreePath/branch fields
+  // TODO: extend the API response type to include these fields
+  const chatDataExtended = chatData as
+    | (typeof chatData & { worktreePath?: string; branch?: string })
+    | undefined
+  const worktreePath = chatDataExtended?.worktreePath
   const canShowTerminal = !!worktreePath
 
   // Terminal scope key for shared terminals
   const terminalScopeKey = useMemo(() => {
     if (!selectedChatId || !worktreePath) return `ws:${selectedChatId || "none"}`
     return getTerminalScopeKey({
-      branch: (chatData as any)?.branch ?? null,
+      branch: chatDataExtended?.branch ?? null,
       worktreePath: worktreePath,
       id: selectedChatId,
     })
-  }, [(chatData as any)?.branch, worktreePath, selectedChatId])
+  }, [chatDataExtended?.branch, worktreePath, selectedChatId])
 
   // Mobile layout - completely different structure
   if (isMobile) {
@@ -1061,8 +1081,7 @@ export function AgentsContent() {
 
         {/* Main content */}
         <div
-          className="relative flex-1 min-w-0 overflow-hidden"
-          style={{ minWidth: "350px" }}
+          className="relative flex-1 min-w-[350px] overflow-hidden"
         >
           <AnimatePresence initial={false}>
             <motion.div

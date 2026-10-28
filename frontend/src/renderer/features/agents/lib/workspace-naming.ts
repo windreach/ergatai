@@ -29,9 +29,7 @@ function getShortestUniqueSuffix(paths: string[], selectedIndex: number): string
   while (commonTailLength < minimumLength) {
     const segment = segments[0]![segments[0]!.length - 1 - commonTailLength]
     const isCommon = segments.every(
-      (item) =>
-        item[item.length - 1 - commonTailLength]?.toLowerCase() ===
-        segment?.toLowerCase(),
+      (item) => item[item.length - 1 - commonTailLength] === segment,
     )
 
     if (!isCommon) break
@@ -47,7 +45,7 @@ function getShortestUniqueSuffix(paths: string[], selectedIndex: number): string
     const suffixes = uniqueSegments.map((item) => item.slice(-length).join("/"))
     const suffix = suffixes[selectedIndex]
 
-    if (suffix && suffixes.filter((item) => item === suffix).length === 1) {
+    if (suffix !== undefined && suffixes.filter((item) => item === suffix).length === 1) {
       return suffix
     }
   }

@@ -26,6 +26,8 @@ export interface TodoItem {
   activeForm?: string
 }
 
+const EMPTY_TODOS: TodoItem[] = []
+
 interface AgentTodoToolProps {
   part: {
     type: string
@@ -112,16 +114,35 @@ function getStatusVerb(status: TodoItem["status"], content: string): string {
   }
 }
 
-// Get icon component for status
-function getStatusIconComponent(status: TodoItem["status"]) {
-  switch (status) {
-    case "completed":
-      return CheckIcon
-    case "in_progress":
-      return IconSpinner
-    default:
-      return Circle
-  }
+// Compute CSS class name for a todo item's text based on its status and pending state
+function getTodoTextClassName(isPending: boolean, status: TodoItem["status"]): string {
+  if (isPending) return "text-muted-foreground"
+  if (status === "completed") return "line-through text-muted-foreground"
+  if (status === "pending") return "text-muted-foreground"
+  return "text-foreground"
+}
+
+// Compute whether this tool call represents the "creation" of a todo list,
+// including detection of new generations (reset of the list).
+// Takes only stable primitives so callers can memoize with safe deps.
+function computeCreationFlags(
+  hasOutputWithEmptyOldTodos: boolean,
+  newTodosLen: number,
+  syncedTodosLen: number,
+  creationToolCallId: string | null,
+  toolCallId: string,
+): { isNewGeneration: boolean; isCreationToolCall: boolean } {
+  const isNewGeneration =
+    hasOutputWithEmptyOldTodos &&
+    newTodosLen > 0 &&
+    syncedTodosLen > 0 &&
+    creationToolCallId !== null &&
+    creationToolCallId !== toolCallId
+  const isCreationToolCall =
+    creationToolCallId === null ||
+    creationToolCallId === toolCallId ||
+    isNewGeneration
+  return { isNewGeneration, isCreationToolCall }
 }
 
 // Pie-style progress circle - fills sectors like pizza slices
@@ -288,18 +309,7 @@ const TodoListItem = memo(function TodoListItem({
       )}
     >
       <TodoStatusIcon status={todo.status} isPending={isPending} />
-      <span
-        className={cn(
-          "text-xs truncate",
-          isPending
-            ? "text-muted-foreground"
-            : todo.status === "completed"
-              ? "line-through text-muted-foreground"
-              : todo.status === "pending"
-                ? "text-muted-foreground"
-                : "text-foreground",
-        )}
-      >
+      <span className={cn("text-xs truncate", getTodoTextClassName(isPending, todo.status))}>
         {todo.content}
       </span>
     </div>
@@ -333,8 +343,18 @@ export const AgentTodoTool = memo(function AgentTodoTool({
   creationToolCallIdRef.current = creationToolCallId
 
   // Get todos from input or output.newTodos
-  const rawOldTodos = part.output?.oldTodos || []
-  const newTodos = part.input?.todos || part.output?.newTodos || []
+  // Use length checks (not ||) so empty arrays fall through to stable EMPTY_TODOS reference
+  const rawOutputOldTodos = part.output?.oldTodos
+  const rawOldTodos: TodoItem[] =
+    rawOutputOldTodos && rawOutputOldTodos.length > 0 ? rawOutputOldTodos : EMPTY_TODOS
+  const inputTodos = part.input?.todos
+  const outputNewTodos = part.output?.newTodos
+  const newTodos: TodoItem[] =
+    inputTodos && inputTodos.length > 0
+      ? inputTodos
+      : outputNewTodos && outputNewTodos.length > 0
+        ? outputNewTodos
+        : EMPTY_TODOS
 
   // Check if we're still streaming input (data not yet complete)
   const isStreaming = part.state === "input-streaming"
@@ -350,16 +370,25 @@ export const AgentTodoTool = memo(function AgentTodoTool({
   //    - this is a different tool call than the stored creation one
   // IMPORTANT: Check if output.oldTodos is explicitly an empty array, not just missing
   // If output doesn't exist yet or oldTodos is undefined, we can't determine if it's new generation
-  const hasOutputWithEmptyOldTodos = part.output !== undefined &&
-    'oldTodos' in part.output &&
-    Array.isArray(part.output.oldTodos) &&
-    part.output.oldTodos.length === 0
-  const isNewGeneration = hasOutputWithEmptyOldTodos &&
-    newTodos.length > 0 &&
-    syncedTodos.length > 0 &&
-    creationToolCallId !== null &&
-    creationToolCallId !== part.toolCallId
-  const isCreationToolCall = creationToolCallId === null || creationToolCallId === part.toolCallId || isNewGeneration
+  // Use optional chaining so `undefined === 0` is false, and an empty array yields true.
+  const hasOutputWithEmptyOldTodos = part.output?.oldTodos?.length === 0
+  const { isNewGeneration, isCreationToolCall } = useMemo(
+    () =>
+      computeCreationFlags(
+        hasOutputWithEmptyOldTodos,
+        newTodos.length,
+        syncedTodos.length,
+        creationToolCallId,
+        part.toolCallId,
+      ),
+    [
+      hasOutputWithEmptyOldTodos,
+      newTodos.length,
+      syncedTodos.length,
+      creationToolCallId,
+      part.toolCallId,
+    ],
+  )
 
   // Use syncedTodos as fallback for oldTodos when output hasn't arrived yet
   // This prevents flickering: without this, when a new tool call arrives with
@@ -377,7 +406,7 @@ export const AgentTodoTool = memo(function AgentTodoTool({
       return syncedTodos
     }
     // Otherwise this is truly a creation (first tool call, or same tool call that set syncedTodos)
-    return []
+    return EMPTY_TODOS
   }, [rawOldTodos, syncedTodos, isCreationToolCall])
 
   // Detect what changed - memoize to avoid recalculation
@@ -427,22 +456,16 @@ export const AgentTodoTool = memo(function AgentTodoTool({
       const currentSyncedTodos = syncedTodosRef.current
       const currentCreationToolCallId = creationToolCallIdRef.current
 
-      // Compute these inside the effect to avoid dependency issues
-      // These values depend on syncedTodos/creationToolCallId which change when we call setTodoState
-      const hasOutputWithEmptyOldTodos = part.output !== undefined &&
-        'oldTodos' in part.output &&
-        Array.isArray(part.output.oldTodos) &&
-        part.output.oldTodos.length === 0
-
-      const isNewGenerationLocal = hasOutputWithEmptyOldTodos &&
-        newTodos.length > 0 &&
-        currentSyncedTodos.length > 0 &&
-        currentCreationToolCallId !== null &&
-        currentCreationToolCallId !== part.toolCallId
-
-      const isCreationToolCallLocal = currentCreationToolCallId === null ||
-        currentCreationToolCallId === part.toolCallId ||
-        isNewGenerationLocal
+      // Re-compute creation flags using current ref values (not stale closure values).
+      // hasOutputWithEmptyOldTodos is a stable boolean derived from part.output's primitive shape.
+      const { isNewGeneration: isNewGenerationLocal, isCreationToolCall: isCreationToolCallLocal } =
+        computeCreationFlags(
+          hasOutputWithEmptyOldTodos,
+          newTodos.length,
+          currentSyncedTodos.length,
+          currentCreationToolCallId,
+          part.toolCallId,
+        )
 
       // Only update if:
       // 1. This is the creation tool call (always update), OR
@@ -466,7 +489,7 @@ export const AgentTodoTool = memo(function AgentTodoTool({
         }
       }
     }
-  }, [newTodos, setTodoState, part.toolCallId, part.output])
+  }, [newTodos, setTodoState, part.toolCallId, hasOutputWithEmptyOldTodos])
 
   // For UPDATE tool calls while streaming, show "Updating..." placeholder
   // This check MUST come BEFORE the newTodos.length === 0 check

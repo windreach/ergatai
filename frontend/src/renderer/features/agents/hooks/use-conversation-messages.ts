@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useMemo } from "react"
 import { trpc } from "../../../lib/trpc"
 
 /**
@@ -30,7 +30,16 @@ export function useConversationMessages(conversationId: string): {
 } {
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [afterSequence, setAfterSequence] = useState(0)
   const lastSequenceRef = useRef(0)
+
+  // Reset state when conversation changes to avoid stale data
+  useEffect(() => {
+    setMessages([])
+    setAfterSequence(0)
+    lastSequenceRef.current = 0
+    setIsLoading(true)
+  }, [conversationId])
 
   // 1. Historical loading via REST
   const { data: historyData, error: historyError, isLoading: isHistoryLoading } =
@@ -46,7 +55,9 @@ export function useConversationMessages(conversationId: string): {
     if (historyData) {
       // tRPC 已经返回 Message[] 类型（通过 mapMessage 转换）
       setMessages(historyData)
-      lastSequenceRef.current = Math.max(...historyData.map((m) => m.sequence), 0)
+      const maxSeq = Math.max(...historyData.map((m) => m.sequence), 0)
+      lastSequenceRef.current = maxSeq
+      setAfterSequence(maxSeq)
       setIsLoading(false)
     }
   }, [historyData, conversationId])
@@ -61,7 +72,7 @@ export function useConversationMessages(conversationId: string): {
   // 2. Real-time subscription via SSE (tRPC bridge)
   const { error: subscriptionError } =
     trpc.ergatai.subscribeConversationMessages.useSubscription(
-      { conversationId, afterSequence: lastSequenceRef.current },
+      { conversationId, afterSequence },
       {
         enabled: !!conversationId && !isLoading,
         onData: (msg) => {
@@ -69,19 +80,27 @@ export function useConversationMessages(conversationId: string): {
           setMessages((prev) => {
             // Dedup by id
             if (prev.some((m) => m.id === msg.id)) return prev
-            // Append and sort by sequence
-            return [...prev, msg].sort((a, b) => a.sequence - b.sequence)
+            // Messages arrive in sequence order from the server, so just append.
+            // If somehow out of order, append and let the next render handle it.
+            return [...prev, msg]
           })
-          lastSequenceRef.current = Math.max(lastSequenceRef.current, msg.sequence)
+          if (msg.sequence > lastSequenceRef.current) {
+            lastSequenceRef.current = msg.sequence
+            setAfterSequence(msg.sequence)
+          }
         },
       }
     )
 
+  // Memoize error to avoid creating new Error objects on every render
+  const error = useMemo<Error | null>(() => {
+    const source = historyError || subscriptionError
+    return source ? new Error(source.message ?? "Unknown error") : null
+  }, [historyError, subscriptionError])
+
   return {
     messages,
     isLoading,
-    error: historyError || subscriptionError
-      ? new Error((historyError || subscriptionError)?.message ?? "Unknown error")
-      : null,
+    error,
   }
 }

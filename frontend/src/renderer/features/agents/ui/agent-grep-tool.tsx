@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useState } from "react"
+import { memo, useMemo, useState } from "react"
 import { ChevronRight } from "lucide-react"
 import { IconSpinner } from "../../../components/ui/icons"
 import { TextShimmer } from "../../../components/ui/text-shimmer"
@@ -9,6 +9,10 @@ import { areToolPropsEqual } from "./agent-tool-utils"
 import { cn } from "../../../lib/utils"
 
 interface AgentGrepToolProps {
+  // `any` is used because the part shape varies across tool call stages
+  // (pending vs. completed) and output formats (string, object, array).
+  // A strict interface would require discriminated unions across multiple
+  // call sites; `any` keeps this component permissive to agent output shapes.
   part: any
   messageId?: string
   partIndex?: number
@@ -57,9 +61,9 @@ export const AgentGrepTool = memo(function AgentGrepTool({
       output.numFiles !== undefined ||
       output.numLines !== undefined ||
       Array.isArray(output.filenames))
-  const numFiles = output?.numFiles || 0
+  const numFiles = output?.numFiles ?? 0
   const mode = output?.mode
-  const numLines = output?.numLines || 0
+  const numLines = output?.numLines ?? 0
 
   // Collapsed row shows the result: "grep: <result>"
   let result: string
@@ -75,7 +79,10 @@ export const AgentGrepTool = memo(function AgentGrepTool({
     result = "done"
   }
 
-  const detailText = extractMatchDetails(output)
+  const detailText = useMemo(
+    () => (isExpanded ? extractMatchDetails(output) : ""),
+    [output, isExpanded],
+  )
 
   return (
     <div

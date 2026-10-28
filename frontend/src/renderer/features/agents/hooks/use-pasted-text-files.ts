@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react"
+import { useState, useCallback, useRef, useEffect } from "react"
 import { trpc } from "../../../lib/trpc"
 
 export interface PastedTextFile {
@@ -29,11 +29,16 @@ export function usePastedTextFiles(conversationId: string): UsePastedTextFilesRe
   pastedTextsRef.current = pastedTexts
 
   const writePastedTextMutation = trpc.files.writePastedText.useMutation()
+  // Use ref to keep mutation stable across renders (mutation object changes on every render)
+  const writePastedTextMutationRef = useRef(writePastedTextMutation)
+  useEffect(() => {
+    writePastedTextMutationRef.current = writePastedTextMutation
+  }, [writePastedTextMutation])
 
   const addPastedText = useCallback(
     async (text: string) => {
       try {
-        const result = await writePastedTextMutation.mutateAsync({
+        const result = await writePastedTextMutationRef.current.mutateAsync({
           conversationId,
           text,
         })
@@ -54,7 +59,7 @@ export function usePastedTextFiles(conversationId: string): UsePastedTextFilesRe
         console.error("[usePastedTextFiles] Failed to write:", error)
       }
     },
-    [conversationId, writePastedTextMutation]
+    [conversationId]
   )
 
   const removePastedText = useCallback((id: string) => {

@@ -48,7 +48,7 @@ export function useQuestionHandling({
   // Prefer the latest assistant metadata that actually includes token/context fields.
   // This keeps the indicator stable while a new assistant message is streaming.
   const messageTokenData = useMemo(() => {
-    const lastAssistantWithTokenData = [...messages].reverse().find((msg) => {
+    const lastAssistantWithTokenData = messages.findLast((msg) => {
       if (msg.role !== "assistant" || !msg.metadata) return false
       const metadata = msg.metadata as {
         inputTokens?: number
@@ -81,8 +81,8 @@ export function useQuestionHandling({
         }
       | undefined
 
-    const cacheReadInputTokens = metadata?.cacheReadInputTokens || 0
-    const cacheCreationInputTokens = metadata?.cacheCreationInputTokens || 0
+    const cacheReadInputTokens = metadata?.cacheReadInputTokens ?? 0
+    const cacheCreationInputTokens = metadata?.cacheCreationInputTokens ?? 0
     const codexInputTokensFromTotal =
       metadata?.totalTokens !== undefined
         ? Math.max(0, metadata.totalTokens - (metadata?.outputTokens ?? 0))
@@ -91,11 +91,11 @@ export function useQuestionHandling({
     const totalInputTokens =
       provider === "codex"
         ? (codexInputTokensFromTotal ?? metadata?.inputTokens ?? 0)
-        : (metadata?.inputTokens || 0) +
+        : (metadata?.inputTokens ?? 0) +
           cacheReadInputTokens +
           cacheCreationInputTokens
-    const totalOutputTokens = metadata?.outputTokens || 0
-    const totalCostUsd = metadata?.totalCostUsd || 0
+    const totalOutputTokens = metadata?.outputTokens ?? 0
+    const totalCostUsd = metadata?.totalCostUsd ?? 0
     const contextWindow = metadata?.modelContextWindow
 
     // Keep this tied to rendered messages for memo comparator stability.
@@ -157,6 +157,8 @@ export function useQuestionHandling({
   // This handles: 1) restoring on chat switch, 2) clearing when question is answered/timed out
   useEffect(() => {
     // Check if there's a pending AskUserQuestion in the last assistant message
+    // Using any because AI SDK UIMessagePart types are complex and don't match our runtime structure
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pendingQuestionPart = lastAssistantMessage?.parts?.find(
       (part: any) =>
         part.type === "tool-AskUserQuestion" &&
@@ -164,7 +166,7 @@ export function useQuestionHandling({
         part.state !== "output-error" &&
         part.state !== "result" &&
         part.input?.questions,
-    ) as any | undefined
+    )
 
 
     // Helper to clear pending question for this conversation
@@ -185,6 +187,8 @@ export function useQuestionHandling({
       // But if the question in messages is already answered, clear the atom
       if (!pendingQuestionPart) {
         // Check if the specific toolUseId is now answered
+        // Using any because AI SDK UIMessagePart types are complex and don't match our runtime structure
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const answeredPart = lastAssistantMessage?.parts?.find(
           (part: any) =>
             part.type === "tool-AskUserQuestion" &&
@@ -207,16 +211,8 @@ export function useQuestionHandling({
     // 3. Timed out (should not show dialog)
     // We only show the question dialog during active streaming when
     // the backend is waiting for user response.
-    if (pendingQuestionPart) {
-      // Don't restore - if there's an existing pending question for this chat, clear it
-      if (pendingQuestions) {
-        clearPendingQuestion()
-      }
-    } else {
-      // No pending question - clear if belongs to this conversation
-      if (pendingQuestions) {
-        clearPendingQuestion()
-      }
+    if (pendingQuestions) {
+      clearPendingQuestion()
     }
   }, [conversationId, lastAssistantMessage, isStreaming, pendingQuestions, setPendingQuestionsMap])
 

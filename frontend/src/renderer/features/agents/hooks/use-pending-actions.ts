@@ -1,5 +1,6 @@
 import { useEffect } from "react"
 import { useAtom } from "jotai"
+import type { CreateUIMessage, UIMessage } from "@ai-sdk/react"
 import {
   pendingPrMessageAtom,
   pendingReviewMessageAtom,
@@ -12,7 +13,7 @@ import { useAgentConversationStore } from "../stores/conversation-store"
 interface UsePendingActionsOptions {
   conversationId: string
   isStreaming: boolean
-  sendMessage: (message: any) => void
+  sendMessage: (message: CreateUIMessage<UIMessage>) => void
 }
 
 export function usePendingActions({

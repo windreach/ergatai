@@ -86,9 +86,6 @@ export const AgentPlanFileTool = memo(function AgentPlanFileTool({
   // Show shimmer during streaming/pending
   const shouldShowShimmer = isPending || isInputStreaming
 
-  // View plan button enabled when there's content
-  const viewPlanEnabled = planContent.length > 0
-
   // Build button disabled during streaming
   const buildDisabled = shouldShowShimmer
 
@@ -113,7 +110,7 @@ export const AgentPlanFileTool = memo(function AgentPlanFileTool({
     bottomGradient.style.opacity = isScrollable && !isAtBottom ? "1" : "0"
   }, [])
 
-  // Update gradients on scroll and expand state change
+  // Update gradients on scroll
   useEffect(() => {
     const content = contentRef.current
     if (!content) return
@@ -123,7 +120,15 @@ export const AgentPlanFileTool = memo(function AgentPlanFileTool({
     updateScrollGradients()
 
     return () => content.removeEventListener("scroll", updateScrollGradients)
-  }, [updateScrollGradients, isExpanded])
+  }, [updateScrollGradients])
+
+  // Update gradients when expand state changes (use rAF to ensure DOM has updated)
+  useEffect(() => {
+    const frameId = requestAnimationFrame(() => {
+      updateScrollGradients()
+    })
+    return () => cancelAnimationFrame(frameId)
+  }, [isExpanded, updateScrollGradients])
 
   // Also update gradients when content changes
   useEffect(() => {
@@ -131,8 +136,10 @@ export const AgentPlanFileTool = memo(function AgentPlanFileTool({
   }, [planContent, updateScrollGradients])
 
   // Trigger plan refetch when plan is written/edited
+  const planUpdateDispatchedRef = useRef(false)
   useEffect(() => {
-    if (filePath && hasVisibleContent && part.state === "output-available") {
+    if (filePath && hasVisibleContent && part.state === "output-available" && !planUpdateDispatchedRef.current) {
+      planUpdateDispatchedRef.current = true
       // Dispatch custom event to notify parent to refetch plan
       window.dispatchEvent(new CustomEvent("plan-updated", {
         detail: { conversationId, filePath }
@@ -155,17 +162,20 @@ export const AgentPlanFileTool = memo(function AgentPlanFileTool({
 
   // Handle build plan - triggers via atom, consumed by ChatViewInner
   const handleBuildPlan = useCallback(() => {
-    const activeConversationId = useAgentConversationStore.getState().activeConversationId
-    if (activeConversationId) {
-      setPendingBuildPlanConversationId(activeConversationId)
+    if (conversationId) {
+      setPendingBuildPlanConversationId(conversationId)
     }
-  }, [setPendingBuildPlanConversationId])
+  }, [setPendingBuildPlanConversationId, conversationId])
 
   // Handle copy plan
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(planContent)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(planContent)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      console.error("Failed to copy plan to clipboard")
+    }
   }, [planContent])
 
   // If no content yet, show minimal view with shimmer (no icon during shimmer)
@@ -277,7 +287,10 @@ export const AgentPlanFileTool = memo(function AgentPlanFileTool({
 
         <div
           ref={contentRef}
-          onClick={() => !isExpanded && setIsExpanded(true)}
+          onClick={(e) => {
+            if (window.getSelection()?.toString()) return
+            setIsExpanded(true)
+          }}
           className={cn(
             "text-xs overflow-hidden transition-all duration-200",
             isExpanded
@@ -305,7 +318,7 @@ export const AgentPlanFileTool = memo(function AgentPlanFileTool({
             variant="ghost"
             size="sm"
             onClick={handleOpenSidebar}
-            disabled={!viewPlanEnabled}
+            disabled={!hasVisibleContent}
             className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
           >
             View plan

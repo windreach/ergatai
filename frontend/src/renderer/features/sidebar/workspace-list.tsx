@@ -1,4 +1,4 @@
-import { memo, useState } from "react"
+import { memo, useState, useCallback } from "react"
 import { Archive, ChevronDown, MoreVertical, Pencil, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -121,7 +121,7 @@ const WorkspaceItem = memo(({
           )}
         </div>
 
-        {!status?.healthy && (
+        {status && !status.healthy && (
           <div className="text-[10px] text-destructive">workdir missing</div>
         )}
       </button>
@@ -250,11 +250,21 @@ export const WorkspaceList = memo(({
   const { data: workspaces, isLoading } =
     trpc.ergatai.listManagedWorkspaces.useQuery({ collaborationMode })
 
+  // Stabilize callbacks so `memo` on `WorkspaceItem` is effective
+  const handleWorkspaceSelect = useCallback(
+    (workspaceId: string) => onWorkspaceSelect?.(workspaceId),
+    [onWorkspaceSelect],
+  )
+  const handleWorkspaceDeleted = useCallback(
+    (workspaceId: string) => onWorkspaceDeleted?.(workspaceId),
+    [onWorkspaceDeleted],
+  )
+
+  const query = searchQuery.trim().toLowerCase()
   const filteredWorkspaces = (workspaces ?? []).filter((workspace) => {
     // Filter out archived workspaces
     if (workspace.status === "archived") return false
     if (workspace.collaborationMode !== collaborationMode) return false
-    const query = searchQuery.trim().toLowerCase()
     if (!query) return true
     return `${workspace.name ?? ""} ${workspace.workDir}`
       .toLowerCase()
@@ -291,8 +301,8 @@ export const WorkspaceList = memo(({
               key={workspace.id}
               workspace={workspace}
               selectedWorkspaceId={selectedWorkspaceId}
-              onWorkspaceSelect={onWorkspaceSelect}
-              onWorkspaceDeleted={onWorkspaceDeleted}
+              onWorkspaceSelect={handleWorkspaceSelect}
+              onWorkspaceDeleted={handleWorkspaceDeleted}
             />
           ))}
         </div>

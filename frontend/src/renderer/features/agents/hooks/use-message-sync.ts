@@ -1,11 +1,11 @@
 import { useEffect, useLayoutEffect } from "react"
 import { useSetAtom } from "jotai"
-import { syncMessagesWithStatusAtom } from "../stores/message-store"
+import { syncMessagesWithStatusAtom, type Message } from "../stores/message-store"
 import { useStreamingStatusStore } from "../stores/streaming-status-store"
 
 interface UseMessageSyncProps {
   conversationId: string
-  messages: any[]
+  messages: Message[]
   status: "ready" | "streaming" | "submitted" | "error"
   isActive: boolean
   isSplitPane: boolean
@@ -29,11 +29,15 @@ export function useMessageSync({
 
   useLayoutEffect(() => {
     syncMessages({ messages, status, conversationId, updateGlobal: isActive })
-  }, [messages, status, conversationId, isActive, isSplitPane, syncMessages])
+  }, [messages, status, conversationId, isActive, syncMessages])
 
   // Sync status to global streaming status store for queue processing
   const setStreamingStatus = useStreamingStatusStore((s) => s.setStatus)
   useEffect(() => {
-    setStreamingStatus(conversationId, status as "ready" | "streaming" | "submitted" | "error")
+    setStreamingStatus(conversationId, status)
+    return () => {
+      // Reset status when conversation changes or component unmounts
+      setStreamingStatus(conversationId, "ready")
+    }
   }, [conversationId, status, setStreamingStatus])
 }

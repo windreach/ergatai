@@ -1,7 +1,6 @@
 "use client"
 
 import { memo } from "react"
-import { ChatMarkdownRenderer } from "../../../components/chat-markdown-renderer"
 import { areToolPropsEqual } from "./agent-tool-utils"
 
 interface ExitPlanModeToolPart {
@@ -15,13 +14,13 @@ interface ExitPlanModeToolPart {
 
 interface AgentExitPlanModeToolProps {
   part: ExitPlanModeToolPart
-  chatStatus?: string
 }
 
+// TODO: Plan is now shown in sidebar instead of inline.
+// This component remains for potential future use.
+// Tracking: Add issue link when component is needed again.
 export const AgentExitPlanModeTool = memo(function AgentExitPlanModeTool({
   part,
 }: AgentExitPlanModeToolProps) {
-  // Plan is now shown in sidebar instead of inline
-  // This component remains for potential future use
   return null
 }, areToolPropsEqual)

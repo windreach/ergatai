@@ -53,7 +53,6 @@ import {
 import { Button } from "../../../components/ui/button"
 import {
   IconSpinner,
-  PullRequestIcon,
   IconChatBubble,
   ExpandIcon,
   CollapseIcon,
@@ -75,8 +74,6 @@ import {
 // import { useIsHydrated } from "@/hooks/use-is-hydrated"
 const useIsHydrated = () => true // Desktop is always hydrated
 import { cn } from "../../../lib/utils"
-import { isDesktopApp } from "../../../lib/utils/platform"
-import { api } from "../../../lib/api-adapter"
 import { trpcClient } from "../../../lib/trpc"
 export type DiffViewMode = "unified" | "split"
 
@@ -104,6 +101,7 @@ interface DiffErrorBoundaryState {
   hasError: boolean
   error: Error | null
   prevRawDiff: string | undefined
+  prevFileName: string | undefined
 }
 
 class DiffErrorBoundary extends Component<
@@ -112,7 +110,7 @@ class DiffErrorBoundary extends Component<
 > {
   constructor(props: DiffErrorBoundaryProps) {
     super(props)
-    this.state = { hasError: false, error: null, prevRawDiff: props.rawDiff }
+    this.state = { hasError: false, error: null, prevRawDiff: props.rawDiff, prevFileName: props.fileName }
   }
 
   static getDerivedStateFromError(error: Error): Partial<DiffErrorBoundaryState> {
@@ -123,9 +121,9 @@ class DiffErrorBoundary extends Component<
     props: DiffErrorBoundaryProps,
     state: DiffErrorBoundaryState
   ): Partial<DiffErrorBoundaryState> | null {
-    // Reset error state when rawDiff changes (different file)
-    if (props.rawDiff !== state.prevRawDiff) {
-      return { hasError: false, error: null, prevRawDiff: props.rawDiff }
+    // Reset error state when rawDiff or fileName changes (different file)
+    if (props.rawDiff !== state.prevRawDiff || props.fileName !== state.prevFileName) {
+      return { hasError: false, error: null, prevRawDiff: props.rawDiff, prevFileName: props.fileName }
     }
     return null
   }
@@ -1112,6 +1110,8 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
       prefetchedFileContents ?? {},
     )
     const [isLoadingFileContents, setIsLoadingFileContents] = useState(false)
+    // Ref for concurrency guard to avoid effect dependency on isLoadingFileContents state
+    const isLoadingFileContentsRef = useRef(false)
 
     // Sync with prefetched file contents when they arrive after mount
     useEffect(() => {
@@ -1331,34 +1331,42 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
 
     // Expand/collapse all functions - exposed via ref for parent control
     // Uses batched updates to avoid blocking UI with many files
-    const expandAll = useCallback(() => {
+
+    // Shared helper for batched expand to avoid UI freeze with many files
+    const batchedExpandAll = useCallback((files: typeof fileDiffs, onComplete?: () => void) => {
       // For small number of files, expand all at once
-      if (fileDiffs.length <= 10) {
+      if (files.length <= 10) {
         startTransition(() => {
           const expandedState: Record<string, boolean> = {}
-          for (const file of fileDiffs) {
+          for (const file of files) {
             expandedState[file.key] = false
           }
           setCollapsedByFileKey(expandedState)
         })
+        onComplete?.()
         return
       }
 
       // For many files, expand in batches to avoid UI freeze
       const BATCH_SIZE = 5
       let currentBatch = 0
+      let isExpanding = true
 
       const expandBatch = () => {
         const start = currentBatch * BATCH_SIZE
-        const end = Math.min(start + BATCH_SIZE, fileDiffs.length)
+        const end = Math.min(start + BATCH_SIZE, files.length)
 
-        if (start >= fileDiffs.length) return
+        if (start >= files.length) {
+          isExpanding = false
+          onComplete?.()
+          return
+        }
 
         startTransition(() => {
           setCollapsedByFileKey((prev) => {
             const next = { ...prev }
             for (let i = start; i < end; i++) {
-              const file = fileDiffs[i]
+              const file = files[i]
               if (file) next[file.key] = false
             }
             return next
@@ -1366,14 +1374,21 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
         })
 
         currentBatch++
-        if (currentBatch * BATCH_SIZE < fileDiffs.length) {
+        if (currentBatch * BATCH_SIZE < files.length) {
           // Use requestAnimationFrame for next batch to allow UI to breathe
           requestAnimationFrame(() => setTimeout(expandBatch, 0))
+        } else {
+          isExpanding = false
+          onComplete?.()
         }
       }
 
       expandBatch()
-    }, [fileDiffs])
+    }, [])
+
+    const expandAll = useCallback(() => {
+      batchedExpandAll(fileDiffs)
+    }, [fileDiffs, batchedExpandAll])
 
     const collapseAll = useCallback(() => {
       // Collapse is fast - no batching needed
@@ -1463,13 +1478,23 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
     // Proactively invalidate viewed state when file content changes (hash mismatch)
     // This ensures all consumers of viewedFilesAtomFamily (changes-view, changes-widget)
     // see the correct viewed state, not just agent-diff-view which checks hashes locally
+    // Cache computed hashes to avoid recomputing on every render
+    const fileDiffHashes = useMemo(() => {
+      const hashes: Record<string, string> = {}
+      for (const file of fileDiffs) {
+        hashes[file.key] = hashString(file.diffText)
+      }
+      return hashes
+    }, [fileDiffs])
+
     useEffect(() => {
       if (fileDiffs.length === 0) return
 
       const keysToInvalidate: string[] = []
       for (const file of fileDiffs) {
         const viewedState = viewedFiles[file.key]
-        if (viewedState?.viewed && viewedState.contentHash !== hashString(file.diffText)) {
+        const currentHash = fileDiffHashes[file.key]
+        if (viewedState?.viewed && currentHash && viewedState.contentHash !== currentHash) {
           keysToInvalidate.push(file.key)
         }
       }
@@ -1481,7 +1506,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
         }
         setViewedFiles(updated)
       }
-    }, [fileDiffs, viewedFiles, setViewedFiles])
+    }, [fileDiffs, fileDiffHashes, viewedFiles, setViewedFiles])
 
     // Notify parent when viewed count changes
     const prevViewedCountRef = useRef<number | null>(null)
@@ -1506,56 +1531,13 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
       // Only update if the file set changed and we're not already expanding
       if (currentFileKeys !== prevFileKeysRef.current && !isExpandingRef.current) {
         prevFileKeysRef.current = currentFileKeys
-
-        // For small number of files, expand all at once
-        if (fileDiffs.length <= 10) {
-          startTransition(() => {
-            const expandedState: Record<string, boolean> = {}
-            for (const file of fileDiffs) {
-              expandedState[file.key] = false
-            }
-            setCollapsedByFileKey(expandedState)
-          })
-          return
-        }
-
-        // For many files, expand in batches to avoid UI freeze
         isExpandingRef.current = true
-        const BATCH_SIZE = 5
-        let currentBatch = 0
 
-        const expandBatch = () => {
-          const start = currentBatch * BATCH_SIZE
-          const end = Math.min(start + BATCH_SIZE, fileDiffs.length)
-
-          if (start >= fileDiffs.length) {
-            isExpandingRef.current = false
-            return
-          }
-
-          startTransition(() => {
-            setCollapsedByFileKey((prev) => {
-              const next = { ...prev }
-              for (let i = start; i < end; i++) {
-                const file = fileDiffs[i]
-                if (file) next[file.key] = false
-              }
-              return next
-            })
-          })
-
-          currentBatch++
-          if (currentBatch * BATCH_SIZE < fileDiffs.length) {
-            // Use requestAnimationFrame for next batch to allow UI to breathe
-            requestAnimationFrame(() => setTimeout(expandBatch, 0))
-          } else {
-            isExpandingRef.current = false
-          }
-        }
-
-        expandBatch()
+        batchedExpandAll(fileDiffs, () => {
+          isExpandingRef.current = false
+        })
       }
-    }, [fileDiffs])
+    }, [fileDiffs, batchedExpandAll])
 
     // Use deferred value to prevent UI blocking during tab switches
     const deferredFileDiffs = useDeferredValue(fileDiffs)
@@ -1568,7 +1550,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
 
     useEffect(() => {
       // Local diff contents come from the worktree only.
-      if (fileDiffs.length === 0 || isLoadingFileContents) return
+      if (fileDiffs.length === 0 || isLoadingFileContentsRef.current) return
       if (!worktreePath) return
       // Skip if we already have enough contents
       const existingContentCount = Object.keys(fileContents).length
@@ -1578,6 +1560,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
         return
 
       const fetchAllContents = async () => {
+        isLoadingFileContentsRef.current = true
         setIsLoadingFileContents(true)
 
         try {
@@ -1599,6 +1582,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
             .filter((f): f is { key: string; filePath: string } => f !== null)
 
           if (filesToFetch.length === 0) {
+            isLoadingFileContentsRef.current = false
             setIsLoadingFileContents(false)
             return
           }
@@ -1619,6 +1603,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
         } catch (error) {
           console.error("Failed to prefetch file contents:", error)
         } finally {
+          isLoadingFileContentsRef.current = false
           setIsLoadingFileContents(false)
         }
       }
@@ -1880,6 +1865,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
       setFocusedDiffFile,
       fileDiffs,
       collapsedByFileKey,
+      virtualizer,
     ])
 
     // Keyboard shortcut: V to mark current file as viewed
@@ -1918,12 +1904,13 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
       return () => window.removeEventListener("keydown", handleKeyDown)
     }, [virtualizer, deferredFileDiffs, handleToggleViewed])
 
-    // Keyboard shortcut: Cmd+Z to undo last viewed action
+    // Keyboard shortcut: Cmd+Z / Ctrl+Z to undo last viewed action
     useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
         // Use e.code for physical key position (works with any keyboard layout)
         if (e.code !== "KeyZ") return
-        if (!e.metaKey || e.shiftKey || e.altKey) return // Only Cmd+Z, not Cmd+Shift+Z
+        const isUndo = e.metaKey || e.ctrlKey
+        if (!isUndo || e.shiftKey || e.altKey) return // Only Cmd+Z / Ctrl+Z, not with Shift/Alt
 
         // Don't trigger if typing in input/textarea
         const target = e.target as HTMLElement

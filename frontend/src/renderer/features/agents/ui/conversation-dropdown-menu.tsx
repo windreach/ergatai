@@ -19,11 +19,18 @@ import { exportChat, copyChat, type ExportFormat } from "../lib/export-chat"
 import { toast } from "sonner"
 
 const openInNewWindow = async (chatId: string, conversationId: string) => {
-  const result = await window.desktopApi?.newWindow({ chatId, conversationId: conversationId })
-  if (result?.blocked) {
-    toast.info("This workspace is already open in another window", {
-      description: "Switching to the existing window.",
-      duration: 3000,
+  try {
+    const result = await window.desktopApi?.newWindow({ chatId, conversationId: conversationId })
+    if (result?.blocked) {
+      toast.info("This workspace is already open in another window", {
+        description: "Switching to the existing window.",
+        duration: 3000,
+      })
+    }
+  } catch (error) {
+    console.error("[openInNewWindow] Error:", error)
+    toast.error("Failed to open new window", {
+      description: error instanceof Error ? error.message : "An unexpected error occurred",
     })
   }
 }
@@ -86,14 +93,14 @@ export function ConversationDropdownMenu({
 }: ConversationDropdownMenuProps) {
   const closeTabShortcut = useCloseTabShortcut()
 
-  const handleExport = useCallback((format: ExportFormat) => {
+  const handleExport = useCallback(async (format: ExportFormat) => {
     if (!chatId) return
-    exportChat({ chatId, conversationId: conversation.id, format })
+    await exportChat({ chatId, conversationId: conversation.id, format })
   }, [chatId, conversation.id])
 
-  const handleCopy = useCallback((format: ExportFormat) => {
+  const handleCopy = useCallback(async (format: ExportFormat) => {
     if (!chatId) return
-    copyChat({ chatId, conversationId: conversation.id, format })
+    await copyChat({ chatId, conversationId: conversation.id, format })
   }, [chatId, conversation.id])
 
   return (
@@ -147,7 +154,7 @@ export function ConversationDropdownMenu({
             Open in new window
           </DropdownMenuItem>
         )}
-        {isSplitTab ? (
+        {isSplitTab && (
           <>
             {splitPaneCount > 2 && onRemoveFromSplit && (
               <DropdownMenuItem onSelect={() => onRemoveFromSplit(conversation.id)}>
@@ -160,14 +167,15 @@ export function ConversationDropdownMenu({
               </DropdownMenuItem>
             )}
           </>
-        ) : onOpenInSplit ? (
+        )}
+        {!isSplitTab && onOpenInSplit && (
           <DropdownMenuItem
             onSelect={() => onOpenInSplit(conversation.id)}
             disabled={isActiveTab || isOnlyChat || splitPaneCount >= 4}
           >
             Add as split
           </DropdownMenuItem>
-        ) : null}
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           onSelect={(event) => {
@@ -180,15 +188,17 @@ export function ConversationDropdownMenu({
           Archive conversation
           {!isOnlyChat && <Kbd>{closeTabShortcut}</Kbd>}
         </DropdownMenuItem>
-        <DropdownMenuItem
-          onSelect={() => onArchiveAllBelow?.(conversation.id)}
-          disabled={
-            currentIndex === undefined ||
-            currentIndex >= (totalCount || 0) - 1
-          }
-        >
-          Archive conversations below
-        </DropdownMenuItem>
+        {onArchiveAllBelow && (
+          <DropdownMenuItem
+            onSelect={() => onArchiveAllBelow(conversation.id)}
+            disabled={
+              currentIndex === undefined ||
+              currentIndex >= (totalCount || 0) - 1
+            }
+          >
+            Archive conversations below
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem
           onSelect={() => onArchiveOthers(conversation.id)}
           disabled={isOnlyChat}

@@ -9,9 +9,10 @@ import { AgentToolRegistry, getToolStatus } from "./agent-tool-registry"
 import { AgentToolCall } from "./agent-tool-call"
 import { areExploringGroupPropsEqual } from "./agent-tool-utils"
 import { cn } from "../../../lib/utils"
+import type { MessagePart } from "../stores/message-store"
 
 interface AgentExploringGroupProps {
-  parts: any[]
+  parts: MessagePart[]
   chatStatus?: string
   isStreaming: boolean
 }
@@ -19,6 +20,11 @@ interface AgentExploringGroupProps {
 // Constants for rendering
 const MAX_VISIBLE_TOOLS = 5
 const TOOL_HEIGHT_PX = 24
+
+// Tool type constants for file operations
+const FILE_TOOL_TYPES = ["tool-Read", "tool-Grep", "tool-Glob"] as const
+// Tool type constants for search operations
+const SEARCH_TOOL_TYPES = ["tool-WebSearch", "tool-WebFetch"] as const
 
 export const AgentExploringGroup = memo(function AgentExploringGroup({
   parts,
@@ -42,18 +48,19 @@ export const AgentExploringGroup = memo(function AgentExploringGroup({
   }, [isStreaming])
 
   // Auto-scroll to bottom when streaming and new parts added
+  // Depend on parts directly instead of parts.length for more reliable updates
   useEffect(() => {
     if (isStreaming && isExpanded && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [parts.length, isStreaming, isExpanded])
+  }, [parts, isStreaming, isExpanded])
 
   // Count files (Read, Grep, Glob) and searches (WebSearch, WebFetch)
   const fileCount = parts.filter((p) =>
-    ["tool-Read", "tool-Grep", "tool-Glob"].includes(p.type),
+    FILE_TOOL_TYPES.includes(p.type as typeof FILE_TOOL_TYPES[number]),
   ).length
   const searchCount = parts.filter((p) =>
-    ["tool-WebSearch", "tool-WebFetch"].includes(p.type),
+    SEARCH_TOOL_TYPES.includes(p.type as typeof SEARCH_TOOL_TYPES[number]),
   ).length
 
   // Build subtitle parts
@@ -135,9 +142,11 @@ export const AgentExploringGroup = memo(function AgentExploringGroup({
                 )
               }
               const { isPending, isError } = getToolStatus(part, chatStatus)
-              const handleClick = part.type === "tool-Read" && onOpenFile && part.input?._locations?.[0]?.path
-                ? () => onOpenFile(part.input._locations[0].path)
-                : undefined
+              const filePath = part.input?._locations?.[0]?.path
+              const handleClick =
+                part.type === "tool-Read" && onOpenFile && filePath
+                  ? () => onOpenFile(filePath)
+                  : undefined
               return (
                 <AgentToolCall
                   key={idx}

@@ -28,12 +28,14 @@ export function InlineEdit({
   // Use refs to avoid stale closures and effect re-runs
   const onSaveRef = useRef(onSave)
   const onCancelRef = useRef(onCancel)
+  const disabledRef = useRef(disabled)
 
   // Keep refs up to date
   useEffect(() => {
     onSaveRef.current = onSave
     onCancelRef.current = onCancel
-  }, [onSave, onCancel])
+    disabledRef.current = disabled
+  }, [onSave, onCancel, disabled])
 
   // Auto-focus and select text when editing starts
   useEffect(() => {
@@ -55,6 +57,9 @@ export function InlineEdit({
     if (!isEditing) return
 
     const handleClickOutside = (event: MouseEvent) => {
+      // Skip if disabled (e.g., during loading or validation lock)
+      if (disabledRef.current) return
+
       if (
         inputRef.current &&
         !inputRef.current.contains(event.target as Node)
@@ -63,10 +68,10 @@ export function InlineEdit({
       }
     }
 
-    // Add delay to avoid immediate trigger
+    // Add delay to avoid immediate trigger from the click that opened the editor
     const timeoutId = setTimeout(() => {
       document.addEventListener("mousedown", handleClickOutside)
-    }, 100)
+    }, 50)
 
     return () => {
       clearTimeout(timeoutId)

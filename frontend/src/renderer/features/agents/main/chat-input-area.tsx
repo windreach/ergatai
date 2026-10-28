@@ -421,6 +421,16 @@ export const ChatInputArea = memo(function ChatInputArea({
   const [isFocused, setIsFocused] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
 
+  // ResizeObserver ref for cleanup
+  const resizeObserverRef = useRef<ResizeObserver | null>(null)
+
+  // Cleanup ResizeObserver on unmount
+  useEffect(() => {
+    return () => {
+      resizeObserverRef.current?.disconnect()
+    }
+  }, [])
+
   // Mention dropdown state
   const [showMentionDropdown, setShowMentionDropdown] = useState(false)
   const [mentionSearchText, setMentionSearchText] = useState("")
@@ -633,13 +643,6 @@ export const ChatInputArea = memo(function ChatInputArea({
 
   // Determine current Ollama model (selected or recommended)
   const currentOllamaModel = selectedOllamaModel || availableModels.recommendedModel || availableModels.ollamaModels[0]
-
-  // Debug: log selected Ollama model
-  useEffect(() => {
-    if (availableModels.isOffline) {
-      console.log(`[Ollama UI] selectedOllamaModel atom value: ${selectedOllamaModel || "(null)"}, currentOllamaModel: ${currentOllamaModel}`)
-    }
-  }, [selectedOllamaModel, currentOllamaModel, availableModels.isOffline])
 
   // Extended thinking (reasoning) toggle
   const [thinkingEnabled, setThinkingEnabled] = useAtom(extendedThinkingEnabledAtom)
@@ -1161,23 +1164,6 @@ export const ChatInputArea = memo(function ChatInputArea({
       // Dropped folders become a single folder mention chip (like file chips
       // but with a folder icon); files continue through existing logic.
       const items = Array.from(e.dataTransfer.items)
-      const rawFiles = Array.from(e.dataTransfer.files)
-      const droppedFiles: File[] = []
-      const droppedFolderPaths: string[] = []
-
-      for (let i = 0; i < items.length; i++) {
-        const entry = items[i]?.webkitGetAsEntry?.()
-        const file = rawFiles[i]
-        if (entry?.isDirectory && file) {
-          const path =
-            window.webUtils?.getPathForFile?.(file) ||
-            (file as File & { path?: string }).path ||
-            entry.name
-          droppedFolderPaths.push(path)
-        } else if (file) {
-          droppedFiles.push(file)
-        }
-      }
 
       // Helper function to recursively read all files from a directory entry
       const readDirectoryFiles = (entry: FileSystemDirectoryEntry): Promise<File[]> => {
@@ -1350,6 +1336,7 @@ export const ChatInputArea = memo(function ChatInputArea({
           parent?.style.setProperty("--chat-input-width", `${width}px`)
         })
         observer.observe(el)
+        resizeObserverRef.current = observer
       }}
       className="px-2 pb-2 shadow-sm shadow-background relative z-10"
     >
@@ -1401,14 +1388,12 @@ export const ChatInputArea = memo(function ChatInputArea({
                     {files.map((f) => (
                       <AgentFileItem
                         key={f.id}
-                        id={f.id}
                         filename={f.filename}
-                        url={f.url || ""}
                         size={f.size}
                         isLoading={f.isLoading}
                         onRemove={() => onRemoveFile(f.id)}
                         isFolder={f.isFolder}
-                        folderFiles={f.folderFiles}
+                        fileCount={f.folderFiles?.length}
                       />
                     ))}
                     {textContexts.map((tc) => (
@@ -1422,8 +1407,6 @@ export const ChatInputArea = memo(function ChatInputArea({
                     {diffTextContexts?.map((dtc) => (
                       <AgentDiffTextContextItem
                         key={dtc.id}
-                        text={dtc.text}
-                        preview={dtc.preview}
                         filePath={dtc.filePath}
                         lineNumber={dtc.lineNumber}
                         lineType={dtc.lineType}
@@ -1433,9 +1416,6 @@ export const ChatInputArea = memo(function ChatInputArea({
                     {pastedTexts.map((pt) => (
                       <AgentPastedTextItem
                         key={pt.id}
-                        filePath={pt.filePath}
-                        filename={pt.filename}
-                        size={pt.size}
                         preview={pt.preview}
                         kind={pt.kind}
                         onRemove={onRemovePastedText ? () => onRemovePastedText(pt.id) : undefined}

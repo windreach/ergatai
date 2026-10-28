@@ -456,6 +456,11 @@ export const agentContractApi: AgentContractApi = {
     // paths. Resolve the backend-owned ID instead of creating one locally.
     const profiles = await trpcClient.ergatai.listProfiles.query()
     const profile = profiles.profiles.find((p) => p.name === name)
-    return { id: profile?.id || name }
+    if (!profile?.id) {
+      throw new Error(
+        `registerAgent succeeded but no profile id was returned for name "${name}".`,
+      )
+    }
+    return { id: profile.id }
   },
 }

@@ -13,6 +13,22 @@ import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areToolPropsEqual } from "./agent-tool-utils"
 import { cn } from "../../../lib/utils"
 
+/**
+ * Format bytes into human-readable string (B, KB, MB).
+ * Extracted outside component to avoid re-creation on every render.
+ */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/**
+ * Props for AgentWebFetchTool component.
+ * Note: `part` is typed as `any` because it represents a tool-specific part structure
+ * from the AI SDK that varies by tool type. The web fetch tool has its own input/output
+ * shape (url, result, bytes, code) that doesn't fit a generic interface.
+ */
 interface AgentWebFetchToolProps {
   part: any
   chatStatus?: string
@@ -29,7 +45,8 @@ export const AgentWebFetchTool = memo(function AgentWebFetchTool({
   const result = part.output?.result || ""
   const bytes = part.output?.bytes || 0
   const statusCode = part.output?.code
-  const isSuccess = statusCode === 200
+  // Check for 2xx success codes, not just 200
+  const isSuccess = statusCode !== undefined && statusCode >= 200 && statusCode < 300
 
   // Extract hostname for display
   let hostname = ""
@@ -37,13 +54,6 @@ export const AgentWebFetchTool = memo(function AgentWebFetchTool({
     hostname = new URL(url).hostname.replace("www.", "")
   } catch {
     hostname = url.slice(0, 30)
-  }
-
-  // Format bytes
-  const formatBytes = (bytes: number) => {
-    if (bytes < 1024) return `${bytes} B`
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   }
 
   const hasContent = result.length > 0
@@ -86,7 +96,7 @@ export const AgentWebFetchTool = memo(function AgentWebFetchTool({
           <div className="flex items-center gap-1.5 text-xs">
             {isPending ? (
               <IconSpinner className="w-3 h-3" />
-            ) : isError || !isSuccess ? (
+            ) : (isError || !isSuccess) ? (
               <span className="text-destructive">
                 {statusCode ? `Error ${statusCode}` : "Failed"}
               </span>

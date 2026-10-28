@@ -32,7 +32,6 @@ export interface AgentMessageMetadata {
 interface AgentMessageUsageProps {
   metadata?: AgentMessageMetadata
   isStreaming?: boolean
-  isMobile?: boolean
 }
 
 function formatTokens(tokens: number): string {
@@ -51,14 +50,13 @@ function formatDuration(ms: number): string {
     return `${seconds.toFixed(1)}s`
   }
   const minutes = Math.floor(seconds / 60)
-  const remainingSeconds = Math.round(seconds % 60)
+  const remainingSeconds = Math.floor(seconds % 60)
   return `${minutes}m ${remainingSeconds}s`
 }
 
 export const AgentMessageUsage = memo(function AgentMessageUsage({
   metadata,
   isStreaming = false,
-  isMobile = false,
 }: AgentMessageUsageProps) {
   if (!metadata || isStreaming) return null
 
@@ -76,6 +74,7 @@ export const AgentMessageUsage = memo(function AgentMessageUsage({
   if (!hasUsage) return null
 
   const normalizedModel = typeof model === "string" ? model.toLowerCase() : ""
+  // Model classification: Codex and GPT models count tokens differently (input + output only, no separate total)
   const isCodexModel =
     normalizedModel.includes("codex") || normalizedModel.startsWith("gpt-")
   const displayTokens = isCodexModel
@@ -85,8 +84,7 @@ export const AgentMessageUsage = memo(function AgentMessageUsage({
   return (
     <HoverCard openDelay={400} closeDelay={100}>
       <HoverCardTrigger asChild>
-        <button
-          tabIndex={-1}
+        <span
           className={cn(
             "h-5 px-1.5 flex items-center text-[10px] rounded-md",
             "text-muted-foreground/60 hover:text-muted-foreground hover:bg-muted/50",
@@ -94,7 +92,7 @@ export const AgentMessageUsage = memo(function AgentMessageUsage({
           )}
         >
           <span className="font-mono">{formatTokens(displayTokens)}</span>
-        </button>
+        </span>
       </HoverCardTrigger>
       <HoverCardContent
         sideOffset={4}

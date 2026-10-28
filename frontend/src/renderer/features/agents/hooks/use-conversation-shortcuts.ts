@@ -1,10 +1,11 @@
-import { useEffect, useCallback } from "react"
+import { useEffect, useCallback, useRef } from "react"
 import { isDesktopApp } from "../../../lib/utils/platform"
 import { useAgentConversationStore } from "../stores/conversation-store"
+import type { UndoItem } from "../atoms"
 
 interface UseConversationShortcutsProps {
   chatId: string
-  setUndoStack: React.Dispatch<React.SetStateAction<any[]>>
+  setUndoStack: React.Dispatch<React.SetStateAction<UndoItem[]>>
   selectedConversationIds: Set<string>
   isConversationMultiSelectMode: boolean
   clearConversationSelection: () => void
@@ -23,13 +24,25 @@ export function useConversationShortcuts({
   clearConversationSelection,
 }: UseConversationShortcutsProps) {
 
+  // Ref to track timeout IDs for cleanup on unmount
+  const timeoutIdsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set())
+
+  // Ref to hold selectedConversationIds to prevent frequent listener re-attachment
+  const selectedConversationIdsRef = useRef(selectedConversationIds)
+  selectedConversationIdsRef.current = selectedConversationIds
+
   // Helper to add conversation to undo stack
   const addConversationToUndoStack = useCallback((conversationId: string) => {
     const timeoutId = setTimeout(() => {
       setUndoStack((prev) => prev.filter(
         (item) => !(item.type === "conversation" && item.conversationId === conversationId)
       ))
+      // Remove from tracked set after timeout fires
+      timeoutIdsRef.current.delete(timeoutId)
     }, 10000)
+
+    // Track this timeout for cleanup
+    timeoutIdsRef.current.add(timeoutId)
 
     setUndoStack((prev) => [...prev, {
       type: "conversation",
@@ -38,6 +51,47 @@ export function useConversationShortcuts({
       timeoutId,
     }])
   }, [chatId, setUndoStack])
+
+  // Cleanup all pending timeouts on unmount
+  useEffect(() => {
+    return () => {
+      timeoutIdsRef.current.forEach((id) => clearTimeout(id))
+      timeoutIdsRef.current.clear()
+    }
+  }, [])
+
+  // Helper to navigate between conversations
+  const navigate = useCallback((delta: -1 | 1) => {
+    const store = useAgentConversationStore.getState()
+    const activeId = store.activeConversationId
+    const openIds = store.openConversationIds
+
+    // Only navigate if we have multiple tabs
+    if (openIds.length <= 1) return
+
+    // If no active tab, select first one
+    if (!activeId) {
+      store.setActiveConversation(openIds[0])
+      return
+    }
+
+    // Find current index
+    const currentIndex = openIds.indexOf(activeId)
+
+    if (currentIndex === -1) {
+      // Current tab not found, select first
+      store.setActiveConversation(openIds[0])
+      return
+    }
+
+    // Calculate next index with wrapping
+    const nextIndex = (currentIndex + delta + openIds.length) % openIds.length
+    const nextId = openIds[nextIndex]
+
+    if (nextId) {
+      store.setActiveConversation(nextId)
+    }
+  }, [])
 
   // Keyboard shortcut: Close active conversation (or bulk close if multi-select mode)
   // Web: Opt+Cmd+W (browser uses Cmd+W to close tab)
@@ -61,10 +115,11 @@ export function useConversationShortcuts({
         e.preventDefault()
 
         const store = useAgentConversationStore.getState()
+        const currentSelectedIds = selectedConversationIdsRef.current
 
         // If multi-select mode, bulk close selected conversations
-        if (isConversationMultiSelectMode && selectedConversationIds.size > 0) {
-          const idsToClose = Array.from(selectedConversationIds)
+        if (isConversationMultiSelectMode && currentSelectedIds.size > 0) {
+          const idsToClose = Array.from(currentSelectedIds)
           const remainingOpenIds = store.openConversationIds.filter(
             (id) => !idsToClose.includes(id),
           )
@@ -95,7 +150,7 @@ export function useConversationShortcuts({
 
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [isConversationMultiSelectMode, selectedConversationIds, clearConversationSelection, addConversationToUndoStack])
+  }, [isConversationMultiSelectMode, clearConversationSelection, addConversationToUndoStack])
 
   // Keyboard shortcut: Navigate between conversations
   // Web: Opt+Cmd+[ and Opt+Cmd+] (browser uses Cmd+[ for back)
@@ -116,37 +171,7 @@ export function useConversationShortcuts({
 
       if (isPrevDesktop || isPrevWeb) {
         e.preventDefault()
-
-        const store = useAgentConversationStore.getState()
-        const activeId = store.activeConversationId
-        const openIds = store.openConversationIds
-
-        // Only navigate if we have multiple tabs
-        if (openIds.length <= 1) return
-
-        // If no active tab, select first one
-        if (!activeId) {
-          store.setActiveConversation(openIds[0])
-          return
-        }
-
-        // Find current index
-        const currentIndex = openIds.indexOf(activeId)
-
-        if (currentIndex === -1) {
-          // Current tab not found, select first
-          store.setActiveConversation(openIds[0])
-          return
-        }
-
-        // Navigate to previous tab (cycle to end if at start)
-        const nextIndex =
-          currentIndex - 1 < 0 ? openIds.length - 1 : currentIndex - 1
-        const nextId = openIds[nextIndex]
-
-        if (nextId) {
-          store.setActiveConversation(nextId)
-        }
+        navigate(-1)
       }
 
       // Check for next conversation shortcut (] key)
@@ -161,40 +186,11 @@ export function useConversationShortcuts({
 
       if (isNextDesktop || isNextWeb) {
         e.preventDefault()
-
-        const store = useAgentConversationStore.getState()
-        const activeId = store.activeConversationId
-        const openIds = store.openConversationIds
-
-        // Only navigate if we have multiple tabs
-        if (openIds.length <= 1) return
-
-        // If no active tab, select first one
-        if (!activeId) {
-          store.setActiveConversation(openIds[0])
-          return
-        }
-
-        // Find current index
-        const currentIndex = openIds.indexOf(activeId)
-
-        if (currentIndex === -1) {
-          // Current tab not found, select first
-          store.setActiveConversation(openIds[0])
-          return
-        }
-
-        // Navigate to next tab (cycle to start if at end)
-        const nextIndex = (currentIndex + 1) % openIds.length
-        const nextId = openIds[nextIndex]
-
-        if (nextId) {
-          store.setActiveConversation(nextId)
-        }
+        navigate(1)
       }
     }
 
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [])
+  }, [navigate])
 }

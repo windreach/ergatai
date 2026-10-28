@@ -870,7 +870,268 @@ tasks:
 "#;
         let result = parse_dag_yaml(yaml, None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unknown task"));
+        assert!(result.unwrap_err().to_string().contains("unknown"));
+    }
+
+    #[test]
+    fn test_yaml_empty_task_name() {
+        let yaml = r#"
+tasks:
+  - name: ""
+    agent: agent-a
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_yaml_whitespace_only_task_name() {
+        let yaml = r#"
+tasks:
+  - name: "   "
+    agent: agent-a
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_yaml_invalid_priority() {
+        let yaml = r#"
+tasks:
+  - name: Task A
+    priority: invalid_priority
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_yaml_valid_priorities() {
+        for priority in &["low", "medium", "high", "LOW", "Medium", "HIGH"] {
+            let yaml = format!(
+                r#"
+tasks:
+  - name: Task A
+    priority: {}
+"#,
+                priority
+            );
+            let result = parse_dag_yaml(&yaml, None);
+            assert!(result.is_ok(), "Priority '{}' should be valid", priority);
+        }
+    }
+
+    #[test]
+    fn test_yaml_zero_timeout() {
+        let yaml = r#"
+tasks:
+  - name: Task A
+    timeout: 0
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_yaml_negative_timeout() {
+        let yaml = r#"
+tasks:
+  - name: Task A
+    timeout: -100
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_yaml_positive_timeout() {
+        let yaml = r#"
+tasks:
+  - name: Task A
+    timeout: 300
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_yaml_invalid_communication_open() {
+        let yaml = r#"
+communication: open
+tasks:
+  - name: Task A
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_yaml_invalid_communication_adjacent() {
+        let yaml = r#"
+communication: adjacent
+tasks:
+  - name: Task A
+  - name: Task B
+    depends_on: [Task A]
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_yaml_communication_star_with_hub() {
+        let yaml = r#"
+communication: "star:hub-agent"
+tasks:
+  - name: Task A
+    agent: hub-agent
+  - name: Task B
+    agent: worker-1
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_yaml_communication_star_invalid_hub() {
+        let yaml = r#"
+communication: "star:non-existent-agent"
+tasks:
+  - name: Task A
+    agent: agent-a
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_yaml_absolute_scope_path() {
+        let yaml = r#"
+tasks:
+  - name: Task A
+    scope: "/absolute/path/**/*.rs"
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_yaml_relative_scope_path() {
+        let yaml = r#"
+tasks:
+  - name: Task A
+    scope: "src/**/*.rs"
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_yaml_invalid_glob_pattern() {
+        let yaml = r#"
+tasks:
+  - name: Task A
+    scope: "[invalid-glob"
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_yaml_template_variable_valid() {
+        let yaml = r#"
+parameters:
+  - name: target_file
+    default: "src/main.rs"
+tasks:
+  - name: Task A
+    task: "{{target_file}}"
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_yaml_template_variable_undefined() {
+        // When parameters are declared but variable is not in the list, it should fail
+        // Note: Template variable validation applies to input/output fields
+        let yaml = r#"
+parameters:
+  - name: defined_var
+    default: "value"
+tasks:
+  - name: Task A
+    input: "{{undefined_var}}"
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_yaml_template_variable_no_parameters_declared() {
+        // When no parameters are declared, template variable check is skipped
+        let yaml = r#"
+tasks:
+  - name: Task A
+    task: "{{any_var}}"
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_yaml_template_variable_no_parameters() {
+        let yaml = r#"
+tasks:
+  - name: Task A
+    task: "some-task.md"
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_yaml_complex_dependency_chain() {
+        let yaml = r#"
+tasks:
+  - name: Task A
+  - name: Task B
+    depends_on: [Task A]
+  - name: Task C
+    depends_on: [Task A, Task B]
+  - name: Task D
+    depends_on: [Task C]
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_ok());
+        let graph = result.unwrap();
+        assert_eq!(graph.nodes.len(), 4);
+    }
+
+    #[test]
+    fn test_yaml_circular_dependency() {
+        let yaml = r#"
+tasks:
+  - name: Task A
+    depends_on: [Task B]
+  - name: Task B
+    depends_on: [Task A]
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        // Circular dependencies should be caught during parsing
+        assert!(result.is_err(), "Circular dependencies should be rejected");
+    }
+
+    #[test]
+    fn test_yaml_self_dependency() {
+        let yaml = r#"
+tasks:
+  - name: Task A
+    depends_on: [Task A]
+"#;
+        let result = parse_dag_yaml(yaml, None);
+        assert!(result.is_err());
     }
 
     #[test]

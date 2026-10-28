@@ -43,11 +43,18 @@ export function WorkspaceEditDialog({
   const registerProjectMutation = trpc.ergatai.registerWorkspaceProject.useMutation()
   const removeProjectMutation = trpc.ergatai.removeWorkspaceProject.useMutation()
 
+  const invalidateWorkspaceCaches = () => {
+    void utils.ergatai.listWorkspaceProjects.invalidate({ id: workspaceId })
+    void utils.ergatai.listManagedWorkspaces.invalidate()
+    void utils.ergatai.workspaceStatus.invalidate({ id: workspaceId })
+  }
+
   const handleAddFolder = useCallback(async () => {
     const folderPath = await pickFolderMutation.mutateAsync()
     if (!folderPath) return
 
-    const folderName = folderPath.split("/").pop() || folderPath
+    // Cross-platform path parsing: split on both / and \
+    const folderName = folderPath.split(/[/\\]/).pop() || folderPath
 
     // Check if already added
     if (projects.some((p) => p.projectName === folderName)) {
@@ -58,11 +65,7 @@ export function WorkspaceEditDialog({
     registerProjectMutation.mutate(
       { id: workspaceId, projectPath: folderPath, projectName: folderName },
       {
-        onSuccess: () => {
-          void utils.ergatai.listWorkspaceProjects.invalidate({ id: workspaceId })
-          void utils.ergatai.listManagedWorkspaces.invalidate()
-          void utils.ergatai.workspaceStatus.invalidate({ id: workspaceId })
-        },
+        onSuccess: invalidateWorkspaceCaches,
         onError: (error) => {
           toast.error("Failed to add folder", { description: error.message })
         },
@@ -75,11 +78,7 @@ export function WorkspaceEditDialog({
       removeProjectMutation.mutate(
         { id: workspaceId, projectId: project.projectId },
         {
-          onSuccess: () => {
-            void utils.ergatai.listWorkspaceProjects.invalidate({ id: workspaceId })
-            void utils.ergatai.listManagedWorkspaces.invalidate()
-            void utils.ergatai.workspaceStatus.invalidate({ id: workspaceId })
-          },
+          onSuccess: invalidateWorkspaceCaches,
           onError: (error) => {
             toast.error("Failed to remove folder", { description: error.message })
           },
@@ -93,12 +92,12 @@ export function WorkspaceEditDialog({
     setSaving(true)
     try {
       await updateNameMutation.mutateAsync({ id: workspaceId, name: name.trim() || undefined })
-      void utils.ergatai.listManagedWorkspaces.invalidate()
-      void utils.ergatai.workspaceStatus.invalidate({ id: workspaceId })
+      invalidateWorkspaceCaches()
       toast.success("Workspace updated")
       onOpenChange(false)
-    } catch (error: any) {
-      toast.error("Failed to save", { description: error.message })
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Unknown error"
+      toast.error("Failed to save", { description: message })
     } finally {
       setSaving(false)
     }

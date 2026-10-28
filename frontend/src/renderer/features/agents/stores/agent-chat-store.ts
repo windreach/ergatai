@@ -23,10 +23,13 @@ export const agentChatStore = {
 
   delete: (id: string) => {
     const chat = chats.get(id) as any
-    chat?.transport?.cleanup?.()
-    chats.delete(id)
-    parentChatIds.delete(id)
-    manuallyAborted.delete(id)
+    try {
+      chat?.transport?.cleanup?.()
+    } finally {
+      chats.delete(id)
+      parentChatIds.delete(id)
+      manuallyAborted.delete(id)
+    }
   },
 
   // Get the ORIGINAL parentChatId that was set when the Chat was created
@@ -43,7 +46,11 @@ export const agentChatStore = {
 
   clear: () => {
     for (const chat of chats.values()) {
-      ;(chat as any)?.transport?.cleanup?.()
+      try {
+        ;(chat as any)?.transport?.cleanup?.()
+      } catch (e) {
+        console.error('[AgentChatStore] Cleanup failed:', e)
+      }
     }
     chats.clear()
     parentChatIds.clear()

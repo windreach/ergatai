@@ -32,7 +32,6 @@ export function ResizeHandle({
         isResizing && "bg-muted-foreground/60",
         className,
       )}
-      style={{ touchAction: "none" }}
     />
   )
 }

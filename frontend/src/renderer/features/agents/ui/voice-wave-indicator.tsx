@@ -3,6 +3,14 @@
 import { memo, useEffect, useRef } from "react"
 import { cn } from "../../../lib/utils"
 
+// Module-level constants for wave visualization
+const BAR_CENTER_FACTORS = [0.45, 0.7, 1, 0.7, 0.45]
+const BAR_BASE_HEIGHT = 10
+const BAR_MAX_HEIGHT = 100
+const BAR_RANDOM_MIN = 0.9
+const BAR_RANDOM_RANGE = 0.2
+const BAR_RESET_HEIGHT = 15
+
 interface VoiceWaveIndicatorProps {
   isRecording: boolean
   audioLevel: number // 0-1 normalized audio level
@@ -18,13 +26,13 @@ export const VoiceWaveIndicator = memo(function VoiceWaveIndicator({
   audioLevel,
   className,
 }: VoiceWaveIndicatorProps) {
-  const barsRef = useRef<HTMLDivElement[]>([])
+  const barsRef = useRef<(HTMLDivElement | null)[]>([])
 
   useEffect(() => {
     if (!isRecording) {
       // Reset bar heights when not recording
       barsRef.current.forEach((bar) => {
-        if (bar) bar.style.height = "15%"
+        if (bar) bar.style.height = `${BAR_RESET_HEIGHT}%`
       })
       return
     }
@@ -35,16 +43,14 @@ export const VoiceWaveIndicator = memo(function VoiceWaveIndicator({
       if (!bar) return
 
       // Create wave pattern - center bars are taller, edges noticeably shorter
-      const centerFactor = [0.45, 0.7, 1, 0.7, 0.45][index] ?? 1
+      const centerFactor = BAR_CENTER_FACTORS[index] ?? 1
 
       // Add slight randomness for organic feel
-      const randomVariation = 0.9 + Math.random() * 0.2
+      const randomVariation = BAR_RANDOM_MIN + Math.random() * BAR_RANDOM_RANGE
 
-      // Calculate height: minimum 10%, scale up to 100% based on audio level
-      const baseHeight = 10
-      const maxHeight = 100
-      const levelHeight = audioLevel * (maxHeight - baseHeight) * centerFactor * randomVariation
-      const finalHeight = baseHeight + levelHeight
+      // Calculate height: minimum BAR_BASE_HEIGHT%, scale up to BAR_MAX_HEIGHT% based on audio level
+      const levelHeight = audioLevel * (BAR_MAX_HEIGHT - BAR_BASE_HEIGHT) * centerFactor * randomVariation
+      const finalHeight = BAR_BASE_HEIGHT + levelHeight
 
       bar.style.height = `${finalHeight}%`
     })
@@ -63,10 +69,14 @@ export const VoiceWaveIndicator = memo(function VoiceWaveIndicator({
         <div
           key={i}
           ref={(el) => {
-            if (el) barsRef.current[i] = el
+            if (el) {
+              barsRef.current[i] = el
+            } else {
+              barsRef.current[i] = null
+            }
           }}
           className="w-[3px] bg-foreground rounded-full transition-[height] duration-75 ease-out"
-          style={{ height: "15%" }}
+          style={{ height: `${BAR_RESET_HEIGHT}%` }}
         />
       ))}
     </div>

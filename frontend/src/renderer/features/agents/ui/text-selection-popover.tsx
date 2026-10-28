@@ -20,6 +20,14 @@ export function TextSelectionPopover({
   const [isVisible, setIsVisible] = useState(false)
   const [isMouseDown, setIsMouseDown] = useState(false)
   const popoverRef = useRef<HTMLDivElement>(null)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   const handleAddToContext = useCallback(() => {
     if (selectedText && source) {
@@ -28,7 +36,9 @@ export function TextSelectionPopover({
       setIsVisible(false)
       // Focus the chat input after adding to context
       requestAnimationFrame(() => {
-        onFocusInput?.()
+        if (mountedRef.current) {
+          onFocusInput?.()
+        }
       })
     }
   }, [selectedText, source, onAddToContext, clearSelection, onFocusInput])
@@ -60,12 +70,18 @@ export function TextSelectionPopover({
       setIsMouseDown(false)
     }
 
+    const handleBlur = () => {
+      setIsMouseDown(false)
+    }
+
     document.addEventListener("mousedown", handleMouseDown)
     document.addEventListener("mouseup", handleMouseUp)
+    window.addEventListener("blur", handleBlur)
 
     return () => {
       document.removeEventListener("mousedown", handleMouseDown)
       document.removeEventListener("mouseup", handleMouseUp)
+      window.removeEventListener("blur", handleBlur)
     }
   }, [])
 
@@ -85,20 +101,23 @@ export function TextSelectionPopover({
 
   // Calculate position - above the selection by default, below if not enough space
   const viewportWidth = window.innerWidth
-  const popoverWidth = 120
   const popoverHeight = 28
+  const popoverWidthEstimate = onQuickComment && (source.type === "diff" || source.type === "tool-edit") ? 160 : 100
   let left = selectionRect.left + selectionRect.width / 2
 
-  // Clamp left position to prevent overflow
-  left = Math.max(popoverWidth / 2 + 8, Math.min(left, viewportWidth - popoverWidth / 2 - 8))
+  // Clamp left position to prevent overflow, using the actual estimated width
+  left = Math.max(popoverWidthEstimate / 2 + 8, Math.min(left, viewportWidth - popoverWidthEstimate / 2 - 8))
 
   // Calculate actual left position accounting for centering
-  const popoverWidthEstimate = onQuickComment && (source.type === "diff" || source.type === "tool-edit") ? 160 : 100
   const centeredLeft = left - popoverWidthEstimate / 2
 
-  // Position above by default, below if not enough space above
+  // Position above by default, below if not enough space above.
+  // Guard: only place below if there's actually room below; otherwise stay above.
   const spaceAbove = selectionRect.top
-  const showAbove = spaceAbove > popoverHeight + 8
+  const spaceBelow = window.innerHeight - selectionRect.bottom
+  const canShowAbove = spaceAbove >= popoverHeight + 8
+  const canShowBelow = spaceBelow >= popoverHeight + 8
+  const showAbove = canShowAbove && (!canShowBelow || spaceAbove >= spaceBelow)
 
   const top = showAbove
     ? selectionRect.top - popoverHeight - 4

@@ -71,35 +71,39 @@ export function QuickCommentInput({
   }, [handleSubmit, onCancel])
 
   // Calculate position - below the selection by default, above if not enough space
+  const QUICK_COMMENT_WIDTH = 320
+  const QUICK_COMMENT_HEIGHT = 90
+  const MAX_PREVIEW_LENGTH = 60
+  const Z_INDEX_QUICK_COMMENT = 100001
+  const MIN_TOP_MARGIN = 8
+
   const viewportWidth = window.innerWidth
   const viewportHeight = window.innerHeight
-  const inputWidth = 320
-  const inputHeight = 90
 
   // Center horizontally on the selection
   let left = rect.left + rect.width / 2
-  left = Math.max(inputWidth / 2 + 16, Math.min(left, viewportWidth - inputWidth / 2 - 16))
-  const centeredLeft = left - inputWidth / 2
+  left = Math.max(QUICK_COMMENT_WIDTH / 2 + 16, Math.min(left, viewportWidth - QUICK_COMMENT_WIDTH / 2 - 16))
+  const centeredLeft = left - QUICK_COMMENT_WIDTH / 2
 
   // Position below by default, above if not enough space below
   const spaceBelow = viewportHeight - rect.bottom
-  const showBelow = spaceBelow > inputHeight + 8
+  const showBelow = spaceBelow > QUICK_COMMENT_HEIGHT + 8
 
-  const top = showBelow
+  const top = Math.max(MIN_TOP_MARGIN, showBelow
     ? rect.bottom + 4
-    : rect.top - inputHeight - 4
+    : rect.top - QUICK_COMMENT_HEIGHT - 4)
 
   const style: React.CSSProperties = {
     position: "fixed",
     top,
     left: centeredLeft,
-    width: inputWidth,
-    zIndex: 100001, // Above popover
+    width: QUICK_COMMENT_WIDTH,
+    zIndex: Z_INDEX_QUICK_COMMENT, // Above popover
   }
 
   // Create preview text
-  const preview = selectedText.length > 60
-    ? selectedText.slice(0, 60) + "..."
+  const preview = selectedText.length > MAX_PREVIEW_LENGTH
+    ? selectedText.slice(0, MAX_PREVIEW_LENGTH) + "..."
     : selectedText
 
   // Get source label

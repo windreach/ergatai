@@ -1084,11 +1084,10 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
           <div className="flex items-center gap-0.5">
             <CopyButton
               text={getMessageTextContent(message)}
-              isMobile={isMobile}
             />
           </div>
           <div className="flex items-center gap-0.5">
-            <AgentMessageUsage metadata={msgMetadata} isStreaming={isStreaming} isMobile={isMobile} />
+            <AgentMessageUsage metadata={msgMetadata} isStreaming={isStreaming} />
             {onFork && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>

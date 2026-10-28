@@ -8,6 +8,8 @@ interface Message {
   parts?: unknown[]
 }
 
+const EMPTY_FILE_CHANGES: ConversationFileChange[] = []
+
 /**
  * Tracks changed files from backend-persisted Edit/Write tool calls.
  * Streaming state is used to avoid querying intermediate messages that are not
@@ -37,7 +39,7 @@ export function useChangedFilesTracking(
   )
 
   const changedFiles: ConversationFileChange[] =
-    fileChangesQuery.data ?? conversationFiles.get(conversationId) ?? []
+    fileChangesQuery.data ?? conversationFiles.get(conversationId) ?? EMPTY_FILE_CHANGES
 
   useEffect(() => {
     setConversationFiles((previous) => {
@@ -54,22 +56,34 @@ export function useChangedFilesTracking(
       next.set(conversationId, chatId)
       return next
     })
-  }, [chatId, conversationId, conversationToChatMap, setConversationToChatMap])
+  }, [chatId, conversationId, setConversationToChatMap])
 
   const recomputeChangedFiles = useCallback(() => {
     if (!isStreaming) {
-      void fileChangesQuery.refetch()
+      fileChangesQuery.refetch().catch((error) => {
+        console.error('[useChangedFilesTracking] Failed to refetch file changes:', error)
+      })
     }
   }, [fileChangesQuery, isStreaming])
 
   useEffect(() => {
     if (!isStreaming && messages.length > 0) {
+      // Use setTimeout(…, 0) to defer refetch until after the current render cycle completes.
+      // This ensures that any pending message state updates are flushed before we query,
+      // avoiding race conditions where we might query stale data.
       const timer = window.setTimeout(() => {
-        void fileChangesQuery.refetch()
+        fileChangesQuery.refetch().catch((error) => {
+          console.error('[useChangedFilesTracking] Failed to refetch file changes after message update:', error)
+        })
       }, 0)
       return () => window.clearTimeout(timer)
     }
   }, [fileChangesQuery, isStreaming, messages.length])
 
-  return { changedFiles, recomputeChangedFiles }
+  return {
+    changedFiles,
+    recomputeChangedFiles,
+    isError: fileChangesQuery.isError,
+    error: fileChangesQuery.error,
+  }
 }

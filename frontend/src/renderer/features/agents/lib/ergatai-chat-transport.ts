@@ -11,13 +11,12 @@
  * Rust backend (ergatai-api) which routes to ACP agent processes.
  */
 
-import type { ChatTransport, UIMessage } from "ai"
+import type { ChatTransport, UIMessage, UIMessageChunk } from "ai"
 import { getOrCreateActiveAgent, fetchAgentModels } from "./ergatai-agent-manager"
 import { trpcClient } from "../../../lib/trpc"
 import { useAgentConversationStore } from "../stores/conversation-store"
 import { getRuntimeSessionStore } from "../../conversation/runtime/runtime-session-store"
-
-type UIMessageChunk = any
+import type { AgentOutputEvent } from "../../../../main/lib/ergatai/sse-client"
 
 // ── Rust backend event types (snake_case JSON) ──
 
@@ -33,32 +32,6 @@ type ToolCallEventData = {
   output?: unknown
   locations?: ToolCallLocation[]
 }
-
-type AgentOutputEvent =
-  | { type: "text"; delta: string }
-  | { type: "thinking"; delta: string }
-  | ({ type: "tool_call_start" } & ToolCallEventData)
-  | { type: "tool_call_input"; id: string; delta: string }
-  | ({ type: "tool_call_complete" } & ToolCallEventData)
-  | { type: "tool_call_error"; id: string; error: string }
-  | { type: "session_title_update"; title: string }
-  | { type: "subagent_spawned"; role?: string | null; subagent_session_id: string; name: string; task: string }
-  | { type: "subagent_state_update"; role?: string | null; subagent_session_id: string; state: string }
-  | {
-      type: "conversation_message"
-      message_id: string
-      role: string
-      message_type?: string | null
-      content: string
-      parts?: unknown
-      metadata?: unknown
-      timestamp_ms: number
-      sender_agent_id?: string | null
-      sender_agent_name?: string | null
-    }
-  | { type: "done"; stop_reason: string }
-  | { type: "turn_started"; role?: string | null }
-  | { type: "error"; message: string }
 
 type ErgataiChatTransportConfig = {
   chatId: string
@@ -88,6 +61,19 @@ type FileAttachment = {
   filename: string
   size?: number
 }
+
+// ── sendMessage response shape (from Rust /api/v1/agents/:id/send) ──
+type SendMessageResult = {
+  status: "queued" | "direct_delivered" | "rejected"
+  target_agent_id?: string
+  session_id?: string
+  sequence?: number
+  reused?: boolean
+  spawned?: boolean
+  reason?: string
+}
+
+
 
 type Unsubscribable = {
   unsubscribe(): void
@@ -213,6 +199,27 @@ function transformEvent(
   }
 }
 
+// ── Safe metadata extraction ──
+// Typed metadata shape used for interrupt/correlation signals. Using `unknown`
+// plus explicit checks avoids `as any` casts that bypass runtime validation.
+type ErgataiMessageMetadata = {
+  interrupt?: unknown
+  correlationId?: unknown
+  [key: string]: unknown
+}
+
+/**
+ * Safely extract metadata from a UIMessage. Returns `undefined` if the
+ * message has no metadata or if the metadata is not a plain object.
+ * This replaces unsafe `as any` casts with runtime validation.
+ */
+function extractMessageMetadata(message: UIMessage | undefined): ErgataiMessageMetadata | undefined {
+  const raw = message?.metadata
+  if (raw === null || raw === undefined) return undefined
+  if (typeof raw !== "object") return undefined
+  return raw as ErgataiMessageMetadata
+}
+
 export class ErgataiChatTransport implements ChatTransport<UIMessage> {
   // Static cache to prevent concurrent conversation creation for the same chat
   private static conversationCreationPromises = new Map<string, Promise<string>>()
@@ -233,13 +240,14 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
     const files = this.extractFiles(lastUser)
 
     // Phase 19: Extract interrupt flag and correlationId from message metadata
-    const interrupt = (lastUser as any)?.metadata?.interrupt ?? false
-    const messageCorrelationId = (lastUser as any)?.metadata?.correlationId
+    // Use a typed helper to avoid unsafe `as any` casts that bypass runtime validation.
+    const metadata = extractMessageMetadata(lastUser)
+    const interrupt = metadata?.interrupt === true
+    const messageCorrelationId =
+      typeof metadata?.correlationId === "string" ? metadata.correlationId : undefined
 
-    // Update config.correlationId if provided in message metadata (for interrupt queue matching)
-    if (messageCorrelationId) {
-      this.config.correlationId = messageCorrelationId
-    }
+    // Use local variable to prevent mutation leaking across calls (HIGH severity bug fix)
+    let effectiveCorrelationId = messageCorrelationId || this.config.correlationId
 
     if (!prompt && images.length === 0 && files.length === 0) {
       throw new Error("No prompt, images, or files found in last user message")
@@ -300,18 +308,18 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
         void (async () => {
           try {
             // Resolve agentId — use config value, or dynamically get/create one
-            let { agentId } = this.config
-            if (!agentId) {
-              agentId = await getOrCreateActiveAgent(
+            // Use local variables to avoid mutating shared this.config (race condition fix)
+            let effectiveAgentId = this.config.agentId
+            let effectiveConversationId = this.config.conversationId
+            if (!effectiveAgentId) {
+              effectiveAgentId = await getOrCreateActiveAgent(
                 this.config.chatId,
                 this.config.command,
-                this.config.conversationId
+                effectiveConversationId
               )
-              // Update config for subsequent calls and abort handling.
-              this.config.agentId = agentId
             }
 
-            if (!agentId) {
+            if (!effectiveAgentId) {
               throw new Error("Agent ID is not available — cannot send message")
             }
 
@@ -319,7 +327,11 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
             // 1. PRIMARY: ACP config_options (standard protocol approach)
             // 2. FALLBACK: Spawn temporary agent and execute /model command (for agents that don't support config_options)
             // Models are written to the Jotai atom asynchronously; UI updates when ready.
-            fetchAgentModels(agentId, this.config.command, undefined, this.config.conversationId)
+            // Fire-and-forget with error handling to prevent uncaught Promise rejections
+            fetchAgentModels(effectiveAgentId, this.config.command, undefined, effectiveConversationId)
+              .catch((err) => {
+                console.warn("[ErgataiChatTransport] Failed to fetch agent models:", err)
+              })
 
             // Determine message payload based on message type
             let promptId: string | null = null
@@ -327,7 +339,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
 
             // Lazily create conversation on first message
             // This follows the principle: "create less, reuse more"
-            if (!this.config.conversationId) {
+            if (!effectiveConversationId) {
               console.log("[ErgataiChatTransport] Lazily creating conversation for chat:", this.config.chatId)
 
               // Check if there's already a creation in progress for this chat
@@ -336,41 +348,43 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               if (existingPromise) {
                 // Wait for the in-progress creation to complete
                 console.log("[ErgataiChatTransport] Waiting for ongoing conversation creation")
-                this.config.conversationId = await existingPromise
-                console.log("[ErgataiChatTransport] Reusing conversation from ongoing creation:", this.config.conversationId)
+                effectiveConversationId = await existingPromise
+                console.log("[ErgataiChatTransport] Reusing conversation from ongoing creation:", effectiveConversationId)
               } else {
-                // Check if conversation already exists for this chat
-                const conversations = await trpcClient.ergatai.listConversations.query({
-                  chatId: this.config.chatId,
-                })
+                // Create conversation with concurrency control
+                // The list-and-create sequence is now inside the promise to serialize it per chatId (TOCTOU fix)
+                const creationPromise = (async () => {
+                  try {
+                    // Check if conversation already exists for this chat (inside promise for serialization)
+                    const conversations = await trpcClient.ergatai.listConversations.query({
+                      chatId: this.config.chatId,
+                    })
 
-                if (conversations.length > 0) {
-                  // Reuse existing conversation
-                  this.config.conversationId = conversations[0].id
-                  console.log("[ErgataiChatTransport] Reusing conversation:", this.config.conversationId)
-                } else {
-                  // Create new conversation with concurrency control
-                  const creationPromise = (async () => {
-                    try {
-                      const conversation = await trpcClient.ergatai.createConversation.mutate({
-                        chatId: this.config.chatId,
-                        title: prompt?.slice(0, 50) || "New Conversation",
-                        mode: this.config.mode,
-                      })
-                      return conversation.id
-                    } finally {
-                      // Clean up the promise cache after completion
-                      ErgataiChatTransport.conversationCreationPromises.delete(this.config.chatId)
+                    if (conversations.length > 0) {
+                      // Reuse existing conversation
+                      console.log("[ErgataiChatTransport] Reusing conversation:", conversations[0].id)
+                      return conversations[0].id
                     }
-                  })()
 
-                  // Store the promise in cache
-                  ErgataiChatTransport.conversationCreationPromises.set(this.config.chatId, creationPromise)
+                    // Create new conversation
+                    const conversation = await trpcClient.ergatai.createConversation.mutate({
+                      chatId: this.config.chatId,
+                      title: prompt?.slice(0, 50) || "New Conversation",
+                      mode: this.config.mode,
+                    })
+                    return conversation.id
+                  } finally {
+                    // Clean up the promise cache after completion
+                    ErgataiChatTransport.conversationCreationPromises.delete(this.config.chatId)
+                  }
+                })()
 
-                  // Wait for creation to complete
-                  this.config.conversationId = await creationPromise
-                  console.log("[ErgataiChatTransport] Created conversation:", this.config.conversationId)
-                }
+                // Store the promise in cache
+                ErgataiChatTransport.conversationCreationPromises.set(this.config.chatId, creationPromise)
+
+                // Wait for creation to complete
+                effectiveConversationId = await creationPromise
+                console.log("[ErgataiChatTransport] Created conversation:", effectiveConversationId)
               }
             }
 
@@ -379,26 +393,26 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               // Generate clientRequestId for optimistic → durable replacement
               const clientRequestId = crypto.randomUUID()
               const result = await trpcClient.ergatai.sendMessage.mutate({
-                agentId,
+                agentId: effectiveAgentId,
                 message: prompt,
                 from: this.config.fromAgentId,
                 messageType: "request",
                 targetAgentCommand: this.config.targetAgentCommand,
                 forceNewSession: this.config.forceNewSession,
-                correlationId: this.config.correlationId,
-                conversationId: this.config.conversationId,
+                correlationId: effectiveCorrelationId,
+                conversationId: effectiveConversationId,
                 clientRequestId,
               })
-              // Try to extract prompt_id from response if available
-              promptId = (result as any)?.prompt_id ?? (result as any)?.stream ?? null
+              // sendMessage returns status + session_id; no prompt_id for agent-to-agent path
+              promptId = (result as SendMessageResult | null)?.session_id ?? null
             } else {
               // Generate clientRequestId for optimistic → durable replacement
-              // Use config.correlationId if provided (for interrupt queue matching), otherwise generate new
-              const clientRequestId = this.config.correlationId ?? crypto.randomUUID()
+              // Use effectiveCorrelationId if provided (for interrupt queue matching), otherwise generate new
+              const clientRequestId = effectiveCorrelationId ?? crypto.randomUUID()
               const promptResult = await trpcClient.ergatai.promptAgent.mutate({
-                agentId,
+                agentId: effectiveAgentId,
                 message: prompt,
-                conversationId: this.config.conversationId,
+                conversationId: effectiveConversationId,
                 images: images.map((image) => ({
                   base64Data: image.base64Data,
                   mediaType: image.mediaType,
@@ -415,25 +429,17 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                 interrupt,  // Phase 19: Pass interrupt flag to backend
               })
               promptId = promptResult.prompt_id
-
-              // Phase 19: Store clientRequestId in last message metadata for queue matching
-              if (interrupt && lastUser) {
-                ;(lastUser as any).metadata = {
-                  ...(lastUser as any).metadata,
-                  clientRequestId,
-                }
-              }
             }
 
             console.log("[ErgataiChatTransport] Subscribing to agent stream", {
-              agentId,
+              agentId: effectiveAgentId,
               promptId,
-              conversationId: this.config.conversationId,
+              conversationId: effectiveConversationId,
             })
 
             subscription = trpcClient.ergatai.subscribeAgentStream.subscribe(
               {
-                agentId,
+                agentId: effectiveAgentId,
                 promptId: promptId ?? undefined,
               },
               {
@@ -447,7 +453,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                     // Notify TurnOrchestrator to remove the message from queue
                     // The message has been successfully inserted at a safe point
                     const sessionStore = getRuntimeSessionStore()
-                    const conversationId = this.config.conversationId
+                    const conversationId = effectiveConversationId
 
                     // Find and remove the queue item by clientRequestId
                     // Store clientRequestId in queue item's transportOverrides for matching
@@ -497,13 +503,13 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                       // Update conversation title in backend only when it changes
                       trpcClient.ergatai.updateConversation
                         .mutate({
-                          conversationId: this.config.conversationId,
+                          conversationId: effectiveConversationId,
                           title: event.title,
                         })
                         .then(() => {
                           // Also update in-memory store so UI reflects the change immediately
                           useAgentConversationStore.getState().updateConversationName(
-                            this.config.conversationId,
+                            effectiveConversationId,
                             event.title
                           )
                         })

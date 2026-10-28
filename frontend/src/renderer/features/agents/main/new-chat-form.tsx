@@ -24,6 +24,7 @@ import {
   TooltipTrigger,
 } from "../../../components/ui/tooltip"
 import { cn } from "../../../lib/utils"
+import { conversationAgentStorage } from "../lib/conversation-agent-storage"
 import {
   agentsDebugModeAtom,
   chatAgentLogosAtom,
@@ -34,7 +35,6 @@ import {
   lastSelectedCodexThinkingAtom,
   lastSelectedBranchesAtom,
   lastSelectedModelIdAtom,
-  lastSelectedRepoAtom,
   lastSelectedWorkModeAtom,
   selectedAgentChatIdAtom,
   selectedDraftIdAtom,
@@ -147,7 +147,6 @@ import {
   type DraftProject,
 } from "../lib/drafts"
 import {
-  CLAUDE_MODELS,
   CODEX_MODELS,
   type CodexThinkingLevel,
 } from "../lib/models"
@@ -300,7 +299,6 @@ export function NewChatForm({
 
   // Check if any chat has unseen changes
   const hasAnyUnseenChanges = unseenChanges.size > 0
-  const [lastSelectedRepo, setLastSelectedRepo] = useAtom(lastSelectedRepoAtom)
   const [selectedWorkspace, setSelectedWorkspace] = useAtom(selectedWorkspaceAtom)
   // Fetch projects to validate selectedWorkspace exists
   const { data: projectsList, isLoading: isLoadingProjects } =
@@ -416,7 +414,6 @@ export function NewChatForm({
   const setSettingsDialogOpen = useSetAtom(agentsSettingsDialogOpenAtom)
   const setSettingsActiveTab = useSetAtom(agentsSettingsDialogActiveTabAtom)
   const setJustCreatedIds = useSetAtom(justCreatedIdsAtom)
-  const [repoSearchQuery, setRepoSearchQuery] = useState("")
   const [createBranchDialogOpen, setCreateBranchDialogOpen] = useState(false)
 
   // Worktree config banner state
@@ -872,72 +869,6 @@ export function NewChatForm({
   // Keyboard shortcut: Cmd+Esc to toggle focus/blur
   useToggleFocusOnCmdEsc(editorRef)
 
-  const repos: Array<{
-    id: string
-    name: string
-    full_name: string
-    sandbox_status?: string
-    pushed_at?: string | null
-  }> = []
-  const readyRepos = repos
-
-  // Use state to avoid hydration mismatch
-  const [resolvedRepo, setResolvedRepo] = useState<(typeof repos)[0] | null>(
-    null,
-  )
-
-  // Derive selected repo from saved or first available (client-side only)
-  // Now includes all repos, not just ready ones
-  useEffect(() => {
-    if (lastSelectedRepo) {
-      // For public imports, use lastSelectedRepo directly (it won't be in repos list)
-      if (lastSelectedRepo.isPublicImport) {
-        setResolvedRepo({
-          id: lastSelectedRepo.id,
-          name: lastSelectedRepo.name,
-          full_name: lastSelectedRepo.full_name,
-          sandbox_status: lastSelectedRepo.sandbox_status || "not_setup",
-        } as (typeof repos)[0])
-        return
-      }
-
-      // Look in all repos by id or full_name
-      // Only compare IDs when lastSelectedRepo.id is non-empty (old localStorage data might have empty id)
-      const stillExists = repos.find(
-        (r) =>
-          (lastSelectedRepo.id && r.id === lastSelectedRepo.id) ||
-          r.full_name === lastSelectedRepo.full_name,
-      )
-      if (stillExists) {
-        setResolvedRepo(stillExists)
-        return
-      }
-    }
-
-    if (repos.length === 0) {
-      setResolvedRepo(null)
-      return
-    }
-
-    // Auto-save first repo if none saved (prefer ready repos, then any)
-    if (!lastSelectedRepo && repos.length > 0) {
-      const firstRepo = readyRepos[0] || repos[0]
-      setLastSelectedRepo({
-        id: firstRepo.id,
-        name: firstRepo.name,
-        full_name: firstRepo.full_name,
-        sandbox_status: firstRepo.sandbox_status as
-          | "ready"
-          | "not_setup"
-          | "in_progress"
-          | "error"
-          | undefined,
-      })
-    }
-
-    setResolvedRepo(readyRepos[0] || repos[0] || null)
-  }, [lastSelectedRepo, repos, readyRepos, setLastSelectedRepo])
-
   // Desktop: fetch branches from local git repository
   const branchesQuery = trpc.changes.getBranches.useQuery(
     { worktreePath: validatedProject?.path || "" },
@@ -1157,26 +1088,6 @@ export function NewChatForm({
     }
   }, [])
 
-  // Filter all repos by search (combined list) and sort by preview status
-  const filteredRepos = repos
-    .filter(
-      (repo) =>
-        repo.name.toLowerCase().includes(repoSearchQuery.toLowerCase()) ||
-        repo.full_name.toLowerCase().includes(repoSearchQuery.toLowerCase()),
-    )
-    .sort((a, b) => {
-      // 1. Repos with preview (sandbox_status === "ready") come first
-      const aHasPreview = a.sandbox_status === "ready"
-      const bHasPreview = b.sandbox_status === "ready"
-      if (aHasPreview && !bHasPreview) return -1
-      if (!aHasPreview && bHasPreview) return 1
-
-      // 2. Sort by last commit date (pushed_at) - most recent first
-      const aDate = a.pushed_at ? new Date(a.pushed_at).getTime() : 0
-      const bDate = b.pushed_at ? new Date(b.pushed_at).getTime() : 0
-      return bDate - aDate
-    })
-
   // Create chat mutation (real tRPC)
   const utils = trpc.useUtils()
   const createChatMutation = trpc.chats.create.useMutation({
@@ -1184,10 +1095,7 @@ export function NewChatForm({
       // Save the selected agent command for the first conversation
       const firstConversationId = data.conversations?.[0]?.id
       if (firstConversationId && variables.agentCommand) {
-        // Import dynamically to avoid circular dependency
-        import("../lib/conversation-agent-storage").then(({ conversationAgentStorage }) => {
-          conversationAgentStorage.set(firstConversationId, variables.agentCommand!)
-        })
+        conversationAgentStorage.set(firstConversationId, variables.agentCommand!)
       }
 
       if (collaborationMode === "group") {
@@ -1212,18 +1120,10 @@ export function NewChatForm({
         utils.chats.get.invalidate({ id: data.id })
       }
       void utils.ergatai.workspaceStatus.invalidate()
-      if (collaborationMode !== "group") {
-        setChatAgentLogos((current) => ({
-          ...current,
-          [data.id]: chatAgentLogos,
-        }))
-      }
-      else {
-        setChatAgentLogos((current) => ({
-          ...current,
-          [data.id]: chatAgentLogos,
-        }))
-      }
+      setChatAgentLogos((current) => ({
+        ...current,
+        [data.id]: chatAgentLogos,
+      }))
       // Clear editor, images, files, pasted texts, and file contents cache only on success
       editorRef.current?.clear()
       clearImages()
@@ -1358,9 +1258,7 @@ export function NewChatForm({
     // Editor, images, files, and pasted texts are cleared in onSuccess callback
   }, [
     selectedWorkspace,
-    validatedProject?.path,
     createChatMutation,
-    hasContent,
     selectedBranch,
     selectedBranchType,
     workMode,
@@ -1601,24 +1499,6 @@ export function NewChatForm({
       // Detect directories — dropped folders become a single folder mention
       // chip (like file chips but with a folder icon).
       const items = Array.from(e.dataTransfer.items)
-      const rawFiles = Array.from(e.dataTransfer.files)
-      const droppedFiles: File[] = []
-      const droppedFolderPaths: string[] = []
-      const localProjectPath = validatedProject?.path
-
-      for (let i = 0; i < items.length; i++) {
-        const entry = items[i]?.webkitGetAsEntry?.()
-        const file = rawFiles[i]
-        if (entry?.isDirectory && file) {
-          const path =
-            window.webUtils?.getPathForFile?.(file) ||
-            (file as File & { path?: string }).path ||
-            entry.name
-          droppedFolderPaths.push(path)
-        } else if (file) {
-          droppedFiles.push(file)
-        }
-      }
 
       // Helper function to recursively read all files from a directory entry
       const readDirectoryFiles = (entry: FileSystemDirectoryEntry): Promise<File[]> => {
@@ -1628,30 +1508,34 @@ export function NewChatForm({
 
           const readEntries = () => {
             reader.readEntries(async (entries) => {
-              if (entries.length === 0) {
-                resolve(files)
-                return
-              }
-
-              for (const ent of entries) {
-                if (ent.isFile) {
-                  const fileEntry = ent as FileSystemFileEntry
-                  try {
-                    const file = await new Promise<File>((res, rej) => {
-                      fileEntry.file(res, rej)
-                    })
-                    files.push(file)
-                  } catch (err) {
-                    console.error(`[handleDrop] Failed to read file:`, err)
-                  }
-                } else if (ent.isDirectory) {
-                  const subFiles = await readDirectoryFiles(ent as FileSystemDirectoryEntry)
-                  files.push(...subFiles)
+              try {
+                if (entries.length === 0) {
+                  resolve(files)
+                  return
                 }
-              }
 
-              // Continue reading (readEntries returns up to 100 entries at a time)
-              readEntries()
+                for (const ent of entries) {
+                  if (ent.isFile) {
+                    const fileEntry = ent as FileSystemFileEntry
+                    try {
+                      const file = await new Promise<File>((res, rej) => {
+                        fileEntry.file(res, rej)
+                      })
+                      files.push(file)
+                    } catch (err) {
+                      console.error(`[handleDrop] Failed to read file:`, err)
+                    }
+                  } else if (ent.isDirectory) {
+                    const subFiles = await readDirectoryFiles(ent as FileSystemDirectoryEntry)
+                    files.push(...subFiles)
+                  }
+                }
+
+                // Continue reading (readEntries returns up to 100 entries at a time)
+                readEntries()
+              } catch (err) {
+                reject(err)
+              }
             }, reject)
           }
 
@@ -1796,22 +1680,17 @@ export function NewChatForm({
         {files.map((f) => (
           <AgentFileItem
             key={f.id}
-            id={f.id}
             filename={f.filename}
-            url={f.url || ""}
             size={f.size}
             isLoading={f.isLoading}
             onRemove={() => removeFile(f.id)}
             isFolder={f.isFolder}
-            folderFiles={f.folderFiles}
+            fileCount={f.folderFiles?.length}
           />
         ))}
         {pastedTexts.map((pt) => (
           <AgentPastedTextItem
             key={pt.id}
-            filePath={pt.filePath}
-            filename={pt.filename}
-            size={pt.size}
             preview={pt.preview}
             onRemove={() => removePastedText(pt.id)}
           />
@@ -2055,7 +1934,7 @@ export function NewChatForm({
                               variant="ghost"
                               size="icon"
                               className="h-7 w-7 rounded-sm outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70"
-                              disabled={images.length >= 5 && files.length >= 10}
+                              disabled={images.length >= 5 || files.length >= 10}
                             >
                               <AttachIcon className="h-4 w-4" />
                             </Button>

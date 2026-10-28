@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { createPortal } from "react-dom"
 import { X, ImageOff, ChevronLeft, ChevronRight, Copy, Download } from "lucide-react"
 import { IconSpinner } from "../../../components/ui/icons"
@@ -43,9 +43,16 @@ export function AgentImageItem({
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [currentIndex, setCurrentIndex] = useState(imageIndex)
   const [isContextMenuOpen, setIsContextMenuOpen] = useState(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const fullscreenDialogRef = useRef<HTMLDivElement>(null)
 
-  // Use allImages if provided, otherwise create single-image array
-  const images = allImages || [{ id, filename, url }]
+  // Sync currentIndex when imageIndex prop changes
+  useEffect(() => {
+    setCurrentIndex(imageIndex)
+  }, [imageIndex])
+
+  // Use allImages if provided, otherwise create stable single-image array
+  const images = allImages || useMemo(() => [{ id, filename, url }], [id, filename, url])
   const hasMultipleImages = images.length > 1
   const currentImage = images[currentIndex] || images[0]
 
@@ -73,24 +80,30 @@ export function AgentImageItem({
     setCurrentIndex((prev) => (prev < images.length - 1 ? prev + 1 : 0))
   }, [images.length])
 
+  // Helper to load image into canvas
+  const loadImageToCanvas = async (imageUrl: string): Promise<HTMLCanvasElement> => {
+    const img = new Image()
+    img.crossOrigin = "anonymous"
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve()
+      img.onerror = reject
+      img.src = imageUrl
+    })
+
+    const canvas = document.createElement("canvas")
+    canvas.width = img.naturalWidth
+    canvas.height = img.naturalHeight
+    const ctx = canvas.getContext("2d")
+    ctx?.drawImage(img, 0, 0)
+    return canvas
+  }
+
   const handleCopyImage = useCallback(async () => {
     try {
       const imgUrl = (images[currentIndex] || images[0])?.url
       if (!imgUrl) return
 
-      const img = new Image()
-      img.crossOrigin = "anonymous"
-      await new Promise<void>((resolve, reject) => {
-        img.onload = () => resolve()
-        img.onerror = reject
-        img.src = imgUrl
-      })
-
-      const canvas = document.createElement("canvas")
-      canvas.width = img.naturalWidth
-      canvas.height = img.naturalHeight
-      const ctx = canvas.getContext("2d")
-      ctx?.drawImage(img, 0, 0)
+      const canvas = await loadImageToCanvas(imgUrl)
 
       const blob = await new Promise<Blob>((resolve, reject) => {
         canvas.toBlob(
@@ -101,8 +114,11 @@ export function AgentImageItem({
       await navigator.clipboard.write([
         new ClipboardItem({ "image/png": blob }),
       ])
+      setErrorMessage(null)
     } catch (err) {
       console.error("[AgentImageItem] Failed to copy image:", err)
+      setErrorMessage("Failed to copy image to clipboard")
+      setTimeout(() => setErrorMessage(null), 3000)
     }
   }, [images, currentIndex])
 
@@ -112,34 +128,25 @@ export function AgentImageItem({
       if (!image?.url) return
 
       // Use canvas to extract image data (avoids CSP issues with blob: URLs)
-      const img = new Image()
-      img.crossOrigin = "anonymous"
-      await new Promise<void>((resolve, reject) => {
-        img.onload = () => resolve()
-        img.onerror = reject
-        img.src = image.url
-      })
-
-      const canvas = document.createElement("canvas")
-      canvas.width = img.naturalWidth
-      canvas.height = img.naturalHeight
-      const ctx = canvas.getContext("2d")
-      ctx?.drawImage(img, 0, 0)
+      const canvas = await loadImageToCanvas(image.url)
 
       const dataUrl = canvas.toDataURL("image/png")
       const base64Data = dataUrl.split(",")[1] || ""
-      const filename = image.filename || "image.png"
+      const saveFilename = image.filename || "image.png"
 
       await window.desktopApi?.saveFile({
         base64Data,
-        filename,
+        filename: saveFilename,
         filters: [
           { name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif"] },
           { name: "All Files", extensions: ["*"] },
         ],
       })
+      setErrorMessage(null)
     } catch (err) {
       console.error("[AgentImageItem] Failed to save image:", err)
+      setErrorMessage("Failed to save image")
+      setTimeout(() => setErrorMessage(null), 3000)
     }
   }, [images, currentIndex])
 
@@ -148,6 +155,11 @@ export function AgentImageItem({
     if (!isFullscreen) return
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Skip handling when target is input/textarea to avoid interfering with text editing
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return
+      }
+
       switch (e.key) {
         case "Escape":
           e.preventDefault()
@@ -167,6 +179,40 @@ export function AgentImageItem({
     window.addEventListener("keydown", handleKeyDown, true)
     return () => window.removeEventListener("keydown", handleKeyDown, true)
   }, [isFullscreen, hasMultipleImages, closeFullscreen, goToPrevious, goToNext])
+
+  // Focus trap in fullscreen dialog
+  useEffect(() => {
+    if (!isFullscreen || !fullscreenDialogRef.current) return
+
+    const dialog = fullscreenDialogRef.current
+    const focusableElements = dialog.querySelectorAll(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    )
+    const firstFocusable = focusableElements[0] as HTMLElement
+    const lastFocusable = focusableElements[focusableElements.length - 1] as HTMLElement
+
+    // Focus the first focusable element when dialog opens
+    firstFocusable?.focus()
+
+    const handleTabKey = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return
+
+      if (e.shiftKey) {
+        if (document.activeElement === firstFocusable) {
+          e.preventDefault()
+          lastFocusable?.focus()
+        }
+      } else {
+        if (document.activeElement === lastFocusable) {
+          e.preventDefault()
+          firstFocusable?.focus()
+        }
+      }
+    }
+
+    dialog.addEventListener("keydown", handleTabKey)
+    return () => dialog.removeEventListener("keydown", handleTabKey)
+  }, [isFullscreen])
 
   return (
     <>
@@ -217,11 +263,19 @@ export function AgentImageItem({
       {/* Fullscreen overlay with gallery navigation - rendered via portal to escape stacking context */}
       {isFullscreen && currentImage?.url && createPortal(
         <div
+          ref={fullscreenDialogRef}
           role="dialog"
           aria-modal="true"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/90"
           onClick={() => { if (!isContextMenuOpen) closeFullscreen() }}
         >
+          {/* Error message toast */}
+          {errorMessage && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-md bg-destructive text-destructive-foreground text-sm shadow-lg z-20">
+              {errorMessage}
+            </div>
+          )}
+
           {/* Close button */}
           <button
             onClick={closeFullscreen}

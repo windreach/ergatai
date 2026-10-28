@@ -108,3 +108,18 @@ frontend/.codebase-memory/
 # Playwright test artifacts
 test-results/.last-run.json
 user_data.db
+
+# Local-only build scripts (machine-specific swap/cgroup setup)
+scripts/build.sh
+
+# E2E screenshot test scripts (local testing only)
+frontend/e2e-tests/scripts/
+
+# E2E test result screenshots
+frontend/e2e-tests/test-results/
+
+# Local documentation (generated during development)
+frontend/FRONTEND_FIXES_SUMMARY.md
+frontend/STREAM_RESUMPTION_TESTS.md
+frontend/TEST_QUALITY_IMPROVEMENT.md
+frontend/UI_COMPONENT_TESTS.md

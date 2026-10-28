@@ -76,8 +76,9 @@ export const highlightRangesAtomFamily = atomFamily(
       const matches = get(chatSearchMatchesAtom)
       const currentMatch = get(chatSearchCurrentMatchAtom)
 
-      // Parse key
-      const [messageId, partIndexStr, partType] = key.split(":")
+      // Parse key - use limited split to handle partType containing colons
+      const [messageId, partIndexStr, ...rest] = key.split(":")
+      const partType = rest.join(":")
       const partIndex = parseInt(partIndexStr, 10)
 
       // Filter matches for this message/part

@@ -1,4 +1,4 @@
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 
 interface PendingAuthRetryMessage {
   conversationId: string
@@ -12,12 +12,27 @@ interface PendingAuthRetryMessage {
   readyToRetry: boolean
 }
 
+interface ImageData {
+  base64Data: string
+  mediaType: string
+  filename?: string
+}
+
+interface MessageParts {
+  role: "user" | "agent"
+  parts: Array<{
+    type: "text" | "data-image"
+    text?: string
+    data?: ImageData
+  }>
+}
+
 interface UsePendingAuthRetryProps {
   pendingAuthRetry: PendingAuthRetryMessage | null
   conversationId: string
-  provider: string
+  provider: "claude-code" | "codex"
   isStreaming: boolean
-  sendMessage: (message: any) => void
+  sendMessage: (message: MessageParts) => void | Promise<void>
   setPendingAuthRetry: (val: PendingAuthRetryMessage | null) => void
 }
 
@@ -32,26 +47,32 @@ export function usePendingAuthRetry({
   sendMessage,
   setPendingAuthRetry,
 }: UsePendingAuthRetryProps) {
+  // Ref to prevent re-entry during async send (race condition guard)
+  const isRetryingRef = useRef(false)
+
   useEffect(() => {
     // Only retry when:
     // 1. There's a pending message
     // 2. readyToRetry is true (set by modal on OAuth success)
     // 3. We're in the correct chat
     // 4. Not currently streaming
+    // 5. Not already retrying (race condition guard)
     if (
       pendingAuthRetry &&
       pendingAuthRetry.readyToRetry &&
       pendingAuthRetry.conversationId === conversationId &&
       pendingAuthRetry.provider === provider &&
-      !isStreaming
+      !isStreaming &&
+      !isRetryingRef.current
     ) {
+      // Set retrying flag to prevent re-entry
+      isRetryingRef.current = true
+
       // Clear the pending message immediately to prevent double-sending
       setPendingAuthRetry(null)
 
       // Build message parts
-      const parts: Array<
-        { type: "text"; text: string } | { type: "data-image"; data: any }
-      > = [{ type: "text", text: pendingAuthRetry.prompt }]
+      const parts: MessageParts["parts"] = [{ type: "text", text: pendingAuthRetry.prompt }]
 
       // Add images if present
       if (pendingAuthRetry.images && pendingAuthRetry.images.length > 0) {
@@ -67,11 +88,22 @@ export function usePendingAuthRetry({
         }
       }
 
-      // Send the message to Claude
-      sendMessage({
-        role: "user",
-        parts,
-      })
+      // Send the message to Claude with proper error handling
+      ;(async () => {
+        try {
+          await sendMessage({
+            role: "user",
+            parts,
+          })
+        } catch (error) {
+          // Restore the pending retry so the user can try again
+          setPendingAuthRetry(pendingAuthRetry)
+          console.error("Failed to retry pending message after auth:", error)
+        } finally {
+          // Clear the retrying flag
+          isRetryingRef.current = false
+        }
+      })()
     }
   }, [
     pendingAuthRetry,

@@ -24,38 +24,42 @@ export function ScaleControl({
 }: ScaleControlProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [inputValue, setInputValue] = useState(String(value))
+  const [isDirty, setIsDirty] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // Sync input value when value prop changes
+  // Helper to validate scale value
+  const isValidScale = (num: number): boolean => {
+    return !isNaN(num) &&
+      num >= AGENTS_PREVIEW_CONSTANTS.MIN_SCALE &&
+      num <= AGENTS_PREVIEW_CONSTANTS.MAX_SCALE
+  }
+
+  // Sync input value when value prop changes (only on mount or when not being edited)
   useEffect(() => {
-    setInputValue(String(value))
-  }, [value])
+    if (!isDirty) {
+      setInputValue(String(value))
+    }
+  }, [value, isDirty])
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const raw = e.target.value.replace(/[^0-9]/g, "")
     setInputValue(raw)
+    setIsDirty(true)
     const num = parseInt(raw)
-    if (
-      !isNaN(num) &&
-      num >= AGENTS_PREVIEW_CONSTANTS.MIN_SCALE &&
-      num <= AGENTS_PREVIEW_CONSTANTS.MAX_SCALE
-    ) {
+    if (isValidScale(num)) {
       onChange(num)
     }
   }
 
   const handleCommit = () => {
     const num = parseInt(inputValue)
-    if (
-      !isNaN(num) &&
-      num >= AGENTS_PREVIEW_CONSTANTS.MIN_SCALE &&
-      num <= AGENTS_PREVIEW_CONSTANTS.MAX_SCALE
-    ) {
+    if (isValidScale(num)) {
       onChange(num)
       setInputValue(String(num))
     } else {
       setInputValue(String(value))
     }
+    setIsDirty(false)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -77,8 +81,8 @@ export function ScaleControl({
       onOpenChange={(open) => {
         if (!open) {
           handleCommit()
-          setIsOpen(false)
         }
+        setIsOpen(open)
       }}
     >
       <PopoverAnchor asChild>

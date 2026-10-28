@@ -16,33 +16,79 @@ export function MessageGroup({ children, isLastGroup }: MessageGroupProps) {
     const groupEl = groupRef.current
     if (!groupEl) return
 
-    // Find the actual bubble element (not the wrapper which includes gradient)
-    const bubbleEl = groupEl.querySelector('[data-user-bubble]') as HTMLDivElement | null
-    if (!bubbleEl) return
+    let observer: ResizeObserver | null = null
+    let currentBubbleEl: HTMLDivElement | null = null
 
-    const updateHeight = () => {
-      groupEl.style.setProperty('--user-message-height', `${bubbleEl.offsetHeight}px`)
+    const setupResizeObserver = () => {
+      // Disconnect previous observer if any
+      if (observer) {
+        observer.disconnect()
+        observer = null
+      }
+
+      // Find the actual bubble element (not the wrapper which includes gradient)
+      const bubbleEl = groupEl.querySelector(
+        "[data-user-bubble]"
+      ) as HTMLDivElement | null
+
+      if (!bubbleEl) {
+        if (process.env.NODE_ENV === "development") {
+          console.warn(
+            "MessageGroup: no [data-user-bubble] element found in children. Sticky todo positioning will not work."
+          )
+        }
+        return
+      }
+
+      currentBubbleEl = bubbleEl
+
+      const updateHeight = () => {
+        groupEl.style.setProperty(
+          "--user-message-height",
+          `${bubbleEl.offsetHeight}px`
+        )
+      }
+
+      updateHeight()
+
+      observer = new ResizeObserver(updateHeight)
+      observer.observe(bubbleEl)
     }
 
-    updateHeight()
+    // Initial setup
+    setupResizeObserver()
 
-    const observer = new ResizeObserver(updateHeight)
-    observer.observe(bubbleEl)
+    // Watch for DOM changes to re-discover bubble element
+    const mutationObserver = new MutationObserver(() => {
+      const newBubbleEl = groupEl.querySelector(
+        "[data-user-bubble]"
+      ) as HTMLDivElement | null
+      if (newBubbleEl !== currentBubbleEl) {
+        setupResizeObserver()
+      }
+    })
 
-    return () => observer.disconnect()
+    mutationObserver.observe(groupEl, {
+      childList: true,
+      subtree: true,
+    })
+
+    return () => {
+      if (observer) {
+        observer.disconnect()
+      }
+      mutationObserver.disconnect()
+    }
   }, [])
 
   return (
     <div
       ref={groupRef}
-      className="relative"
-      style={{
-        ...(!isLastGroup && {
-          contentVisibility: "auto",
-          containIntrinsicSize: "auto 200px",
-        }),
-        ...(isLastGroup && { minHeight: "calc(var(--chat-container-height) - 32px)" }),
-      }}
+      className={
+        isLastGroup
+          ? "relative min-h-[calc(var(--chat-container-height)-32px)]"
+          : "relative [content-visibility:auto] [contain-intrinsic-size:auto_200px]"
+      }
       data-last-group={isLastGroup || undefined}
     >
       {children}

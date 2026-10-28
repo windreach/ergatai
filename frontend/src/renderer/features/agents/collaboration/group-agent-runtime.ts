@@ -43,12 +43,16 @@ export function setGroupAgentRuntimeStatuses(
 
   const scopeKey = createPanelLinkScopeKey({ chatId })
 
-  for (const [agentId, status] of Object.entries(statuses) as [CoreAgentId, GroupAgentRuntimeStatus][]) {
+  for (const [agentId, status] of Object.entries(statuses)) {
+    // Runtime validation: ensure agentId is a non-empty string
+    if (typeof agentId !== "string" || agentId.length === 0) {
+      continue
+    }
     appStore.set(
       panelLinkCommandAtomFamily(scopeKey),
       normalizePanelLinkRuntimeEvent({
         type: "agent-status-changed",
-        agentId,
+        agentId: agentId as CoreAgentId,
         chatId,
         status,
       }),
@@ -60,6 +64,11 @@ export function getGroupAgentRuntimeStatuses(chatId: string) {
   return snapshots.get(chatId) ?? EMPTY_STATUSES
 }
 
+export function cleanupGroupAgentRuntime(chatId: string) {
+  snapshots.delete(chatId)
+  listeners.delete(chatId)
+}
+
 export function useGroupAgentRuntimeStatuses(chatId: string) {
   const subscribe = useCallback(
     (listener: GroupAgentRuntimeListener) => {
@@ -69,6 +78,9 @@ export function useGroupAgentRuntimeStatuses(chatId: string) {
 
       return () => {
         chatListeners.delete(listener)
+        if (chatListeners.size === 0) {
+          listeners.delete(chatId)
+        }
       }
     },
     [chatId],

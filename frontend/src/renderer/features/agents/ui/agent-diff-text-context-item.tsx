@@ -1,6 +1,5 @@
 "use client"
 
-import { useState } from "react"
 import { X } from "lucide-react"
 import { isPlanFile } from "./agent-tool-utils"
 
@@ -27,8 +26,6 @@ function TextSelectIcon({ className }: { className?: string }) {
 }
 
 interface AgentDiffTextContextItemProps {
-  text: string
-  preview: string
   filePath: string
   lineNumber?: number
   lineType?: "old" | "new"
@@ -36,27 +33,19 @@ interface AgentDiffTextContextItemProps {
 }
 
 export function AgentDiffTextContextItem({
-  text,
-  preview,
   filePath,
   lineNumber,
   lineType,
   onRemove,
 }: AgentDiffTextContextItemProps) {
-  const [isHovered, setIsHovered] = useState(false)
-
   // Check if this is a plan selection
   const isPlan = isPlanFile(filePath)
 
-  // Extract just the filename from the path
-  const fileName = filePath.split("/").pop() || filePath
+  // Extract just the filename from the path (handle both Unix and Windows paths)
+  const fileName = filePath.split(/[/\\]/).pop() || filePath
 
   return (
-    <div
-      className="relative flex items-center gap-2 pl-1 pr-2 py-1 rounded-lg bg-muted/50 cursor-default min-w-[120px] max-w-[200px]"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-    >
+    <div className="relative group flex items-center gap-2 pl-1 pr-2 py-1 rounded-lg bg-muted/50 cursor-default min-w-[120px] max-w-[200px]">
       {/* Icon container */}
       <div className="flex items-center justify-center w-8 self-stretch rounded-md bg-muted shrink-0">
         {isPlan ? (
@@ -98,8 +87,9 @@ export function AgentDiffTextContextItem({
           className={`absolute -top-1.5 -right-1.5 size-4 rounded-full bg-background border border-border
                      flex items-center justify-center transition-[opacity,transform] duration-150 ease-out active:scale-[0.97] z-10
                      text-muted-foreground hover:text-foreground
-                     ${isHovered ? "opacity-100" : "opacity-0"}`}
+                     opacity-0 group-hover:opacity-100`}
           type="button"
+          aria-label="Remove"
         >
           <X className="size-3" />
         </button>

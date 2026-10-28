@@ -38,13 +38,20 @@ export const McpServersIndicator = memo(function McpServersIndicator({
   const [sessionInfo, setSessionInfo] = useAtom(sessionInfoAtom)
 
   // Fetch MCP config on mount if we have projectPath and no session info yet
-  const { data: mcpConfig } = trpc.mcp.getMcpConfig.useQuery(
+  const { data: mcpConfig, error: mcpConfigError } = trpc.mcp.getMcpConfig.useQuery(
     { projectPath: projectPath! },
     {
       enabled: !!projectPath && !sessionInfo?.mcpServers?.length,
       staleTime: 5 * 60 * 1000, // 5 minutes
     },
   )
+
+  // Log tRPC query errors for debugging
+  useEffect(() => {
+    if (mcpConfigError) {
+      console.error("Failed to fetch MCP config:", mcpConfigError)
+    }
+  }, [mcpConfigError])
 
   // Update sessionInfo with MCP config if we don't have it yet
   useEffect(() => {
@@ -59,11 +66,18 @@ export const McpServersIndicator = memo(function McpServersIndicator({
         skills: prev?.skills || [],
       }))
     }
-  }, [mcpConfig, sessionInfo?.mcpServers?.length, setSessionInfo])
+  }, [mcpConfig, sessionInfo?.mcpServers, setSessionInfo])
   const [isOpen, setIsOpen] = useState(false)
   const [expandedServers, setExpandedServers] = useState<Set<string>>(new Set())
   const [focusedIndex, setFocusedIndex] = useState(-1)
   const serverButtonsRef = useRef<(HTMLButtonElement | null)[]>([])
+
+  // Focus the button when focusedIndex changes (derived from keyboard navigation)
+  useEffect(() => {
+    if (focusedIndex >= 0 && serverButtonsRef.current[focusedIndex]) {
+      serverButtonsRef.current[focusedIndex]?.focus()
+    }
+  }, [focusedIndex])
 
   // Count connected servers
   const connectedCount = useMemo(() => {
@@ -177,30 +191,11 @@ export const McpServersIndicator = memo(function McpServersIndicator({
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault()
-        setFocusedIndex((prev) => {
-          const next = prev < serverCount - 1 ? prev + 1 : 0
-          serverButtonsRef.current[next]?.focus()
-          return next
-        })
+        setFocusedIndex((prev) => (prev < serverCount - 1 ? prev + 1 : 0))
         break
       case "ArrowUp":
         e.preventDefault()
-        setFocusedIndex((prev) => {
-          const next = prev > 0 ? prev - 1 : serverCount - 1
-          serverButtonsRef.current[next]?.focus()
-          return next
-        })
-        break
-      case "Enter":
-      case " ":
-        if (focusedIndex >= 0 && focusedIndex < serverCount) {
-          const server = sessionInfo.mcpServers[focusedIndex]
-          const hasTools = (toolsByServer.get(server.name) || []).length > 0
-          if (hasTools) {
-            e.preventDefault()
-            toggleServer(server.name)
-          }
-        }
+        setFocusedIndex((prev) => (prev > 0 ? prev - 1 : serverCount - 1))
         break
       case "Escape":
         setIsOpen(false)
@@ -266,6 +261,14 @@ export const McpServersIndicator = memo(function McpServersIndicator({
                     serverButtonsRef.current[index] = el
                   }}
                   onClick={() => hasTools && toggleServer(server.name)}
+                  onKeyDown={(e) => {
+                    // Handle Enter/Space directly on the button to avoid double-toggle
+                    // from native click + container keyboard event
+                    if ((e.key === "Enter" || e.key === " ") && hasTools) {
+                      e.preventDefault()
+                      toggleServer(server.name)
+                    }
+                  }}
                   onFocus={() => setFocusedIndex(index)}
                   className={cn(
                     "w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors",

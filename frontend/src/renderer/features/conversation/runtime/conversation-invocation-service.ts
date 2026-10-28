@@ -24,6 +24,7 @@ import type {
 import { getTurnOrchestrator } from "./turn-orchestrator"
 import { getRuntimeSessionStore } from "./runtime-session-store"
 import { getAdapterRegistry } from "./runtime-adapter"
+import { generateTicketId, generateQueueItemId } from "./id-generators"
 import { useStreamingStatusStore } from "../../agents/stores/streaming-status-store"
 import { trpcClient } from "../../../lib/trpc"
 
@@ -124,6 +125,12 @@ export interface ConversationInvocationService {
  */
 class ConversationInvocationServiceImpl implements ConversationInvocationService {
   /**
+   * Set of conversation IDs currently being stopped.
+   * Used to deduplicate concurrent stop() calls and prevent race conditions.
+   */
+  private stoppingSet = new Set<string>()
+
+  /**
    * Send a message in a conversation.
    * Delegates to Turn Orchestrator.
    */
@@ -140,52 +147,94 @@ class ConversationInvocationServiceImpl implements ConversationInvocationService
    * Also clears currentTurnId to prevent stale callbacks from updating state.
    *
    * Fixed: Use top-level import for trpcClient to avoid SSR issues.
-   * Added: Debounce mechanism to prevent duplicate stop() calls.
+   * Fixed: Added stoppingSet to deduplicate concurrent stop() calls and prevent
+   * race conditions where multiple calls proceed in parallel.
    */
   async stop(input: ConversationStopInput): Promise<void> {
-    const { conversationId, agentId } = input
-    const sessionStore = getRuntimeSessionStore()
+    const { conversationId, agentId, agentIds } = input
 
-    // Check if already stopping (debounce)
-    const session = sessionStore.getSession(conversationId)
-    if (session?.status === "idle" || session?.status === "ready") {
-      // Already stopped or not started
+    // Deduplication: if already stopping this conversation, return early
+    if (this.stoppingSet.has(conversationId)) {
       return
     }
 
-    // Clear current turn ID to prevent stale callbacks
-    sessionStore.setCurrentTurnId(conversationId, null)
+    // Mark as stopping to prevent concurrent duplicate calls
+    this.stoppingSet.add(conversationId)
 
-    // Get adapter for this conversation
-    const adapter = getAdapterRegistry().get(conversationId)
-    if (adapter) {
-      try {
-        await adapter.stop()
-      } catch (error) {
-        console.warn("[ConversationInvocationService] Error stopping adapter:", error)
-        // Continue with backend cancel even if adapter.stop() fails
-        // The backend needs to know to stop processing
+    try {
+      const sessionStore = getRuntimeSessionStore()
+
+      // Check if already stopped or not started
+      const session = sessionStore.getSession(conversationId)
+      if (!session || session.status === "idle" || session.status === "ready") {
+        // Already stopped or not started - nothing to do
+        return
       }
-    }
 
-    // Call backend cancel API to stop agent processing
-    // This is the unified entry point - transport layer should NOT call this
-    if (agentId) {
-      try {
-        void trpcClient.ergatai.cancelPrompt.mutate({ agentId }).catch((error) => {
-          console.warn("[ConversationInvocationService] Error calling cancel API:", error)
-        })
-      } catch (error) {
-        console.warn("[ConversationInvocationService] Failed to call cancel API:", error)
+      // Get adapter for this conversation
+      const adapter = getAdapterRegistry().get(conversationId)
+      if (adapter) {
+        try {
+          await adapter.stop()
+        } catch (error) {
+          console.warn("[ConversationInvocationService] Error stopping adapter:", error)
+          // Continue with backend cancel even if adapter.stop() fails
+          // The backend needs to know to stop processing
+        }
       }
+
+      // Clear current turn ID AFTER adapter.stop() completes
+      // This ensures the adapter can read turnId during cleanup if needed
+      sessionStore.setCurrentTurnId(conversationId, null)
+
+      // Call backend cancel API to stop agent processing
+      // This is the unified entry point - transport layer should NOT call this
+      // Support both single agentId (backward compat) and multiple agentIds (group chat)
+      const agentsToCancel = agentIds ?? (agentId ? [agentId] : [])
+      if (agentsToCancel.length > 0) {
+        // Set up timeout to prevent hanging
+        let timeoutId: NodeJS.Timeout | undefined
+
+        try {
+          // Await cancel with timeout to prevent hanging
+          await Promise.race([
+            Promise.all(
+              agentsToCancel.map((id) =>
+                trpcClient.ergatai.cancelPrompt
+                  .mutate({ agentId: id })
+                  .catch((error) => {
+                    console.warn(`[ConversationInvocationService] Error calling cancel API for agent ${id}:`, error)
+                  })
+              )
+            ),
+            new Promise<void>((_, reject) => {
+              timeoutId = setTimeout(() => {
+                reject(new Error('Cancel timeout after 5000ms'))
+              }, 5000)
+            })
+          ])
+        } catch (error) {
+          console.warn("[ConversationInvocationService] Cancel API timeout or error:", error)
+          // Continue anyway - don't block on cancel failure
+        } finally {
+          // Always clear the timeout to prevent memory leak and unhandled rejection
+          if (timeoutId !== undefined) {
+            clearTimeout(timeoutId)
+          }
+        }
+      }
+
+      // Now safe to set status to ready - cancel API has resolved or timed out
+      // Update streaming status (legacy compatibility)
+      useStreamingStatusStore.getState().setStatus(conversationId, "ready")
+
+      // Update session state
+      sessionStore.setStatus(conversationId, "ready")
+      sessionStore.setStreamingMessageId(conversationId, null)
+    } finally {
+      // Always remove from stopping set, even if an error occurred
+      this.stoppingSet.delete(conversationId)
     }
-
-    // Update streaming status (legacy compatibility)
-    useStreamingStatusStore.getState().setStatus(conversationId, "ready")
-
-    // Update session state
-    sessionStore.setStatus(conversationId, "ready")
-    sessionStore.setStreamingMessageId(conversationId, null)
   }
 
   /**
@@ -206,7 +255,7 @@ class ConversationInvocationServiceImpl implements ConversationInvocationService
     sessionStore.ensureSession(conversationId)
 
     // Create queue item
-    const queueItemId = `queue_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`
+    const queueItemId = generateQueueItemId()
     const queueItem = {
       id: queueItemId,
       originalInput: input,
@@ -218,7 +267,7 @@ class ConversationInvocationServiceImpl implements ConversationInvocationService
     sessionStore.addQueueItem(conversationId, queueItem)
 
     return {
-      ticketId: `ticket_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`,
+      ticketId: generateTicketId(),
       conversationId,
       queued: true,
       queueItemId,

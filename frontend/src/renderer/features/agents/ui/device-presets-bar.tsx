@@ -12,6 +12,10 @@ import {
 import { Input } from "../../../components/ui/input"
 import { DEVICE_PRESETS, AGENTS_PREVIEW_CONSTANTS } from "../constants"
 
+// Shared classes to hide number input spinners
+const SPINNER_HIDDEN_CLASSES =
+  "[&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [-moz-appearance:textfield]"
+
 interface DevicePresetsBarProps {
   selectedPreset: string
   width: number
@@ -32,18 +36,21 @@ export function DevicePresetsBar({
   className,
 }: DevicePresetsBarProps) {
   const [widthInputValue, setWidthInputValue] = useState(String(width))
+  const [isFocused, setIsFocused] = useState(false)
 
-  // Sync input value when width prop changes
+  // Sync input value when width prop changes, but only if input is not focused
   useEffect(() => {
-    setWidthInputValue(String(width))
-  }, [width])
+    if (!isFocused) {
+      setWidthInputValue(String(width))
+    }
+  }, [width, isFocused])
 
   const handleWidthInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setWidthInputValue(e.target.value)
   }
 
   const handleWidthBlur = () => {
-    const value = parseInt(widthInputValue)
+    const value = parseInt(widthInputValue, 10)
 
     // Apply any valid positive number, clamp to reasonable bounds
     if (!isNaN(value) && value > 0) {
@@ -101,13 +108,17 @@ export function DevicePresetsBar({
             type="number"
             value={widthInputValue}
             onChange={handleWidthInputChange}
-            onBlur={handleWidthBlur}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => {
+              setIsFocused(false)
+              handleWidthBlur()
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.currentTarget.blur()
               }
             }}
-            className="h-7 w-auto min-w-9 text-xs px-1.5 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [-moz-appearance:textfield]"
+            className={`h-7 w-auto min-w-9 text-xs px-1.5 ${SPINNER_HIDDEN_CLASSES}`}
             style={{
               width: `${Math.max(widthInputValue.length || 1, 3) + 2}ch`,
             }}
@@ -122,7 +133,7 @@ export function DevicePresetsBar({
             type="number"
             value={height}
             disabled
-            className="h-7 w-auto min-w-[3ch] text-xs px-1.5 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [-moz-appearance:textfield]"
+            className={`h-7 w-auto min-w-[3ch] text-xs px-1.5 ${SPINNER_HIDDEN_CLASSES}`}
             style={{
               width: `${String(height).length + 2}ch`,
             }}

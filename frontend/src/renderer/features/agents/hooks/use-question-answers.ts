@@ -1,21 +1,50 @@
 import { useCallback, useRef, useMemo } from "react"
 import { trpcClient } from "../../../lib/trpc"
+import { QUESTIONS_SKIPPED_MESSAGE } from "../atoms"
+
+// Type for question objects in the displayQuestions structure
+interface QuestionItem {
+  question: string
+  header: string
+  options: Array<{ label: string; description: string }>
+  multiSelect: boolean
+  [key: string]: unknown
+}
+
+// Type for the pending/expired question structure
+interface DisplayQuestions {
+  toolUseId: string
+  questions: QuestionItem[]
+}
+
+// Type for editor ref (Monaco-like editor)
+interface EditorRef {
+  getValue(): string | undefined
+}
+
+// Type for question component ref
+interface QuestionRef {
+  getAnswers(): Record<string, string>
+}
+
+// Type for agent chat store
+interface AgentChatStore {
+  setManuallyAborted(conversationId: string, value: boolean): void
+}
 
 interface UseQuestionAnswersOptions {
-  displayQuestions: any
+  displayQuestions: DisplayQuestions | null
   isQuestionExpired: boolean
   conversationId: string
-  editorRef: React.RefObject<any>
-  questionRef: React.RefObject<any>
+  editorRef: React.RefObject<EditorRef | null>
+  questionRef: React.RefObject<QuestionRef | null>
   clearPendingQuestionCallback: () => void
   clearInputAndDraft: () => void
   sendUserMessage: (text: string) => Promise<void>
   isStreamingRef: React.RefObject<boolean>
   stopRef: React.RefObject<() => Promise<void>>
-  agentChatStore: any
+  agentChatStore: AgentChatStore
 }
-
-const QUESTIONS_SKIPPED_MESSAGE = "User skipped answering the questions"
 
 export function useQuestionAnswers({
   displayQuestions,
@@ -38,23 +67,36 @@ export function useQuestionAnswers({
     [],
   )
 
+  // Ref to prevent double submit of question answer
+  const isSubmittingQuestionAnswerRef = useRef(false)
+
   // Handle answering questions
   const handleQuestionsAnswer = useCallback(
     async (answers: Record<string, string>) => {
       if (!displayQuestions) return
+      if (isSubmittingQuestionAnswerRef.current) return
+      isSubmittingQuestionAnswerRef.current = true
 
-      if (isQuestionExpired) {
-        // Question timed out - send answers as a normal user message
+      try {
+        if (isQuestionExpired) {
+          // Question timed out - send answers as a normal user message
+          clearPendingQuestionCallback()
+          await sendUserMessage(formatAnswersAsText(answers))
+        } else {
+          // Question is still live - use tool approval path
+          await trpcClient.mcp.respondToolApproval.mutate({
+            toolUseId: displayQuestions.toolUseId,
+            approved: true,
+            updatedInput: { questions: displayQuestions.questions, answers },
+          })
+          clearPendingQuestionCallback()
+        }
+      } catch (error) {
+        // Ensure cleanup on error
         clearPendingQuestionCallback()
-        await sendUserMessage(formatAnswersAsText(answers))
-      } else {
-        // Question is still live - use tool approval path
-        await trpcClient.mcp.respondToolApproval.mutate({
-          toolUseId: displayQuestions.toolUseId,
-          approved: true,
-          updatedInput: { questions: displayQuestions.questions, answers },
-        })
-        clearPendingQuestionCallback()
+        // Error will be handled by tRPC/query client error boundaries
+      } finally {
+        isSubmittingQuestionAnswerRef.current = false
       }
     },
     [displayQuestions, isQuestionExpired, clearPendingQuestionCallback, sendUserMessage, formatAnswersAsText],
@@ -87,9 +129,6 @@ export function useQuestionAnswers({
       // Stream likely already aborted - ignore
     }
   }, [displayQuestions, isQuestionExpired, clearPendingQuestionCallback])
-
-  // Ref to prevent double submit of question answer
-  const isSubmittingQuestionAnswerRef = useRef(false)
 
   // Handle answering questions with custom text from input (called on Enter in input)
   const handleSubmitWithQuestionAnswer = useCallback(
@@ -127,7 +166,6 @@ export function useQuestionAnswers({
           // Expired: send user's custom text as-is (don't format)
           clearPendingQuestionCallback()
           clearInputAndDraft()
-          // await sendUserMessage(formatAnswersAsText(formattedAnswers))
           await sendUserMessage(customText)
         } else {
           // Live: use existing tool approval flow
@@ -155,7 +193,19 @@ export function useQuestionAnswers({
         isSubmittingQuestionAnswerRef.current = false
       }
     },
-    [displayQuestions, isQuestionExpired, clearPendingQuestionCallback, clearInputAndDraft, sendUserMessage, conversationId],
+    [
+      displayQuestions,
+      isQuestionExpired,
+      clearPendingQuestionCallback,
+      clearInputAndDraft,
+      sendUserMessage,
+      conversationId,
+      editorRef,
+      questionRef,
+      isStreamingRef,
+      agentChatStore,
+      stopRef,
+    ],
   )
 
   // Memoize the callback to prevent ChatInputArea re-renders

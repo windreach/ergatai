@@ -11,7 +11,12 @@ import { highlightCode } from "../../../lib/themes/shiki-theme-loader"
 import { useCodeTheme } from "../../../lib/hooks/use-code-theme"
 
 interface AgentMcpToolCallProps {
-  part: any
+  // `part` shape from streaming tool-call pipeline
+  part: {
+    state: string
+    input?: Record<string, unknown>
+    output?: unknown
+  }
   mcpInfo: McpToolInfo
   chatStatus?: string
 }
@@ -35,24 +40,24 @@ const COMPLETED_VERBS: Record<string, string> = {
   Start: "Started", Set: "Set", Check: "Checked", Find: "Found",
 }
 
-function getActiveTitle(info: McpToolInfo): string {
+function transformToolTitle(info: McpToolInfo, verbMap: Record<string, string>): string {
   const words = info.displayName.split(" ")
   const verb = words[0]
   const rest = words.slice(1).join(" ")
-  const active = ACTIVE_VERBS[verb]
-  if (active) return rest ? `${active} ${rest}` : active
+  const transformed = verbMap[verb]
+  if (transformed) return rest ? `${transformed} ${rest}` : transformed
   return info.displayName
 }
 
-function getCompletedTitle(info: McpToolInfo): string {
-  const words = info.displayName.split(" ")
-  const verb = words[0]
-  const rest = words.slice(1).join(" ")
-  const completed = COMPLETED_VERBS[verb]
-  return completed ? (rest ? `${completed} ${rest}` : completed) : info.displayName
+function getActiveTitle(info: McpToolInfo): string {
+  return transformToolTitle(info, ACTIVE_VERBS)
 }
 
-function getResultCount(output: any): string | null {
+function getCompletedTitle(info: McpToolInfo): string {
+  return transformToolTitle(info, COMPLETED_VERBS)
+}
+
+function getResultCount(output: unknown): string | null {
   if (!output) return null
 
   if (Array.isArray(output)) {
@@ -60,8 +65,8 @@ function getResultCount(output: any): string | null {
     return `${n} ${n === 1 ? "result" : "results"}`
   }
 
-  if (typeof output === "object") {
-    let longest: any[] | undefined
+  if (typeof output === "object" && output !== null) {
+    let longest: unknown[] | undefined
     for (const v of Object.values(output)) {
       if (Array.isArray(v) && (!longest || v.length > longest.length)) {
         longest = v
@@ -76,7 +81,7 @@ function getResultCount(output: any): string | null {
   return null
 }
 
-function formatMcpArgs(input: any): string {
+function formatMcpArgs(input: Record<string, unknown> | undefined | null): string {
   if (!input || typeof input !== "object") return ""
   const entries = Object.entries(input).filter(
     ([, v]) => v !== undefined && v !== null && v !== "",
@@ -111,7 +116,7 @@ function formatMcpArgs(input: any): string {
  *  - a raw JSON string
  *  - already-parsed object
  */
-function unwrapMcpOutput(output: any): any {
+function unwrapMcpOutput(output: unknown): unknown {
   if (!output) return output
 
   // Unwrap array of content blocks: [{type:"text", text:"..."}]
@@ -135,12 +140,19 @@ function unwrapMcpOutput(output: any): any {
   }
 
   // Unwrap single content block: {type:"text", text:"..."}
-  if (output?.type === "text" && typeof output?.text === "string") {
-    const text = output.text
-    try {
-      return JSON.parse(text)
-    } catch {
-      return text
+  if (
+    typeof output === "object" &&
+    output !== null &&
+    "type" in output &&
+    "text" in output
+  ) {
+    const obj = output as { type: string; text: string }
+    if (obj.type === "text" && typeof obj.text === "string") {
+      try {
+        return JSON.parse(obj.text)
+      } catch {
+        return obj.text
+      }
     }
   }
 
@@ -159,13 +171,27 @@ function unwrapMcpOutput(output: any): any {
 /**
  * Format MCP output as pretty-printed JSON for display.
  */
-function formatOutputForDisplay(output: any): string {
+function formatOutputForDisplay(output: unknown): string {
   const unwrapped = unwrapMcpOutput(output)
   if (typeof unwrapped === "string") {
     return unwrapped.length > 3000 ? unwrapped.slice(0, 3000) + "\n..." : unwrapped
   }
   const text = JSON.stringify(unwrapped, null, 2)
   return text.length > 3000 ? text.slice(0, 3000) + "\n..." : text
+}
+
+/**
+ * Sanitize HTML to prevent XSS attacks.
+ * Removes script tags and event handlers while preserving safe formatting tags.
+ */
+function sanitizeHtml(html: string): string {
+  return html
+    // Remove script tags and their content
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+    // Remove event handlers (onclick, onerror, etc.)
+    .replace(/\son\w+\s*=\s*"[^"]*"/gi, "")
+    .replace(/\son\w+\s*=\s*'[^']*'/gi, "")
+    .replace(/\son\w+\s*=\s*[^\s>]+/gi, "")
 }
 
 /** Highlighted JSON code block using shiki */
@@ -179,15 +205,18 @@ function HighlightedJson({ code }: { code: string }) {
       .then((result) => {
         if (!cancelled) setHtml(result)
       })
-      .catch(() => {})
+      .catch((err) => {
+        console.warn("highlightCode failed:", err)
+      })
     return () => { cancelled = true }
   }, [code, themeId])
 
   if (html) {
+    const safeHtml = sanitizeHtml(html)
     return (
       <pre
         className="text-[10px] font-mono leading-relaxed whitespace-pre-wrap break-words [&>pre]:!bg-transparent"
-        dangerouslySetInnerHTML={{ __html: html }}
+        dangerouslySetInnerHTML={{ __html: safeHtml }}
       />
     )
   }
@@ -197,6 +226,17 @@ function HighlightedJson({ code }: { code: string }) {
       {code}
     </pre>
   )
+}
+
+/**
+ * Format a single argument value for display.
+ * Truncates long strings and JSON-stringifies other types.
+ */
+function formatArgValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value.length > 120 ? value.slice(0, 117) + "..." : value
+  }
+  return JSON.stringify(value)
 }
 
 export const AgentMcpToolCall = memo(function AgentMcpToolCall({
@@ -230,10 +270,10 @@ export const AgentMcpToolCall = memo(function AgentMcpToolCall({
     return formatOutputForDisplay(part.output)
   }, [part.output])
 
-  const hasExpandableContent = (
-    (part.input && Object.keys(part.input).length > 0) ||
-    !!part.output
-  ) && !isPending
+  const hasExpandableContent = useMemo(() => (
+    ((part.input && Object.keys(part.input).length > 0) ||
+    !!part.output) && !isPending
+  ), [part.input, part.output, isPending])
 
   if (isInterrupted && !part.output) {
     return (
@@ -312,9 +352,7 @@ export const AgentMcpToolCall = memo(function AgentMcpToolCall({
                       {key}:
                     </span>
                     <span className="text-muted-foreground/70 font-mono truncate">
-                      {typeof value === "string"
-                        ? value.length > 120 ? value.slice(0, 117) + "..." : value
-                        : JSON.stringify(value)}
+                      {formatArgValue(value)}
                     </span>
                   </div>
                 ))}

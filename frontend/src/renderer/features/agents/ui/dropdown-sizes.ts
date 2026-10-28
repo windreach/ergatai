@@ -10,15 +10,16 @@ const BASE_MAX_HEIGHT = 200
 const BASE_GAP = 8
 
 /**
- * Get dropdown dimensions with optional scale factor
- * Scale factor can come from user preferences or zoom settings
+ * Get dropdown dimensions.
+ * Scale factor is accepted for backwards compatibility but ignored —
+ * CSS `transform: scale()` handles all visual scaling.
  */
-export function getDropdownDimensions(scale: number = 1) {
+export function getDropdownDimensions(_scale: number = 1) {
   return {
-    width: Math.round(BASE_DROPDOWN_WIDTH * scale),
-    itemHeight: Math.round(BASE_ITEM_HEIGHT * scale),
-    headerHeight: Math.round(BASE_HEADER_HEIGHT * scale),
-    maxHeight: Math.round(BASE_MAX_HEIGHT * scale),
-    gap: Math.round(BASE_GAP * scale),
+    width: BASE_DROPDOWN_WIDTH,
+    itemHeight: BASE_ITEM_HEIGHT,
+    headerHeight: BASE_HEADER_HEIGHT,
+    maxHeight: BASE_MAX_HEIGHT,
+    gap: BASE_GAP,
   }
 }

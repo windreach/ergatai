@@ -1,17 +1,4 @@
 import { useCallback, useRef } from "react"
-import { toast } from "sonner"
-import { trpcClient } from "../../../lib/trpc"
-import { appStore } from "../../../lib/jotai-store"
-import {
-  conversationModelIdAtomFamily,
-  conversationCodexModelIdAtomFamily,
-  conversationCodexThinkingAtomFamily,
-  conversationModeAtomFamily,
-  pendingChatHistoryAtom,
-} from "../atoms"
-import { useAgentConversationStore } from "../stores/conversation-store"
-import { formatHistoryForContext } from "../lib/export-chat"
-import type { PendingChatHistory } from "../atoms"
 
 interface UseProviderSelectionOptions {
   conversationId: string
@@ -20,7 +7,7 @@ interface UseProviderSelectionOptions {
   isStreaming: boolean
   messages: any[]
   onProviderChange?: (conversationId: string, provider: "claude-code" | "codex") => void
-  utils: any
+  utils?: unknown
   conversationNameRef: React.RefObject<string>
 }
 
@@ -51,17 +38,15 @@ export function useProviderSelection({
 
       try {
         // Backend no longer supports creating child conversations
-        // This feature has been removed
-        console.warn("[use-provider-selection] createChildConversation is no longer supported")
-        throw new Error("Creating new conversations from history is no longer supported")
-      } catch (error) {
-        console.error("[handleContinueWithProvider] Error:", error)
-        toast.error("Failed to continue with provider")
+        // This feature has been removed - log warning for debugging
+        console.warn(
+          `[use-provider-selection] Continuing with ${targetProvider} is no longer supported`,
+        )
       } finally {
         isContinuingRef.current = false
       }
     },
-    [isStreaming, messages, conversationId],
+    [isStreaming, messages],
   )
 
   return {

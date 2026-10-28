@@ -33,12 +33,13 @@ import { ChevronDown, MoreHorizontal, Columns3, ArrowUpRight } from "lucide-reac
 import { useQuery } from "@tanstack/react-query"
 // import { useRouter } from "next/navigation" // Desktop doesn't use next/navigation
 // import { useCombinedAuth } from "@/lib/hooks/use-combined-auth"
-const useCombinedAuth = () => ({ userId: null, isLoaded: true })
 // import { AuthDialog } from "@/components/auth/auth-dialog"
 const AuthDialog = (_props: { open: boolean; onOpenChange: (open: boolean) => void }) => null
 // Desktop: archive is handled inline, not via hook
 // import { DiscordIcon } from "@/components/icons"
 import { DiscordIcon } from "../../icons"
+// Desktop: mock Clerk hook (matches pattern in agents-content.tsx — Clerk is not installed)
+const useClerk = () => ({ signOut: () => {} })
 import { AgentsRenameConversationDialog } from "../agents/components/agents-rename-conversation-dialog"
 import { ConfirmArchiveDialog } from "../../components/confirm-archive-dialog"
 import { WorkspaceList } from "./workspace-list"
@@ -444,7 +445,6 @@ const AgentChatItem = React.memo(function AgentChatItem({
   isMobileFullscreen,
   isDesktop,
   isPinned,
-  displayText,
   gitOwner,
   gitProvider,
   stats,
@@ -467,7 +467,6 @@ const AgentChatItem = React.memo(function AgentChatItem({
   onBulkPin,
   onBulkUnpin,
   onBulkArchive,
-  archivePending,
   archiveBatchPending,
   nameRefCallback,
   formatTime,
@@ -491,7 +490,6 @@ const AgentChatItem = React.memo(function AgentChatItem({
   isMobileFullscreen: boolean
   isDesktop: boolean
   isPinned: boolean
-  displayText: string
   gitOwner: string | null | undefined
   gitProvider: string | null | undefined
   stats: { fileCount: number; additions: number; deletions: number } | undefined
@@ -514,7 +512,6 @@ const AgentChatItem = React.memo(function AgentChatItem({
   onBulkPin: () => void
   onBulkUnpin: () => void
   onBulkArchive: () => void
-  archivePending: boolean
   archiveBatchPending: boolean
   nameRefCallback: (chatId: string, el: HTMLSpanElement | null) => void
   formatTime: (dateStr: string) => string
@@ -522,6 +519,14 @@ const AgentChatItem = React.memo(function AgentChatItem({
 }) {
   // Resolved hotkey for context menu
   const archiveWorkspaceHotkey = useResolvedHotkeyDisplay("archive-workspace")
+
+  // Hover/text color class — flattened from nested ternary for readability
+  const hoverClass =
+    isSelected || isFocused
+      ? "bg-foreground/5 text-foreground"
+      : isMobileFullscreen
+        ? "text-muted-foreground"
+        : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
 
   return (
     <ContextMenu>
@@ -560,14 +565,7 @@ const AgentChatItem = React.memo(function AgentChatItem({
             // In multi-select: px-3 compensates for removed container px-2, keeping text aligned
             isMultiSelectMode ? "px-3" : "pl-2 pr-2",
             !isMultiSelectMode && "rounded-md",
-            isSelected
-              ? "bg-foreground/5 text-foreground"
-              : isFocused
-                ? "bg-foreground/5 text-foreground"
-                : // On mobile, no hover effect to prevent double-tap issue
-                  isMobileFullscreen
-                  ? "text-muted-foreground"
-                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
+            hoverClass,
             isChecked &&
               (isMobileFullscreen
                 ? "bg-primary/10"
@@ -740,12 +738,17 @@ const AgentChatItem = React.memo(function AgentChatItem({
             </ContextMenuSub>
             {isDesktop && (
               <ContextMenuItem onClick={async () => {
-                const result = await window.desktopApi?.newWindow({ chatId })
-                if (result?.blocked) {
-                  toast.info("This workspace is already open in another window", {
-                    description: "Switching to the existing window.",
-                    duration: 3000,
-                  })
+                try {
+                  const result = await window.desktopApi?.newWindow({ chatId })
+                  if (result?.blocked) {
+                    toast.info("This workspace is already open in another window", {
+                      description: "Switching to the existing window.",
+                      duration: 3000,
+                    })
+                  }
+                } catch (error) {
+                  console.error("[NewWindow] Failed:", error)
+                  toast.error("Failed to open in new window")
                 }
               }}>
                 Open in new window
@@ -788,7 +791,6 @@ function chatListSectionPropsAreEqual(
   if (prevProps.isMultiSelectMode !== nextProps.isMultiSelectMode) return false
   if (prevProps.canShowPinOption !== nextProps.canShowPinOption) return false
   if (prevProps.areAllSelectedPinned !== nextProps.areAllSelectedPinned) return false
-  if (prevProps.archivePending !== nextProps.archivePending) return false
   if (prevProps.archiveBatchPending !== nextProps.archiveBatchPending) return false
   if (prevProps.title !== nextProps.title) return false
   if (prevProps.isMobileFullscreen !== nextProps.isMobileFullscreen) return false
@@ -859,7 +861,6 @@ interface ChatListSectionProps {
   onBulkPin: () => void
   onBulkUnpin: () => void
   onBulkArchive: () => void
-  archivePending: boolean
   archiveBatchPending: boolean
   nameRefCallback: (chatId: string, el: HTMLSpanElement | null) => void
   formatTime: (dateStr: string) => string
@@ -901,7 +902,6 @@ const ChatListSection = React.memo(function ChatListSection({
   onBulkPin,
   onBulkUnpin,
   onBulkArchive,
-  archivePending,
   archiveBatchPending,
   nameRefCallback,
   formatTime,
@@ -940,12 +940,6 @@ const ChatListSection = React.memo(function ChatListSection({
           const workspaceName = chat.projectId
             ? workspaceDisplayNames.get(chat.projectId) ?? chat.name
             : chat.name
-          const repoName = project?.gitRepo || project?.name
-          const displayText = chat.branch
-            ? repoName
-              ? `${repoName} • ${chat.branch}`
-              : chat.branch
-            : repoName || "Local project"
 
           const isChecked = selectedChatIds.has(chat.id)
           const stats = workspaceFileStats.get(chat.id)
@@ -978,7 +972,6 @@ const ChatListSection = React.memo(function ChatListSection({
               isMobileFullscreen={isMobileFullscreen}
               isDesktop={isDesktop}
               isPinned={isPinned}
-              displayText={displayText}
               gitOwner={gitOwner}
               gitProvider={gitProvider}
               stats={stats ?? undefined}
@@ -1001,7 +994,6 @@ const ChatListSection = React.memo(function ChatListSection({
               onBulkPin={onBulkPin}
               onBulkUnpin={onBulkUnpin}
               onBulkArchive={onBulkArchive}
-              archivePending={archivePending}
               archiveBatchPending={archiveBatchPending}
               nameRefCallback={nameRefCallback}
               formatTime={formatTime}
@@ -1016,7 +1008,7 @@ const ChatListSection = React.memo(function ChatListSection({
 
 interface AgentsSidebarProps {
   userId?: string | null | undefined
-  clerkUser?: any
+  clerkUser?: { username?: string; email?: string } | null
   desktopUser?: { id: string; email: string; name?: string } | null
   onSignOut?: () => void
   onToggleSidebar?: () => void
@@ -1160,6 +1152,56 @@ const SidebarHeader = memo(function SidebarHeader({
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
   const showOfflineFeatures = useAtomValue(showOfflineModeFeaturesAtom)
   const toggleSidebarHotkey = useResolvedHotkeyDisplay("toggle-sidebar")
+  const clerk = useClerk()
+
+  const handleSignOut = useCallback(async () => {
+    try {
+      await clerk.signOut()
+      onSignOut?.()
+    } catch (error) {
+      console.error("[SignOut] Failed:", error)
+      toast.error("Failed to sign out")
+    }
+  }, [clerk, onSignOut])
+
+  // Shared Help submenu — used in both authenticated and unauthenticated branches
+  const helpSubmenu = (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger className="gap-2">
+        <QuestionCircleIcon className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+        <span className="flex-1">Help</span>
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent
+        className="w-36"
+        sideOffset={6}
+        alignOffset={-4}
+      >
+        <DropdownMenuItem
+          onSelect={() => {
+            window.open("https://discord.gg/8ektTZGnj4", "_blank")
+            setIsDropdownOpen(false)
+          }}
+          className="gap-2"
+        >
+          <DiscordIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          <span className="flex-1">Discord</span>
+        </DropdownMenuItem>
+        {!isMobileFullscreen && (
+          <DropdownMenuItem
+            onSelect={() => {
+              setIsDropdownOpen(false)
+              setSettingsActiveTab("keyboard")
+              setSettingsDialogOpen(true)
+            }}
+            className="gap-2"
+          >
+            <KeyboardIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            <span className="flex-1">Shortcuts</span>
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  )
 
   return (
     <div
@@ -1304,44 +1346,7 @@ const SidebarHeader = memo(function SidebarHeader({
                     </DropdownMenuItem>
 
                     {/* Help Submenu */}
-                    <DropdownMenuSub>
-                      <DropdownMenuSubTrigger className="gap-2">
-                        <QuestionCircleIcon className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
-                        <span className="flex-1">Help</span>
-                      </DropdownMenuSubTrigger>
-                      <DropdownMenuSubContent
-                        className="w-36"
-                        sideOffset={6}
-                        alignOffset={-4}
-                      >
-                        <DropdownMenuItem
-                          onSelect={() => {
-                            window.open(
-                              "https://discord.gg/8ektTZGnj4",
-                              "_blank",
-                            )
-                            setIsDropdownOpen(false)
-                          }}
-                          className="gap-2"
-                        >
-                          <DiscordIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                          <span className="flex-1">Discord</span>
-                        </DropdownMenuItem>
-                        {!isMobileFullscreen && (
-                          <DropdownMenuItem
-                            onSelect={() => {
-                              setIsDropdownOpen(false)
-                              setSettingsActiveTab("keyboard")
-                              setSettingsDialogOpen(true)
-                            }}
-                            className="gap-2"
-                          >
-                            <KeyboardIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                            <span className="flex-1">Shortcuts</span>
-                          </DropdownMenuItem>
-                        )}
-                      </DropdownMenuSubContent>
-                    </DropdownMenuSub>
+                    {helpSubmenu}
 
                     <DropdownMenuSeparator />
 
@@ -1349,7 +1354,7 @@ const SidebarHeader = memo(function SidebarHeader({
                     <div className="">
                       <DropdownMenuItem
                         className="gap-2"
-                        onSelect={() => onSignOut()}
+                        onSelect={handleSignOut}
                       >
                         <svg
                           className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0"
@@ -1405,44 +1410,7 @@ const SidebarHeader = memo(function SidebarHeader({
                     <DropdownMenuSeparator />
 
                     {/* Help Submenu */}
-                    <DropdownMenuSub>
-                      <DropdownMenuSubTrigger className="gap-2">
-                        <QuestionCircleIcon className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
-                        <span className="flex-1">Help</span>
-                      </DropdownMenuSubTrigger>
-                      <DropdownMenuSubContent
-                        className="w-36"
-                        sideOffset={6}
-                        alignOffset={-4}
-                      >
-                        <DropdownMenuItem
-                          onSelect={() => {
-                            window.open(
-                              "https://discord.gg/8ektTZGnj4",
-                              "_blank",
-                            )
-                            setIsDropdownOpen(false)
-                          }}
-                          className="gap-2"
-                        >
-                          <DiscordIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                          <span className="flex-1">Discord</span>
-                        </DropdownMenuItem>
-                        {!isMobileFullscreen && (
-                          <DropdownMenuItem
-                            onSelect={() => {
-                              setIsDropdownOpen(false)
-                              setSettingsActiveTab("keyboard")
-                              setSettingsDialogOpen(true)
-                            }}
-                            className="gap-2"
-                          >
-                            <KeyboardIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                            <span className="flex-1">Shortcuts</span>
-                          </DropdownMenuItem>
-                        )}
-                      </DropdownMenuSubContent>
-                    </DropdownMenuSub>
+                    {helpSubmenu}
                   </>
                 )}
               </DropdownMenuContent>
@@ -1520,6 +1488,13 @@ export function AgentsSidebar({
   onChatSelect,
 }: AgentsSidebarProps) {
   const [selectedChatId, setSelectedChatId] = useAtom(selectedAgentChatIdAtom)
+  // Ref to hold latest selectedChatId for use in async callbacks (avoids stale closure)
+  const selectedChatIdRef = useRef(selectedChatId)
+  useEffect(() => {
+    selectedChatIdRef.current = selectedChatId
+  }, [selectedChatId])
+  // Lock to prevent concurrent execution of handleChatClick's async claim/release sequence
+  const chatClickLockRef = useRef(false)
   const {
     mode: collaborationMode,
     setMode: setCollaborationMode,
@@ -1616,7 +1591,6 @@ export function AgentsSidebar({
       setDesktopViewForSettings(null)
     }
   }, [setDesktopViewForSettings, setSidebarOpenForSettings])
-  const { isLoaded: isAuthLoaded } = useCombinedAuth()
   const [showAuthDialog, setShowAuthDialog] = useState(false)
   const setCreateTeamDialogOpen = useSetAtom(createTeamDialogOpenAtom)
 
@@ -1663,21 +1637,6 @@ export function AgentsSidebar({
   // Prefetch individual chat data on hover
   const prefetchLocalChat = usePrefetchLocalChat()
   const ENABLE_CHAT_HOVER_PREFETCH = false
-
-  // Group chats under their referenced workspace; chats without a workspace link stay unassigned.
-  const chatsByWorkspace = useMemo(() => {
-    if (!allChats) return new Map<string, typeof allChats>()
-
-    const grouped = new Map<string, typeof allChats>()
-    for (const chat of allChats) {
-      const wsId = chat.workspaceId || "unassigned"
-      if (!grouped.has(wsId)) {
-        grouped.set(wsId, [])
-      }
-      grouped.get(wsId)!.push(chat)
-    }
-    return grouped
-  }, [allChats])
 
   // Build sidebar chat entries; a chat can reference a workspace, but is not the workspace itself.
   const rawAgentChats = useMemo(() => {
@@ -1727,7 +1686,7 @@ export function AgentsSidebar({
     })
 
     return unified
-  }, [allChats, workspaces])
+  }, [allChats])
 
   const agentChats = useMemo(() => {
     const seenPaths = new Set<string>()
@@ -1933,7 +1892,7 @@ export function AgentsSidebar({
 
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [undoStack, setUndoStack, restoreChatMutation, setSelectedChatId])
+  }, [undoStack, setUndoStack, restoreChatMutation.mutate])
 
   // Batch archive mutation
   const archiveChatsBatchMutation = trpc.chats.archiveBatch.useMutation({
@@ -2117,9 +2076,6 @@ export function AgentsSidebar({
       clearChatSelection()
     }
   }, [selectedChatIds, clearChatSelection])
-
-  // Get clerk username
-  const clerkUsername = clerkUser?.username
 
   // Filter and separate pinned/unpinned agents
   const { pinnedAgents, unpinnedAgents, filteredChats } = useMemo(() => {
@@ -2492,35 +2448,44 @@ export function AgentsSidebar({
     // In multi-select mode, clicking on the item still navigates to the chat
     // Only clicking on the checkbox toggles selection
 
-    const originalId = chatId
+    // Prevent concurrent execution from rapid clicks on different chats
+    if (chatClickLockRef.current) return
+    chatClickLockRef.current = true
+    try {
+      const originalId = chatId
 
-    // Prevent opening same chat in multiple windows.
-    // Claim new chat BEFORE releasing old one — if claim fails, we keep the current chat.
-    if (window.desktopApi?.claimChat) {
-      const result = await window.desktopApi.claimChat(originalId)
-      if (!result.ok) {
-        toast.info("This workspace is already open in another window", {
-          description: "Switching to the existing window.",
-          duration: 3000,
-        })
-        await window.desktopApi.focusChatOwner(originalId)
-        return
+      // Prevent opening same chat in multiple windows.
+      // Claim new chat BEFORE releasing old one — if claim fails, we keep the current chat.
+      if (window.desktopApi?.claimChat) {
+        const result = await window.desktopApi.claimChat(originalId)
+        if (!result.ok) {
+          toast.info("This workspace is already open in another window", {
+            description: "Switching to the existing window.",
+            duration: 3000,
+          })
+          await window.desktopApi.focusChatOwner(originalId)
+          return
+        }
+        // Release old chat only after new one is successfully claimed.
+        // Use ref to get latest selectedChatId (avoids stale closure).
+        const currentSelectedId = selectedChatIdRef.current
+        if (currentSelectedId && currentSelectedId !== originalId) {
+          await window.desktopApi.releaseChat(currentSelectedId)
+        }
       }
-      // Release old chat only after new one is successfully claimed
-      if (selectedChatId && selectedChatId !== originalId) {
-        await window.desktopApi.releaseChat(selectedChatId)
-      }
-    }
 
-    setSelectedChatId(originalId)
-    // Sync selectedWorkspaceId to match the selected chat's workspace
-    const clickedChat = filteredChats.find((c) => c.id === originalId)
-    setSelectedWorkspaceId(clickedChat?.workspaceId ?? null)
-    setShowNewChatForm(false)
-    setDesktopView(null) // Clear automations/inbox view when selecting a chat
-    // On mobile, notify parent to switch to chat mode
-    if (isMobileFullscreen && onChatSelect) {
-      onChatSelect()
+      setSelectedChatId(originalId)
+      // Sync selectedWorkspaceId to match the selected chat's workspace
+      const clickedChat = filteredChats.find((c) => c.id === originalId)
+      setSelectedWorkspaceId(clickedChat?.workspaceId ?? null)
+      setShowNewChatForm(false)
+      setDesktopView(null) // Clear automations/inbox view when selecting a chat
+      // On mobile, notify parent to switch to chat mode
+      if (isMobileFullscreen && onChatSelect) {
+        onChatSelect()
+      }
+    } finally {
+      chatClickLockRef.current = false
     }
   }, [filteredChats, selectedChatId, selectedChatIds, toggleChatSelection, setSelectedChatIds, setSelectedChatId, setSelectedWorkspaceId, setShowNewChatForm, setDesktopView, isMobileFullscreen, onChatSelect])
 
@@ -2549,28 +2514,33 @@ export function AgentsSidebar({
   // Archive single chat - wrapped for memoized component
   // Checks for active terminal processes and worktree, shows confirmation dialog if needed
   const handleArchiveSingle = useCallback(async (chatId: string) => {
-    // Fetch both session count and worktree status in parallel
-    const isLocalMode = true
-    const [sessionCount, worktreeStatus] = await Promise.all([
-      // Local mode: terminals are shared and won't be killed on archive, so skip count
-      isLocalMode
-        ? Promise.resolve(0)
-        : utils.terminal.getActiveSessionCount.fetch({ workspaceId: chatId }),
-      utils.chats.getWorktreeStatus.fetch({ chatId }),
-    ])
+    try {
+      // Fetch both session count and worktree status in parallel
+      const isLocalMode = true
+      const [sessionCount, worktreeStatus] = await Promise.all([
+        // Local mode: terminals are shared and won't be killed on archive, so skip count
+        isLocalMode
+          ? Promise.resolve(0)
+          : utils.terminal.getActiveSessionCount.fetch({ workspaceId: chatId }),
+        utils.chats.getWorktreeStatus.fetch({ chatId }),
+      ])
 
-    const needsConfirmation = sessionCount > 0 || worktreeStatus.hasWorktree
+      const needsConfirmation = sessionCount > 0 || worktreeStatus.hasWorktree
 
-    if (needsConfirmation) {
-      // Show confirmation dialog
-      setArchivingChatId(chatId)
-      setActiveProcessCount(sessionCount)
-      setHasWorktree(worktreeStatus.hasWorktree)
-      setUncommittedCount(worktreeStatus.uncommittedCount)
-      setConfirmArchiveDialogOpen(true)
-    } else {
-      // No active processes and no worktree, archive directly
-      archiveChatMutation.mutate({ id: chatId })
+      if (needsConfirmation) {
+        // Show confirmation dialog
+        setArchivingChatId(chatId)
+        setActiveProcessCount(sessionCount)
+        setHasWorktree(worktreeStatus.hasWorktree)
+        setUncommittedCount(worktreeStatus.uncommittedCount)
+        setConfirmArchiveDialogOpen(true)
+      } else {
+        // No active processes and no worktree, archive directly
+        archiveChatMutation.mutate({ id: chatId })
+      }
+    } catch (error) {
+      console.error("Failed to check workspace status before archiving:", error)
+      toast.error("Failed to check workspace status")
     }
   }, [
     archiveChatMutation,

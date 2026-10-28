@@ -3,7 +3,7 @@
 import { useCallback, useMemo, useState } from "react"
 import { useAtomValue } from "jotai"
 import { loadingConversationsAtom } from "../atoms"
-import { Plus, ChevronDown, Play, AlignJustify, FolderDown } from "lucide-react"
+import { Plus, ChevronDown, Play, AlignJustify } from "lucide-react"
 import {
   IconSpinner,
   PlanIcon,
@@ -79,8 +79,8 @@ export function MobileChatHeader({
   const sortedConversations = useMemo(
     () =>
       [...allConversations].sort((a, b) => {
-        const aT = new Date(a.updated_at || a.created_at || "0").getTime()
-        const bT = new Date(b.updated_at || b.created_at || "0").getTime()
+        const aT = new Date(a.updated_at || a.created_at || 0).getTime()
+        const bT = new Date(b.updated_at || b.created_at || 0).getTime()
         return bT - aT
       }),
     [allConversations],

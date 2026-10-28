@@ -17,14 +17,16 @@ export const conversationAgentStorage = {
     }
   },
 
-  set(conversationId: string, agentCommand: string): void {
+  set(conversationId: string, agentCommand: string): boolean {
     try {
       const stored = localStorage.getItem(STORAGE_KEY)
       const map = stored ? JSON.parse(stored) : {}
       map[conversationId] = agentCommand
       localStorage.setItem(STORAGE_KEY, JSON.stringify(map))
+      return true
     } catch (error) {
-      console.warn("[conversationAgentStorage] Failed to save agent command:", error)
+      console.error("[conversationAgentStorage] Failed to save agent command:", error)
+      return false
     }
   },
 

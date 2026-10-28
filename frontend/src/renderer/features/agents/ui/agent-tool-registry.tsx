@@ -27,15 +27,30 @@ import {
 
 export type ToolVariant = "simple" | "collapsible"
 
+/**
+ * Generic tool part structure.
+ * Note: `any` is used here because each tool has its own specific Part interface
+ * (e.g., ThinkingToolPart, TaskToolPart) with different input/output shapes.
+ * The registry needs to handle all tool types generically, so we use `any` to
+ * allow TypeScript to accept any tool-specific part structure.
+ */
+export interface ToolPart {
+  type?: string
+  state?: string
+  input?: any
+  output?: any
+  [key: string]: any
+}
+
 export interface ToolMeta {
   icon: React.ComponentType<{ className?: string }>
-  title: (part: any) => string
-  subtitle?: (part: any) => string
-  tooltipContent?: (part: any, projectPath?: string) => string
+  title: (part: ToolPart) => string
+  subtitle?: (part: ToolPart) => string
+  tooltipContent?: (part: ToolPart, projectPath?: string) => string
   variant: ToolVariant
 }
 
-export function getToolStatus(part: any, chatStatus?: string) {
+export function getToolStatus(part: ToolPart, chatStatus?: string) {
   const basePending =
     part.state !== "output-available" && part.state !== "output-error" && part.state !== "result"
   const isError =
@@ -47,7 +62,20 @@ export function getToolStatus(part: any, chatStatus?: string) {
   const isActivelyStreaming = chatStatus === "streaming" || chatStatus === "submitted"
   const isPending = basePending && isActivelyStreaming
   // Tool was in progress but chat stopped streaming (user interrupted)
-  const isInterrupted = basePending && !isActivelyStreaming && chatStatus !== undefined
+  // Only mark as interrupted if:
+  // 1. Tool is still pending (not completed/errored)
+  // 2. Chat is not actively streaming
+  // 3. Chat has a defined status (not initial/undefined state)
+  // 4. Chat is not in a normal completion state (input-streaming means waiting for next tool)
+  // 5. Tool was actually in-progress (not just created but never started)
+  const wasInProgress = part.state === "input-streaming" ||
+                       part.state === "call" ||
+                       part.state === "input-available"
+  const isInterrupted = basePending &&
+                       !isActivelyStreaming &&
+                       chatStatus !== undefined &&
+                       chatStatus !== "input-streaming" &&
+                       wasInProgress
 
   return { isPending, isError, isSuccess, isInterrupted }
 }
@@ -103,37 +131,37 @@ export function getDisplayPath(filePath: string, projectPath?: string): string {
   return filePath
 }
 
-// Utility to calculate diff stats
-function calculateDiffStats(oldString: string, newString: string) {
-  const oldLines = oldString.split("\n")
-  const newLines = newString.split("\n")
-  const maxLines = Math.max(oldLines.length, newLines.length)
-  let addedLines = 0
-  let removedLines = 0
+// Planning messages - memoized per part instance to prevent flickering on re-render
+const PLANNING_MESSAGES = [
+  "Crafting...",
+  "Whirring...",
+  "Imagining...",
+  "Cooking...",
+  "Sussing...",
+  "Unravelling...",
+  "Creating...",
+  "Spinning...",
+  "Computing...",
+  "Synthesizing...",
+  "Manifesting...",
+]
 
-  for (let i = 0; i < maxLines; i++) {
-    const oldLine = oldLines[i]
-    const newLine = newLines[i]
-    if (oldLine !== undefined && newLine !== undefined) {
-      if (oldLine !== newLine) {
-        removedLines++
-        addedLines++
-      }
-    } else if (oldLine !== undefined) {
-      removedLines++
-    } else if (newLine !== undefined) {
-      addedLines++
-    }
+const planningMessageCache = new WeakMap<object, string>()
+
+function getStablePlanningMessage(part: object): string {
+  let cached = planningMessageCache.get(part)
+  if (!cached) {
+    cached = PLANNING_MESSAGES[Math.floor(Math.random() * PLANNING_MESSAGES.length)]
+    planningMessageCache.set(part, cached)
   }
-  return { addedLines, removedLines }
+  return cached
 }
 
 export const AgentToolRegistry: Record<string, ToolMeta> = {
   "tool-Task": {
     icon: SparklesIcon,
     title: (part) => {
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       const isInputStreaming = part.state === "input-streaming"
       if (isInputStreaming) return "Preparing agent"
       const subagentType = part.input?.subagent_type || "Agent"
@@ -153,8 +181,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
   "tool-Grep": {
     icon: SearchIcon,
     title: (part) => {
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       const isInputStreaming = part.state === "input-streaming"
       if (isInputStreaming) return "Preparing search"
       if (isPending) return "Grepping"
@@ -205,8 +232,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
   "tool-Glob": {
     icon: FolderSearch,
     title: (part) => {
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       const isInputStreaming = part.state === "input-streaming"
       if (isInputStreaming) return "Preparing search"
       if (isPending) return "Exploring files"
@@ -235,8 +261,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
   "tool-Read": {
     icon: EyeIcon,
     title: (part) => {
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       const isInputStreaming = part.state === "input-streaming"
       if (isInputStreaming) return "Preparing to read"
       return isPending ? "Reading" : "Read"
@@ -267,31 +292,6 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
       if (!filePath) return "Edit" // Show "Edit" if no file path yet during streaming
       return filePath.split("/").pop() || "Edit"
     },
-    subtitle: (part) => {
-      // Don't show subtitle while input is still streaming
-      if (part.state === "input-streaming") return ""
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
-      if (isPending) return ""
-
-      const oldString = part.input?.old_string || ""
-      const newString = part.input?.new_string || ""
-
-      if (!oldString && !newString) {
-        return ""
-      }
-
-      // Always show actual line counts if there are any changes (copied from canvas)
-      if (oldString !== newString) {
-        const { addedLines, removedLines } = calculateDiffStats(
-          oldString,
-          newString,
-        )
-        return `<span style="font-size: 11px; color: light-dark(#587C0B, #A3BE8C)">+${addedLines}</span> <span style="font-size: 11px; color: light-dark(#AD0807, #AE5A62)">-${removedLines}</span>`
-      }
-
-      return ""
-    },
     variant: "simple",
   },
 
@@ -305,22 +305,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
   // Planning indicator - shown when streaming starts but no content yet
   "tool-planning": {
     icon: PlanningIcon,
-    title: () => {
-      const messages = [
-        "Crafting...",
-        "Whirring...",
-        "Imagining...",
-        "Cooking...",
-        "Sussing...",
-        "Unravelling...",
-        "Creating...",
-        "Spinning...",
-        "Computing...",
-        "Synthesizing...",
-        "Manifesting...",
-      ]
-      return messages[Math.floor(Math.random() * messages.length)]
-    },
+    title: (part) => getStablePlanningMessage(part),
     variant: "simple",
   },
 
@@ -344,8 +329,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
   "tool-Bash": {
     icon: CustomTerminalIcon,
     title: (part) => {
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       const isInputStreaming = part.state === "input-streaming"
       if (isInputStreaming) return "Generating command"
       return isPending ? "Running command" : "Ran command"
@@ -369,8 +353,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
   "tool-WebFetch": {
     icon: GlobeIcon,
     title: (part) => {
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       const isInputStreaming = part.state === "input-streaming"
       if (isInputStreaming) return "Preparing fetch"
       return isPending ? "Fetching" : "Fetched"
@@ -391,8 +374,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
   "tool-WebSearch": {
     icon: SearchIcon,
     title: (part) => {
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       const isInputStreaming = part.state === "input-streaming"
       if (isInputStreaming) return "Preparing search"
       return isPending ? "Searching the web" : "Searched the web"
@@ -410,8 +392,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
   "tool-TodoWrite": {
     icon: ListTodo,
     title: (part) => {
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       const action = part.input?.action || "update"
       if (isPending) {
         return action === "add" ? "Adding todo" : "Updating todos"
@@ -430,8 +411,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
   "tool-TaskCreate": {
     icon: Plus,
     title: (part) => {
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       return isPending ? "Creating task" : "Created task"
     },
     subtitle: (part) => {
@@ -446,8 +426,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
     title: (part) => {
       // Status comes from INPUT (output is just confirmation string)
       const status = part.input?.status
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       if (isPending) {
         if (status === "in_progress") return "Starting task"
         if (status === "completed") return "Completing task"
@@ -473,8 +452,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
   "tool-TaskGet": {
     icon: Eye,
     title: (part) => {
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       return isPending ? "Getting task" : "Got task"
     },
     subtitle: (part) => {
@@ -491,8 +469,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
   "tool-TaskList": {
     icon: List,
     title: (part) => {
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       const count = part.output?.tasks?.length
       if (isPending) return "Listing tasks"
       return count !== undefined ? `Listed ${count} tasks` : "Listed tasks"
@@ -504,8 +481,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
   "tool-PlanWrite": {
     icon: PlanningIcon,
     title: (part) => {
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       const action = part.input?.action || "create"
       const status = part.input?.plan?.status
       if (isPending) {
@@ -550,8 +526,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
   "tool-NotebookEdit": {
     icon: FileCode2,
     title: (part) => {
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       return isPending ? "Editing notebook" : "Edited notebook"
     },
     subtitle: (part) => {
@@ -566,8 +541,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
   "tool-BashOutput": {
     icon: Terminal,
     title: (part) => {
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       return isPending ? "Getting output" : "Got output"
     },
     subtitle: (part) => {
@@ -580,8 +554,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
   "tool-KillShell": {
     icon: XCircle,
     title: (part) => {
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       return isPending ? "Stopping shell" : "Stopped shell"
     },
     subtitle: (part) => {
@@ -611,8 +584,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
   "tool-Thinking": {
     icon: SparklesIcon,
     title: (part) => {
-      const isPending =
-        part.state !== "output-available" && part.state !== "output-error"
+      const { isPending } = getToolStatus(part)
       return isPending ? "Thinking..." : "Thought"
     },
     subtitle: (part) => {

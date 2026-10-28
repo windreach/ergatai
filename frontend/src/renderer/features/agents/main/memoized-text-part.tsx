@@ -11,13 +11,8 @@ interface MemoizedTextPartProps {
   isStreaming?: boolean
 }
 
-// Helper function to highlight text in DOM using TreeWalker
-function highlightTextInDom(
-  container: HTMLElement,
-  searchText: string,
-  currentMatchIndex: number | null = null
-) {
-  // Remove existing highlights first
+// Helper function to remove existing search highlights from DOM
+function removeHighlights(container: HTMLElement) {
   const existingHighlights = container.querySelectorAll(".search-highlight")
   existingHighlights.forEach((el) => {
     const parent = el.parentNode
@@ -26,6 +21,16 @@ function highlightTextInDom(
       parent.normalize()
     }
   })
+}
+
+// Helper function to highlight text in DOM using TreeWalker
+function highlightTextInDOM(
+  container: HTMLElement,
+  searchText: string,
+  currentMatchIndex: number | null = null
+) {
+  // Remove existing highlights first
+  removeHighlights(container)
 
   if (!searchText) return
 
@@ -140,18 +145,11 @@ export const MemoizedTextPart = memo(function MemoizedTextPart({
   useEffect(() => {
     if (!containerRef.current || isStreaming || !searchQuery) return
 
-    highlightTextInDom(containerRef.current, searchQuery, currentMatchIndexInPart)
+    highlightTextInDOM(containerRef.current, searchQuery, currentMatchIndexInPart)
 
     return () => {
       if (containerRef.current) {
-        const existingHighlights = containerRef.current.querySelectorAll(".search-highlight")
-        existingHighlights.forEach((el) => {
-          const parent = el.parentNode
-          if (parent) {
-            parent.replaceChild(document.createTextNode(el.textContent || ""), el)
-            parent.normalize()
-          }
-        })
+        removeHighlights(containerRef.current)
       }
     }
   }, [searchQuery, currentMatchIndexInPart, isStreaming, text])

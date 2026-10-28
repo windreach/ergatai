@@ -35,7 +35,12 @@ export function AgentSessionsPanel({
     onSuccess: (_data, variables) => setActiveSessionId(variables.sessionId),
   })
   const deleteSession = trpc.ergatai.deleteAgentSession.useMutation({
-    onSuccess: () => utils.ergatai.listAgentSessions.invalidate({ agentId }),
+    onSuccess: (_data, variables) => {
+      utils.ergatai.listAgentSessions.invalidate({ agentId })
+      if (activeSessionId === variables.sessionId) {
+        setActiveSessionId(null)
+      }
+    },
   })
 
   const sessions: AgentSession[] = Array.isArray(sessionsQuery.data)

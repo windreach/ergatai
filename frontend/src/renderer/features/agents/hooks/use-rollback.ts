@@ -1,13 +1,20 @@
-import { useCallback } from "react"
+import { useCallback, useRef } from "react"
+import { toast } from "sonner"
 import { executeRollback } from "./rollback-utils"
 import type { SelectedTextContext, DiffTextContext, PastedTextFile, UploadedImage } from "../types"
+
+// any justified: messages have a complex union type from the conversation system
+// that varies by role and content type. Using a generic array type is simpler
+// than importing and maintaining the full Message union here.
+type MessagesArray = any[]
+type SetMessagesFn = (messages: MessagesArray | ((current: MessagesArray) => MessagesArray)) => void
 
 interface UseRollbackOptions {
   isRollingBack: boolean
   setIsRollingBack: (value: boolean) => void
   isStreaming: boolean
-  messages: any[]
-  setMessages: (messages: any[] | ((current: any[]) => any[])) => void
+  messages: MessagesArray
+  setMessages: SetMessagesFn
   conversationId: string
   recomputeChangedFiles: () => void
   refreshDiff?: () => void
@@ -15,7 +22,7 @@ interface UseRollbackOptions {
   setTextContextsFromDraft: (contexts: SelectedTextContext[]) => void
   setDiffTextContextsFromDraft: (contexts: DiffTextContext[]) => void
   setPastedTextsFromDraft: (texts: PastedTextFile[]) => void
-  editorRef: React.RefObject<any>
+  editorRef: React.RefObject<any> // any justified: editor ref type is complex and varies by editor implementation
 }
 
 export function useRollback({
@@ -33,30 +40,48 @@ export function useRollback({
   setPastedTextsFromDraft,
   editorRef,
 }: UseRollbackOptions) {
+  // Use refs for volatile state to stabilize callback identity
+  const isRollingBackRef = useRef(isRollingBack)
+  const isStreamingRef = useRef(isStreaming)
+  const messagesRef = useRef(messages)
+
+  // Keep refs in sync with current values
+  isRollingBackRef.current = isRollingBack
+  isStreamingRef.current = isStreaming
+  messagesRef.current = messages
+
   // Rollback handler - triggered from user message bubble
   // Finds the last assistant message BEFORE this user message, rolls back to it,
   // and inserts the user message text into the input for easy re-sending
   const handleRollback = useCallback(
-    async (userMsg: (typeof messages)[0]) => {
-      await executeRollback(
-        { isRollingBack, isStreaming, messages, conversationId, userMsg },
-        {
-          setIsRollingBack,
-          setMessages,
-          recomputeChangedFiles,
-          refreshDiff,
-          setImagesFromDraft,
-          setTextContextsFromDraft,
-          setDiffTextContextsFromDraft,
-          setPastedTextsFromDraft,
-          editorRef,
-        },
-      )
+    async (userMsg: MessagesArray[0]) => {
+      try {
+        await executeRollback(
+          {
+            isRollingBack: isRollingBackRef.current,
+            isStreaming: isStreamingRef.current,
+            messages: messagesRef.current,
+            conversationId,
+            userMsg,
+          },
+          {
+            setIsRollingBack,
+            setMessages,
+            recomputeChangedFiles,
+            refreshDiff,
+            setImagesFromDraft,
+            setTextContextsFromDraft,
+            setDiffTextContextsFromDraft,
+            setPastedTextsFromDraft,
+            editorRef,
+          },
+        )
+      } catch (error) {
+        console.error("[useRollback] Unexpected error during rollback:", error)
+        toast.error("An unexpected error occurred during rollback")
+      }
     },
     [
-      isRollingBack,
-      isStreaming,
-      messages,
       conversationId,
       setIsRollingBack,
       setMessages,

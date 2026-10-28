@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import {
   Bird,
   Braces,
@@ -55,6 +55,21 @@ export function getCoreAgentIcon(agentId: CoreAgentId) {
   return ClaudeCodeIcon
 }
 
+export function getCoreAgentDisplayName(agentId: CoreAgentId): string {
+  if (agentId === "claude-code") return "Claude Code"
+  if (agentId === "codex") return "Codex"
+  if (agentId === "cursor") return "Cursor"
+  if (agentId === "opencode") return "OpenCode"
+  if (agentId === "gemini") return "Gemini"
+  if (agentId === "goose") return "Goose"
+  if (agentId === "cline") return "Cline"
+  if (agentId === "kiro") return "Kiro"
+  if (agentId === "auggie") return "Auggie"
+  if (agentId === "hermes") return "Hermes"
+  if (agentId === "openclaw") return "OpenClaw"
+  return agentId
+}
+
 export function CoreAgentSelector({
   value = "claude-code",
   onChange,
@@ -66,7 +81,7 @@ export function CoreAgentSelector({
   const [agents, setAgents] = useState<CoreAgentOption[]>([])
   const [selectedAgent, setSelectedAgent] = useState<CoreAgentOption>({
     id: value,
-    name: value === "codex" ? "Codex" : "Claude Code",
+    name: getCoreAgentDisplayName(value),
   })
 
   useEffect(() => {
@@ -89,7 +104,7 @@ export function CoreAgentSelector({
     setSelectedAgent((current) =>
       current.id === value
         ? current
-        : { id: value, name: value === "codex" ? "Codex" : "Claude Code" },
+        : { id: value, name: getCoreAgentDisplayName(value) },
     )
   }, [value])
 
@@ -186,28 +201,12 @@ function GroupAgentSelector({
   const [open, setOpen] = useState(false)
   const [draftAgentIds, setDraftAgentIds] =
     useState<CoreAgentId[]>(selectedAgentIds)
-  const panelRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     if (open) {
       setDraftAgentIds(selectedAgentIds)
     }
   }, [open, selectedAgentIds])
-
-  useEffect(() => {
-    if (!open) return
-
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!panelRef.current?.contains(event.target as Node)) {
-        setOpen(false)
-      }
-    }
-
-    document.addEventListener("pointerdown", handlePointerDown)
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown)
-    }
-  }, [open])
 
   const toggleDraftAgent = (agentId: CoreAgentId) => {
     setDraftAgentIds((current) => {
@@ -259,12 +258,9 @@ function GroupAgentSelector({
           </button>
         </PopoverTrigger>
         <PopoverContent
-          ref={panelRef}
           align="start"
           className="w-64 p-3"
           onEscapeKeyDown={(event) => event.preventDefault()}
-          onPointerDownOutside={(event) => event.preventDefault()}
-          onFocusOutside={(event) => event.preventDefault()}
         >
           <div className="mb-1 flex items-center justify-between">
             <span className="text-sm font-medium">Add agent</span>

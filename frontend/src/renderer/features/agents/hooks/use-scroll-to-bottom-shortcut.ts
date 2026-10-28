@@ -1,9 +1,10 @@
 import { useEffect } from "react"
+import type { AgentsMentionsEditorHandle } from "../mentions"
 
 interface UseScrollToBottomShortcutProps {
   isActive: boolean
   scrollToBottom: () => void
-  editorRef: React.RefObject<any>
+  editorRef: React.RefObject<AgentsMentionsEditorHandle | null>
 }
 
 /**
@@ -25,6 +26,19 @@ export function useScrollToBottomShortcut({
         !e.altKey &&
         !e.shiftKey
       ) {
+        // Only trigger when editor or a contenteditable element is focused
+        // This prevents interference with other focused elements (inputs, modals, etc.)
+        const activeElement = document.activeElement
+        const isEditorFocused =
+          activeElement &&
+          (activeElement.getAttribute("contenteditable") === "true" ||
+            activeElement.tagName === "TEXTAREA" ||
+            activeElement.tagName === "INPUT")
+
+        if (!isEditorFocused) {
+          return
+        }
+
         // Don't intercept if input has content - let native cursor navigation work
         const inputValue = editorRef.current?.getValue() || ""
         if (inputValue.trim().length > 0) {

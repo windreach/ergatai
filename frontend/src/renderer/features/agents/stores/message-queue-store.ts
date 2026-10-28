@@ -27,6 +27,8 @@ interface MessageQueueState {
   prependItem: (conversationId: string, item: AgentQueueItem) => void
   // Signal that a queued message was auto-sent (for scroll triggering)
   triggerQueueSent: (conversationId: string) => void
+  // Remove all state for a conversation (call on conversation close/delete to prevent unbounded growth)
+  removeConversation: (conversationId: string) => void
 }
 
 export const useMessageQueueStore = create<MessageQueueState>()(
@@ -75,17 +77,14 @@ export const useMessageQueueStore = create<MessageQueueState>()(
 
   // Atomic pop: find and remove in single set() call to prevent race conditions
   popItem: (conversationId, itemId) => {
-    let foundItem: AgentQueueItem | null = null
-    set((state) => {
-      const currentQueue = state.queues[conversationId] || []
-      foundItem = currentQueue.find((i) => i.id === itemId) || null
-      if (!foundItem) return state
-      return {
-        queues: {
-          ...state.queues,
-          [conversationId]: currentQueue.filter((i) => i.id !== itemId),
-        },
-      }
+    const currentQueue = get().queues[conversationId] || []
+    const foundItem = currentQueue.find((i) => i.id === itemId) || null
+    if (!foundItem) return null
+    set({
+      queues: {
+        ...get().queues,
+        [conversationId]: currentQueue.filter((i) => i.id !== itemId),
+      },
     })
     return foundItem
   },
@@ -107,5 +106,20 @@ export const useMessageQueueStore = create<MessageQueueState>()(
         [conversationId]: (state.queueSentTriggers[conversationId] || 0) + 1,
       },
     }))
+  },
+
+  // Remove all state for a conversation to prevent unbounded memory growth
+  // in long-running sessions with many conversations.
+  removeConversation: (conversationId) => {
+    set((state) => {
+      const newQueues = { ...state.queues }
+      const newSentTriggers = { ...state.queueSentTriggers }
+      delete newQueues[conversationId]
+      delete newSentTriggers[conversationId]
+      return {
+        queues: newQueues,
+        queueSentTriggers: newSentTriggers,
+      }
+    })
   },
 })))

@@ -50,7 +50,7 @@ interface AgentChatCardProps {
   chat: {
     id: string
     name: string | null
-    meta: any
+    meta: unknown
     sandbox_id: string | null
     branch?: string | null
   }
@@ -92,6 +92,40 @@ function ChatIconWithBadge({
     )
   }
 
+  const renderBadgeContent = () => {
+    if (isLoading) {
+      return (
+        <IconSpinner
+          className={cn(
+            "w-2.5 h-2.5",
+            isSelected ? "text-primary-foreground" : "text-muted-foreground",
+          )}
+        />
+      )
+    }
+    if (hasUnseenChanges) {
+      return <div className="w-2 h-2 rounded-full bg-[#307BD0]" />
+    }
+    if (lastMode === "plan") {
+      return (
+        <PlanIcon
+          className={cn(
+            "w-2.5 h-2.5",
+            isSelected ? "text-primary-foreground" : "text-muted-foreground",
+          )}
+        />
+      )
+    }
+    return (
+      <AgentIcon
+        className={cn(
+          "w-2.5 h-2.5",
+          isSelected ? "text-primary-foreground" : "text-muted-foreground",
+        )}
+      />
+    )
+  }
+
   return (
     <div className="relative flex-shrink-0 h-4 w-4">
       {renderMainIcon()}
@@ -102,30 +136,7 @@ function ChatIconWithBadge({
           isSelected ? "bg-primary" : "bg-background",
         )}
       >
-        {isLoading ? (
-          <IconSpinner
-            className={cn(
-              "w-2.5 h-2.5",
-              isSelected ? "text-primary-foreground" : "text-muted-foreground",
-            )}
-          />
-        ) : hasUnseenChanges ? (
-          <div className="w-2 h-2 rounded-full bg-[#307BD0]" />
-        ) : lastMode === "plan" ? (
-          <PlanIcon
-            className={cn(
-              "w-2.5 h-2.5",
-              isSelected ? "text-primary-foreground" : "text-muted-foreground",
-            )}
-          />
-        ) : (
-          <AgentIcon
-            className={cn(
-              "w-2.5 h-2.5",
-              isSelected ? "text-primary-foreground" : "text-muted-foreground",
-            )}
-          />
-        )}
+        {renderBadgeContent()}
       </div>
     </div>
   )

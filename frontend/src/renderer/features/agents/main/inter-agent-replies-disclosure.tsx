@@ -11,21 +11,22 @@ import {
 import { ChevronDown } from "lucide-react"
 import { cn } from "../../../lib/utils"
 import { trpc } from "../../../lib/trpc"
-import { useConversationMessages } from "../hooks/use-conversation-messages"
+import {
+  useConversationMessages,
+  type Message,
+} from "../hooks/use-conversation-messages"
 
-type PersistedMessage = {
-  id: string
-  sequence: number
-  role: string
-  parts: unknown[]
-  metadata: Record<string, unknown> | null
-}
+// `Message` is imported from the hook; it is the authoritative shape
+// (id, sequence, role, parts, metadata, conversationId, createdAt).
+// We alias it locally to keep downstream call sites short.
+type PersistedMessage = Message
 
 function getMessageText(message: PersistedMessage) {
   return message.parts
-    .filter((part): part is { type: "text"; text: string } =>
-      (part as any)?.type === "text" && typeof (part as any)?.text === "string",
-    )
+    .filter((part): part is { type: "text"; text: string } => {
+      const p = part as { type?: unknown; text?: unknown } | null
+      return p?.type === "text" && typeof p.text === "string"
+    })
     .map((part) => part.text)
     .join("\n")
     .trim()
@@ -37,9 +38,14 @@ type InterAgentTarget = {
   runtimeAgentId?: string
 }
 
-function getOutputTargetAgentId(part: any) {
-  const outputText = (Array.isArray(part.output) ? part.output : [])
-    .map((item: any) => typeof item?.text === "string" ? item.text : "")
+function getOutputTargetAgentId(part: unknown) {
+  const candidate = part as { output?: unknown } | null
+  const rawOutput = candidate?.output
+  const outputText = (Array.isArray(rawOutput) ? rawOutput : [])
+    .map((item) => {
+      const it = item as { text?: unknown } | null
+      return typeof it?.text === "string" ? it.text : ""
+    })
     .join("\n")
 
   try {
@@ -97,7 +103,17 @@ function AgentReplyDisclosure({
   agentId: string
   agentName: string
 }) {
-  const { messages, isLoading } = useConversationMessages(conversationId)
+  const { messages, isLoading, error } = useConversationMessages(conversationId)
+
+  if (error) {
+    // Surface load errors to the console; the surrounding UI falls back to
+    // an empty disclosure, so we log rather than swallow silently.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[InterAgentRepliesDisclosure] Failed to load conversation ${conversationId}:`,
+      error,
+    )
+  }
 
   const replies = useMemo(() => {
     if (isLoading) return []
@@ -147,7 +163,7 @@ export function InterAgentRepliesDisclosure({
   message,
   chatId,
 }: {
-  message: any
+  message: { parts?: unknown[] }
   chatId: string
 }) {
   const isPersistedChat = chatId.startsWith("chat_")
@@ -158,7 +174,11 @@ export function InterAgentRepliesDisclosure({
 
   const targets = useMemo(
     () => getInterAgentTargets(Array.isArray(message?.parts) ? message.parts : []),
-    [message],
+    // Depend on the actual parts array so memo recomputes when its identity
+    // changes; the outer `message` reference can be unstable even when parts
+    // are unchanged, leading to either stale or redundant recomputation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [message?.parts],
   )
 
   const resolvedTargets = useMemo(() => {
@@ -168,15 +188,15 @@ export function InterAgentRepliesDisclosure({
       const normalizedRequested = target.requestedAgentId?.toLowerCase()
       const binding = [...bindings]
         .reverse()
-        .find((binding) => {
-          if (target.runtimeAgentId && binding.agentId === target.runtimeAgentId) {
+        .find((b) => {
+          if (target.runtimeAgentId && b?.agentId === target.runtimeAgentId) {
             return true
           }
 
           return Boolean(normalizedRequested) && [
-            binding.agentName,
-            binding.agentCommand,
-            binding.agentId,
+            b?.agentName,
+            b?.agentCommand,
+            b?.agentId,
           ].some((value) => value?.toLowerCase() === normalizedRequested)
         })
 

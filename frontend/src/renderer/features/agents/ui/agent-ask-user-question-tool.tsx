@@ -12,6 +12,15 @@ import {
 } from "../atoms"
 import { areAskUserQuestionPropsEqual } from "./agent-tool-utils"
 
+// Helper component for consistent status line styling
+function StatusLine({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-2 py-1 px-2 text-xs text-muted-foreground">
+      {children}
+    </div>
+  )
+}
+
 interface AgentAskUserQuestionToolProps {
   input: {
     questions?: Array<{
@@ -23,7 +32,6 @@ interface AgentAskUserQuestionToolProps {
   }
   result?:
     | {
-        questions?: unknown
         answers?: Record<string, string>
       }
     | string
@@ -80,11 +88,11 @@ export const AgentAskUserQuestionTool = memo(function AgentAskUserQuestionTool({
   // 2. Streaming but dialog not yet shown (waiting for ask-user-question chunk)
   if (state === "call" && (questionCount === 0 || (isStreaming && !isDialogShown))) {
     return (
-      <div className="flex items-center gap-2 py-1 px-2 text-xs text-muted-foreground">
+      <StatusLine>
         <TextShimmer className="text-xs" duration={1.5}>
           Asking question...
         </TextShimmer>
-      </div>
+      </StatusLine>
     )
   }
 
@@ -92,22 +100,22 @@ export const AgentAskUserQuestionTool = memo(function AgentAskUserQuestionTool({
   if (state === "result" && (isSkipped || isTimedOut)) {
     const firstQuestion = questions[0]?.header || questions[0]?.question
     return (
-      <div className="flex items-center gap-2 py-1 px-2 text-xs text-muted-foreground">
+      <StatusLine>
         <span>{firstQuestion || "Question"}</span>
         <span className="text-muted-foreground/50">•</span>
         <span>{isTimedOut ? "Timed out" : "Skipped"}</span>
-      </div>
+      </StatusLine>
     )
   }
 
   // Show error state
   if (state === "result" && isError) {
     return (
-      <div className="flex items-center gap-2 py-1 px-2 text-xs text-muted-foreground">
+      <StatusLine>
         <span>Question</span>
         <span className="text-muted-foreground/50">•</span>
         <span className="text-red-500">{effectiveErrorText || "Error"}</span>
-      </div>
+      </StatusLine>
     )
   }
 
@@ -116,9 +124,9 @@ export const AgentAskUserQuestionTool = memo(function AgentAskUserQuestionTool({
     const entries = Object.entries(answers)
     if (entries.length === 0) {
       return (
-        <div className="flex items-center gap-2 py-1 px-2 text-xs text-muted-foreground">
+        <StatusLine>
           <span>Question answered</span>
-        </div>
+        </StatusLine>
       )
     }
 
@@ -133,8 +141,8 @@ export const AgentAskUserQuestionTool = memo(function AgentAskUserQuestionTool({
         </div>
         {/* Content */}
         <div className="flex flex-col gap-2 p-2.5 text-xs">
-          {entries.map(([question, answer], idx) => (
-            <div key={idx} className="flex flex-col gap-0.5">
+          {entries.map(([question, answer]) => (
+            <div key={question} className="flex flex-col gap-0.5">
               <span className="font-medium text-foreground">{question}</span>
               <span className="text-muted-foreground">{answer}</span>
             </div>
@@ -151,11 +159,11 @@ export const AgentAskUserQuestionTool = memo(function AgentAskUserQuestionTool({
   // isStreaming is true only when global streaming is active AND this is the last message
   if (isStreaming) {
     return (
-      <div className="flex items-center gap-2 py-1 px-2 text-xs text-muted-foreground">
+      <StatusLine>
         <span>{firstQuestion || "Question"}</span>
         <span className="text-muted-foreground/50">•</span>
         <span>Waiting for response...</span>
-      </div>
+      </StatusLine>
     )
   }
 
@@ -165,20 +173,20 @@ export const AgentAskUserQuestionTool = memo(function AgentAskUserQuestionTool({
   // If there's no realtimeResult and no answers, the stream was interrupted without an answer
   if (state === "result" && realtimeResult && !answers && !isError && !isSkipped && !isTimedOut) {
     return (
-      <div className="flex items-center gap-2 py-1 px-2 text-xs text-muted-foreground">
+      <StatusLine>
         <span>{firstQuestion || "Question"}</span>
         <span className="text-muted-foreground/50">•</span>
         <span>Submitting...</span>
-      </div>
+      </StatusLine>
     )
   }
 
   // Not streaming and state is "call" - it was truly interrupted
   return (
-    <div className="flex items-center gap-2 py-1 px-2 text-xs text-muted-foreground">
+    <StatusLine>
       <span>{firstQuestion || "Question"}</span>
       <span className="text-muted-foreground/50">•</span>
       <span>Interrupted</span>
-    </div>
+    </StatusLine>
   )
 }, areAskUserQuestionPropsEqual)

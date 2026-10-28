@@ -7,6 +7,13 @@ import { cn } from "../../../lib/utils"
 import { getCoreAgentIcon } from "../components/core-agent-selector"
 import type { CoreAgentId } from "../lib/agent-contract-api"
 
+const AGENT_DISPLAY_NAMES: Record<string, string> = {
+  "claude-code": "Claude Code",
+  "codex": "Codex",
+  "opencode": "OpenCode",
+  "cursor": "Cursor",
+}
+
 interface GroupAgentMentionToolProps {
   part: {
     toolCallId: string
@@ -40,12 +47,9 @@ export const GroupAgentMentionTool = memo(function GroupAgentMentionTool({
     : null
   const TargetIcon = targetAgentId ? getCoreAgentIcon(targetAgentId) : AtSign
 
-  const targetName =
-    targetAgentId
-      ?.replace("claude-code", "Claude Code")
-      .replace("codex", "Codex")
-      .replace("opencode", "OpenCode")
-      .replace("cursor", "Cursor") ?? "Unknown Agent"
+  const targetName = targetAgentId
+    ? (AGENT_DISPLAY_NAMES[targetAgentId] ?? targetAgentId)
+    : "Unknown Agent"
 
   return (
     <div

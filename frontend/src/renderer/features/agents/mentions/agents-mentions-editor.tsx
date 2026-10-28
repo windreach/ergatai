@@ -16,6 +16,52 @@ import { createFileIconElement } from "./file-icon-utils"
 // Should be >= MAX_PASTE_LENGTH from paste-text.ts to avoid processing large pasted content
 const LARGE_TEXT_THRESHOLD = 10000
 
+// Maximum number of undo states to keep in the stack
+const MAX_UNDO_STACK_SIZE = 100
+
+// Undo state snapshot (html + serialized cursor offset)
+interface UndoState {
+  html: string
+  cursorOffset: number
+}
+
+// Parse a serialized mention id (the part inside @[...]) into a FileMentionOption.
+// Used as a fallback when resolveMention is not provided (e.g., during restore from serialized text).
+function parseMentionId(id: string): FileMentionOption | null {
+  if (id.startsWith(MENTION_PREFIXES.FILE) || id.startsWith(MENTION_PREFIXES.FOLDER)) {
+    const parts = id.split(":")
+    if (parts.length >= 3) {
+      const type = parts[0] as "file" | "folder"
+      const repo = parts[1]
+      const path = parts.slice(2).join(":")
+      const name = path.split("/").pop() || path
+      return { id, label: name, path, repository: repo, type }
+    }
+  }
+  if (id.startsWith(MENTION_PREFIXES.SKILL)) {
+    const skillName = id.slice(MENTION_PREFIXES.SKILL.length)
+    return { id, label: skillName, path: "", repository: "", type: "skill" }
+  }
+  if (id.startsWith(MENTION_PREFIXES.AGENT)) {
+    const agentName = id.slice(MENTION_PREFIXES.AGENT.length)
+    return { id, label: agentName, path: "", repository: "", type: "agent" }
+  }
+  if (id.startsWith(MENTION_PREFIXES.TOOL)) {
+    const toolPath = id.slice(MENTION_PREFIXES.TOOL.length)
+    if (toolPath.startsWith("mcp__")) {
+      const parts = toolPath.split("__")
+      const toolName = parts.length >= 3 ? parts.slice(2).join("__") : toolPath
+      const displayName = toolName
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (c) => c.toUpperCase())
+        .trim()
+      return { id, label: displayName, path: toolPath, repository: "", type: "tool" }
+    }
+    return { id, label: toolPath, path: toolPath, repository: "", type: "tool" }
+  }
+  return null
+}
+
 export interface FileMentionOption {
   id: string // file:owner/repo:path/to/file.tsx or folder:owner/repo:path/to/folder or skill:skill-name or tool:servername
   label: string // filename or folder name or skill name or tool name
@@ -62,6 +108,8 @@ export type AgentsMentionsEditorHandle = {
   setValue: (value: string) => void
   clear: () => void
   clearSlashCommand: () => void // Clear slash command text after selection
+  /** Returns true if the given DOM node is inside the editor */
+  contains: (node: Node) => boolean
 }
 
 type AgentsMentionsEditorProps = {
@@ -206,48 +254,8 @@ function buildContentFromSerialized(
       appendText(root, serialized.slice(lastIndex, match.index))
     }
     const id = match[1]
-    // Try to resolve mention
-    let option: FileMentionOption | null = null
-    if (resolveMention) {
-      option = resolveMention(id)
-    }
-    if (!option && (id.startsWith(MENTION_PREFIXES.FILE) || id.startsWith(MENTION_PREFIXES.FOLDER))) {
-      // Parse file/folder mention: file:repo:path or folder:repo:path
-      const parts = id.split(":")
-      if (parts.length >= 3) {
-        const type = parts[0] as "file" | "folder"
-        const repo = parts[1]
-        const path = parts.slice(2).join(":")
-        const name = path.split("/").pop() || path
-        option = { id, label: name, path, repository: repo, type }
-      }
-    }
-    if (!option && id.startsWith(MENTION_PREFIXES.SKILL)) {
-      // Parse skill mention: skill:skill-name
-      const skillName = id.slice(MENTION_PREFIXES.SKILL.length)
-      option = { id, label: skillName, path: "", repository: "", type: "skill" }
-    }
-    if (!option && id.startsWith(MENTION_PREFIXES.AGENT)) {
-      // Parse agent mention: agent:agent-name
-      const agentName = id.slice(MENTION_PREFIXES.AGENT.length)
-      option = { id, label: agentName, path: "", repository: "", type: "agent" }
-    }
-    if (!option && id.startsWith(MENTION_PREFIXES.TOOL)) {
-      const toolPath = id.slice(MENTION_PREFIXES.TOOL.length)
-      if (toolPath.startsWith("mcp__")) {
-        // Individual tool: tool:mcp__servername__toolname
-        const parts = toolPath.split("__")
-        const toolName = parts.length >= 3 ? parts.slice(2).join("__") : toolPath
-        const displayName = toolName
-          .replace(/_/g, " ")
-          .replace(/\b\w/g, (c) => c.toUpperCase())
-          .trim()
-        option = { id, label: displayName, path: toolPath, repository: "", type: "tool" }
-      } else {
-        // MCP server: tool:servername
-        option = { id, label: toolPath, path: toolPath, repository: "", type: "tool" }
-      }
-    }
+    // Try to resolve mention (prefer caller-provided resolver, fall back to parser)
+    const option = resolveMention ? resolveMention(id) : parseMentionId(id)
     if (option) {
       root.appendChild(createMentionNode(option))
       root.appendChild(document.createTextNode(" "))
@@ -524,10 +532,6 @@ export const AgentsMentionsEditor = memo(
 
       // Custom undo/redo stack
       // Browser's native undo doesn't work well with execCommand insertText and DOM manipulations
-      interface UndoState {
-        html: string
-        cursorOffset: number
-      }
       const undoStack = useRef<UndoState[]>([])
       const redoStack = useRef<UndoState[]>([])
       const isUndoRedo = useRef(false)
@@ -543,6 +547,7 @@ export const AgentsMentionsEditor = memo(
         if (sel && sel.rangeCount > 0 && editorRef.current.contains(sel.anchorNode)) {
           const range = sel.getRangeAt(0)
           // Calculate offset by walking through all nodes
+          // Mentions count by their serialized length @[id] for consistency with walkTreeOnce/insertMention
           const walker = document.createTreeWalker(
             editorRef.current,
             NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
@@ -557,16 +562,20 @@ export const AgentsMentionsEditor = memo(
               cursorOffset += node.textContent?.length || 0
             } else if (node.nodeType === Node.ELEMENT_NODE) {
               const el = node as HTMLElement
-              // Mention nodes count as their serialized length for consistency
               if (el.hasAttribute("data-mention-id")) {
-                cursorOffset += 1 // Count mention as single unit
-                // Skip children of mention node - move walker to next sibling
-                const nextSibling = walker.nextSibling()
-                if (nextSibling) {
-                  node = nextSibling
+                const id = el.getAttribute("data-mention-id") || ""
+                cursorOffset += `@[${id}]`.length
+                // Skip children of mention node - jump to parent's next sibling
+                let parent: Node | null = el.parentNode
+                while (parent && parent !== editorRef.current && !parent.nextSibling) parent = parent.parentNode
+                if (parent && parent.nextSibling) {
+                  walker.currentNode = parent.nextSibling
+                  node = parent.nextSibling
                   continue
                 }
-                // No sibling - break out and let nextNode handle it
+                // No more siblings - stop walking
+                node = null
+                continue
               }
             }
             node = walker.nextNode()
@@ -587,7 +596,7 @@ export const AgentsMentionsEditor = memo(
         // Clear redo stack when new action is performed
         redoStack.current = []
         // Limit stack size
-        if (undoStack.current.length > 100) {
+        if (undoStack.current.length > MAX_UNDO_STACK_SIZE) {
           undoStack.current.shift()
         }
       }, [getCurrentState])
@@ -614,6 +623,7 @@ export const AgentsMentionsEditor = memo(
 
       // Restore cursor position after undo/redo
       // Handles both text nodes and mention nodes
+      // Mentions count by their serialized length @[id] for consistency with getCurrentState
       const restoreCursor = useCallback((offset: number) => {
         if (!editorRef.current) return
         const sel = window.getSelection()
@@ -625,8 +635,6 @@ export const AgentsMentionsEditor = memo(
           NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
         )
         let node: Node | null = walker.nextNode()
-        let lastTextNode: Text | null = null
-        let lastTextNodeOffset = 0
 
         while (node) {
           if (node.nodeType === Node.TEXT_NODE) {
@@ -640,14 +648,13 @@ export const AgentsMentionsEditor = memo(
               sel.addRange(range)
               return
             }
-            lastTextNode = textNode
-            lastTextNodeOffset = nodeLength
             currentOffset += nodeLength
           } else if (node.nodeType === Node.ELEMENT_NODE) {
             const el = node as HTMLElement
             if (el.hasAttribute("data-mention-id")) {
-              // Mention counts as 1 unit
-              if (currentOffset + 1 >= offset) {
+              const id = el.getAttribute("data-mention-id") || ""
+              const mentionLen = `@[${id}]`.length
+              if (currentOffset + mentionLen >= offset) {
                 // Place cursor after mention
                 const range = document.createRange()
                 range.setStartAfter(el)
@@ -656,13 +663,18 @@ export const AgentsMentionsEditor = memo(
                 sel.addRange(range)
                 return
               }
-              currentOffset += 1
-              // Skip to next sibling (don't traverse inside mention)
-              const nextSibling = walker.nextSibling()
-              if (nextSibling) {
-                node = nextSibling
+              currentOffset += mentionLen
+              // Skip children of mention node - jump to parent's next sibling
+              let parent: Node | null = el.parentNode
+              while (parent && parent !== editorRef.current && !parent.nextSibling) parent = parent.parentNode
+              if (parent && parent.nextSibling) {
+                walker.currentNode = parent.nextSibling
+                node = parent.nextSibling
                 continue
               }
+              // No more siblings - stop walking
+              node = null
+              continue
             }
           }
           node = walker.nextNode()
@@ -684,40 +696,7 @@ export const AgentsMentionsEditor = memo(
 
       // Resolve mention from id for rendering
       const resolveMention = useCallback(
-        (id: string): FileMentionOption | null => {
-          if (id.startsWith(MENTION_PREFIXES.FILE) || id.startsWith(MENTION_PREFIXES.FOLDER)) {
-            const parts = id.split(":")
-            if (parts.length >= 3) {
-              const type = parts[0] as "file" | "folder"
-              const repo = parts[1]
-              const path = parts.slice(2).join(":")
-              const name = path.split("/").pop() || path
-              return { id, label: name, path, repository: repo, type }
-            }
-          }
-          if (id.startsWith(MENTION_PREFIXES.SKILL)) {
-            const skillName = id.slice(MENTION_PREFIXES.SKILL.length)
-            return { id, label: skillName, path: "", repository: "", type: "skill" }
-          }
-          if (id.startsWith(MENTION_PREFIXES.AGENT)) {
-            const agentName = id.slice(MENTION_PREFIXES.AGENT.length)
-            return { id, label: agentName, path: "", repository: "", type: "agent" }
-          }
-          if (id.startsWith(MENTION_PREFIXES.TOOL)) {
-            const toolPath = id.slice(MENTION_PREFIXES.TOOL.length)
-            if (toolPath.startsWith("mcp__")) {
-              const parts = toolPath.split("__")
-              const toolName = parts.length >= 3 ? parts.slice(2).join("__") : toolPath
-              const displayName = toolName
-                .replace(/_/g, " ")
-                .replace(/\b\w/g, (c) => c.toUpperCase())
-                .trim()
-              return { id, label: displayName, path: toolPath, repository: "", type: "tool" }
-            }
-            return { id, label: toolPath, path: toolPath, repository: "", type: "tool" }
-          }
-          return null
-        },
+        (id: string): FileMentionOption | null => parseMentionId(id),
         [],
       )
 
@@ -850,7 +829,7 @@ export const AgentsMentionsEditor = memo(
 
         // Clear previous timeout
         if (triggerDetectionTimeout.current) {
-          clearTimeout(triggerDetectionTimeout.current)
+          cancelAnimationFrame(triggerDetectionTimeout.current)
         }
 
         // For short content, run trigger detection immediately
@@ -1190,12 +1169,16 @@ export const AgentsMentionsEditor = memo(
                   if (el.hasAttribute("data-mention-id")) {
                     const id = el.getAttribute("data-mention-id") || ""
                     serializedCharCount += `@[${id}]`.length
-                    const next: Node | null = el.nextSibling
-                    if (next) {
-                      walker.currentNode = next
-                      walkNode = next
+                    // Skip mention children - jump to parent's next sibling
+                    let parent: Node | null = el.parentNode
+                    while (parent && parent !== editorRef.current && !parent.nextSibling) parent = parent.parentNode
+                    if (parent && parent.nextSibling) {
+                      walker.currentNode = parent.nextSibling
+                      walkNode = parent.nextSibling
                       continue
                     }
+                    walkNode = null
+                    continue
                   }
                 }
                 walkNode = walker.nextNode()
@@ -1276,12 +1259,16 @@ export const AgentsMentionsEditor = memo(
                   if (el.hasAttribute("data-mention-id")) {
                     const id = el.getAttribute("data-mention-id") || ""
                     serializedCharCount += `@[${id}]`.length
-                    let next: Node | null = el.nextSibling
-                    if (next) {
-                      walker.currentNode = next
-                      walkNode = next
+                    // Skip mention children - jump to parent's next sibling
+                    let parent: Node | null = el.parentNode
+                    while (parent && parent !== editorRef.current && !parent.nextSibling) parent = parent.parentNode
+                    if (parent && parent.nextSibling) {
+                      walker.currentNode = parent.nextSibling
+                      walkNode = parent.nextSibling
                       continue
                     }
+                    walkNode = null
+                    continue
                   }
                 }
                 walkNode = walker.nextNode()
@@ -1357,6 +1344,10 @@ export const AgentsMentionsEditor = memo(
               setHasContent(true)
               onContentChange?.(true)
             }
+          },
+
+          contains: (node: Node) => {
+            return editorRef.current != null && editorRef.current.contains(node)
           },
         }),
         [onCloseTrigger, onCloseSlashTrigger, resolveMention, onContentChange, immediateSaveUndoState],

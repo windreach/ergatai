@@ -11,6 +11,17 @@ interface PrStatusBarProps {
 type PrState = "open" | "draft" | "merged" | "closed"
 type ReviewDecision = "approved" | "changes_requested" | "pending"
 
+const VALID_PR_STATES = new Set<PrState>(["open", "draft", "merged", "closed"])
+const VALID_REVIEW_DECISIONS = new Set<ReviewDecision>(["approved", "changes_requested", "pending"])
+
+function isValidPrState(state: string): state is PrState {
+  return VALID_PR_STATES.has(state as PrState)
+}
+
+function isValidReviewDecision(decision: string): decision is ReviewDecision {
+  return VALID_REVIEW_DECISIONS.has(decision as ReviewDecision)
+}
+
 function getStatusLabel(state: PrState, reviewDecision?: ReviewDecision): string {
   if (state === "merged") return "Merged"
   if (state === "closed") return "Closed"
@@ -21,20 +32,16 @@ function getStatusLabel(state: PrState, reviewDecision?: ReviewDecision): string
 }
 
 export function PrStatusBar({ chatId, prUrl, prNumber }: PrStatusBarProps) {
-  console.log("[PrStatusBar] Rendered with props:", { chatId, prUrl, prNumber })
-
   // Poll PR status every 30 seconds
-  const { data: status, isLoading } = trpc.chats.getPrStatus.useQuery(
+  const { data: status, isLoading, error, isError } = trpc.chats.getPrStatus.useQuery(
     { chatId },
-    { refetchInterval: 30000 }
+    { refetchInterval: 30000, enabled: !!prNumber }
   )
-
-  console.log("[PrStatusBar] Query state:", { isLoading, status, pr: status?.pr })
 
   const pr = status?.pr
 
   const handleOpenPr = () => {
-    window.desktopApi.openExternal(prUrl)
+    window.desktopApi?.openExternal(prUrl)
   }
 
   return (
@@ -51,9 +58,16 @@ export function PrStatusBar({ chatId, prUrl, prNumber }: PrStatusBarProps) {
       {/* Status */}
       {isLoading ? (
         <IconSpinner className="h-3.5 w-3.5" />
+      ) : isError ? (
+        <span className="text-xs font-mono text-destructive">
+          Failed to load status
+        </span>
       ) : pr ? (
         <span className="text-xs font-mono text-muted-foreground">
-          {getStatusLabel(pr.state as PrState, pr.reviewDecision as ReviewDecision)}
+          {getStatusLabel(
+            isValidPrState(pr.state) ? pr.state : "open",
+            isValidReviewDecision(pr.reviewDecision) ? pr.reviewDecision : undefined
+          )}
         </span>
       ) : null}
     </div>

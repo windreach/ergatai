@@ -40,9 +40,15 @@ export function ChatSearchBar({ messages, className, topOffset }: ChatSearchBarP
 
   const inputRef = useRef<HTMLInputElement>(null)
   const debounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Keep latest messages in a ref so the debounced search always reads fresh data
+  // without re-arming the timer on every streaming message update
+  const messagesRef = useRef(messages)
 
   // Track if search has completed (to avoid showing "No results" while typing)
   const [searchCompleted, setSearchCompleted] = useState(false)
+
+  // Sync messages ref on every render (cheap, no effect needed)
+  messagesRef.current = messages
 
   // Focus input when search opens
   useEffect(() => {
@@ -65,7 +71,9 @@ export function ChatSearchBar({ messages, className, topOffset }: ChatSearchBarP
     return () => window.removeEventListener("chat-search-select-all", handleSelectAll)
   }, [])
 
-  // Debounced search
+  // Debounced search — depends ONLY on inputValue.
+  // Messages are read from messagesRef so streaming updates don't reset the
+  // debounce timer (which previously caused search starvation during streaming).
   useEffect(() => {
     // Mark search as not completed when input changes
     setSearchCompleted(false)
@@ -84,13 +92,19 @@ export function ChatSearchBar({ messages, className, topOffset }: ChatSearchBarP
         return
       }
 
-      // Extract and search
-      const extracted = extractSearchableText(messages)
-      const matches = findMatches(extracted, inputValue)
-
-      setMatches(matches)
-      setCurrentIndex(0)
-      setSearchCompleted(true)
+      // Extract and search with error handling
+      try {
+        const extracted = extractSearchableText(messagesRef.current)
+        const matches = findMatches(extracted, inputValue)
+        setMatches(matches)
+        setCurrentIndex(0)
+      } catch (error) {
+        console.error("Search failed:", error)
+        setMatches([])
+        setCurrentIndex(0)
+      } finally {
+        setSearchCompleted(true)
+      }
     }, 200)
 
     return () => {
@@ -98,7 +112,8 @@ export function ChatSearchBar({ messages, className, topOffset }: ChatSearchBarP
         clearTimeout(debounceTimeoutRef.current)
       }
     }
-  }, [inputValue, messages, setSearchQuery, setMatches, setCurrentIndex])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- messages intentionally read via ref
+  }, [inputValue, setSearchQuery, setMatches, setCurrentIndex])
 
   // Keyboard navigation
   const handleKeyDown = useCallback(
@@ -113,15 +128,29 @@ export function ChatSearchBar({ messages, className, topOffset }: ChatSearchBarP
         } else {
           goToNext()
         }
-      } else if (e.key === "ArrowDown" || (e.key === "g" && !e.shiftKey && (e.metaKey || e.ctrlKey))) {
+      } else if (e.key === "ArrowDown") {
+        // Only intercept when there are matches to navigate — otherwise let the
+        // browser move the text cursor to the end of the input
+        if (countInfo.total > 0) {
+          e.preventDefault()
+          goToNext()
+        }
+      } else if (e.key === "ArrowUp") {
+        // Only intercept when there are matches to navigate — otherwise let the
+        // browser move the text cursor to the start of the input
+        if (countInfo.total > 0) {
+          e.preventDefault()
+          goToPrev()
+        }
+      } else if (e.key === "g" && !e.shiftKey && (e.metaKey || e.ctrlKey)) {
         e.preventDefault()
         goToNext()
-      } else if (e.key === "ArrowUp" || (e.key === "g" && e.shiftKey && (e.metaKey || e.ctrlKey))) {
+      } else if (e.key === "g" && e.shiftKey && (e.metaKey || e.ctrlKey)) {
         e.preventDefault()
         goToPrev()
       }
     },
-    [closeSearch, goToNext, goToPrev]
+    [closeSearch, goToNext, goToPrev, countInfo.total]
   )
 
   // Focus input when clicking on container (but not on buttons)

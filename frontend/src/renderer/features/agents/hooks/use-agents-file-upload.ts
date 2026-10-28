@@ -1,5 +1,6 @@
 // File upload hook for desktop app with base64 conversion for Claude API
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
+import { toast } from "sonner"
 
 export interface UploadedImage {
   id: string
@@ -23,11 +24,10 @@ export interface UploadedFile {
 }
 
 /**
- * Convert a blob URL to base64 data
+ * Convert a Blob (or File) to base64 data.
+ * File extends Blob, so this works for both.
  */
-async function blobUrlToBase64(blobUrl: string): Promise<string> {
-  const response = await fetch(blobUrl)
-  const blob = await response.blob()
+async function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onloadend = () => {
@@ -41,27 +41,13 @@ async function blobUrlToBase64(blobUrl: string): Promise<string> {
   })
 }
 
-/**
- * Convert a File to base64 data
- */
-async function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onloadend = () => {
-      const result = reader.result as string
-      // Remove the data:image/xxx;base64, prefix
-      const base64 = result.split(",")[1]
-      resolve(base64 || "")
-    }
-    reader.onerror = reject
-    reader.readAsDataURL(file)
-  })
-}
-
 export function useAgentsFileUpload() {
   const [images, setImages] = useState<UploadedImage[]>([])
   const [files, setFiles] = useState<UploadedFile[]>([])
   const [isUploading, setIsUploading] = useState(false)
+
+  // Track blob URLs to prevent memory leaks
+  const blobUrlsRef = useRef<Set<string>>(new Set())
 
   const handleAddAttachments = useCallback(async (inputFiles: File[]) => {
     setIsUploading(true)
@@ -76,13 +62,15 @@ export function useAgentsFileUpload() {
         const filename = file.name || `screenshot-${Date.now()}.png`
         const mediaType = file.type || "image/png"
         const url = URL.createObjectURL(file)
-        
+        blobUrlsRef.current.add(url)
+
         // Convert to base64 for API
         let base64Data: string | undefined
         try {
-          base64Data = await fileToBase64(file)
+          base64Data = await blobToBase64(file)
         } catch (err) {
           console.error("[useAgentsFileUpload] Failed to convert image to base64:", err)
+          toast.error(`Failed to process image "${filename}"`)
         }
 
         return {
@@ -100,14 +88,17 @@ export function useAgentsFileUpload() {
       otherFiles.map(async (file) => {
         let base64Data: string | undefined
         try {
-          base64Data = await fileToBase64(file)
+          base64Data = await blobToBase64(file)
         } catch (err) {
           console.error("[useAgentsFileUpload] Failed to convert file to base64:", err)
+          toast.error(`Failed to process file "${file.name}"`)
         }
+        const url = URL.createObjectURL(file)
+        blobUrlsRef.current.add(url)
         return {
           id: crypto.randomUUID(),
           filename: file.name,
-          url: URL.createObjectURL(file),
+          url,
           base64Data,
           isLoading: false,
           size: file.size,
@@ -122,19 +113,49 @@ export function useAgentsFileUpload() {
   }, [])
 
   const removeImage = useCallback((id: string) => {
-    setImages((prev) => prev.filter((img) => img.id !== id))
+    setImages((prev) => {
+      const img = prev.find((img) => img.id === id)
+      if (img?.url) {
+        URL.revokeObjectURL(img.url)
+        blobUrlsRef.current.delete(img.url)
+      }
+      return prev.filter((img) => img.id !== id)
+    })
   }, [])
 
   const removeFile = useCallback((id: string) => {
-    setFiles((prev) => prev.filter((f) => f.id !== id))
+    setFiles((prev) => {
+      const file = prev.find((f) => f.id === id)
+      if (file?.url) {
+        URL.revokeObjectURL(file.url)
+        blobUrlsRef.current.delete(file.url)
+      }
+      return prev.filter((f) => f.id !== id)
+    })
   }, [])
 
   const clearImages = useCallback(() => {
-    setImages([])
+    setImages((prev) => {
+      prev.forEach((img) => {
+        if (img.url) {
+          URL.revokeObjectURL(img.url)
+          blobUrlsRef.current.delete(img.url)
+        }
+      })
+      return []
+    })
   }, [])
 
   const clearFiles = useCallback(() => {
-    setFiles([])
+    setFiles((prev) => {
+      prev.forEach((file) => {
+        if (file.url) {
+          URL.revokeObjectURL(file.url)
+          blobUrlsRef.current.delete(file.url)
+        }
+      })
+      return []
+    })
   }, [])
 
   // Handle folder upload - creates a virtual folder attachment
@@ -154,16 +175,54 @@ export function useAgentsFileUpload() {
 
 
   const clearAll = useCallback(() => {
-    setImages([])
-    setFiles([])
+    setImages((prev) => {
+      prev.forEach((img) => {
+        if (img.url) {
+          URL.revokeObjectURL(img.url)
+          blobUrlsRef.current.delete(img.url)
+        }
+      })
+      return []
+    })
+    setFiles((prev) => {
+      prev.forEach((file) => {
+        if (file.url) {
+          URL.revokeObjectURL(file.url)
+          blobUrlsRef.current.delete(file.url)
+        }
+      })
+      return []
+    })
+  }, [])
+
+  // Cleanup all blob URLs when component unmounts
+  useEffect(() => {
+    return () => {
+      blobUrlsRef.current.forEach((url) => {
+        URL.revokeObjectURL(url)
+      })
+      blobUrlsRef.current.clear()
+    }
   }, [])
 
   // Direct state setters for restoring from draft
   const setImagesFromDraft = useCallback((draftImages: UploadedImage[]) => {
+    // Track blob URLs from drafts
+    draftImages.forEach((img) => {
+      if (img.url) {
+        blobUrlsRef.current.add(img.url)
+      }
+    })
     setImages(draftImages)
   }, [])
 
   const setFilesFromDraft = useCallback((draftFiles: UploadedFile[]) => {
+    // Track blob URLs from drafts
+    draftFiles.forEach((file) => {
+      if (file.url) {
+        blobUrlsRef.current.add(file.url)
+      }
+    })
     setFiles(draftFiles)
   }, [])
 

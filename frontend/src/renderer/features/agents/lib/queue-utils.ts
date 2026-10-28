@@ -68,6 +68,9 @@ export interface QueuedPastedText {
 export type AgentQueueItem = {
   id: string
   message: string // Serialized value with @[id] tokens for mentions
+  // Full parts array from UIMessage, stored to preserve images/files/other content
+  // when queueing messages. Falls back to reconstructing from message string if undefined.
+  parts?: Array<{ type: string; [key: string]: any }>
   images?: QueuedImage[]
   files?: QueuedFile[]
   textContexts?: QueuedTextContext[]
@@ -75,6 +78,7 @@ export type AgentQueueItem = {
   pastedTexts?: QueuedPastedText[]
   timestamp: Date
   status: "pending" | "processing"
+  retryCount?: number // Number of failed send attempts
 }
 
 export function generateQueueId(): string {

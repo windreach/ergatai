@@ -3,12 +3,17 @@ import { trpcClient } from "../../../lib/trpc"
 import { toast } from "sonner"
 import { useAgentConversationStore } from "../stores/conversation-store"
 
+// Hardcoded business string for plan approval
+const IMPLEMENT_PLAN_MESSAGE = "Implement plan"
+
 interface UsePlanApprovalOptions {
   conversationId: string
   setConversationMode: (mode: "plan" | "agent") => void
   scrollToBottom: () => void
-  updateConversationModeMutation: any
-  sendMessageRef: React.RefObject<(message: any) => Promise<void>>
+  updateConversationModeMutation: {
+    mutate: (vars: { conversationId: string; mode: "agent" | "plan" }) => void
+  }
+  sendMessageRef: React.RefObject<(message: { role: string; parts: Array<{ type: string; text?: string }> }) => Promise<void>>
 }
 
 export function usePlanApproval({
@@ -22,8 +27,6 @@ export function usePlanApproval({
     async (toolUseId: string, approved: boolean) => {
       if (!toolUseId) return
 
-      // This would need planApprovalPending state passed in or managed here
-      // For now, we'll just handle the API call
       try {
         await trpcClient.mcp.respondToolApproval.mutate({
           toolUseId,
@@ -37,30 +40,45 @@ export function usePlanApproval({
     [],
   )
 
-  // Handle plan approval - sends "Build plan" message and switches to agent mode
-  const handleApprovePlan = useCallback(() => {
-    // Update store mode synchronously BEFORE sending (transport reads from store)
-    useAgentConversationStore.getState().updateConversationMode(conversationId, "agent")
+  // Handle plan approval - sends "Implement plan" message and switches to agent mode
+  // NOTE: Direct store access is intentional - the transport reads from store synchronously.
+  // If subsequent steps fail, the store will be in "agent" mode but the message won't be sent.
+  // This is an acceptable trade-off since the user can manually switch back to plan mode.
+  const handleApprovePlan = useCallback(
+    async () => {
+      // Update store mode synchronously BEFORE sending (transport reads from store)
+      useAgentConversationStore.getState().updateConversationMode(conversationId, "agent")
 
-    // Sync mode to database for sidebar indicator (getPendingPlanApprovals)
-    if (!conversationId.startsWith("temp-")) {
-      updateConversationModeMutation.mutate({ conversationId, mode: "agent" })
-    }
+      // Sync mode to database for sidebar indicator (getPendingPlanApprovals)
+      if (!conversationId.startsWith("temp-")) {
+        updateConversationModeMutation.mutate({ conversationId, mode: "agent" })
+      }
 
-    // Update atomFamily state (for UI) - this also syncs to store via effect
-    setConversationMode("agent")
+      // Update atomFamily state (for UI) - this also syncs to store via effect
+      setConversationMode("agent")
 
-    // Enable auto-scroll and immediately scroll to bottom
-    // Note: shouldAutoScrollRef needs to be passed in or managed differently
-    // For now, we'll just call scrollToBottom
-    scrollToBottom()
+      // Enable auto-scroll and immediately scroll to bottom
+      scrollToBottom()
 
-    // Send "Build plan" message (now in agent mode)
-    sendMessageRef.current({
-      role: "user",
-      parts: [{ type: "text", text: "Implement plan" }],
-    })
-  }, [conversationId, setConversationMode, scrollToBottom, updateConversationModeMutation, sendMessageRef])
+      // Send "Implement plan" message (now in agent mode)
+      if (!sendMessageRef.current) {
+        console.error("[plan-approval] sendMessageRef.current is not available")
+        toast.error("Message system is not ready. Please try again.")
+        return
+      }
+
+      try {
+        await sendMessageRef.current({
+          role: "user",
+          parts: [{ type: "text", text: IMPLEMENT_PLAN_MESSAGE }],
+        })
+      } catch (error) {
+        console.error("[plan-approval] Failed to send message:", error)
+        toast.error("Failed to send implementation request. Please try again.")
+      }
+    },
+    [conversationId, setConversationMode, scrollToBottom, updateConversationModeMutation, sendMessageRef],
+  )
 
   return {
     handlePlanApproval,

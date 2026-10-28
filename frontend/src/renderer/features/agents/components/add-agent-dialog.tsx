@@ -113,6 +113,9 @@ export function AddAgentDialog({
           setAvatarUrl(reader.result)
         }
       }
+      reader.onerror = () => {
+        toast.error("Failed to read the selected image")
+      }
       reader.readAsDataURL(file)
       event.target.value = ""
     },
@@ -174,7 +177,7 @@ export function AddAgentDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-5">
+        <form id="create-agent-form" onSubmit={handleSubmit} className="space-y-5">
           <div className="flex items-start gap-4">
             <label
               className="relative flex h-16 w-16 flex-shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-dashed bg-muted/30 text-muted-foreground transition-colors hover:border-primary/40 hover:bg-accent/40 hover:text-foreground"
@@ -355,8 +358,8 @@ export function AddAgentDialog({
             Cancel
           </Button>
           <Button
-            type="button"
-            onClick={(event) => event.currentTarget.form?.requestSubmit()}
+            type="submit"
+            form="create-agent-form"
           >
             Create agent
           </Button>

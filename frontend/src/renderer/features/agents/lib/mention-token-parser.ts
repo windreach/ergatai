@@ -113,12 +113,9 @@ export function parseMentionTokensFromText(rawText: string): ParsedMentionTokens
 
   // Remove mention tokens from text to get clean user text
   for (const mentionStr of mentionsToRemove) {
-    cleanedText = cleanedText.replace(mentionStr, "")
+    cleanedText = cleanedText.replaceAll(mentionStr, "")
   }
   cleanedText = cleanedText
-    .split("\n")
-    .map((line: string) => line.trim())
-    .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim()
 

@@ -121,9 +121,23 @@ export function PreviewUrlInput({
         const url = new URL(input)
         newPath = url.pathname + url.search + url.hash
       } else if (input.includes(".") && input.includes("/")) {
-        // It's host + path like "localhost:3000/some/path"
+        // Check if it's host + path like "localhost:3000/some/path"
         const slashIndex = input.indexOf("/")
-        newPath = input.slice(slashIndex)
+        const beforeSlash = input.slice(0, slashIndex)
+        const afterSlash = input.slice(slashIndex + 1)
+
+        // Only treat as host+path if it looks like a hostname
+        const looksLikeHost =
+          beforeSlash.includes(":") || // Has port (e.g., localhost:3000)
+          beforeSlash === "localhost" ||
+          /^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/i.test(beforeSlash) // Has TLD pattern
+
+        if (looksLikeHost) {
+          newPath = "/" + afterSlash
+        } else {
+          // It's a path like "my.file/path" - treat as path
+          newPath = input.startsWith("/") ? input : "/" + input
+        }
       } else if (input.startsWith("/")) {
         // Just a path starting with /
         newPath = input
@@ -205,6 +219,11 @@ export function PreviewUrlInput({
           <button
             type="button"
             onClick={startEditing}
+            onMouseDown={(e) => {
+              // Prevent mousedown from triggering input blur
+              // so the blur fires after click, avoiding the race condition
+              e.preventDefault()
+            }}
             className={cn(
               sharedStyles,
               variant === "mobile"
@@ -228,12 +247,10 @@ export function PreviewUrlInput({
             >
               {/* Glow effect - uniform along progress, fades at edges via blur */}
               <motion.div
-                className="absolute -bottom-2 left-0 h-4"
+                className="absolute -bottom-2 left-0 h-4 blur-sm bg-[hsl(var(--primary)/0.15)]"
                 style={{
                   width,
                   opacity: glowOpacity,
-                  background: "hsl(var(--primary) / 0.15)",
-                  filter: "blur(4px)",
                 }}
               />
               {/* Progress bar line */}

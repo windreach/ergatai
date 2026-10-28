@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { trpcClient } from "../../../lib/trpc"
+import { createLogger } from "../../../../main/lib/logger"
+
+const log = createLogger("CollaborationSession")
 
 export const COLLABORATION_SESSION_FLAG_KEY =
   "agents:collaborationSessionRuntime"
@@ -20,9 +23,18 @@ export type CollaborationSessionState =
   | "failed"
   | "cancelled"
 
+const VALID_SESSION_STATES: readonly CollaborationSessionState[] = [
+  "idle", "planning", "executing", "waiting_input",
+  "waiting_approval", "synthesizing", "completed", "failed", "cancelled"
+]
+
+function isValidSessionState(value: string | undefined): value is CollaborationSessionState {
+  return !!value && VALID_SESSION_STATES.includes(value as CollaborationSessionState)
+}
+
 export interface CollaborationSessionParticipantInput {
-  conversationId: string  // ✅ 新增：Conversation ID
-  agentId: string  // 保留：Agent ID（从 conversation 获取）
+  conversationId: string
+  agentId: string
   role?: string
   status?: string
 }
@@ -30,8 +42,8 @@ export interface CollaborationSessionParticipantInput {
 export interface CollaborationSessionParticipant {
   id: string
   session_id: string
-  conversation_id: string  // ✅ 新增：Conversation ID
-  agent_id: string  // 保留：Agent ID（从 conversation 获取）
+  conversation_id: string
+  agent_id: string
   role: string
   status: string
 }
@@ -143,6 +155,11 @@ function normalizeSession(value: unknown): CollaborationSession | null {
     return null
   }
 
+  // Validate state is a valid CollaborationSessionState
+  if (!isValidSessionState(state)) {
+    return null
+  }
+
   return {
     id,
     chat_id: chatId,
@@ -162,7 +179,7 @@ function normalizeDetail(value: unknown): CollaborationSessionDetail | null {
     ? value.participants.filter(isRecord).map((participant) => ({
       id: readString(participant.id) ?? "",
       session_id: readString(participant.session_id) ?? session.id,
-      conversation_id: readString(participant.conversation_id) ?? "",  // ✅ 新增
+      conversation_id: readString(participant.conversation_id) ?? "",
       agent_id: readString(participant.agent_id) ?? "",
       role: readString(participant.role) ?? "peer",
       status: readString(participant.status) ?? "ready",
@@ -254,9 +271,14 @@ export function useCollaborationSession({
 
     for (const event of [...normalized].reverse()) {
       if (event.type !== "session_state_changed") continue
+      // Type guard: check if payload has the expected structure
       const payload = event.payload as SessionStatePayload
       const nextState = readString(payload.to)
       if (!nextState) continue
+
+      // Validate nextState is a valid CollaborationSessionState
+      if (!isValidSessionState(nextState)) continue
+
       setSession((current) => current
         ? { ...current, state: nextState as CollaborationSessionState }
         : current)
@@ -333,9 +355,10 @@ export function useCollaborationSession({
           autoExecute: true,
         })
 
-        const result = normalizeDetail(rawResult)
-          ? rawResult as CollaborationInteractionResult
-          : { ...rawResult, route: "auto" } as CollaborationInteractionResult
+        // Normalize the result and ensure it has the expected structure
+        const result: CollaborationInteractionResult = normalizeDetail(rawResult)
+          ? { ...rawResult, route: rawResult.route ?? "auto" }
+          : { ...rawResult, route: "auto" }
 
         const detail = normalizeDetail(result)
         if (detail) setSession(detail)
@@ -351,11 +374,17 @@ export function useCollaborationSession({
 
   useEffect(() => {
     if (!enabled || !chatId) return
+
+    // 重置序列号，防止旧会话的高序列号污染新会话
+    // Reset sequence number to prevent high sequence numbers from old session
+    // from polluting the new session and causing events to be skipped
+    lastSequenceRef.current = 0
+
     let cancelled = false
 
     void loadExistingSession().catch((caught: unknown) => {
       if (cancelled) return
-      console.debug("[CollaborationSession] Runtime unavailable:", caught)
+      log.debug("Runtime unavailable", caught as Error)
       setError(caught instanceof Error ? caught.message : "Collaboration runtime unavailable")
     })
 
@@ -366,17 +395,37 @@ export function useCollaborationSession({
 
   useEffect(() => {
     if (!pollingEnabled || !enabled || !session) return
-    const interval = window.setInterval(() => {
-      void (async () => {
+
+    let isActive = true
+    let timeoutId: number | undefined
+
+    const poll = async () => {
+      if (!isActive) return
+
+      try {
         await refreshSession()
         await loadEvents(session.id)
-      })().catch((caught: unknown) => {
-        console.debug("[CollaborationSession] Event poll failed:", caught)
-      })
-    }, 1000)
+      } catch (caught: unknown) {
+        log.debug("Event poll failed", caught as Error)
+      }
 
-    return () => window.clearInterval(interval)
-  }, [enabled, loadEvents, pollingEnabled, refreshSession, session])
+      // Schedule next poll only after current one completes
+      if (isActive) {
+        timeoutId = window.setTimeout(poll, 1000)
+      }
+    }
+
+    // Start polling
+    timeoutId = window.setTimeout(poll, 1000)
+
+    return () => {
+      isActive = false
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, loadEvents, pollingEnabled, refreshSession])
 
   const sessionEvents = useMemo(() => {
     if (!session) return []

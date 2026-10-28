@@ -12,6 +12,7 @@ import { cn } from "../../../lib/utils"
 import { selectedWorkspaceAtom } from "../atoms"
 
 interface AgentBashToolProps {
+  // AI SDK tool part shape is dynamic/loosely typed
   part: any
   messageId?: string
   partIndex?: number
@@ -23,6 +24,9 @@ function extractCommandSummary(command: string): string {
   if (!command || typeof command !== "string") return ""
   // First, normalize line continuations (backslash + newline) into single line
   const normalizedCommand = command.replace(/\\\s*\n\s*/g, " ")
+  // Known limitation: This simple split on &&, ||, ;, | doesn't handle quoted strings
+  // correctly (e.g., "echo 'foo && bar'" would be split incorrectly). For display purposes
+  // this is acceptable since we only show the first 4 command names as a summary.
   const parts = normalizedCommand.split(/\s*(?:&&|\|\||;|\|)\s*/)
   const firstWords = parts.map((p) => p.trim().split(/\s+/)[0]).filter(Boolean)
   // Limit to first 4 commands to keep it concise
@@ -36,8 +40,12 @@ function extractCommandSummary(command: string): string {
 // Replace absolute project paths with relative paths in a string
 function shortenPaths(text: string, projectPath: string | undefined): string {
   if (!text || !projectPath || typeof text !== "string") return text || ""
-  // Replace project path (with trailing slash) with empty string
-  return text.replaceAll(projectPath + "/", "").replaceAll(projectPath, ".")
+  // Use regex to ensure path is followed by non-alphanumeric char or end of string
+  // This prevents substring matches (e.g., /home/user/foo matching /home/user/foobar)
+  const escaped = projectPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return text
+    .replace(new RegExp(escaped + '/', 'g'), '')
+    .replace(new RegExp(escaped + '(?=[^\\w]|$)', 'g'), '.')
 }
 
 export const AgentBashTool = memo(function AgentBashTool({
@@ -55,7 +63,8 @@ export const AgentBashTool = memo(function AgentBashTool({
   const command = typeof rawCommand === "string" ? rawCommand : rawCommand ? String(rawCommand) : ""
   const stdout = part.output?.stdout || part.output?.output || ""
   const stderr = part.output?.stderr || ""
-  const exitCode = part.output?.exitCode ?? part.output?.exit_code
+  const rawExitCode = part.output?.exitCode ?? part.output?.exit_code
+  const exitCode = rawExitCode !== undefined ? Number(rawExitCode) : undefined
 
   // For bash tools, success/error is determined by exitCode, not by state
   // exitCode 0 = success, anything else (or undefined if no output yet) = error

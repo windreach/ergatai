@@ -9,6 +9,7 @@ export function waitForStreamingReady(conversationId: string): Promise<void> {
       return
     }
 
+    let unsub: () => void
     const timeout = setTimeout(() => {
       console.warn(
         `[waitForStreamingReady] Timed out after ${STREAMING_READY_TIMEOUT_MS}ms for conversation ${conversationId.slice(-8)}, proceeding anyway`
@@ -17,7 +18,7 @@ export function waitForStreamingReady(conversationId: string): Promise<void> {
       resolve()
     }, STREAMING_READY_TIMEOUT_MS)
 
-    const unsub = useStreamingStatusStore.subscribe(
+    unsub = useStreamingStatusStore.subscribe(
       (state) => state.statuses[conversationId],
       (status) => {
         if (status === "ready" || status === undefined) {

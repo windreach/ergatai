@@ -55,7 +55,7 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
 
   // Fetch agent bindings to get the agentId for the current chat
   const { data: bindings } = trpc.ergatai.getAgentBindings.useQuery(
-    { chatId: chatId! },
+    { chatId: chatId ?? "" },
     {
       enabled: isOpen && !!chatId,
       staleTime: 60_000, // Cache for 1 minute - bindings don't change often
@@ -67,7 +67,7 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
 
   // Fetch available commands from the running agent via ergatai backend
   const { data: agentCommandsData } = trpc.ergatai.getAgentCommands.useQuery(
-    { agentId: agentId! },
+    { agentId: agentId ?? "" },
     {
       enabled: isOpen && !!agentId,
       staleTime: 30_000, // Cache for 30 seconds - commands rarely change mid-session
@@ -293,16 +293,22 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
     window.innerHeight - (position.top + caretOffsetBelow) - safeMargin
   const availableAbove = position.top - safeMargin
 
-  // Compute desired placement, but lock it for the duration of the open state
-  if (placementRef.current === null) {
+  // Compute desired placement, but lock it for the duration of the open state.
+  // Ref is read during render (allowed); it is only written inside useLayoutEffect.
+  const placement = useMemo(() => {
+    if (placementRef.current !== null) return placementRef.current
     const condition1 =
       availableAbove >= requestedHeight && availableBelow < requestedHeight
     const condition2 =
       availableAbove > availableBelow && availableAbove >= requestedHeight
     const shouldPlaceAbove = condition1 || condition2
-    placementRef.current = shouldPlaceAbove ? "above" : "below"
-  }
-  const placeAbove = placementRef.current === "above"
+    return shouldPlaceAbove ? "above" : "below"
+  }, [availableAbove, availableBelow, requestedHeight])
+
+  useLayoutEffect(() => {
+    placementRef.current = placement
+  }, [placement])
+  const placeAbove = placement === "above"
 
   // Compute final top based on placement
   let finalTop = placeAbove

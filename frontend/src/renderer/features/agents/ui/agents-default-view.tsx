@@ -6,12 +6,21 @@ import { toast } from "sonner"
 
 import { Logo } from "@/components/ui/logo"
 import { WorkspaceSelector } from "../components/workspace-selector"
-import { selectedWorkspaceIdAtom, showNewChatFormAtom } from "../atoms"
-import { agentsUnseenChangesAtom } from "../atoms"
-import { agentsSidebarOpenAtom } from "../atoms"
+import {
+  selectedWorkspaceIdAtom,
+  showNewChatFormAtom,
+  agentsUnseenChangesAtom,
+  agentsSidebarOpenAtom,
+} from "../atoms"
 import { AgentsHeaderControls } from "./agents-header-controls"
 import { useCollaborationMode } from "../collaboration/use-collaboration-mode"
 import { trpc } from "../../../lib/trpc"
+
+interface WorkspaceSelection {
+  id: string
+  name: string
+  path: string
+}
 
 interface AgentsDefaultViewProps {
   onWorkspaceCreated?: (workspaceId: string) => void
@@ -30,7 +39,7 @@ export function AgentsDefaultView({
 
   // Create workspace mutation
   const createWorkspaceMutation = trpc.ergatai.createWorkspace.useMutation({
-    onSuccess: (data, variables) => {
+    onSuccess: (data) => {
       toast.success("Workspace created successfully")
       utils.ergatai.listManagedWorkspaces.invalidate()
       setSelectedWorkspaceId(data.id)
@@ -46,7 +55,13 @@ export function AgentsDefaultView({
   // Wrapped in try/catch: prop type is `(workspace) => void` (synchronous), so
   // the caller in WorkspaceSelector won't await this or catch rejections.
   const handleWorkspaceSelected = useCallback(
-    async (workspace: { id: string; name: string; path: string }) => {
+    async (workspace: WorkspaceSelection) => {
+      // Guard against concurrent mutations (race condition)
+      if (createWorkspaceMutation.isPending) {
+        console.log("[Workspace] Creation already in progress, ignoring")
+        return
+      }
+
       try {
         // Fetch fresh workspace list to avoid creating duplicates due to stale cache
         const freshWorkspaces = await utils.ergatai.listManagedWorkspaces.fetch({
@@ -81,6 +96,7 @@ export function AgentsDefaultView({
     },
     [
       collaborationMode,
+      createWorkspaceMutation.isPending,
       createWorkspaceMutation,
       setSelectedWorkspaceId,
       setShowNewChatForm,
@@ -90,40 +106,35 @@ export function AgentsDefaultView({
   )
 
   return (
-    <>
-      <div className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-background">
-        <div className="flex flex-shrink-0 items-center justify-between bg-background p-1.5">
-          <div className="flex min-w-0 items-center gap-2">
-            <AgentsHeaderControls
-              isSidebarOpen={sidebarOpen}
-              onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
-              hasUnseenChanges={unseenChanges.size > 0}
-            />
-          </div>
-
-          <div className="flex items-center gap-1" />
-        </div>
-
-        <div className="flex flex-1 items-center justify-center overflow-y-auto px-6">
-          <div className="w-full max-w-xl pb-10 text-center">
-            <Logo className="mx-auto h-9 w-9 text-foreground" />
-
-            <h1 className="mt-10 text-sm font-medium text-foreground">
-              Choose a workspace to start multi-agent collaboration
-            </h1>
-
-            <div className="mt-5">
-              <WorkspaceSelector
-                triggerClassName="h-16 w-full justify-center gap-2 rounded-xl border border-border bg-background px-4 text-sm font-medium text-foreground shadow-sm hover:bg-accent/50"
-                contentClassName="rounded-xl"
-                matchTriggerWidth
-                onWorkspaceSelected={handleWorkspaceSelected}
-              />
-            </div>
-          </div>
+    <div className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-background">
+      <div className="flex flex-shrink-0 items-center justify-between bg-background p-1.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <AgentsHeaderControls
+            isSidebarOpen={sidebarOpen}
+            onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
+            hasUnseenChanges={unseenChanges.size > 0}
+          />
         </div>
       </div>
 
-    </>
+      <div className="flex flex-1 items-center justify-center overflow-y-auto px-6">
+        <div className="w-full max-w-xl pb-10 text-center">
+          <Logo className="mx-auto h-9 w-9 text-foreground" />
+
+          <h1 className="mt-10 text-sm font-medium text-foreground">
+            Choose a workspace to start multi-agent collaboration
+          </h1>
+
+          <div className="mt-5">
+            <WorkspaceSelector
+              triggerClassName="h-16 w-full justify-center gap-2 rounded-xl border border-border bg-background px-4 text-sm font-medium text-foreground shadow-sm hover:bg-accent/50"
+              contentClassName="rounded-xl"
+              matchTriggerWidth
+              onWorkspaceSelected={handleWorkspaceSelected}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
   )
 }

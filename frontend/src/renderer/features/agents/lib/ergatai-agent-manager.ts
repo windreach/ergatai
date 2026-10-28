@@ -11,6 +11,9 @@
 import { atom } from "jotai"
 import { appStore } from "../../../lib/jotai-store"
 import { trpcClient } from "../../../lib/trpc"
+import { createLogger } from "../../../../main/lib/logger"
+
+const log = createLogger("AgentManager")
 
 // ── Types ──
 
@@ -57,6 +60,17 @@ interface SpawnAgentRequest {
   env?: Record<string, string>
 }
 
+class ConversationNotFoundError extends Error {
+  constructor(conversationId: string) {
+    super(
+      `Conversation "${conversationId}" not found in backend. ` +
+        `This may happen after backend restart. ` +
+        `Please refresh the page or create a new chat.`
+    )
+    this.name = "ConversationNotFoundError"
+  }
+}
+
 // ── Jotai atoms ──
 
 /** List of available agents from the Rust backend */
@@ -68,9 +82,6 @@ export const ergataiActiveAgentIdAtom = atom<string | null>(null)
 /** Loading state for agent operations */
 export const ergataiAgentsLoadingAtom = atom<boolean>(false)
 
-/** Available models per agent (fetched from backend /model command) */
-export const ergataiAgentModelsAtom = atom<Record<string, string[]>>({})
-
 /** Model info per agent — includes models list and current selection */
 export interface AgentModelInfo {
   models: string[]
@@ -78,9 +89,6 @@ export interface AgentModelInfo {
   fetchedAt: number
 }
 export const ergataiAgentModelInfoAtom = atom<Record<string, AgentModelInfo>>({})
-
-/** Pending agent creation promises to prevent race conditions */
-const pendingAgentCreations = new Map<string, Promise<string>>()
 
 export interface AgentModelsResult {
   models: string[]
@@ -96,18 +104,20 @@ export interface AgentModelsResult {
 export async function spawnAgent(
   request: SpawnAgentRequest
 ): Promise<string> {
-  console.log("[ErgataiAgentManager] Spawning agent with request:", request)
+  log.info("Spawning agent", undefined, { request })
   try {
     const result = await trpcClient.ergatai.spawnAgent.mutate(request)
-    console.log("[ErgataiAgentManager] Spawn result:", JSON.stringify(result))
-    const agentId = result?.agent_id ?? (result as { agentId?: string })?.agentId
+    log.info("Spawn result", undefined, { result })
+    // Handle both snake_case and camelCase response formats
+    const resultObj = result as Record<string, unknown>
+    const agentId = (resultObj.agent_id ?? resultObj.agentId) as string | undefined
     if (!agentId) {
-      console.error("[ErgataiAgentManager] Backend did not return agent_id. Full result:", result)
+      log.error("Backend did not return agent_id", undefined, { result })
       throw new Error("Ergatai backend did not return an agent ID")
     }
     return agentId
   } catch (error) {
-    console.error("[ErgataiAgentManager] spawnAgent failed:", error)
+    log.error("spawnAgent failed", error as Error)
     throw error
   }
 }
@@ -125,6 +135,94 @@ export async function listAgents(): Promise<ErgataiAgent[]> {
  */
 export async function killAgent(agentId: string): Promise<void> {
   await trpcClient.ergatai.killAgent.mutate({ agentId })
+}
+
+/**
+ * Check for existing agent binding for a chat/conversation.
+ * Returns the agent ID if a valid binding exists and the agent is alive.
+ */
+async function checkExistingAgentBinding(
+  chatId: string,
+  conversationId?: string,
+): Promise<string | null> {
+  try {
+    const bindings = await trpcClient.ergatai.getAgentBindings.query({ chatId })
+    if (!bindings || bindings.length === 0) return null
+
+    const binding = conversationId
+      ? bindings.find((candidate) => candidate.conversationId === conversationId)
+      : bindings[0]
+
+    if (!binding) return null
+
+    const agentId = binding.agentId
+
+    // Verify the agent is still alive
+    try {
+      const agents = await listAgents()
+      const agent = agents.find((a) => a.agent_id === agentId)
+      if (agent && agent.is_alive) {
+        log.debug("Reusing bound agent", undefined, { agentId })
+        return agentId
+      }
+    } catch {
+      // Agent list failed, continue to spawn
+    }
+
+    return null
+  } catch (err) {
+    log.warn("Failed to get agent bindings", err as Error)
+    return null
+  }
+}
+
+/**
+ * Validate that a conversation exists in the backend.
+ * Throws an error if the conversation doesn't exist.
+ */
+async function validateConversationExists(conversationId: string): Promise<void> {
+  try {
+    const conversation = await trpcClient.ergatai.getConversation.query({
+      conversationId,
+    })
+    if (!conversation) {
+      throw new ConversationNotFoundError(conversationId)
+    }
+  } catch (err) {
+    // If it's already our custom error, re-throw it
+    if (err instanceof ConversationNotFoundError) {
+      throw err
+    }
+    // Otherwise, wrap the error
+    throw new Error(
+      `Failed to verify conversation "${conversationId}": ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+}
+
+/**
+ * Spawn a new agent for a conversation.
+ * This is the core agent creation logic.
+ */
+async function spawnNewAgent(
+  conversationId: string,
+  command: string,
+): Promise<string> {
+  // Validate conversation exists before spawning
+  await validateConversationExists(conversationId)
+
+  const spawnParams = {
+    conversationId,
+    command,
+  }
+  log.debug("Spawning agent with params", undefined, { spawnParams })
+  const agentId = await spawnAgent(spawnParams)
+  log.info("Spawned new agent", undefined, { agentId })
+
+  // Note: Agent binding has been removed from the backend
+  log.debug("Agent binding disabled - backend endpoint removed")
+
+  return agentId
 }
 
 /**
@@ -148,45 +246,19 @@ export async function getOrCreateActiveAgent(
   // Use conversationId as the lock key to prevent duplicate agents per conversation
   const lockKey = conversationId || chatId
 
-  // Check if there's already a pending creation for this conversation
-  const pending = pendingAgentCreations.get(lockKey)
-  if (pending) {
-    console.log("[ErgataiAgentManager] Waiting for pending agent creation:", lockKey)
-    return pending
-  }
-
-  // Step 1: Check for existing agent binding for this chat
-  try {
-    const bindings = await trpcClient.ergatai.getAgentBindings.query({ chatId })
-    if (bindings && bindings.length > 0) {
-      const binding = conversationId
-        ? bindings.find((candidate) => candidate.conversationId === conversationId)
-        : bindings[0]
-      if (binding) {
-        const agentId = binding.agentId
-
-        // Verify the agent is still alive
-        try {
-          const agents = await listAgents()
-          const agent = agents.find((a) => a.agent_id === agentId)
-          if (agent && agent.is_alive) {
-            console.log("[ErgataiAgentManager] Reusing bound agent:", agentId)
-            return agentId
-          }
-        } catch {
-          // Agent list failed, continue to spawn
-        }
-      }
-    }
-  } catch (err) {
-    console.warn("[ErgataiAgentManager] Failed to get agent bindings:", err)
-  }
-
-  // Step 2: No valid binding found — spawn new agent (with lock)
+  // FIX #1: Create the creation promise IMMEDIATELY to lock this key BEFORE any async work.
+  // Without this, two concurrent callers could both pass the pendingFetches.get check below,
+  // both call checkExistingAgentBinding, both find no live agent, and both spawn new agents.
   const creationPromise = (async () => {
+    // Step 1: Check for existing agent binding
+    const existingAgentId = await checkExistingAgentBinding(chatId, conversationId)
+    if (existingAgentId) {
+      return existingAgentId
+    }
+
+    // Step 2: No valid binding found — spawn new agent
     try {
       // conversationId is required for spawn — it should always be provided by the caller.
-      // If missing, this is a programming error, not a fallback scenario.
       if (!conversationId) {
         throw new Error(
           "conversationId is required but was not provided. " +
@@ -194,47 +266,11 @@ export async function getOrCreateActiveAgent(
         )
       }
 
-      // Validate conversationId exists in backend before spawning.
-      // localStorage may persist stale conversationIds from previous sessions
-      // that no longer exist after backend restart.
-      try {
-        const conversation = await trpcClient.ergatai.getConversation.query({
-          conversationId,
-        })
-        if (!conversation) {
-          throw new Error(
-            `Conversation "${conversationId}" not found in backend. ` +
-            `This may happen after backend restart. ` +
-            `Please refresh the page or create a new chat.`
-          )
-        }
-      } catch (err) {
-        // If it's already our custom error, re-throw it
-        if (err instanceof Error && err.message.includes("not found in backend")) {
-          throw err
-        }
-        // Otherwise, wrap the error
-        throw new Error(
-          `Failed to verify conversation "${conversationId}": ${err instanceof Error ? err.message : String(err)}`
-        )
-      }
-
-      const spawnParams = {
-        conversationId,
-        command,
-      }
-      console.log("[ErgataiAgentManager] Spawning agent with params:", spawnParams)
-      const agentId = await spawnAgent(spawnParams)
-      console.log("[ErgataiAgentManager] Spawned new agent:", agentId)
-
-      // Step 3: Backend no longer supports agent binding
-      // Agent binding has been removed from the backend
-      console.log("[ErgataiAgentManager] Agent binding disabled - backend endpoint removed")
-
-      return agentId
+      return await spawnNewAgent(conversationId, command)
     } catch (err) {
-      console.error("[ErgataiAgentManager] Failed to spawn agent:", err)
+      log.error("Failed to spawn agent", err as Error, { conversationId, command })
       const errorMessage = err instanceof Error ? err.message : String(err)
+
       // Provide more specific error messages
       if (errorMessage.includes("Conversation not found")) {
         throw new Error(
@@ -244,14 +280,17 @@ export async function getOrCreateActiveAgent(
         )
       }
       throw new Error(`Failed to spawn agent: ${errorMessage}`)
-    } finally {
-      // Clean up the pending promise
-      pendingAgentCreations.delete(lockKey)
     }
   })()
 
   // Store the pending promise so concurrent callers can wait for it
-  pendingAgentCreations.set(lockKey, creationPromise)
+  modelFetchCache.pendingFetches.set(lockKey, creationPromise)
+
+  // Clean up the pending promise when it settles (success or failure)
+  creationPromise.finally(() => {
+    modelFetchCache.pendingFetches.delete(lockKey)
+  })
+
   return creationPromise
 }
 
@@ -265,13 +304,23 @@ export async function refreshAgentList(
     const agents = await listAgents()
     setAgents(agents)
   } catch (err) {
-    console.error("[ErgataiAgentManager] Failed to refresh agent list:", err)
+    log.error("Failed to refresh agent list", err as Error)
   }
 }
 
 // ── Dedup guard: skip fetch if models were fetched recently ──
 const MODEL_FETCH_DEDUP_MS = 30_000 // 30 seconds
-let lastModelFetchAt = 0
+
+// Model fetch cache - tracks last fetch time per agent to prevent redundant requests
+interface ModelFetchCache {
+  lastFetchAt: Map<string, number>
+  pendingFetches: Map<string, Promise<string> | Promise<{ models: string[]; current?: string } | null>>
+}
+
+const modelFetchCache: ModelFetchCache = {
+  lastFetchAt: new Map(),
+  pendingFetches: new Map(),
+}
 
 /**
  * Fetch model information from agent.
@@ -289,72 +338,87 @@ export async function fetchAgentModels(
   workDir?: string,
   conversationId?: string,
 ): Promise<{ models: string[]; current?: string } | null> {
-  // Dedup: if we fetched models recently, skip
+  // Dedup: if we fetched models for this agent recently, skip
   const now = Date.now()
-  if (now - lastModelFetchAt < MODEL_FETCH_DEDUP_MS) {
-    console.log("[ErgataiAgentManager] fetchAgentModels: skipped (dedup, last fetch", Math.round((now - lastModelFetchAt) / 1000), "s ago)")
+  const lastFetchAt = modelFetchCache.lastFetchAt.get(agentId) ?? 0
+  if (now - lastFetchAt < MODEL_FETCH_DEDUP_MS) {
+    log.debug("fetchAgentModels: skipped (dedup)", undefined, {
+      agentId,
+      lastFetchSec: Math.round((now - lastFetchAt) / 1000)
+    })
     const store = appStore
     const existing = store.get(ergataiAgentModelInfoAtom)
-    const latest = Object.values(existing).reduce((a, b) => (a.fetchedAt > b.fetchedAt ? a : b), { models: [] as string[], fetchedAt: 0 })
-    if (latest.models.length > 0) {
-      return { models: latest.models, current: latest.current }
+    const agentEntry = existing[agentId]
+    if (agentEntry && agentEntry.models.length > 0) {
+      return { models: agentEntry.models, current: agentEntry.current }
     }
     return null
   }
-  lastModelFetchAt = now
+  // FIX #2: Do NOT set lastFetchAt here — set it only on successful fetch
+  // (inside saveModelResult). Otherwise a failed fetch would block retries
+  // for MODEL_FETCH_DEDUP_MS.
 
-  console.log("[ErgataiAgentManager] fetchAgentModels: agentId=", agentId)
+  log.debug("fetchAgentModels", undefined, { agentId })
 
   // PRIMARY: Try ACP config_options (standard protocol approach)
   try {
     const result = await trpcClient.ergatai.getAgentConfigOptions.query({ agentId })
-    const configOptions = (result as any)?.configOptions || (result as any)?.config_options || []
+    const resultObj = result as Record<string, unknown>
+    const configOptions = (resultObj.configOptions ?? resultObj.config_options ?? []) as Array<Record<string, unknown>>
 
     if (Array.isArray(configOptions) && configOptions.length > 0) {
       // Find config option with category="Model"
-      const modelOption = configOptions.find((opt: any) => opt.category === "Model" || opt.category === "model")
+      const modelOption = configOptions.find((opt) => {
+        const category = opt.category as string | undefined
+        return category === "Model" || category === "model"
+      })
 
       if (modelOption) {
         // Extract models from the config option
         let models: string[] = []
         let current: string | undefined
 
-        if (modelOption.kind?.type === "select") {
-          current = modelOption.kind.currentValue
-          const options = modelOption.kind.options || []
-          models = options.map((opt: any) => opt.value || opt.id).filter(Boolean)
+        const kind = modelOption.kind as Record<string, unknown> | undefined
+        if (kind?.type === "select") {
+          current = kind.currentValue as string | undefined
+          const options = (kind.options ?? []) as Array<Record<string, unknown>>
+          models = options.map((opt) => (opt.value ?? opt.id) as string).filter(Boolean)
         }
 
         if (models.length > 0) {
-          console.log("[ErgataiAgentManager] fetchAgentModels: got models from ACP config_options:", models, "current:", current)
+          log.info("fetchAgentModels: got models from ACP config_options", undefined, { models, current })
           return saveModelResult(agentId, models, current)
         }
       }
     }
 
-    console.log("[ErgataiAgentManager] fetchAgentModels: ACP config_options not available or no Model category, trying fallback...")
+    log.debug("fetchAgentModels: ACP config_options not available, trying fallback")
   } catch (err) {
-    console.warn("[ErgataiAgentManager] fetchAgentModels: ACP config_options failed:", err)
+    log.warn("fetchAgentModels: ACP config_options failed", err as Error)
   }
 
   // FALLBACK: Spawn temporary agent and execute /model command
   if (command) {
-    console.log("[ErgataiAgentManager] fetchAgentModels: using fallback (temp agent with /model command)")
+    log.debug("fetchAgentModels: using fallback (temp agent with /model command)")
     return spawnTempModelAgentFallback(command, workDir, conversationId)
   }
 
-  console.warn("[ErgataiAgentManager] fetchAgentModels: both methods failed")
+  log.warn("fetchAgentModels: both methods failed")
   return null
 }
 
 /**
  * Save model result to Jotai atom and SQLite database.
+ * FIX #2: Also updates lastFetchAt timestamp so dedup only kicks in after success.
  */
 function saveModelResult(
   agentId: string,
   models: string[],
   current: string | undefined,
 ): { models: string[]; current?: string } {
+  // Update dedup timestamp ONLY on success (not before fetch)
+  modelFetchCache.lastFetchAt.set(agentId, Date.now())
+
   const store = appStore
   const existing = store.get(ergataiAgentModelInfoAtom)
   store.set(ergataiAgentModelInfoAtom, {
@@ -372,10 +436,10 @@ function saveModelResult(
     models,
     current,
   }).catch((err) => {
-    console.warn("[ErgataiAgentManager] Failed to save model snapshot to SQLite:", err)
+    log.warn("Failed to save model snapshot to SQLite", err as Error)
   })
 
-  console.log("[ErgataiAgentManager] fetchAgentModels: models saved:", models, "current:", current)
+  log.debug("fetchAgentModels: models saved", undefined, { models, current })
   return { models, current }
 }
 
@@ -400,10 +464,10 @@ async function spawnTempModelAgentFallback(
     })
     tempAgentId = spawnResult?.agent_id ?? null
     if (!tempAgentId) {
-      console.error("[ErgataiAgentManager] spawnTempModelAgentFallback: no agent_id returned")
+      log.error("spawnTempModelAgentFallback: no agent_id returned")
       return null
     }
-    console.log("[ErgataiAgentManager] spawnTempModelAgentFallback: spawned temp agent:", tempAgentId)
+    log.debug("spawnTempModelAgentFallback: spawned temp agent", undefined, { tempAgentId })
 
     // Step 2: Wait for agent process to start, then execute /model with retries
     const MAX_ATTEMPTS = 3
@@ -419,8 +483,9 @@ async function spawnTempModelAgentFallback(
           args: [],
         })
 
-        const parsed = (result as any)?.parsed
-        const output = (result as any)?.output
+        const resultObj = result as Record<string, unknown>
+        const parsed = resultObj.parsed as Record<string, unknown> | undefined
+        const output = resultObj.output as unknown
         let models: string[] = []
         let current: string | undefined
 
@@ -457,32 +522,32 @@ async function spawnTempModelAgentFallback(
           models = [...new Set(parsed.models as string[])]
           if (!current && parsed.current) current = parsed.current as string
         }
-
         if (models.length > 0) {
-          console.log("[ErgataiAgentManager] spawnTempModelAgentFallback: models fetched:", models, "current:", current)
+          log.info("spawnTempModelAgentFallback: models fetched", undefined, { models, current })
           return saveModelResult(tempAgentId, models, current)
         }
 
-        console.log("[ErgataiAgentManager] spawnTempModelAgentFallback: empty result, attempt", attempt, "/", MAX_ATTEMPTS)
+        log.debug("spawnTempModelAgentFallback: empty result", undefined, { attempt, maxAttempts: MAX_ATTEMPTS })
       } catch (cmdErr) {
-        console.warn("[ErgataiAgentManager] spawnTempModelAgentFallback: command failed, attempt", attempt, "/", MAX_ATTEMPTS, cmdErr)
+        log.warn("spawnTempModelAgentFallback: command failed", cmdErr as Error, { attempt, maxAttempts: MAX_ATTEMPTS })
       }
     }
 
-    console.warn("[ErgataiAgentManager] spawnTempModelAgentFallback: all attempts exhausted, no models found")
+    log.warn("spawnTempModelAgentFallback: all attempts exhausted, no models found")
     return null
   } catch (err) {
-    console.warn("[ErgataiAgentManager] spawnTempModelAgentFallback failed:", err)
+    log.warn("spawnTempModelAgentFallback failed", err as Error)
     return null
   } finally {
     // Step 3: Always kill temp agent (fire-and-forget to avoid blocking)
     if (tempAgentId) {
       trpcClient.ergatai.killAgent.mutate({ agentId: tempAgentId })
         .then(() => {
-          console.log("[ErgataiAgentManager] spawnTempModelAgentFallback: killed temp agent:", tempAgentId)
+          log.debug("spawnTempModelAgentFallback: killed temp agent", undefined, { tempAgentId })
         })
-        .catch(() => {
-          // Ignore — agent may have already exited
+        .catch((err) => {
+          // FIX #3: Log failures so orphaned agents can be diagnosed
+          log.warn("spawnTempModelAgentFallback: failed to kill temp agent (may be orphaned)", err as Error, { tempAgentId })
         })
     }
   }
@@ -496,7 +561,7 @@ export async function getChatAgents(chatId: string): Promise<ChatAgent[]> {
   try {
     return await trpcClient.ergatai.getChatAgents.query({ chatId })
   } catch (err) {
-    console.warn("[ErgataiAgentManager] Failed to get chat agents:", err)
+    log.warn("Failed to get chat agents", err as Error)
     return []
   }
 }
@@ -527,7 +592,7 @@ export async function sendAgentToAgentMessage(
     correlationId?: string
   } = {}
 ): Promise<{ targetAgentId: string | null; sessionId: string | null; status: string }> {
-  console.log("[ErgataiAgentManager] Sending agent-to-agent message:", {
+  log.info("Sending agent-to-agent message", undefined, {
     fromAgentId,
     targetAgentCommand,
     forceNewSession: options.forceNewSession,
@@ -548,11 +613,12 @@ export async function sendAgentToAgentMessage(
     // Backend response varies based on implementation status
     // New implementation returns: { status, target_agent_id, session_id, reused }
     // Fallback for older backends: { status, target_agent, stream }
-    const targetAgentId = (result as any)?.target_agent_id ?? (result as any)?.target_agent ?? null
-    const sessionId = (result as any)?.session_id ?? (result as any)?.stream ?? null
-    const status = (result as any)?.status ?? "unknown"
+    const resultObj = result as Record<string, unknown>
+    const targetAgentId = (resultObj.target_agent_id ?? resultObj.target_agent ?? null) as string | null
+    const sessionId = (resultObj.session_id ?? resultObj.stream ?? null) as string | null
+    const status = (resultObj.status ?? "unknown") as string
 
-    console.log("[ErgataiAgentManager] Agent-to-agent message result:", {
+    log.info("Agent-to-agent message result", undefined, {
       targetAgentId,
       sessionId,
       status,
@@ -560,7 +626,7 @@ export async function sendAgentToAgentMessage(
 
     return { targetAgentId, sessionId, status }
   } catch (err) {
-    console.error("[ErgataiAgentManager] Failed to send agent-to-agent message:", err)
+    log.error("Failed to send agent-to-agent message", err as Error)
     throw err
   }
 }
@@ -583,7 +649,7 @@ export async function spawnNewAgentSession(
     workspaceId?: string
   } = {}
 ): Promise<SpawnSessionResult> {
-  console.log("[ErgataiAgentManager] Spawning new agent session:", {
+  log.info("Spawning new agent session", undefined, {
     agentId,
     targetCommand,
     reason,
@@ -598,10 +664,10 @@ export async function spawnNewAgentSession(
       workspaceId: options.workspaceId,
     })
 
-    console.log("[ErgataiAgentManager] New session spawned:", result)
+    log.info("New session spawned", undefined, { result })
     return result
   } catch (err) {
-    console.error("[ErgataiAgentManager] Failed to spawn new session:", err)
+    log.error("Failed to spawn new session", err as Error)
     throw err
   }
 }

@@ -23,6 +23,23 @@ import { getAgentRuntimeStatusState, refreshAgentRuntimeStatus } from "../../age
 import { agentContractApi } from "../../agents/lib/agent-contract-api"
 
 // ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+/**
+ * Normalize provider/profile name for comparison.
+ *
+ * Handles case-insensitive matching and common naming variations:
+ * - "claude-code", "claude code", "Claude-Code", "CLAUDE_CODE" all normalize to "claudecode"
+ *
+ * @param name - Name to normalize
+ * @returns Normalized name (lowercase, no hyphens/spaces/underscores)
+ */
+function normalizeProviderName(name: string): string {
+  return name.toLowerCase().replace(/[-\s_]/g, "")
+}
+
+// ============================================================================
 // RESOLVER INTERFACE - Public API
 // ============================================================================
 
@@ -159,11 +176,24 @@ class AgentRuntimeResolverImpl implements AgentRuntimeResolver {
     }
 
     // Find the agent in the cached agents list
-    const agent = statusState.agents.find((a) => a.id === agentId)
+    let agent = statusState.agents.find((a) => a.id === agentId)
 
-    // If agent not found in cache, assume not alive
+    // If agent not found in cache, attempt a refresh
+    // This handles the case where an agent was just created and hasn't been
+    // picked up by the polling cycle yet
     if (!agent) {
-      return false
+      try {
+        await refreshAgentRuntimeStatus()
+        const refreshedState = getAgentRuntimeStatusState()
+        agent = refreshedState.agents.find((a) => a.id === agentId)
+        if (!agent) {
+          return false
+        }
+        return agent.isAlive
+      } catch (error) {
+        console.warn("[AgentRuntimeResolver] Failed to refresh for missing agent:", error)
+        return false
+      }
     }
 
     // Return the agent's alive status from the cache
@@ -188,8 +218,11 @@ class AgentRuntimeResolverImpl implements AgentRuntimeResolver {
 
       // Check if the agentId matches any registered profile
       // agentId could be a profile name or a runtime-generated ID
+      // Use normalizeProviderName to handle case and naming variations
+      // (e.g., "claude-code" vs "claude code" vs "Claude-Code")
+      const normalizedAgentId = normalizeProviderName(agentId)
       const profileExists = profiles.some(
-        (profile) => profile.name === agentId || profile.name === agentId.toLowerCase(),
+        (profile) => normalizeProviderName(profile.name) === normalizedAgentId,
       )
 
       return profileExists

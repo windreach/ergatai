@@ -78,6 +78,7 @@ export interface ConversationRuntimeAdapter {
    * - Updating the UI state (messages, status, etc.)
    *
    * @param input - Message to send
+   * @throws {Error} If the message cannot be sent (network error, backend rejection, etc.)
    */
   sendMessage(input: AdapterSendMessageInput): Promise<void>
 
@@ -85,6 +86,8 @@ export interface ConversationRuntimeAdapter {
    * Stop the current streaming response.
    *
    * The adapter should abort any in-progress stream and update state accordingly.
+   *
+   * @throws {Error} If the operation cannot be stopped (adapter in invalid state, etc.)
    */
   stop(): Promise<void>
 
@@ -110,6 +113,9 @@ export interface ConversationRuntimeAdapter {
    * This allows the orchestrator to automatically process queue at safe points,
    * enabling "interrupt-like" behavior without explicit user action.
    *
+   * @experimental This method is defined but not yet implemented or consumed by any adapter.
+   * TODO: Implement in adapters that support safe point detection, or remove if not needed.
+   *
    * @param listener - Callback invoked when a safe point is reached
    * @returns Unsubscribe function
    */
@@ -123,6 +129,9 @@ export interface ConversationRuntimeAdapter {
 /**
  * Registry for conversation runtime adapters.
  * Maps conversation IDs to their corresponding adapters.
+ *
+ * TODO: Consider adding periodic pruning of stale entries or WeakRef-based detection
+ * to prevent memory leaks if consumers forget to call the unregister function.
  */
 class AdapterRegistry {
   private adapters = new Map<string, ConversationRuntimeAdapter>()
@@ -135,6 +144,17 @@ class AdapterRegistry {
    * @returns Unregister function
    */
   register(conversationId: string, adapter: ConversationRuntimeAdapter): () => void {
+    const existing = this.adapters.get(conversationId)
+    if (existing) {
+      console.warn(
+        `[AdapterRegistry] Replacing existing adapter for conversation ${conversationId}. This may indicate a cleanup issue.`,
+      )
+      try {
+        existing.stop?.()
+      } catch (error) {
+        console.error("[AdapterRegistry] Error stopping previous adapter:", error)
+      }
+    }
     this.adapters.set(conversationId, adapter)
 
     return () => {
@@ -165,6 +185,14 @@ class AdapterRegistry {
   has(conversationId: string): boolean {
     return this.adapters.has(conversationId)
   }
+
+  /**
+   * Clear all registered adapters.
+   * Resets the internal Map without replacing the instance.
+   */
+  clear(): void {
+    this.adapters.clear()
+  }
 }
 
 // ============================================================================
@@ -190,5 +218,6 @@ export function getAdapterRegistry(): AdapterRegistry {
  * Reset the registry (for testing).
  */
 export function resetAdapterRegistry(): void {
+  registryInstance?.clear()  // Clear existing instance first
   registryInstance = null
 }

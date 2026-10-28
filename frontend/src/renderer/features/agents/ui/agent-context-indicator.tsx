@@ -8,7 +8,8 @@ import {
 } from "../../../components/ui/tooltip"
 import { cn } from "../../../lib/utils"
 
-// Claude model context windows
+// Context window sizes - keep in sync with model provider documentation
+// These are fallback values; prefer tokenData.contextWindow from API when available
 const CONTEXT_WINDOWS = {
   opus: 200_000,
   sonnet: 200_000,
@@ -103,7 +104,8 @@ export const AgentContextIndicator = memo(function AgentContextIndicator({
   disabled,
 }: AgentContextIndicatorProps) {
   const contextTokens = tokenData.totalInputTokens
-  const contextWindow = tokenData.contextWindow ?? CONTEXT_WINDOWS[modelId]
+  // Guard against division by zero: ensure contextWindow is always positive
+  const contextWindow = Math.max(1, tokenData.contextWindow ?? CONTEXT_WINDOWS[modelId])
   const percentUsed = Math.min(100, (contextTokens / contextWindow) * 100)
   const isEmpty = contextTokens === 0
 

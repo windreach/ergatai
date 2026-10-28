@@ -10,8 +10,9 @@ interface UseAgentPlanResult {
   planPath: string | null
   planContent: string | null
   isLoading: boolean
-  error: any | null
+  error: Error | null
   refetch: () => void
+  refetchBindings: () => void
 }
 
 /**
@@ -29,13 +30,16 @@ export function useAgentPlan({
     data: bindings,
     isLoading: bindingsLoading,
     error: bindingsError,
+    refetch: refetchBindings,
   } = trpc.ergatai.getAgentBindings.useQuery(
-    { chatId: chatId! },
+    { chatId: chatId ?? '' },
     { enabled: !!chatId && enabled }
   )
 
   // Step 2: Find binding for active conversation
-  const activeBinding = bindings?.find((b) => b.conversationId === conversationId)
+  const activeBinding = conversationId
+    ? bindings?.find((b) => b.conversationId === conversationId)
+    : undefined
   const agentId = activeBinding?.agentId ?? null
 
   // Step 3: Fetch plan using agentId
@@ -45,7 +49,7 @@ export function useAgentPlan({
     error: planError,
     refetch,
   } = trpc.ergatai.getAgentPlan.useQuery(
-    { agentId: agentId! },
+    { agentId: agentId ?? '' },
     {
       enabled: !!agentId && enabled,
       retry: 1,
@@ -56,11 +60,17 @@ export function useAgentPlan({
   const planPath = planData?.file_path ?? null
   const planContent = planData?.content ?? null
 
+  // Convert TRPC errors to standard Error objects
+  const error = bindingsError || planError
+    ? new Error((bindingsError || planError)?.message ?? "Unknown error")
+    : null
+
   return {
     planPath,
     planContent,
     isLoading: bindingsLoading || planLoading,
-    error: bindingsError || planError || null,
+    error,
     refetch,
+    refetchBindings,
   }
 }

@@ -15,10 +15,13 @@ interface UseScrollInitProps {
   isAutoScrollingRef: React.MutableRefObject<boolean>
   isInitializingScrollRef: React.MutableRefObject<boolean>
   scrollInitializedRef: React.MutableRefObject<boolean>
+  prevScrollTopRef: React.MutableRefObject<number>
   scrollToBottom: () => void
   handleScroll: (e: Event) => void
   status: "ready" | "streaming" | "submitted" | "error"
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: replace with proper Message type
   messages: any[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: replace with specific editor type
   editorRef: React.RefObject<any>
 }
 
@@ -37,6 +40,7 @@ export function useScrollInit({
   isAutoScrollingRef,
   isInitializingScrollRef,
   scrollInitializedRef,
+  prevScrollTopRef,
   scrollToBottom,
   handleScroll,
   status,
@@ -46,6 +50,18 @@ export function useScrollInit({
   // Keep isActive in ref for use in callbacks (avoid stale closures)
   const isVisiblePaneRef = useRef(isVisiblePane)
   isVisiblePaneRef.current = isVisiblePane
+
+  // Helper function to perform auto-scroll to bottom with proper flag management
+  // Used by both ResizeObserver and streaming useEffect to avoid duplication
+  const performAutoScrollToBottom = (container: HTMLElement) => {
+    requestAnimationFrame(() => {
+      isAutoScrollingRef.current = true
+      container.scrollTop = container.scrollHeight
+      requestAnimationFrame(() => {
+        isAutoScrollingRef.current = false
+      })
+    })
+  }
 
   // Initialize scroll position on mount or tab re-activation.
   // Strategy: restore saved position if user was scrolled up, otherwise scroll to bottom.
@@ -78,7 +94,14 @@ export function useScrollInit({
 
     // Mark as initialized IMMEDIATELY
     scrollInitializedRef.current = true
-    isInitializingScrollRef.current = false
+
+    // Defer reset of isInitializingScrollRef so that scroll events dispatched
+    // asynchronously from the programmatic scrollTop assignment above are still
+    // suppressed. Without this, the guard is true→false synchronously in the
+    // same task and scroll handlers never observe it as true.
+    requestAnimationFrame(() => {
+      isInitializingScrollRef.current = false
+    })
 
     // ResizeObserver on content wrapper to detect any height change
     // (markdown rendering, syntax highlighting, image loads, content-visibility reflows, etc.)
@@ -98,13 +121,7 @@ export function useScrollInit({
 
       if (shouldAutoScrollRef.current) {
         // Auto-scroll to bottom as content grows
-        requestAnimationFrame(() => {
-          isAutoScrollingRef.current = true
-          container.scrollTop = container.scrollHeight
-          requestAnimationFrame(() => {
-            isAutoScrollingRef.current = false
-          })
-        })
+        performAutoScrollToBottom(container)
       } else {
         // User is scrolled up — maintain their relative position as content height changes
         // (e.g., syntax highlighting expanding code blocks above the viewport)
@@ -132,11 +149,16 @@ export function useScrollInit({
     const container = chatContainerRef.current
     if (!container) return
 
+    // Initialize prevScrollTopRef from the container's actual scrollTop so that
+    // the first scroll event doesn't compare against a stale 0 value. This is
+    // important when scroll position is restored from cache to a non-zero value.
+    prevScrollTopRef.current = container.scrollTop
+
     container.addEventListener("scroll", handleScroll, { passive: true })
     return () => {
       container.removeEventListener("scroll", handleScroll)
     }
-  }, [handleScroll, chatContainerRef])
+  }, [handleScroll, chatContainerRef, prevScrollTopRef])
 
   // Auto scroll to bottom when messages change during streaming
   // Only kicks in after content fills the viewport (overflow behavior)
@@ -152,13 +174,7 @@ export function useScrollInit({
       if (container) {
         // Always scroll during streaming if auto-scroll is enabled
         // (user can disable by scrolling up)
-        requestAnimationFrame(() => {
-          isAutoScrollingRef.current = true
-          container.scrollTop = container.scrollHeight
-          requestAnimationFrame(() => {
-            isAutoScrollingRef.current = false
-          })
-        })
+        performAutoScrollToBottom(container)
       }
     }
   }, [isVisiblePane, messages, status, conversationId, chatContainerRef, shouldAutoScrollRef, isAutoScrollingRef, scrollInitializedRef])

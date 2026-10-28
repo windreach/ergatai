@@ -23,13 +23,56 @@ import { DevicePresetsBar } from "./device-presets-bar"
 import { ResizeHandle } from "./resize-handle"
 import { MobileCopyLinkButton } from "./mobile-copy-link-button"
 import { DEVICE_PRESETS, AGENTS_PREVIEW_CONSTANTS } from "../constants"
-// import { getSandboxPreviewUrl } from "@/app/(alpha)/canvas/{components}/settings-tabs/repositories/preview-url"
+// TODO: Replace mock with real implementation when sandbox preview URL service is available
+// Original import: import { getSandboxPreviewUrl } from "@/app/(alpha)/canvas/{components}/settings-tabs/repositories/preview-url"
 const getSandboxPreviewUrl = (sandboxId: string, port: number, _type: string) => `https://${sandboxId}-${port}.csb.app` // Desktop mock
+
+/**
+ * Shared loading overlay component with animated Ergatai logo.
+ * Used in both mobile and desktop iframe previews.
+ */
+const LoadingOverlay = ({ className }: { className?: string }) => (
+  <div className={cn("absolute inset-0 flex items-center justify-center bg-background z-10", className)}>
+    <div className="w-6 h-6 animate-pulse">
+      <svg
+        width="100%"
+        height="100%"
+        viewBox="0 0 400 400"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-label="Ergatai logo"
+      >
+        <path
+          fillRule="evenodd"
+          clipRule="evenodd"
+          d="M358.333 0C381.345 0 400 18.6548 400 41.6667V295.833C400 298.135 398.134 300 395.833 300H270.833C268.532 300 266.667 301.865 266.667 304.167V395.833C266.667 398.134 264.801 400 262.5 400H41.6667C18.6548 400 0 381.345 0 358.333V304.72C0 301.793 1.54269 299.081 4.05273 297.575L153.76 207.747C157.159 205.708 156.02 200.679 152.376 200.065L151.628 200H4.16667C1.86548 200 6.71103e-08 198.135 0 195.833V104.167C1.07376e-06 101.865 1.86548 100 4.16667 100H162.5C164.801 100 166.667 98.1345 166.667 95.8333V4.16667C166.667 1.86548 168.532 1.00666e-07 170.833 0H358.333ZM170.833 100C168.532 100 166.667 101.865 166.667 104.167V295.833C166.667 298.135 168.532 300 170.833 300H262.5C264.801 300 266.667 298.135 266.667 295.833V104.167C266.667 101.865 164.801 100 262.5 100H170.833Z"
+          fill="currentColor"
+          className="text-muted-foreground"
+        />
+      </svg>
+    </div>
+  </div>
+)
+
+/**
+ * Validate that a path is a safe relative path for preview URL construction.
+ * Prevents absolute URLs, protocol injection, and path traversal attacks.
+ */
+const isValidRelativePath = (path: string): boolean => {
+  if (typeof path !== "string" || path.length === 0) return false
+  if (!path.startsWith("/")) return false
+  if (path.includes("://")) return false
+  if (path.includes("..")) return false
+  if (path.toLowerCase().startsWith("javascript:")) return false
+  if (path.toLowerCase().startsWith("data:")) return false
+  if (path.toLowerCase().startsWith("vbscript:")) return false
+  return true
+}
+
 interface AgentPreviewProps {
   chatId: string
   sandboxId: string
   port: number
-  repository?: string
   hideHeader?: boolean
   onClose?: () => void
   isMobile?: boolean
@@ -39,7 +82,6 @@ export function AgentPreview({
   chatId,
   sandboxId,
   port,
-  repository,
   hideHeader = false,
   onClose,
   isMobile = false,
@@ -141,7 +183,9 @@ export function AgentPreview({
   }, [previewBaseUrl])
 
   const previewUrl = useMemo(() => {
-    return `${previewBaseUrl}${loadedPath}`
+    // Validate loadedPath to prevent URL injection attacks
+    const safePath = isValidRelativePath(loadedPath) ? loadedPath : "/"
+    return `${previewBaseUrl}${safePath}`
   }, [previewBaseUrl, loadedPath])
 
   // Handle path selection from URL bar
@@ -172,6 +216,12 @@ export function AgentPreview({
 
         // Skip srcdoc paths (edge case from iframe)
         if (newPath.includes("srcdoc")) {
+          return
+        }
+
+        // Validate URL to prevent injection attacks (absolute URLs, path traversal, etc.)
+        if (!isValidRelativePath(newPath)) {
+          console.error("[AgentPreview] Invalid URL rejected:", newPath)
           return
         }
 
@@ -290,6 +340,8 @@ export function AgentPreview({
       }
 
       const cleanup = () => {
+        // Using `any` cast because PointerEvent handlers expect specific event types
+        // but we're attaching to HTMLElement which has broader event signatures
         handle.removeEventListener("pointermove", handlePointerMove as any)
         handle.removeEventListener("pointerup", handlePointerUp as any)
         handle.removeEventListener("pointercancel", handlePointerCancel as any)
@@ -300,6 +352,7 @@ export function AgentPreview({
 
       document.body.style.userSelect = "none"
       document.body.style.cursor = "ew-resize"
+      // Using `any` cast for consistency with cleanup above
       handle.addEventListener("pointermove", handlePointerMove as any)
       handle.addEventListener("pointerup", handlePointerUp as any)
       handle.addEventListener("pointercancel", handlePointerCancel as any)
@@ -485,28 +538,7 @@ export function AgentPreview({
               />
             </div>
             {/* Loading overlay */}
-            {!isLoaded && (
-              <div className="absolute inset-0 flex items-center justify-center bg-background z-10">
-                <div className="w-6 h-6 animate-pulse">
-                  <svg
-                    width="100%"
-                    height="100%"
-                    viewBox="0 0 400 400"
-                    fill="none"
-                    xmlns="http://www.w3.org/2000/svg"
-                    aria-label="Ergatai logo"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      clipRule="evenodd"
-                      d="M358.333 0C381.345 0 400 18.6548 400 41.6667V295.833C400 298.135 398.134 300 395.833 300H270.833C268.532 300 266.667 301.865 266.667 304.167V395.833C266.667 398.134 264.801 400 262.5 400H41.6667C18.6548 400 0 381.345 0 358.333V304.72C0 301.793 1.54269 299.081 4.05273 297.575L153.76 207.747C157.159 205.708 156.02 200.679 152.376 200.065L151.628 200H4.16667C1.86548 200 6.71103e-08 198.135 0 195.833V104.167C1.07376e-06 101.865 1.86548 100 4.16667 100H162.5C164.801 100 166.667 98.1345 166.667 95.8333V4.16667C166.667 1.86548 168.532 1.00666e-07 170.833 0H358.333ZM170.833 100C168.532 100 166.667 101.865 166.667 104.167V295.833C166.667 298.135 168.532 300 170.833 300H262.5C264.801 300 266.667 298.135 266.667 295.833V104.167C266.667 101.865 264.801 100 262.5 100H170.833Z"
-                      fill="currentColor"
-                      className="text-muted-foreground"
-                    />
-                  </svg>
-                </div>
-              </div>
-            )}
+            {!isLoaded && <LoadingOverlay />}
           </div>
         ) : (
           <>
@@ -566,34 +598,15 @@ export function AgentPreview({
                     borderRadius: viewportMode === "desktop" ? "8px" : "24px",
                   }}
                   sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+                  allow="clipboard-write"
                   onLoad={() => setIsLoaded(true)}
+                  onError={() => setIsLoaded(true)}
                   title="Preview"
                   tabIndex={-1}
                 />
 
                 {/* Loading overlay */}
-                {!isLoaded && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-background z-10 rounded-[inherit]">
-                    <div className="w-6 h-6 animate-pulse">
-                      <svg
-                        width="100%"
-                        height="100%"
-                        viewBox="0 0 400 400"
-                        fill="none"
-                        xmlns="http://www.w3.org/2000/svg"
-                        aria-label="Ergatai logo"
-                      >
-                        <path
-                          fillRule="evenodd"
-                          clipRule="evenodd"
-                          d="M358.333 0C381.345 0 400 18.6548 400 41.6667V295.833C400 298.135 398.134 300 395.833 300H270.833C268.532 300 266.667 301.865 266.667 304.167V395.833C266.667 398.134 264.801 400 262.5 400H41.6667C18.6548 400 0 381.345 0 358.333V304.72C0 301.793 1.54269 299.081 4.05273 297.575L153.76 207.747C157.159 205.708 156.02 200.679 152.376 200.065L151.628 200H4.16667C1.86548 200 6.71103e-08 198.135 0 195.833V104.167C1.07376e-06 101.865 1.86548 100 4.16667 100H162.5C164.801 100 166.667 98.1345 166.667 95.8333V4.16667C166.667 1.86548 168.532 1.00666e-07 170.833 0H358.333ZM170.833 100C168.532 100 166.667 101.865 166.667 104.167V295.833C166.667 298.135 168.532 300 170.833 300H262.5C264.801 300 266.667 298.135 266.667 295.833V104.167C266.667 101.865 264.801 100 262.5 100H170.833Z"
-                          fill="currentColor"
-                          className="text-muted-foreground"
-                        />
-                      </svg>
-                    </div>
-                  </div>
-                )}
+                {!isLoaded && <LoadingOverlay className="rounded-[inherit]" />}
               </div>
             </div>
 

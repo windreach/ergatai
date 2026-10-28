@@ -10,76 +10,56 @@
 // ============================================================================
 // TOOL STATE CACHE
 // ============================================================================
-// Cache tool state by toolCallId to detect AI SDK in-place mutations.
-// This is the same pattern used for MemoizedTextPart.
+// Cache for cleanup purposes. The actual comparison is now done via pure
+// comparison in hasToolStateChanged without side effects.
 // ============================================================================
 
-interface CachedToolState {
-  state: string | undefined
-  inputJson: string  // JSON stringified input for deep comparison
-  outputJson: string // JSON stringified output for deep comparison
-}
-
-const toolStateCache = new Map<string, CachedToolState>()
+const toolStateCache = new Map<string, any>()
 
 export function clearToolStateCachesByToolCallIds(toolCallIds: string[]) {
   for (const toolCallId of toolCallIds) {
     toolStateCache.delete(toolCallId)
-    askUserStateCache.delete(toolCallId)
   }
 }
 
-function getToolStateSnapshot(part: any): CachedToolState {
-  return {
-    state: part.state,
-    inputJson: JSON.stringify(part.input || {}),
-    outputJson: JSON.stringify(part.output || {}),
-  }
-}
+function hasToolStateChanged(prev: any, next: any): boolean {
+  // Pure comparison - no side effects
+  // Compare state, input, and output directly
+  if (prev.state !== next.state) return true
 
-function hasToolStateChanged(toolCallId: string, part: any): boolean {
-  const cached = toolStateCache.get(toolCallId)
-  const current = getToolStateSnapshot(part)
+  // Deep compare input using JSON.stringify
+  const prevInputJson = JSON.stringify(prev.input || {})
+  const nextInputJson = JSON.stringify(next.input || {})
+  if (prevInputJson !== nextInputJson) return true
 
-  if (!cached) {
-    toolStateCache.set(toolCallId, current)
-    return true
-  }
+  // Deep compare output using JSON.stringify
+  const prevOutputJson = JSON.stringify(prev.output || {})
+  const nextOutputJson = JSON.stringify(next.output || {})
+  if (prevOutputJson !== nextOutputJson) return true
 
-  const changed =
-    cached.state !== current.state ||
-    cached.inputJson !== current.inputJson ||
-    cached.outputJson !== current.outputJson
-
-  if (changed) {
-    toolStateCache.set(toolCallId, current)
-  }
-
-  return changed
+  return false
 }
 
 /**
  * Compare two part objects by their significant fields.
  * Returns true if they are equal.
  *
- * IMPORTANT: Uses external cache to detect AI SDK in-place mutations.
+ * IMPORTANT: Uses pure comparison without side effects.
  */
 function arePartsEqual(prev: any, next: any): boolean {
   // Different toolCallId = different tool
   if (prev.toolCallId !== next.toolCallId) return false
   if (prev.type !== next.type) return false
 
-  // Use cache-based comparison for the next part
-  // We check if the NEXT part has changed from what we cached
+  // Use pure comparison for the next part
   const toolCallId = next.toolCallId
   if (!toolCallId) {
     // No toolCallId - fall back to simple comparison
     return prev.state === next.state
   }
 
-  // Check if tool state has changed using our external cache
-  // hasToolStateChanged updates the cache if changed
-  const changed = hasToolStateChanged(toolCallId, next)
+  // Check if tool state has changed using pure comparison
+  const changed = hasToolStateChanged(prev, next)
 
   // Return true (equal) if nothing changed
   return !changed
@@ -215,18 +195,8 @@ export function isPlanFile(filePath: string): boolean {
 
 /**
  * Compare function for AgentAskUserQuestionTool which has different props structure.
- * Uses cache-based comparison for AI SDK in-place mutations.
+ * Uses pure comparison without side effects.
  */
-
-interface CachedAskUserState {
-  state: string
-  isError: boolean | undefined
-  errorText: string | undefined
-  inputJson: string
-  resultJson: string
-}
-
-const askUserStateCache = new Map<string, CachedAskUserState>()
 
 export function areAskUserQuestionPropsEqual(
   prevProps: {
@@ -257,31 +227,16 @@ export function areAskUserQuestionPropsEqual(
     return prevProps.state === nextProps.state
   }
 
-  // Create current state snapshot
-  const current: CachedAskUserState = {
-    state: nextProps.state,
-    isError: nextProps.isError,
-    errorText: nextProps.errorText,
-    inputJson: JSON.stringify(nextProps.input || {}),
-    resultJson: JSON.stringify(nextProps.result || {}),
-  }
+  // Pure comparison - no side effects
+  const stateChanged = prevProps.state !== nextProps.state
+  const isErrorChanged = prevProps.isError !== nextProps.isError
+  const errorTextChanged = prevProps.errorText !== nextProps.errorText
+  const inputChanged = JSON.stringify(prevProps.input || {}) !== JSON.stringify(nextProps.input || {})
+  const resultChanged = JSON.stringify(prevProps.result || {}) !== JSON.stringify(nextProps.result || {})
 
-  const cached = askUserStateCache.get(toolCallId)
-
-  if (!cached) {
-    askUserStateCache.set(toolCallId, current)
-    return false // First render
-  }
-
-  const changed =
-    cached.state !== current.state ||
-    cached.isError !== current.isError ||
-    cached.errorText !== current.errorText ||
-    cached.inputJson !== current.inputJson ||
-    cached.resultJson !== current.resultJson
+  const changed = stateChanged || isErrorChanged || errorTextChanged || inputChanged || resultChanged
 
   if (changed) {
-    askUserStateCache.set(toolCallId, current)
     return false
   }
 

@@ -21,7 +21,6 @@ import {
   pendingUserQuestionsAtom,
   registeredAgentsAtom,
   undoStackAtom,
-  conversationModeAtomFamily,
   suppressInputFocusAtom,
   type UndoItem,
 } from "../agents/atoms"
@@ -66,7 +65,7 @@ import { isDesktopApp, getShortcutKey } from "../../lib/utils/platform"
 import { useResolvedHotkeyDisplay } from "../../lib/hotkeys"
 import { TrafficLightSpacer } from "../agents/components/traffic-light-spacer"
 import { PopoverTrigger } from "../../components/ui/popover"
-import { AlignJustify, ChevronDown } from "lucide-react"
+import { AlignJustify } from "lucide-react"
 import {
   ContextMenu,
   ContextMenuContent,
@@ -85,7 +84,6 @@ import {
   AlertDialogTitle,
 } from "../../components/ui/alert-dialog"
 import { api } from "../../lib/api-adapter"
-import { trpcClient } from "../../lib/trpc"
 import { toast } from "sonner"
 import { AgentsRenameConversationDialog } from "../agents/components/agents-rename-conversation-dialog"
 import { SearchCombobox } from "../../components/ui/search-combobox"
@@ -97,15 +95,6 @@ import { useHotkeys } from "react-hotkeys-hook"
 import { useConversationDraftsCache, getConversationDraftKey } from "../agents/lib/drafts"
 import { Checkbox } from "../../components/ui/checkbox"
 import { TypewriterText } from "../../components/ui/typewriter-text"
-import {
-  agentContractApi,
-  type AgentConversation,
-  type AgentSummary,
-} from "../agents/lib/agent-contract-api"
-import {
-  refreshAgentRuntimeStatus,
-  useAgentRuntimeAgents,
-} from "../agents/lib/agent-runtime-status-store"
 import { getCoreAgentIcon } from "../agents/components/core-agent-selector"
 import {
   hasStoredGroupAgentIds,
@@ -113,12 +102,8 @@ import {
   loadGroupAgents,
 } from "../agents/collaboration/group-agent-storage"
 import { useCollaborationMode } from "../agents/collaboration/use-collaboration-mode"
-import {
-  type CollaborationMode,
-} from "../agents/collaboration/collaboration-mode"
 import type { inferRouterOutputs } from "@trpc/server"
 import type { AppRouter } from "../../../main/lib/trpc/routers"
-import type { ErgataiConversation } from "../../../main/lib/trpc/routers/ergatai"
 
 type RouterOutput = inferRouterOutputs<AppRouter>
 
@@ -132,32 +117,8 @@ interface SidebarSearchHistoryPopoverProps {
   onSelect: (conversation?: ConversationMeta) => void
 }
 
-const AGENT_STATUS_STYLES: Record<AgentSummary["status"], string> = {
-  idle: "bg-muted text-muted-foreground",
-  working: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
-  error: "bg-destructive/15 text-destructive",
-  unknown: "bg-muted text-muted-foreground",
-}
-
-const CONVERSATION_STATUS_STYLES: Record<AgentConversation["status"], string> = {
-  active: "text-emerald-600 dark:text-emerald-400",
-  completed: "text-muted-foreground",
-  failed: "text-destructive",
-}
-
-const SHOW_CONVERSATION_THREADS = false
-
 function displayText(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback
-}
-
-function formatConversationTime(value: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value))
 }
 
 const WorkspaceChatList = memo(function WorkspaceChatList({
@@ -305,205 +266,6 @@ function ChatAgentLogoBadge({ logo }: { logo: ChatAgentLogo }) {
     </span>
   )
 }
-
-const AgentConversationPanel = memo(function AgentConversationPanel({
-  searchQuery,
-  refreshKey = 0,
-  onConversationSelect,
-}: {
-  searchQuery: string
-  refreshKey?: number
-  onConversationSelect?: (conversation: AgentConversation) => void
-}) {
-  const [conversationsByAgent, setConversationsByAgent] = useState<
-    Record<string, AgentConversation[]>
-  >({})
-  const [expandedAgentIds, setExpandedAgentIds] = useState<Set<string>>(
-    () => new Set(),
-  )
-  const [loadingConversationIds, setLoadingConversationIds] = useState<Set<string>>(
-    () => new Set(),
-  )
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
-  const agentRuntimeStatus = useAgentRuntimeAgents()
-  const agents = agentRuntimeStatus.agents
-  const isLoadingAgents = agentRuntimeStatus.status === "loading"
-
-  useEffect(() => {
-    if (refreshKey > 0) void refreshAgentRuntimeStatus()
-  }, [refreshKey])
-
-  const toggleAgent = useCallback(async (agent: AgentSummary) => {
-    const nextExpandedAgentIds = new Set(expandedAgentIds)
-    const isExpanding = !nextExpandedAgentIds.has(agent.id)
-
-    if (isExpanding) {
-      nextExpandedAgentIds.add(agent.id)
-      if (!conversationsByAgent[agent.id]) {
-        setLoadingConversationIds((current) => new Set(current).add(agent.id))
-        try {
-          const conversations = await agentContractApi.listConversations(agent.id)
-          setConversationsByAgent((current) => ({
-            ...current,
-            [agent.id]: conversations,
-          }))
-        } finally {
-          setLoadingConversationIds((current) => {
-            const next = new Set(current)
-            next.delete(agent.id)
-            return next
-          })
-        }
-      }
-    } else {
-      nextExpandedAgentIds.delete(agent.id)
-    }
-
-    setExpandedAgentIds(nextExpandedAgentIds)
-  }, [conversationsByAgent, expandedAgentIds])
-
-  const visibleAgents = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase()
-    if (!query) return agents
-
-    return agents.filter((agent) => {
-      const agentMatches = `${displayText(agent.name)} ${displayText(agent.description)}`
-        .toLowerCase()
-        .includes(query)
-      const conversations = conversationsByAgent[agent.id] ?? []
-      const conversationMatches = conversations.some((conversation) =>
-        `${displayText(conversation?.title)} ${displayText(conversation?.preview)}`
-          .toLowerCase()
-          .includes(query),
-      )
-      return agentMatches || conversationMatches
-    })
-  }, [agents, conversationsByAgent, searchQuery])
-
-  const visibleConversationsByAgent = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase()
-
-    return Object.fromEntries(
-      Object.entries(conversationsByAgent).map(([agentId, items]) => [
-        agentId,
-        query
-          ? items.filter((item) =>
-              `${displayText(item?.title)} ${displayText(item?.preview)}`
-                .toLowerCase()
-                .includes(query),
-            )
-          : items,
-      ]),
-    )
-  }, [conversationsByAgent, searchQuery])
-
-  if (isLoadingAgents) {
-    return (
-      <div className="mb-4 px-1 py-5 text-center text-xs text-muted-foreground">
-        Loading agents...
-      </div>
-    )
-  }
-
-  return (
-    <div className="mb-4 -mx-1">
-      <h3 className="px-2 text-xs font-medium text-muted-foreground">群聊会话</h3>
-      <div className="mt-1 space-y-1">
-        {visibleAgents.map((agent) => {
-          const expanded = expandedAgentIds.has(agent.id)
-          const conversations = visibleConversationsByAgent[agent.id] ?? []
-          const isLoadingConversations = loadingConversationIds.has(agent.id)
-
-          return (
-            <div key={agent.id} className="rounded-lg bg-background">
-              <button
-                type="button"
-                onClick={() => void toggleAgent(agent)}
-                className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent"
-              >
-                <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-primary/10 text-[10px] font-semibold text-primary">
-                  {displayText(agent.name) === "Codex"
-                    ? "CX"
-                    : displayText(agent.name).toLowerCase().startsWith("claude")
-                      ? "CC"
-                      : displayText(agent.name).slice(0, 2).toUpperCase()}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-2">
-                    <span className="truncate text-sm font-medium">{agent.name}</span>
-                    <span
-                      className={cn(
-                        "rounded-full px-1.5 py-0.5 text-[10px] leading-none",
-                        AGENT_STATUS_STYLES[agent.status],
-                      )}
-                    >
-                      {agent.status}
-                    </span>
-                  </span>
-                  <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                    {agent.description}
-                  </span>
-                </span>
-                <ChevronDown
-                  className={cn(
-                    "h-4 w-4 flex-shrink-0 text-muted-foreground transition-transform",
-                    expanded && "rotate-180",
-                  )}
-                />
-              </button>
-
-              {expanded ? (
-                <div className="space-y-0.5 px-2 pb-2">
-                  {isLoadingConversations ? (
-                    <div className="px-2 py-2 text-xs text-muted-foreground">Loading history...</div>
-                  ) : conversations.length === 0 ? (
-                    <div className="px-2 py-2 text-xs text-muted-foreground">No matching history</div>
-                  ) : (
-                    conversations.map((conversation) => (
-                      <button
-                        key={conversation.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedConversationId(conversation.id)
-                          onConversationSelect?.(conversation)
-                        }}
-                        className={cn(
-                          "w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent",
-                          selectedConversationId === conversation.id && "bg-accent",
-                        )}
-                      >
-                        <span className="flex items-center justify-between gap-2">
-                          <span className="truncate text-xs font-medium">{conversation.title}</span>
-                          <span className={cn("text-[10px]", CONVERSATION_STATUS_STYLES[conversation.status])}>
-                            {conversation.status}
-                          </span>
-                        </span>
-                        <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                          {conversation.preview}
-                        </span>
-                        <span className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground/70">
-                          <span>{formatConversationTime(conversation.updatedAt)}</span>
-                          <span>{conversation.messageCount} messages</span>
-                        </span>
-                      </button>
-                    ))
-                  )}
-                </div>
-              ) : null}
-            </div>
-          )
-        })}
-      </div>
-      {agents.length === 0 ? (
-        <div className="px-2 py-5 text-center text-xs text-muted-foreground">
-          No agents yet
-        </div>
-      ) : visibleAgents.length === 0 ? (
-        <div className="px-2 py-5 text-center text-xs text-muted-foreground">No matching agents</div>
-      ) : null}
-    </div>
-  )
-})
 
 const SidebarSearchHistoryPopover = memo(function SidebarSearchHistoryPopover({
   sortedConversations,
@@ -718,8 +480,7 @@ export function AgentsConversationsSidebar({
   // Unified undo stack for Cmd+Z support
   const setUndoStack = useSetAtom(undoStackAtom)
   const [searchQuery, setSearchQuery] = useState("")
-  const [agentContractVersion, setAgentContractVersion] = useState(0)
-  const { mode: collaborationMode, config: collaborationModeConfig } = useCollaborationMode()
+  const { config: collaborationModeConfig } = useCollaborationMode()
   const [focusedChatIndex, setFocusedChatIndex] = useState<number>(-1)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -1128,13 +889,6 @@ export function AgentsConversationsSidebar({
     [renamingConversation, renameMutation, setJustCreatedIds],
   )
 
-  const handleCreateNew = async () => {
-    // Backend no longer supports creating child conversations
-    console.warn("[agents-conversations-sidebar] createChildConversation is no longer supported")
-    toast.error("Creating new conversations is no longer supported")
-    return
-  }
-
   const handleSelectFromHistory = useCallback((conversation?: ConversationMeta) => {
     if (!conversation?.id) return
     const state = useAgentConversationStore.getState()
@@ -1168,6 +922,18 @@ export function AgentsConversationsSidebar({
     window.addEventListener("resize", handleResize, { passive: true })
     return () => window.removeEventListener("resize", handleResize)
   }, [updateScrollGradients])
+
+  // Cleanup pending timers on unmount
+  useEffect(() => {
+    return () => {
+      if (conversationTooltipTimerRef.current) {
+        clearTimeout(conversationTooltipTimerRef.current)
+      }
+      // Clear undo stack timeouts
+      const undoStack = appStore.get(undoStackAtom)
+      undoStack.forEach((item) => clearTimeout(item.timeoutId))
+    }
+  }, [])
 
   // Check if all selected conversations are pinned
   const areAllSelectedPinned = useMemo(() => {
@@ -1428,6 +1194,329 @@ export function AgentsConversationsSidebar({
     </div>
   )
 
+  const renderConversationItem = (conversation: (typeof filteredConversations)[number]) => {
+    const isConversationLoading = loadingChatIds.has(conversation?.id)
+    const isActive = activeConversationId === conversation?.id
+    const isPinned = pinnedConversationIds.includes(conversation?.id)
+    const globalIndex = filteredIndexById.get(conversation?.id) ?? -1
+    const isSplitTab = splitPaneIdSet.has(conversation?.id)
+    const hasSplitPrev =
+      isSplitTab &&
+      globalIndex > 0 &&
+      splitPaneIdSet.has(filteredConversations[globalIndex - 1]?.id)
+    const hasSplitNext =
+      isSplitTab &&
+      globalIndex >= 0 &&
+      globalIndex < filteredConversations.length - 1 &&
+      splitPaneIdSet.has(filteredConversations[globalIndex + 1]?.id)
+    const isFocused =
+      focusedChatIndex === globalIndex &&
+      focusedChatIndex >= 0
+    const hasUnseen = conversationsUnseenChanges.has(conversation?.id || "")
+    const timeAgo = formatTimeAgo(
+      conversation?.updated_at || conversation?.created_at,
+    )
+    const mode = conversation?.mode || "agent"
+    const isChecked = selectedConversationIds.has(conversation?.id)
+    const draftText = getDraftText(conversation?.id)
+    const hasPendingQuestion = pendingQuestionsMap.has(conversation?.id || "")
+    const hasPendingPlan = pendingPlanApprovals.has(conversation?.id)
+    const fileChanges = conversationFiles.get(conversation?.id) || []
+    const stats =
+      fileChanges.length > 0
+        ? fileChanges.reduce(
+            (acc, f) => ({
+              fileCount: acc.fileCount + 1,
+              additions: acc.additions + f.additions,
+              deletions: acc.deletions + f.deletions,
+            }),
+            { fileCount: 0, additions: 0, deletions: 0 },
+          )
+        : null
+
+    return (
+      <ContextMenu key={conversation?.id}>
+        <ContextMenuTrigger asChild>
+          <div
+            data-testid={`conversation-item-${conversation?.id}`}
+            data-conversation-index={globalIndex}
+            onClick={(e) =>
+              handleConversationItemClick(
+                conversation?.id,
+                e,
+                globalIndex,
+              )
+            }
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault()
+                handleConversationItemClick(
+                  conversation?.id,
+                  undefined,
+                  globalIndex,
+                )
+              }
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault()
+                const nextIndex = e.key === "ArrowDown" ? globalIndex + 1 : globalIndex - 1
+                const container = (e.currentTarget as HTMLElement).closest("[data-sidebar-scroll]")
+                const nextEl = container?.querySelector<HTMLElement>(`[data-conversation-index="${nextIndex}"]`)
+                if (nextEl) {
+                  appStore.set(suppressInputFocusAtom, true)
+                  nextEl.click()
+                  nextEl.focus()
+                  nextEl.scrollIntoView({ block: "nearest" })
+                }
+              }
+            }}
+            onMouseEnter={(e) => {
+              hoveredChatIndexRef.current = globalIndex
+              handleConversationMouseEnter(
+                conversation?.id,
+                conversation?.name || "New Chat",
+                e.currentTarget,
+              )
+            }}
+            onMouseLeave={() => {
+              hoveredChatIndexRef.current = -1
+              handleConversationMouseLeave()
+            }}
+            className={cn(
+              "w-full text-left py-1.5 transition-colors duration-75 cursor-pointer group relative",
+              "outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70",
+              isMultiSelectMode ? "px-3" : "pl-2 pr-2",
+              isMultiSelectMode ? "" : "rounded-md",
+              isActive
+                ? "bg-foreground/5 text-foreground"
+                : isChecked
+                  ? "bg-foreground/5 text-foreground"
+                  : isFocused
+                    ? "bg-foreground/5 text-foreground"
+                    : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
+              isSplitTab && !isMultiSelectMode && "border border-border/60",
+              isSplitTab && !isMultiSelectMode && !isActive && !isChecked && !isFocused && "bg-muted/40 hover:bg-muted/50",
+              isSplitTab && !isMultiSelectMode && hasSplitPrev && "-mt-px rounded-t-none",
+              isSplitTab && !isMultiSelectMode && hasSplitNext && "rounded-b-none",
+            )}
+          >
+            <div className="flex items-start gap-2.5">
+              {/* Icon/Checkbox container */}
+              <div className="pt-0.5 flex-shrink-0 w-4 h-4 flex items-center justify-center relative">
+                {/* Checkbox - shown in multi-select mode */}
+                <div
+                  className={cn(
+                    "absolute inset-0 flex items-center justify-center transition-[opacity,transform] duration-150 ease-out",
+                    isMultiSelectMode
+                      ? "opacity-100 scale-100"
+                      : "opacity-0 scale-95 pointer-events-none",
+                  )}
+                  onClick={(e) =>
+                    handleCheckboxClick(e, conversation?.id)
+                  }
+                >
+                  <Checkbox
+                    checked={isChecked}
+                    className="cursor-pointer h-4 w-4"
+                    tabIndex={isMultiSelectMode ? 0 : -1}
+                  />
+                </div>
+                {/* Mode icon or Question icon - hidden in multi-select mode */}
+                <div
+                  className={cn(
+                    "transition-[opacity,transform] duration-150 ease-out",
+                    isMultiSelectMode
+                      ? "opacity-0 scale-95 pointer-events-none"
+                      : "opacity-100 scale-100",
+                  )}
+                >
+                  {hasPendingQuestion ? (
+                    <QuestionIcon className="w-4 h-4 text-blue-500" />
+                  ) : mode === "plan" ? (
+                    <PlanIcon className="w-4 h-4 text-muted-foreground" />
+                  ) : (
+                    <AgentIcon className="w-4 h-4 text-muted-foreground" />
+                  )}
+                </div>
+                {/* Badge in bottom-right corner - hidden in multi-select mode and when pending question */}
+                {(isConversationLoading || hasUnseen || hasPendingPlan) &&
+                  !isMultiSelectMode && !hasPendingQuestion && (
+                    <div
+                      className={cn(
+                        "absolute -bottom-1 -right-1 w-3 h-3 rounded-full flex items-center justify-center",
+                        isActive
+                          ? "bg-[#E8E8E8] dark:bg-[#1B1B1B]"
+                          : "bg-[#F4F4F4] group-hover:bg-[#E8E8E8] dark:bg-[#101010] dark:group-hover:bg-[#1B1B1B]",
+                      )}
+                    >
+                      {/* Priority: loader > amber dot (pending plan) > blue dot (unseen) */}
+                      {isConversationLoading ? (
+                        <LoadingDot isLoading={true} className="w-2.5 h-2.5 text-muted-foreground" />
+                      ) : hasPendingPlan ? (
+                        <div className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                      ) : (
+                        <LoadingDot isLoading={false} className="w-2.5 h-2.5 text-muted-foreground" />
+                      )}
+                    </div>
+                  )}
+              </div>
+              <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+                <div className="flex items-center gap-1">
+                  <span
+                    ref={(el) => {
+                      if (el) {
+                        conversationNameRefs.current.set(conversation?.id, el)
+                      } else {
+                        conversationNameRefs.current.delete(conversation?.id)
+                      }
+                    }}
+                    className="truncate block text-sm leading-tight flex-1"
+                  >
+                    <TypewriterText
+                      text={conversation?.name || ""}
+                      placeholder="New Chat"
+                      id={conversation?.id}
+                      isJustCreated={justCreatedIds.has(conversation?.id)}
+                      showPlaceholder={true}
+                    />
+                  </span>
+                  {!isMultiSelectMode && (
+                    <ConversationDropdownMenu
+                      conversation={conversation}
+                      isPinned={isPinned}
+                      onTogglePin={togglePinConversation}
+                      onRename={handleRenameClick}
+                      onArchive={handleArchiveConversation}
+                      onArchiveAllBelow={handleArchiveAllBelow}
+                      onArchiveOthers={onCloseOtherChats}
+                      isOnlyChat={openConversations.length === 1}
+                      currentIndex={globalIndex}
+                      totalCount={filteredConversations.length}
+                      chatId={parentChatId}
+                      onOpenInSplit={addToSplit}
+                      onCloseSplit={closeSplit}
+                      onRemoveFromSplit={removeFromSplit}
+                      splitPaneCount={splitPaneIds.length}
+                      isActiveTab={isActive}
+                      isSplitTab={isSplitTab}
+                    />
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60 min-w-0">
+                  {draftText ? (
+                    <span className="truncate flex-1 min-w-0">
+                      <span className="text-blue-500">Draft:</span>{" "}
+                      {draftText}
+                    </span>
+                  ) : (
+                    <span className="truncate flex-1 min-w-0">
+                      {stats ? (
+                        <>
+                          {stats.fileCount}{" "}
+                          {stats.fileCount === 1
+                            ? "file"
+                            : "files"}
+                        </>
+                      ) : null}
+                    </span>
+                  )}
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    {!draftText && stats && (stats.additions > 0 || stats.deletions > 0) && (
+                      <>
+                        <span className="text-green-600 dark:text-green-400">
+                          +{stats.additions}
+                        </span>
+                        <span className="text-red-600 dark:text-red-400">
+                          -{stats.deletions}
+                        </span>
+                      </>
+                    )}
+                    <span>{timeAgo}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </ContextMenuTrigger>
+        {/* Multi-select context menu */}
+        {isMultiSelectMode &&
+        selectedConversationIds.has(conversation?.id) ? (
+          <ContextMenuContent className="w-48">
+            {canShowPinOption && (
+              <>
+                <ContextMenuItem
+                  onClick={
+                    areAllSelectedPinned
+                      ? handleBulkUnpin
+                      : handleBulkPin
+                  }
+                >
+                  {areAllSelectedPinned
+                    ? `Unpin ${selectedConversationIds.size} ${pluralize(selectedConversationIds.size, "conversation")}`
+                    : `Pin ${selectedConversationIds.size} ${pluralize(selectedConversationIds.size, "conversation")}`}
+                </ContextMenuItem>
+                <ContextMenuSeparator />
+              </>
+            )}
+            <ContextMenuItem onClick={handleBulkArchive}>
+              Archive {selectedConversationIds.size}{" "}
+              {pluralize(selectedConversationIds.size, "conversation")}
+            </ContextMenuItem>
+          </ContextMenuContent>
+        ) : (
+          <ConversationContextMenu
+            conversation={conversation}
+            isPinned={isPinned}
+            onTogglePin={togglePinConversation}
+            onRename={handleRenameClick}
+            onArchive={handleArchiveConversation}
+            onArchiveAllBelow={handleArchiveAllBelow}
+            onArchiveOthers={onCloseOtherChats}
+            isOnlyChat={openConversations.length === 1}
+            currentIndex={globalIndex}
+            totalCount={filteredConversations.length}
+            chatId={parentChatId}
+            onOpenInSplit={addToSplit}
+            onCloseSplit={closeSplit}
+            onRemoveFromSplit={removeFromSplit}
+            splitPaneCount={splitPaneIds.length}
+            isActiveTab={isActive}
+            isSplitTab={isSplitTab}
+          />
+        )}
+      </ContextMenu>
+    )
+  }
+
+  const ConversationSection = ({
+    title,
+    items,
+    bottomMargin,
+  }: {
+    title: string
+    items: typeof filteredConversations
+    bottomMargin?: boolean
+  }) => {
+    if (items.length === 0) return null
+    return (
+      <>
+        <div
+          className={cn(
+            "flex items-center h-4 mb-1",
+            isMultiSelectMode ? "pl-3" : "pl-2",
+          )}
+        >
+          <h3 className="text-xs font-medium text-muted-foreground whitespace-nowrap">
+            {title}
+          </h3>
+        </div>
+        <div className={cn("list-none p-0 m-0", bottomMargin && "mb-3")}>
+          {items.map(renderConversationItem)}
+        </div>
+      </>
+    )
+  }
+
   return (
     <div
       data-testid="conversation-sidebar"
@@ -1627,641 +1716,15 @@ export function AgentsConversationsSidebar({
                 onChatSelect={onChatSelect}
               />
 
-              {SHOW_CONVERSATION_THREADS && collaborationMode === "group" && (
-                <AgentConversationPanel
-                  searchQuery={searchQuery}
-                  refreshKey={agentContractVersion}
-                />
-              )}
-              {SHOW_CONVERSATION_THREADS && collaborationMode === "supervisor" && filteredConversations.length > 0 ? (
+              {filteredConversations.length > 0 ? (
                 <div
                   className={cn("mb-4", isMultiSelectMode ? "px-0" : "-mx-1")}
                 >
-                  {/* Pinned section */}
-                  {pinnedChats.length > 0 && (
-                    <>
-                      <div
-                        className={cn(
-                          "flex items-center h-4 mb-1",
-                          isMultiSelectMode ? "pl-3" : "pl-2",
-                        )}
-                      >
-                        <h3 className="text-xs font-medium text-muted-foreground whitespace-nowrap">
-                          置顶会话
-                        </h3>
-                      </div>
-                      <div className="list-none p-0 m-0 mb-3">
-                        {pinnedChats.map((conversation) => {
-                          const isConversationLoading = loadingChatIds.has(
-                            conversation?.id,
-                          )
-                          const isActive = activeConversationId === conversation?.id
-                          const isPinned = pinnedConversationIds.includes(conversation?.id)
-                          const globalIndex = filteredIndexById.get(conversation?.id) ?? -1
-                          const isSplitTab = splitPaneIdSet.has(conversation?.id)
-                          const hasSplitPrev =
-                            isSplitTab &&
-                            globalIndex > 0 &&
-                            splitPaneIdSet.has(filteredConversations[globalIndex - 1]?.id)
-                          const hasSplitNext =
-                            isSplitTab &&
-                            globalIndex >= 0 &&
-                            globalIndex < filteredConversations.length - 1 &&
-                            splitPaneIdSet.has(filteredConversations[globalIndex + 1]?.id)
-                          const isFocused =
-                            focusedChatIndex === globalIndex &&
-                            focusedChatIndex >= 0
-                          const hasUnseen = conversationsUnseenChanges.has(conversation?.id || "")
-                          const timeAgo = formatTimeAgo(
-                            conversation?.updated_at || conversation?.created_at,
-                          )
-                          const mode = conversation?.mode || "agent"
-                          const isChecked = selectedConversationIds.has(conversation?.id)
-                          const draftText = getDraftText(conversation?.id)
-                          const hasPendingQuestion = pendingQuestionsMap.has(conversation?.id || "")
-                          const hasPendingPlan = pendingPlanApprovals.has(conversation?.id)
-                          const fileChanges = conversationFiles.get(conversation?.id) || []
-                          const stats =
-                            fileChanges.length > 0
-                              ? fileChanges.reduce(
-                                  (acc, f) => ({
-                                    fileCount: acc.fileCount + 1,
-                                    additions: acc.additions + f.additions,
-                                    deletions: acc.deletions + f.deletions,
-                                  }),
-                                  { fileCount: 0, additions: 0, deletions: 0 },
-                                )
-                              : null
-
-                          return (
-                            <ContextMenu key={conversation?.id}>
-                              <ContextMenuTrigger asChild>
-                                <div
-                                  data-testid={`conversation-item-${conversation?.id}`}
-                                  data-conversation-index={globalIndex}
-                                  onClick={(e) =>
-                                    handleConversationItemClick(
-                                      conversation?.id,
-                                      e,
-                                      globalIndex,
-                                    )
-                                  }
-                                  tabIndex={0}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter" || e.key === " ") {
-                                      e.preventDefault()
-                                      handleConversationItemClick(
-                                        conversation?.id,
-                                        undefined,
-                                        globalIndex,
-                                      )
-                                    }
-                                    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                                      e.preventDefault()
-                                      const nextIndex = e.key === "ArrowDown" ? globalIndex + 1 : globalIndex - 1
-                                      const container = (e.currentTarget as HTMLElement).closest("[data-sidebar-scroll]")
-                                      const nextEl = container?.querySelector<HTMLElement>(`[data-conversation-index="${nextIndex}"]`)
-                                      if (nextEl) {
-                                        appStore.set(suppressInputFocusAtom, true)
-                                        nextEl.click()
-                                        nextEl.focus()
-                                        nextEl.scrollIntoView({ block: "nearest" })
-                                      }
-                                    }
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    hoveredChatIndexRef.current = globalIndex
-                                    handleConversationMouseEnter(
-                                      conversation?.id,
-                                      conversation?.name || "New Chat",
-                                      e.currentTarget,
-                                    )
-                                  }}
-                                  onMouseLeave={() => {
-                                    hoveredChatIndexRef.current = -1
-                                    handleConversationMouseLeave()
-                                  }}
-                                  className={cn(
-                                    "w-full text-left py-1.5 transition-colors duration-75 cursor-pointer group relative",
-                                    "outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70",
-                                    isMultiSelectMode ? "px-3" : "pl-2 pr-2",
-                                    isMultiSelectMode ? "" : "rounded-md",
-                                    isActive
-                                      ? "bg-foreground/5 text-foreground"
-                                      : isChecked
-                                        ? "bg-foreground/5 text-foreground"
-                                        : isFocused
-                                          ? "bg-foreground/5 text-foreground"
-                                          : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
-                                    isSplitTab && !isMultiSelectMode && "border border-border/60",
-                                    isSplitTab && !isMultiSelectMode && !isActive && !isChecked && !isFocused && "bg-muted/40 hover:bg-muted/50",
-                                    isSplitTab && !isMultiSelectMode && hasSplitPrev && "-mt-px rounded-t-none",
-                                    isSplitTab && !isMultiSelectMode && hasSplitNext && "rounded-b-none",
-                                  )}
-                                >
-                                  <div className="flex items-start gap-2.5">
-                                    {/* Icon/Checkbox container */}
-                                    <div className="pt-0.5 flex-shrink-0 w-4 h-4 flex items-center justify-center relative">
-                                      {/* Checkbox - shown in multi-select mode */}
-                                      <div
-                                        className={cn(
-                                          "absolute inset-0 flex items-center justify-center transition-[opacity,transform] duration-150 ease-out",
-                                          isMultiSelectMode
-                                            ? "opacity-100 scale-100"
-                                            : "opacity-0 scale-95 pointer-events-none",
-                                        )}
-                                        onClick={(e) =>
-                                          handleCheckboxClick(e, conversation?.id)
-                                        }
-                                      >
-                                        <Checkbox
-                                          checked={isChecked}
-                                          className="cursor-pointer h-4 w-4"
-                                          tabIndex={isMultiSelectMode ? 0 : -1}
-                                        />
-                                      </div>
-                                      {/* Mode icon or Question icon - hidden in multi-select mode */}
-                                      <div
-                                        className={cn(
-                                          "transition-[opacity,transform] duration-150 ease-out",
-                                          isMultiSelectMode
-                                            ? "opacity-0 scale-95 pointer-events-none"
-                                            : "opacity-100 scale-100",
-                                        )}
-                                      >
-                                        {hasPendingQuestion ? (
-                                          <QuestionIcon className="w-4 h-4 text-blue-500" />
-                                        ) : mode === "plan" ? (
-                                          <PlanIcon className="w-4 h-4 text-muted-foreground" />
-                                        ) : (
-                                          <AgentIcon className="w-4 h-4 text-muted-foreground" />
-                                        )}
-                                      </div>
-                                      {/* Badge in bottom-right corner - hidden in multi-select mode and when pending question */}
-                                      {(isConversationLoading || hasUnseen || hasPendingPlan) &&
-                                        !isMultiSelectMode && !hasPendingQuestion && (
-                                          <div
-                                            className={cn(
-                                              "absolute -bottom-1 -right-1 w-3 h-3 rounded-full flex items-center justify-center",
-                                              isActive
-                                                ? "bg-[#E8E8E8] dark:bg-[#1B1B1B]"
-                                                : "bg-[#F4F4F4] group-hover:bg-[#E8E8E8] dark:bg-[#101010] dark:group-hover:bg-[#1B1B1B]",
-                                            )}
-                                          >
-                                            {/* Priority: loader > amber dot (pending plan) > blue dot (unseen) */}
-                                            {isConversationLoading ? (
-                                              <LoadingDot isLoading={true} className="w-2.5 h-2.5 text-muted-foreground" />
-                                            ) : hasPendingPlan ? (
-                                              <div className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                                            ) : (
-                                              <LoadingDot isLoading={false} className="w-2.5 h-2.5 text-muted-foreground" />
-                                            )}
-                                          </div>
-                                        )}
-                                    </div>
-                                    <div className="flex-1 min-w-0 flex flex-col gap-0.5">
-                                      <div className="flex items-center gap-1">
-                                        <span
-                                          ref={(el) => {
-                                            if (el)
-                                              conversationNameRefs.current.set(
-                                                conversation?.id,
-                                                el,
-                                              )
-                                          }}
-                                          className="truncate block text-sm leading-tight flex-1"
-                                        >
-                                          <TypewriterText
-                                            text={conversation?.name || ""}
-                                            placeholder="New Chat"
-                                            id={conversation?.id}
-                                            isJustCreated={justCreatedIds.has(conversation?.id)}
-                                            showPlaceholder={true}
-                                          />
-                                        </span>
-                                        {!isMultiSelectMode && (
-                                          <ConversationDropdownMenu
-                                            conversation={conversation}
-                                            isPinned={isPinned}
-                                            onTogglePin={togglePinConversation}
-                                            onRename={handleRenameClick}
-                                            onArchive={handleArchiveConversation}
-                                            onArchiveAllBelow={handleArchiveAllBelow}
-                                            onArchiveOthers={onCloseOtherChats}
-                                            isOnlyChat={openConversations.length === 1}
-                                            currentIndex={globalIndex}
-                                            totalCount={filteredConversations.length}
-                                            chatId={parentChatId}
-                                            onOpenInSplit={addToSplit}
-                                            onCloseSplit={closeSplit}
-                                            onRemoveFromSplit={removeFromSplit}
-                                            splitPaneCount={splitPaneIds.length}
-                                            isActiveTab={isActive}
-                                            isSplitTab={isSplitTab}
-                                          />
-                                        )}
-                                      </div>
-                                      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60 min-w-0">
-                                        {draftText ? (
-                                          <span className="truncate flex-1 min-w-0">
-                                            <span className="text-blue-500">Draft:</span>{" "}
-                                            {draftText}
-                                          </span>
-                                        ) : (
-                                          <span className="truncate flex-1 min-w-0">
-                                            {stats ? (
-                                              <>
-                                                {stats.fileCount}{" "}
-                                                {stats.fileCount === 1
-                                                  ? "file"
-                                                  : "files"}
-                                              </>
-                                            ) : null}
-                                          </span>
-                                        )}
-                                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                                          {!draftText && stats && (stats.additions > 0 || stats.deletions > 0) && (
-                                            <>
-                                              <span className="text-green-600 dark:text-green-400">
-                                                +{stats.additions}
-                                              </span>
-                                              <span className="text-red-600 dark:text-red-400">
-                                                -{stats.deletions}
-                                              </span>
-                                            </>
-                                          )}
-                                          <span>{timeAgo}</span>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                              </ContextMenuTrigger>
-                              {/* Multi-select context menu */}
-                              {isMultiSelectMode &&
-                              selectedConversationIds.has(conversation?.id) ? (
-                                <ContextMenuContent className="w-48">
-                                  {canShowPinOption && (
-                                    <>
-                                      <ContextMenuItem
-                                        onClick={
-                                          areAllSelectedPinned
-                                            ? handleBulkUnpin
-                                            : handleBulkPin
-                                        }
-                                      >
-                                        {areAllSelectedPinned
-                                          ? `Unpin ${selectedConversationIds.size} ${pluralize(selectedConversationIds.size, "conversation")}`
-                                          : `Pin ${selectedConversationIds.size} ${pluralize(selectedConversationIds.size, "conversation")}`}
-                                      </ContextMenuItem>
-                                      <ContextMenuSeparator />
-                                    </>
-                                  )}
-                                  <ContextMenuItem onClick={handleBulkArchive}>
-                                    Archive {selectedConversationIds.size}{" "}
-                                    {pluralize(selectedConversationIds.size, "conversation")}
-                                  </ContextMenuItem>
-                                </ContextMenuContent>
-                              ) : (
-                                <ConversationContextMenu
-                                  conversation={conversation}
-                                  isPinned={isPinned}
-                                  onTogglePin={togglePinConversation}
-                                  onRename={handleRenameClick}
-                                  onArchive={handleArchiveConversation}
-                                  onArchiveAllBelow={handleArchiveAllBelow}
-                                  onArchiveOthers={onCloseOtherChats}
-                                  isOnlyChat={openConversations.length === 1}
-                                  currentIndex={globalIndex}
-                                  totalCount={filteredConversations.length}
-                                  chatId={parentChatId}
-                                  onOpenInSplit={addToSplit}
-                                  onCloseSplit={closeSplit}
-                                  onRemoveFromSplit={removeFromSplit}
-                                  splitPaneCount={splitPaneIds.length}
-                                  isActiveTab={isActive}
-                                  isSplitTab={isSplitTab}
-                                />
-                              )}
-                            </ContextMenu>
-                          )
-                        })}
-                      </div>
-                    </>
-                  )}
-
-                  {/* Unpinned section */}
-                  {unpinnedChats.length > 0 && (
-                    <>
-                      <div
-                        className={cn(
-                          "flex items-center h-4 mb-1",
-                          isMultiSelectMode ? "pl-3" : "pl-2",
-                        )}
-                      >
-                        <h3 className="text-xs font-medium text-muted-foreground whitespace-nowrap">
-                          {pinnedChats.length > 0 ? "最近会话" : "会话"}
-                        </h3>
-                      </div>
-                      <div className="list-none p-0 m-0">
-                        {unpinnedChats.map((conversation) => {
-                          const isConversationLoading = loadingChatIds.has(
-                            conversation?.id,
-                          )
-                          const isActive = activeConversationId === conversation?.id
-                          const isPinned = pinnedConversationIds.includes(conversation?.id)
-                          const globalIndex = filteredIndexById.get(conversation?.id) ?? -1
-                          const isSplitTab = splitPaneIdSet.has(conversation?.id)
-                          const hasSplitPrev =
-                            isSplitTab &&
-                            globalIndex > 0 &&
-                            splitPaneIdSet.has(filteredConversations[globalIndex - 1]?.id)
-                          const hasSplitNext =
-                            isSplitTab &&
-                            globalIndex >= 0 &&
-                            globalIndex < filteredConversations.length - 1 &&
-                            splitPaneIdSet.has(filteredConversations[globalIndex + 1]?.id)
-                          const isFocused =
-                            focusedChatIndex === globalIndex &&
-                            focusedChatIndex >= 0
-                          const hasUnseen = conversationsUnseenChanges.has(conversation?.id || "")
-                          const timeAgo = formatTimeAgo(
-                            conversation?.updated_at || conversation?.created_at,
-                          )
-                          const mode = conversation?.mode || "agent"
-                          const isChecked = selectedConversationIds.has(conversation?.id)
-                          const draftText = getDraftText(conversation?.id)
-                          const hasPendingQuestion = pendingQuestionsMap.has(conversation?.id || "")
-                          const hasPendingPlan = pendingPlanApprovals.has(conversation?.id)
-                          const fileChanges = conversationFiles.get(conversation?.id) || []
-                          const stats =
-                            fileChanges.length > 0
-                              ? fileChanges.reduce(
-                                  (acc, f) => ({
-                                    fileCount: acc.fileCount + 1,
-                                    additions: acc.additions + f.additions,
-                                    deletions: acc.deletions + f.deletions,
-                                  }),
-                                  { fileCount: 0, additions: 0, deletions: 0 },
-                                )
-                              : null
-
-                          return (
-                            <ContextMenu key={conversation?.id}>
-                              <ContextMenuTrigger asChild>
-                                <div
-                                  data-testid={`conversation-item-${conversation?.id}`}
-                                  data-conversation-index={globalIndex}
-                                  onClick={(e) =>
-                                    handleConversationItemClick(
-                                      conversation?.id,
-                                      e,
-                                      globalIndex,
-                                    )
-                                  }
-                                  tabIndex={0}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter" || e.key === " ") {
-                                      e.preventDefault()
-                                      handleConversationItemClick(
-                                        conversation?.id,
-                                        undefined,
-                                        globalIndex,
-                                      )
-                                    }
-                                    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                                      e.preventDefault()
-                                      const nextIndex = e.key === "ArrowDown" ? globalIndex + 1 : globalIndex - 1
-                                      const container = (e.currentTarget as HTMLElement).closest("[data-sidebar-scroll]")
-                                      const nextEl = container?.querySelector<HTMLElement>(`[data-conversation-index="${nextIndex}"]`)
-                                      if (nextEl) {
-                                        appStore.set(suppressInputFocusAtom, true)
-                                        nextEl.click()
-                                        nextEl.focus()
-                                        nextEl.scrollIntoView({ block: "nearest" })
-                                      }
-                                    }
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    hoveredChatIndexRef.current = globalIndex
-                                    handleConversationMouseEnter(
-                                      conversation?.id,
-                                      conversation?.name || "New Chat",
-                                      e.currentTarget,
-                                    )
-                                  }}
-                                  onMouseLeave={() => {
-                                    hoveredChatIndexRef.current = -1
-                                    handleConversationMouseLeave()
-                                  }}
-                                  className={cn(
-                                    "w-full text-left py-1.5 transition-colors duration-75 cursor-pointer group relative",
-                                    "outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70",
-                                    isMultiSelectMode ? "px-3" : "pl-2 pr-2",
-                                    isMultiSelectMode ? "" : "rounded-md",
-                                    isActive
-                                      ? "bg-foreground/5 text-foreground"
-                                      : isChecked
-                                        ? "bg-foreground/5 text-foreground"
-                                        : isFocused
-                                          ? "bg-foreground/5 text-foreground"
-                                          : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
-                                    isSplitTab && !isMultiSelectMode && "border border-border/60",
-                                    isSplitTab && !isMultiSelectMode && !isActive && !isChecked && !isFocused && "bg-muted/40 hover:bg-muted/50",
-                                    isSplitTab && !isMultiSelectMode && hasSplitPrev && "-mt-px rounded-t-none",
-                                    isSplitTab && !isMultiSelectMode && hasSplitNext && "rounded-b-none",
-                                  )}
-                                >
-                                  <div className="flex items-start gap-2.5">
-                                    {/* Icon/Checkbox container */}
-                                    <div className="pt-0.5 flex-shrink-0 w-4 h-4 flex items-center justify-center relative">
-                                      {/* Checkbox - shown in multi-select mode */}
-                                      <div
-                                        className={cn(
-                                          "absolute inset-0 flex items-center justify-center transition-[opacity,transform] duration-150 ease-out",
-                                          isMultiSelectMode
-                                            ? "opacity-100 scale-100"
-                                            : "opacity-0 scale-95 pointer-events-none",
-                                        )}
-                                        onClick={(e) =>
-                                          handleCheckboxClick(e, conversation?.id)
-                                        }
-                                      >
-                                        <Checkbox
-                                          checked={isChecked}
-                                          className="cursor-pointer h-4 w-4"
-                                          tabIndex={isMultiSelectMode ? 0 : -1}
-                                        />
-                                      </div>
-                                      {/* Mode icon or Question icon - hidden in multi-select mode */}
-                                      <div
-                                        className={cn(
-                                          "transition-[opacity,transform] duration-150 ease-out",
-                                          isMultiSelectMode
-                                            ? "opacity-0 scale-95 pointer-events-none"
-                                            : "opacity-100 scale-100",
-                                        )}
-                                      >
-                                        {hasPendingQuestion ? (
-                                          <QuestionIcon className="w-4 h-4 text-blue-500" />
-                                        ) : mode === "plan" ? (
-                                          <PlanIcon className="w-4 h-4 text-muted-foreground" />
-                                        ) : (
-                                          <AgentIcon className="w-4 h-4 text-muted-foreground" />
-                                        )}
-                                      </div>
-                                      {/* Badge - hidden in multi-select mode and when pending question */}
-                                      {(isConversationLoading || hasUnseen || hasPendingPlan) &&
-                                        !isMultiSelectMode && !hasPendingQuestion && (
-                                          <div
-                                            className={cn(
-                                              "absolute -bottom-1 -right-1 w-3 h-3 rounded-full flex items-center justify-center",
-                                              isActive
-                                                ? "bg-[#E8E8E8] dark:bg-[#1B1B1B]"
-                                                : "bg-[#F4F4F4] group-hover:bg-[#E8E8E8] dark:bg-[#101010] dark:group-hover:bg-[#1B1B1B]",
-                                            )}
-                                          >
-                                            {/* Priority: loader > amber dot (pending plan) > blue dot (unseen) */}
-                                            {isConversationLoading ? (
-                                              <LoadingDot isLoading={true} className="w-2.5 h-2.5 text-muted-foreground" />
-                                            ) : hasPendingPlan ? (
-                                              <div className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                                            ) : (
-                                              <LoadingDot isLoading={false} className="w-2.5 h-2.5 text-muted-foreground" />
-                                            )}
-                                          </div>
-                                        )}
-                                    </div>
-                                    <div className="flex-1 min-w-0 flex flex-col gap-0.5">
-                                      <div className="flex items-center gap-1">
-                                        <span
-                                          ref={(el) => {
-                                            if (el)
-                                              conversationNameRefs.current.set(
-                                                conversation?.id,
-                                                el,
-                                              )
-                                          }}
-                                          className="truncate block text-sm leading-tight flex-1"
-                                        >
-                                          <TypewriterText
-                                            text={conversation?.name || ""}
-                                            placeholder="New Chat"
-                                            id={conversation?.id}
-                                            isJustCreated={justCreatedIds.has(conversation?.id)}
-                                            showPlaceholder={true}
-                                          />
-                                        </span>
-                                        {!isMultiSelectMode && (
-                                          <ConversationDropdownMenu
-                                            conversation={conversation}
-                                            isPinned={isPinned}
-                                            onTogglePin={togglePinConversation}
-                                            onRename={handleRenameClick}
-                                            onArchive={handleArchiveConversation}
-                                            onArchiveAllBelow={handleArchiveAllBelow}
-                                            onArchiveOthers={onCloseOtherChats}
-                                            isOnlyChat={openConversations.length === 1}
-                                            currentIndex={globalIndex}
-                                            totalCount={filteredConversations.length}
-                                            chatId={parentChatId}
-                                            onOpenInSplit={addToSplit}
-                                            onCloseSplit={closeSplit}
-                                            onRemoveFromSplit={removeFromSplit}
-                                            splitPaneCount={splitPaneIds.length}
-                                            isActiveTab={isActive}
-                                            isSplitTab={isSplitTab}
-                                          />
-                                        )}
-                                      </div>
-                                      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60 min-w-0">
-                                        {draftText ? (
-                                          <span className="truncate flex-1 min-w-0">
-                                            <span className="text-blue-500">Draft:</span>{" "}
-                                            {draftText}
-                                          </span>
-                                        ) : (
-                                          <span className="truncate flex-1 min-w-0">
-                                            {stats ? (
-                                              <>
-                                                {stats.fileCount}{" "}
-                                                {stats.fileCount === 1
-                                                  ? "file"
-                                                  : "files"}
-                                              </>
-                                            ) : null}
-                                          </span>
-                                        )}
-                                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                                          {!draftText && stats && (stats.additions > 0 || stats.deletions > 0) && (
-                                            <>
-                                              <span className="text-green-600 dark:text-green-400">
-                                                +{stats.additions}
-                                              </span>
-                                              <span className="text-red-600 dark:text-red-400">
-                                                -{stats.deletions}
-                                              </span>
-                                            </>
-                                          )}
-                                          <span>{timeAgo}</span>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                              </ContextMenuTrigger>
-                              {/* Multi-select context menu */}
-                              {isMultiSelectMode &&
-                              selectedConversationIds.has(conversation?.id) ? (
-                                <ContextMenuContent className="w-48">
-                                  {canShowPinOption && (
-                                    <>
-                                      <ContextMenuItem
-                                        onClick={
-                                          areAllSelectedPinned
-                                            ? handleBulkUnpin
-                                            : handleBulkPin
-                                        }
-                                      >
-                                        {areAllSelectedPinned
-                                          ? `Unpin ${selectedConversationIds.size} ${pluralize(selectedConversationIds.size, "conversation")}`
-                                          : `Pin ${selectedConversationIds.size} ${pluralize(selectedConversationIds.size, "conversation")}`}
-                                      </ContextMenuItem>
-                                      <ContextMenuSeparator />
-                                    </>
-                                  )}
-                                  <ContextMenuItem onClick={handleBulkArchive}>
-                                    Archive {selectedConversationIds.size}{" "}
-                                    {pluralize(selectedConversationIds.size, "conversation")}
-                                  </ContextMenuItem>
-                                </ContextMenuContent>
-                              ) : (
-                                <ConversationContextMenu
-                                  conversation={conversation}
-                                  isPinned={isPinned}
-                                  onTogglePin={togglePinConversation}
-                                  onRename={handleRenameClick}
-                                  onArchive={handleArchiveConversation}
-                                  onArchiveAllBelow={handleArchiveAllBelow}
-                                  onArchiveOthers={onCloseOtherChats}
-                                  isOnlyChat={openConversations.length === 1}
-                                  currentIndex={globalIndex}
-                                  totalCount={filteredConversations.length}
-                                  chatId={parentChatId}
-                                  onOpenInSplit={addToSplit}
-                                  onCloseSplit={closeSplit}
-                                  onRemoveFromSplit={removeFromSplit}
-                                  splitPaneCount={splitPaneIds.length}
-                                  isActiveTab={isActive}
-                                  isSplitTab={isSplitTab}
-                                />
-                              )}
-                            </ContextMenu>
-                          )
-                        })}
-                      </div>
-                    </>
-                  )}
+                  <ConversationSection title="Pinned Chats" items={pinnedChats} bottomMargin />
+                  <ConversationSection
+                    title={pinnedChats.length > 0 ? "Recent Chats" : "Chats"}
+                    items={unpinnedChats}
+                  />
                 </div>
               ) : null}
             </div>

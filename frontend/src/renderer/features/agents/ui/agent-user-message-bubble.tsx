@@ -28,88 +28,89 @@ interface AgentUserMessageBubbleProps {
   skipTextMentionBlocks?: boolean
 }
 
-// Helper function to highlight text in DOM using TreeWalker
-function highlightTextInDom(
-  container: HTMLElement,
-  searchText: string,
-  currentOffset: number | null,
-  currentLength: number | null
-) {
-  // Remove existing highlights first
-  const existingHighlights = container.querySelectorAll(".search-highlight")
-  existingHighlights.forEach((el) => {
-    const parent = el.parentNode
-    if (parent) {
-      parent.replaceChild(document.createTextNode(el.textContent || ""), el)
-      parent.normalize()
+// Component that renders text with search highlighting using React (not imperative DOM manipulation)
+function HighlightedText({ text }: { text: string }) {
+  const highlights = useSearchHighlight("", 0, "text")
+  const searchQuery = useSearchQuery()
+  const currentHighlight = highlights.find(h => h.isCurrent)
+
+  const highlightedNodes = useMemo(() => {
+    if (!searchQuery || searchQuery.length === 0) {
+      return <RenderFileMentions text={text} />
     }
-  })
 
-  if (!searchText) return
-
-  const lowerSearch = searchText.toLowerCase()
-  const walker = document.createTreeWalker(
-    container,
-    NodeFilter.SHOW_TEXT,
-    null
-  )
-
-  const textNodes: Text[] = []
-  let node: Text | null
-  while ((node = walker.nextNode() as Text | null)) {
-    if (node.nodeValue && node.nodeValue.toLowerCase().includes(lowerSearch)) {
-      textNodes.push(node)
-    }
-  }
-
-  let globalOffset = 0
-  for (const textNode of textNodes) {
-    const text = textNode.nodeValue || ""
+    const lowerSearch = searchQuery.toLowerCase()
     const lowerText = text.toLowerCase()
+    const parts: Array<{ text: string; isMatch: boolean; isCurrent: boolean; offset: number }> = []
     let lastIndex = 0
-    const fragments: (string | HTMLElement)[] = []
     let searchIndex = 0
 
     while ((searchIndex = lowerText.indexOf(lowerSearch, lastIndex)) !== -1) {
+      // Add non-matching text before this match
       if (searchIndex > lastIndex) {
-        fragments.push(text.slice(lastIndex, searchIndex))
-      }
-
-      const mark = document.createElement("mark")
-      mark.className = "search-highlight"
-      mark.textContent = text.slice(searchIndex, searchIndex + searchText.length)
-
-      if (currentOffset !== null && currentLength !== null) {
-        const matchStart = globalOffset + searchIndex
-        if (matchStart === currentOffset) {
-          mark.classList.add("search-highlight-current")
-        }
-      }
-
-      fragments.push(mark)
-      lastIndex = searchIndex + searchText.length
-    }
-
-    if (lastIndex < text.length) {
-      fragments.push(text.slice(lastIndex))
-    }
-
-    if (fragments.length > 0) {
-      const parent = textNode.parentNode
-      if (parent) {
-        fragments.forEach((frag) => {
-          if (typeof frag === "string") {
-            parent.insertBefore(document.createTextNode(frag), textNode)
-          } else {
-            parent.insertBefore(frag, textNode)
-          }
+        parts.push({
+          text: text.slice(lastIndex, searchIndex),
+          isMatch: false,
+          isCurrent: false,
+          offset: lastIndex,
         })
-        parent.removeChild(textNode)
       }
+
+      // Add the match
+      const isCurrent = currentHighlight?.offset === searchIndex
+      parts.push({
+        text: text.slice(searchIndex, searchIndex + searchQuery.length),
+        isMatch: true,
+        isCurrent,
+        offset: searchIndex,
+      })
+
+      lastIndex = searchIndex + searchQuery.length
     }
 
-    globalOffset += text.length
-  }
+    // Add remaining text after last match
+    if (lastIndex < text.length) {
+      parts.push({
+        text: text.slice(lastIndex),
+        isMatch: false,
+        isCurrent: false,
+        offset: lastIndex,
+      })
+    }
+
+    // If no matches found, render as plain text
+    if (parts.length === 0) {
+      return <RenderFileMentions text={text} />
+    }
+
+    // Render each part, using RenderFileMentions for non-matching text
+    // This preserves mention parsing for non-highlighted text
+    return parts.map((part, idx) => {
+      if (part.isMatch) {
+        return (
+          <mark
+            key={idx}
+            className={cn(
+              "search-highlight",
+              part.isCurrent && "search-highlight-current"
+            )}
+            data-offset={part.offset}
+          >
+            {part.text}
+          </mark>
+        )
+      } else {
+        // For non-matching text, use RenderFileMentions to preserve mention parsing
+        return (
+          <span key={idx}>
+            <RenderFileMentions text={part.text} />
+          </span>
+        )
+      }
+    })
+  }, [text, searchQuery, currentHighlight?.offset])
+
+  return <>{highlightedNodes}</>
 }
 
 export const AgentUserMessageBubble = memo(function AgentUserMessageBubble({
@@ -132,7 +133,6 @@ export const AgentUserMessageBubble = memo(function AgentUserMessageBubble({
 
   // Search highlight support
   const highlights = useSearchHighlight(messageId, 0, "text")
-  const searchQuery = useSearchQuery()
   const currentHighlight = highlights.find(h => h.isCurrent)
 
   // Determine if we should scroll for search (has current highlight in this message)
@@ -142,15 +142,14 @@ export const AgentUserMessageBubble = memo(function AgentUserMessageBubble({
   const prevHadHighlight = useRef(false)
 
   // Scroll to current highlight within the user message bubble
+  // No need for requestAnimationFrame since highlighting is now React-based and
+  // the DOM is ready after render completes
   useEffect(() => {
     if (hasCurrentSearchHighlight && contentRef.current) {
-      // Wait for DOM highlighting to be applied
-      requestAnimationFrame(() => {
-        const highlightEl = contentRef.current?.querySelector(".search-highlight-current")
-        if (highlightEl) {
-          highlightEl.scrollIntoView({ behavior: "smooth", block: "center" })
-        }
-      })
+      const highlightEl = contentRef.current.querySelector(".search-highlight-current")
+      if (highlightEl) {
+        highlightEl.scrollIntoView({ behavior: "smooth", block: "center" })
+      }
     }
 
     // Reset scroll position when search leaves this message
@@ -161,31 +160,6 @@ export const AgentUserMessageBubble = memo(function AgentUserMessageBubble({
     prevHadHighlight.current = hasCurrentSearchHighlight
   }, [hasCurrentSearchHighlight, currentHighlight?.offset])
 
-  // Apply DOM-based highlighting after render
-  useEffect(() => {
-    if (!contentRef.current) return
-
-    highlightTextInDom(
-      contentRef.current,
-      searchQuery,
-      currentHighlight?.offset ?? null,
-      currentHighlight?.length ?? null
-    )
-
-    return () => {
-      if (contentRef.current) {
-        const existingHighlights = contentRef.current.querySelectorAll(".search-highlight")
-        existingHighlights.forEach((el) => {
-          const parent = el.parentNode
-          if (parent) {
-            parent.replaceChild(document.createTextNode(el.textContent || ""), el)
-            parent.normalize()
-          }
-        })
-      }
-    }
-  }, [searchQuery, currentHighlight?.offset, currentHighlight?.length, textContent])
-
   return (
     <>
       <div data-testid="user-message" className="flex justify-end drop-shadow-[0_10px_20px_hsl(var(--background))]" data-user-bubble>
@@ -195,7 +169,7 @@ export const AgentUserMessageBubble = memo(function AgentUserMessageBubble({
             <div className="flex flex-wrap items-center gap-1.5">
               {(() => {
                 // Build allImages array for gallery navigation
-                const resolveImgUrl = (img: any) =>
+                const resolveImgUrl = (img: NonNullable<AgentUserMessageBubbleProps["imageParts"]>[number]) =>
                   img.data?.base64Data && img.data?.mediaType
                     ? `data:${img.data.mediaType};base64,${img.data.base64Data}`
                     : img.data?.url || ""
@@ -240,7 +214,7 @@ export const AgentUserMessageBubble = memo(function AgentUserMessageBubble({
               data-part-index={0}
               data-part-type="text"
             >
-              <RenderFileMentions text={cleanedText} />
+              <HighlightedText text={cleanedText} />
               {/* Show gradient only when collapsed and not searching in this message */}
               {showGradient && !hasCurrentSearchHighlight && (
                 <div className="absolute bottom-0 left-0 right-0 h-10 pointer-events-none bg-gradient-to-t from-[hsl(var(--muted))] to-transparent rounded-b-xl" />
@@ -300,7 +274,7 @@ export const AgentUserMessageBubble = memo(function AgentUserMessageBubble({
               <TextMentionBlocks mentions={textMentions} />
             )}
             <div className="whitespace-pre-wrap text-sm">
-              <RenderFileMentions text={cleanedText} />
+              <HighlightedText text={cleanedText} />
             </div>
           </div>
         </DialogContent>

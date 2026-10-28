@@ -16,11 +16,18 @@ import { exportChat, copyChat, type ExportFormat } from "../lib/export-chat"
 import { toast } from "sonner"
 
 const openInNewWindow = async (chatId: string, conversationId: string) => {
-  const result = await window.desktopApi?.newWindow({ chatId, conversationId: conversationId })
-  if (result?.blocked) {
-    toast.info("This workspace is already open in another window", {
-      description: "Switching to the existing window.",
-      duration: 3000,
+  try {
+    const result = await window.desktopApi?.newWindow({ chatId, conversationId: conversationId })
+    if (result?.blocked) {
+      toast.info("This workspace is already open in another window", {
+        description: "Switching to the existing window.",
+        duration: 3000,
+      })
+    }
+  } catch (error) {
+    console.error("[openInNewWindow] Error:", error)
+    toast.error("Failed to open new window", {
+      description: error instanceof Error ? error.message : "An unexpected error occurred",
     })
   }
 }
@@ -84,7 +91,7 @@ export function ConversationContextMenu({
   onCloseTab,
   onCloseOtherTabs,
   onCloseTabsToRight,
-  visualIndex = 0,
+  visualIndex,
   hasTabsToRight = false,
   canCloseOtherTabs = false,
   chatId,
@@ -97,14 +104,14 @@ export function ConversationContextMenu({
 }: ConversationContextMenuProps) {
   const closeTabShortcut = useCloseTabShortcut()
 
-  const handleExport = useCallback((format: ExportFormat) => {
+  const handleExport = useCallback(async (format: ExportFormat) => {
     if (!chatId) return
-    exportChat({ chatId, conversationId: conversation.id, format })
+    await exportChat({ chatId, conversationId: conversation.id, format })
   }, [chatId, conversation.id])
 
-  const handleCopy = useCallback((format: ExportFormat) => {
+  const handleCopy = useCallback(async (format: ExportFormat) => {
     if (!chatId) return
-    copyChat({ chatId, conversationId: conversation.id, format })
+    await copyChat({ chatId, conversationId: conversation.id, format })
   }, [chatId, conversation.id])
 
   return (
@@ -146,7 +153,7 @@ export function ConversationContextMenu({
           Open in new window
         </ContextMenuItem>
       )}
-      {isSplitTab ? (
+      {isSplitTab && (
         <>
           {splitPaneCount > 2 && onRemoveFromSplit && (
             <ContextMenuItem onClick={() => onRemoveFromSplit(conversation.id)}>
@@ -159,14 +166,15 @@ export function ConversationContextMenu({
             </ContextMenuItem>
           )}
         </>
-      ) : onOpenInSplit ? (
+      )}
+      {!isSplitTab && onOpenInSplit && (
         <ContextMenuItem
           onClick={() => onOpenInSplit(conversation.id)}
           disabled={isActiveTab || isOnlyChat || splitPaneCount >= 4}
         >
           Add as split
         </ContextMenuItem>
-      ) : null}
+      )}
       <ContextMenuSeparator />
 
       {showCloseTabOptions ? (
@@ -186,7 +194,13 @@ export function ConversationContextMenu({
             Close other conversations
           </ContextMenuItem>
           <ContextMenuItem
-            onClick={() => onCloseTabsToRight?.(conversation.id, visualIndex)}
+            onClick={() => {
+              if (visualIndex === undefined) {
+                console.warn("visualIndex is required when showCloseTabOptions is enabled")
+                return
+              }
+              onCloseTabsToRight?.(conversation.id, visualIndex)
+            }}
             disabled={!hasTabsToRight}
           >
             Close conversations to the right

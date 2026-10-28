@@ -23,18 +23,14 @@ function ChatHistoryIcon({ className }: { className?: string }) {
 }
 
 interface AgentPastedTextItemProps {
-  filePath: string
-  filename: string
-  size: number
   preview: string
   kind?: "pasted" | "chatHistory"
   onRemove?: () => void
 }
 
+const MAX_TITLE_LENGTH = 20
+
 export function AgentPastedTextItem({
-  filePath,
-  filename,
-  size,
   preview,
   kind = "pasted",
   onRemove,
@@ -46,8 +42,8 @@ export function AgentPastedTextItem({
   // Get a short title from the preview
   const title = isChatHistory
     ? (preview?.trim() || "Previous Chat")
-    : (preview.split("\n")[0]?.trim() || preview.trim())
-  const displayTitle = title.length > 20 ? `${title.slice(0, 20)}...` : title
+    : (preview?.split("\n")[0]?.trim() || preview?.trim() || "Pasted Text")
+  const displayTitle = title.length > MAX_TITLE_LENGTH ? `${title.slice(0, MAX_TITLE_LENGTH)}...` : title
 
   const subtitle = isChatHistory ? "Past chat" : "Pasted Text"
 

@@ -1,6 +1,6 @@
 import { useAtomValue } from "jotai"
 import * as React from "react"
-import { createContext, useContext, useMemo, useCallback } from "react"
+import { createContext, useContext, useMemo, useCallback, useRef } from "react"
 
 import {
   chatSearchOpenAtom,
@@ -28,6 +28,11 @@ interface SearchHighlightContextValue {
 const SearchHighlightContext = createContext<SearchHighlightContextValue | null>(
   null
 )
+
+// Separate context for currentMatch — changes on navigation but is isolated
+// from the main context so consumers that only need query/matches don't
+// re-render when the user presses Enter to jump between matches.
+const SearchCurrentMatchContext = createContext<SearchMatch | null>(null)
 
 // ============================================================================
 // PROVIDER
@@ -79,6 +84,12 @@ function SearchHighlightProviderActive({
   const matches = useAtomValue(chatSearchMatchesAtom)
   const currentMatch = useAtomValue(chatSearchCurrentMatchAtom)
 
+  // Keep currentMatch in a ref so getHighlightRanges doesn't need it as a
+  // dependency. This keeps the main context value stable across navigation,
+  // preventing a re-render cascade for all consumers.
+  const currentMatchRef = useRef(currentMatch)
+  currentMatchRef.current = currentMatch
+
   // Build lookup map for efficient highlight retrieval
   const matchesByKey = useMemo(() => {
     const map = new Map<string, SearchMatch[]>()
@@ -91,25 +102,48 @@ function SearchHighlightProviderActive({
     return map
   }, [matches])
 
+  // Per-key cache for highlight range arrays. Avoids creating a new array on
+  // every call to getHighlightRanges (which previously produced unstable
+  // references that defeated React.memo in consumers).
+  const cacheRef = useRef<Map<string, HighlightRange[]>>(new Map())
+  const prevMatchesByKeyRef = useRef(matchesByKey)
+
+  // Invalidate the cache when the underlying matches change (new search).
+  if (prevMatchesByKeyRef.current !== matchesByKey) {
+    cacheRef.current.clear()
+    prevMatchesByKeyRef.current = matchesByKey
+  }
+
   const getHighlightRanges = useCallback(
     (messageId: string, partIndex: number, partType: string): HighlightRange[] => {
       const key = `${messageId}:${partIndex}:${partType}`
       const relevantMatches = matchesByKey.get(key)
 
       if (!relevantMatches || relevantMatches.length === 0) {
+        // Stable empty constant — never a fresh array literal
         return EMPTY_HIGHLIGHT_RANGES
       }
 
-      return relevantMatches.map((m, idx) => ({
-        offset: m.offset,
-        length: m.length,
-        isCurrent: currentMatch?.id === m.id,
-        indexInPart: idx,
-      }))
+      const currentMatchId = currentMatchRef.current?.id ?? null
+      const cacheKey = `${key}:${currentMatchId}`
+
+      let cached = cacheRef.current.get(cacheKey)
+      if (!cached) {
+        cached = relevantMatches.map((m, idx) => ({
+          offset: m.offset,
+          length: m.length,
+          isCurrent: currentMatchId === m.id,
+          indexInPart: idx,
+        }))
+        cacheRef.current.set(cacheKey, cached)
+      }
+      return cached
     },
-    [matchesByKey, currentMatch]
+    [matchesByKey]
   )
 
+  // Main context value — stable wrt currentMatch changes because
+  // getHighlightRanges reads currentMatch from a ref, not from its deps.
   const value = useMemo(
     () => ({
       query,
@@ -121,7 +155,9 @@ function SearchHighlightProviderActive({
 
   return (
     <SearchHighlightContext.Provider value={value}>
-      {children}
+      <SearchCurrentMatchContext.Provider value={currentMatch}>
+        {children}
+      </SearchCurrentMatchContext.Provider>
     </SearchHighlightContext.Provider>
   )
 }
@@ -147,9 +183,14 @@ export function useSearchHighlight(
   partType: string
 ): HighlightRange[] {
   const context = useContext(SearchHighlightContext)
+  // Subscribe to the isolated currentMatch context so this hook re-renders
+  // when navigation happens (to update `isCurrent`). Because currentMatch is
+  // in its own context, consumers of useSearchQuery / useIsSearchActive do
+  // NOT re-render on navigation.
+  useContext(SearchCurrentMatchContext)
 
   if (!context || !context.isSearchActive) {
-    return []
+    return EMPTY_HIGHLIGHT_RANGES
   }
 
   return context.getHighlightRanges(messageId, partIndex, partType)

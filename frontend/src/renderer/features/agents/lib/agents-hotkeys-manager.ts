@@ -285,23 +285,19 @@ export function useAgentsHotkeys(
         }
       }
 
-      // Check new-workspace alt hotkey ("C") — only when not in input
-      if (!isInputFocused && matchesHotkey(e, "c")) {
-        e.preventDefault()
-        e.stopPropagation()
-        handleHotkeyAction("create-new-agent")
-        return
+      // Check new-agent hotkey (configurable; only when not in input)
+      if (!isInputFocused) {
+        const newAgentHotkey = getHotkeyForAction("new-agent")
+        if (newAgentHotkey && matchesHotkey(e, newAgentHotkey)) {
+          e.preventDefault()
+          e.stopPropagation()
+          handleHotkeyAction("create-new-agent")
+          return
+        }
       }
-    }
 
-    window.addEventListener("keydown", handleKeyDown, true)
-    return () => window.removeEventListener("keydown", handleKeyDown, true)
-  }, [enabled, handleHotkeyAction, getHotkeyForAction, config.betaKanbanEnabled])
-
-  // General hotkey handler for remaining actions
-  const actionsWithHotkeys = useMemo(
-    () =>
-      Object.values(AGENT_ACTIONS).filter(
+      // General hotkey handler for remaining actions
+      const actionsWithHotkeys = Object.values(AGENT_ACTIONS).filter(
         (action) =>
           action.hotkey !== undefined &&
           action.id !== "create-new-agent" &&
@@ -309,53 +305,21 @@ export function useAgentsHotkeys(
           action.id !== "open-shortcuts" &&
           action.id !== "open-settings" &&
           action.id !== "toggle-chat-search",
-      ),
-    [],
-  )
+      )
 
-  const hotkeyMappings = useMemo(() => {
-    const mappings: Array<{
-      actionId: string
-      hotkeys: string[]
-      isGlobal: boolean
-    }> = []
+      for (const action of actionsWithHotkeys) {
+        if (!action.hotkey) continue
+        if (isInputFocused && !GLOBAL_HOTKEYS.has(action.id)) continue
 
-    for (const action of actionsWithHotkeys) {
-      if (!action.hotkey) continue
-      const hotkeys = Array.isArray(action.hotkey)
-        ? action.hotkey
-        : [action.hotkey]
-      const isGlobal = GLOBAL_HOTKEYS.has(action.id)
-      mappings.push({
-        actionId: action.id,
-        hotkeys: hotkeys.filter(Boolean) as string[],
-        isGlobal,
-      })
-    }
-
-    return mappings
-  }, [actionsWithHotkeys])
-
-  React.useEffect(() => {
-    if (!enabled) return
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement
-      const isInInput =
-        target.tagName === "INPUT" ||
-        target.tagName === "TEXTAREA" ||
-        target.isContentEditable
-
-      for (const mapping of hotkeyMappings) {
-        if (isInInput && !mapping.isGlobal) continue
-
-        for (const hotkey of mapping.hotkeys) {
+        const hotkeys = Array.isArray(action.hotkey) ? action.hotkey : [action.hotkey]
+        for (const hotkey of hotkeys) {
+          if (!hotkey) continue
           if (matchesHotkey(e, hotkey)) {
             if (preventDefault) {
               e.preventDefault()
               e.stopPropagation()
             }
-            handleHotkeyAction(mapping.actionId)
+            handleHotkeyAction(action.id)
             return
           }
         }
@@ -364,7 +328,7 @@ export function useAgentsHotkeys(
 
     window.addEventListener("keydown", handleKeyDown, true)
     return () => window.removeEventListener("keydown", handleKeyDown, true)
-  }, [enabled, preventDefault, hotkeyMappings, handleHotkeyAction])
+  }, [enabled, preventDefault, handleHotkeyAction, getHotkeyForAction, config.betaKanbanEnabled])
 
   return {
     executeAction: handleHotkeyAction,

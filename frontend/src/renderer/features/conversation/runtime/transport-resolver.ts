@@ -41,12 +41,13 @@ import { GroupChatTransport } from "../../agents/lib/group-chat-transport"
 export interface ChatTransport {
   /** Send messages and get a streaming response */
   sendMessages(options: {
-    messages: any[]
+    // TODO: Replace with proper message type from AI SDK
+    messages: unknown[]
     abortSignal?: AbortSignal
-  }): Promise<ReadableStream<any>>
+  }): Promise<ReadableStream<unknown>>
 
   /** Reconnect to an existing stream (if supported) */
-  reconnectToStream(): Promise<ReadableStream<any> | null>
+  reconnectToStream(): Promise<ReadableStream<unknown> | null>
 
   /** Clean up transport resources */
   cleanup?(): void
@@ -118,7 +119,6 @@ class TransportResolverImpl implements TransportResolver {
       case "agent":
         return this.createAgentTransport(conversation, runtime, overrides)
       case "normal":
-      default:
         return this.createNormalTransport(conversation, overrides)
     }
   }
@@ -179,12 +179,12 @@ class TransportResolverImpl implements TransportResolver {
    * GroupChatTransport is currently a stub - full implementation pending.
    *
    * @param conversation - Resolved conversation
-   * @param overrides - Transport overrides
+   * @param _overrides - Transport overrides (reserved for future use)
    * @returns Chat transport
    */
   private createGroupTransport(
     conversation: ResolvedConversation,
-    overrides?: ConversationSendMessageInput["transportOverrides"],
+    _overrides?: ConversationSendMessageInput["transportOverrides"],
   ): ChatTransport {
     // GroupChatTransport doesn't require configuration yet
     // Future: Pass workspace/conversation context when group chat is fully implemented
@@ -211,12 +211,10 @@ class TransportResolverImpl implements TransportResolver {
     const fromAgentId = runtime.fromAgentId ?? undefined
 
     if (!fromAgentId) {
-      // Fallback to normal transport if no fromAgentId
-      // This shouldn't happen in practice, but provides graceful degradation
-      console.warn(
-        "[TransportResolver] Agent mode requested without fromAgentId, falling back to normal transport",
+      throw new Error(
+        "[TransportResolver] Agent mode requested but fromAgentId is not set. " +
+        "The agent runtime resolver must populate fromAgentId for agent-to-agent communication."
       )
-      return this.createNormalTransport(conversation, overrides)
     }
 
     return createAgentToAgentTransport(

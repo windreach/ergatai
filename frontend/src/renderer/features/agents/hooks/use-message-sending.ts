@@ -21,6 +21,8 @@ import {
 } from "../lib/queue-utils"
 import { waitForStreamingReady } from "../utils/stream-utils"
 
+const ACKNOWLEDGMENT_TEXT = "收到"
+
 interface UseMessageSendingOptions {
   // 会话信息
   conversation: {
@@ -201,7 +203,13 @@ export function useMessageSending({
       )
 
       // Enqueue via service
-      await serviceRef.current!.enqueue(item)
+      if (serviceRef.current?.enqueue) {
+        await serviceRef.current.enqueue(item)
+      } else {
+        console.error('[MessageSending] Service enqueue is not available')
+        toast.error('Message queue service is not available')
+        return
+      }
 
       // Clear input and attachments
       inputRefsRef.current.editor.current?.clear()
@@ -258,6 +266,7 @@ export function useMessageSending({
             mediaType: (f as any).mediaType,
             filename: f.filename,
             size: f.size,
+            base64Data: (f as any).base64Data,
           },
         })),
     ]
@@ -368,18 +377,8 @@ export function useMessageSending({
             agentId: target.id,
             agentName: target.name,
           },
-          parts: [{ type: "text", text: "收到" }],
+          parts: [{ type: "text", text: ACKNOWLEDGMENT_TEXT }],
         }))
-
-        inputRefsRef.current.editor.current?.clear()
-        if (conversationRef.current.parentChatId) {
-          actionsRef.current.clearConversationDraft(conversationRef.current.parentChatId, conversationRef.current.id)
-        }
-        actionsRef.current.clearAll()
-        actionsRef.current.clearTextContexts()
-        actionsRef.current.clearDiffTextContexts()
-        actionsRef.current.clearPastedTexts()
-        actionsRef.current.clearFileContents()
 
         messagingRef.current.setGroupAgentRuntimeStatuses(
           parentChatId,
@@ -422,8 +421,8 @@ export function useMessageSending({
         const correlationId = `group-${Date.now()}-${Math.random()
           .toString(36)
           .slice(2, 8)}`
-        targets.forEach((target) => {
-          void (async () => {
+        const results = await Promise.allSettled(
+          targets.map(async (target) => {
             await trpcClient.groupChat.addMember.mutate({
               chatId: parentChatId,
               agentCommand: getCoreAgentProfileName(target),
@@ -437,16 +436,18 @@ export function useMessageSending({
               correlationId,
               images,
             })
-          })().catch((error) => {
-              messagingRef.current.setGroupAgentRuntimeStatuses(parentChatId, {
-                [target.id]: "failed",
-              })
-              console.error("[GroupChat] Failed to dispatch mentioned message:", error)
-              toast.error(
-                error instanceof Error ? error.message : "Failed to send to agent",
-              )
           })
-        })
+        )
+        const failedIndices = results
+          .map((r, i) => (r.status === 'rejected' ? i : -1))
+          .filter((i) => i !== -1)
+        if (failedIndices.length > 0) {
+          const failedStatuses = Object.fromEntries(
+            failedIndices.map((i) => [targets[i].id, 'failed' as const])
+          )
+          messagingRef.current.setGroupAgentRuntimeStatuses(parentChatId, failedStatuses as GroupAgentRuntimeStatuses)
+          toast.error(`Failed to send to ${failedIndices.length} agent(s)`)
+        }
 
         return
       }
@@ -538,7 +539,16 @@ export function useMessageSending({
     messagingRef.current.submitImplicitInteraction(text)
 
     // Send via service
-    await serviceRef.current!.send(parts)
+    try {
+      await serviceRef.current!.send(parts)
+    } catch (error) {
+      console.error("[ChatSend] Failed to send message:", error)
+      toast.error(error instanceof Error ? error.message : "Failed to send message")
+      // Restore editor content so the user can retry
+      inputRefsRef.current.editor.current?.setValue(
+        mentionPrefix + (text || ""),
+      )
+    }
   }, [])
 
   // Queue handlers for sending queued messages

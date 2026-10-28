@@ -15,8 +15,16 @@
 import type {
   ConversationInvocationSource,
   ResolvedConversation,
-  ConversationSource,
 } from "./contracts"
+
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
+/**
+ * Default provider type when not specified in invocation source.
+ */
+const DEFAULT_PROVIDER = "claude-code"
 
 // ============================================================================
 // RESOLVER INTERFACE - Public API
@@ -53,36 +61,42 @@ class ConversationResolverImpl implements ConversationResolver {
    * @returns Resolved conversation
    */
   async resolve(input: ConversationInvocationSource): Promise<ResolvedConversation> {
-    const {
-      chatId,
-      conversationId,
-      backendConversationId,
-      agentId,
-      provider,
-      source,
-    } = input
-
-    // Determine conversation mode
-    const mode = this.determineConversationMode(input)
-
-    // Resolve backend conversation ID
-    const resolvedBackendConversationId = backendConversationId ?? conversationId
-
-    // Resolve provider
-    const resolvedProvider = provider ?? "claude-code"
-
-    // Build resolved conversation
-    const resolved: ResolvedConversation = {
-      conversationId,
-      backendConversationId: resolvedBackendConversationId,
-      chatId,
-      agentId: agentId ?? null,
-      provider: resolvedProvider,
-      mode,
-      source,
+    // B6: Add null guard
+    if (!input) {
+      throw new Error("[ConversationResolver] resolve() called with null/undefined input")
     }
 
-    return resolved
+    // B5: Add try/catch for async function
+    try {
+      const {
+        chatId,
+        conversationId,
+        backendConversationId,
+        agentId,
+        provider,
+        source,
+      } = input
+
+      const mode = this.determineConversationMode(input)
+      const resolvedBackendConversationId = backendConversationId ?? conversationId
+      const resolvedProvider = provider ?? DEFAULT_PROVIDER
+
+      const resolved: ResolvedConversation = {
+        conversationId,
+        backendConversationId: resolvedBackendConversationId,
+        chatId,
+        agentId: agentId ?? null,
+        provider: resolvedProvider,
+        mode,
+        source,
+      }
+
+      return resolved
+    } catch (error) {
+      throw new Error(
+        `[ConversationResolver] Failed to resolve conversation: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
   }
 
   /**

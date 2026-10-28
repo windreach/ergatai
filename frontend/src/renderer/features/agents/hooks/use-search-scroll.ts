@@ -6,6 +6,10 @@ interface UseSearchScrollProps {
   chatContainerRef: React.RefObject<HTMLElement | null>
 }
 
+// Delay to wait for DOM highlight updates before scrolling
+// This heuristic ensures highlights are rendered before attempting to scroll
+const SCROLL_HIGHLIGHT_SETTLE_DELAY_MS = 50
+
 /**
  * Hook to handle scrolling to search matches in the chat
  */
@@ -23,9 +27,13 @@ export function useSearchScroll({ chatContainerRef }: UseSearchScrollProps) {
     const currentLock = ++searchScrollLockRef.current
 
     // Use double requestAnimationFrame + small delay to ensure DOM has updated with new highlights
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        setTimeout(() => {
+    let rafId1: number | undefined
+    let rafId2: number | undefined
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+
+    rafId1 = requestAnimationFrame(() => {
+      rafId2 = requestAnimationFrame(() => {
+        timeoutId = setTimeout(() => {
           // Check if this scroll operation is still valid (not superseded by newer one)
           if (searchScrollLockRef.current !== currentLock) return
 
@@ -34,7 +42,8 @@ export function useSearchScroll({ chatContainerRef }: UseSearchScrollProps) {
 
           // If no highlight mark, find the message element with matching data attributes
           if (!targetElement) {
-            const selector = `[data-message-id="${currentSearchMatch.messageId}"][data-part-index="${currentSearchMatch.partIndex}"]`
+            const escapedMessageId = CSS.escape(currentSearchMatch.messageId)
+            const selector = `[data-message-id="${escapedMessageId}"][data-part-index="${currentSearchMatch.partIndex}"]`
             targetElement = container.querySelector(selector)
           }
 
@@ -57,8 +66,15 @@ export function useSearchScroll({ chatContainerRef }: UseSearchScrollProps) {
               block: "center",
             })
           }
-        }, 50)
+        }, SCROLL_HIGHLIGHT_SETTLE_DELAY_MS)
       })
     })
+
+    // Cleanup: cancel any pending animation frames and timeouts
+    return () => {
+      if (rafId1 !== undefined) cancelAnimationFrame(rafId1)
+      if (rafId2 !== undefined) cancelAnimationFrame(rafId2)
+      if (timeoutId !== undefined) clearTimeout(timeoutId)
+    }
   }, [currentSearchMatch, chatContainerRef])
 }

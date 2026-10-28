@@ -4,7 +4,7 @@ import { agentContractApi, type AgentSummary } from "./agent-contract-api"
 
 export type AgentRuntimeStatusState = {
   agents: AgentSummary[]
-  status: "idle" | "loading" | "ready" | "error"
+  status: "idle" | "loading" | "ready" | "stale" | "error"
   updatedAt: number | null
   error?: string
 }
@@ -58,7 +58,7 @@ async function refreshAgents() {
     })
   } catch (error) {
     setState({
-      status: state.agents.length > 0 ? "ready" : "error",
+      status: state.agents.length > 0 ? "stale" : "error",
       error: error instanceof Error ? error.message : "Failed to load agent status",
     })
   } finally {
@@ -120,8 +120,8 @@ export function useAgentRuntimeAgents(enabled = true): AgentRuntimeStatusState {
   )
 
   const getSnapshot = useCallback(() => {
-    return enabled ? state : undefined
+    return enabled ? state : disabledState
   }, [enabled])
 
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot) ?? disabledState
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }

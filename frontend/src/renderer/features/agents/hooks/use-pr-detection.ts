@@ -7,7 +7,7 @@ interface UsePrDetectionOptions {
   isStreaming: boolean
   parentChatId: string | null
   existingPrUrl: string | null | undefined
-  utils: any
+  utils: { agents: { getAgentChat: { invalidate: (params: { chatId: string }) => void } } }
 }
 
 export function usePrDetection({
@@ -62,6 +62,9 @@ export function usePrDetection({
           .then(() => {
             // Invalidate the agentChat query to refetch with new PR info
             utils.agents.getAgentChat.invalidate({ chatId: parentChatId })
+          })
+          .catch((err: unknown) => {
+            console.error("[usePrDetection] Failed to update PR info:", err)
           })
 
         break // Only process first PR URL found

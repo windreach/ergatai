@@ -8,7 +8,7 @@ import { cn } from "../../../lib/utils"
 import { sideChatSidebarOpenAtom } from "../../details-sidebar/atoms"
 import { groupAgentChatRequestAtomFamily } from "./group-chat-context"
 import { getCoreAgentIcon } from "../components/core-agent-selector"
-import type { CoreAgentId } from "../lib/agent-contract-api"
+import { resolveCoreAgentId, type CoreAgentId } from "../lib/agent-contract-api"
 import type { AgentParticipant } from "./agent-participant"
 
 const STATUS_LABELS: Record<AgentParticipant["status"], string> = {
@@ -64,7 +64,7 @@ export function AgentRail({
   const openAgentChat = (participant: AgentParticipant) => {
     setIsSideChatSidebarOpen(true)
     setAgentChatRequest({
-      agentId: participant.coreAgentId ?? (participant.agentId as CoreAgentId),
+      agentId: participant.coreAgentId ?? resolveCoreAgentId(participant.agentId) ?? (participant.agentId as CoreAgentId),
       conversationId: participant.conversationId,
       requestId: Date.now(),
     })

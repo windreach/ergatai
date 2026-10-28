@@ -98,7 +98,9 @@ export function handlePasteEvent(
 
       // Large text: save as file attachment instead of pasting inline
       if (text.length > LARGE_PASTE_THRESHOLD && addPastedText) {
-        addPastedText(text)
+        addPastedText(text).catch((error) => {
+          console.error('[handlePasteEvent] Failed to save large paste as file:', error)
+        })
         return
       }
 

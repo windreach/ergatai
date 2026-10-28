@@ -1,7 +1,7 @@
 "use client"
 
 import { AnimatePresence, motion } from "motion/react"
-import { useEffect, useState, useRef } from "react"
+import { useCallback, useEffect, useState, useRef } from "react"
 import { createPortal } from "react-dom"
 import { Button } from "../../../components/ui/button"
 import { Input } from "../../../components/ui/input"
@@ -49,6 +49,30 @@ export function AgentsRenameConversationDialog({
     }
   }
 
+  const handleClose = useCallback(() => {
+    const canInteract = performance.now() - openAtRef.current > INTERACTION_DELAY_MS
+    if (!canInteract || isSaving) return
+    onClose()
+  }, [isSaving, onClose])
+
+  const handleSave = useCallback(async () => {
+    const trimmedName = name.trim()
+    if (!trimmedName || trimmedName === currentName) {
+      handleClose()
+      return
+    }
+
+    setIsSaving(true)
+    try {
+      await onSave(trimmedName)
+      handleClose()
+    } catch {
+      // Error is already handled by parent (toast), keep dialog open
+    } finally {
+      setIsSaving(false)
+    }
+  }, [name, currentName, handleClose, onSave])
+
   useEffect(() => {
     if (!isOpen) return
 
@@ -65,31 +89,7 @@ export function AgentsRenameConversationDialog({
 
     document.addEventListener("keydown", handleKeyDown)
     return () => document.removeEventListener("keydown", handleKeyDown)
-  }, [isOpen, name])
-
-  const handleClose = () => {
-    const canInteract = performance.now() - openAtRef.current > INTERACTION_DELAY_MS
-    if (!canInteract || isSaving) return
-    onClose()
-  }
-
-  const handleSave = async () => {
-    const trimmedName = name.trim()
-    if (!trimmedName || trimmedName === currentName) {
-      handleClose()
-      return
-    }
-    
-    setIsSaving(true)
-    try {
-      await onSave(trimmedName)
-      handleClose()
-    } catch {
-      // Error is already handled by parent (toast), keep dialog open
-    } finally {
-      setIsSaving(false)
-    }
-  }
+  }, [isOpen, handleClose, handleSave])
 
   if (!mounted) return null
 
@@ -132,7 +132,7 @@ export function AgentsRenameConversationDialog({
               <div className="bg-background rounded-2xl border shadow-2xl overflow-hidden" data-canvas-dialog>
                 <div className="p-6">
                   <h2 className="text-xl font-semibold mb-4">
-                    Rename agent
+                    Rename conversation
                   </h2>
 
                   {/* Input */}

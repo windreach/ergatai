@@ -13,8 +13,18 @@ interface SearchResult {
 }
 
 interface AgentWebSearchCollapsibleProps {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   part: any
   chatStatus?: string
+}
+
+const isValidHttpUrl = (url: string): boolean => {
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+  } catch {
+    return false
+  }
 }
 
 export const AgentWebSearchCollapsible = memo(
@@ -40,13 +50,17 @@ export const AgentWebSearchCollapsible = memo(
       const allResults: SearchResult[] = []
 
       for (const result of rawResults) {
+        let collectedFromContent = false
         if (result.content && Array.isArray(result.content)) {
           for (const item of result.content) {
             if (item.title && item.url) {
               allResults.push({ title: item.title, url: item.url })
+              collectedFromContent = true
             }
           }
-        } else if (result.title && result.url) {
+        }
+        // Check root-level fields after inner loop if no items collected from content array
+        if (!collectedFromContent && result.title && result.url) {
           allResults.push({ title: result.title, url: result.url })
         }
       }
@@ -60,10 +74,12 @@ export const AgentWebSearchCollapsible = memo(
     return (
       <div>
         {/* Header - clickable to toggle */}
-        <div
+        <button
+          type="button"
           onClick={() => hasResults && !isPending && setIsExpanded(!isExpanded)}
+          disabled={!hasResults || isPending}
           className={cn(
-            "group flex items-start gap-1.5 py-0.5 px-2",
+            "group flex items-start gap-1.5 py-0.5 px-2 w-full text-left",
             hasResults && !isPending && "cursor-pointer",
           )}
         >
@@ -104,23 +120,26 @@ export const AgentWebSearchCollapsible = memo(
               )}
             </div>
           </div>
-        </div>
+        </button>
 
         {/* Results list - only show when expanded */}
         {isExpanded && hasResults && (
           <div className="px-2 pb-1">
             <div className="space-y-1">
-              {results.map((result, idx) => (
-                <a
-                  key={idx}
-                  href={result.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block px-2 py-0.5 text-xs text-foreground truncate rounded hover:bg-muted/50 transition-colors"
-                >
-                  {result.title}
-                </a>
-              ))}
+              {results.map((result) => {
+                const safeUrl = isValidHttpUrl(result.url) ? result.url : undefined
+                return (
+                  <a
+                    key={result.url}
+                    href={safeUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block px-2 py-0.5 text-xs text-foreground truncate rounded hover:bg-muted/50 transition-colors"
+                  >
+                    {result.title}
+                  </a>
+                )
+              })}
             </div>
           </div>
         )}

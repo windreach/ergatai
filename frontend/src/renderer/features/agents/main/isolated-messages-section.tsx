@@ -1,9 +1,13 @@
 "use client"
 
-import { memo, useMemo } from "react"
+import { memo, useEffect, useMemo } from "react"
 import { useAtomValue } from "jotai"
-import { userMessageIdsPerChatAtom } from "../stores/message-store"
+import type { UIMessage } from "@ai-sdk/react"
+import {
+  userMessageIdsPerChatAtom,
+} from "../stores/message-store"
 import { IsolatedMessageGroup } from "./isolated-message-group"
+import type { ToolPart } from "../ui/agent-tool-registry"
 
 // ============================================================================
 // ISOLATED MESSAGES SECTION (LAYER 3)
@@ -18,6 +22,24 @@ import { IsolatedMessageGroup } from "./isolated-message-group"
 // - Only the AssistantMessageItem for the streaming message re-renders
 // ============================================================================
 
+/**
+ * Image part shape for inline image attachments. Must stay structurally
+ * identical to the `ImagePart` type in `isolated-message-group.tsx`, since
+ * that component's `UserBubbleComponent` prop is typed against it.
+ */
+type ImagePart = {
+  type?: "data-image" | string
+  data?: {
+    filename?: string
+    url?: string
+    base64Data?: string
+    mediaType?: string
+  }
+}
+
+/** Icon component accepted by `ToolCallComponent` — matches `ToolMeta.icon`. */
+type ToolIcon = React.ComponentType<{ className?: string }>
+
 interface IsolatedMessagesSectionProps {
   conversationId: string
   chatId: string
@@ -26,44 +48,39 @@ interface IsolatedMessagesSectionProps {
   stickyTopClass: string
   sandboxSetupError?: string
   onRetrySetup?: () => void
-  onRollback?: (msg: any) => void
+  onRollback?: (msg: UIMessage) => void
   onFork?: (messageId: string) => void
   // Components passed from parent - must be stable references
   UserBubbleComponent: React.ComponentType<{
     messageId: string
     textContent: string
-    imageParts: any[]
+    imageParts: ImagePart[]
     skipTextMentionBlocks?: boolean
   }>
   ToolCallComponent: React.ComponentType<{
-    icon: any
+    icon: ToolIcon
     title: string
     isPending: boolean
     isError: boolean
   }>
   MessageGroupWrapper: React.ComponentType<{ children: React.ReactNode; isLastGroup?: boolean }>
-  toolRegistry: Record<string, { icon: any; title: (args: any) => string }>
+  toolRegistry: Record<string, { icon: ToolIcon; title: (args: ToolPart) => string }>
 }
 
-function areSectionPropsEqual(
-  prev: IsolatedMessagesSectionProps,
-  next: IsolatedMessagesSectionProps
-): boolean {
-  return (
-    prev.conversationId === next.conversationId &&
-    prev.chatId === next.chatId &&
-    prev.isMobile === next.isMobile &&
-    prev.sandboxSetupStatus === next.sandboxSetupStatus &&
-    prev.stickyTopClass === next.stickyTopClass &&
-    prev.sandboxSetupError === next.sandboxSetupError &&
-    prev.onRetrySetup === next.onRetrySetup &&
-    prev.onRollback === next.onRollback &&
-    prev.onFork === next.onFork &&
-    prev.UserBubbleComponent === next.UserBubbleComponent &&
-    prev.ToolCallComponent === next.ToolCallComponent &&
-    prev.MessageGroupWrapper === next.MessageGroupWrapper &&
-    prev.toolRegistry === next.toolRegistry
-  )
+/**
+ * Shallow equality helper: compares two prop objects by own-key identity.
+ * Avoids the fragility of manually listing every prop (adding a new prop
+ * no longer requires also remembering to extend this function).
+ */
+function shallowEqualProps<T extends Record<string, unknown>>(a: T, b: T): boolean {
+  if (a === b) return true
+  const aKeys = Object.keys(a)
+  const bKeys = Object.keys(b)
+  if (aKeys.length !== bKeys.length) return false
+  for (const key of aKeys) {
+    if (a[key] !== b[key]) return false
+  }
+  return true
 }
 
 export const IsolatedMessagesSection = memo(function IsolatedMessagesSection({
@@ -89,27 +106,38 @@ export const IsolatedMessagesSection = memo(function IsolatedMessagesSection({
   // valid groups so React does not see undefined/duplicate keys.
   const validUserMsgIds = useMemo(() => {
     const seen = new Set<string>()
+    const out: string[] = []
+    for (const userMsgId of userMsgIds) {
+      if (typeof userMsgId !== "string" || userMsgId.length === 0) continue
+      if (seen.has(userMsgId)) continue
+      seen.add(userMsgId)
+      out.push(userMsgId)
+    }
+    return out
+  }, [userMsgIds])
 
-    return userMsgIds.filter((userMsgId): userMsgId is string => {
+  // Validation warnings live in an effect so the render pass stays pure.
+  useEffect(() => {
+    const seen = new Set<string>()
+    for (const userMsgId of userMsgIds) {
       if (typeof userMsgId !== "string" || userMsgId.length === 0) {
+        // eslint-disable-next-line no-console
         console.warn(
           "[IsolatedMessagesSection] Skipping message group without an id",
           { conversationId, userMsgId },
         )
-        return false
+        continue
       }
-
       if (seen.has(userMsgId)) {
+        // eslint-disable-next-line no-console
         console.warn(
           "[IsolatedMessagesSection] Skipping duplicate message group id",
           { conversationId, userMsgId },
         )
-        return false
+        continue
       }
-
       seen.add(userMsgId)
-      return true
-    })
+    }
   }, [userMsgIds, conversationId])
 
   return (
@@ -135,4 +163,4 @@ export const IsolatedMessagesSection = memo(function IsolatedMessagesSection({
       ))}
     </>
   )
-}, areSectionPropsEqual)
+}, shallowEqualProps as (a: IsolatedMessagesSectionProps, b: IsolatedMessagesSectionProps) => boolean)
