@@ -12,6 +12,7 @@ import { ergataiFetch, getErgataiAuthConfig, isErgataiApiError, ErgataiApiError 
 import {
   agentIdSchema,
   chatIdSchema,
+  clientRequestIdSchema,
   conversationKeySchema,
   messageIdSchema,
   projectIdSchema,
@@ -275,6 +276,9 @@ type Message = {
   fromAgentName: string | null
   messageType: string | null
   content: string | null
+  turnId: string | null
+  projectionKind: string | null
+  originMessageId: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -471,6 +475,9 @@ function mapMessage(message: BackendMessage): Message {
     fromAgentName: message.from_agent_name,
     messageType: message.message_type,
     content: message.content,
+    turnId: message.turn_id,
+    projectionKind: message.projection_kind,
+    originMessageId: message.origin_message_id,
     createdAt: new Date(message.created_at * 1000),
     updatedAt: new Date(message.updated_at * 1000),
   }
@@ -708,7 +715,7 @@ export const ergataiRouter = router({
         targetAgentCommand: z.string().optional(),  // Target agent type (e.g., "claude", "codex")
         forceNewSession: z.boolean().optional(),    // Force spawn new session
         conversationId: conversationKeySchema.optional(),      // Required for agent-to-agent routing
-        clientRequestId: z.string().optional(),    // Frontend-generated ID for optimistic → durable replacement
+        clientRequestId: clientRequestIdSchema.optional(), // Persisted/backend-allocated message ID
       }),
     )
     .mutation(async ({ input }) => {
@@ -1920,7 +1927,7 @@ export const ergataiRouter = router({
           )
           .optional(),
         waitForStream: z.boolean().optional(),
-        clientRequestId: z.string().optional(),  // Frontend-generated ID for optimistic → durable replacement
+        clientRequestId: clientRequestIdSchema.optional(), // Persisted/backend-allocated message ID
         interrupt: z.boolean().optional(),  // Insert at safe point instead of FIFO queue
       }),
     )

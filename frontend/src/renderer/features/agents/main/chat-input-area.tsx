@@ -60,6 +60,7 @@ import {
 import { useAgentConversationStore } from "../stores/conversation-store"
 import { AgentsSlashCommand, type SlashCommandOption } from "../commands"
 import { AgentModelSelector } from "../components/agent-model-selector"
+import { getCoreAgentIcon } from "../components/core-agent-selector"
 import { PermissionModeSelector } from "../components/permission-mode-selector"
 import { CoreAgentSelector } from "../components/core-agent-selector"
 import {
@@ -67,8 +68,10 @@ import {
   resolveGroupMentionAgents,
   saveGroupAgents,
 } from "../collaboration/group-agent-storage"
+import { fetchAgentModels } from "../lib/ergatai-agent-manager"
 import {
   agentContractApi,
+  CORE_AGENT_OPTIONS,
   type CoreAgentId,
   type CoreAgentOption,
 } from "../lib/agent-contract-api"
@@ -170,7 +173,9 @@ export interface ChatInputAreaProps {
   // Context
   conversationId: string
   parentChatId: string
-  provider?: "claude-code" | "codex"
+  provider?: "claude-code" | "codex" | "opencode"
+  /** Runtime agent ID for providers whose model is discovered from ACP. */
+  agentId?: string | null
   teamId?: string
   repository?: string
   sandboxId?: string
@@ -210,6 +215,7 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
     prevProps.conversationId !== nextProps.conversationId ||
     prevProps.parentChatId !== nextProps.parentChatId ||
     prevProps.provider !== nextProps.provider ||
+    prevProps.agentId !== nextProps.agentId ||
     prevProps.teamId !== nextProps.teamId ||
     prevProps.repository !== nextProps.repository ||
     prevProps.sandboxId !== nextProps.sandboxId ||
@@ -399,6 +405,7 @@ export const ChatInputArea = memo(function ChatInputArea({
   conversationId,
   parentChatId,
   provider = "claude-code",
+  agentId,
   teamId,
   repository,
   sandboxId,
@@ -552,6 +559,9 @@ export const ChatInputArea = memo(function ChatInputArea({
   const setLastSelectedCodexModelId = useSetAtom(lastSelectedCodexModelIdAtom)
   const setLastSelectedCodexThinking = useSetAtom(lastSelectedCodexThinkingAtom)
   const availableModels = useAvailableModels()
+  const isRuntimeModelProvider = provider !== "claude-code" && provider !== "codex"
+  const [runtimeModel, setRuntimeModel] = useState<string | null>(null)
+  const [isDetectingRuntimeModel, setIsDetectingRuntimeModel] = useState(false)
   const selectedModel = useMemo(
     () =>
       availableModels.models.find((model) => model.id === selectedConversationModelId) ||
@@ -559,6 +569,44 @@ export const ChatInputArea = memo(function ChatInputArea({
       availableModels.models[0],
     [availableModels.models, availableModels.currentModelId, selectedConversationModelId],
   )
+  const runtimeModelLabel = useMemo(() => {
+    if (runtimeModel) return runtimeModel
+    if (isDetectingRuntimeModel) return "Detecting model…"
+    return "Model unavailable"
+  }, [runtimeModel, isDetectingRuntimeModel])
+
+  const RuntimeModelIcon = getCoreAgentIcon(provider as CoreAgentId)
+
+  useEffect(() => {
+    if (!isRuntimeModelProvider || !agentId) {
+      setRuntimeModel(null)
+      setIsDetectingRuntimeModel(false)
+      return
+    }
+
+    let cancelled = false
+    setIsDetectingRuntimeModel(true)
+
+    // ACP exposes the model as a config option when available; the existing
+    // helper also handles cached snapshots and the /model fallback.
+    const providerCommand = CORE_AGENT_OPTIONS.find(
+      (option) => option.id === provider,
+    )?.defaultCommand ?? provider
+
+    void fetchAgentModels(agentId, providerCommand).then((result) => {
+      if (cancelled) return
+      setRuntimeModel(result?.current ?? result?.models?.[0] ?? null)
+      setIsDetectingRuntimeModel(false)
+    }).catch(() => {
+      if (cancelled) return
+      setRuntimeModel(null)
+      setIsDetectingRuntimeModel(false)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [agentId, isRuntimeModelProvider, provider])
 
   const hiddenModels = useAtomValue(hiddenModelsAtom)
 
@@ -1464,72 +1512,88 @@ export const ChatInputArea = memo(function ChatInputArea({
               </div>
               <PromptInputActions className="w-full">
                 <div className="flex items-center gap-0.5 flex-1 min-w-0">
-                  {/* Mode toggle (Agent/Plan) */}
+	                    {/* Mode toggle (Agent/Plan) */}
 
-                  <div className="group/model-controls flex items-center gap-0.5">
-                    {!isGroupMode && (
-                      <AgentModelSelector
-                        open={isModelDropdownOpen}
-                        onOpenChange={setIsModelDropdownOpen}
-                        selectedAgentId={provider}
-                        onSelectedAgentIdChange={(nextProvider) => {
-                          if (!canSwitchProvider) return
-                          if (nextProvider === provider) return
-                          onProviderChange?.(nextProvider)
-                        }}
-                        allowProviderSwitch={canSwitchProvider}
-                        onContinueWithProvider={!canSwitchProvider ? onContinueWithProvider : undefined}
-                        selectedModelLabel={selectedModelLabel}
-                        claude={{
-                          models: availableModels.models.filter((m) => !hiddenModels.includes(m.id)),
-                          selectedModelId: selectedModel?.id,
-                          onSelectModel: (modelId) => {
-                            const model =
-                              availableModels.models.find((item) => item.id === modelId) ||
-                              availableModels.models[0]
-                            if (!model) return
-                            setSelectedConversationModelId(model.id)
-                            setLastSelectedModelId(model.id)
-                          },
-                          hasCustomModelConfig: hasCustomClaudeConfig,
-                          isOffline: availableModels.isOffline && availableModels.hasOllama,
-                          ollamaModels: availableModels.ollamaModels,
-                          selectedOllamaModel: currentOllamaModel,
-                          recommendedOllamaModel: availableModels.recommendedModel,
-                          onSelectOllamaModel: setSelectedOllamaModel,
-                          isConnected: isClaudeConnected,
-                          thinkingEnabled,
-                          onThinkingChange: setThinkingEnabled,
-                        }}
-                        codex={{
-                          models: codexUiModels,
-                          selectedModelId: selectedCodexModel.id,
-                          onSelectModel: (modelId) => {
-                            const model = codexUiModels.find((item) => item.id === modelId)
-                            if (!model) return
-                            const nextThinking = model.thinkings.includes(
-                              selectedConversationCodexThinking as CodexThinkingLevel,
-                            )
-                              ? (selectedConversationCodexThinking as CodexThinkingLevel)
-                              : (model.thinkings.includes("high")
-                                ? "high"
-                                : model.thinkings[0]!)
+	                    <div className="group/model-controls flex items-center gap-0.5">
+	                    {!isGroupMode && (
+	                      isRuntimeModelProvider ? (
+	                        <button
+	                          type="button"
+	                          disabled
+	                          className="flex h-7 items-center gap-1.5 px-2 text-sm text-muted-foreground opacity-100 disabled:opacity-100"
+	                          title={`Detected ${provider} model`}
+	                        >
+	                          {isDetectingRuntimeModel ? (
+	                            <IconSpinner className="h-4 w-4 shrink-0" />
+	                          ) : (
+	                            <RuntimeModelIcon className="h-4 w-4 shrink-0" />
+	                          )}
+	                          <span className="max-w-40 truncate">{runtimeModelLabel}</span>
+	                        </button>
+	                      ) : (
+	                      <AgentModelSelector
+	                        open={isModelDropdownOpen}
+	                        onOpenChange={setIsModelDropdownOpen}
+	                        selectedAgentId={provider === "codex" ? "codex" : "claude-code"}
+	                        onSelectedAgentIdChange={(nextProvider) => {
+	                          if (!canSwitchProvider) return
+	                          if (nextProvider === provider) return
+	                          onProviderChange?.(nextProvider)
+	                        }}
+	                        allowProviderSwitch={canSwitchProvider}
+	                        onContinueWithProvider={!canSwitchProvider ? onContinueWithProvider : undefined}
+	                        selectedModelLabel={selectedModelLabel}
+	                        claude={{
+	                          models: availableModels.models.filter((m) => !hiddenModels.includes(m.id)),
+	                          selectedModelId: selectedModel?.id,
+	                          onSelectModel: (modelId) => {
+	                            const model =
+	                              availableModels.models.find((item) => item.id === modelId) ||
+	                              availableModels.models[0]
+	                            if (!model) return
+	                            setSelectedConversationModelId(model.id)
+	                            setLastSelectedModelId(model.id)
+	                          },
+	                          hasCustomModelConfig: hasCustomClaudeConfig,
+	                          isOffline: availableModels.isOffline && availableModels.hasOllama,
+	                          ollamaModels: availableModels.ollamaModels,
+	                          selectedOllamaModel: currentOllamaModel,
+	                          recommendedOllamaModel: availableModels.recommendedModel,
+	                          onSelectOllamaModel: setSelectedOllamaModel,
+	                          isConnected: isClaudeConnected,
+	                          thinkingEnabled,
+	                          onThinkingChange: setThinkingEnabled,
+	                        }}
+	                        codex={{
+	                          models: codexUiModels,
+	                          selectedModelId: selectedCodexModel.id,
+	                          onSelectModel: (modelId) => {
+	                            const model = codexUiModels.find((item) => item.id === modelId)
+	                            if (!model) return
+	                            const nextThinking = model.thinkings.includes(
+	                              selectedConversationCodexThinking as CodexThinkingLevel,
+	                            )
+	                              ? (selectedConversationCodexThinking as CodexThinkingLevel)
+	                              : (model.thinkings.includes("high")
+	                                ? "high"
+	                                : model.thinkings[0]!)
 
-                            setSelectedConversationCodexModelId(model.id)
-                            setSelectedConversationCodexThinking(nextThinking)
-                            setLastSelectedCodexModelId(model.id)
-                            setLastSelectedCodexThinking(nextThinking)
-                          },
-                          selectedThinking: selectedCodexThinking,
-                          onSelectThinking: (thinking) => {
-                            setSelectedConversationCodexThinking(thinking)
-                            setLastSelectedCodexThinking(thinking)
-                          },
-                          isConnected: false,
-                        }}
-                      />
-                    )}
-                    <PermissionModeSelector />
+	                            setSelectedConversationCodexModelId(model.id)
+	                            setSelectedConversationCodexThinking(nextThinking)
+	                            setLastSelectedCodexModelId(model.id)
+	                            setLastSelectedCodexThinking(nextThinking)
+	                          },
+	                          selectedThinking: selectedCodexThinking,
+	                          onSelectThinking: (thinking) => {
+	                            setSelectedConversationCodexThinking(thinking)
+	                            setLastSelectedCodexThinking(thinking)
+	                          },
+	                          isConnected: false,
+	                        }}
+	                      />
+	                      )
+	                    )}
+	                    {!isRuntimeModelProvider && <PermissionModeSelector />}
                   </div>
 
                 </div>

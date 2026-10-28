@@ -47,7 +47,7 @@
 
 use snowdon::{ClassicLayout, ClassicLayoutSnowflakeExtension, Epoch, Generator, MachineId};
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, RwLock};
 
 /// Snowflake parameters for Ergatai.
 struct ErgataiSnowflakeParams;
@@ -65,11 +65,16 @@ static MACHINE_ID: AtomicU16 = AtomicU16::new(u16::MAX);
 impl MachineId for ErgataiSnowflakeParams {
     fn machine_id() -> u64 {
         let raw = MACHINE_ID.load(Ordering::Relaxed);
-        if raw == u16::MAX {
+        let base: u64 = if raw == u16::MAX {
             0
         } else {
-            raw as u64
-        }
+            (raw & 0x3FF) as u64
+        };
+        // Each generator rebuild bumps this offset so post-rebuild IDs can
+        // never collide with IDs issued before the rollback (see
+        // `rebuild_generator_after_clock_rollback`).
+        let offset = (REBUILD_OFFSET.load(Ordering::Relaxed) & 0x3FF) as u64;
+        (base + offset) & 0x3FF
     }
 }
 
@@ -79,7 +84,14 @@ type ErgataiSnowflake =
 type ErgataiGenerator = Generator<ClassicLayout<ErgataiSnowflakeParams>, ErgataiSnowflakeParams>;
 
 /// Global snowflake generator instance.
-static GENERATOR: OnceLock<ErgataiGenerator> = OnceLock::new();
+///
+/// Wrapped in `Arc` behind a `RwLock` so it can be swapped out after a severe
+/// clock rollback (see `rebuild_generator_after_clock_rollback`). The read
+/// path is a short lock + `Arc` clone; the write path only runs on rebuild.
+static GENERATOR: RwLock<Option<Arc<ErgataiGenerator>>> = RwLock::new(None);
+
+/// Number of times the generator has been rebuilt after clock rollbacks.
+static REBUILD_OFFSET: AtomicU16 = AtomicU16::new(0);
 
 /// ID type enumeration.
 ///
@@ -113,6 +125,8 @@ pub enum IdType {
     Task = 11,
     /// State checkpoint ID (DAG recovery)
     Checkpoint = 12,
+    /// Agent execution turn ID
+    Turn = 14,
 }
 
 impl IdType {
@@ -132,6 +146,7 @@ impl IdType {
             IdType::Dag => "dag",
             IdType::Task => "task",
             IdType::Checkpoint => "ckpt",
+            IdType::Turn => "turn",
         }
     }
 
@@ -151,6 +166,7 @@ impl IdType {
             "dag" => Some(IdType::Dag),
             "task" => Some(IdType::Task),
             "ckpt" => Some(IdType::Checkpoint),
+            "turn" => Some(IdType::Turn),
             _ => None,
         }
     }
@@ -190,15 +206,44 @@ pub fn init(instance_id: u16) {
         Ordering::SeqCst,
         Ordering::Relaxed,
     );
-    GENERATOR.get_or_init(ErgataiGenerator::default);
+    generator();
 }
 
 /// Get or initialize the global generator.
 ///
 /// This function does NOT panic. If called before `init()`, it initializes with
 /// default instance_id=0. Call `init(instance_id)` at startup to set a specific value.
-fn generator() -> &'static ErgataiGenerator {
-    GENERATOR.get_or_init(ErgataiGenerator::default)
+fn generator() -> Arc<ErgataiGenerator> {
+    if let Some(generator) = GENERATOR.read().unwrap().as_ref() {
+        return generator.clone();
+    }
+    let mut generator_slot = GENERATOR.write().unwrap();
+    generator_slot
+        .get_or_insert_with(|| Arc::new(ErgataiGenerator::default()))
+        .clone()
+}
+
+/// Rebuild the global generator after a persistent clock rollback.
+///
+/// A large backwards clock adjustment (e.g. an NTP step correction after the
+/// machine booted with a fast clock, a VM resume, or hibernate) leaves the
+/// generator's in-memory "last timestamp" far ahead of the wall clock. Short
+/// retries can never outlast that, so the generator is replaced with a fresh
+/// one whose timestamps restart from the current (corrected) clock.
+///
+/// To keep IDs unique across the rollback, the machine-id offset is bumped:
+/// previously issued IDs — including "future" timestamps generated while the
+/// clock was fast, which the corrected wall clock will eventually re-traverse
+/// — can then never collide with newly issued ones.
+fn rebuild_generator_after_clock_rollback() {
+    REBUILD_OFFSET.fetch_add(1, Ordering::SeqCst);
+    let mut generator_slot = GENERATOR.write().unwrap();
+    *generator_slot = Some(Arc::new(ErgataiGenerator::default()));
+    tracing::error!(
+        machine_id = ErgataiSnowflakeParams::machine_id(),
+        "Snowflake generator rebuilt after persistent clock rollback; \
+         IDs issued while the clock was wrong will sort before newer IDs"
+    );
 }
 
 /// Maximum retry attempts for transient ID generation failures.
@@ -212,7 +257,7 @@ const MAX_GENERATE_RETRIES: u32 = 100;
 ///
 /// Transient failures (clock rollback, sequence exhaustion) are handled with
 /// microsecond sleeps. The function retries up to `MAX_GENERATE_RETRIES` times
-/// before panicking. In practice, transient failures resolve within 1-2 retries.
+/// before escalating. In practice, transient failures resolve within 1-2 retries.
 ///
 /// # Panics
 ///
@@ -221,6 +266,13 @@ const MAX_GENERATE_RETRIES: u32 = 100;
 /// - Persistent clock rollback (NTP sync problems)
 /// - Extreme contention (millions of IDs per millisecond)
 /// - Generator corruption
+///
+/// Persistent `NonMonotonicClock` failures no longer panic: instead, the
+/// generator is rebuilt (machine-id offset bumped) and generation continues,
+/// so a large clock rollback degrades ID ordering instead of taking requests
+/// down. Panics remain the last-resort path for non-recoverable errors; run
+/// request handlers behind a panic-catching layer so a panic surfaces as an
+/// HTTP 500 instead of a dropped connection.
 ///
 /// **Why panic instead of returning Result?** This function is called throughout
 /// the codebase (50+ call sites) for critical operations like message IDs,
@@ -245,6 +297,7 @@ const MAX_GENERATE_RETRIES: u32 = 100;
 /// let conversation_id = generate();
 /// ```
 pub fn generate() -> i64 {
+    let mut last_error: Option<snowdon::Error> = None;
     for attempt in 0..MAX_GENERATE_RETRIES {
         match generator().generate() {
             Ok(snowflake) => return snowflake.into_i64(),
@@ -261,18 +314,40 @@ pub fn generate() -> i64 {
                     // Small sleep to back off (100 microseconds, exponential backoff could be added)
                     std::thread::sleep(std::time::Duration::from_micros(100));
                 }
+                last_error = Some(err);
             }
         }
     }
+    let last_error = last_error.expect("generator must return an error after exhausting retries");
+
+    // Persistent clock rollback: no amount of short retrying can outlast it
+    // (e.g. an 8-hour NTP step correction). Rebuild the generator and try once
+    // more instead of panicking — panicking here aborts the request handler
+    // and closes the HTTP connection without a response, which clients see as
+    // `UND_ERR_SOCKET` "other side closed" with zero bytes read.
+    if matches!(last_error, snowdon::Error::NonMonotonicClock) {
+        rebuild_generator_after_clock_rollback();
+        match generator().generate() {
+            Ok(snowflake) => return snowflake.into_i64(),
+            Err(err) => {
+                tracing::error!(
+                    error = %err,
+                    "Critical: snowflake generation failed even after generator rebuild"
+                );
+                panic!("Failed to generate snowflake ID after generator rebuild: {err}");
+            }
+        }
+    }
+
     // Log at ERROR level before panicking for better observability
     tracing::error!(
         retries = MAX_GENERATE_RETRIES,
-        "Critical: Failed to generate snowflake ID after {} retries",
-        MAX_GENERATE_RETRIES
+        error = %last_error,
+        "Critical: failed to generate snowflake ID after retries"
     );
     panic!(
-        "Failed to generate snowflake ID after {} retries",
-        MAX_GENERATE_RETRIES
+        "Failed to generate snowflake ID after {} retries: {}",
+        MAX_GENERATE_RETRIES, last_error
     )
 }
 
@@ -678,6 +753,7 @@ mod tests {
             (IdType::Lock, "lock"),
             (IdType::Dag, "dag"),
             (IdType::Task, "task"),
+            (IdType::Turn, "turn"),
         ];
 
         for (id_type, _prefix) in test_cases {
@@ -749,6 +825,7 @@ mod tests {
             IdType::Lock,
             IdType::Dag,
             IdType::Task,
+            IdType::Turn,
         ];
 
         for id_type in test_cases {
@@ -758,5 +835,24 @@ mod tests {
                 parse_to_i64_with_type(&formatted, id_type).expect("Failed to parse matching type");
             assert_eq!(id, parsed, "Roundtrip failed for {:?}", id_type);
         }
+    }
+
+    #[test]
+    fn test_rebuild_after_clock_rollback_keeps_generating() {
+        init(1);
+        let before_machine_id = ErgataiSnowflakeParams::machine_id();
+        let _pre_rollback = generate();
+
+        rebuild_generator_after_clock_rollback();
+
+        let after_machine_id = ErgataiSnowflakeParams::machine_id();
+        assert_ne!(
+            before_machine_id, after_machine_id,
+            "rebuild must bump the machine-id offset so post-rebuild IDs \
+             cannot collide with pre-rollback IDs"
+        );
+
+        let id = generate();
+        assert!(id > 0, "generation must succeed after rebuild");
     }
 }

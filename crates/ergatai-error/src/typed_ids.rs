@@ -200,6 +200,7 @@ define_id_type!(DagId, IdType::Dag, "dag");
 define_id_type!(TaskId, IdType::Task, "task");
 define_id_type!(CheckpointId, IdType::Checkpoint, "ckpt");
 define_id_type!(ProjectId, IdType::Project, "proj");
+define_id_type!(TurnId, IdType::Turn, "turn");
 
 // ============================================================================
 // 错误类型

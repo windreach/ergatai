@@ -13,6 +13,7 @@ import {
 } from "../../../components/ui/dropdown-menu"
 import { CollapseIcon, ExpandIcon, PlanIcon } from "../../../components/ui/icons"
 import { TextShimmer } from "../../../components/ui/text-shimmer"
+import { ChatMarkdownRenderer } from "../../../components/chat-markdown-renderer"
 import { cn } from "../../../lib/utils"
 import { selectedWorkspaceAtom, showMessageJsonAtom } from "../atoms"
 import { GroupAgentMessageHeader } from "../collaboration/group-agent-message-header"
@@ -750,6 +751,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
   const renderPart = useCallback((part: any, idx: number, isFinal = false) => {
     if (part.type === "step-start") return null
     if (part.type === "tool-TaskOutput") return null
+    if (part.type === "control-end") return null
 
     if (part.toolCallId && orphanToolCallIds.has(part.toolCallId)) {
       if (!orphanFirstToolCallIds.has(part.toolCallId)) return null
@@ -800,11 +802,24 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
         (part.input as any)?.target_agent_id
         ?? (part.type.match(/target_agent_id[='"]+(\w+)/)?.[1])
         ?? "agent"
-      const message = (part.input as any)?.message ?? ""
+      const sideMessage = part.sideMessage as
+        | { text?: string; messageId?: string }
+        | undefined
+      const message = sideMessage?.text ?? (part.input as any)?.message ?? ""
       return (
-        <div key={idx} className="text-xs text-muted-foreground px-2 py-0.5">
-          <span className="font-medium text-foreground">@{targetAgent}</span>
-          {message && <span> {message}</span>}
+        <div
+          key={idx}
+          className="max-w-full rounded-md border border-border/60 bg-muted/20 px-2 py-1.5 text-xs"
+        >
+          <div className="flex items-center gap-1 text-muted-foreground">
+            <span className="font-medium text-foreground">@{targetAgent}</span>
+            <span>send_message</span>
+          </div>
+          {message && (
+            <div className="mt-1 max-h-44 overflow-y-auto rounded-sm bg-background/60 px-2 py-1.5">
+              <ChatMarkdownRenderer content={message} size="sm" />
+            </div>
+          )}
         </div>
       )
     }

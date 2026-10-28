@@ -491,6 +491,25 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
         "Using Conversation-centric delivery (direct conversation_id → AgentInfo lookup)"
     );
 
+    // Give the next output turn enough transport context to persist a stable
+    // request/output correlation. This is intentionally invisible to the agent.
+    if from != "user" {
+        if let Some(registry) =
+            ergatai_runtime::output_accumulator::get_global_accumulator_registry()
+        {
+            registry
+                .set_pending_turn_context(
+                    &conversation_id.to_string(),
+                    ergatai_runtime::output_accumulator::TurnContext {
+                        reply_to_message_id: Some(payload.message_id.clone()),
+                        correlation_id: payload.correlation_id.clone(),
+                        source_conversation_id: None,
+                    },
+                )
+                .await;
+        }
+    }
+
     // ── EARLY PERSISTENCE: Make message visible before agent processing ──
     // Persist the request message immediately so it's visible in conversation API
     // and SSE stream before the agent starts processing it.
@@ -634,12 +653,14 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
 
             // Persist agent message to SQLite with structured fields
             let external_id_for_meta = external_message_id.clone();
+            let correlation_id_for_meta = payload.correlation_id.clone();
             let append_result = tokio::task::spawn_blocking(move || {
                 let metadata = serde_json::json!({
                     "externalMessageId": external_id_for_meta,
                     "senderAgentId": from_agent,
                     "senderAgentName": from_agent_name,
                     "messageType": message_type,
+                    "correlationId": correlation_id_for_meta,
                     "deliveryStatus": "pending",  // Will be updated to "delivered" or "failed" after injection
                 });
 
@@ -648,6 +669,8 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                     from_agent_name: Some(from_agent_name),
                     message_type: Some(message_type),
                     content: Some(actual_message),
+                    projection_kind: Some("canonical".to_string()),
+                    ..Default::default()
                 };
 
                 crate::user_data_db::messages::append(
@@ -699,7 +722,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
 
     // ── Deliver via AgentRuntime injection (ACP protocol) ──
     // Choose delivery method based on whether images are present
-    let delivery_result = if payload.images.is_empty() {
+    let mut delivery_result = if payload.images.is_empty() {
         runtime
             .inject_message_to_conversation(&conversation_id.to_string(), formatted_message)
             .await
@@ -719,10 +742,71 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
             .inject_message_to_conversation_with_images(
                 &conversation_id.to_string(),
                 formatted_message,
-                runtime_images,
+                runtime_images.clone(),
             )
             .await
     };
+
+    // If delivery failed because agent/conversation not found, try to auto-resume suspended agent
+    if let Err(ref e) = delivery_result {
+        let is_not_found = matches!(
+            e,
+            ergatai_error::ErgataiError::NotFound(_)
+                | ergatai_error::ErgataiError::AgentNotFound(_)
+        );
+        if is_not_found {
+            tracing::info!(
+                from = from,
+                to = to,
+                conversation_id = %conversation_id,
+                "Delivery failed with not found error, checking for suspended agent"
+            );
+
+            if let Some(_resumed_id) =
+                crate::services::agent_service::try_auto_resume_suspended_agent(
+                    &runtime,
+                    to,
+                    Some(&conversation_id.to_string()),
+                )
+                .await
+            {
+                tracing::info!(
+                    from = from,
+                    to = to,
+                    conversation_id = %conversation_id,
+                    "Auto-resumed suspended agent, retrying delivery"
+                );
+
+                // Retry delivery
+                delivery_result = if payload.images.is_empty() {
+                    runtime
+                        .inject_message_to_conversation(
+                            &conversation_id.to_string(),
+                            formatted_message,
+                        )
+                        .await
+                } else {
+                    let runtime_images: Vec<ergatai_runtime::types::AgentImage> = payload
+                        .images
+                        .iter()
+                        .map(|img| ergatai_runtime::types::AgentImage {
+                            base64_data: img.base64_data.clone(),
+                            media_type: img.media_type.clone(),
+                            filename: img.filename.clone(),
+                        })
+                        .collect();
+
+                    runtime
+                        .inject_message_to_conversation_with_images(
+                            &conversation_id.to_string(),
+                            formatted_message,
+                            runtime_images,
+                        )
+                        .await
+                };
+            }
+        }
+    }
 
     // Extract external_message_id once for delivery status tracking (used in both success and error paths)
     let external_message_id = payload

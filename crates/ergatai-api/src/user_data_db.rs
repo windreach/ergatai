@@ -133,7 +133,8 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
 
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
 
-    create_tables_if_not_exists(conn)
+    create_tables_if_not_exists(conn)?;
+    migrate_message_turn_columns(conn)
 }
 
 /// Create all tables if they don't already exist (safe for production)
@@ -271,6 +272,11 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
             message_type TEXT,            -- "request" | "response" | "broadcast"
             content TEXT,                 -- 实际消息内容（纯文本）
 
+            -- Turn aggregate / projection metadata
+            turn_id TEXT,                 -- Stable agent execution-turn identifier
+            projection_kind TEXT,         -- canonical | side_copy
+            origin_message_id TEXT,       -- Canonical message for a projection
+
             -- Agent 输出字段（role="assistant" 时使用，统一存储 agent 的详细输出）
             thinking TEXT,                -- JSON: [{text, duration_ms}]
             tool_calls TEXT,              -- JSON: [{id, name, input, output, status}]
@@ -288,6 +294,8 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_messages_role ON messages(role);
         CREATE INDEX IF NOT EXISTS idx_messages_from_agent_id ON messages(from_agent_id);
         CREATE INDEX IF NOT EXISTS idx_messages_message_type ON messages(message_type);
+        CREATE INDEX IF NOT EXISTS idx_messages_turn_id ON messages(turn_id);
+        CREATE INDEX IF NOT EXISTS idx_messages_origin_message_id ON messages(origin_message_id);
 
         CREATE TABLE IF NOT EXISTS terminal_sessions (
             session_id INTEGER PRIMARY KEY,
@@ -376,8 +384,10 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
             decided_at INTEGER,
             FOREIGN KEY (session_id) REFERENCES collaboration_sessions(collaboration_session_id) ON DELETE CASCADE
         );
-        "#,
+    "#,
     )?;
+
+    migrate_message_turn_columns(conn)?;
 
     // MCP Servers table
     //
@@ -413,6 +423,42 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
         "#,
     )?;
 
+    Ok(())
+}
+
+/// Add the turn model columns to databases created before the strict turn
+/// model was introduced. SQLite has no `ADD COLUMN IF NOT EXISTS`.
+fn migrate_message_turn_columns(conn: &Connection) -> Result<()> {
+    let existing_columns: std::collections::HashSet<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut columns = std::collections::HashSet::new();
+        for column in rows {
+            let column = column?;
+            columns.insert(column);
+        }
+        columns
+    };
+
+    for (column, definition) in [
+        ("turn_id", "TEXT"),
+        ("projection_kind", "TEXT"),
+        ("origin_message_id", "TEXT"),
+    ] {
+        if !existing_columns.contains(column) {
+            conn.execute(
+                &format!("ALTER TABLE messages ADD COLUMN {column} {definition}"),
+                [],
+            )?;
+        }
+    }
+
+    conn.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_messages_turn_id ON messages(turn_id);
+        CREATE INDEX IF NOT EXISTS idx_messages_origin_message_id ON messages(origin_message_id);
+        "#,
+    )?;
     Ok(())
 }
 
@@ -522,6 +568,11 @@ pub struct Message {
     pub message_type: Option<String>,    // "request" | "response" | "broadcast"
     pub content: Option<String>,         // 实际消息内容（纯文本）
 
+    // Turn aggregate / projection metadata
+    pub turn_id: Option<String>, // Stable agent execution-turn identifier
+    pub projection_kind: Option<String>, // canonical | side_copy
+    pub origin_message_id: Option<String>,
+
     // Agent 输出字段（role="assistant" 时使用）
     pub thinking: Option<String>,    // JSON: [{text, duration_ms}]
     pub tool_calls: Option<String>,  // JSON: [{id, name, input, output, status}]
@@ -547,13 +598,16 @@ pub fn map_row_to_message(row: &rusqlite::Row) -> rusqlite::Result<Message> {
         from_agent_name: row.get(7)?,
         message_type: row.get(8)?,
         content: row.get(9)?,
-        thinking: row.get(10)?,
-        tool_calls: row.get(11)?,
-        text_chunks: row.get(12)?,
-        stop_reason: row.get(13)?,
-        duration_ms: row.get(14)?,
-        created_at: row.get(15)?,
-        updated_at: row.get(16)?,
+        turn_id: row.get(10)?,
+        projection_kind: row.get(11)?,
+        origin_message_id: row.get(12)?,
+        thinking: row.get(13)?,
+        tool_calls: row.get(14)?,
+        text_chunks: row.get(15)?,
+        stop_reason: row.get(16)?,
+        duration_ms: row.get(17)?,
+        created_at: row.get(18)?,
+        updated_at: row.get(19)?,
     })
 }
 
@@ -1756,6 +1810,7 @@ pub mod messages {
         let mut stmt = conn.prepare(
             "SELECT message_id, conversation_id, sequence, role, parts, metadata,
                     from_agent_id, from_agent_name, message_type, content,
+                    turn_id, projection_kind, origin_message_id,
                     thinking, tool_calls, text_chunks, stop_reason, duration_ms,
                     created_at, updated_at
              FROM messages WHERE message_id = ?1",
@@ -1843,6 +1898,7 @@ pub mod messages {
         let mut stmt = conn.prepare(
             "SELECT message_id, conversation_id, sequence, role, parts, metadata,
                     from_agent_id, from_agent_name, message_type, content,
+                    turn_id, projection_kind, origin_message_id,
                     thinking, tool_calls, text_chunks, stop_reason, duration_ms,
                     created_at, updated_at
              FROM messages WHERE conversation_id = ?1 ORDER BY sequence ASC",
@@ -1861,6 +1917,7 @@ pub mod messages {
         let mut stmt = conn.prepare(
             "SELECT message_id, conversation_id, sequence, role, parts, metadata,
                     from_agent_id, from_agent_name, message_type, content,
+                    turn_id, projection_kind, origin_message_id,
                     thinking, tool_calls, text_chunks, stop_reason, duration_ms,
                     created_at, updated_at
              FROM messages
@@ -1879,6 +1936,7 @@ pub mod messages {
         let mut stmt = conn.prepare(
             "SELECT message_id, conversation_id, sequence, role, parts, metadata,
                     from_agent_id, from_agent_name, message_type, content,
+                    turn_id, projection_kind, origin_message_id,
                     thinking, tool_calls, text_chunks, stop_reason, duration_ms,
                     created_at, updated_at
              FROM messages
@@ -1906,14 +1964,20 @@ pub mod messages {
     ) -> Result<bool> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
+        // Initial messages are persisted before the prompt is queued. Older
+        // records did not yet carry externalMessageId in metadata, but the
+        // frontend reuses their message_id as the prompt's clientRequestId.
+        let legacy_message_id = MessageId::decode(external_message_id).ok();
+        let legacy_message_id_i64 = legacy_message_id.map_or(-1, |id| id.as_i64());
         // Use JSON extraction to check metadata.externalMessageId
         let exists: bool = conn.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM messages
                 WHERE conversation_id = ?1
-                  AND json_extract(metadata, '$.externalMessageId') = ?2
+                  AND (json_extract(metadata, '$.externalMessageId') = ?2
+                       OR message_id = ?3)
             )",
-            params![conversation_id, external_message_id],
+            params![conversation_id, external_message_id, legacy_message_id_i64],
             |row| row.get(0),
         )?;
         Ok(exists)
@@ -1994,6 +2058,9 @@ pub mod messages {
         pub from_agent_name: Option<String>,
         pub message_type: Option<String>,
         pub content: Option<String>,
+        pub turn_id: Option<String>,
+        pub projection_kind: Option<String>,
+        pub origin_message_id: Option<String>,
     }
 
     /// Agent 输出字段（用于存储 agent 的详细输出）
@@ -2004,6 +2071,57 @@ pub mod messages {
         pub text_chunks: Option<String>,
         pub stop_reason: Option<String>,
         pub duration_ms: Option<i64>,
+    }
+
+    /// Reorder side-copy projections after their completed turn.
+    ///
+    /// A side copy is persisted as soon as `send_message` accepts the outbound
+    /// message, while the producing turn is persisted after all events finish.
+    /// Assigning sequence at insert time therefore puts the projection before
+    /// reasoning/tool events even though causally it is an output of that turn.
+    pub fn link_side_copies_to_turn(
+        conversation_id: ConversationId,
+        correlation_id: &str,
+        turn_id: &str,
+    ) -> Result<usize> {
+        let db = get_user_data_db();
+        let mut conn = db.lock().unwrap();
+        let transaction = conn.transaction()?;
+        let next_sequence: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
+            params![conversation_id],
+            |row| row.get(0),
+        )?;
+
+        let mut stmt = transaction.prepare(
+            "SELECT message_id FROM messages
+             WHERE conversation_id = ?1
+               AND projection_kind = 'side_copy'
+               AND json_extract(metadata, '$.correlationId') = ?2
+             ORDER BY sequence ASC",
+        )?;
+        let message_ids = stmt
+            .query_map(params![conversation_id, correlation_id], |row| {
+                row.get::<_, i64>(0)
+            })?
+            .collect::<Result<Vec<_>>>()?;
+        drop(stmt);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        for (offset, message_id) in message_ids.iter().enumerate() {
+            transaction.execute(
+                "UPDATE messages
+                 SET sequence = ?1, turn_id = ?2, updated_at = ?3
+                 WHERE message_id = ?4",
+                params![next_sequence + offset as i64, turn_id, now, message_id],
+            )?;
+        }
+
+        transaction.commit()?;
+        Ok(message_ids.len())
     }
 
     pub fn append(
@@ -2068,6 +2186,9 @@ pub mod messages {
             from_agent_name: agent_fields.from_agent_name,
             message_type: agent_fields.message_type,
             content: agent_fields.content,
+            turn_id: agent_fields.turn_id,
+            projection_kind: agent_fields.projection_kind,
+            origin_message_id: agent_fields.origin_message_id,
             thinking: output_fields.thinking,
             tool_calls: output_fields.tool_calls,
             text_chunks: output_fields.text_chunks,
@@ -2080,9 +2201,12 @@ pub mod messages {
         transaction.execute(
             "INSERT INTO messages (message_id, conversation_id, sequence, role, parts, metadata,
              from_agent_id, from_agent_name, message_type, content,
+             turn_id, projection_kind, origin_message_id,
              thinking, tool_calls, text_chunks, stop_reason, duration_ms,
              created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                     ?11, ?12, ?13,
+                     ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 message.message_id,
                 message.conversation_id,
@@ -2094,6 +2218,9 @@ pub mod messages {
                 message.from_agent_name,
                 message.message_type,
                 message.content,
+                message.turn_id,
+                message.projection_kind,
+                message.origin_message_id,
                 message.thinking,
                 message.tool_calls,
                 message.text_chunks,
@@ -2141,8 +2268,20 @@ pub mod messages {
             // Use empty array instead of NULL for parts to simplify query logic
             let parts_str = parts.to_string();
 
+            let message_id = MessageId::generate();
+            let mut metadata = if metadata.is_null() {
+                serde_json::json!({})
+            } else {
+                metadata
+            };
+            if let serde_json::Value::Object(metadata_map) = &mut metadata {
+                metadata_map
+                    .entry("externalMessageId")
+                    .or_insert_with(|| serde_json::Value::String(message_id.encode()));
+            }
+
             let message = Message {
-                message_id: MessageId::generate(),
+                message_id,
                 conversation_id,
                 sequence,
                 role, // role is already a String from the tuple, no need to clone
@@ -2156,6 +2295,9 @@ pub mod messages {
                 from_agent_name: agent_fields.from_agent_name,
                 message_type: agent_fields.message_type,
                 content: agent_fields.content,
+                turn_id: agent_fields.turn_id,
+                projection_kind: agent_fields.projection_kind,
+                origin_message_id: agent_fields.origin_message_id,
                 thinking: output_fields.thinking,
                 tool_calls: output_fields.tool_calls,
                 text_chunks: output_fields.text_chunks,
@@ -2168,9 +2310,12 @@ pub mod messages {
             transaction.execute(
                 "INSERT INTO messages (message_id, conversation_id, sequence, role, parts, metadata,
                  from_agent_id, from_agent_name, message_type, content,
+                 turn_id, projection_kind, origin_message_id,
                  thinking, tool_calls, text_chunks, stop_reason, duration_ms,
                  created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                         ?11, ?12, ?13,
+                         ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
                 params![
                     message.message_id,
                     message.conversation_id,
@@ -2182,6 +2327,9 @@ pub mod messages {
                     message.from_agent_name,
                     message.message_type,
                     message.content,
+                    message.turn_id,
+                    message.projection_kind,
+                    message.origin_message_id,
                     message.thinking,
                     message.tool_calls,
                     message.text_chunks,
@@ -2214,6 +2362,7 @@ pub mod messages {
         let mut stmt = conn.prepare(
             "SELECT m.message_id, m.conversation_id, m.sequence, m.role, m.parts, m.metadata,
                     m.from_agent_id, m.from_agent_name, m.message_type, m.content,
+                    m.turn_id, m.projection_kind, m.origin_message_id,
                     m.thinking, m.tool_calls, m.text_chunks, m.stop_reason, m.duration_ms,
                     m.created_at, m.updated_at
              FROM messages m
@@ -2232,6 +2381,7 @@ pub mod messages {
         let mut stmt = conn.prepare(
             "SELECT m.message_id, m.conversation_id, m.sequence, m.role, m.parts, m.metadata,
                     m.from_agent_id, m.from_agent_name, m.message_type, m.content,
+                    m.turn_id, m.projection_kind, m.origin_message_id,
                     m.thinking, m.tool_calls, m.text_chunks, m.stop_reason, m.duration_ms,
                     m.created_at, m.updated_at
              FROM messages m
@@ -2473,6 +2623,7 @@ pub mod messages {
             (Some(_l), Some(_o)) => {
                 "SELECT message_id, conversation_id, sequence, role, parts, metadata,
                         from_agent_id, from_agent_name, message_type, content,
+                        turn_id, projection_kind, origin_message_id,
                         thinking, tool_calls, text_chunks, stop_reason, duration_ms,
                         created_at, updated_at
                  FROM messages WHERE conversation_id = ?1 ORDER BY sequence ASC LIMIT ?2 OFFSET ?3"
@@ -2480,6 +2631,7 @@ pub mod messages {
             (Some(_l), None) => {
                 "SELECT message_id, conversation_id, sequence, role, parts, metadata,
                         from_agent_id, from_agent_name, message_type, content,
+                        turn_id, projection_kind, origin_message_id,
                         thinking, tool_calls, text_chunks, stop_reason, duration_ms,
                         created_at, updated_at
                  FROM messages WHERE conversation_id = ?1 ORDER BY sequence ASC LIMIT ?2"
@@ -2487,6 +2639,7 @@ pub mod messages {
             _ => {
                 "SELECT message_id, conversation_id, sequence, role, parts, metadata,
                         from_agent_id, from_agent_name, message_type, content,
+                        turn_id, projection_kind, origin_message_id,
                         thinking, tool_calls, text_chunks, stop_reason, duration_ms,
                         created_at, updated_at
                  FROM messages WHERE conversation_id = ?1 ORDER BY sequence ASC"
@@ -2581,6 +2734,28 @@ pub mod group_agent_bindings {
         let mut stmt = conn
             .prepare("SELECT conversation_id FROM group_agent_bindings WHERE agent_id = ?1 ORDER BY updated_at DESC, created_at DESC LIMIT 1")?;
         let mut rows = stmt.query_map(params![agent_id], |row| row.get::<_, ConversationId>(0))?;
+        rows.next().transpose()
+    }
+
+    /// Find the most recent agent binding that owns a conversation.
+    ///
+    /// This is the authoritative way to attribute normal assistant turns to an
+    /// agent; no database migration is required because the binding table
+    /// already owns the conversation → agent relationship.
+    pub fn find_by_conversation_id(
+        conversation_id: ConversationId,
+    ) -> Result<Option<GroupAgentBinding>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at
+             FROM group_agent_bindings
+             WHERE conversation_id = ?1
+             ORDER BY updated_at DESC, created_at DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![conversation_id], row_to_binding)?;
         rows.next().transpose()
     }
 

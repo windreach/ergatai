@@ -320,7 +320,6 @@ export const chatsRouter = router({
       const conversationsWithMessages = await Promise.all(
         chatConversations.map(async (conversation) => {
           const messages = await listConversationMessages(conversation.id)
-          console.log(`[chats.get] Conversation ${conversation.id} name="${conversation.name}" has ${messages.length} messages`)
           const uiMessages = mapBackendMessagesToUiMessages(messages)
           return {
             id: conversation.id,

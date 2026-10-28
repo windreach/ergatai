@@ -12,6 +12,12 @@ export type Message = {
   conversationId: string
   sequence: number
   role: string
+  fromAgentId?: string | null
+  fromAgentName?: string | null
+  messageType?: string | null
+  turnId?: string | null
+  projectionKind?: string | null
+  originMessageId?: string | null
   parts: unknown[]
   metadata: Record<string, unknown> | null
   createdAt: Date

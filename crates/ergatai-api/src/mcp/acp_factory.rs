@@ -303,6 +303,7 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
                 target_agent,
                 stream,
                 sequence,
+                ..
             } => {
                 let response_json = serde_json::json!({
                     "status": "queued",
@@ -317,7 +318,7 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
                     ),
                 ]))
             }
-            crate::messaging::SendMessageResult::DirectDelivered { target_agent } => {
+            crate::messaging::SendMessageResult::DirectDelivered { target_agent, .. } => {
                 let response_json = serde_json::json!({
                     "status": "direct_delivered",
                     "target_agent": target_agent,

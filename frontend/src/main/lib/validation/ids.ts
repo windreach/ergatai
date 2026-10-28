@@ -60,6 +60,7 @@ const prefixedSnowflakeIdSchema = (prefix: string, label: string) =>
 export const chatIdSchema = prefixedSnowflakeIdSchema("chat", "chat")
 export const conversationIdSchema = prefixedSnowflakeIdSchema("conv", "conversation")
 export const workspaceIdSchema = prefixedSnowflakeIdSchema("ws", "workspace")
+export const turnIdSchema = prefixedSnowflakeIdSchema("turn", "turn")
 
 /**
  * The UI also uses runtime conversation keys for agent-to-agent turns (for
@@ -83,6 +84,13 @@ export const messageIdSchema = z
       (value.startsWith("msg_") && isSnowflakeId(value.slice(4))),
     "Invalid message ID",
   )
+
+/**
+ * A client request ID is always a persisted message ID (or one allocated by the
+ * backend before durable persistence). Local UI IDs and random tokens must not
+ * enter durable message metadata.
+ */
+export const clientRequestIdSchema = prefixedSnowflakeIdSchema("msg", "message")
 
 /**
  * Agent references can be runtime IDs (`agent_...`) or configured profile

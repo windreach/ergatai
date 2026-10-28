@@ -4,17 +4,13 @@ import {
   type DiffTextContext,
   createTextPreview,
 } from "../lib/queue-utils"
+import { createLocalId } from "../../../../shared/id"
 
 /**
- * Generate a unique ID using crypto.randomUUID() when available,
- * falling back to Date.now() + random for older browsers.
+ * Generate a unique local ID for context selections.
  */
 function generateUniqueId(prefix: string): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `${prefix}_${crypto.randomUUID()}`
-  }
-  // Fallback: timestamp + random suffix
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
+  return createLocalId(prefix)
 }
 
 export interface UseTextContextSelectionReturn {

@@ -7,13 +7,18 @@ import {
 } from "./chat-contract-api"
 import { useConversationRuntime } from "./conversation-runtime-gateway"
 import { buildRuntimeMessages } from "./conversation-runtime-ui"
+import { attachSideCopyProjectionsToTrace } from "./side-copy-projection"
 
 type PersistedSessionMessage = {
   id: string
   sequence: number
   role: string
   parts: unknown[]
+  content?: string | null
   metadata?: Record<string, unknown> | null
+  turnId?: string | null
+  projectionKind?: string | null
+  originMessageId?: string | null
 }
 
 function normalizeMessageRole(role: string): ChatMessage["role"] {
@@ -47,6 +52,23 @@ function getReasoningText(parts: unknown[]) {
 
 function mapSessionMessage(message: PersistedSessionMessage): ChatMessage {
   const metadata = message.metadata ?? undefined
+  const structuredContent =
+    typeof message.content === "string" && message.content.trim().length > 0
+      ? message.content
+      : undefined
+  const isEnvelopeCandidate =
+    message.role === "agent" ||
+    typeof (metadata as { messageType?: unknown } | undefined)?.messageType === "string"
+  const hasTextOnlyParts =
+    message.parts.length > 0 &&
+    message.parts.every((part) => {
+      const candidate = part as { type?: unknown }
+      return candidate?.type === "text"
+    })
+  const displayParts =
+    structuredContent && isEnvelopeCandidate && hasTextOnlyParts
+      ? [{ type: "text", text: structuredContent }]
+      : message.parts
   const readString = (key: string) => {
     const value = metadata?.[key]
     return typeof value === "string" && value.length > 0 ? value : undefined
@@ -55,13 +77,13 @@ function mapSessionMessage(message: PersistedSessionMessage): ChatMessage {
   return {
     id: message.id,
     role: normalizeMessageRole(message.role),
-    content: getMessageText(message.parts),
+    content: structuredContent ?? getMessageText(message.parts),
     reasoning: getReasoningText(message.parts) || undefined,
     senderAgentId: readString("senderAgentId") ?? readString("agentId"),
     senderAgentName: readString("senderAgentName") ?? readString("agentName"),
     messageType: readString("messageType"),
     metadata,
-    parts: message.parts,
+    parts: displayParts,
   }
 }
 
@@ -101,7 +123,7 @@ export function useConversationSession({
   )
 
   const persistedMessages = useMemo(
-    () => allPersistedMessages.map(mapSessionMessage),
+    () => attachSideCopyProjectionsToTrace(allPersistedMessages).map(mapSessionMessage),
     [allPersistedMessages],
   )
 

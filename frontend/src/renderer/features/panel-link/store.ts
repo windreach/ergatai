@@ -2,6 +2,7 @@ import { atom } from "jotai"
 import { atomFamily } from "jotai/utils"
 
 import { atomWithWindowStorage } from "@/lib/window-storage"
+import { randomToken } from "../../../shared/id"
 
 import type {
   PanelId,
@@ -112,7 +113,7 @@ function withRequestToken(target: PanelTarget): PanelTarget {
     ...target,
     metadata: {
       ...target.metadata,
-      requestToken: crypto.randomUUID(),
+      requestToken: randomToken(32),
     },
   }
 }

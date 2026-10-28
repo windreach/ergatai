@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
+use ergatai_error::id::{format, generate, IdType};
+
 /// Token representing a specific turn in a conversation.
 ///
 /// This token must be passed to all output event operations to ensure events
@@ -17,6 +19,8 @@ use tokio::sync::{Mutex, RwLock};
 pub struct TurnToken {
     pub conversation_id: String,
     pub generation: u64,
+    /// Stable identifier shared by runtime events and the persisted projection.
+    pub turn_id: String,
     pub accumulator: Arc<Mutex<TurnAccumulator>>,
 }
 
@@ -40,10 +44,17 @@ type AccumulatorValue = Arc<Mutex<TurnAccumulator>>;
 /// Forgetting to flush will cause thinking data to be lost or incorrectly merged across events.
 pub struct TurnAccumulator {
     pub conversation_id: i64,
+    pub turn_id: String,
+    /// Delivery context attached by the message layer before injection. This
+    /// lets a persisted output turn be correlated with the inbound request that
+    /// caused it.
+    context: TurnContext,
     thinking: Vec<ThinkingBlock>,
     thinking_buffer: String, // Accumulates thinking text until a boundary
     thinking_start_timestamp: Option<u64>, // When the current thinking block started
     tool_calls: HashMap<String, ToolCallRecord>,
+    timeline: Vec<OutputTimelineItem>,
+    timeline_tool_positions: HashMap<String, usize>,
     text_chunks: Vec<TextChunk>,
     final_text: String,
     metadata: OutputMetadata,
@@ -80,6 +91,35 @@ pub struct ToolCallRecord {
     pub error: Option<String>,
 }
 
+/// Chronological output item. The legacy separate thinking/tool/text arrays
+/// cannot preserve interleaving when an agent alternates thinking, tool calls,
+/// and text. Persistence uses this timeline when available.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OutputTimelineItem {
+    Thinking {
+        text: String,
+        timestamp: u64,
+    },
+    ToolCall {
+        id: String,
+        name: String,
+        kind: Option<String>,
+        input: Box<serde_json::Value>,
+        output: Box<Option<serde_json::Value>>,
+        status: String,
+        #[serde(default)]
+        locations: Vec<ToolCallLocation>,
+        started_at: u64,
+        completed_at: Option<u64>,
+        error: Option<String>,
+    },
+    Text {
+        text: String,
+        timestamp: u64,
+    },
+}
+
 /// File location associated with a tool call
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallLocation {
@@ -96,6 +136,20 @@ pub struct OutputMetadata {
     pub total_tokens: Option<TokenUsage>,
 }
 
+/// Delivery context for an incoming prompt.
+///
+/// This is intentionally decoupled from agent-visible message content. Agents do
+/// not need to echo these IDs; the transport owns request/output correlation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TurnContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_conversation_id: Option<String>,
+}
+
 /// Token usage statistics
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenUsage {
@@ -107,11 +161,36 @@ pub struct TokenUsage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentOutputData {
     pub conversation_id: i64,
+    /// Stable execution-turn identifier shared with runtime events and
+    /// message projections.
+    pub turn_id: String,
     pub message_id: Option<i64>,
     pub role: String,
+    /// Runtime ID of the agent that produced this turn. Populated by the
+    /// backend at flush time and resolved to a stable binding ID during
+    /// persistence.
+    #[serde(default)]
+    pub sender_agent_id: Option<String>,
+    /// Human-readable agent profile/binding name, if known at flush time.
+    #[serde(default)]
+    pub sender_agent_name: Option<String>,
+    /// Stable semantic type for normal agent turns. Inter-agent envelope
+    /// messages use "request"/"response"/"broadcast" instead.
+    #[serde(default)]
+    pub message_type: Option<String>,
+    /// ID of the inbound inter-agent request that caused this turn, when known.
+    #[serde(default)]
+    pub reply_to_message_id: Option<String>,
+    /// Delivery correlation ID for request/output/response grouping.
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    /// Conversation from which the triggering request originated, when known.
+    #[serde(default)]
+    pub source_conversation_id: Option<String>,
     pub thinking: Option<String>,
     pub tool_calls: Option<String>,
     pub text_chunks: Option<String>,
+    pub timeline: Option<String>,
     pub final_text: Option<String>,
     pub metadata: Option<String>,
     pub created_at: i64,
@@ -123,10 +202,14 @@ impl TurnAccumulator {
     pub fn new(conversation_id: i64) -> Self {
         Self {
             conversation_id,
+            turn_id: format(generate(), IdType::Turn),
+            context: TurnContext::default(),
             thinking: Vec::new(),
             thinking_buffer: String::new(),
             thinking_start_timestamp: None,
             tool_calls: HashMap::new(),
+            timeline: Vec::new(),
+            timeline_tool_positions: HashMap::new(),
             text_chunks: Vec::new(),
             final_text: String::new(),
             metadata: OutputMetadata::default(),
@@ -162,6 +245,10 @@ impl TurnAccumulator {
             .as_secs();
 
         self.text_chunks.push(TextChunk {
+            text: delta.to_string(),
+            timestamp: now,
+        });
+        self.timeline.push(OutputTimelineItem::Text {
             text: delta.to_string(),
             timestamp: now,
         });
@@ -208,10 +295,13 @@ impl TurnAccumulator {
     fn flush_thinking_buffer(&mut self) {
         if !self.thinking_buffer.is_empty() {
             let timestamp = self.thinking_start_timestamp.unwrap_or(0);
+            let text = std::mem::take(&mut self.thinking_buffer);
             self.thinking.push(ThinkingBlock {
-                text: std::mem::take(&mut self.thinking_buffer),
+                text: text.clone(),
                 timestamp,
             });
+            self.timeline
+                .push(OutputTimelineItem::Thinking { text, timestamp });
             self.thinking_start_timestamp = None;
         }
     }
@@ -239,24 +329,56 @@ impl TurnAccumulator {
         self.tool_calls.insert(
             id.clone(),
             ToolCallRecord {
-                id,
-                name,
-                kind,
-                input,
+                id: id.clone(),
+                name: name.clone(),
+                kind: kind.clone(),
+                input: input.clone(),
                 output: None,
                 status: "pending".to_string(),
-                locations,
+                locations: locations.clone(),
                 started_at: now,
                 completed_at: None,
                 error: None,
             },
         );
+
+        if let Some(position) = self.timeline_tool_positions.get(&id).copied() {
+            if let Some(OutputTimelineItem::ToolCall {
+                kind: existing_kind,
+                input: existing_input,
+                locations: existing_locations,
+                started_at: existing_started_at,
+                ..
+            }) = self.timeline.get_mut(position)
+            {
+                *existing_kind = kind;
+                **existing_input = input.clone();
+                *existing_locations = locations;
+                *existing_started_at = now;
+            }
+        } else {
+            self.timeline_tool_positions
+                .insert(id.clone(), self.timeline.len());
+            self.timeline.push(OutputTimelineItem::ToolCall {
+                id,
+                name,
+                kind,
+                input: Box::new(input),
+                output: Box::new(None),
+                status: "pending".to_string(),
+                locations,
+                started_at: now,
+                completed_at: None,
+                error: None,
+            });
+        }
     }
 
     /// Record tool call update (completion or failure)
     pub fn record_tool_call_update(
         &mut self,
         id: &str,
+        input: Option<serde_json::Value>,
         output: Option<serde_json::Value>,
         status: String,
         error: Option<String>,
@@ -264,16 +386,38 @@ impl TurnAccumulator {
         if self.sealed {
             return; // Silently discard data after seal
         }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or(std::time::Duration::from_secs(0))
+            .as_secs();
         if let Some(tool_call) = self.tool_calls.get_mut(id) {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or(std::time::Duration::from_secs(0))
-                .as_secs();
-
-            tool_call.output = output;
-            tool_call.status = status;
-            tool_call.error = error;
+            if let Some(ref input) = input {
+                tool_call.input = input.clone();
+            }
+            tool_call.output = output.clone();
+            tool_call.status = status.clone();
+            tool_call.error = error.clone();
             tool_call.completed_at = Some(now);
+        }
+
+        if let Some(position) = self.timeline_tool_positions.get(id).copied() {
+            if let Some(OutputTimelineItem::ToolCall {
+                input: timeline_input,
+                output: timeline_output,
+                status: timeline_status,
+                completed_at: timeline_completed_at,
+                error: timeline_error,
+                ..
+            }) = self.timeline.get_mut(position)
+            {
+                if let Some(input) = input {
+                    **timeline_input = input.clone();
+                }
+                **timeline_output = output;
+                *timeline_status = status;
+                *timeline_completed_at = Some(now);
+                *timeline_error = error;
+            }
         }
     }
 
@@ -314,8 +458,15 @@ impl TurnAccumulator {
 
         AgentOutputData {
             conversation_id: self.conversation_id,
+            turn_id: self.turn_id,
             message_id: None,
             role: "assistant".to_string(),
+            sender_agent_id: None,
+            sender_agent_name: None,
+            message_type: Some("agent_output".to_string()),
+            reply_to_message_id: self.context.reply_to_message_id,
+            correlation_id: self.context.correlation_id,
+            source_conversation_id: self.context.source_conversation_id,
             thinking: if self.thinking.is_empty() {
                 None
             } else {
@@ -331,6 +482,11 @@ impl TurnAccumulator {
                 None
             } else {
                 Some(serde_json::to_string(&self.text_chunks).unwrap_or_default())
+            },
+            timeline: if self.timeline.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&self.timeline).unwrap_or_default())
             },
             final_text: if self.final_text.is_empty() {
                 None
@@ -353,6 +509,9 @@ pub struct OutputAccumulatorRegistry {
     accumulators: RwLock<HashMap<AccumulatorKey, AccumulatorValue>>,
     /// Current generation for each conversation
     generations: RwLock<HashMap<String, u64>>,
+    /// One-shot delivery context consumed by the next `begin_turn` call for a
+    /// conversation. This avoids changing every backend command/trait signature.
+    pending_contexts: RwLock<HashMap<String, TurnContext>>,
 }
 
 impl OutputAccumulatorRegistry {
@@ -361,7 +520,24 @@ impl OutputAccumulatorRegistry {
         Self {
             accumulators: RwLock::new(HashMap::new()),
             generations: RwLock::new(HashMap::new()),
+            pending_contexts: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Attach correlation metadata to the next turn started for a conversation.
+    pub async fn set_pending_turn_context(&self, conversation_id: &str, context: TurnContext) {
+        self.pending_contexts
+            .write()
+            .await
+            .insert(conversation_id.to_string(), context);
+    }
+
+    /// Clear any pending turn context for a conversation.
+    ///
+    /// This should be called when message injection fails after setting the context,
+    /// to prevent stale metadata from leaking into the next turn.
+    pub async fn clear_pending_turn_context(&self, conversation_id: &str) {
+        self.pending_contexts.write().await.remove(conversation_id);
     }
 
     /// Begin a new turn for a conversation
@@ -372,6 +548,7 @@ impl OutputAccumulatorRegistry {
     pub async fn begin_turn(&self, conversation_id: &str) -> TurnToken {
         // Lock generations first to maintain consistent lock order
         let mut generations = self.generations.write().await;
+        let context = self.pending_contexts.write().await.remove(conversation_id);
 
         // Get the previous generation before incrementing
         let prev_generation = generations.get(conversation_id).copied();
@@ -403,7 +580,10 @@ impl OutputAccumulatorRegistry {
         }
 
         let conv_id_i64 = ergatai_error::id::parse_to_i64(conversation_id).unwrap_or(0);
-        let accumulator = Arc::new(Mutex::new(TurnAccumulator::new(conv_id_i64)));
+        let mut accumulator_data = TurnAccumulator::new(conv_id_i64);
+        accumulator_data.context = context.unwrap_or_default();
+        let turn_id = accumulator_data.turn_id.clone();
+        let accumulator = Arc::new(Mutex::new(accumulator_data));
         accumulators.insert(
             (conversation_id.to_string(), generation),
             accumulator.clone(),
@@ -412,6 +592,7 @@ impl OutputAccumulatorRegistry {
         TurnToken {
             conversation_id: conversation_id.to_string(),
             generation,
+            turn_id,
             accumulator,
         }
     }
@@ -449,9 +630,11 @@ impl OutputAccumulatorRegistry {
         if let Some(&generation) = generations.get(conversation_id) {
             if let Some(accumulator) = accumulators.get(&(conversation_id.to_string(), generation))
             {
+                let turn_id = accumulator.lock().await.turn_id.clone();
                 return Some(TurnToken {
                     conversation_id: conversation_id.to_string(),
                     generation,
+                    turn_id,
                     accumulator: accumulator.clone(),
                 });
             }
@@ -626,6 +809,7 @@ mod tests {
 
         acc.record_tool_call_update(
             "tool-1",
+            None,
             Some(serde_json::json!({"success": true})),
             "completed".to_string(),
             None,
@@ -652,6 +836,7 @@ mod tests {
         acc.record_tool_call_update(
             "tool-1",
             None,
+            None,
             "failed".to_string(),
             Some("File not found".to_string()),
         );
@@ -666,9 +851,58 @@ mod tests {
         let mut acc = create_test_accumulator();
 
         // Updating a non-existent tool call should not panic
-        acc.record_tool_call_update("nonexistent", None, "completed".to_string(), None);
+        acc.record_tool_call_update("nonexistent", None, None, "completed".to_string(), None);
 
         assert!(acc.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn test_timeline_preserves_interleaving_and_tool_update() {
+        let mut acc = create_test_accumulator();
+
+        acc.accumulate_thinking("before tool");
+        acc.record_tool_call_start(
+            "tool-1".to_string(),
+            "send_message".to_string(),
+            None,
+            serde_json::json!({}),
+            vec![],
+        );
+        acc.record_tool_call_update(
+            "tool-1",
+            Some(serde_json::json!({"message": "hello"})),
+            Some(serde_json::json!({"status": "queued"})),
+            "completed".to_string(),
+            None,
+        );
+        acc.accumulate_thinking("after tool");
+        acc.accumulate_text("final");
+
+        let output = acc.into_output_data();
+        let timeline = serde_json::from_str::<Vec<serde_json::Value>>(
+            output.timeline.as_deref().unwrap_or_default(),
+        )
+        .unwrap();
+
+        let types: Vec<&str> = timeline
+            .iter()
+            .map(|item| {
+                item.get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(types, ["thinking", "tool_call", "thinking", "text"]);
+
+        let tool = &timeline[1];
+        assert_eq!(
+            tool.get("input"),
+            Some(&serde_json::json!({"message": "hello"}))
+        );
+        assert_eq!(
+            tool.get("output"),
+            Some(&serde_json::json!({"status": "queued"}))
+        );
     }
 
     #[test]
@@ -810,5 +1044,32 @@ mod tests {
 
         assert!(acc.thinking_buffer.is_empty());
         assert_eq!(acc.thinking.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_pending_turn_context_is_consumed_once() {
+        let registry = OutputAccumulatorRegistry::new();
+        registry
+            .set_pending_turn_context(
+                "conv_1",
+                TurnContext {
+                    reply_to_message_id: Some("msg_request".to_string()),
+                    correlation_id: Some("corr_1".to_string()),
+                    source_conversation_id: Some("conv_host".to_string()),
+                },
+            )
+            .await;
+
+        let token = registry.begin_turn("conv_1").await;
+        let output = registry.flush(&token).await.unwrap();
+        assert_eq!(output.reply_to_message_id.as_deref(), Some("msg_request"));
+        assert_eq!(output.correlation_id.as_deref(), Some("corr_1"));
+        assert_eq!(output.source_conversation_id.as_deref(), Some("conv_host"));
+
+        let token = registry.begin_turn("conv_1").await;
+        let output = registry.flush(&token).await.unwrap();
+        assert!(output.reply_to_message_id.is_none());
+        assert!(output.correlation_id.is_none());
+        assert!(output.source_conversation_id.is_none());
     }
 }

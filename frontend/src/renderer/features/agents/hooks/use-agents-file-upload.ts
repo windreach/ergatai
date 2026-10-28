@@ -1,6 +1,7 @@
 // File upload hook for desktop app with base64 conversion for Claude API
 import { useState, useCallback, useEffect, useRef } from "react"
 import { toast } from "sonner"
+import { createLocalId } from "../../../../shared/id"
 
 export interface UploadedImage {
   id: string
@@ -58,7 +59,7 @@ export function useAgentsFileUpload() {
     // Process images with base64 conversion
     const newImages: UploadedImage[] = await Promise.all(
       imageFiles.map(async (file) => {
-        const id = crypto.randomUUID()
+        const id = createLocalId("local-image")
         const filename = file.name || `screenshot-${Date.now()}.png`
         const mediaType = file.type || "image/png"
         const url = URL.createObjectURL(file)
@@ -96,7 +97,7 @@ export function useAgentsFileUpload() {
         const url = URL.createObjectURL(file)
         blobUrlsRef.current.add(url)
         return {
-          id: crypto.randomUUID(),
+          id: createLocalId("local-file"),
           filename: file.name,
           url,
           base64Data,
@@ -161,7 +162,7 @@ export function useAgentsFileUpload() {
   // Handle folder upload - creates a virtual folder attachment
   const handleAddFolder = useCallback((folderName: string, folderFilePaths: string[]) => {
     const folderFile: UploadedFile = {
-      id: crypto.randomUUID(),
+      id: createLocalId("local-folder"),
       filename: folderName,
       url: "", // No blob URL for folders
       isLoading: false,

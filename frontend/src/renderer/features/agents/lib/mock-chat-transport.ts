@@ -5,6 +5,7 @@ import type { GroupAgentRuntimeStatuses } from "../collaboration/group-agent-run
 import type { GroupAgentRuntimeStatus } from "../collaboration/group-agent-runtime"
 import { setGroupAgentRuntimeStatuses } from "../collaboration/group-agent-runtime"
 import { loadGroupAgents } from "../collaboration/group-agent-storage"
+import { createLocalId } from "../../../../shared/id"
 
 type MockChatTransportConfig = {
   chatId: string
@@ -153,9 +154,9 @@ export class MockChatTransport implements ChatTransport<UIMessage> {
 
     return new ReadableStream<UIMessageChunk>({
       async start(controller) {
-        const messageId = crypto.randomUUID()
-        const thinkingId = crypto.randomUUID()
-        const webSearchId = crypto.randomUUID()
+        const messageId = createLocalId("mock-message")
+        const thinkingId = createLocalId("mock-thinking")
+        const webSearchId = createLocalId("mock-search")
 
         controller.enqueue({
           type: "start",
@@ -169,7 +170,7 @@ export class MockChatTransport implements ChatTransport<UIMessage> {
         })
         controller.enqueue({ type: "start-step" })
 
-        const acknowledgmentId = crypto.randomUUID()
+        const acknowledgmentId = createLocalId("mock-text")
         controller.enqueue({ type: "text-start", id: acknowledgmentId })
         controller.enqueue({
           type: "text-delta",

@@ -171,6 +171,21 @@ impl EventLog {
                 started_at_ms INTEGER,
                 updated_at_ms INTEGER
             );
+
+            CREATE TABLE IF NOT EXISTS conversation_turns (
+                conversation_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                started_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                completed_at_ms INTEGER,
+                status TEXT NOT NULL,
+                stop_reason TEXT,
+                event_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (conversation_id, turn_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_conversation_turns_started
+                ON conversation_turns(conversation_id, started_at_ms);
             "#,
         )?;
         let (queue, receiver) = mpsc::unbounded_channel();
@@ -269,6 +284,52 @@ impl EventLog {
             ) {
                 warn!(error = %error, "Failed to persist conversation runtime event");
                 continue;
+            }
+
+            let turn_status = if matches!(
+                record.event.event,
+                AgentOutputEvent::Done { .. } | AgentOutputEvent::Error { .. }
+            ) {
+                record.status
+            } else {
+                RuntimeStatus::Streaming
+            };
+            let stop_reason = match &record.event.event {
+                AgentOutputEvent::Done { stop_reason, .. } => Some(stop_reason.clone()),
+                _ => None,
+            };
+            if let Err(error) = transaction.execute(
+                "INSERT INTO conversation_turns
+                 (conversation_id, turn_id, started_at_ms, updated_at_ms, completed_at_ms,
+                  status, stop_reason, event_count)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)
+                 ON CONFLICT(conversation_id, turn_id) DO UPDATE SET
+                   event_count = conversation_turns.event_count + 1,
+                   updated_at_ms = excluded.updated_at_ms,
+                   status = CASE
+                     WHEN excluded.status = 'streaming' THEN conversation_turns.status
+                     ELSE excluded.status
+                   END,
+                   completed_at_ms = CASE
+                     WHEN excluded.status IN ('completed', 'error') THEN excluded.updated_at_ms
+                     ELSE conversation_turns.completed_at_ms
+                   END,
+                   stop_reason = COALESCE(excluded.stop_reason, conversation_turns.stop_reason)",
+                params![
+                    record.event.conversation_id,
+                    record.event.turn_id,
+                    record.started_at_ms.unwrap_or(record.event.timestamp_ms),
+                    record.updated_at_ms.unwrap_or(record.event.timestamp_ms),
+                    if matches!(turn_status, RuntimeStatus::Completed | RuntimeStatus::Error) {
+                        Some(record.updated_at_ms.unwrap_or(record.event.timestamp_ms))
+                    } else {
+                        None
+                    },
+                    turn_status.as_str(),
+                    stop_reason,
+                ],
+            ) {
+                warn!(error = %error, "Failed to persist conversation turn");
             }
 
             final_states.insert(
@@ -392,6 +453,12 @@ impl ConversationRuntimeStore {
     }
 
     pub async fn ingest(&self, conversation_id: String, event: AgentOutputEvent) {
+        // Validate conversation_id to prevent silent pollution of the runtime cache
+        // with events keyed by invalid or empty IDs.
+        if conversation_id.is_empty() {
+            warn!("ingest called with empty conversation_id; dropping event");
+            return;
+        }
         if matches!(event, AgentOutputEvent::ConversationId { .. }) {
             return;
         }
@@ -434,7 +501,15 @@ impl ConversationRuntimeStore {
         // remain in the hot cache. Durable conversation messages must not reset
         // an active/completed turn; they are appended to the runtime log so a
         // UI attached to the conversation can render them immediately.
-        if let Some((message_id, _, _)) = durable_message {
+        if let AgentOutputEvent::TurnStarted { turn_id, .. } = &event {
+            // TurnStarted is the authoritative boundary emitted by the
+            // accumulator. Use its ID verbatim so persisted messages can be
+            // joined with this runtime timeline without timestamp guessing.
+            runtime.events.clear();
+            runtime.turn_id = Some(turn_id.clone());
+            runtime.started_at_ms = Some(now);
+            runtime.status = RuntimeStatus::Streaming;
+        } else if let Some((message_id, _, _)) = durable_message {
             if matches!(
                 runtime.status,
                 RuntimeStatus::Completed | RuntimeStatus::Error

@@ -2,6 +2,7 @@ import { toast } from "sonner"
 import { trpcClient } from "../../../lib/trpc"
 import { findRollbackTargetSdkUuidForUserIndex } from "../stores/message-store"
 import { parseMentionTokensFromText } from "../lib/mention-token-parser"
+import { createLocalId } from "../../../../shared/id"
 import type {
   SelectedTextContext,
   DiffTextContext,
@@ -106,7 +107,7 @@ export async function executeRollback(
   const userMsgImages: UploadedImage[] = (userMsg.parts || [])
     .filter((p: any) => p.type === "data-image" && p.data)
     .map((p: any) => ({
-      id: crypto.randomUUID(),
+      id: createLocalId("local-image"),
       filename: p.data.filename || "image",
       url: p.data.url || (p.data.base64Data && p.data.mediaType
         ? `data:${p.data.mediaType};base64,${p.data.base64Data}`

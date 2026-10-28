@@ -62,6 +62,35 @@ function normalizeRuntimeMessageRole(role: string): RuntimeUIMessageRole {
   return "assistant"
 }
 
+function unwrapAgentEnvelopeText(value: string | null | undefined): string | undefined {
+  if (!value) return undefined
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "message" in parsed &&
+      typeof (parsed as { message?: unknown }).message === "string"
+    ) {
+      return (parsed as { message: string }).message
+    }
+  } catch {
+    // Plain text
+  }
+  return undefined
+}
+
+function normalizeRuntimeToolName(name: string | undefined): string {
+  const raw = name?.trim() || "unknown"
+  if (raw.startsWith("mcp__")) return raw
+  if (raw.startsWith("Ergatai_MCP_Tools_")) {
+    return `mcp__Ergatai_MCP_Tools__${raw.slice("Ergatai_MCP_Tools_".length)}`
+  }
+  return raw
+}
+
+type RuntimeStreamMessage = UIMessage & { parts: RuntimePart[] }
+
 export function buildRuntimeMessages(
   snapshot: ConversationRuntimeState | undefined,
 ): UIMessage[] {
@@ -71,34 +100,84 @@ export function buildRuntimeMessages(
   if (!runtimeEvents.length) return []
 
   const messages: UIMessage[] = []
-  const parts: RuntimePart[] = []
-  let runtimeRole: "assistant" | "agent" = "assistant"
+  let currentMessage: RuntimeStreamMessage | null = null
+  let currentRole: RuntimeUIMessageRole = "assistant"
+  let streamMessageIndex = 0
+  const conversationId = snapshot?.conversationId ?? "conversation"
+  const turnId = (snapshot as { turnId?: string } | undefined)?.turnId
 
-  const flushRuntimeParts = () => {
-    if (parts.length === 0) return
-    messages.push({
-      id: `runtime-${snapshot?.conversationId ?? "conversation"}`,
-      role: runtimeRole,
-      metadata: {
-        runtime: true,
-        runtimeStatus: snapshot?.status,
-        runtimeSequence: snapshot?.lastSequence,
-      },
-      parts,
-    } as UIMessage)
-    parts.length = 0
+  const finalizeStreamMessage = () => {
+    if (!currentMessage || currentMessage.parts.length === 0) {
+      currentMessage = null
+      return
+    }
+
+    currentMessage.metadata = {
+      ...(currentMessage.metadata ?? {}),
+      runtime: true,
+      runtimeStatus: snapshot?.status,
+      runtimeSequence: snapshot?.lastSequence,
+    }
+    currentMessage = null
+  }
+
+  const ensureStreamMessage = (role?: string): RuntimeStreamMessage => {
+    const nextRole = normalizeRuntimeMessageRole(role ?? currentRole)
+
+    if (currentMessage && currentMessage.role !== nextRole) {
+      finalizeStreamMessage()
+    }
+
+    if (!currentMessage) {
+      currentRole = nextRole
+      currentMessage = {
+        id: `runtime-${conversationId}-${turnId ?? "turn"}-${streamMessageIndex}`,
+        role: nextRole,
+        metadata: {
+          runtime: true,
+          runtimeStatus: snapshot?.status,
+          runtimeSequence: snapshot?.lastSequence,
+        },
+        parts: [],
+      } as RuntimeStreamMessage
+      messages.push(currentMessage)
+      streamMessageIndex += 1
+    }
+
+    return currentMessage
   }
 
   for (const runtimeEvent of runtimeEvents) {
     const event = runtimeEvent.event
 
     if (event.type === "conversation_message") {
-      flushRuntimeParts()
-
-      const persistedMetadata = (event.metadata && typeof event.metadata === "object")
+      const runtimeMetadata = (event.metadata && typeof event.metadata === "object")
         ? event.metadata as Record<string, unknown>
         : {}
+
+      // Legacy events may still carry side-copy projections into the live
+      // stream. They belong to the durable side transcript and must not split
+      // the sender's active turn timeline.
+      if (
+        runtimeMetadata.sideConversationCopy === true ||
+        runtimeMetadata.projectionKind === "side_copy"
+      ) {
+        continue
+      }
+
+      finalizeStreamMessage()
+
+      const persistedMetadata = runtimeMetadata
       const rawParts = Array.isArray(event.parts) ? event.parts : []
+      const structuredContent = unwrapAgentEnvelopeText(event.content) ??
+        (event.content?.trim() ? event.content : undefined)
+      const shouldUseStructuredContent =
+        Boolean(structuredContent) &&
+        (event.role === "agent" || Boolean(event.message_type)) &&
+        rawParts.every((part) => {
+          const candidate = part as { type?: unknown }
+          return candidate?.type === "text"
+        })
       messages.push({
         id: event.message_id,
         role: normalizeRuntimeMessageRole(event.role),
@@ -108,12 +187,19 @@ export function buildRuntimeMessages(
           senderAgentName: event.sender_agent_name ?? persistedMetadata.senderAgentName,
           messageType: event.message_type ?? persistedMetadata.messageType,
           // AgentMessageItem prefers this structured content for agent requests.
-          agentContent: event.role === "agent" ? event.content : undefined,
+          agentContent: event.role === "agent" ? structuredContent : undefined,
         },
-        parts: rawParts.length > 0
-          ? rawParts
-          : [{ type: "text", text: event.content }],
+        parts: shouldUseStructuredContent && structuredContent
+          ? [{ type: "text", text: structuredContent }]
+          : rawParts.length > 0
+            ? rawParts
+            : [{ type: "text", text: event.content }],
       } as UIMessage)
+      continue
+    }
+
+    if (event.type === "done" || event.type === "error") {
+      finalizeStreamMessage()
       continue
     }
 
@@ -121,7 +207,8 @@ export function buildRuntimeMessages(
       case "text": {
         // Match the transport layer behavior: each text block (separated by
         // thinking or tool calls) creates a new text part.
-        if (event.role === "agent") runtimeRole = "agent"
+        const message = ensureStreamMessage(event.role)
+        const parts = message.parts
         const lastPart = parts.length > 0 ? parts[parts.length - 1] : null
         let part: RuntimePart
         if (lastPart && lastPart.type === "text") {
@@ -136,7 +223,8 @@ export function buildRuntimeMessages(
       case "thinking": {
         // Match the transport layer behavior: each thinking block (separated by
         // text or tool calls) creates a new reasoning part.
-        if (event.role === "agent") runtimeRole = "agent"
+        const message = ensureStreamMessage(event.role)
+        const parts = message.parts
         const lastPart = parts.length > 0 ? parts[parts.length - 1] : null
         let part: RuntimePart
         if (lastPart && lastPart.type === "reasoning") {
@@ -154,8 +242,9 @@ export function buildRuntimeMessages(
         break
       }
       case "tool_call_start": {
-        parts.push({
-          type: `tool-${event.name || "unknown"}`,
+        const message = ensureStreamMessage()
+        message.parts.push({
+          type: `tool-${normalizeRuntimeToolName(event.name)}`,
           toolCallId: event.id,
           state: "input-streaming",
           input: event.input ?? {},
@@ -163,6 +252,8 @@ export function buildRuntimeMessages(
         break
       }
       case "tool_call_complete": {
+        const message = ensureStreamMessage()
+        const parts = message.parts as RuntimePart[]
         const part = parts.find(
           candidate =>
             candidate.toolCallId === event.id &&
@@ -174,7 +265,7 @@ export function buildRuntimeMessages(
           part.output = event.output ?? { success: true }
         } else {
           parts.push({
-            type: `tool-${event.name || "unknown"}`,
+            type: `tool-${normalizeRuntimeToolName(event.name)}`,
             toolCallId: event.id,
             state: "output-available",
             input: event.input ?? {},
@@ -184,6 +275,8 @@ export function buildRuntimeMessages(
         break
       }
       case "tool_call_error": {
+        const message = ensureStreamMessage()
+        const parts = message.parts as RuntimePart[]
         const part = parts.find(
           candidate =>
             candidate.toolCallId === event.id &&
@@ -200,6 +293,6 @@ export function buildRuntimeMessages(
     }
   }
 
-  flushRuntimeParts()
+  finalizeStreamMessage()
   return messages
 }

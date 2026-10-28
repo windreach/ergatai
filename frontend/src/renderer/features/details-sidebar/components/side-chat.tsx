@@ -112,6 +112,8 @@ export function SideChat({
     chatId,
     agentId,
     isActive,
+    runtimeMessages: externalMessages,
+    runtimeStatus,
   })
 
   // Destructure from bridge hook
@@ -133,38 +135,11 @@ export function SideChat({
     sessionState,
   } = chatInvocation
 
-  // Runtime cache covers turns started outside this mounted Chat instance.
-  // While this local instance is streaming, its transport is already the live
-  // source. For an externally started turn (especially agent-to-agent), the
-  // runtime cache must be appended even when history has already loaded;
-  // otherwise the existing history hides the live turn until completion.
+  // `messages` is now the unified RuntimeSessionStore view: persisted history,
+  // the local Chat stream, and externally started agent-to-agent turns. While
+  // the local instance is streaming, useChatInstance already syncs the store.
   const isRuntimeStreaming = runtimeStatus === "streaming"
-  // A durable request can be present in both persisted messages and the live
-  // runtime snapshot. Runtime deltas don't have persisted IDs yet, so only
-  // remove runtime messages whose exact backend message ID is already loaded.
-  const persistedMessageIds = useMemo(
-    () => new Set(messages.map((message) => message.id)),
-    [messages],
-  )
-  const visibleExternalMessages = useMemo(
-    () => externalMessages.filter((message) => !persistedMessageIds.has(message.id)),
-    [externalMessages, persistedMessageIds],
-  )
-  const runtimeMessagesVisible =
-    visibleExternalMessages.length > 0 &&
-    !isStreaming &&
-    (isRuntimeStreaming || messages.length === 0)
-
-  // Memoize to prevent unnecessary re-renders when runtimeMessagesVisible is true
-  const displayMessages = useMemo(() => {
-    if (isStreaming) {
-      return messages
-    }
-    if (runtimeMessagesVisible) {
-      return [...messages, ...visibleExternalMessages]
-    }
-    return messages
-  }, [isStreaming, messages, runtimeMessagesVisible, visibleExternalMessages])
+  const displayMessages = messages
 
   // ChatMessagesRenderer reads the optimized per-conversation message store,
   // not the messages prop. Seed it from backend-generated runtime turns so a
@@ -172,7 +147,7 @@ export function SideChat({
   const syncExternalMessages = useSetAtom(syncMessagesWithStatusAtom)
   const externalRuntimeStatus = isRuntimeStreaming ? "streaming" : "ready"
   useLayoutEffect(() => {
-    if (!runtimeMessagesVisible || visibleExternalMessages.length === 0) {
+    if (isStreaming || displayMessages.length === 0) {
       return
     }
 
@@ -184,9 +159,8 @@ export function SideChat({
     })
   }, [
     displayMessages,
-    visibleExternalMessages,
     externalRuntimeStatus,
-    runtimeMessagesVisible,
+    isStreaming,
     runtimeConversationId,
     syncExternalMessages,
   ])
@@ -412,7 +386,14 @@ export function SideChat({
             messageTokenData={messageTokenData}
             conversationId={runtimeConversationId}
             parentChatId={chatId}
-            provider={conversation.agent.id === "codex" ? "codex" : "claude-code"}
+            provider={
+              conversation.agent.id === "codex"
+                ? "codex"
+                : conversation.agent.id === "claude-code"
+                  ? "claude-code"
+                  : "opencode"
+            }
+            agentId={agentId}
             changedFiles={[]}
             isMobile={false}
             queueLength={invocationQueue.length}

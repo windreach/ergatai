@@ -24,7 +24,7 @@ use ergatai_core::id::{format as format_id, generate, parse_to_i64, IdType};
 use ergatai_error::{AgentId, ConversationId};
 use ergatai_runtime::AgentRuntime;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::mcp::conversation::{ConversationConfig, ConversationManager};
 use crate::mcp::request_monitor::RequestMonitor;
@@ -111,9 +111,17 @@ pub enum SendMessageResult {
         target_agent: String,
         stream: String,
         sequence: u64,
+        /// Stable ID of the request envelope persisted in the target
+        /// conversation. Used for request/output correlation.
+        message_id: String,
+        correlation_id: Option<String>,
     },
     /// Message delivered directly via ACP protocol (NATS unavailable).
-    DirectDelivered { target_agent: String },
+    DirectDelivered {
+        target_agent: String,
+        message_id: String,
+        correlation_id: Option<String>,
+    },
     /// Message was rejected.
     Rejected { reason: String },
 }
@@ -476,10 +484,10 @@ impl MessageSender {
         };
         let correlation_id: Option<String> = match req.message_type.as_str() {
             "request" => Some(format_id(generate(), IdType::Message)),
-            "response" => req
-                .correlation_id
-                .clone()
-                .or_else(|| pending_response.as_ref().map(|p| p.correlation_id.clone())),
+            "response" => pending_response
+                .as_ref()
+                .map(|p| p.correlation_id.clone())
+                .or_else(|| req.correlation_id.clone()),
             _ => None,
         };
 
@@ -507,6 +515,12 @@ impl MessageSender {
             if let Some(client_request_id) = &req.client_request_id {
                 metadata.insert("clientRequestId".to_string(), client_request_id.clone());
             }
+            let queued_message_id = format_id(generate(), IdType::Message);
+            let queued_conversation_id = target_conversation_id;
+            let queued_conversation_id_for_warn = target_conversation_id;
+            let sender_conversation_id = self.get_sender_conversation_id(&resolved_sender_id).await;
+            let sender_conversation_id_for_copy =
+                ConversationId::decode(&sender_conversation_id).ok();
 
             let payload = ergatai_nats::AgentMessagePayload {
                 from_agent: resolved_sender_id.clone(),
@@ -514,8 +528,7 @@ impl MessageSender {
                 content: formatted_content.clone(),
                 timestamp,
                 metadata,
-                // Generate unique message ID for tracking
-                message_id: format_id(generate(), IdType::Message),
+                message_id: queued_message_id.clone(),
                 // Request messages require read receipts
                 requires_receipt: is_request,
                 // correlation_id: generated for requests, echoed from req for responses
@@ -563,6 +576,170 @@ impl MessageSender {
 
             match publish_result {
                 Ok((stream, sequence)) => {
+                    // Persist the queued inter-agent message immediately. The
+                    // delivery consumer checks the same external ID and skips
+                    // its later persistence pass, so this only moves the UI
+                    // visibility point from injection time to acceptance time.
+                    let parsed_content: Option<serde_json::Value> =
+                        serde_json::from_str(&formatted_content).ok();
+                    let actual_message = parsed_content
+                        .as_ref()
+                        .and_then(|value| value.get("message"))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(&formatted_content)
+                        .to_string();
+                    let sender_name = parsed_content
+                        .as_ref()
+                        .and_then(|value| value.get("from"))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(&sender_display)
+                        .to_string();
+                    let early_metadata = serde_json::json!({
+                        "externalMessageId": queued_message_id,
+                        "clientRequestId": req.client_request_id.clone(),
+                        "senderAgentId": resolved_sender_id,
+                        "senderAgentName": sender_name,
+                        "messageType": req.message_type,
+                        "correlationId": correlation_id.clone(),
+                        "deliveryStatus": "pending",
+                    });
+                    let early_parts =
+                        serde_json::json!([{ "type": "text", "text": actual_message }]);
+                    let early_from = resolved_sender_id.clone();
+                    let early_sender_name = sender_name.clone();
+                    let early_message_type = req.message_type.clone();
+                    let early_content = actual_message.clone();
+                    let append_result = tokio::task::spawn_blocking(move || {
+                        let role = agent_message_role(&early_message_type);
+                        let agent_fields = user_data_db::messages::AgentMessageFields {
+                            from_agent_id: parse_to_i64(&early_from),
+                            from_agent_name: Some(early_sender_name),
+                            message_type: Some(early_message_type),
+                            content: Some(early_content),
+                            projection_kind: Some("canonical".to_string()),
+                            ..Default::default()
+                        };
+
+                        user_data_db::messages::append(
+                            queued_conversation_id,
+                            role,
+                            early_parts,
+                            early_metadata,
+                            Some(agent_fields),
+                        )
+                    })
+                    .await;
+
+                    match append_result {
+                        Ok(Ok(persisted_msg)) => {
+                            publish_to_conversation_subject_with_message(
+                                persisted_msg,
+                                Some(resolved_sender_id.clone()),
+                                Some(sender_display.clone()),
+                            )
+                            .await;
+                        }
+                        Ok(Err(error)) => {
+                            warn!(
+                                message_id = %queued_message_id,
+                                conversation_id = %queued_conversation_id_for_warn,
+                                error = %error,
+                                "Failed to persist queued agent message early"
+                            );
+                        }
+                        Err(error) => {
+                            warn!(
+                                message_id = %queued_message_id,
+                                conversation_id = %queued_conversation_id_for_warn,
+                                error = %error,
+                                "Failed to join early queued message persistence task"
+                            );
+                        }
+                    }
+
+                    // A response is delivered to the requesting conversation,
+                    // but the responding agent's side conversation should also
+                    // show what it sent. Persist a display copy there so the
+                    // side transcript is not limited to thinking/tool/END.
+                    if matches!(req.message_type.as_str(), "response" | "broadcast")
+                        && sender_conversation_id_for_copy
+                            .is_some_and(|id| id != queued_conversation_id_for_warn)
+                    {
+                        let Some(sender_conversation_id_for_copy) = sender_conversation_id_for_copy
+                        else {
+                            unreachable!("guarded above");
+                        };
+                        let copy_message_id = format_id(generate(), IdType::Message);
+                        let copy_conversation_id = sender_conversation_id_for_copy;
+                        let copy_parts = serde_json::json!([
+                            { "type": "text", "text": actual_message }
+                        ]);
+                        let copy_metadata = serde_json::json!({
+                            "externalMessageId": copy_message_id,
+                            "senderAgentId": resolved_sender_id,
+                            "senderAgentName": sender_name,
+                            "messageType": req.message_type,
+                            "correlationId": correlation_id.clone(),
+                            "deliveryStatus": "sent",
+                            "sideConversationCopy": true,
+                            "projectionKind": "side_copy",
+                            "originMessageId": queued_message_id.clone(),
+                        });
+                        let copy_from = resolved_sender_id.clone();
+                        let copy_sender_name = sender_name.clone();
+                        let copy_message_type = req.message_type.clone();
+                        let copy_content = actual_message.clone();
+                        let copy_origin_message_id = queued_message_id.clone();
+                        let copy_result = tokio::task::spawn_blocking(move || {
+                            let role = agent_message_role(&copy_message_type);
+                            let agent_fields = user_data_db::messages::AgentMessageFields {
+                                from_agent_id: parse_to_i64(&copy_from),
+                                from_agent_name: Some(copy_sender_name),
+                                message_type: Some(copy_message_type),
+                                content: Some(copy_content),
+                                projection_kind: Some("side_copy".to_string()),
+                                origin_message_id: Some(copy_origin_message_id),
+                                ..Default::default()
+                            };
+
+                            user_data_db::messages::append(
+                                copy_conversation_id,
+                                role,
+                                copy_parts,
+                                copy_metadata,
+                                Some(agent_fields),
+                            )
+                        })
+                        .await;
+
+                        match copy_result {
+                            Ok(Ok(persisted_msg)) => {
+                                publish_to_conversation_subject_with_message(
+                                    persisted_msg,
+                                    Some(resolved_sender_id.clone()),
+                                    Some(sender_display.clone()),
+                                )
+                                .await;
+                            }
+                            Ok(Err(error)) => {
+                                warn!(
+                                    message_id = %copy_message_id,
+                                    conversation_id = %sender_conversation_id_for_copy,
+                                    error = %error,
+                                    "Failed to persist side-conversation response copy"
+                                );
+                            }
+                            Err(error) => {
+                                warn!(
+                                    message_id = %copy_message_id,
+                                    conversation_id = %sender_conversation_id_for_copy,
+                                    error = %error,
+                                    "Failed to join side-conversation response copy task"
+                                );
+                            }
+                        }
+                    }
+
                     self.mark_response_delivered(
                         &req.message_type,
                         correlation_id.as_deref(),
@@ -588,6 +765,8 @@ impl MessageSender {
                         target_agent: resolved_target_id,
                         stream,
                         sequence,
+                        message_id: queued_message_id.clone(),
+                        correlation_id,
                     };
                 }
                 Err(e) => {
@@ -601,6 +780,23 @@ impl MessageSender {
         }
 
         // ── Fallback: direct delivery via ACP protocol ──
+        let direct_message_id = format_id(generate(), IdType::Message);
+        let conversation_key = target_conversation_id.to_string();
+        if let Some(registry) =
+            ergatai_runtime::output_accumulator::get_global_accumulator_registry()
+        {
+            registry
+                .set_pending_turn_context(
+                    &conversation_key,
+                    ergatai_runtime::output_accumulator::TurnContext {
+                        reply_to_message_id: Some(direct_message_id.clone()),
+                        correlation_id: correlation_id.clone(),
+                        source_conversation_id: None,
+                    },
+                )
+                .await;
+        }
+
         match runtime
             .inject_message(&resolved_target_id, &formatted_content)
             .await
@@ -631,14 +827,18 @@ impl MessageSender {
                     let from = req.from.clone();
                     let sender_name = sender_display.clone();
                     let message_type = req.message_type.clone();
+                    let direct_message_id_for_meta = direct_message_id.clone();
+                    let correlation_id_for_meta = correlation_id.clone();
                     let conversation_id_for_persist = conversation_id;
                     // Wrap synchronous DB call in spawn_blocking
                     let append_result = tokio::task::spawn_blocking(move || {
                         let role = agent_message_role(&message_type);
                         let metadata = serde_json::json!({
+                            "externalMessageId": direct_message_id_for_meta,
                             "senderAgentId": from,
                             "senderAgentName": sender_name,
                             "messageType": message_type,
+                            "correlationId": correlation_id_for_meta,
                         });
 
                         // Use AgentMessageFields for structured storage
@@ -647,6 +847,8 @@ impl MessageSender {
                             from_agent_name: Some(sender_name),
                             message_type: Some(message_type),
                             content: Some(message.clone()),
+                            projection_kind: Some("canonical".to_string()),
+                            ..Default::default()
                         };
 
                         user_data_db::messages::append(
@@ -674,21 +876,35 @@ impl MessageSender {
                             warn!("Failed to persist A-to-A message to messages table: {}", e);
                         }
                         Err(e) => {
-                            warn!("Failed to persist delivered message (task join error): {}", e);
+                            warn!(
+                                "Failed to persist delivered message (task join error): {}",
+                                e
+                            );
                         }
                     }
                 }
 
                 SendMessageResult::DirectDelivered {
                     target_agent: resolved_target_id,
+                    message_id: direct_message_id.clone(),
+                    correlation_id,
                 }
             }
-            Err(e) => SendMessageResult::Rejected {
-                reason: format!(
-                    "Failed to deliver message to {}: NATS publish failed and direct injection error: {}",
-                    resolved_target_id, e
-                ),
-            },
+            Err(e) => {
+                // Clean up the pending turn context on error to prevent it from
+                // leaking into the next turn on this conversation.
+                if let Some(registry) =
+                    ergatai_runtime::output_accumulator::get_global_accumulator_registry()
+                {
+                    registry.clear_pending_turn_context(&conversation_key).await;
+                }
+                SendMessageResult::Rejected {
+                    reason: format!(
+                        "Failed to deliver message to {}: NATS publish failed and direct injection error: {}",
+                        resolved_target_id, e
+                    ),
+                }
+            }
         }
     }
 
@@ -1240,7 +1456,24 @@ impl MessageSender {
         let position = match correlation_id {
             Some(correlation_id) => contexts
                 .iter()
-                .position(|context| context.correlation_id == correlation_id),
+                .position(|context| context.correlation_id == correlation_id)
+                .or_else(|| {
+                    if contexts.is_empty() {
+                        None
+                    } else {
+                        // Some ACP clients mint their own response correlation
+                        // id. Server-side pending-response state is
+                        // authoritative; otherwise the original request times
+                        // out even though a valid response was delivered.
+                        tracing::warn!(
+                            responder_agent = %responder_agent,
+                            client_correlation_id = %correlation_id,
+                            pending_correlation_id = %contexts[0].correlation_id,
+                            "Ignoring client response correlation_id; using pending request"
+                        );
+                        Some(0)
+                    }
+                }),
             None if contexts.is_empty() => None,
             None => Some(0),
         };
@@ -1439,86 +1672,13 @@ impl MessageSender {
         target: &str,
         conversation_id: Option<&str>,
     ) -> Option<String> {
-        // Step 1: Check if target matches a suspended agent ID
-        if let Ok(Some(suspended)) = runtime.suspend_store().load_suspended(target) {
-            tracing::info!(
-                target = target,
-                suspended_id = %suspended.id,
-                conversation_id = %suspended.conversation_id,
-                "Found suspended agent by ID, attempting resume"
-            );
-
-            match runtime.resume_agent(&suspended.id).await {
-                Ok(new_agent_id) => {
-                    tracing::info!(
-                        suspended_id = %suspended.id,
-                        new_agent_id = %new_agent_id,
-                        "Successfully resumed suspended agent by ID"
-                    );
-                    // Agent is fully ready: resume_agent() waits for ACP connection + session setup
-                    return Some(new_agent_id);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        suspended_id = %suspended.id,
-                        "Failed to resume suspended agent by ID"
-                    );
-                    return None;
-                }
-            }
-        }
-
-        // Step 2: Check if conversation_id matches a suspended agent
-        if let Some(conversation_id) = conversation_id {
-            if let Ok(Some(suspended)) = runtime
-                .suspend_store()
-                .find_by_conversation(conversation_id)
-            {
-                tracing::info!(
-                    conversation_id = %conversation_id,
-                    suspended_id = %suspended.id,
-                    "Found suspended agent by conversation_id, attempting resume"
-                );
-
-                match runtime.resume_agent(&suspended.id).await {
-                    Ok(new_agent_id) => {
-                        tracing::info!(
-                            suspended_id = %suspended.id,
-                            new_agent_id = %new_agent_id,
-                            conversation_id = %conversation_id,
-                            "Successfully resumed suspended agent by conversation_id"
-                        );
-                        // Agent is fully ready: resume_agent() waits for ACP connection + session setup
-                        return Some(new_agent_id);
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            suspended_id = %suspended.id,
-                            conversation_id = %conversation_id,
-                            "Failed to resume suspended agent by conversation_id"
-                        );
-                        return None;
-                    }
-                }
-            }
-        }
-
-        // Step 3: Check if any running agent has this conversation_id in metadata
-        // (This handles the case where the agent is running but not found by ID)
-        if let Some(conversation_id) = conversation_id {
-            if let Some(agent_id) = find_agent_by_conversation(runtime, conversation_id).await {
-                tracing::debug!(
-                    conversation_id = %conversation_id,
-                    agent_id = %agent_id,
-                    "Found running agent with matching conversation_id"
-                );
-                return Some(agent_id);
-            }
-        }
-
-        None
+        // Delegate to shared service function
+        crate::services::agent_service::try_auto_resume_suspended_agent(
+            runtime,
+            target,
+            conversation_id,
+        )
+        .await
     }
 
     /// Try to auto-spawn an agent from a profile when the SENDER is not found.
@@ -1840,12 +2000,35 @@ pub async fn publish_to_conversation_subject_with_message(
     let conversation_id_for_log = persisted_msg.conversation_id;
     let msg_id_for_log = persisted_msg.message_id;
 
-    // Extract text content from parts to ensure consistency
+    // Side copies are persistence projections, not turn events. Publishing
+    // them while the sender's own turn is still streaming splits the active
+    // trace and makes the renderer race between runtime and durable views.
+    // They become visible when the turn's durable projection is reconciled.
+    if persisted_msg.projection_kind.as_deref() == Some("side_copy") {
+        debug!(
+            message_id = %msg_id_for_log,
+            conversation_id = %conversation_id_for_log,
+            "Skipping SSE publish for side-copy projection"
+        );
+        return;
+    }
+
+    // Structured agent messages keep the user-facing content in `content`,
+    // while `parts` preserves the original wire envelope (for example a JSON
+    // inter-agent request). Prefer `content` so the UI does not render the
+    // envelope; fall back to parts for regular assistant/user messages.
     let content = persisted_msg
-        .parts
+        .content
         .as_ref()
-        .map(|p| extract_text_from_parts(p))
-        .unwrap_or_default();
+        .filter(|content| !content.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| {
+            persisted_msg
+                .parts
+                .as_ref()
+                .map(|p| extract_text_from_parts(p))
+                .unwrap_or_default()
+        });
 
     // Fire-and-forget: spawn task but don't await, so send_message is not blocked
     tokio::spawn(async move {

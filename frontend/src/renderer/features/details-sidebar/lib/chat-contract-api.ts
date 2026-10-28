@@ -49,7 +49,7 @@ function delay<T>(value: T, milliseconds = 80): Promise<T> {
 export const chatContractApi: ChatContractApi = {
   createConversation(agent, backendConversationId) {
     const conversation: ChatConversation = {
-      id: backendConversationId ?? `chat-${crypto.randomUUID()}`,
+      id: backendConversationId ?? createLocalId("local-chat"),
       backendConversationId,
       agent: { ...agent },
       messages: [],
@@ -58,3 +58,4 @@ export const chatContractApi: ChatContractApi = {
     return delay(conversation)
   },
 }
+import { createLocalId } from "../../../../shared/id"

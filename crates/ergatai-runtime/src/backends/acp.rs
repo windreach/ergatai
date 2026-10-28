@@ -466,12 +466,33 @@ async fn flush_and_persist_output(
     agent_id: &str,
     context_label: &str,
 ) -> bool {
+    tracing::info!(
+        agent_id = %agent_id,
+        conversation_id = %token.conversation_id,
+        generation = token.generation,
+        context_label = %context_label,
+        "flush_and_persist_output called"
+    );
+
     if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
+        tracing::info!(
+            conversation_id = %token.conversation_id,
+            "Got accumulator registry, calling flush"
+        );
         if let Some(output_data) = registry.flush(token).await {
+            let mut output_data = output_data;
+            output_data.sender_agent_id = Some(agent_id.to_string());
+            if output_data.message_type.is_none() {
+                output_data.message_type = Some("agent_output".to_string());
+            }
             tracing::info!(
                 agent_id = %agent_id,
                 conversation_id = %token.conversation_id,
                 generation = token.generation,
+                role = %output_data.role,
+                has_thinking = output_data.thinking.is_some(),
+                has_tool_calls = output_data.tool_calls.is_some(),
+                has_text_chunks = output_data.text_chunks.is_some(),
                 "Flushed accumulated output for persistence ({})",
                 context_label
             );
@@ -480,26 +501,47 @@ async fn flush_and_persist_output(
                 let cb = callback.clone();
                 let conv_id = token.conversation_id.clone();
                 let context_label_owned = context_label.to_string();
+                tracing::info!(
+                    conversation_id = %conv_id,
+                    "Calling persist callback"
+                );
                 tokio::spawn(async move {
-                    if let Err(e) = cb(conv_id, output_data).await {
+                    if let Err(e) = cb(conv_id.clone(), output_data).await {
                         tracing::error!(
                             error = %e,
+                            conversation_id = %conv_id,
                             "Failed to persist agent output ({})",
                             context_label_owned
                         );
                     } else {
                         tracing::info!(
+                            conversation_id = %conv_id,
                             "Agent output persisted successfully ({})",
                             context_label_owned
                         );
                     }
                 });
+            } else {
+                tracing::warn!(
+                    conversation_id = %token.conversation_id,
+                    "No persist callback set!"
+                );
             }
             true
         } else {
+            tracing::warn!(
+                agent_id = %agent_id,
+                conversation_id = %token.conversation_id,
+                "registry.flush returned None - no output to persist"
+            );
             false
         }
     } else {
+        tracing::warn!(
+            agent_id = %agent_id,
+            conversation_id = %token.conversation_id,
+            "No global accumulator registry set!"
+        );
         false
     }
 }
@@ -516,20 +558,22 @@ async fn begin_turn_lifecycle(
         if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
             let token = registry.begin_turn(conversation_id).await;
             *task_current_turn_token.write() = Some(token.clone());
+
+            // Emit explicit TurnStarted event to make turn boundaries visible to the frontend
+            send_output_event_with_turn_token(
+                task_current_turn_token,
+                conversation_id,
+                AgentOutputEvent::TurnStarted {
+                    role: "assistant".to_string(),
+                    turn_id: token.turn_id.clone(),
+                },
+            )
+            .await;
+
             Some(token)
         } else {
             None
         };
-
-    // Emit explicit TurnStarted event to make turn boundaries visible to the frontend
-    send_output_event_with_turn_token(
-        task_current_turn_token,
-        conversation_id,
-        AgentOutputEvent::TurnStarted {
-            role: "assistant".to_string(),
-        },
-    )
-    .await;
 
     turn_token
 }
@@ -658,12 +702,21 @@ async fn send_output_event_internal(
                         acc_locations,
                     );
                 }
-                AgentOutputEvent::ToolCallComplete { id, output, .. } => {
-                    acc.record_tool_call_update(id, output.clone(), "completed".to_string(), None);
+                AgentOutputEvent::ToolCallComplete {
+                    id, input, output, ..
+                } => {
+                    acc.record_tool_call_update(
+                        id,
+                        input.clone(),
+                        output.clone(),
+                        "completed".to_string(),
+                        None,
+                    );
                 }
                 AgentOutputEvent::ToolCallError { id, error, .. } => {
                     acc.record_tool_call_update(
                         id,
+                        None,
                         None,
                         "failed".to_string(),
                         Some(error.clone()),
@@ -1313,6 +1366,9 @@ pub enum AgentOutputEvent {
     TurnStarted {
         /// Message role: "assistant" for local agent, "agent" for inter-agent
         role: String,
+        /// The stable turn id shared by the accumulator, runtime log, and
+        /// persisted message projection.
+        turn_id: String,
     },
     /// An error occurred during prompt execution.
     Error {
@@ -1540,16 +1596,19 @@ impl UsageTracker {
 
 /// Command sent to the ACP connection task via channel.
 enum AcpCommand {
-    /// Send a prompt message to the agent.
-    Prompt {
-        message: String,
-        images: Vec<crate::types::AgentImage>,
-        response_tx: oneshot::Sender<ErgataiResult<()>>,
-    },
     /// Queue a prompt and wait for completion (so prompt failures can be observed).
     QueuePrompt {
         message: String,
         images: Vec<crate::types::AgentImage>,
+        response_tx: oneshot::Sender<ErgataiResult<()>>,
+    },
+    /// Execute an internal slash command without durable conversation output.
+    ///
+    /// Slash commands are control-plane probes (for example `/model`). They run
+    /// through an agent process, but their output is returned to the caller and
+    /// must not create persisted assistant messages in a conversation.
+    SlashCommand {
+        message: String,
         response_tx: oneshot::Sender<ErgataiResult<()>>,
     },
     /// Insert a message at the next safe point (after thinking/tool completion).
@@ -2508,9 +2567,8 @@ impl AcpBackend {
         // Send the command as a prompt through the ACP channel.
         let (response_tx, response_rx) = oneshot::channel();
         command_tx
-            .send(AcpCommand::Prompt {
+            .send(AcpCommand::SlashCommand {
                 message: command.to_string(),
-                images: Vec::new(),
                 response_tx,
             })
             .await
@@ -3777,6 +3835,61 @@ impl AcpBackendInterface for AcpBackend {
                                         ).await;
 
                                         let _ = response_tx.send(Ok(()));
+
+                                        // Auto-continue on max_tokens / max_turn_requests.
+                                        if task_auto_continue
+                                            && (sr == "max_tokens" || sr == "max_turn_requests")
+                                        {
+                                            // Atomically increment only while under the limit.
+                                            let mut permitted_count: Option<usize> = None;
+                                            loop {
+                                                let cur = task_continuation_count
+                                                    .load(std::sync::atomic::Ordering::SeqCst);
+                                                if cur >= task_max_auto_continues {
+                                                    break;
+                                                }
+                                                if task_continuation_count
+                                                    .compare_exchange_weak(
+                                                        cur,
+                                                        cur + 1,
+                                                        std::sync::atomic::Ordering::SeqCst,
+                                                        std::sync::atomic::Ordering::SeqCst,
+                                                    )
+                                                    .is_ok()
+                                                {
+                                                    permitted_count = Some(cur);
+                                                    break;
+                                                }
+                                            }
+                                            if let Some(count) = permitted_count {
+                                                info!(
+                                                    continuation = count + 1,
+                                                    max = task_max_auto_continues,
+                                                    stop_reason = %sr,
+                                                    "Auto-continuing prompt"
+                                                );
+                                                let (cont_tx, cont_rx) = oneshot::channel();
+                                                let _ = task_command_tx
+                                                    .send(AcpCommand::QueuePrompt {
+                                                        message: "Please continue your unfinished work.".to_string(),
+                                                        images: Vec::new(),
+                                                        response_tx: cont_tx,
+                                                    })
+                                                    .await;
+                                                // Fire-and-forget: the continuation response is
+                                                // consumed by the command loop.
+                                                tokio::spawn(async move {
+                                                    let _ = cont_rx.await;
+                                                });
+                                            } else {
+                                                warn!(
+                                                    count = task_continuation_count
+                                                        .load(std::sync::atomic::Ordering::SeqCst),
+                                                    max = task_max_auto_continues,
+                                                    "Auto-continue limit reached"
+                                                );
+                                            }
+                                        }
                                     }
                                     Err(e) => {
                                         warn!(error = %e, message_id = %message_id, "Interrupt prompt failed");
@@ -3797,6 +3910,62 @@ impl AcpBackendInterface for AcpBackend {
                                 // Clear the current message ID and paused task
                                 *task_current_message_id.write() = None;
                                 *task_paused_task.write() = None;
+                            }
+                            Some(AcpCommand::SlashCommand { message, response_tx }) => {
+                                task_text_output_seen.store(false, Ordering::Relaxed);
+                                task_recent_thinking.lock().clear();
+
+                                // Do not call begin_turn_lifecycle here. Slash commands
+                                // are internal probes; notifications are captured by the
+                                // OutputBuffer but must not create durable output.
+                                let prompt_started_at = Instant::now();
+                                info!(
+                                    agent_id = %connection_agent_id,
+                                    session_id = %session_id,
+                                    message_bytes = message.len(),
+                                    "ACP slash command started"
+                                );
+
+                                let content = if message.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    vec![ContentBlock::Text(TextContent::new(message.clone()))]
+                                };
+                                let request = connection
+                                    .send_request(PromptRequest::new(
+                                        session_id.clone(),
+                                        content,
+                                    ));
+
+                                let result = request.block_task().await;
+                                match result {
+                                    Ok(response) => {
+                                        let sr = serde_json::to_string(&response.stop_reason)
+                                            .unwrap_or_else(|_| format!("{:?}", response.stop_reason))
+                                            .trim_matches('"')
+                                            .to_string();
+                                        info!(
+                                            agent_id = %connection_agent_id,
+                                            session_id = %session_id,
+                                            stop_reason = %sr,
+                                            duration_ms = prompt_started_at.elapsed().as_millis() as u64,
+                                            "ACP slash command completed"
+                                        );
+                                        let _ = response_tx.send(Ok(()));
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            agent_id = %connection_agent_id,
+                                            session_id = %session_id,
+                                            error = %e,
+                                            duration_ms = prompt_started_at.elapsed().as_millis() as u64,
+                                            "ACP slash command failed"
+                                        );
+                                        let _ = response_tx.send(Err(ErgataiError::internal(
+                                            format!("ACP slash command failed: {e}"),
+                                        )));
+                                    }
+                                }
                             }
                             Some(AcpCommand::QueuePrompt { message, images, response_tx }) => {
                                 task_text_output_seen.store(false, Ordering::Relaxed);
@@ -3881,157 +4050,6 @@ impl AcpBackendInterface for AcpBackend {
                                         ).await;
                                         let _ = response_tx.send(Err(ErgataiError::internal(
                                             format!("ACP queued prompt failed: {e}"),
-                                        )));
-                                    }
-                                }
-                            }
-                            Some(AcpCommand::Prompt {
-                                message,
-                                images,
-                                response_tx,
-                            }) => {
-                                task_text_output_seen.store(false, Ordering::Relaxed);
-                                // New prompt turn — reset the thinking
-                                // accumulator so it only covers this turn.
-                                task_recent_thinking.lock().clear();
-
-                                // Begin a new turn for output accumulation
-                                // This creates a fresh accumulator for this prompt turn
-                                let turn_token = begin_turn_lifecycle(
-                                    &task_current_turn_token,
-                                    &connection_conversation_id,
-                                ).await;
-
-                                let prompt_started_at = Instant::now();
-                                info!(
-                                    agent_id = %connection_agent_id,
-                                    session_id = %session_id,
-                                    message_bytes = message.len(),
-                                    image_count = images.len(),
-                                    "ACP prompt started"
-                                );
-                                let mut content = if message.is_empty() {
-                                    Vec::new()
-                                } else {
-                                    vec![ContentBlock::Text(TextContent::new(message.clone()))]
-                                };
-                                content.extend(images.into_iter().map(|image| {
-                                    ContentBlock::Image(ImageContent::new(
-                                        image.base64_data,
-                                        image.media_type,
-                                    ))
-                                }));
-                                if content.is_empty() {
-                                    content.push(ContentBlock::Text(TextContent::new(String::new())));
-                                }
-                                let request = connection
-                                    .send_request(PromptRequest::new(
-                                        session_id.clone(),
-                                        content,
-                                    ));
-
-                                let result = request.block_task().await;
-
-                                match result {
-                                    Ok(response) => {
-                                        // Serialize as snake_case matching ACP wire format
-                                        // (e.g. "end_turn", "max_tokens", "refusal").
-                                        let sr = serde_json::to_string(&response.stop_reason)
-                                            .unwrap_or_else(|_| format!("{:?}", response.stop_reason))
-                                            .trim_matches('"')
-                                            .to_string();
-                                        info!(
-                                            agent_id = %connection_agent_id,
-                                            session_id = %session_id,
-                                            stop_reason = %sr,
-                                            duration_ms = prompt_started_at.elapsed().as_millis() as u64,
-                                            "ACP prompt completed"
-                                        );
-                                        crate::permission_service::global_permission_service()
-                                            .force_resolve_rejected_for_agent(&connection_agent_id)
-                                            .await;
-                                        *task_stop_reason.write() = Some(sr.clone());
-
-                                        // End turn lifecycle: Done event + flush + clear token
-                                        end_turn_lifecycle(
-                                            &turn_token,
-                                            &task_current_turn_token,
-                                            &connection_agent_id,
-                                            &sr,
-                                            "normal completion",
-                                        ).await;
-
-                                        let _ = response_tx.send(Ok(()));
-
-                                        // Auto-continue on max_tokens / max_turn_requests
-                                        if task_auto_continue
-                                            && (sr == "max_tokens" || sr == "max_turn_requests")
-                                        {
-                                            // Atomically increment only while under the limit
-                                            // (compare_exchange_weak loop avoids the transient
-                                            // inflated count of fetch_add + fetch_sub rollback).
-                                            let mut permitted_count: Option<usize> = None;
-                                            loop {
-                                                let cur = task_continuation_count
-                                                    .load(std::sync::atomic::Ordering::SeqCst);
-                                                if cur >= task_max_auto_continues {
-                                                    break;
-                                                }
-                                                if task_continuation_count
-                                                    .compare_exchange_weak(
-                                                        cur,
-                                                        cur + 1,
-                                                        std::sync::atomic::Ordering::SeqCst,
-                                                        std::sync::atomic::Ordering::SeqCst,
-                                                    )
-                                                    .is_ok()
-                                                {
-                                                    permitted_count = Some(cur);
-                                                    break;
-                                                }
-                                            }
-                                            if let Some(count) = permitted_count {
-                                                info!(
-                                                    continuation = count + 1,
-                                                    max = task_max_auto_continues,
-                                                    stop_reason = %sr,
-                                                    "Auto-continuing prompt"
-                                                );
-                                                let (cont_tx, cont_rx) = oneshot::channel();
-                                                let _ = task_command_tx
-                                                .send(AcpCommand::Prompt {
-                                                    message: "Please continue your unfinished work.".to_string(),
-                                                    images: Vec::new(),
-                                                    response_tx: cont_tx,
-                                                })
-                                                    .await;
-                                                // Fire-and-forget: the continuation response
-                                                // is consumed by the command loop.
-                                                tokio::spawn(async move {
-                                                    let _ = cont_rx.await;
-                                                });
-                                            } else {
-                                                warn!(
-                                                    count = task_continuation_count
-                                                        .load(std::sync::atomic::Ordering::SeqCst),
-                                                    max = task_max_auto_continues,
-                                                    "Auto-continue limit reached"
-                                                );
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        warn!(error = %e, "ACP prompt failed");
-                                        // End turn lifecycle with error: Done(error) + flush + clear token
-                                        end_turn_lifecycle(
-                                            &turn_token,
-                                            &task_current_turn_token,
-                                            &connection_agent_id,
-                                            "error",
-                                            "failed prompt",
-                                        ).await;
-                                        let _ = response_tx.send(Err(ErgataiError::internal(
-                                            format!("ACP prompt failed: {e}"),
                                         )));
                                     }
                                 }

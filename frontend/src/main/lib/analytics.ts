@@ -1,7 +1,7 @@
 import { app } from "electron"
 import { existsSync, readFileSync, writeFileSync } from "fs"
 import { join } from "path"
-import { randomUUID } from "crypto"
+import { randomToken } from "../../shared/id"
 
 let cachedUserId: string | null = null
 
@@ -28,7 +28,7 @@ export function getCurrentUserId(): string | null {
     }
 
     // Generate a new random user ID and persist it
-    cachedUserId = randomUUID()
+    cachedUserId = randomToken(16)
     writeFileSync(userIdPath, cachedUserId, { mode: 0o600 })
     return cachedUserId
   } catch {

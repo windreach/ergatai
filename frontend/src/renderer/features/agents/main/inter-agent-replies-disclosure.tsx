@@ -36,9 +36,38 @@ type InterAgentTarget = {
   key: string
   requestedAgentId?: string
   runtimeAgentId?: string
+  messageId?: string
+  correlationId?: string
 }
 
-function getOutputTargetAgentId(part: unknown) {
+function isSendMessageToolPart(candidate: {
+  type?: unknown
+  toolKind?: unknown
+  input?: { target_agent_id?: unknown; message?: unknown }
+}) {
+  if (candidate.toolKind === "inter_agent_send") return true
+
+  // Prefer the structured input contract. Tool names have varied across
+  // runtime versions, so the name is only a compatibility fallback.
+  if (
+    typeof candidate.input?.target_agent_id === "string" &&
+    typeof candidate.input.message === "string"
+  ) {
+    return true
+  }
+
+  if (typeof candidate.type !== "string") return false
+
+  // Persisted tool calls can use either the canonical MCP tool name
+  // (`tool-mcp__<server>__send_message`) or the agent runtime's legacy
+  // adapter name (`tool-Ergatai_MCP_Tools_send_message`).
+  if (candidate.type.startsWith("tool-mcp__")) {
+    return candidate.type.endsWith("__send_message")
+  }
+  return /^tool-(?:Ergatai_MCP_Tools_)?send_message$/i.test(candidate.type)
+}
+
+function parseToolOutputObject(part: unknown) {
   const candidate = part as { output?: unknown } | null
   const rawOutput = candidate?.output
   const outputText = (Array.isArray(rawOutput) ? rawOutput : [])
@@ -49,12 +78,27 @@ function getOutputTargetAgentId(part: unknown) {
     .join("\n")
 
   try {
-    const parsed = JSON.parse(outputText) as { target_agent?: unknown }
-    return typeof parsed.target_agent === "string" && parsed.target_agent.length > 0
-      ? parsed.target_agent
-      : undefined
+    const parsed = JSON.parse(outputText || "{}") as {
+      target_agent?: unknown
+      message_id?: unknown
+      correlation_id?: unknown
+    }
+    return {
+      targetAgentId:
+        typeof parsed.target_agent === "string" && parsed.target_agent.length > 0
+          ? parsed.target_agent
+          : undefined,
+      messageId:
+        typeof parsed.message_id === "string" && parsed.message_id.length > 0
+          ? parsed.message_id
+          : undefined,
+      correlationId:
+        typeof parsed.correlation_id === "string" && parsed.correlation_id.length > 0
+          ? parsed.correlation_id
+          : undefined,
+    }
   } catch {
-    return undefined
+    return {}
   }
 }
 
@@ -62,15 +106,15 @@ function getInterAgentTargets(parts: unknown[]): InterAgentTarget[] {
   return parts.flatMap((part, index) => {
     const candidate = part as {
       type?: unknown
+      toolKind?: unknown
       state?: unknown
       toolCallId?: unknown
-      input?: { target_agent_id?: unknown }
+      input?: { target_agent_id?: unknown; message?: unknown }
       output?: unknown
     }
     const type = typeof candidate.type === "string" ? candidate.type : ""
     if (
-      !type.startsWith("tool-mcp__") ||
-      !type.endsWith("__send_message") ||
+      !isSendMessageToolPart(candidate) ||
       candidate.state !== "output-available"
     ) {
       return []
@@ -80,7 +124,8 @@ function getInterAgentTargets(parts: unknown[]): InterAgentTarget[] {
       && candidate.input.target_agent_id.length > 0
       ? candidate.input.target_agent_id
       : undefined
-    const runtimeAgentId = getOutputTargetAgentId(candidate)
+    const output = parseToolOutputObject(candidate)
+    const runtimeAgentId = output.targetAgentId
 
     if (!requestedAgentId && !runtimeAgentId) return []
 
@@ -90,6 +135,8 @@ function getInterAgentTargets(parts: unknown[]): InterAgentTarget[] {
         : `mcp-${index}`,
       requestedAgentId,
       runtimeAgentId,
+      messageId: output.messageId,
+      correlationId: output.correlationId,
     }]
   })
 }
@@ -98,10 +145,14 @@ function AgentReplyDisclosure({
   conversationId,
   agentId,
   agentName,
+  replyToMessageId,
+  correlationId,
 }: {
   conversationId: string
   agentId: string
   agentName: string
+  replyToMessageId?: string
+  correlationId?: string
 }) {
   const { messages, isLoading, error } = useConversationMessages(conversationId)
 
@@ -120,10 +171,49 @@ function AgentReplyDisclosure({
 
     return (messages as PersistedMessage[])
       .filter((message) => {
-        const metadata = message.metadata
+        const metadata = message.metadata as
+          | {
+              senderAgentId?: unknown
+              correlationId?: unknown
+              replyToMessageId?: unknown
+              sideConversationCopy?: unknown
+              projectionKind?: unknown
+            }
+          | null
+        const isSideCopy =
+          metadata?.sideConversationCopy === true ||
+          metadata?.projectionKind === "side_copy" ||
+          message.projectionKind === "side_copy"
 
-        return message.role !== "system" &&
-          metadata?.senderAgentId === agentId
+        // The disclosure shows the outbound reply projection, not the whole
+        // agent turn. Reasoning/tool events are queried separately as trace.
+        const isLegacyReply =
+          message.role === "assistant" &&
+          message.messageType === "response" &&
+          Boolean(message.parts?.every((part: any) => part?.type === "text"))
+        const messageCorrelationId =
+          typeof metadata?.correlationId === "string" ? metadata.correlationId : undefined
+        const messageReplyToMessageId =
+          typeof metadata?.replyToMessageId === "string"
+            ? metadata.replyToMessageId
+            : undefined
+
+        // When the send_message result has correlation metadata, only show the
+        // exact turn produced by that request. Legacy messages without either
+        // ID remain visible through the fallback path.
+        const matchesRequest =
+          !replyToMessageId && !correlationId
+            ? true
+            : messageReplyToMessageId === replyToMessageId ||
+              (Boolean(correlationId) && messageCorrelationId === correlationId)
+
+        // The bound conversation is the authoritative ownership boundary:
+        // `role: "agent"` is an inbound inter-agent request, while
+        // `role: "assistant"` is the bound agent's own reply/output.
+        return message.role === "assistant" &&
+          (isSideCopy || isLegacyReply) &&
+          matchesRequest &&
+          getMessageText(message).length > 0
       })
       .sort((left, right) => left.sequence - right.sequence)
       .map((message) => ({
@@ -131,7 +221,7 @@ function AgentReplyDisclosure({
         text: getMessageText(message),
       }))
       .filter((message) => message.text.length > 0)
-  }, [messages, agentId, isLoading])
+  }, [correlationId, messages, replyToMessageId, isLoading])
 
   if (replies.length === 0) return null
 
@@ -200,7 +290,7 @@ export function InterAgentRepliesDisclosure({
           ].some((value) => value?.toLowerCase() === normalizedRequested)
         })
 
-      return binding ? [{ key: target.key, binding }] : []
+      return binding ? [{ key: target.key, target, binding }] : []
     })
   }, [bindings, targets])
 
@@ -208,12 +298,14 @@ export function InterAgentRepliesDisclosure({
 
   return (
     <>
-      {resolvedTargets.map(({ key, binding }) => (
+      {resolvedTargets.map(({ key, target, binding }) => (
         <AgentReplyDisclosure
           key={key}
           conversationId={binding.conversationId}
           agentId={binding.agentId}
           agentName={binding.agentName}
+          replyToMessageId={target.messageId}
+          correlationId={target.correlationId}
         />
       ))}
     </>

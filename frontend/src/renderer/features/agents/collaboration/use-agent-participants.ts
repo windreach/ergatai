@@ -211,23 +211,54 @@ export function useAgentParticipants({
           ),
       )
 
-      return scopedRuntimeAgents
-      .map<AgentParticipant>((agent) => ({
-        activity: agent.sessionTitle || agent.description,
-        agentId: agent.id,
-        coreAgentId:
-          inferCoreAgentId(agent.profile) ?? inferCoreAgentId(agent.name),
-        key: `runtime:${agent.id}`,
-        name: agent.name,
-        profile: agent.profile,
-        source: "runtime",
-        status: mapRuntimeStatus(agent.status),
-        conversationId: runtimeBindings?.find(
-          (binding) => binding.agentId === agent.id,
-        )?.conversationId,
-        workspaceId: agent.workspaceId,
-      }))
-      .sort(
+    // Include stopped agents: those in bindings but not in runtime agents.
+    // Backend returns all bindings (including stopped ones), but runtimeAgents
+    // only contains alive agents. We need to show stopped agents too so users
+    // can still see the full participant list and access historical conversations.
+    const aliveAgentIds = new Set(scopedRuntimeAgents.map((a) => a.id))
+    const stoppedAgents = (runtimeBindings ?? [])
+      .filter((binding) => !aliveAgentIds.has(binding.agentId))
+      .filter((binding) => {
+        const coreAgentId =
+          inferCoreAgentId(binding.agentCommand) ?? inferCoreAgentId(binding.agentName)
+        return !supervisorAgentId || coreAgentId !== supervisorAgentId
+      })
+      .filter(
+        (binding) =>
+          binding.conversationId !== chatId &&
+          binding.conversationId !== activeConversationId,
+      )
+
+      return [
+        ...scopedRuntimeAgents.map<AgentParticipant>((agent) => ({
+          activity: agent.sessionTitle || agent.description,
+          agentId: agent.id,
+          coreAgentId:
+            inferCoreAgentId(agent.profile) ?? inferCoreAgentId(agent.name),
+          key: `runtime:${agent.id}`,
+          name: agent.name,
+          profile: agent.profile,
+          source: "runtime",
+          status: mapRuntimeStatus(agent.status),
+          conversationId: runtimeBindings?.find(
+            (binding) => binding.agentId === agent.id,
+          )?.conversationId,
+          workspaceId: agent.workspaceId,
+        })),
+        ...stoppedAgents.map<AgentParticipant>((binding) => ({
+          activity: "Agent stopped",
+          agentId: binding.agentId,
+          coreAgentId:
+            inferCoreAgentId(binding.agentCommand) ?? inferCoreAgentId(binding.agentName),
+          key: `stopped:${binding.agentId}`,
+          name: binding.agentName,
+          profile: binding.agentCommand,
+          source: "stopped",
+          status: "completed",
+          conversationId: binding.conversationId,
+          workspaceId: binding.workspaceId,
+        })),
+      ].sort(
         (left, right) =>
           STATUS_ORDER[left.status] - STATUS_ORDER[right.status] ||
           left.name.localeCompare(right.name),

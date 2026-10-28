@@ -75,6 +75,7 @@ Agent 通过调用 `send_message` MCP 工具发送给其他 agent 的消息。
 
 ### 技术实现
 - 消息角色：`role: "assistant"`
+- 输出归属：`metadata.senderAgentId` / `metadata.senderAgentName`；普通 agent turn 使用 `metadata.messageType: "agent_output"`
 - 渲染组件：`AssistantMessageItem` 或同等完整渲染组件
 - 位置：紧跟在触发它的 user/agent 消息后面
 
@@ -130,6 +131,8 @@ Agent 通过调用 `send_message` MCP 工具发送给其他 agent 的消息。
 - 消息角色：`metadata.messageType: "response"` + `metadata.source: "agent"`
 - 渲染组件：`InterAgentRepliesDisclosure` 或同等可折叠组件
 - 数据来源：轮询目标 agent 的 conversation messages
+- 选择规则：优先使用 `metadata.senderAgentId === binding.agentId`。`role: "agent"` 是从其他 agent 注入的请求；`role: "assistant"` 是目标 agent 自己的输出。`send_message` part 现在会带 `toolKind: "inter_agent_send"`，不要仅凭工具名推断回复归属。
+- 精确关联：目标 agent 输出使用 `metadata.replyToMessageId` / `metadata.correlationId`；`send_message` 工具结果返回 `message_id` / `correlation_id`。两者匹配时只渲染该次请求对应的输出。
 - 位置：嵌入在触发请求的宿主 agent 消息内部
 
 ### rationale
@@ -161,12 +164,14 @@ Agent 通过调用 `send_message` MCP 工具发送给其他 agent 的消息。
 | `"request"` | `"agent"` | `"agent"` | 规则 1：简化渲染 |
 | `"response"` | `"agent"` | `"assistant"` | 规则 2 或 3 |
 | `"broadcast"` | `"agent"` | `"assistant"` | 规则 2 或 3 |
+| `"agent_output"` | 绑定 agent | `"assistant"` | 规则 2 或 3 |
 | - | `"user"` | `"user"` | 用户消息 |
 | - | `"system"` | `"assistant"` | 规则 2 |
 
 **区分规则 2 和 3：**
 - 如果消息在当前 agent 自己的 conversation 中 → 规则 2（宿主回复）
 - 如果消息在其他 agent 的 conversation 中 → 规则 3（其他 agent 回复）
+- 在目标 agent 的绑定 conversation 中，`role: "assistant"` 明确表示该绑定 agent 的输出；跨 conversation 复制到主会话的副本必须保留 `metadata.messageType: "response"`、sender 元数据和 `correlationId`。
 
 ---
 

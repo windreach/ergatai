@@ -215,6 +215,119 @@ pub async fn resolve_to_runtime_id(agent_id: &str) -> Option<String> {
     resolve_agent_id(agent_id).await
 }
 
+/// Try to auto-resume a suspended agent.
+///
+/// This is the shared auto-resume logic used by both the HTTP prompt path
+/// (`prompt_agent` handler) and the MCP messaging path (`send_message`).
+/// It tries three strategies in order:
+/// 1. Look up suspended agent by agent ID
+/// 2. Look up suspended agent by conversation_id
+/// 3. Look up running agent by conversation_id (handles race conditions)
+///
+/// Returns the new agent ID if resume succeeded, or the existing agent ID
+/// if a running agent with matching conversation_id is found.
+///
+/// # Race Condition Warning
+///
+/// Step 3 performs a non-atomic check-then-act: it lists all agents, filters
+/// by conversation_id, and returns if found. Two concurrent requests for the
+/// same conversation_id can both pass this check and both attempt to resume,
+/// potentially creating duplicate agents. A proper fix would require distributed
+/// locking or a unique constraint at the database level. For now, this is a
+/// known limitation with low probability in practice.
+pub async fn try_auto_resume_suspended_agent(
+    runtime: &ergatai_runtime::AgentRuntime,
+    target: &str,
+    conversation_id: Option<&str>,
+) -> Option<String> {
+    // Step 1: Check if target matches a suspended agent ID
+    if let Ok(Some(suspended)) = runtime.suspend_store().load_suspended(target) {
+        tracing::info!(
+            target = target,
+            suspended_id = %suspended.id,
+            conversation_id = %suspended.conversation_id,
+            "Found suspended agent by ID, attempting resume"
+        );
+
+        match runtime.resume_agent(&suspended.id).await {
+            Ok(new_agent_id) => {
+                tracing::info!(
+                    suspended_id = %suspended.id,
+                    new_agent_id = %new_agent_id,
+                    "Successfully resumed suspended agent by ID"
+                );
+                return Some(new_agent_id);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    suspended_id = %suspended.id,
+                    "Failed to resume suspended agent by ID"
+                );
+                return None;
+            }
+        }
+    }
+
+    // Step 2: Check if conversation_id matches a suspended agent
+    if let Some(conversation_id) = conversation_id {
+        if let Ok(Some(suspended)) = runtime
+            .suspend_store()
+            .find_by_conversation(conversation_id)
+        {
+            tracing::info!(
+                conversation_id = %conversation_id,
+                suspended_id = %suspended.id,
+                "Found suspended agent by conversation_id, attempting resume"
+            );
+
+            match runtime.resume_agent(&suspended.id).await {
+                Ok(new_agent_id) => {
+                    tracing::info!(
+                        suspended_id = %suspended.id,
+                        new_agent_id = %new_agent_id,
+                        conversation_id = %conversation_id,
+                        "Successfully resumed suspended agent by conversation_id"
+                    );
+                    return Some(new_agent_id);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        suspended_id = %suspended.id,
+                        conversation_id = %conversation_id,
+                        "Failed to resume suspended agent by conversation_id"
+                    );
+                    return None;
+                }
+            }
+        }
+    }
+
+    // Step 3: Check if any running agent has this conversation_id in metadata
+    if let Some(conversation_id) = conversation_id {
+        let agents = runtime.list_agents().await;
+        for agent in agents {
+            if agent
+                .handle
+                .workspace
+                .metadata
+                .get("ergatai_conversation_id")
+                == Some(&conversation_id.to_string())
+            {
+                tracing::debug!(
+                    conversation_id = %conversation_id,
+                    agent_id = %agent.agent_id,
+                    "Found running agent with matching conversation_id"
+                );
+                return Some(agent.agent_id);
+            }
+        }
+    }
+
+    None
+}
+
 /// Get agent information by runtime ID.
 pub async fn get_agent_info(runtime_id: &str) -> Option<ergatai_runtime::AgentInfo> {
     let runtime = crate::context::get_app_context().agent_runtime.clone();

@@ -14,7 +14,9 @@ use tokio::sync::Mutex;
 use utoipa::ToSchema;
 
 use ergatai_core::id::{format as format_id, generate, parse_to_i64, IdType};
-use ergatai_error::{AgentId, ChatId, CollaborationSessionId, ConversationId, WorkspaceId};
+use ergatai_error::{
+    AgentId, ChatId, CollaborationSessionId, ConversationId, MessageId, WorkspaceId,
+};
 
 use crate::messaging::{get_message_sender, SendMessageResult, SendRequest};
 use crate::AppState;
@@ -750,7 +752,10 @@ pub async fn spawn_agent(
             _ => (req.command.clone(), None, None),
         };
 
-    if req.workspace_id.is_none() && req.conversation_id.is_none() {
+    // Temporary agents (e.g., for model queries) can be spawned without workspace/conversation.
+    // They use a default workspace. Non-temporary agents require workspace_id or conversation_id.
+    let is_temporary = req.temporary_agent.unwrap_or(false);
+    if !is_temporary && req.workspace_id.is_none() && req.conversation_id.is_none() {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -766,6 +771,11 @@ pub async fn spawn_agent(
     let capture_thoughts = false;
 
     let mut spawn_chat_id: Option<String> = None;
+
+    // For temporary agents without workspace/conversation, use a default workspace.
+    if is_temporary && workspace_id.is_none() && req.conversation_id.is_none() {
+        workspace_id = Some("default".to_string());
+    }
 
     if let Some(conversation_id) = req.conversation_id.as_deref() {
         let conversation_id_typed = match crate::http_error::parse_typed_id::<ConversationId>(
@@ -1137,63 +1147,9 @@ pub async fn cancel_prompt(
     }
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v1/agents/{id}/send",
-    tag = "Agents",
-    params(("id" = String, Path, description = "Agent ID")),
-    request_body = SendMessageRequest,
-    responses(
-        (status = 200, description = "Message queued or delivered"),
-        (status = 400, description = "Invalid agent ID format or request", body = crate::api::ApiError),
-        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
-        (status = 404, description = "Agent not found", body = crate::api::ApiError),
-        (status = 415, description = "Unsupported Media Type", body = crate::api::ApiError),
-        (status = 422, description = "Validation error", body = crate::api::ApiError),
-        (status = 500, description = "Internal server error", body = crate::api::ApiError),
-    )
-)]
-/// Helper function to update AgentInfo in registry with conversation_id.
-/// This enables message_delivery.rs to resolve conversation → agent mapping.
-async fn update_agent_conversation_id(agent_id: &str, conversation_id_i64: i64) {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
-    if let Some(agent_info) = runtime.registry().get(agent_id).await {
-        let mut updated_info = agent_info.clone();
-
-        // Format conversation ID for registry indexing and handle.metadata (business ID)
-        let conversation_id_formatted =
-            ergatai_error::id::format(conversation_id_i64, ergatai_error::id::IdType::Conversation);
-
-        // Update handle.metadata with formatted ID (used by AgentInfo.conversation_id)
-        // This is the canonical format for conversation_id across the system
-        updated_info.handle.metadata.insert(
-            "conversation_id".to_string(),
-            conversation_id_formatted.clone(),
-        );
-
-        // Store raw i64 separately for database queries (backward compatibility)
-        updated_info.handle.metadata.insert(
-            "conversation_id_i64".to_string(),
-            conversation_id_i64.to_string(),
-        );
-
-        // Update conversation_id field with formatted ID (for resolve_conversation_id lookups)
-        updated_info.conversation_id = Some(conversation_id_formatted.clone());
-
-        runtime.registry().insert(updated_info).await;
-        tracing::info!(
-            agent_id = %agent_id,
-            conversation_id_i64 = %conversation_id_i64,
-            conversation_id_formatted = %conversation_id_formatted,
-            "Updated AgentInfo with conversation_id for message routing"
-        );
-    } else {
-        tracing::warn!(
-            agent_id = %agent_id,
-            "AgentInfo not found in registry, cannot update conversation_id"
-        );
-    }
-}
+// NOTE: The old non-atomic `update_agent_conversation_id` helper was removed.
+// Call sites now use `runtime.registry().update()` directly to avoid
+// read-modify-write race conditions (see issue #3).
 
 #[utoipa::path(
     post,
@@ -1239,6 +1195,14 @@ pub async fn send_message(
             }),
         )
             .into_response();
+    }
+
+    // A client request ID participates in durable dedup metadata. Never accept
+    // arbitrary local UI identifiers here.
+    if let Some(client_request_id) = req.client_request_id.as_deref() {
+        if MessageId::decode(client_request_id).is_err() {
+            return crate::http_error::bad_request("Invalid client request ID").into_response();
+        }
     }
 
     // Validate message_type if provided
@@ -1403,6 +1367,7 @@ pub async fn send_message(
                                         target_agent,
                                         stream,
                                         sequence,
+                                        ..
                                     } => {
                                         return (
                                             StatusCode::OK,
@@ -1416,7 +1381,7 @@ pub async fn send_message(
                                         )
                                             .into_response();
                                     }
-                                    SendMessageResult::DirectDelivered { target_agent } => {
+                                    SendMessageResult::DirectDelivered { target_agent, .. } => {
                                         return (
                                             StatusCode::OK,
                                             Json(serde_json::json!({
@@ -1790,8 +1755,38 @@ pub async fn send_message(
 
                 // CRITICAL FIX: Update AgentInfo in registry with conversation_id
                 // This enables message_delivery.rs to resolve conversation → agent mapping
-                update_agent_conversation_id(&new_agent_id, agent_conversation_id_i64.as_i64())
-                    .await;
+                // Uses atomic registry.update() to avoid read-modify-write race conditions
+                {
+                    let runtime = crate::context::get_app_context().agent_runtime.clone();
+                    let conversation_id_formatted = agent_conversation_id_i64.encode();
+                    let conversation_id_i64_str = agent_conversation_id_i64.as_i64().to_string();
+                    let updated = runtime
+                        .registry()
+                        .update(&new_agent_id, |info| {
+                            info.handle.metadata.insert(
+                                "conversation_id".to_string(),
+                                conversation_id_formatted.clone(),
+                            );
+                            info.handle.metadata.insert(
+                                "conversation_id_i64".to_string(),
+                                conversation_id_i64_str.clone(),
+                            );
+                            info.conversation_id = Some(conversation_id_formatted.clone());
+                        })
+                        .await;
+                    if updated.is_some() {
+                        tracing::info!(
+                            agent_id = %new_agent_id,
+                            conversation_id = %agent_conversation_id_i64.encode(),
+                            "Updated AgentInfo with conversation_id for message routing"
+                        );
+                    } else {
+                        tracing::warn!(
+                            agent_id = %new_agent_id,
+                            "AgentInfo not found in registry, cannot update conversation_id"
+                        );
+                    }
+                }
 
                 // Register the conversation in the collaboration session.
                 let chat_id_i64 =
@@ -1854,6 +1849,7 @@ pub async fn send_message(
                         target_agent,
                         stream,
                         sequence,
+                        ..
                     } => (
                         StatusCode::OK,
                         Json(serde_json::json!({
@@ -1865,7 +1861,7 @@ pub async fn send_message(
                         })),
                     )
                         .into_response(),
-                    SendMessageResult::DirectDelivered { target_agent } => (
+                    SendMessageResult::DirectDelivered { target_agent, .. } => (
                         StatusCode::OK,
                         Json(serde_json::json!({
                             "status": "direct_delivered",
@@ -1937,6 +1933,7 @@ pub async fn send_message(
             target_agent,
             stream,
             sequence,
+            ..
         } => (
             StatusCode::OK,
             Json(serde_json::json!({
@@ -1947,7 +1944,7 @@ pub async fn send_message(
             })),
         )
             .into_response(),
-        SendMessageResult::DirectDelivered { target_agent } => (
+        SendMessageResult::DirectDelivered { target_agent, .. } => (
             StatusCode::OK,
             Json(serde_json::json!({
                 "status": "direct_delivered",
@@ -2895,6 +2892,14 @@ pub async fn prompt_agent(
         "prompt_agent: START"
     );
 
+    // A client request ID participates in durable dedup metadata. Never accept
+    // arbitrary local UI identifiers here.
+    if let Some(client_request_id) = body.client_request_id.as_deref() {
+        if MessageId::decode(client_request_id).is_err() {
+            return crate::http_error::bad_request("Invalid client request ID").into_response();
+        }
+    }
+
     // Filter out empty placeholder objects (both fields empty)
     let valid_images: Vec<_> = body
         .images
@@ -2936,13 +2941,39 @@ pub async fn prompt_agent(
     let runtime_id = match crate::services::agent_service::resolve_to_runtime_id(&id).await {
         Some(rid) => rid,
         None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: format!("Agent {} not found or not running", id),
-                }),
+            // Agent not found in runtime — check if it's suspended and try to auto-resume
+            tracing::info!(
+                agent_id = %id,
+                conversation_id = ?body.conversation_id,
+                "Agent not found in runtime, checking for suspended agent"
+            );
+
+            let runtime = crate::context::get_app_context().agent_runtime.clone();
+            match crate::services::agent_service::try_auto_resume_suspended_agent(
+                &runtime,
+                &id,
+                body.conversation_id.as_deref(),
             )
-                .into_response();
+            .await
+            {
+                Some(resumed_id) => {
+                    tracing::info!(
+                        old_agent_id = %id,
+                        new_agent_id = %resumed_id,
+                        "Auto-resumed suspended agent"
+                    );
+                    resumed_id
+                }
+                None => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(ErrorResponse {
+                            error: format!("Agent {} not found or not running", id),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
         }
     };
 
@@ -3060,7 +3091,38 @@ pub async fn prompt_agent(
 
         // CRITICAL FIX: Update AgentInfo in registry with conversation_id
         // This enables message_delivery.rs to resolve conversation → agent mapping
-        update_agent_conversation_id(&runtime_id, conversation_id_for_update.as_i64()).await;
+        // Uses atomic registry.update() to avoid read-modify-write race conditions
+        {
+            let runtime = crate::context::get_app_context().agent_runtime.clone();
+            let conversation_id_formatted = conversation_id_for_update.encode();
+            let conversation_id_i64_str = conversation_id_for_update.as_i64().to_string();
+            let updated = runtime
+                .registry()
+                .update(&runtime_id, |info| {
+                    info.handle.metadata.insert(
+                        "conversation_id".to_string(),
+                        conversation_id_formatted.clone(),
+                    );
+                    info.handle.metadata.insert(
+                        "conversation_id_i64".to_string(),
+                        conversation_id_i64_str.clone(),
+                    );
+                    info.conversation_id = Some(conversation_id_formatted.clone());
+                })
+                .await;
+            if updated.is_some() {
+                tracing::info!(
+                    agent_id = %runtime_id,
+                    conversation_id = %conversation_id_for_update.encode(),
+                    "Updated AgentInfo with conversation_id for message routing"
+                );
+            } else {
+                tracing::warn!(
+                    agent_id = %runtime_id,
+                    "AgentInfo not found in registry, cannot update conversation_id"
+                );
+            }
+        }
 
         let agent_name = agent_info
             .as_ref()
@@ -3204,6 +3266,14 @@ pub async fn prompt_agent(
             if let Some(nats_conn) = ctx.nats_connection.clone() {
                 let bus = ergatai_nats::EventBus::new(nats_conn);
 
+                // Client request IDs are canonical message-shaped Snowflake IDs:
+                // an existing persisted ID when supplied, otherwise a new one
+                // generated here. Frontend UUIDs must not enter durable metadata.
+                let client_request_id = body
+                    .client_request_id
+                    .clone()
+                    .unwrap_or_else(|| ergatai_error::MessageId::generate().encode());
+
                 // Build AgentMessagePayload for user message
                 let payload = ergatai_nats::AgentMessagePayload {
                     from_agent: "user".to_string(),
@@ -3213,7 +3283,10 @@ pub async fn prompt_agent(
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs())
                         .unwrap_or(0),
-                    metadata: std::collections::HashMap::new(),
+                    metadata: std::collections::HashMap::from([(
+                        "clientRequestId".to_string(),
+                        client_request_id,
+                    )]),
                     message_id: prompt_id.clone(),
                     requires_receipt: false,
                     correlation_id: None,

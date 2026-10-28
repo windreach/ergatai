@@ -29,6 +29,7 @@ import { useResolvedHotkeyDisplay } from "@/lib/hotkeys"
 import { Terminal } from "./terminal"
 import { TerminalTabs } from "./terminal-tabs"
 import { getDefaultTerminalBg } from "./helpers"
+import { randomToken } from "../../../shared/id"
 import {
   terminalSidebarOpenAtomFamily,
   terminalSidebarWidthAtom,
@@ -71,7 +72,7 @@ interface TerminalSidebarProps {
  * Generate a unique terminal ID
  */
 function generateTerminalId(): string {
-  return crypto.randomUUID().slice(0, 8)
+  return randomToken(4)
 }
 
 /**

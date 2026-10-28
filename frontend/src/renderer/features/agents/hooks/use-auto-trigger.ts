@@ -7,12 +7,19 @@ interface TextPart {
   text: string
 }
 
+interface AutoTriggerSendMessage {
+  role: 'user'
+  parts: unknown[]
+  id?: string
+  metadata?: unknown
+}
+
 interface UseAutoTriggerOptions {
   conversationId: string
   isStreaming: boolean
   isGroupMode: boolean
   messages: UIMessage[]
-  sendMessage: (message: { role: 'user'; parts: unknown[] }) => Promise<void> | void
+  sendMessage: (message: AutoTriggerSendMessage) => Promise<void> | void
   setMessages: (messages: UIMessage[]) => void
   hasTriggeredAutoGenerateRef: React.MutableRefObject<boolean>
 }
@@ -58,18 +65,6 @@ export function useAutoTrigger({
     // Clear messages to avoid duplicates
     setMessages([])
 
-    // Cleanup: Restore the message if effect re-runs or component unmounts before Effect 2 sends
-    return () => {
-      // If Effect 2 hasn't cleared the pending ref yet, restore the message
-      if (autoTriggerPendingRef.current === conversationId && autoTriggerUserMessageRef.current) {
-        console.log("[AutoTrigger] Cleanup: restoring message due to unmount/re-run")
-        const restoredMessage = autoTriggerUserMessageRef.current
-        autoTriggerPendingRef.current = null
-        autoTriggerUserMessageRef.current = null
-        // Restore the original messages (put the user message back)
-        setMessages([restoredMessage])
-      }
-    }
   }, [messages, isStreaming, conversationId, isGroupMode, setMessages])
 
   // Effect 2: After messages are cleared, send the message
@@ -90,7 +85,15 @@ export function useAutoTrigger({
         autoTriggerUserMessageRef.current = null
 
         // Attempt to send
-        await sendMessage({ role: "user", parts: userMessage.parts })
+        // Preserve the persisted message ID and metadata. The transport reuses
+        // this ID as clientRequestId, allowing the delivery consumer to recognize
+        // an auto-triggered initial message as already durable.
+        await sendMessage({
+          role: "user",
+          parts: userMessage.parts,
+          id: userMessage.id,
+          metadata: userMessage.metadata,
+        })
       } catch (error) {
         // Send failed, restore refs to allow retry
         console.error('[AutoTrigger] Send failed:', error)

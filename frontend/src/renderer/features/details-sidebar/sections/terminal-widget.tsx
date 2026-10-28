@@ -22,6 +22,7 @@ import {
 import type { TerminalInstance } from "@/features/terminal/types"
 import { cn } from "@/lib/utils"
 import { killTerminalSession } from "@/features/terminal/providers"
+import { randomToken } from "../../../../shared/id"
 
 interface TerminalWidgetProps {
   /** Must match the TerminalSidebar scope key so tasks map 1:1 to sidebar terminals */
@@ -30,7 +31,7 @@ interface TerminalWidgetProps {
 }
 
 function generateTerminalId(): string {
-  return crypto.randomUUID().slice(0, 8)
+  return randomToken(4)
 }
 
 function generatePaneId(scopeKey: string, terminalId: string): string {

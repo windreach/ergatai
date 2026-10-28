@@ -36,6 +36,28 @@ interface AgentMessageItemProps {
  *
  * Used in both main chat (isolated-message-group) and side chat.
  */
+/**
+ * Older inter-agent messages may carry the original request envelope in text
+ * or metadata. Extract the human-readable `message` field when possible while
+ * leaving plain text unchanged.
+ */
+function unwrapAgentMessage(value: string): string {
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "message" in parsed &&
+      typeof (parsed as { message?: unknown }).message === "string"
+    ) {
+      return (parsed as { message: string }).message
+    }
+  } catch {
+    // Plain text
+  }
+  return value
+}
+
 export const AgentMessageItem = memo(function AgentMessageItem({
   message,
   chatId,
@@ -61,7 +83,7 @@ export const AgentMessageItem = memo(function AgentMessageItem({
   const textContent = useMemo(() => {
     // 优先使用新的结构化字段
     if (metadata?.agentContent) {
-      return metadata.agentContent
+      return unwrapAgentMessage(metadata.agentContent)
     }
 
     // 回退：从parts提取原始文本
@@ -71,16 +93,7 @@ export const AgentMessageItem = memo(function AgentMessageItem({
       .join("\n") || ""
 
     // 尝试解析JSON（向后兼容旧数据）
-    try {
-      const parsed = JSON.parse(rawText)
-      if (parsed && typeof parsed === "object" && "message" in parsed) {
-        return parsed.message
-      }
-    } catch {
-      // 不是JSON，返回原始文本
-    }
-
-    return rawText
+    return unwrapAgentMessage(rawText)
   }, [metadata?.agentContent, message.parts])
 
   // 提取发送者名称：优先使用结构化字段

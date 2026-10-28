@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
+use axum::response::IntoResponse;
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 
@@ -887,6 +888,18 @@ async fn async_main(args: Args) -> Result<()> {
         .agent_runtime
         .clone();
     let app = ergatai_api::api::acp_server::mount_acp_server(app, runtime);
+
+    // SAFETY NET: convert handler panics into a 500 JSON response instead of
+    // abruptly dropping the connection. Without this, a panic inside a request
+    // handler closes the TCP connection with no response and clients see
+    // `UND_ERR_SOCKET` "other side closed" with zero bytes read, which is
+    // nearly impossible to debug from the client side.
+    let app = app.layer(tower_http::catch_panic::CatchPanicLayer::custom(
+        |_panic: Box<dyn std::any::Any + Send>| {
+            ergatai_api::http_error::internal("panic in request handler", "request handler")
+                .into_response()
+        },
+    ));
 
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)
         .parse()

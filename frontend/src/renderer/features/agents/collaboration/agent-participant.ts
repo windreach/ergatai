@@ -8,7 +8,7 @@ export type AgentParticipantStatus =
   | "idle"
   | "unknown"
 
-export type AgentParticipantSource = "group" | "runtime"
+export type AgentParticipantSource = "group" | "runtime" | "stopped"
 
 export interface AgentParticipant {
   activity: string

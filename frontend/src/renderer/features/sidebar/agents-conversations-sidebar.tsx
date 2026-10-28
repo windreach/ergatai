@@ -102,10 +102,6 @@ import {
   loadGroupAgents,
 } from "../agents/collaboration/group-agent-storage"
 import { useCollaborationMode } from "../agents/collaboration/use-collaboration-mode"
-import type { inferRouterOutputs } from "@trpc/server"
-import type { AppRouter } from "../../../main/lib/trpc/routers"
-
-type RouterOutput = inferRouterOutputs<AppRouter>
 
 // Isolated Search History Popover for sidebar - prevents parent re-renders when popover opens/closes
 interface SidebarSearchHistoryPopoverProps {
@@ -121,127 +117,7 @@ function displayText(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback
 }
 
-const WorkspaceChatList = memo(function WorkspaceChatList({
-  workspaceId,
-  searchQuery,
-  selectedChatId,
-  onChatSelect,
-}: {
-  workspaceId?: string | null
-  searchQuery?: string
-  selectedChatId?: string | null
-  onChatSelect?: (chatId: string) => void
-}) {
-  const { data: chats, isLoading } = trpc.chats.list.useQuery(
-    {
-      workspaceId: workspaceId!,
-    },
-    { enabled: !!workspaceId },
-  )
 
-  const workspaceChats = useMemo(() => {
-    const query = searchQuery?.trim().toLowerCase() ?? ""
-    return (chats ?? [])
-      .filter((chat) => (
-        chat.id.startsWith("chat_") &&
-        (!query || `${chat.name || "New Chat"}`.toLowerCase().includes(query))
-      ))
-      .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
-  }, [chats, searchQuery])
-
-  if (!workspaceId) {
-    return null
-  }
-
-  return (
-    <div className={cn("mb-4", "px-0")}>
-      <div className="flex items-center h-4 mb-1 pl-2">
-        <h3 className="text-xs font-medium text-muted-foreground whitespace-nowrap">
-          Chats
-        </h3>
-      </div>
-
-      {isLoading ? (
-        <div className="px-2 py-2 text-xs text-muted-foreground">
-          Loading chats...
-        </div>
-      ) : workspaceChats.length > 0 ? (
-        <div className="list-none p-0 m-0 space-y-0.5">
-          {workspaceChats.map((chat) => (
-            <WorkspaceChatItem
-              key={chat.id}
-              chat={chat}
-              isSelected={selectedChatId === chat.id}
-              onChatSelect={onChatSelect}
-            />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  )
-})
-
-const WorkspaceChatItem = memo(function WorkspaceChatItem({
-  chat,
-  isSelected,
-  onChatSelect,
-}: {
-  chat: RouterOutput["chats"]["list"][number]
-  isSelected: boolean
-  onChatSelect?: (chatId: string) => void
-}) {
-  const chatAgentLogosMap = useAtomValue(chatAgentLogosAtom)
-  const registeredAgents = useAtomValue(registeredAgentsAtom)
-  const chatAgentLogos = useMemo(() => {
-    const storedLogos = chatAgentLogosMap[chat.id]
-    if (storedLogos?.length) return storedLogos
-    if (!hasStoredGroupAgentIds(chat.id)) return []
-
-    return createChatAgentLogos(
-      loadGroupAgentIds(chat.id),
-      loadGroupAgents(chat.id),
-      registeredAgents,
-    )
-  }, [chatAgentLogosMap, chat.id, registeredAgents])
-  const visibleChatAgentLogos = chatAgentLogos.slice(0, MAX_CHAT_AGENT_LOGOS)
-
-  return (
-    <button
-      type="button"
-      onClick={() => onChatSelect?.(chat.id)}
-      className={cn(
-        "w-full rounded-lg px-2 text-left transition-colors",
-        "py-2.5",
-        isSelected
-          ? "bg-foreground/10 text-foreground"
-          : "text-foreground/80 hover:bg-foreground/5 hover:text-foreground",
-      )}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <span className="truncate text-sm">
-          {chat.name || "New Chat"}
-        </span>
-        <span className="flex flex-shrink-0 flex-col items-end gap-1">
-          {visibleChatAgentLogos.length > 0 ? (
-            <span className="flex items-center justify-end -space-x-1">
-              {visibleChatAgentLogos.map((logo) => (
-                <ChatAgentLogoBadge
-                  key={`${logo.agentId}:${logo.avatarUrl ?? "core"}`}
-                  logo={logo}
-                />
-              ))}
-            </span>
-          ) : (
-            <AgentIcon className="h-3.5 w-3.5 text-muted-foreground/50" />
-          )}
-          <span className="text-[11px] text-muted-foreground/60">
-            {formatTimeAgo(chat.updatedAt)}
-          </span>
-        </span>
-      </div>
-    </button>
-  )
-})
 
 function ChatAgentLogoBadge({ logo }: { logo: ChatAgentLogo }) {
   const [avatarFailed, setAvatarFailed] = useState(false)
@@ -1709,13 +1585,6 @@ export function AgentsConversationsSidebar({
                 isMultiSelectMode ? "px-0" : "px-2",
               )}
             >
-              <WorkspaceChatList
-                workspaceId={workspaceId}
-                searchQuery={searchQuery}
-                selectedChatId={selectedChatId}
-                onChatSelect={onChatSelect}
-              />
-
               {filteredConversations.length > 0 ? (
                 <div
                   className={cn("mb-4", isMultiSelectMode ? "px-0" : "-mx-1")}

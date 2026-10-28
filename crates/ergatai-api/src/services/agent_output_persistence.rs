@@ -4,6 +4,7 @@
 //! outputs to the messages table when a turn completes.
 
 use ergatai_error::{ChatId, CollaborationSessionId, ConversationId, WorkspaceId};
+use ergatai_runtime::output_accumulator::OutputTimelineItem;
 use ergatai_runtime::AgentOutputData;
 
 /// Build complete parts array from agent output data.
@@ -17,6 +18,81 @@ use ergatai_runtime::AgentOutputData;
 /// - Final text: { "type": "text", "text": "..." }
 fn build_complete_parts_array(output_data: &AgentOutputData) -> Option<serde_json::Value> {
     let mut parts_array = Vec::new();
+
+    // New turns persist a typed chronological timeline. This is the strict
+    // turn projection: reasoning/tool/text remain ordered, contiguous text
+    // deltas are coalesced, and protocol-only markers are not user text.
+    if let Some(timeline_json) = &output_data.timeline {
+        if let Ok(timeline) = serde_json::from_str::<Vec<OutputTimelineItem>>(timeline_json) {
+            let mut pending_text = String::new();
+            let flush_text = |parts: &mut Vec<serde_json::Value>, text: &mut String| {
+                if !text.trim().is_empty() {
+                    parts.push(serde_json::json!({
+                        "type": "text",
+                        "text": std::mem::take(text),
+                    }));
+                } else {
+                    text.clear();
+                }
+            };
+
+            for item in timeline {
+                match item {
+                    OutputTimelineItem::Text { text, .. } => {
+                        if text.trim() == "END" {
+                            flush_text(&mut parts_array, &mut pending_text);
+                            parts_array.push(serde_json::json!({
+                                "type": "control-end",
+                            }));
+                        } else {
+                            pending_text.push_str(&text);
+                        }
+                    }
+                    OutputTimelineItem::Thinking { text, .. } => {
+                        flush_text(&mut parts_array, &mut pending_text);
+                        parts_array.push(serde_json::json!({
+                            "type": "tool-Thinking",
+                            "state": "result",
+                            "input": { "text": text },
+                            "output": { "completed": true },
+                        }));
+                    }
+                    OutputTimelineItem::ToolCall {
+                        id,
+                        name,
+                        kind,
+                        input,
+                        output,
+                        status,
+                        locations,
+                        started_at,
+                        completed_at,
+                        error,
+                    } => {
+                        flush_text(&mut parts_array, &mut pending_text);
+                        parts_array.push(serde_json::json!({
+                            "type": format!("tool-{}", name),
+                            "toolCallId": id,
+                            "toolKind": kind,
+                            "state": if status == "completed" { "result" } else { "error" },
+                            "input": *input,
+                            "output": *output,
+                            "locations": locations,
+                            "startedAt": started_at,
+                            "completedAt": completed_at,
+                            "error": error,
+                        }));
+                    }
+                }
+            }
+            flush_text(&mut parts_array, &mut pending_text);
+            return if parts_array.is_empty() {
+                None
+            } else {
+                Some(serde_json::Value::Array(parts_array))
+            };
+        }
+    }
 
     // 1. Add thinking blocks as tool-Thinking parts
     if let Some(thinking_json) = &output_data.thinking {
@@ -279,15 +355,57 @@ pub async fn persist_agent_output(
             // This ensures the frontend can render all content from the parts array
             let parts = build_complete_parts_array(&output_data);
 
+            let metadata = serde_json::json!({
+                "turnId": output_data.turn_id,
+                "replyToMessageId": output_data.reply_to_message_id,
+                "correlationId": output_data.correlation_id,
+                "sourceConversationId": output_data.source_conversation_id,
+            });
+
             // Insert into messages table with agent output fields
             messages::append_with_output(
                 conversation_id,
                 &output_data.role,
                 parts,
-                serde_json::json!({}),
-                None,
+                metadata,
+                Some(crate::user_data_db::messages::AgentMessageFields {
+                    turn_id: Some(output_data.turn_id.clone()),
+                    projection_kind: Some("canonical".to_string()),
+                    ..Default::default()
+                }),
                 Some(output_fields),
             )?;
+
+            // The side copy was written before this turn completed, so its
+            // insert-time sequence is not causal. Re-link it under the same
+            // turn after the trace is durable.
+            if let Some(correlation_id) = output_data.correlation_id.as_deref() {
+                match messages::link_side_copies_to_turn(
+                    conversation_id,
+                    correlation_id,
+                    &output_data.turn_id,
+                ) {
+                    Ok(0) => {}
+                    Ok(count) => {
+                        tracing::debug!(
+                            conversation_id = %conversation_id,
+                            correlation_id = %correlation_id,
+                            turn_id = %output_data.turn_id,
+                            count,
+                            "Linked side-copy projections to completed turn"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            conversation_id = %conversation_id,
+                            correlation_id = %correlation_id,
+                            turn_id = %output_data.turn_id,
+                            error = %error,
+                            "Failed to link side-copy projections to completed turn"
+                        );
+                    }
+                }
+            }
 
             Ok(())
         },
@@ -300,4 +418,89 @@ pub async fn persist_agent_output(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn output_with_timeline(timeline: &str) -> AgentOutputData {
+        serde_json::from_str::<serde_json::Value>(
+            r#"{
+                "conversation_id": 1,
+                "role": "assistant",
+                "created_at": 1,
+                "updated_at": 1
+            }"#,
+        )
+        .map(|mut value| {
+            value["turn_id"] = serde_json::json!("turn_test");
+            value["timeline"] = serde_json::json!(timeline);
+            serde_json::from_value(value).unwrap()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn timeline_projection_coalesces_text_and_hides_end_marker() {
+        let timeline = serde_json::to_string(&vec![
+            OutputTimelineItem::Text {
+                text: "你好".to_string(),
+                timestamp: 1,
+            },
+            OutputTimelineItem::Text {
+                text: "！".to_string(),
+                timestamp: 1,
+            },
+            OutputTimelineItem::Text {
+                text: "END".to_string(),
+                timestamp: 2,
+            },
+        ])
+        .unwrap();
+        let parts = build_complete_parts_array(&output_with_timeline(&timeline))
+            .and_then(|value| value.as_array().cloned())
+            .unwrap();
+
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "你好！");
+        assert_eq!(parts[1]["type"], "control-end");
+    }
+
+    #[test]
+    fn timeline_projection_preserves_interleaving() {
+        let timeline = serde_json::to_string(&vec![
+            OutputTimelineItem::Thinking {
+                text: "why".to_string(),
+                timestamp: 1,
+            },
+            OutputTimelineItem::Text {
+                text: "hello ".to_string(),
+                timestamp: 2,
+            },
+            OutputTimelineItem::ToolCall {
+                id: "call_1".to_string(),
+                name: "send_message".to_string(),
+                kind: None,
+                input: Box::new(serde_json::json!({"message": "hello"})),
+                output: Box::new(Some(serde_json::json!({"status": "queued"}))),
+                status: "completed".to_string(),
+                locations: Vec::new(),
+                started_at: 3,
+                completed_at: Some(4),
+                error: None,
+            },
+        ])
+        .unwrap();
+        let parts = build_complete_parts_array(&output_with_timeline(&timeline))
+            .and_then(|value| value.as_array().cloned())
+            .unwrap();
+
+        let types: Vec<&str> = parts
+            .iter()
+            .map(|part| part["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(types, ["tool-Thinking", "text", "tool-send_message"]);
+    }
 }

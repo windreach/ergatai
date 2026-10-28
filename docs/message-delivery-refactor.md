@@ -70,11 +70,12 @@ AgentOutputEvent::TurnStarted {
 
 **问题**：前端发送消息后无法将 optimistic 消息与后端持久化的 durable 消息匹配，导致"重复消息"、"完成后闪一下"、"历史覆盖实时流"等问题。
 
-**解决方案**：前端生成 `clientRequestId`，全链路传递到 SQLite metadata 的 `externalMessageId` 字段，前端用它做 optimistic → durable 替换。
+**解决方案**：前端复用已持久化的 `message_id` 作为 `clientRequestId`，全链路传递到 SQLite metadata 的
+`externalMessageId` 字段。新的 optimistic 消息可以省略该 ID，由后端在持久化时分配 Snowflake `message_id`。
 
 **改动文件**：
 - `frontend/src/main/lib/trpc/routers/ergatai.ts` — `sendMessage` 和 `promptAgent` 新增 `clientRequestId` 参数
-- `frontend/src/renderer/features/agents/lib/ergatai-chat-transport.ts` — 发送时生成 `crypto.randomUUID()` 作为 `clientRequestId`
+- `frontend/src/renderer/features/agents/lib/ergatai-chat-transport.ts` — 优先复用已持久化的消息 ID 作为 `clientRequestId`
 - `crates/ergatai-api/src/api/agents.rs` — `SendMessageRequest` 和 `PromptAgentRequest` 新增 `client_request_id` 字段
 - `crates/ergatai-api/src/messaging/mod.rs` — `SendRequest` 新增 `client_request_id` 字段，存入 NATS payload metadata
 - `crates/ergatai-api/src/mcp/message_delivery.rs` — 优先使用 metadata 中的 `clientRequestId` 作为 `externalMessageId`
@@ -84,7 +85,7 @@ AgentOutputEvent::TurnStarted {
 
 **数据流**：
 ```
-前端 crypto.randomUUID()
+前端复用 persisted message_id；新消息省略 clientRequestId
   → tRPC clientRequestId
   → REST API client_request_id
   → SendRequest.client_request_id
@@ -99,7 +100,7 @@ AgentOutputEvent::TurnStarted {
 
 | ID | 来源 | 用途 |
 |----|------|------|
-| `clientRequestId` | 前端生成（UUID） | Optimistic 消息标识，用于匹配 durable 消息 |
+| `clientRequestId` | 前端复用 persisted `message_id`；新消息可省略 | 去重 / optimistic 消息匹配标识 |
 | `message_id` | 后端生成（snowflake） | SQLite 主键，全局唯一 |
 | `externalMessageId` | SQLite metadata 字段 | 存储 `clientRequestId`，用于前端去重匹配 |
 | `turnId` | runtime 生成 | Agent 回合标识，格式 `turn-{epoch}-{sequence}` |

@@ -65,7 +65,6 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
     { chatId },
     { enabled: isActive && chatId.startsWith("chat_") },
   )
-
   // Get list of agents already bound to this chat
   const boundAgentIds = useMemo(() => {
     return new Set(agentBindingsQuery.data?.map((b) => b.agentId) ?? [])

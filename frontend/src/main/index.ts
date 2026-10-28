@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, Menu, nativeImage, session } from "electron"
-import { existsSync, readFileSync, readlinkSync, unlinkSync } from "fs"
+import { existsSync, mkdirSync, readFileSync, readlinkSync, unlinkSync } from "fs"
 import { createServer } from "http"
 import { join } from "path"
 import { AuthManager, initAuthManager, getAuthManager as getAuthManagerFromModule } from "./auth-manager"
@@ -31,14 +31,19 @@ const PROTOCOL = IS_DEV ? "ergatai-dev" : "ergatai"
 // Keep the Linux app menu and About panel on the product brand in dev mode too.
 app.name = "Ergatai"
 
-// Set dev mode userData path BEFORE requestSingleInstanceLock()
-// This ensures dev and prod have separate instance locks
-if (IS_DEV) {
-  const { join } = require("path")
-  const devUserData = join(app.getPath("userData"), "..", "Ergatai Dev")
-  app.setPath("userData", devUserData)
-  console.log("[Dev] Using separate userData path:", devUserData)
-}
+// Keep all Ergatai-owned frontend data under the same user data root as the
+// backend. Chromium runtime files still live inside this userData directory.
+// Dev/prod use sibling directories so development cannot pollute production.
+const globalDataRoot = process.env.ERGATAI_USER_DATA_DIR
+  ? process.env.ERGATAI_USER_DATA_DIR
+  : join(app.getPath("home"), ".local", "share", "ergatai")
+const frontendDataPath = join(globalDataRoot, IS_DEV ? "ui-dev" : "ui")
+mkdirSync(frontendDataPath, { recursive: true })
+app.setPath("userData", frontendDataPath)
+console.log(
+  `[Data] Using ${IS_DEV ? "development" : "production"} frontend data path:`,
+  frontendDataPath,
+)
 
 // Increase V8 old-space limit for renderer/main processes to reduce OOM frequency
 // under heavy multi-chat workloads. Must be set before app readiness/window creation.

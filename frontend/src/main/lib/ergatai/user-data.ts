@@ -155,6 +155,9 @@ export type BackendMessage = {
   from_agent_name: string | null
   message_type: string | null
   content: string | null
+  turn_id: string | null
+  projection_kind: string | null
+  origin_message_id: string | null
   created_at: number
   updated_at: number
 }
@@ -168,6 +171,50 @@ function parseJsonOr<T>(value: string | null | undefined, fallback: T): T {
   }
 }
 
+function unwrapAgentEnvelopeText(value: string | null | undefined): string | undefined {
+  if (!value) return undefined
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "message" in parsed &&
+      typeof (parsed as { message?: unknown }).message === "string"
+    ) {
+      return (parsed as { message: string }).message
+    }
+  } catch {
+    // Plain text
+  }
+  return undefined
+}
+
+function normalizePersistedMessageParts(
+  message: BackendMessage,
+): unknown[] {
+  const parts = parseJsonOr<unknown[]>(message.parts, [])
+  const structuredContent = unwrapAgentEnvelopeText(message.content) ??
+    (message.content?.trim() ? message.content : undefined)
+
+  // Inter-agent requests/responses store the original wire envelope in parts
+  // and the human-readable message in `content`. Normalizing here prevents the
+  // renderer from showing `{"from":"...", "message":"..."}` as assistant text.
+  const isEnvelopeCandidate =
+    message.role === "agent" || Boolean(message.message_type)
+  const hasTextOnlyParts =
+    parts.length > 0 &&
+    parts.every((part) => {
+      const candidate = part as { type?: unknown }
+      return candidate?.type === "text"
+    })
+
+  if (structuredContent && isEnvelopeCandidate && hasTextOnlyParts) {
+    return [{ type: "text", text: structuredContent }]
+  }
+
+  return parts
+}
+
 /**
  * Normalize a backend message into the UI message shape.
  *
@@ -176,17 +223,22 @@ function parseJsonOr<T>(value: string | null | undefined, fallback: T): T {
  * Every API boundary returning BackendMessage to the renderer should use this.
  */
 export function mapBackendMessageToUiMessage(message: BackendMessage) {
+  const parts = normalizePersistedMessageParts(message)
+
   return {
     id: String(message.message_id),
     conversationId: String(message.conversation_id),
     sequence: message.sequence,
     role: message.role,
-    parts: parseJsonOr<unknown[]>(message.parts, []),
+    parts,
     metadata: parseJsonOr<Record<string, unknown> | null>(message.metadata, null),
     fromAgentId: message.from_agent_id ?? undefined,
     fromAgentName: message.from_agent_name ?? undefined,
     messageType: message.message_type ?? undefined,
     content: message.content ?? undefined,
+    turnId: message.turn_id ?? undefined,
+    projectionKind: message.projection_kind ?? undefined,
+    originMessageId: message.origin_message_id ?? undefined,
     createdAt: message.created_at,
     updatedAt: message.updated_at,
   }
@@ -212,6 +264,9 @@ export type BackendSseMessage = {
   sender_agent_id?: string
   sender_agent_name?: string
   message_type?: string
+  turn_id?: string | null
+  projection_kind?: string | null
+  origin_message_id?: string | null
 }
 
 export type RegisteredWorktree = {

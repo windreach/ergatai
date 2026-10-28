@@ -64,6 +64,9 @@ pub(crate) async fn handle(
             target_agent,
             stream,
             sequence,
+            message_id,
+            correlation_id,
+            ..
         } => {
             let response_json = serde_json::json!({
                 "status": "queued",
@@ -71,6 +74,8 @@ pub(crate) async fn handle(
                 "delivery_method": "nats_jetstream",
                 "stream": stream,
                 "sequence": sequence,
+                "message_id": message_id,
+                "correlation_id": correlation_id,
                 "note": "Message persisted to NATS JetStream. Background consumer will deliver via ACP protocol."
             });
 
@@ -78,11 +83,18 @@ pub(crate) async fn handle(
                 serde_json::to_string_pretty(&response_json).unwrap_or_default(),
             )]))
         }
-        crate::messaging::SendMessageResult::DirectDelivered { target_agent } => {
+        crate::messaging::SendMessageResult::DirectDelivered {
+            target_agent,
+            message_id,
+            correlation_id,
+            ..
+        } => {
             let response_json = serde_json::json!({
                 "status": "direct_delivered",
                 "target_agent": target_agent,
                 "delivery_method": "acp_protocol",
+                "message_id": message_id,
+                "correlation_id": correlation_id,
                 "note": "NATS unavailable. Message delivered directly via ACP protocol (no persistence)."
             });
 

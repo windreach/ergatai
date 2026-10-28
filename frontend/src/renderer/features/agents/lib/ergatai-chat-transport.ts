@@ -17,6 +17,7 @@ import { trpcClient } from "../../../lib/trpc"
 import { useAgentConversationStore } from "../stores/conversation-store"
 import { getRuntimeSessionStore } from "../../conversation/runtime/runtime-session-store"
 import type { AgentOutputEvent } from "../../../../main/lib/ergatai/sse-client"
+import { isPersistedMessageId } from "../../../../shared/id"
 
 // ── Rust backend event types (snake_case JSON) ──
 
@@ -246,6 +247,15 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
     const messageCorrelationId =
       typeof metadata?.correlationId === "string" ? metadata.correlationId : undefined
 
+    // Only a backend-issued message ID is safe for durable deduplication.
+    // Normal optimistic messages have local IDs and must omit clientRequestId;
+    // the backend will allocate the canonical ID when it persists the message.
+    const persistedMessageId = isPersistedMessageId(metadata?.externalMessageId)
+      ? metadata.externalMessageId
+      : isPersistedMessageId(lastUser?.id)
+        ? lastUser.id
+        : undefined
+
     // Use local variable to prevent mutation leaking across calls (HIGH severity bug fix)
     let effectiveCorrelationId = messageCorrelationId || this.config.correlationId
 
@@ -390,8 +400,11 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
 
             if (isAgentToAgent) {
               // Agent-to-agent communication
-              // Generate clientRequestId for optimistic → durable replacement
-              const clientRequestId = crypto.randomUUID()
+              // Reuse an already-persisted message ID when available (for
+              // example, auto-triggering a message written by chats.create).
+              // Otherwise omit the ID and let the backend assign its canonical
+              // Snowflake message ID.
+              const clientRequestId = persistedMessageId
               const result = await trpcClient.ergatai.sendMessage.mutate({
                 agentId: effectiveAgentId,
                 message: prompt,
@@ -406,9 +419,10 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               // sendMessage returns status + session_id; no prompt_id for agent-to-agent path
               promptId = (result as SendMessageResult | null)?.session_id ?? null
             } else {
-              // Generate clientRequestId for optimistic → durable replacement
-              // Use effectiveCorrelationId if provided (for interrupt queue matching), otherwise generate new
-              const clientRequestId = effectiveCorrelationId ?? crypto.randomUUID()
+              // Reuse an already-persisted message ID when available. For a new
+              // optimistic message, let the backend assign the canonical ID; do
+              // not create frontend UUIDs for durable message metadata.
+              const clientRequestId = persistedMessageId
               const promptResult = await trpcClient.ergatai.promptAgent.mutate({
                 agentId: effectiveAgentId,
                 message: prompt,

@@ -131,8 +131,11 @@ export const workspaceCollaborationModesAtom = atomWithWindowStorage<
   Record<string, CollaborationMode>
 >("agents:workspaceCollaborationModes", {}, { getOnInit: true })
 
-// Selected agent chat ID - null means "new chat" view (not persisted, always starts fresh)
-export const selectedAgentChatIdAtom = atom<string | null>(null)
+// Selected agent chat ID - null means "new chat" view. Persist per window so a
+// page reload restores the same chat without sharing selection across windows.
+export const selectedAgentChatIdAtom = atomWithWindowStorage<
+  string | null
+>("agents:selectedChatId", null, { getOnInit: true })
 
 // Selected workspace IDs are isolated by collaboration mode so switching modes
 // never leaks one mode's active workspace into the other.

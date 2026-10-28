@@ -9,7 +9,7 @@
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import * as crypto from "crypto"
+import { randomToken } from "../../../shared/id"
 import { authIdSchema } from "../validation/ids"
 
 export const ERGATAI_API_URL =
@@ -133,7 +133,7 @@ function readOrGenerateToken(): string | null {
       // Still doesn't exist, generate it
     }
 
-    const token = crypto.randomUUID()
+    const token = randomToken(32)
     fs.mkdirSync(path.dirname(tokenPath), { recursive: true })
     fs.writeFileSync(tokenPath, token, { mode: 0o600 })
     cachedToken = token
@@ -180,26 +180,33 @@ interface ErgataiFetchOptions extends RequestInit {
   silentStatus?: number[]
 }
 
-export async function ergataiFetch<T>(
-  path: string,
-  init?: ErgataiFetchOptions,
-): Promise<T> {
-  const { apiUrl, token } = getErgataiAuthConfig()
+const DEFAULT_TIMEOUT_MS = 10_000
+const LONG_RUNNING_TIMEOUT_MS = 120_000
 
-  // Default 10s timeout; allow override via init.signal for long-running ops
-  const DEFAULT_TIMEOUT_MS = 10_000
+/** Server statuses worth one automatic retry on idempotent requests */
+const RETRYABLE_STATUS_CODES = new Set([502, 503, 504])
+
+/**
+ * Run a single request attempt with its own timeout budget.
+ *
+ * Network-level failures propagate as raw `TypeError`s so the retry layer in
+ * `ergataiFetch` can distinguish them from API-level errors.
+ */
+async function performErgataiRequest<T>(
+  url: string,
+  init: ErgataiFetchOptions | undefined,
+  token: string | null,
+): Promise<T> {
   const isLongRunning = init?.method === "POST"
   const timeoutController = new AbortController()
   const timeout = setTimeout(
     () => timeoutController.abort(),
-    isLongRunning ? 120_000 : DEFAULT_TIMEOUT_MS,
+    isLongRunning ? LONG_RUNNING_TIMEOUT_MS : DEFAULT_TIMEOUT_MS,
   )
   const abortHandler = () => timeoutController.abort()
   init?.signal?.addEventListener("abort", abortHandler, { once: true })
 
   try {
-    const url = `${apiUrl}${path}`
-
     const headers: Record<string, string> = {
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -246,13 +253,62 @@ export async function ergataiFetch<T>(
       console.error(`[ergataiFetch] Failed to parse JSON: ${text}`)
       throw new ErgataiApiError(0, `Failed to parse response: ${text.substring(0, 100)}`)
     }
-  } catch (error) {
-    if (error instanceof ErgataiApiError) throw error
-    if (init?.signal?.aborted) throw error
-    console.error(`[ergataiFetch] Request failed:`, error)
-    throw new ErgataiApiError(0, `Ergatai API request failed: ${String(error)}`)
   } finally {
     clearTimeout(timeout)
     init?.signal?.removeEventListener("abort", abortHandler)
+  }
+}
+
+function retryDelayMs(error: unknown): number {
+  return error instanceof TypeError ? 300 : 1_000
+}
+
+function isRetryableErgataiError(error: unknown): boolean {
+  // Network-level failure (e.g. the backend dropped the connection:
+  // TypeError "fetch failed" caused by UND_ERR_SOCKET "other side closed")
+  if (error instanceof TypeError) return true
+  return (
+    error instanceof ErgataiApiError &&
+    RETRYABLE_STATUS_CODES.has(error.status)
+  )
+}
+
+export async function ergataiFetch<T>(
+  path: string,
+  init?: ErgataiFetchOptions,
+): Promise<T> {
+  const { apiUrl, token } = getErgataiAuthConfig()
+  const url = `${apiUrl}${path}`
+  // Only retry requests that are safe to repeat automatically. POSTs may have
+  // side effects (create chat, send message, ...) and must surface failures.
+  const isIdempotentGet = !init?.method || init.method === "GET"
+  const MAX_ATTEMPTS = 2
+
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await performErgataiRequest<T>(url, init, token)
+    } catch (error) {
+      const callerAborted = init?.signal?.aborted === true
+      const canRetry =
+        attempt < MAX_ATTEMPTS &&
+        !callerAborted &&
+        isIdempotentGet &&
+        isRetryableErgataiError(error)
+
+      if (!canRetry) {
+        if (error instanceof ErgataiApiError) throw error
+        if (callerAborted) throw error
+        console.error(`[ergataiFetch] Request failed:`, error)
+        throw new ErgataiApiError(0, `Ergatai API request failed: ${String(error)}`)
+      }
+
+      const delayMs = retryDelayMs(error)
+      console.warn(
+        `[ergataiFetch] Transient failure on ${init?.method || "GET"} ${redactUrlPath(url)}` +
+          `, retrying in ${delayMs}ms (attempt ${attempt + 1}/${MAX_ATTEMPTS}):`,
+        String(error),
+      )
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+    }
   }
 }

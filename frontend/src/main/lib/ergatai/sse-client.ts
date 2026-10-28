@@ -173,7 +173,7 @@ const agentOutputEventSchema = z.discriminatedUnion("type", [
     conversation_id: z.string().nullish(),
   }),
   z.object({ type: z.literal("done"), stop_reason: z.string(), conversation_id: z.string().nullish() }),
-  z.object({ type: z.literal("turn_started"), role: z.string().nullish(), conversation_id: z.string().nullish() }),
+  z.object({ type: z.literal("turn_started"), role: z.string().nullish(), turn_id: z.string().nullish(), conversation_id: z.string().nullish() }),
   z.object({ type: z.literal("error"), message: z.string(), conversation_id: z.string().nullish() }),
   z.object({
     type: z.literal("conversation_message"),
@@ -270,7 +270,7 @@ export type AgentOutputEvent =
   | ({ type: "subagent_spawned"; subagent_session_id: string; name: string; task: string; role?: string | null } & AgentOutputEventContext)
   | ({ type: "subagent_state_update"; subagent_session_id: string; state: string; role?: string | null } & AgentOutputEventContext)
   | ({ type: "done"; stop_reason: string } & AgentOutputEventContext)
-  | ({ type: "turn_started"; role?: string | null } & AgentOutputEventContext)
+  | ({ type: "turn_started"; role?: string | null; turn_id?: string | null } & AgentOutputEventContext)
   | ({ type: "error"; message: string } & AgentOutputEventContext)
   | ({
       type: "conversation_message"
@@ -611,6 +611,9 @@ function convertSseMessageToBackend(sseMsg: BackendSseMessage): BackendMessage {
     from_agent_name: sseMsg.sender_agent_name ?? null,
     message_type: sseMsg.message_type ?? null,
     content: sseMsg.content ?? null,
+    turn_id: sseMsg.turn_id ?? null,
+    projection_kind: sseMsg.projection_kind ?? null,
+    origin_message_id: sseMsg.origin_message_id ?? null,
     created_at: sseMsg.timestamp,
     updated_at: sseMsg.timestamp,
   }
