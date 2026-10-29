@@ -1654,6 +1654,9 @@ pub async fn send_message(
                                 status: "ready".to_string(),
                                 created_at: now,
                                 updated_at: now,
+                                context_used: 0,
+                                context_window: 0,
+                                context_updated_at: 0,
                             },
                         )?;
                         Ok(conversation_id_i64_for_create)
@@ -3459,6 +3462,9 @@ pub async fn prompt_agent(
             status: "active".to_string(),
             created_at: now,
             updated_at: now,
+            context_used: 0,
+            context_window: 0,
+            context_updated_at: 0,
         };
 
         if let Err(e) =

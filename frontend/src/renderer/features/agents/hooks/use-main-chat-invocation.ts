@@ -5,13 +5,13 @@
  * This hook provides a compatibility layer between the existing Chat instance
  * and the new ConversationInvocationService.
  *
- * Phase 10: Progressive migration - uses new service for queue management,
- * while keeping existing Chat instance for message rendering and streaming.
+ * Phase 10: Progressive migration - uses the invocation service for queue
+ * management and the RuntimeSessionStore for merged message rendering.
  *
  * Phase 16: Fixed duplicate Chat instance issue and registered runtime adapter.
  * - Now accepts an existing chat instance instead of creating a new one
  * - Registers adapter to delegate message sending to existing Chat
- * - Only manages queue and session state via new service
+ * - Bridges raw message sources into the runtime store, which owns merging
  * - Does not create duplicate Chat/transport state
  */
 
@@ -19,9 +19,46 @@ import { useCallback, useEffect, useMemo } from "react"
 import { useConversationInvocation, useSessionState } from "../../conversation/runtime/use-conversation-invocation"
 import { getAdapterRegistry, type AdapterState } from "../../conversation/runtime/runtime-adapter"
 import type { ConversationStatus } from "../../conversation/runtime/contracts"
+import { useRuntimeSessionSources } from "../../conversation/runtime/use-runtime-session-sources"
+import type { Message } from "../stores/message-store"
 import { MENTION_PREFIXES } from "../../mentions/types"
 import { utf8ToBase64 } from "../utils/base64"
 import type { ChatConversation } from "@/features/details-sidebar/lib/chat-contract-api"
+
+/**
+ * Raw message shape from various sources (backend API, Chat instance, etc.).
+ * These are transformed into Message objects via toSessionMessage().
+ * TODO: Replace with proper API response types once backend typing is standardized.
+ */
+type RawMessage = Record<string, unknown> & {
+  id: string
+  role: string
+  parts?: unknown[]
+  metadata?: Record<string, unknown>
+  sequence?: number
+  createdAt?: string | number | Date
+}
+
+const EMPTY_PERSISTED_MESSAGES: RawMessage[] = []
+
+function toSessionMessage(message: RawMessage): Message {
+  const metadata = message.metadata
+  const runtimeSequence = metadata?.runtimeSequence
+
+  return {
+    id: message.id,
+    role: message.role,
+    parts: message.parts ?? [],
+    metadata,
+    sequence:
+      typeof message.sequence === "number"
+        ? message.sequence
+        : typeof runtimeSequence === "number"
+          ? (runtimeSequence as number)
+          : undefined,
+    createdAt: message.createdAt ? new Date(message.createdAt as string | number | Date) : undefined,
+  }
+}
 
 /**
  * Chat instance API (subset of Chat interface we need).
@@ -48,12 +85,18 @@ export function useMainChatInvocation({
   chatId,
   agentId,
   isActive = true,
+  persistedMessages,
+  runtimeMessages = [],
   existingChat,
 }: {
-  conversation: ChatConversation & { messages?: any[] }
+  conversation: ChatConversation & { messages?: RawMessage[] }
   chatId: string
   agentId?: string | null
   isActive?: boolean
+  /** Durable messages from the chat snapshot, separate from local streaming. */
+  persistedMessages?: RawMessage[]
+  /** Live output events for turns started by the backend scheduler. */
+  runtimeMessages?: RawMessage[]
   /** Existing Chat instance to avoid creating duplicate */
   existingChat?: ChatInstanceAPI
 }) {
@@ -65,6 +108,41 @@ export function useMainChatInvocation({
 
   // Get session state from new service
   const sessionState = useSessionState(runtimeConversationId)
+
+  const safePersistedMessages = persistedMessages ?? EMPTY_PERSISTED_MESSAGES
+  const persistedSessionMessages = useMemo(
+    () => safePersistedMessages.map(toSessionMessage),
+    [safePersistedMessages],
+  )
+
+  const rawLocalMessages = existingChat?.messages ?? []
+  const isLocalStreaming =
+    existingChat?.status === "streaming" || existingChat?.status === "submitted"
+  const localSessionMessages = useMemo(
+    () => rawLocalMessages.map(toSessionMessage),
+    [rawLocalMessages],
+  )
+
+  // While the local transport streams the current turn, clear the backend
+  // preview source. Local Chat is the freshest view of that same turn.
+  const backendRuntimeMessages = useMemo(
+    () => (isLocalStreaming ? [] : runtimeMessages.map(toSessionMessage)),
+    [isLocalStreaming, runtimeMessages],
+  )
+
+  // The hook only ingests raw sources. RuntimeSessionStore owns merging and
+  // produces the stable visibleMessages snapshot consumed by the UI.
+  useRuntimeSessionSources({
+    conversationId: runtimeConversationId,
+    persistedMessages: persistedSessionMessages,
+    localMessages: localSessionMessages,
+    backendRuntimeMessages,
+  })
+
+  const visibleMessages =
+    sessionState?.visibleMessages && sessionState.visibleMessages.length > 0
+      ? sessionState.visibleMessages
+      : rawLocalMessages
 
   // Phase 16: Register runtime adapter that delegates to existing Chat instance
   // This allows the service to leverage AI SDK's stream handling
@@ -314,6 +392,9 @@ export function useMainChatInvocation({
       // From existing chat instance (if provided)
       ...existingChat,
 
+      // Main chat now renders through the same merged runtime view as side chat.
+      messages: visibleMessages,
+
       // Overridden methods
       handleSend,
       handleSendFromQueue,
@@ -338,6 +419,7 @@ export function useMainChatInvocation({
     }),
     [
       existingChat,
+      visibleMessages,
       handleSend,
       handleSendFromQueue,
       handleStop,

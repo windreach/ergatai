@@ -728,6 +728,10 @@ async fn send_output_event_internal(
                 AgentOutputEvent::SessionTitleUpdate { title, .. } => {
                     acc.set_session_title(title.clone());
                 }
+                AgentOutputEvent::ContextUsage { used, size } => {
+                    tracing::info!(used = used, size = size, "Accumulating context_usage event");
+                    acc.set_context_usage(*used, *size);
+                }
                 _ => {}
             }
         } else {
@@ -752,7 +756,7 @@ async fn send_output_event_internal(
         .or(conversation_id);
     if let Some(publisher) = crate::output_publisher::get_global_output_publisher() {
         if let Some(conv_id) = conv_id_for_publish {
-            if let Err(e) = publisher.publish(conv_id, event) {
+            if let Err(e) = publisher.publish(conv_id, event).await {
                 tracing::warn!(
                     conversation_id = %conv_id,
                     error = %e,
@@ -861,10 +865,94 @@ async fn handle_standard_session_notification(
                 "ACP usage update"
             );
             usage.record(usage_update.used as usize, usage_update.size as usize);
+
+            // Try to accumulate in the active turn (if any)
+            let token = turn_token.read().clone();
+            if let Some(ref t) = token {
+                if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry()
+                {
+                    if let Some(accumulator) = registry.get(t).await {
+                        let mut acc = accumulator.lock().await;
+                        tracing::info!(
+                            used = usage_update.used,
+                            size = usage_update.size,
+                            "Accumulating context_usage in active turn"
+                        );
+                        acc.set_context_usage(usage_update.used, usage_update.size);
+                    }
+                }
+            } else {
+                tracing::debug!("No active turn token, skipping context_usage accumulation");
+            }
+
+            // Always push context usage snapshot via SSE for frontend animation
+            // This does NOT require a turn token - it's just for UI updates
+            info!(
+                used = usage_update.used,
+                size = usage_update.size,
+                conversation_id = %conversation_id,
+                "Sending ContextUsage event to frontend (via SSE)"
+            );
+            send_output_event_internal(
+                token.as_ref(),
+                Some(conversation_id),
+                AgentOutputEvent::ContextUsage {
+                    used: usage_update.used,
+                    size: usage_update.size,
+                },
+            )
+            .await;
         }
         SessionUpdate::ToolCall(tc) => {
+            let tool_call_id = tc.tool_call_id.to_string();
+
+            // Check if we've already processed this tool call ID.
+            // claude-code ACP sends tool_call notifications in two phases:
+            // 1st: tool starts with empty rawInput (quick UI feedback)
+            // 2nd: rawInput is populated with actual parameters
+            // We should update the existing record and emit ToolCallInput event,
+            // not simply skip the duplicate.
+            let is_duplicate = tool_calls.has_been_seen(&tool_call_id);
+
+            if is_duplicate {
+                // Check if rawInput has been updated (non-empty now)
+                let has_input = tc
+                    .raw_input
+                    .as_ref()
+                    .map(|v| !v.is_null() && v.as_object().is_some_and(|o| !o.is_empty()))
+                    .unwrap_or(false);
+
+                if has_input {
+                    debug!(
+                        id = %tool_call_id,
+                        title = %tc.title,
+                        "Tool call input updated, emitting ToolCallInput event"
+                    );
+                    // Emit ToolCallInput event to update frontend with actual parameters
+                    send_output_event_with_turn_token(
+                        turn_token,
+                        conversation_id,
+                        AgentOutputEvent::ToolCallInput {
+                            role: "assistant".to_string(),
+                            id: tool_call_id.clone(),
+                            delta: serde_json::to_string(&tc.raw_input).unwrap_or_default(),
+                        },
+                    )
+                    .await;
+                } else {
+                    debug!(
+                        id = %tool_call_id,
+                        title = %tc.title,
+                        "Duplicate tool call start with no input update, skipping"
+                    );
+                }
+                // Update the tracked record (in case other fields changed)
+                tool_calls.record_initial(tc);
+                return;
+            }
+
             debug!(
-                id = %tc.tool_call_id,
+                id = %tool_call_id,
                 title = %tc.title,
                 kind = ?tc.kind,
                 "ACP tool call started"
@@ -1396,6 +1484,15 @@ pub enum AgentOutputEvent {
         sender_agent_id: Option<String>,
         sender_agent_name: Option<String>,
     },
+    /// Context window usage snapshot from ACP UsageUpdate.
+    /// Pushed via SSE so the frontend can animate the token counter.
+    /// The final value is persisted to the database when the turn completes.
+    ContextUsage {
+        /// Tokens currently used in context
+        used: u64,
+        /// Total context window size
+        size: u64,
+    },
 }
 
 /// Helper function to evict oldest entries when a tracker reaches capacity.
@@ -1465,6 +1562,14 @@ impl ToolCallTracker {
             order: RwLock::new(VecDeque::new()),
             max_entries,
         }
+    }
+
+    /// Check if a tool call ID has been seen before.
+    ///
+    /// This is used for deduplication to prevent processing the same
+    /// `SessionUpdate::ToolCall` notification multiple times.
+    fn has_been_seen(&self, tool_call_id: &str) -> bool {
+        self.calls.read().contains_key(tool_call_id)
     }
 
     /// Record the initial creation of a tool call (from `SessionUpdate::ToolCall`).

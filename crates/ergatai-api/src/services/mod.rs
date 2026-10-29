@@ -15,6 +15,7 @@ pub mod collaboration_session_service;
 pub mod conversation_runtime;
 pub mod conversation_service;
 pub mod dag_service;
+pub mod initial_prompt_turns;
 pub mod lock_service;
 pub mod message_service;
 pub mod nats_interrupt_event_publisher;

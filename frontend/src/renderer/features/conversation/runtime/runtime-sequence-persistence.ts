@@ -43,9 +43,10 @@ export function readPersistedSequence(conversationId: string): number | null {
 
     const key = getSequenceStorageKey(conversationId)
     const value = localStorage.getItem(key)
-    if (value === null) return null
+    if (value === null || value.trim() === "") return null
 
-    // Use Number() instead of parseInt() to properly validate numeric input
+    // Use Number() to validate numeric input; sequence numbers must be
+    // non-negative integers.
     const parsed = Number(value)
     return Number.isInteger(parsed) && parsed >= 0 ? parsed : null
   } catch (error) {

@@ -122,6 +122,31 @@ describe("RuntimeSessionStore", () => {
       expect(state?.visibleMessages).toHaveLength(1)
     })
 
+    it("should not notify when runtime messages are structurally unchanged", () => {
+      const store = getRuntimeSessionStore()
+      store.ensureSession("conv-1")
+
+      const listener = vi.fn()
+      const unsubscribe = store.subscribe("conv-1", listener)
+
+      const message: Message = {
+        id: "msg-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "Hello" }],
+        metadata: { turn: 1 },
+      } as Message
+
+      store.setRuntimeMessages("conv-1", [message])
+      expect(listener).toHaveBeenCalledTimes(1)
+
+      // A recreated array is common when a component projects the store back
+      // into itself. It must not create another state snapshot.
+      store.setRuntimeMessages("conv-1", [{ ...message }])
+      expect(listener).toHaveBeenCalledTimes(1)
+
+      unsubscribe()
+    })
+
     it("should add runtime messages with sequence numbers", () => {
       const store = getRuntimeSessionStore()
       store.ensureSession("conv-1")
@@ -166,6 +191,50 @@ describe("RuntimeSessionStore", () => {
         type: "text",
         text: "Updated",
       })
+    })
+
+    it("should merge source channels and let local transport override live backend turns", () => {
+      const store = getRuntimeSessionStore()
+      store.ensureSession("conv-1")
+
+      const persistedMessage: Message = {
+        id: "durable-1",
+        role: "user",
+        parts: [{ type: "text", text: "Durable user" }],
+        sequence: 0,
+      } as Message
+      const backendMessage: Message = {
+        id: "live-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "Backend preview" }],
+      } as Message
+      const localMessage: Message = {
+        id: "live-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "Local stream" }],
+      } as Message
+
+      store.setPersistedMessages("conv-1", [persistedMessage])
+      store.setRuntimeMessages("conv-1", [backendMessage])
+      store.setLocalMessages("conv-1", [localMessage])
+
+      const state = store.getRuntimeState("conv-1")
+      expect(state?.visibleMessages.map((message) => message.id)).toEqual([
+        "durable-1",
+        "live-1",
+      ])
+      expect(state?.visibleMessages[1]?.parts).toEqual([
+        { type: "text", text: "Local stream" },
+      ])
+
+      // Clearing a source removes only that source's messages.
+      store.setRuntimeMessages("conv-1", [])
+      expect(store.getRuntimeState("conv-1")?.runtimeMessages).toHaveLength(0)
+      expect(store.getRuntimeState("conv-1")?.localMessages).toHaveLength(1)
+      expect(store.getRuntimeState("conv-1")?.visibleMessages.map((message) => message.id)).toEqual([
+        "durable-1",
+        "live-1",
+      ])
     })
 
     it("should sort messages by sequence number", () => {
@@ -274,31 +343,6 @@ describe("RuntimeSessionStore", () => {
 
       const state = store.getRuntimeState("conv-1")
       expect(state?.queue[0]?.status).toBe("sending")
-    })
-  })
-
-  describe("Abort Controller Management", () => {
-    it("should set and get abort controller", () => {
-      const store = getRuntimeSessionStore()
-      store.ensureSession("conv-1")
-
-      const controller = new AbortController()
-      store.setAbortController("conv-1", controller)
-
-      const retrieved = store.getAbortController("conv-1")
-      expect(retrieved).toBe(controller)
-    })
-
-    it("should clear abort controller", () => {
-      const store = getRuntimeSessionStore()
-      store.ensureSession("conv-1")
-
-      const controller = new AbortController()
-      store.setAbortController("conv-1", controller)
-      store.setAbortController("conv-1", null)
-
-      const retrieved = store.getAbortController("conv-1")
-      expect(retrieved).toBeNull()
     })
   })
 

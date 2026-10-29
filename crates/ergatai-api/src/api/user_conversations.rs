@@ -47,6 +47,18 @@ pub struct ConversationRuntimeQuery {
     pub after_sequence: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateInitialPromptRequest {
+    pub message_id: String,
+    pub client_request_id: String,
+    pub agent_command: String,
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default)]
+    pub images: Vec<ergatai_runtime::AgentImage>,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorResponse {
     pub error: String,
@@ -1059,6 +1071,123 @@ pub async fn create_conversation_messages(
     }
 }
 
+/// POST /api/v1/conversations/{id}/initial-prompt
+///
+/// Persistently schedule the first prompt of a new chat. The message itself has
+/// already been persisted by `chats.create`; this endpoint only records the
+/// one-shot delivery state. The scheduler may spawn the conversation agent.
+pub async fn create_initial_prompt(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<CreateInitialPromptRequest>,
+) -> Response {
+    let conversation_id =
+        match crate::http_error::parse_typed_id::<ConversationId>(&id, "Conversation") {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
+
+    let conversation = match tokio::task::spawn_blocking(move || {
+        crate::user_data_db::conversations::get(conversation_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(conversation))) => conversation,
+        Ok(Ok(None)) => {
+            return crate::http_error::not_found("Conversation", &id).into_response();
+        }
+        Ok(Err(error)) => return db_error("Failed to load conversation", error),
+        Err(error) => {
+            return crate::http_error::internal(error, "initial_prompt_conversation_join")
+                .into_response()
+        }
+    };
+
+    let workspace_id = match tokio::task::spawn_blocking(move || {
+        crate::user_data_db::conversations::resolve_workspace_id(conversation.conversation_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(workspace_id))) => workspace_id,
+        Ok(Ok(None)) => {
+            return crate::http_error::not_found("Conversation workspace", &id).into_response();
+        }
+        Ok(Err(error)) => {
+            return db_error("Failed to resolve conversation workspace", error);
+        }
+        Err(error) => {
+            return crate::http_error::internal(error, "initial_prompt_workspace_join")
+                .into_response()
+        }
+    };
+
+    let message_id = match MessageId::decode(&request.message_id) {
+        Ok(id) => id,
+        Err(_) => {
+            return crate::http_error::bad_request("Invalid initial message ID").into_response();
+        }
+    };
+    if MessageId::decode(&request.client_request_id).is_err() {
+        return crate::http_error::bad_request("Invalid client request ID").into_response();
+    }
+    if request.agent_command.trim().is_empty() {
+        return crate::http_error::bad_request("Agent command is required").into_response();
+    }
+    for (index, image) in request.images.iter().enumerate() {
+        if let Err(reason) = image.validate() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid image attachment at index {}: {}", index, reason),
+                }),
+            )
+                .into_response();
+        }
+    }
+    if request.prompt.trim().is_empty() && request.images.is_empty() {
+        return crate::http_error::bad_request("Initial prompt is empty").into_response();
+    }
+
+    let input = crate::services::initial_prompt_turns::InitialPromptInput {
+        conversation_id,
+        chat_id: conversation.chat_id,
+        workspace_id,
+        message_id,
+        client_request_id: request.client_request_id,
+        agent_command: request.agent_command,
+        prompt: request.prompt,
+        images: request.images,
+    };
+
+    match crate::services::initial_prompt_turns::enqueue(input) {
+        Ok(turn) => (StatusCode::ACCEPTED, Json(turn)).into_response(),
+        Err(error) => crate::http_error::internal(error, "create_initial_prompt").into_response(),
+    }
+}
+
+/// GET /api/v1/conversations/{id}/initial-prompt
+pub async fn get_initial_prompt(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    let conversation_id =
+        match crate::http_error::parse_typed_id::<ConversationId>(&id, "Conversation") {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
+
+    match tokio::task::spawn_blocking(move || {
+        crate::services::initial_prompt_turns::get_by_conversation(conversation_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(turn))) => (StatusCode::OK, Json(turn)).into_response(),
+        Ok(Ok(None)) => crate::http_error::not_found("Initial prompt", &id).into_response(),
+        Ok(Err(error)) => crate::http_error::internal(error, "get_initial_prompt").into_response(),
+        Err(error) => crate::http_error::internal(error, "get_initial_prompt_join").into_response(),
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/api/v1/conversations/{id}/file-changes",
@@ -1937,6 +2066,9 @@ pub async fn create_conversation(
         status: "ready".to_string(),
         created_at: now,
         updated_at: now,
+        context_used: 0,
+        context_window: 0,
+        context_updated_at: 0,
     };
 
     match tokio::task::spawn_blocking(move || user_data_db::conversations::create(conversation))
@@ -1955,4 +2087,77 @@ pub async fn create_conversation(
         )
             .into_response(),
     }
+}
+
+// ── Context Usage ────────────────────────────────────────────────────────────
+
+/// Response for context usage endpoint.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ContextUsageResponse {
+    pub conversation_id: String,
+    pub context_used: i64,
+    pub context_window: i64,
+    pub percent_used: f64,
+    pub updated_at: i64,
+}
+
+/// Get ACP context window usage for a conversation.
+///
+/// Returns the latest snapshot from ACP UsageUpdate notifications.
+#[utoipa::path(
+    get,
+    path = "/api/v1/conversations/{id}/context-usage",
+    tag = "Conversations",
+    params(("id" = String, Path, description = "Conversation ID")),
+    responses(
+        (status = 200, description = "Context usage", body = ContextUsageResponse),
+        (status = 404, description = "Conversation not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn get_conversation_context_usage(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    let id_i64 = match crate::http_error::parse_typed_id::<ConversationId>(&id, "Conversation") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
+    };
+
+    let conversation =
+        match tokio::task::spawn_blocking(move || crate::user_data_db::conversations::get(id_i64))
+            .await
+        {
+            Ok(Ok(Some(conversation))) => conversation,
+            Ok(Ok(None)) => {
+                return crate::http_error::not_found("Conversation", &id).into_response();
+            }
+            Ok(Err(error)) => return db_error("Failed to load conversation", error),
+            Err(e) => {
+                return crate::http_error::internal(e, "load_conversation_join").into_response()
+            }
+        };
+
+    tracing::info!(
+        conversation_id = %id,
+        context_used = conversation.context_used,
+        context_window = conversation.context_window,
+        "Returning context usage for conversation"
+    );
+
+    let percent_used = if conversation.context_window > 0 {
+        (conversation.context_used as f64 / conversation.context_window as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let response = ContextUsageResponse {
+        conversation_id: id,
+        context_used: conversation.context_used,
+        context_window: conversation.context_window,
+        percent_used: percent_used.min(100.0),
+        updated_at: conversation.context_updated_at,
+    };
+
+    (StatusCode::OK, Json(response)).into_response()
 }

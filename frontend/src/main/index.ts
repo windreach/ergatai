@@ -49,6 +49,26 @@ console.log(
 // under heavy multi-chat workloads. Must be set before app readiness/window creation.
 app.commandLine.appendSwitch("js-flags", "--max-old-space-size=8192")
 
+// GPU hardware acceleration strategy:
+// - Default: enabled (for best performance on machines with proper drivers)
+// - Fallback: software rendering (if VAAPI/OpenGL initialization fails)
+// - User override: set ELECTRON_DISABLE_GPU=1 to force software rendering
+//
+// This approach ensures the app works on all machines without requiring
+// users to manually install GPU drivers (VAAPI on Linux, etc.)
+if (process.env.ELECTRON_DISABLE_GPU === "1") {
+  console.log("[GPU] Hardware acceleration disabled via ELECTRON_DISABLE_GPU=1")
+  app.disableHardwareAcceleration()
+} else {
+  console.log("[GPU] Hardware acceleration enabled (set ELECTRON_DISABLE_GPU=1 to disable)")
+
+  // Force GPU rasterization even if VAAPI fails
+  // This ensures smooth streaming rendering on machines with GPU but missing VAAPI drivers
+  app.commandLine.appendSwitch("enable-gpu-rasterization")
+  app.commandLine.appendSwitch("enable-zero-copy") // Optimize texture uploads
+  app.commandLine.appendSwitch("ignore-gpu-blacklist") // Force GPU even if blacklisted
+}
+
 // URL configuration (exported for use in other modules)
 export function getBaseUrl(): string {
   return "http://127.0.0.1"

@@ -1194,6 +1194,9 @@ impl MessageSender {
                 status: "ready".to_string(),
                 created_at: timestamp,
                 updated_at: timestamp,
+                context_used: 0,
+                context_window: 0,
+                context_updated_at: 0,
             })
             .map_err(|error| error.to_string())?;
 
@@ -1349,6 +1352,9 @@ impl MessageSender {
                     status: "ready".to_string(),
                     created_at: timestamp,
                     updated_at: timestamp,
+                    context_used: 0,
+                    context_window: 0,
+                    context_updated_at: 0,
                 },
                 crate::user_data_db::Conversation {
                     conversation_id: sender_conversation_id,
@@ -1361,6 +1367,9 @@ impl MessageSender {
                     status: "ready".to_string(),
                     created_at: timestamp,
                     updated_at: timestamp,
+                    context_used: 0,
+                    context_window: 0,
+                    context_updated_at: 0,
                 },
                 crate::user_data_db::GroupAgentBinding {
                     workspace_id,

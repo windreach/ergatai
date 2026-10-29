@@ -134,6 +134,9 @@ pub struct OutputMetadata {
     pub session_title: Option<String>,
     pub duration_ms: Option<u64>,
     pub total_tokens: Option<TokenUsage>,
+    /// ACP context window usage snapshot (from UsageUpdate)
+    pub context_used: Option<u64>,
+    pub context_window: Option<u64>,
 }
 
 /// Delivery context for an incoming prompt.
@@ -440,6 +443,12 @@ impl TurnAccumulator {
     /// Set token usage
     pub fn set_token_usage(&mut self, input: u64, output: u64) {
         self.metadata.total_tokens = Some(TokenUsage { input, output });
+    }
+
+    /// Set ACP context window usage snapshot
+    pub fn set_context_usage(&mut self, used: u64, window: u64) {
+        self.metadata.context_used = Some(used);
+        self.metadata.context_window = Some(window);
     }
 
     /// Convert to AgentOutputData (intermediate representation)

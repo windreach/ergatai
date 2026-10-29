@@ -5,6 +5,9 @@ import {
   pendingUserQuestionsAtom,
   expiredUserQuestionsAtom,
 } from "../atoms"
+import { useSessionState } from "../../conversation/runtime"
+import { trpcClient } from "../../../lib/trpc"
+import { getRuntimeSessionStore } from "../../conversation/runtime/runtime-session-store"
 
 interface UseQuestionHandlingOptions {
   conversationId: string
@@ -31,6 +34,41 @@ export function useQuestionHandling({
   )
   const expiredQuestions = expiredQuestionsMap.get(conversationId) ?? null
 
+  // Subscribe to session state for real-time ACP context usage
+  const sessionState = useSessionState(conversationId)
+
+  // Fetch initial context usage from database when conversation loads
+  useEffect(() => {
+    if (!conversationId) return
+
+    const fetchInitialContextUsage = async () => {
+      try {
+        console.log("[useQuestionHandling] Fetching initial context usage for:", conversationId)
+        const result = await trpcClient.ergatai.getConversationContextUsage.query({
+          conversationId,
+        })
+        console.log("[useQuestionHandling] Initial context usage:", result)
+        // Initialize session store with persisted context usage
+        if (result.context_used > 0 || result.context_window > 0) {
+          const sessionStore = getRuntimeSessionStore()
+          sessionStore.updateContextUsage(
+            conversationId,
+            result.context_used,
+            result.context_window,
+          )
+          console.log("[useQuestionHandling] Updated session store with initial context usage")
+        } else {
+          console.log("[useQuestionHandling] No initial context usage to set")
+        }
+      } catch (error) {
+        // Silently fail - context usage is not critical
+        console.debug("Failed to fetch initial context usage:", error)
+      }
+    }
+
+    fetchInitialContextUsage()
+  }, [conversationId])
+
   // Unified display questions: prefer pending (live), fall back to expired
   const displayQuestions = pendingQuestions ?? expiredQuestions
   const isQuestionExpired = !pendingQuestions && !!expiredQuestions
@@ -47,6 +85,7 @@ export function useQuestionHandling({
   // Pre-compute token data for ChatInputArea to avoid passing unstable messages array.
   // Prefer the latest assistant metadata that actually includes token/context fields.
   // This keeps the indicator stable while a new assistant message is streaming.
+  // Also includes real-time ACP context usage from session store (SSE-driven).
   const messageTokenData = useMemo(() => {
     const lastAssistantWithTokenData = messages.findLast((msg) => {
       if (msg.role !== "assistant" || !msg.metadata) return false
@@ -101,14 +140,19 @@ export function useQuestionHandling({
     // Keep this tied to rendered messages for memo comparator stability.
     const messageCount = messages.length
 
+    // Read real-time ACP context usage from session state (SSE-driven)
+    const contextUsed = sessionState?.contextUsed
+    const sessionContextWindow = sessionState?.contextWindow
+
     return {
       totalInputTokens,
       totalOutputTokens,
       totalCostUsd,
       messageCount,
-      contextWindow,
+      contextWindow: sessionContextWindow || contextWindow,
+      contextUsed,
     }
-  }, [messages, provider])
+  }, [messages, provider, conversationId, sessionState])
 
   // Track previous streaming state to detect stream stop
   const prevIsStreamingRef = useRef(isStreaming)

@@ -41,6 +41,9 @@ impl ConversationService {
             status: "ready".to_string(),
             created_at: now,
             updated_at: now,
+            context_used: 0,
+            context_window: 0,
+            context_updated_at: 0,
         };
 
         let conversation = conversations::create(conversation)?;
@@ -125,6 +128,9 @@ impl ConversationService {
             status: "ready".to_string(),
             created_at: now,
             updated_at: now,
+            context_used: 0,
+            context_window: 0,
+            context_updated_at: 0,
         };
 
         let child = conversations::create(child)?;

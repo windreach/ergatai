@@ -238,6 +238,9 @@ export type ConversationRuntimeState = {
   /** Runtime messages (from streaming/session) */
   runtimeMessages: Message[]
 
+  /** Raw messages owned by the local AI SDK Chat transport. */
+  localMessages: Message[]
+
   /** Visible messages (merged persisted + runtime, deduplicated) */
   visibleMessages: Message[]
 
@@ -259,6 +262,12 @@ export type ConversationRuntimeState = {
 
   /** Last runtime sequence number (for sync) */
   lastRuntimeSequence?: number
+
+  /** ACP context window: tokens currently used (real-time from SSE) */
+  contextUsed?: number
+
+  /** ACP context window: total size (real-time from SSE) */
+  contextWindow?: number
 }
 
 // ============================================================================

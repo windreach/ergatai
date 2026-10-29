@@ -34,6 +34,7 @@ import {
   updateConversation,
   updateConversationMessages,
   listConversationMessages as listMessages,
+  createInitialPromptTurn,
   type BackendMessage,
   type BackendConversation,
   type BackendChat,
@@ -81,6 +82,58 @@ type ChatsRouterConversation = {
   createdAt: Date
   updatedAt: Date
   archivedAt: Date | null
+}
+
+type InitialMessagePart =
+  | { type: "text"; text: string }
+  | {
+      type: "data-image"
+      data: {
+        url?: string
+        mediaType?: string
+        filename?: string
+        base64Data?: string
+      }
+    }
+  | { type: "file-content"; filePath: string; content: string }
+
+function extractInitialPrompt(parts: unknown[]): {
+  prompt: string
+  images: Array<{
+    base64Data: string
+    mediaType: string
+    filename: string | null
+  }>
+} {
+  const promptChunks: string[] = []
+  const images: Array<{
+    base64Data: string
+    mediaType: string
+    filename: string | null
+  }> = []
+
+  for (const part of parts) {
+    if (
+      typeof part === "object" &&
+      part !== null &&
+      "type" in part
+    ) {
+      const typedPart = part as InitialMessagePart
+      if (typedPart.type === "text") {
+        promptChunks.push(typedPart.text)
+      } else if (typedPart.type === "data-image" && typedPart.data.base64Data) {
+        images.push({
+          base64Data: typedPart.data.base64Data,
+          mediaType: typedPart.data.mediaType || "image/png",
+          filename: typedPart.data.filename ?? null,
+        })
+      } else if (typedPart.type === "file-content") {
+        promptChunks.push(`\n\n[File: ${typedPart.filePath}]\n${typedPart.content}`)
+      }
+    }
+  }
+
+  return { prompt: promptChunks.join(""), images }
 }
 
 async function resolveChatWorkspace(
@@ -562,6 +615,23 @@ export const chatsRouter = router({
         throw err
       }
 
+      // Supervisor-mode initial prompts are owned by the backend scheduler.
+      // Group chats use the explicit group dispatch path above.
+      let initialPromptTurn: Awaited<ReturnType<typeof createInitialPromptTurn>> | null = null
+      if (initialMessages.length > 0 && input.collaborationMode !== "group") {
+        const initialMessage = initialMessages[0]
+        const { prompt, images } = extractInitialPrompt(
+          Array.isArray(initialMessage.parts) ? initialMessage.parts : [],
+        )
+        initialPromptTurn = await createInitialPromptTurn(conversation.id, {
+          messageId: initialMessage.id,
+          clientRequestId: initialMessage.id,
+          agentCommand: input.agentCommand || "claude-code",
+          prompt,
+          images,
+        })
+      }
+
       const response = {
         ...chat,
         worktreePath: worktreeResult.worktreePath || project.path,
@@ -581,6 +651,7 @@ export const chatsRouter = router({
             name: input.agentCommand || "claude-code",
           },
         }],
+        initialPromptTurn,
       }
 
       // Track workspace created

@@ -24,17 +24,52 @@ FRONTEND_LOG="$LOG_DIR/frontend.log"
 rm -f "$BACKEND_LOG" "$FRONTEND_LOG"
 
 cleanup() {
-  # Kill the entire process group to catch all descendants
-  kill -- -$$ 2>/dev/null || true
+  echo ""
+  echo "── Shutting down... ──"
+
+  # Kill child processes and their descendants
+  # Use pkill with process tree to ensure all descendants are killed
+  if [[ -n "${BACKEND_PID:-}" ]]; then
+    pkill -P "$BACKEND_PID" 2>/dev/null || true
+    kill "$BACKEND_PID" 2>/dev/null || true
+  fi
+
+  if [[ -n "${FRONTEND_PID:-}" ]]; then
+    pkill -P "$FRONTEND_PID" 2>/dev/null || true
+    kill "$FRONTEND_PID" 2>/dev/null || true
+  fi
+
+  # Give processes time to gracefully shutdown
   sleep 1
-  kill -KILL -- -$$ 2>/dev/null || true
+
+  # Force kill any remaining processes
+  if [[ -n "${BACKEND_PID:-}" ]]; then
+    kill -KILL "$BACKEND_PID" 2>/dev/null || true
+  fi
+
+  if [[ -n "${FRONTEND_PID:-}" ]]; then
+    kill -KILL "$FRONTEND_PID" 2>/dev/null || true
+  fi
+
+  # Also kill any process using port 3000 (backend might have spawned children)
+  if command -v lsof >/dev/null 2>&1; then
+    local port_pid
+    port_pid=$(lsof -ti:"$API_PORT" 2>/dev/null || true)
+    if [[ -n "$port_pid" ]]; then
+      kill "$port_pid" 2>/dev/null || true
+      sleep 0.5
+      kill -KILL "$port_pid" 2>/dev/null || true
+    fi
+  fi
+
   wait 2>/dev/null || true
+
   echo ""
   echo "── Logs saved to ──"
   echo "Backend:  $BACKEND_LOG"
   echo "Frontend: $FRONTEND_LOG"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 echo "── Starting backend (ergatai-api) ──"
 cd "$ROOT_DIR"

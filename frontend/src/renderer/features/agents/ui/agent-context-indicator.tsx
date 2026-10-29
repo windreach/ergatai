@@ -25,6 +25,8 @@ export interface MessageTokenData {
   totalCostUsd: number
   messageCount: number
   contextWindow?: number
+  /** ACP context window usage (real-time snapshot from SSE) */
+  contextUsed?: number
 }
 
 interface AgentContextIndicatorProps {
@@ -103,11 +105,20 @@ export const AgentContextIndicator = memo(function AgentContextIndicator({
   isCompacting,
   disabled,
 }: AgentContextIndicatorProps) {
-  const contextTokens = tokenData.totalInputTokens
+  // Prefer ACP context_used (real-time SSE snapshot), fall back to totalInputTokens (metadata)
+  const contextTokens = tokenData.contextUsed ?? tokenData.totalInputTokens
   // Guard against division by zero: ensure contextWindow is always positive
   const contextWindow = Math.max(1, tokenData.contextWindow ?? CONTEXT_WINDOWS[modelId])
   const percentUsed = Math.min(100, (contextTokens / contextWindow) * 100)
   const isEmpty = contextTokens === 0
+
+  console.log("[AgentContextIndicator] Rendering with:", {
+    contextTokens,
+    contextWindow,
+    percentUsed,
+    isEmpty,
+    source: tokenData.contextUsed !== undefined ? "ACP" : "metadata",
+  })
 
   const isClickable = onCompact && !disabled && !isCompacting
 

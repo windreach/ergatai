@@ -831,59 +831,47 @@ export const messageTokenDataAtom = atom((get) => {
 // Key optimization: Only updates atoms for messages that actually changed.
 // ============================================================================
 
-// Track previous message state to detect changes
-// Key format: "conversationId:msgId" to isolate per chat
+// P1 IMMUTABILITY: complete fingerprint + deep clone + deep freeze.
 //
-// NOTE: This is a simplified change detection optimized for streaming performance.
-// It only checks the LAST part (partsLength + lastPartText + lastPartState).
-// During streaming, only the last part changes, so this is sufficient and fast.
+// The AI SDK mutates its message objects in place, so object identity cannot
+// be used to detect changes. Instead:
+// 1. A COMPLETE content fingerprint (JSON of the whole message) detects every
+//    change — including non-last parts and nested input/output fields that the
+//    previous partial diff (last part only) silently missed.
+// 2. Changed messages are stored as deep-cloned, deep-frozen snapshots, so
+//    atoms always hold immutable values and downstream memoization can rely
+//    on plain identity comparison. No external change-tracking caches needed.
 //
-// Compare with messages-list.tsx which uses a more thorough check (all parts'
-// textLengths[] and partStates[]) for useSyncExternalStore. That approach is
-// more comprehensive but slightly slower. Both are correct for their use cases:
-// - This (message-store): Jotai atom updates during high-frequency streaming
-// - messages-list.tsx: External store subscription for React render triggering
-const previousMessageState = new Map<string, {
-  partsLength: number
-  lastPartText: string | undefined
-  lastPartState: string | undefined
-  lastPartInputJson: string | undefined
-  metadataJson: string | undefined
-}>()
+// Perf note: fingerprinting JSON-stringifies every message on every sync tick.
+// If profiling shows this matters on very long chats, cache fingerprints per
+// source-object reference (WeakMap) and recompute only the streaming message.
+const messageFingerprints = new Map<string, string>()
 
-function hasMessageChanged(conversationId: string, msgId: string, msg: Message): boolean {
-  const cacheKey = `${conversationId}:${msgId}`
-  const prev = previousMessageState.get(cacheKey)
-  const parts = msg.parts || []
-  const lastPart = parts[parts.length - 1]
-
-  const current = {
-    partsLength: parts.length,
-    lastPartText: lastPart?.text,
-    lastPartState: lastPart?.state,
-    lastPartInputJson: lastPart?.input ? JSON.stringify(lastPart.input) : undefined,
-    // Include metadata in change detection to ensure token usage, costs, etc.
-    // appear after stream completion (fixes race condition on fast streams)
-    metadataJson: msg.metadata ? JSON.stringify(msg.metadata) : undefined,
+function deepClonePlain<T>(value: T): T {
+  if (value instanceof Date) {
+    return new Date(value.getTime()) as unknown as T
   }
-
-  if (!prev) {
-    previousMessageState.set(cacheKey, current)
-    return true
+  if (Array.isArray(value)) {
+    return value.map((item) => deepClonePlain(item)) as unknown as T
   }
-
-  const changed =
-    prev.partsLength !== current.partsLength ||
-    prev.lastPartText !== current.lastPartText ||
-    prev.lastPartState !== current.lastPartState ||
-    prev.lastPartInputJson !== current.lastPartInputJson ||
-    prev.metadataJson !== current.metadataJson
-
-  if (changed) {
-    previousMessageState.set(cacheKey, current)
+  if (value !== null && typeof value === "object") {
+    const clone: Record<string, unknown> = {}
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      clone[key] = deepClonePlain(val)
+    }
+    return clone as T
   }
+  return value
+}
 
-  return changed
+function freezeDeep<T>(value: T): T {
+  if (value !== null && typeof value === "object") {
+    Object.freeze(value)
+    for (const val of Object.values(value as Record<string, unknown>)) {
+      freezeDeep(val)
+    }
+  }
+  return value
 }
 
 export const syncMessagesWithStatusAtom = atom(
@@ -981,24 +969,17 @@ export const syncMessagesWithStatusAtom = atom(
     // 1. msg object itself is mutated in-place
     // 2. msg.parts array is mutated in-place
     // 3. Individual part objects inside parts are mutated in-place
-    const lastMessageId = newIds[newIds.length - 1] ?? null
     for (const msg of messages) {
       const messageKey = getPerChatMessageKey(currentConversationId, msg.id)
       const currentAtomValue = get(messageAtomFamily(messageKey))
-      const msgChanged = hasMessageChanged(currentConversationId, msg.id, msg)
-      const isLastMessage = msg.id === lastMessageId
+      const fingerprint = JSON.stringify(msg)
 
-      // CRITICAL FIX: Also update if atom is null (not yet populated)
-      // Always refresh the last message because AI SDK can mutate non-last parts
-      // of the current streaming assistant message without changing the last part.
-      if (msgChanged || !currentAtomValue || isLastMessage) {
-        // Deep clone message with new parts array and new part objects
-        const clonedMsg = {
-          ...msg,
-          parts: msg.parts?.map((part: any) => ({ ...part, input: part.input ? { ...part.input } : undefined })),
-        }
-
-        set(messageAtomFamily(messageKey), clonedMsg)
+      // Update the atom only when content actually changed. The fingerprint is
+      // complete, so this catches every in-place mutation of the streaming
+      // message (all parts, not just the last one) while skipping no-op syncs.
+      if (currentAtomValue === null || messageFingerprints.get(messageKey) !== fingerprint) {
+        messageFingerprints.set(messageKey, fingerprint)
+        set(messageAtomFamily(messageKey), freezeDeep(deepClonePlain(msg)))
       }
     }
 
@@ -1010,7 +991,7 @@ export const syncMessagesWithStatusAtom = atom(
         // Message was removed - cleanup its atom and caches
         const messageKey = getPerChatMessageKey(currentConversationId, oldId)
         messageAtomFamily.remove(messageKey)
-        previousMessageState.delete(`${currentConversationId}:${oldId}`)
+        messageFingerprints.delete(getPerChatMessageKey(currentConversationId, oldId))
         assistantIdsCacheByChat.delete(`${currentConversationId}:${oldId}`)
         assistantIdsPerChatCache.delete(`${currentConversationId}:::${oldId}`)
         isLastMessagePerChatAtomFamily.remove(`${currentConversationId}:::${oldId}`)
@@ -1087,7 +1068,7 @@ export function clearConversationCaches(conversationId: string): {
       }
 
       messageAtomFamily.remove(messageKey)
-      previousMessageState.delete(`${conversationId}:${id}`)
+      messageFingerprints.delete(messageKey)
       assistantIdsCacheByChat.delete(`${conversationId}:${id}`)
       assistantIdsPerChatCache.delete(`${conversationId}:::${id}`)
       isLastMessagePerChatAtomFamily.remove(`${conversationId}:::${id}`)

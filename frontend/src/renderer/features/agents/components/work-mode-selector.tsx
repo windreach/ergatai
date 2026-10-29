@@ -15,6 +15,7 @@ interface WorkModeSelectorProps {
   value: WorkMode
   onChange: (mode: WorkMode) => void
   disabled?: boolean
+  worktreeAvailable?: boolean
 }
 
 const workModeOptions: Array<{
@@ -38,6 +39,7 @@ export function WorkModeSelector({
   value,
   onChange,
   disabled,
+  worktreeAvailable = true,
 }: WorkModeSelectorProps) {
   const [open, setOpen] = useState(false)
   const selectedOption = workModeOptions.find((opt) => opt.id === value) || workModeOptions[1]
@@ -65,7 +67,7 @@ export function WorkModeSelector({
         {workModeOptions.map((option) => {
           const OptionIcon = option.icon
           const isSelected = value === option.id
-          const isDisabled = false
+          const isDisabled = option.id === "worktree" && !worktreeAvailable
           const isSoon = false
           return (
             <button
@@ -87,7 +89,12 @@ export function WorkModeSelector({
             >
               <OptionIcon className="h-4 w-4 text-muted-foreground shrink-0" />
               <span className="flex-1">{option.label}</span>
-              {isSoon && (
+                {!worktreeAvailable && option.id === "worktree" && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0 bg-muted text-muted-foreground">
+                    No git
+                  </span>
+                )}
+                {isSoon && (
                 <span className="text-[10px] text-muted-foreground px-1.5 py-0.5 rounded bg-muted">
                   Soon
                 </span>

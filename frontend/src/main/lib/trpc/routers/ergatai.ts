@@ -1720,7 +1720,18 @@ export const ergataiRouter = router({
   getChat: publicProcedure
     .input(z.object({ id: z.string() }))
     .query(async ({ input }) => {
-      const chat = await ergataiFetch<BackendChat | null>(`/api/v1/chats/${input.id}`)
+      // A persisted UI selection may survive a dev database reset. Treat a
+      // missing chat as "not found" so callers can clear the stale selection.
+      let chat: BackendChat | null
+      try {
+        chat = await ergataiFetch<BackendChat | null>(
+          `/api/v1/chats/${input.id}`,
+          { silentStatus: [404] },
+        )
+      } catch (error) {
+        if (isErgataiApiError(error) && error.status === 404) return null
+        throw error
+      }
       return chat ? mapChat(chat) : null
     }),
 
@@ -1809,7 +1820,9 @@ export const ergataiRouter = router({
             created_at?: number
             updated_at?: number
           }>
-        }>(`/api/v1/chats/${encodeURIComponent(input.chatId)}/agents`)
+        }>(`/api/v1/chats/${encodeURIComponent(input.chatId)}/agents`, {
+          silentStatus: [404],
+        })
         const agents = response.agents
         return agents.map((agent) => {
           // Use binding's created_at/updated_at when available; fall back to
@@ -1834,6 +1847,7 @@ export const ergataiRouter = router({
           }
         })
       } catch (err) {
+        if (isErgataiApiError(err) && err.status === 404) return []
         console.warn("[ergatai] getAgentBindings failed:", err)
         return []
       }
@@ -1984,6 +1998,23 @@ export const ergataiRouter = router({
           () => emit.complete(),
         )
       })
+    }),
+
+  /** Get ACP context window usage for a conversation */
+  getConversationContextUsage: publicProcedure
+    .input(
+      z.object({
+        conversationId: conversationKeySchema,
+      }),
+    )
+    .query(async ({ input }) => {
+      return ergataiFetch<{
+        conversation_id: string
+        context_used: number
+        context_window: number
+        percent_used: number
+        updated_at: number
+      }>(`/api/v1/conversations/${encodeURIComponent(input.conversationId)}/context-usage`)
     }),
 
   /** Get the backend's live cache for an active conversation turn */

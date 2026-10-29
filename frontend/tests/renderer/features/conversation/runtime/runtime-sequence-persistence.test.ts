@@ -69,11 +69,10 @@ describe("RuntimeSequencePersistence", () => {
       expect(result).toBeNull()
     })
 
-    it("should handle floating point numbers by truncating", () => {
+    it("should reject floating point numbers", () => {
       localStorage.setItem("ergatai:runtime:sequence:conv-1", "42.7")
       const result = readPersistedSequence("conv-1")
-      // parseInt truncates to 42
-      expect(result).toBe(42)
+      expect(result).toBeNull()
     })
 
     it("should return null when localStorage throws", () => {

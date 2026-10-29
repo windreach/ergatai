@@ -70,6 +70,7 @@ import { ResizableSidebar } from "../../../components/ui/resizable-sidebar"
 // Desktop mock — returns null userId, disabling user-specific features.
 const useCombinedAuth = () => ({ userId: null })
 import { Button } from "../../../components/ui/button"
+import { IconSpinner } from "../../../components/ui/icons"
 import { AlignJustify } from "lucide-react"
 import { AgentsQuickSwitchDialog } from "../components/agents-quick-switch-dialog"
 import { ConversationsQuickSwitchDialog } from "../components/conversations-quick-switch-dialog"
@@ -254,6 +255,9 @@ export function AgentsContent() {
     { chatId: selectedChatId! },
     { enabled: !!isValidChatId },
   )
+  // Validate the restored selection before mounting ChatView. Child views
+  // otherwise fire chat-scoped queries against an ID that may no longer exist.
+  const isChatDataLoading = !!isValidChatId && chatData === undefined
 
   useEffect(() => {
     if (!selectedChatId) return
@@ -992,7 +996,11 @@ export function AgentsContent() {
             className="h-full w-full flex flex-col overflow-hidden select-text"
             data-mobile-chat-mode
           >
-            {selectedChatId ? (
+            {selectedChatId && isChatDataLoading ? (
+              <div className="flex h-full items-center justify-center">
+                <IconSpinner className="h-5 w-5 text-muted-foreground" />
+              </div>
+            ) : selectedChatId ? (
               <ChatView
                 key={selectedChatId}
                 chatId={selectedChatId}
@@ -1098,6 +1106,10 @@ export function AgentsContent() {
                 <TaskBoardView />
               ) : desktopView === "add-agent" ? (
                 <AddAgentViewPage />
+              ) : selectedChatId && isChatDataLoading ? (
+                <div className="h-full flex items-center justify-center">
+                  <IconSpinner className="h-5 w-5 text-muted-foreground" />
+                </div>
               ) : selectedChatId ? (
                 <div className="h-full flex flex-col relative overflow-hidden">
                   <ChatView

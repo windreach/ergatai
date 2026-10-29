@@ -162,6 +162,29 @@ export type BackendMessage = {
   updated_at: number
 }
 
+export type BackendInitialPromptTurn = {
+  turnId: string
+  conversationId: string
+  chatId: string
+  workspaceId: string
+  messageId: string
+  clientRequestId: string
+  agentCommand: string
+  prompt: string
+  images: Array<{
+    base64Data: string
+    mediaType: string
+    filename: string | null
+  }>
+  status: "pending" | "dispatching" | "running" | "completed" | "failed"
+  attempt: number
+  error: string | null
+  createdAt: number
+  updatedAt: number
+  dispatchedAt: number | null
+  completedAt: number | null
+}
+
 function parseJsonOr<T>(value: string | null | undefined, fallback: T): T {
   if (value == null) return fallback
   try {
@@ -490,5 +513,25 @@ export async function replaceConversationMessages(
   return ergataiFetch<BackendMessage[]>(
     `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
     { method: "PUT", body: JSON.stringify({ messages }) },
+  )
+}
+
+export async function createInitialPromptTurn(
+  conversationId: string,
+  input: {
+    messageId: string
+    clientRequestId: string
+    agentCommand: string
+    prompt: string
+    images: Array<{
+      base64Data: string
+      mediaType: string
+      filename: string | null
+    }>
+  },
+): Promise<BackendInitialPromptTurn> {
+  return ergataiFetch<BackendInitialPromptTurn>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/initial-prompt`,
+    { method: "POST", body: JSON.stringify(input) },
   )
 }

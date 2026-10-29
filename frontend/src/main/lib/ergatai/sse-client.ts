@@ -196,6 +196,13 @@ const agentOutputEventSchema = z.discriminatedUnion("type", [
     conversation_id: z.string().nullish(),
     client_request_id: z.string().nullish(),
   }),
+  // Context window usage snapshot from ACP UsageUpdate
+  z.object({
+    type: z.literal("context_usage"),
+    used: z.number(),
+    size: z.number(),
+    conversation_id: z.string().nullish(),
+  }),
 ])
 
 /**
@@ -291,6 +298,12 @@ export type AgentOutputEvent =
       message_id: string
       inserted_at: number
       client_request_id?: string | null
+    } & AgentOutputEventContext)
+  // Context window usage snapshot from ACP UsageUpdate
+  | ({
+      type: "context_usage"
+      used: number
+      size: number
     } & AgentOutputEventContext)
 
 export type UIMessageChunk =
@@ -449,12 +462,13 @@ export function subscribeAgentStream(
           "conversation_message",
           "message_inserted",
           "turn_started",
+          "context_usage",
         ].includes(currentEventName)) return
 
         try {
           const data = JSON.parse(rawData)
           // Validate using Zod schema to ensure type safety
-          const event = agentOutputEventSchema.parse(data)
+          const event = agentOutputEventSchema.parse(data) as AgentOutputEvent
           handleEvent(event)
         } catch (error) {
           log.error("Failed to parse event", error as Error, { currentEventName })
@@ -560,7 +574,7 @@ export function subscribeRawAgentStream(
 
     let event: AgentOutputEvent
     try {
-      event = agentOutputEventSchema.parse(JSON.parse(data))
+      event = agentOutputEventSchema.parse(JSON.parse(data)) as AgentOutputEvent
     } catch (parseError) {
       log.error("Failed to parse or validate event data", parseError as Error)
       return
@@ -570,6 +584,15 @@ export function subscribeRawAgentStream(
       if (process.env.NODE_ENV === "development") {
         log.warn("Event type mismatch", undefined, { eventName, eventType: event.type })
       }
+    }
+
+    // Log context_usage events for debugging
+    if (event.type === "context_usage") {
+      console.log("[SSE] Received context_usage event:", {
+        used: event.used,
+        size: event.size,
+        conversation_id: event.conversation_id,
+      })
     }
 
     onEvent(event)

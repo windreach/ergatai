@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo } from "react"
+import { useEffect, useMemo, useRef } from "react"
 
 import { ChatMarkdownRenderer } from "../../../components/chat-markdown-renderer"
 import {
@@ -20,6 +20,8 @@ import {
 // (id, sequence, role, parts, metadata, conversationId, createdAt).
 // We alias it locally to keep downstream call sites short.
 type PersistedMessage = Message
+
+type ReplyItem = PersistedMessage & { text: string }
 
 function getMessageText(message: PersistedMessage) {
   return message.parts
@@ -154,7 +156,12 @@ function AgentReplyDisclosure({
   replyToMessageId?: string
   correlationId?: string
 }) {
-  const { messages, isLoading, error } = useConversationMessages(conversationId)
+  // Pass the bound agent so the shared pipeline can subscribe to the agent
+  // stream endpoint (the conversations SSE endpoint was deprecated).
+  const { messages, isLoading, error } = useConversationMessages(
+    conversationId,
+    agentId,
+  )
 
   if (error) {
     // Surface load errors to the console; the surrounding UI falls back to
@@ -166,7 +173,7 @@ function AgentReplyDisclosure({
     )
   }
 
-  const replies = useMemo(() => {
+  const replies = useMemo<ReplyItem[]>(() => {
     if (isLoading) return []
 
     return (messages as PersistedMessage[])
@@ -178,6 +185,7 @@ function AgentReplyDisclosure({
               replyToMessageId?: unknown
               sideConversationCopy?: unknown
               projectionKind?: unknown
+              streaming?: unknown
             }
           | null
         const isSideCopy =
@@ -210,9 +218,13 @@ function AgentReplyDisclosure({
         // The bound conversation is the authoritative ownership boundary:
         // `role: "agent"` is an inbound inter-agent request, while
         // `role: "assistant"` is the bound agent's own reply/output.
+        // Live streaming previews (built from agent-stream deltas while the
+        // turn is running) are always shown — they are this agent's in-flight
+        // turn and carry no correlation metadata yet.
+        const isStreamingPreview = metadata?.streaming === true
         return message.role === "assistant" &&
-          (isSideCopy || isLegacyReply) &&
-          matchesRequest &&
+          (isSideCopy || isLegacyReply || isStreamingPreview) &&
+          (isStreamingPreview || matchesRequest) &&
           getMessageText(message).length > 0
       })
       .sort((left, right) => left.sequence - right.sequence)
@@ -223,7 +235,20 @@ function AgentReplyDisclosure({
       .filter((message) => message.text.length > 0)
   }, [correlationId, messages, replyToMessageId, isLoading])
 
-  if (replies.length === 0) return null
+  // A transient empty result (e.g. a history refetch lands before the
+  // correlation metadata is attached to the projected reply) must not unmount
+  // the whole disclosure — unmounting resets the Collapsible open state and
+  // remounting it right after is what users perceive as a flicker.
+  const lastNonEmptyRepliesRef = useRef<ReplyItem[]>([])
+  useEffect(() => {
+    if (replies.length > 0) {
+      lastNonEmptyRepliesRef.current = replies
+    }
+  }, [replies])
+  const displayReplies =
+    replies.length > 0 ? replies : lastNonEmptyRepliesRef.current
+
+  if (displayReplies.length === 0) return null
 
   return (
     <Collapsible className="mt-2 w-fit max-w-full">
@@ -238,7 +263,7 @@ function AgentReplyDisclosure({
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="mt-1 min-w-64 max-w-full space-y-3 rounded-lg border border-border/70 bg-muted/20 px-3 py-3">
-          {replies.map((reply) => (
+          {displayReplies.map((reply) => (
             <div key={reply.id} className="space-y-1">
               <ChatMarkdownRenderer content={reply.text} size="sm" />
             </div>

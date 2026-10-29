@@ -39,14 +39,8 @@ fn build_complete_parts_array(output_data: &AgentOutputData) -> Option<serde_jso
             for item in timeline {
                 match item {
                     OutputTimelineItem::Text { text, .. } => {
-                        if text.trim() == "END" {
-                            flush_text(&mut parts_array, &mut pending_text);
-                            parts_array.push(serde_json::json!({
-                                "type": "control-end",
-                            }));
-                        } else {
-                            pending_text.push_str(&text);
-                        }
+                        // Treat all text as regular content - no special filtering for "END"
+                        pending_text.push_str(&text);
                     }
                     OutputTimelineItem::Thinking { text, .. } => {
                         flush_text(&mut parts_array, &mut pending_text);
@@ -311,6 +305,9 @@ pub async fn persist_agent_output(
                     status: "completed".to_string(),
                     created_at: now,
                     updated_at: now,
+                    context_used: 0,
+                    context_window: 0,
+                    context_updated_at: 0,
                 };
                 if let Err(e) = conversations::create(conv) {
                     tracing::warn!(
@@ -324,24 +321,56 @@ pub async fn persist_agent_output(
             // Build agent output fields
             // Note: thinking/tool_calls/text_chunks are already JSON strings in AgentOutputData,
             // so we pass them through directly without re-encoding
-            // Parse metadata to extract stop_reason and duration_ms
-            let (stop_reason, duration_ms) = if let Some(ref metadata_json) = output_data.metadata {
-                if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(metadata_json) {
-                    let sr = metadata
-                        .get("stop_reason")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let dm = metadata
-                        .get("duration_ms")
-                        .and_then(|v| v.as_u64())
-                        .map(|d| d as i64);
-                    (sr, dm)
+            // Parse metadata to extract stop_reason, duration_ms, and context usage
+            tracing::debug!(
+                conversation_id = %output_data.conversation_id,
+                has_metadata = output_data.metadata.is_some(),
+                "Parsing output metadata for context usage"
+            );
+            let (stop_reason, duration_ms, context_used, context_window) =
+                if let Some(ref metadata_json) = output_data.metadata {
+                    tracing::debug!(
+                        conversation_id = %output_data.conversation_id,
+                        "Parsing metadata JSON"
+                    );
+                    if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(metadata_json) {
+                        let sr = metadata
+                            .get("stop_reason")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let dm = metadata
+                            .get("duration_ms")
+                            .and_then(|v| v.as_u64())
+                            .map(|d| d as i64);
+                        let cu = metadata
+                            .get("context_used")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as i64);
+                        let cw = metadata
+                            .get("context_window")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as i64);
+                        tracing::debug!(
+                            conversation_id = %output_data.conversation_id,
+                            context_used = ?cu,
+                            context_window = ?cw,
+                            "Extracted context usage from metadata"
+                        );
+                        (sr, dm, cu, cw)
+                    } else {
+                        tracing::warn!(
+                            conversation_id = %output_data.conversation_id,
+                            "Failed to parse metadata JSON"
+                        );
+                        (None, None, None, None)
+                    }
                 } else {
-                    (None, None)
-                }
-            } else {
-                (None, None)
-            };
+                    tracing::debug!(
+                        conversation_id = %output_data.conversation_id,
+                        "No metadata in output data"
+                    );
+                    (None, None, None, None)
+                };
 
             let output_fields = AgentOutputFields {
                 thinking: output_data.thinking.clone(),
@@ -375,6 +404,34 @@ pub async fn persist_agent_output(
                 }),
                 Some(output_fields),
             )?;
+
+            // Update conversation context usage (final snapshot from this turn)
+            if let (Some(cu), Some(cw)) = (context_used, context_window) {
+                tracing::info!(
+                    conversation_id = %conversation_id,
+                    context_used = cu,
+                    context_window = cw,
+                    "Updating conversation context usage in database"
+                );
+                if let Err(e) = crate::user_data_db::conversations::update_context_usage(
+                    conversation_id,
+                    cu,
+                    cw,
+                ) {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        error = %e,
+                        "Failed to update conversation context usage after turn"
+                    );
+                }
+            } else {
+                tracing::debug!(
+                    conversation_id = %conversation_id,
+                    context_used = ?context_used,
+                    context_window = ?context_window,
+                    "No context usage to update (one or both values are None)"
+                );
+            }
 
             // The side copy was written before this turn completed, so its
             // insert-time sequence is not causal. Re-link it under the same
@@ -442,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn timeline_projection_coalesces_text_and_hides_end_marker() {
+    fn timeline_projection_coalesces_text_including_end_marker() {
         let timeline = serde_json::to_string(&vec![
             OutputTimelineItem::Text {
                 text: "你好".to_string(),
@@ -462,10 +519,10 @@ mod tests {
             .and_then(|value| value.as_array().cloned())
             .unwrap();
 
-        assert_eq!(parts.len(), 2);
+        // "END" is now treated as regular text content, not filtered out
+        assert_eq!(parts.len(), 1);
         assert_eq!(parts[0]["type"], "text");
-        assert_eq!(parts[0]["text"], "你好！");
-        assert_eq!(parts[1]["type"], "control-end");
+        assert_eq!(parts[0]["text"], "你好！END");
     }
 
     #[test]

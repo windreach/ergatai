@@ -36,6 +36,7 @@ import {
   lastSelectedBranchesAtom,
   lastSelectedModelIdAtom,
   lastSelectedWorkModeAtom,
+  pendingInitialPromptAtomFamily,
   selectedAgentChatIdAtom,
   selectedDraftIdAtom,
   selectedWorkspaceAtom,
@@ -48,6 +49,7 @@ import { WorkModeSelector } from "../components/work-mode-selector"
 import { PermissionModeSelector } from "../components/permission-mode-selector"
 // import { selectedTeamIdAtom } from "@/lib/atoms/team"
 import { atom } from "jotai"
+import { appStore } from "../../../lib/jotai-store"
 const selectedTeamIdAtom = atom<string | null>(null)
 import {
   agentsSettingsDialogOpenAtom,
@@ -396,6 +398,14 @@ export function NewChatForm({
     setAgentMode(getNextMode)
   }, [])
   const [workMode, setWorkMode] = useAtom(lastSelectedWorkModeAtom)
+  const gitRepositoryQuery = trpc.changes.isGitRepository.useQuery(
+    { path: validatedProject?.path || "" },
+    { enabled: !!validatedProject?.path },
+  )
+  const isGitRepository = gitRepositoryQuery.data === true
+  // A persisted "worktree" preference must not leak into plain folders. The
+  // effective mode is used by the UI and creation payload.
+  const effectiveWorkMode = isGitRepository ? workMode : "local"
   const debugMode = useAtomValue(agentsDebugModeAtom)
   const customClaudeConfig = useAtomValue(customClaudeConfigAtom)
   const normalizedCustomClaudeConfig =
@@ -428,11 +438,16 @@ export function NewChatForm({
   // Check if project has worktree config
   const { data: worktreeConfigData } = trpc.worktreeConfig.get.useQuery(
     { projectId: validatedProject?.id ?? "" },
-    { enabled: !!validatedProject?.id && workMode === "worktree" && !worktreeBannerDismissed },
+    {
+      enabled:
+        !!validatedProject?.id &&
+        effectiveWorkMode === "worktree" &&
+        !worktreeBannerDismissed,
+    },
   )
 
   const showWorktreeBanner =
-    workMode === "worktree" &&
+    effectiveWorkMode === "worktree" &&
     validatedProject &&
     !worktreeBannerDismissed &&
     worktreeConfigData &&
@@ -873,7 +888,7 @@ export function NewChatForm({
   const branchesQuery = trpc.changes.getBranches.useQuery(
     { worktreePath: validatedProject?.path || "" },
     {
-      enabled: !!validatedProject?.path,
+      enabled: !!validatedProject?.path && isGitRepository,
       staleTime: 30_000, // Cache for 30 seconds
     },
   )
@@ -1098,6 +1113,13 @@ export function NewChatForm({
         conversationAgentStorage.set(firstConversationId, variables.agentCommand!)
       }
 
+      if (data.initialPromptTurn?.conversationId) {
+        appStore.set(
+          pendingInitialPromptAtomFamily(data.initialPromptTurn.conversationId),
+          data.initialPromptTurn,
+        )
+      }
+
       if (collaborationMode === "group") {
         const groupAgents =
           boundGroupAgents.length > 0
@@ -1148,8 +1170,9 @@ export function NewChatForm({
     () =>
       validatedProject ? (
         <WorkModeSelector
-          value={workMode}
+          value={effectiveWorkMode}
           onChange={setWorkMode}
+          worktreeAvailable={isGitRepository}
           disabled={createChatMutation.isPending}
         />
       ) : null,
@@ -1157,7 +1180,8 @@ export function NewChatForm({
       createChatMutation.isPending,
       setWorkMode,
       validatedProject,
-      workMode,
+      effectiveWorkMode,
+      isGitRepository,
     ],
   )
 
@@ -1247,10 +1271,10 @@ export function NewChatForm({
       model: selectedChatModel || undefined, // Only send model if explicitly selected
       initialMessageParts: parts.length > 0 ? parts : undefined,
       baseBranch:
-        workMode === "worktree" ? selectedBranch || undefined : undefined,
+        effectiveWorkMode === "worktree" ? selectedBranch || undefined : undefined,
       branchType:
-        workMode === "worktree" ? selectedBranchType : undefined,
-      useWorktree: workMode === "worktree",
+        effectiveWorkMode === "worktree" ? selectedBranchType : undefined,
+      useWorktree: effectiveWorkMode === "worktree",
       mode: agentMode,
       collaborationMode,
       agentCommand: selectedAgent.id, // Pass selected agent command
@@ -1261,7 +1285,7 @@ export function NewChatForm({
     createChatMutation,
     selectedBranch,
     selectedBranchType,
-    workMode,
+    effectiveWorkMode,
     images,
     files,
     pastedTexts,
@@ -1990,7 +2014,7 @@ export function NewChatForm({
                 <div className="mt-1.5 md:mt-2 ml-[5px] flex items-center gap-2">
 
                   {/* Branch selector - only visible when worktree mode is selected */}
-                  {validatedProject && workMode === "worktree" && (
+                  {validatedProject && effectiveWorkMode === "worktree" && (
                     <Popover
                       open={branchPopoverOpen}
                       onOpenChange={(open) => {

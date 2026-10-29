@@ -57,6 +57,12 @@ export type RuntimeSessionState = {
   /** Runtime messages (from streaming/session) */
   runtimeMessages: Message[]
 
+  /** Messages owned by the local AI SDK Chat transport. */
+  localMessages: Message[]
+
+  /** Stable sequence assigned to each ingested message ID. */
+  sequenceByMessageId: Map<string, number>
+
   /** Visible messages (merged persisted + runtime, deduplicated) */
   visibleMessages: Message[]
 
@@ -86,6 +92,10 @@ export type RuntimeSessionState = {
 
   /** Current turn ID (for preventing stale callbacks from updating state) */
   currentTurnId: string | null
+
+  /** ACP context window usage snapshot (from SSE UsageUpdate events) */
+  contextUsed: number
+  contextWindow: number
 }
 
 // ============================================================================
@@ -105,6 +115,33 @@ class RuntimeSessionStoreImpl {
 
   // Re-entrancy guard for notifyListeners
   private notifying = new Set<string>()
+
+  /**
+   * Source snapshots can be recreated on every render. This check makes the
+   * external-store contract stable: no semantic change means no new snapshot
+   * and no notification.
+   */
+  private messageSignature(message: Message): string {
+    return JSON.stringify([
+      message.id,
+      message.role,
+      message.parts ?? null,
+      message.metadata ?? null,
+      message.createdAt?.getTime() ?? null,
+    ])
+  }
+
+  private messagesChanged(previous: Message[], next: Message[]): boolean {
+    if (previous === next) return false
+    if (previous.length !== next.length) return true
+
+    return next.some((message, index) => {
+      const oldMessage = previous[index]
+      if (!oldMessage) return true
+      if (oldMessage === message) return false
+      return this.messageSignature(oldMessage) !== this.messageSignature(message)
+    })
+  }
 
   /**
    * Ensure a session exists for the given conversation ID.
@@ -228,7 +265,25 @@ class RuntimeSessionStoreImpl {
    */
   setPersistedMessages(conversationId: string, messages: Message[]): void {
     const session = this.ensureSession(conversationId)
-    session.persistedMessages = messages
+    if (!this.messagesChanged(session.persistedMessages, messages)) return
+
+    session.persistedMessages = this.normalizeMessages(session, messages)
+    session.visibleMessages = this.mergeMessages(session)
+    session.cachedPublicState = null
+    session.updatedAt = new Date()
+
+    this.notifyListeners(conversationId)
+  }
+
+  /**
+   * Ingest raw messages from the local AI SDK Chat transport. This is a source
+   * write, not a write-back of the store's merged view.
+   */
+  setLocalMessages(conversationId: string, messages: Message[]): void {
+    const session = this.ensureSession(conversationId)
+    if (!this.messagesChanged(session.localMessages, messages)) return
+
+    session.localMessages = this.normalizeMessages(session, messages)
     session.visibleMessages = this.mergeMessages(session)
     session.cachedPublicState = null // Invalidate cache
     session.updatedAt = new Date()
@@ -244,7 +299,9 @@ class RuntimeSessionStoreImpl {
    */
   setRuntimeMessages(conversationId: string, messages: Message[]): void {
     const session = this.ensureSession(conversationId)
-    session.runtimeMessages = messages
+    if (!this.messagesChanged(session.runtimeMessages, messages)) return
+
+    session.runtimeMessages = this.normalizeMessages(session, messages)
     session.visibleMessages = this.mergeMessages(session)
     session.cachedPublicState = null // Invalidate cache
     session.updatedAt = new Date()
@@ -263,7 +320,9 @@ class RuntimeSessionStoreImpl {
     // Assign sequence number for stable ordering
     // Note: incrementLocalSequence already invalidates cachedPublicState
     const sequence = this.incrementLocalSequence(conversationId)
-    session.runtimeMessages.push({ ...message, sequence })
+    const runtimeMessage = { ...message, sequence }
+    session.runtimeMessages.push(runtimeMessage)
+    session.sequenceByMessageId.set(message.id, sequence)
     session.visibleMessages = this.mergeMessages(session)
     // Cache invalidation already handled by incrementLocalSequence() above
     session.updatedAt = new Date()
@@ -352,6 +411,28 @@ class RuntimeSessionStoreImpl {
   removeQueueItem(conversationId: string, itemId: string): void {
     const session = this.ensureSession(conversationId)
     session.queue = session.queue.filter((item) => item.id !== itemId)
+    session.cachedPublicState = null // Invalidate cache
+    session.updatedAt = new Date()
+
+    this.notifyListeners(conversationId)
+  }
+
+  /**
+   * Update ACP context window usage snapshot.
+   * Called when SSE emits a context_usage event.
+   *
+   * @param conversationId - Conversation ID
+   * @param used - Tokens currently used in context
+   * @param size - Total context window size
+   */
+  updateContextUsage(conversationId: string, used: number, size: number): void {
+    const session = this.ensureSession(conversationId)
+    // Only update if values changed (prevent unnecessary re-renders)
+    if (session.contextUsed === used && session.contextWindow === size) {
+      return
+    }
+    session.contextUsed = used
+    session.contextWindow = size
     session.cachedPublicState = null // Invalidate cache
     session.updatedAt = new Date()
 
@@ -455,6 +536,8 @@ class RuntimeSessionStoreImpl {
       status: "idle",
       persistedMessages: [],
       runtimeMessages: [],
+      localMessages: [],
+      sequenceByMessageId: new Map(),
       visibleMessages: [],
       streamingMessageId: null,
       lastRuntimeSequence: 0,
@@ -465,13 +548,14 @@ class RuntimeSessionStoreImpl {
       updatedAt: now,
       cachedPublicState: null,
       currentTurnId: null,
+      contextUsed: 0,
+      contextWindow: 0,
     }
   }
 
   /**
-   * Merge persisted and runtime messages.
-   * Deduplicates by message ID (runtime messages take precedence).
-   * Sorts by local sequence number for stable ordering.
+   * Merge durable history, backend-owned live turns, and the local transport.
+   * Deduplicates by message ID; local transport wins because it is freshest.
    *
    * @param session - Session state
    * @returns Merged messages
@@ -484,22 +568,27 @@ class RuntimeSessionStoreImpl {
       messageMap.set(message.id, message)
     }
 
-    // Override with runtime messages (runtime takes precedence)
+    // Backend runtime messages override durable history.
     for (const message of session.runtimeMessages) {
+      messageMap.set(message.id, message)
+    }
+
+    // Local transport messages override the same ID in older sources.
+    for (const message of session.localMessages) {
       messageMap.set(message.id, message)
     }
 
     // Convert back to array and sort by sequence or createdAt as fallback
     return Array.from(messageMap.values()).sort((a, b) => {
       // Prefer sequence number if available (added by runtime)
-      const aSeq = a.sequence ?? 0
-      const bSeq = b.sequence ?? 0
+      const aSeq = a.sequence ?? Number.MAX_SAFE_INTEGER
+      const bSeq = b.sequence ?? Number.MAX_SAFE_INTEGER
 
       if (aSeq !== bSeq) {
         return aSeq - bSeq
       }
 
-      // Fallback to createdAt for persisted messages
+      // Fallback to createdAt, then ID for deterministic ordering.
       const aTime = a.createdAt?.getTime() ?? 0
       const bTime = b.createdAt?.getTime() ?? 0
 
@@ -507,9 +596,37 @@ class RuntimeSessionStoreImpl {
         return aTime - bTime
       }
 
-      // Final fallback: sort by ID for deterministic ordering
-      // This ensures stable sort when both sequence and timestamp are identical
       return a.id.localeCompare(b.id)
+    })
+  }
+
+  /**
+   * Assign a stable sequence to messages that did not arrive from durable
+   * history. Existing IDs retain their sequence as streaming snapshots replace
+   * one another.
+   */
+  private normalizeMessages(
+    session: RuntimeSessionState,
+    messages: Message[],
+  ): Message[] {
+    return messages.map((message) => {
+      if (typeof message.sequence === "number") {
+        session.sequenceByMessageId.set(message.id, message.sequence)
+        if (session.localSequence < message.sequence) {
+          session.localSequence = message.sequence
+        }
+        return message
+      }
+
+      const existingSequence = session.sequenceByMessageId.get(message.id)
+      if (existingSequence !== undefined) {
+        return { ...message, sequence: existingSequence }
+      }
+
+      session.localSequence += 1
+      const sequence = session.localSequence
+      session.sequenceByMessageId.set(message.id, sequence)
+      return { ...message, sequence }
     })
   }
 
@@ -525,12 +642,15 @@ class RuntimeSessionStoreImpl {
       status: session.status,
       persistedMessages: session.persistedMessages,
       runtimeMessages: session.runtimeMessages,
+      localMessages: session.localMessages,
       visibleMessages: session.visibleMessages,
       isStreaming: session.status === "streaming",
       queue: session.queue,
       error: session.error ?? undefined,
       streamingMessageId: session.streamingMessageId,
       lastRuntimeSequence: session.lastRuntimeSequence,
+      contextUsed: session.contextUsed || undefined,
+      contextWindow: session.contextWindow || undefined,
     }
   }
 

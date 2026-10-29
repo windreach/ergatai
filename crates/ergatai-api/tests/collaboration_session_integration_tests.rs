@@ -159,6 +159,9 @@ fn create_collaboration_session_and_conversation(
             status: "ready".to_string(),
             created_at: 0,
             updated_at: 0,
+            context_used: 0,
+            context_window: 0,
+            context_updated_at: 0,
         });
     conversation_id
 }

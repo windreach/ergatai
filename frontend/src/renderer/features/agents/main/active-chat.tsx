@@ -92,7 +92,6 @@ import { useForkConversation } from "../hooks/use-fork-conversation"
 import { useTabsToRender } from "../hooks/use-tabs-to-render"
 import { useRollback } from "../hooks/use-rollback"
 import { useDraftRecovery } from "../hooks/use-draft-recovery"
-import { useAutoTrigger } from "../hooks/use-auto-trigger"
 import { useSearchScroll } from "../hooks/use-search-scroll"
 import { useKeyboardStop } from "../hooks/use-keyboard-stop"
 import { useScrollInit } from "../hooks/use-scroll-init"
@@ -103,6 +102,8 @@ import { useScrollToBottomShortcut } from "../hooks/use-scroll-to-bottom-shortcu
 import { useMessageSync } from "../hooks/use-message-sync"
 import { useDiffCache } from "../hooks/use-diff-cache"
 import { useMainChatInvocation } from "../hooks/use-main-chat-invocation"
+import { useConversationRuntime } from "../../details-sidebar/lib/conversation-runtime-gateway"
+import { buildRuntimeMessages } from "../../details-sidebar/lib/conversation-runtime-ui"
 import {
   DiffStateProvider,
   DiffSidebarRenderer,
@@ -172,6 +173,7 @@ import {
   pendingChatHistoryAtom,
   type PendingChatHistory,
   pendingMentionAtom,
+  pendingInitialPromptAtomFamily,
   pendingPlanApprovalsAtom,
   pendingPrMessageAtom,
   pendingReviewMessageAtom,
@@ -661,6 +663,7 @@ const ChatViewInner = memo(function ChatViewInner({
   workspaceRepoName,
   workspaceId,
   projectId,
+  persistedMessages,
 }: {
   chat: Chat<any>
   conversationId: string
@@ -693,6 +696,7 @@ const ChatViewInner = memo(function ChatViewInner({
   workspaceRepoName?: string | null
   workspaceId?: string | null
   projectId?: string | null
+  persistedMessages?: any[]
 }) {
   const [groupAgents, setGroupAgents] = useState<CoreAgentOption[]>([])
 
@@ -718,8 +722,29 @@ const ChatViewInner = memo(function ChatViewInner({
     conversationId,
   )
 
-  const hasTriggeredAutoGenerateRef = useRef(false)
   const isVisiblePane = isActive || isSplitPane
+
+  // Subscribe to backend-owned turns (such as new-chat initial prompts) so
+  // they remain visible even though no local Chat transport started them.
+  const agentBindingsQuery = trpc.ergatai.getAgentBindings.useQuery(
+    { chatId: parentChatId },
+    { enabled: isVisiblePane && parentChatId.startsWith("chat_") },
+  )
+  const backendAgentId = useMemo(
+    () =>
+      agentBindingsQuery.data?.find(
+        (binding) => binding.conversationId === conversationId,
+      )?.agentId ?? null,
+    [agentBindingsQuery.data, conversationId],
+  )
+  const conversationRuntime = useConversationRuntime(conversationId, isVisiblePane)
+  const backendRuntimeMessages = useMemo(
+    () => buildRuntimeMessages(conversationRuntime),
+    [conversationRuntime],
+  )
+  const [pendingInitialPrompt, setPendingInitialPrompt] = useAtom(
+    pendingInitialPromptAtomFamily(conversationId),
+  )
 
   // Keep isActive in ref for use in callbacks (avoid stale closures)
   const isVisiblePaneRef = useRef(isVisiblePane)
@@ -739,6 +764,8 @@ const ChatViewInner = memo(function ChatViewInner({
     chatId: parentChatId,
     agentId: provider,
     isActive,
+    persistedMessages,
+    runtimeMessages: backendRuntimeMessages,
     existingChat: chat, // Pass existing Chat instance to avoid duplicate
   })
 
@@ -1078,7 +1105,6 @@ const ChatViewInner = memo(function ChatViewInner({
   const chatRef = useRef<Chat<any> | null>(null)
 
   if (prevConversationIdRef.current !== conversationId) {
-    hasTriggeredAutoGenerateRef.current = false // Reset auto-generate on conversation change
     prevConversationIdRef.current = conversationId
   }
   chatRef.current = chat
@@ -1096,11 +1122,18 @@ const ChatViewInner = memo(function ChatViewInner({
   })
 
   // Use conversationId as stable key to prevent HMR-induced duplicate resume requests
-  const { messages, sendMessage, status, stop, regenerate, setMessages } = useChat({
+  const { messages: chatMessages, sendMessage, status, stop, setMessages } = useChat({
     id: conversationId,
     chat,
     experimental_throttle: 50,  // Throttle updates to reduce re-renders during streaming
   })
+
+  // Main chat now shares the side-chat rendering contract: merged persisted +
+  // runtime messages are read through RuntimeSessionStore.visibleMessages.
+  // The local Chat messages remain the fallback while the session is initializing.
+  const messages = chatInvocation.messages?.length
+    ? chatInvocation.messages
+    : chatMessages
 
   // Refs for useChat functions to keep callbacks stable across renders
   const sendMessageRef = useRef(sendMessage)
@@ -1108,7 +1141,51 @@ const ChatViewInner = memo(function ChatViewInner({
   const stopRef = useRef(stop)
   stopRef.current = stop
 
-  const isStreaming = status === "streaming" || status === "submitted"
+  const isLocalStreaming = status === "streaming" || status === "submitted"
+  const isInitialPromptBusy =
+    pendingInitialPrompt?.status === "pending" ||
+    pendingInitialPrompt?.status === "dispatching" ||
+    pendingInitialPrompt?.status === "running"
+  const isBackendStreaming =
+    isInitialPromptBusy ||
+    conversationRuntime?.status === "streaming" ||
+    sessionState?.isStreaming === true
+  const isRuntimeStreaming =
+    conversationRuntime?.status === "streaming" ||
+    sessionState?.isStreaming === true
+  const isStreaming = isLocalStreaming || isBackendStreaming
+
+  // The scheduler state covers agent startup; runtime streaming covers the
+  // actual ACP turn. Once either says the turn is live/done, retire the handle.
+  useEffect(() => {
+    if (
+      !pendingInitialPrompt ||
+      pendingInitialPrompt.status === "completed" ||
+      pendingInitialPrompt.status === "failed"
+    ) {
+      return
+    }
+
+    if (
+      isRuntimeStreaming ||
+      messages.some((message) => message.role === "assistant")
+    ) {
+      setPendingInitialPrompt(null)
+    }
+  }, [
+    isRuntimeStreaming,
+    messages,
+    pendingInitialPrompt,
+    setPendingInitialPrompt,
+  ])
+
+  // Backend-owned turns have no local useChat status transition. Present them
+  // to rendering and state UI as streaming as soon as the runtime emits a turn.
+  const streamingStatus = isLocalStreaming
+    ? status
+    : isStreaming
+      ? "streaming"
+      : status
 
   // Ref for isStreaming to use in callbacks/effects that need fresh value
   const isStreamingRef = useRef(isStreaming)
@@ -1142,10 +1219,10 @@ const ChatViewInner = memo(function ChatViewInner({
 
   // Refetch plan when streaming completes
   useEffect(() => {
-    if (status === "ready" && conversationId) {
+    if (status === "ready" && !isStreaming && conversationId) {
       refetchPlan()
     }
-  }, [status, conversationId, refetchPlan])
+  }, [status, isStreaming, conversationId, refetchPlan])
 
   // Listen for plan update events from AgentPlanFileTool
   useEffect(() => {
@@ -1204,10 +1281,21 @@ const ChatViewInner = memo(function ChatViewInner({
 
   // Handler to stop streaming - memoized to prevent ChatInputArea re-renders
   const handleStop = useCallback(async () => {
+    // Backend-owned turns never entered the local AI SDK Chat transport, so
+    // cancel the runtime prompt directly using the bound agent.
+    if (isBackendStreaming && backendAgentId) {
+      await trpcClient.ergatai.cancelPrompt
+        .mutate({ agentId: backendAgentId })
+        .catch((error) => {
+          console.warn("[ActiveChat] Failed to cancel backend prompt:", error)
+        })
+      return
+    }
+
     // Mark as manually aborted to prevent completion sound
     agentChatStore.setManuallyAborted(conversationId, true)
     await stopRef.current()
-  }, [conversationId])
+  }, [backendAgentId, conversationId, isBackendStreaming])
 
   // Wrapper for addTextContext that handles TextSelectionSource
   const addTextContext = useCallback((text: string, source: TextSelectionSource) => {
@@ -1253,21 +1341,6 @@ const ChatViewInner = memo(function ChatViewInner({
     sendMessageRef,
   })
 
-  // Auto-trigger: when a chat is loaded from DB with user messages but no assistant
-  // messages, the initial message was saved by chats.create but the agent hasn't
-  // been triggered. We use sendMessage to trigger the agent with real-time streaming.
-  // To avoid duplicate user messages, we clear messages first, then trigger sendMessage
-  // after the state update completes.
-  const { autoTriggeredRef } = useAutoTrigger({
-    conversationId,
-    isStreaming,
-    isGroupMode,
-    messages,
-    sendMessage,
-    setMessages,
-    hasTriggeredAutoGenerateRef,
-  })
-
   // Sync loading status to atom for UI indicators
   // When streaming starts, set loading. When it stops, clear loading.
   // Unseen changes, sound notification, and sidebar refresh are handled in onFinish callback
@@ -1277,20 +1350,19 @@ const ChatViewInner = memo(function ChatViewInner({
     const storedParentChatId = agentChatStore.getParentChatId(conversationId)
     if (!storedParentChatId) return
 
-    // For auto-triggered chats, keep loading state until the chat has assistant
-    // messages (stream completed)
-    const isAutoTriggered = autoTriggeredRef.current.has(conversationId)
-    const hasAssistantMessages = messages.some((m) => m.role === "assistant")
+    const isBackendStreaming = conversationRuntime?.status === "streaming"
 
-    if (isStreaming) {
-      setLoading(setLoadingConversations, conversationId, storedParentChatId)
-    } else if (isAutoTriggered && !hasAssistantMessages) {
-      // Auto-triggered but no assistant messages yet - keep loading state
+    if (isStreaming || isBackendStreaming) {
       setLoading(setLoadingConversations, conversationId, storedParentChatId)
     } else {
       clearLoading(setLoadingConversations, conversationId)
     }
-  }, [isStreaming, conversationId, setLoadingConversations, messages])
+  }, [
+    isStreaming,
+    conversationRuntime?.status,
+    conversationId,
+    setLoadingConversations,
+  ])
 
   // Extract pending actions into a hook
   const { isCreatingPr, setIsCreatingPr, pendingAuthRetry, setPendingAuthRetry } = usePendingActions({
@@ -1477,26 +1549,6 @@ const ChatViewInner = memo(function ChatViewInner({
   // Keyboard shortcut: Cmd+Esc to toggle focus/blur (without stopping generation)
   useToggleFocusOnCmdEsc(editorRef, isActive)
 
-  // Auto-trigger AI response when we have initial message but no response yet
-  // Also trigger auto-rename for initial conversation with pre-populated message
-  useEffect(() => {
-    if (
-      (isGroupMode || messages.length === 1) &&
-      status === "ready" &&
-      !hasTriggeredAutoGenerateRef.current
-    ) {
-      hasTriggeredAutoGenerateRef.current = true
-      regenerate()
-    }
-  }, [
-    status,
-    messages,
-    regenerate,
-    isFirstConversation,
-    conversationId,
-    isGroupMode,
-  ])
-
   // Scroll initialization, auto-scroll, and position restoration
   useScrollInit({
     conversationId,
@@ -1512,7 +1564,7 @@ const ChatViewInner = memo(function ChatViewInner({
     prevScrollTopRef,
     scrollToBottom,
     handleScroll,
-    status,
+    status: streamingStatus,
     messages,
     editorRef,
   })
@@ -1672,7 +1724,7 @@ const ChatViewInner = memo(function ChatViewInner({
   useMessageSync({
     conversationId,
     messages,
-    status,
+    status: streamingStatus,
     isActive,
     isSplitPane,
   })
@@ -2218,6 +2270,33 @@ export function ChatView({
     updated_at?: Date | string | null
     messages?: any
   }>
+
+  // Parse the durable chat snapshot once per query result. This gives the
+  // runtime session cache a history source that is independent of the local
+  // streaming Chat instance.
+  const persistedMessagesByConversationId = useMemo(() => {
+    const messagesById = new Map<string, any[]>()
+
+    for (const conversation of agentConversations) {
+      const rawMessages = conversation.messages
+      let parsedMessages: any[] = []
+
+      if (Array.isArray(rawMessages)) {
+        parsedMessages = rawMessages
+      } else if (typeof rawMessages === "string") {
+        try {
+          const parsed = JSON.parse(rawMessages)
+          parsedMessages = Array.isArray(parsed) ? parsed : []
+        } catch {
+          parsedMessages = []
+        }
+      }
+
+      messagesById.set(conversation.id, parsedMessages)
+    }
+
+    return messagesById
+  }, [agentConversations])
 
   // Workspace isolation: limit mounted tabs to prevent memory growth
   // Tabs to render - handles filtering and validation of conversation tabs
@@ -3164,6 +3243,7 @@ export function ChatView({
                             workspaceRepoName={(agentChat as any)?.project?.gitRepo || (agentChat as any)?.project?.name || null}
                             workspaceId={agentChat?.workspaceId ?? null}
                             projectId={null}
+                            persistedMessages={persistedMessagesByConversationId.get(paneId) ?? []}
                           />
                         </div>
                       )
@@ -3215,6 +3295,7 @@ export function ChatView({
                                 workspaceRepoName={(agentChat as any)?.project?.gitRepo || (agentChat as any)?.project?.name || null}
                                 workspaceId={agentChat?.workspaceId ?? null}
                                 projectId={null}
+                                persistedMessages={persistedMessagesByConversationId.get(conversationId) ?? []}
                               />
                             </div>
                           )
@@ -3279,6 +3360,7 @@ export function ChatView({
                       workspaceRepoName={(agentChat as any)?.project?.gitRepo || (agentChat as any)?.project?.name || null}
                       workspaceId={agentChat?.workspaceId ?? null}
                       projectId={null}
+                      persistedMessages={persistedMessagesByConversationId.get(conversationId) ?? []}
                     />
                   </div>
                 )

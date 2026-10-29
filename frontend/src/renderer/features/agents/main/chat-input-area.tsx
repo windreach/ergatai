@@ -340,6 +340,7 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
     prevProps.messageTokenData.totalInputTokens !== nextProps.messageTokenData.totalInputTokens ||
     prevProps.messageTokenData.totalOutputTokens !== nextProps.messageTokenData.totalOutputTokens ||
     prevProps.messageTokenData.contextWindow !== nextProps.messageTokenData.contextWindow ||
+    prevProps.messageTokenData.contextUsed !== nextProps.messageTokenData.contextUsed ||
     prevProps.messageTokenData.messageCount !== nextProps.messageTokenData.messageCount
   ) {
     return false

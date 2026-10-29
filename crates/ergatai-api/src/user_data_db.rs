@@ -78,63 +78,19 @@ fn get_db_path() -> PathBuf {
 
 /// Initialize all required tables
 ///
-/// This function drops and recreates all tables on startup ONLY in development mode.
-/// Set ERGATAI_PRESERVE_DATA=1 or ERGATAI_PRODUCTION_MODE=1 to preserve existing data.
+/// Always preserves existing data. Creates tables only if they don't exist.
+/// Migrations are applied incrementally (add new columns, never drop/recreate).
 fn initialize_tables(conn: &Connection) -> Result<()> {
-    // Helper to check if an environment variable is truthy (accepts "1" or "true", case-insensitive)
-    let is_truthy_env = |var_name: &str| -> bool {
-        std::env::var(var_name)
-            .map(|v| v == "1" || v.to_lowercase() == "true")
-            .unwrap_or(false)
-    };
-
-    // Check if we should preserve existing data (production mode)
-    let preserve_data =
-        is_truthy_env("ERGATAI_PRESERVE_DATA") || is_truthy_env("ERGATAI_PRODUCTION_MODE");
-
-    if preserve_data {
-        // Production mode: create tables if they don't exist, preserve existing data
-        tracing::info!(
-            "ERGATAI_PRESERVE_DATA or ERGATAI_PRODUCTION_MODE is set - preserving existing data"
-        );
-        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
-        return create_tables_if_not_exists(conn);
-    }
-
-    // Development mode: drop and recreate all tables
-    tracing::warn!(
-        "Development mode: dropping all user data tables. \
-         Set ERGATAI_PRESERVE_DATA=1 to preserve data across restarts."
-    );
-
-    // Enable foreign key constraints
-    conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
-
-    // Drop all tables in reverse dependency order (development mode - no data preservation)
-    conn.execute_batch(
-        r#"
-        DROP TABLE IF EXISTS collaboration_approvals;
-        DROP TABLE IF EXISTS collaboration_plan_revisions;
-        DROP TABLE IF EXISTS collaboration_context_events;
-        DROP TABLE IF EXISTS group_agent_bindings;
-        DROP TABLE IF EXISTS conversation_execution_contexts;
-        DROP TABLE IF EXISTS terminal_sessions;
-        DROP TABLE IF EXISTS messages;
-        DROP TABLE IF EXISTS agent_sessions;
-        DROP TABLE IF EXISTS conversations;
-        DROP TABLE IF EXISTS collaboration_session_participants;
-        DROP TABLE IF EXISTS collaboration_sessions;
-        DROP TABLE IF EXISTS projects;
-        DROP TABLE IF EXISTS chats;
-        DROP TABLE IF EXISTS workspaces;
-        DROP TABLE IF EXISTS mcp_servers;
-        "#,
-    )?;
-
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
 
+    // Create tables if they don't exist (no-op for existing tables)
     create_tables_if_not_exists(conn)?;
-    migrate_message_turn_columns(conn)
+
+    // Run incremental migrations (add new columns, etc.)
+    migrate_message_columns(conn)?;
+    migrate_conversation_context_columns(conn)?;
+
+    Ok(())
 }
 
 /// Create all tables if they don't already exist (safe for production)
@@ -240,6 +196,10 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
             status TEXT NOT NULL DEFAULT 'ready',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
+            -- ACP context window usage (latest snapshot from UsageUpdate)
+            context_used INTEGER DEFAULT 0,
+            context_window INTEGER DEFAULT 0,
+            context_updated_at INTEGER DEFAULT 0,
             FOREIGN KEY (collaboration_session_id) REFERENCES collaboration_sessions(collaboration_session_id) ON DELETE CASCADE,
             FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
             FOREIGN KEY (parent_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
@@ -247,6 +207,30 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_conversations_collaboration_session_id ON conversations(collaboration_session_id);
         CREATE INDEX IF NOT EXISTS idx_conversations_chat_id ON conversations(chat_id);
         CREATE INDEX IF NOT EXISTS idx_conversations_parent_id ON conversations(parent_id);
+
+        CREATE TABLE IF NOT EXISTS initial_prompt_turns (
+            turn_id TEXT PRIMARY KEY,
+            conversation_id INTEGER NOT NULL UNIQUE,
+            chat_id INTEGER NOT NULL,
+            workspace_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL UNIQUE,
+            client_request_id TEXT NOT NULL UNIQUE,
+            agent_command TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            images TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL CHECK (status IN ('pending', 'dispatching', 'running', 'completed', 'failed')),
+            attempt INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            dispatched_at INTEGER,
+            completed_at INTEGER,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_initial_prompt_turns_status
+            ON initial_prompt_turns(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_initial_prompt_turns_chat_id
+            ON initial_prompt_turns(chat_id);
 
         CREATE TABLE IF NOT EXISTS agent_sessions (
             agent_session_id INTEGER PRIMARY KEY,
@@ -387,7 +371,8 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
     "#,
     )?;
 
-    migrate_message_turn_columns(conn)?;
+    migrate_message_columns(conn)?;
+    migrate_conversation_context_columns(conn)?;
 
     // MCP Servers table
     //
@@ -426,9 +411,9 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Add the turn model columns to databases created before the strict turn
-/// model was introduced. SQLite has no `ADD COLUMN IF NOT EXISTS`.
-fn migrate_message_turn_columns(conn: &Connection) -> Result<()> {
+/// Add columns to the messages table that may be missing from older databases.
+/// SQLite has no `ADD COLUMN IF NOT EXISTS`, so we check PRAGMA table_info.
+fn migrate_message_columns(conn: &Connection) -> Result<()> {
     let existing_columns: std::collections::HashSet<String> = {
         let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
@@ -441,6 +426,18 @@ fn migrate_message_turn_columns(conn: &Connection) -> Result<()> {
     };
 
     for (column, definition) in [
+        // Agent message columns (inter-agent messaging)
+        ("from_agent_id", "INTEGER"),
+        ("from_agent_name", "TEXT"),
+        ("message_type", "TEXT"),
+        ("content", "TEXT"),
+        // Agent output columns (assistant turn output)
+        ("thinking", "TEXT"),
+        ("tool_calls", "TEXT"),
+        ("text_chunks", "TEXT"),
+        ("stop_reason", "TEXT"),
+        ("duration_ms", "INTEGER"),
+        // Turn model columns
         ("turn_id", "TEXT"),
         ("projection_kind", "TEXT"),
         ("origin_message_id", "TEXT"),
@@ -459,6 +456,36 @@ fn migrate_message_turn_columns(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_messages_origin_message_id ON messages(origin_message_id);
         "#,
     )?;
+    Ok(())
+}
+
+/// Add context usage columns to existing conversations tables.
+/// SQLite has no `ADD COLUMN IF NOT EXISTS`, so we check PRAGMA table_info.
+fn migrate_conversation_context_columns(conn: &Connection) -> Result<()> {
+    let existing_columns: std::collections::HashSet<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(conversations)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut columns = std::collections::HashSet::new();
+        for column in rows {
+            let column = column?;
+            columns.insert(column);
+        }
+        columns
+    };
+
+    for (column, definition) in [
+        ("context_used", "INTEGER DEFAULT 0"),
+        ("context_window", "INTEGER DEFAULT 0"),
+        ("context_updated_at", "INTEGER DEFAULT 0"),
+    ] {
+        if !existing_columns.contains(column) {
+            conn.execute(
+                &format!("ALTER TABLE conversations ADD COLUMN {column} {definition}"),
+                [],
+            )?;
+        }
+    }
+
     Ok(())
 }
 
@@ -541,6 +568,10 @@ pub struct Conversation {
     pub status: String,
     pub created_at: i64,
     pub updated_at: i64,
+    // ACP context window usage (latest snapshot from UsageUpdate)
+    pub context_used: i64,
+    pub context_window: i64,
+    pub context_updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1401,8 +1432,8 @@ pub mod conversations {
         let conn = db.lock().unwrap();
 
         conn.execute(
-            "INSERT INTO conversations (conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO conversations (conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at, context_used, context_window, context_updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 conversation.conversation_id,
                 conversation.collaboration_session_id,
@@ -1414,6 +1445,9 @@ pub mod conversations {
                 conversation.status,
                 conversation.created_at,
                 conversation.updated_at,
+                conversation.context_used,
+                conversation.context_window,
+                conversation.context_updated_at,
             ],
         )?;
 
@@ -1427,7 +1461,7 @@ pub mod conversations {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at
+            "SELECT conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at, context_used, context_window, context_updated_at
              FROM conversations WHERE collaboration_session_id = ?1 ORDER BY created_at ASC"
         )?;
         let conversations = stmt.query_map(params![collaboration_session_id], |row| {
@@ -1442,6 +1476,9 @@ pub mod conversations {
                 status: row.get(7)?,
                 created_at: row.get(8)?,
                 updated_at: row.get(9)?,
+                context_used: row.get(10)?,
+                context_window: row.get(11)?,
+                context_updated_at: row.get(12)?,
             })
         })?;
         conversations.collect()
@@ -1452,7 +1489,7 @@ pub mod conversations {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at
+            "SELECT conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at, context_used, context_window, context_updated_at
              FROM conversations WHERE chat_id = ?1 ORDER BY created_at ASC"
         )?;
         let conversations = stmt.query_map(params![chat_id], |row| {
@@ -1467,6 +1504,9 @@ pub mod conversations {
                 status: row.get(7)?,
                 created_at: row.get(8)?,
                 updated_at: row.get(9)?,
+                context_used: row.get(10)?,
+                context_window: row.get(11)?,
+                context_updated_at: row.get(12)?,
             })
         })?;
         conversations.collect()
@@ -1477,7 +1517,7 @@ pub mod conversations {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at
+            "SELECT conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at, context_used, context_window, context_updated_at
              FROM conversations WHERE parent_id = ?1 ORDER BY created_at ASC"
         )?;
         let conversations = stmt.query_map(params![parent_id], |row| {
@@ -1492,6 +1532,9 @@ pub mod conversations {
                 status: row.get(7)?,
                 created_at: row.get(8)?,
                 updated_at: row.get(9)?,
+                context_used: row.get(10)?,
+                context_window: row.get(11)?,
+                context_updated_at: row.get(12)?,
             })
         })?;
         conversations.collect()
@@ -1526,6 +1569,9 @@ pub mod conversations {
                     status: row.get(7)?,
                     created_at: row.get(8)?,
                     updated_at: row.get(9)?,
+                    context_used: row.get(10)?,
+                    context_window: row.get(11)?,
+                    context_updated_at: row.get(12)?,
                 })
             })?;
             for row in rows {
@@ -1535,7 +1581,7 @@ pub mod conversations {
         } else {
             // List all root conversations
             let mut stmt = conn.prepare(
-                "SELECT conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at
+                "SELECT conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at, context_used, context_window, context_updated_at
                  FROM conversations WHERE parent_id IS NULL ORDER BY created_at ASC"
             )?;
             let mut result = Vec::new();
@@ -1551,6 +1597,9 @@ pub mod conversations {
                     status: row.get(7)?,
                     created_at: row.get(8)?,
                     updated_at: row.get(9)?,
+                    context_used: row.get(10)?,
+                    context_window: row.get(11)?,
+                    context_updated_at: row.get(12)?,
                 })
             })?;
             for row in rows {
@@ -1567,7 +1616,7 @@ pub mod conversations {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at
+            "SELECT conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at, context_used, context_window, context_updated_at
              FROM conversations WHERE conversation_id = ?1"
         )?;
 
@@ -1583,6 +1632,9 @@ pub mod conversations {
                 status: row.get(7)?,
                 created_at: row.get(8)?,
                 updated_at: row.get(9)?,
+                context_used: row.get(10)?,
+                context_window: row.get(11)?,
+                context_updated_at: row.get(12)?,
             })
         })?;
 
@@ -1600,7 +1652,8 @@ pub mod conversations {
         conn.execute(
             "UPDATE conversations
              SET collaboration_session_id = ?1, chat_id = ?2, parent_id = ?3, name = ?4,
-                 mode = ?5, participant_role = ?6, status = ?7, updated_at = ?8
+                 mode = ?5, participant_role = ?6, status = ?7, updated_at = ?8,
+                 context_used = ?10, context_window = ?11, context_updated_at = ?12
              WHERE conversation_id = ?9",
             params![
                 conversation.collaboration_session_id,
@@ -1612,7 +1665,34 @@ pub mod conversations {
                 conversation.status,
                 conversation.updated_at,
                 conversation.conversation_id,
+                conversation.context_used,
+                conversation.context_window,
+                conversation.context_updated_at,
             ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Update ACP context window usage for a conversation.
+    /// Called when ACP sends a UsageUpdate notification.
+    pub fn update_context_usage(
+        conversation_id: ConversationId,
+        context_used: i64,
+        context_window: i64,
+    ) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        conn.execute(
+            "UPDATE conversations
+             SET context_used = ?1, context_window = ?2, context_updated_at = ?3
+             WHERE conversation_id = ?4",
+            params![context_used, context_window, now, conversation_id],
         )?;
 
         Ok(())
@@ -2949,6 +3029,9 @@ pub mod conversation_execution_contexts {
                     status: row.get(7)?,
                     created_at: row.get(8)?,
                     updated_at: row.get(9)?,
+                context_used: row.get(10)?,
+                context_window: row.get(11)?,
+                context_updated_at: row.get(12)?,
                 })
             },
         )
@@ -3297,8 +3380,8 @@ pub fn create_default_chat_with_binding(
 
     // 3. Create root conversation
     transaction.execute(
-        "INSERT INTO conversations (conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO conversations (conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at, context_used, context_window, context_updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             root_conversation.conversation_id,
             root_conversation.collaboration_session_id,
@@ -3310,13 +3393,16 @@ pub fn create_default_chat_with_binding(
             root_conversation.status,
             root_conversation.created_at,
             root_conversation.updated_at,
+            root_conversation.context_used,
+            root_conversation.context_window,
+            root_conversation.context_updated_at,
         ],
     )?;
 
     // 4. Create agent conversation
     transaction.execute(
-        "INSERT INTO conversations (conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO conversations (conversation_id, collaboration_session_id, chat_id, parent_id, name, mode, participant_role, status, created_at, updated_at, context_used, context_window, context_updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             agent_conversation.conversation_id,
             agent_conversation.collaboration_session_id,
@@ -3328,6 +3414,9 @@ pub fn create_default_chat_with_binding(
             agent_conversation.status,
             agent_conversation.created_at,
             agent_conversation.updated_at,
+            agent_conversation.context_used,
+            agent_conversation.context_window,
+            agent_conversation.context_updated_at,
         ],
     )?;
 
@@ -3500,6 +3589,9 @@ mod tests {
             status: "ready".to_string(),
             created_at: 1000,
             updated_at: 1000,
+            context_used: 0,
+            context_window: 0,
+            context_updated_at: 0,
         })
         .unwrap();
 
@@ -3610,6 +3702,9 @@ mod tests {
             status: "ready".to_string(),
             created_at: 1000,
             updated_at: 1000,
+            context_used: 0,
+            context_window: 0,
+            context_updated_at: 0,
         })
         .unwrap();
 
@@ -3714,6 +3809,9 @@ mod tests {
             status: "ready".to_string(),
             created_at: 1000,
             updated_at: 1000,
+            context_used: 0,
+            context_window: 0,
+            context_updated_at: 0,
         })
         .unwrap();
 

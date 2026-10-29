@@ -186,6 +186,10 @@ function transformEvent(
       // Not a message content, so return empty array
       return []
 
+    case "context_usage":
+      // Context usage is handled separately in onData callback for UI animation
+      return []
+
     case "done":
       return [{ type: "finish" }]
 
@@ -459,6 +463,22 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               {
                 onData: (event) => {
                   if (finished) {
+                    return
+                  }
+
+                  // Handle context_usage event for token counter animation
+                  if (event.type === "context_usage") {
+                    console.log("[ErgataiChatTransport] Received context_usage event:", {
+                      used: event.used,
+                      size: event.size,
+                      conversationId: effectiveConversationId,
+                    });
+                    // Notify UI to update context usage display
+                    // The actual animation is handled by the UI component
+                    const sessionStore = getRuntimeSessionStore()
+                    if (effectiveConversationId) {
+                      sessionStore.updateContextUsage(effectiveConversationId, event.used, event.size)
+                    }
                     return
                   }
 

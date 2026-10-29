@@ -97,3 +97,8 @@ export {
   useSessionState,
   type UseConversationInvocationReturn,
 } from "./use-conversation-invocation"
+
+export {
+  useRuntimeSessionSources,
+  type RuntimeSessionSources,
+} from "./use-runtime-session-sources"

@@ -538,11 +538,20 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/conversations/{conversation_id}/unarchive",
             post(api::user_conversations::unarchive_conversation),
         )
+        .route(
+            "/api/v1/conversations/{conversation_id}/context-usage",
+            get(api::user_conversations::get_conversation_context_usage),
+        )
         // Conversation Messages
         .route(
             "/api/v1/conversations/{conversation_id}/messages",
             get(api::user_conversations::list_conversation_messages)
                 .post(api::user_conversations::create_conversation_messages),
+        )
+        .route(
+            "/api/v1/conversations/{conversation_id}/initial-prompt",
+            get(api::user_conversations::get_initial_prompt)
+                .post(api::user_conversations::create_initial_prompt),
         )
         .route(
             "/api/v1/conversations/{conversation_id}/runtime",

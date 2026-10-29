@@ -7,6 +7,8 @@
 
 use crate::backends::acp::AgentOutputEvent;
 use ergatai_error::ErgataiResult;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -60,8 +62,13 @@ pub fn get_global_output_publisher() -> Option<&'static Arc<dyn OutputPublisher>
 /// }
 ///
 /// impl OutputPublisher for NatsOutputPublisher {
-///     fn publish(&self, conversation_id: &str, event: AgentOutputEvent) -> ErgataiResult<()> {
-///         // Publish to NATS
+///     fn publish(&self, conversation_id: &str, event: AgentOutputEvent)
+///         -> Pin<Box<dyn Future<Output = ErgataiResult<()>> + Send + '_>>
+///     {
+///         Box::pin(async move {
+///             // Publish to NATS
+///             Ok(())
+///         })
 ///     }
 /// }
 /// ```
@@ -77,7 +84,17 @@ pub trait OutputPublisher: Send + Sync {
     ///
     /// Returns `Ok(())` if the event was published successfully,
     /// or `Err` if publishing failed.
-    fn publish(&self, conversation_id: &str, event: AgentOutputEvent) -> ErgataiResult<()>;
+    ///
+    /// # Async
+    ///
+    /// This method returns a Future to allow implementations to acquire locks or perform
+    /// other async operations before spawning background tasks, ensuring proper
+    /// ordering guarantees.
+    fn publish(
+        &self,
+        conversation_id: &str,
+        event: AgentOutputEvent,
+    ) -> Pin<Box<dyn Future<Output = ErgataiResult<()>> + Send + '_>>;
 }
 
 /// A no-op output publisher that discards all events.
@@ -86,8 +103,14 @@ pub trait OutputPublisher: Send + Sync {
 pub struct NoOpOutputPublisher;
 
 impl OutputPublisher for NoOpOutputPublisher {
-    fn publish(&self, _conversation_id: &str, _event: AgentOutputEvent) -> ErgataiResult<()> {
-        // Discard the event
-        Ok(())
+    fn publish(
+        &self,
+        _conversation_id: &str,
+        _event: AgentOutputEvent,
+    ) -> Pin<Box<dyn Future<Output = ErgataiResult<()>> + Send + '_>> {
+        Box::pin(async move {
+            // Discard the event
+            Ok(())
+        })
     }
 }

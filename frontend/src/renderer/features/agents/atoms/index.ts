@@ -944,6 +944,20 @@ export const compactingConversationsAtom = atom<Set<string>>(new Set<string>())
 // Used to determine whether to show placeholder + typewriter effect
 export const justCreatedIdsAtom = atom<Set<string>>(new Set<string>())
 
+// Backend-owned initial prompt turns are dispatched while the chat view is
+// mounting. Keep a short-lived UI handle so the user sees "Generating" before
+// the first runtime SSE event arrives.
+export type PendingInitialPrompt = {
+  turnId: string
+  conversationId: string
+  chatId: string
+  status: "pending" | "dispatching" | "running" | "completed" | "failed"
+}
+
+export const pendingInitialPromptAtomFamily = atomFamily(
+  (conversationId: string) => atom<PendingInitialPrompt | null>(null),
+)
+
 // Pending user questions from AskUserQuestion tool
 // Set when Claude requests user input, cleared when answered or skipped
 export const QUESTIONS_SKIPPED_MESSAGE = "User skipped questions - proceed with defaults"

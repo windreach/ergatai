@@ -698,6 +698,13 @@ async fn async_main(args: Args) -> Result<()> {
             ergatai_runtime::set_global_persist_callback(persist_callback);
             tracing::info!("✅ Global accumulator registry and persistence callback initialized");
 
+            // Recover and dispatch initial chat prompts. This is started after
+            // AppContext because a worker may need to spawn an agent.
+            ergatai_api::services::initial_prompt_turns::spawn_worker(
+                mcp_cancellation_token.clone(),
+            );
+            tracing::info!("✅ Initial prompt scheduler started");
+
             // Spawn agent output TTL cleanup task (bounds storage growth).
             // Runs daily; failures are logged but do not affect the main service.
             // Also cleans up expired output publisher locks to prevent memory leaks.

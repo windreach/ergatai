@@ -16,6 +16,17 @@ const INVALID_BRANCH_PATTERNS = [/^-/, /\.\./, /\.$/, /^\./, /@\{/, /\\/, /\s/];
 
 export const createBranchesRouter = () => {
 	return router({
+		isGitRepository: publicProcedure
+			.input(z.object({ path: z.string() }))
+			.query(async ({ input }): Promise<boolean> => {
+				try {
+					const git = createGit(input.path);
+					return await git.checkIsRepo();
+				} catch {
+					return false;
+				}
+			}),
+
 		getBranches: publicProcedure
 			.input(z.object({ worktreePath: z.string() }))
 			.query(

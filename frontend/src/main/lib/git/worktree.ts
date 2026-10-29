@@ -917,7 +917,13 @@ export async function createWorktreeForChat(
 ): Promise<WorktreeResult> {
 	try {
 		const git = simpleGit(projectPath);
-		const isRepo = await git.checkIsRepo();
+		// `checkIsRepo()` can surface different behavior across simple-git/platform
+		// combinations; `rev-parse --is-inside-work-tree` is the explicit check we
+		// want for deciding whether worktree mode is possible.
+		const isRepo = await git
+			.revparse(["--is-inside-work-tree"])
+			.then((value) => value.trim() === "true")
+			.catch(() => false);
 
 		if (!isRepo) {
 			return { success: true, worktreePath: projectPath };

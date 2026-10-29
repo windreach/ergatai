@@ -419,118 +419,9 @@ export interface AssistantMessageItemProps {
   showInterAgentReplies?: boolean
 }
 
-// Cache for tracking previous message state per conversation/message
-// (to detect AI SDK in-place mutations without cross-chat collisions)
-// Stores both text lengths and tool states for complete change detection
-interface MessageStateSnapshot {
-  textLengths: number[]
-  partStates: (string | undefined)[]
-  lastPartInputJson: string | undefined
-}
-const messageStateCache = new Map<string, MessageStateSnapshot>()
-
-export function clearMessageStateCacheByMessageIds(conversationId: string, messageIds: string[]) {
-  for (const id of messageIds) {
-    messageStateCache.delete(`${conversationId}:${id}`)
-  }
-}
-
-function getTrackedPartTextLength(part: any): number {
-  if (part?.type === "text") {
-    return typeof part.text === "string" ? part.text.length : 0
-  }
-
-  if (part?.type === "reasoning") {
-    return typeof part.text === "string" ? part.text.length : 0
-  }
-
-  if (part?.type === "tool-Thinking") {
-    if (typeof part?.input?.text === "string") return part.input.text.length
-    if (typeof part?.text === "string") return part.text.length
-    return 0
-  }
-
-  return -1
-}
-
-// Custom comparison - check if message content actually changed
-// CRITICAL: AI SDK mutates objects in-place! So prev.message.parts[i].text === next.message.parts[i].text
-// even when text HAS changed (they're the same mutated object).
-// Solution: Cache state externally and compare those.
-function areMessagePropsEqual(
-  prev: AssistantMessageItemProps,
-  next: AssistantMessageItemProps
-): boolean {
-  const msgId = next.message?.id
-  const cacheKey = msgId ? `${next.conversationId}:${msgId}` : null
-
-  // Different message ID = different message
-  if (prev.message?.id !== next.message?.id) {
-    return false
-  }
-
-  // Check other props first (cheap comparisons)
-  if (prev.status !== next.status) return false
-  if (prev.isStreaming !== next.isStreaming) return false
-  if (prev.isLastMessage !== next.isLastMessage) return false
-  if (prev.isMobile !== next.isMobile) return false
-  if (prev.conversationId !== next.conversationId) return false
-  if (prev.chatId !== next.chatId) return false
-  if (prev.sandboxSetupStatus !== next.sandboxSetupStatus) return false
-  if (prev.showInterAgentReplies !== next.showInterAgentReplies) return false
-
-  // Get current message state from parts
-  const nextParts = next.message?.parts || []
-  const lastPart = nextParts[nextParts.length - 1]
-
-  const currentState: MessageStateSnapshot = {
-    textLengths: nextParts.map((p: any) => getTrackedPartTextLength(p)),
-    // Track ALL part states - critical for detecting Edit plan file streaming!
-    partStates: nextParts.map((p: any) => p.state),
-    // Track tool input changes - this is critical for tool streaming!
-    lastPartInputJson: lastPart?.input ? JSON.stringify(lastPart.input) : undefined,
-  }
-
-  // Get cached state from previous render
-  const cachedState = cacheKey ? messageStateCache.get(cacheKey) : undefined
-
-  // If no cache, this is first comparison - cache and allow render
-  if (!cachedState) {
-    if (cacheKey) messageStateCache.set(cacheKey, currentState)
-    return false  // First render - must render
-  }
-
-  // Compare parts count
-  if (cachedState.textLengths.length !== currentState.textLengths.length) {
-    messageStateCache.set(cacheKey!, currentState)
-    return false  // Parts count changed
-  }
-
-  // Compare text lengths (detects streaming text changes!)
-  for (let i = 0; i < currentState.textLengths.length; i++) {
-    if (cachedState.textLengths[i] !== currentState.textLengths[i]) {
-      messageStateCache.set(cacheKey!, currentState)
-      return false  // Text length changed = content changed
-    }
-  }
-
-  // Compare last part's input (detects tool input streaming!)
-  if (cachedState.lastPartInputJson !== currentState.lastPartInputJson) {
-    messageStateCache.set(cacheKey!, currentState)
-    return false  // Tool input changed
-  }
-
-  // Compare ALL part states (detects Edit plan file streaming!)
-  for (let i = 0; i < currentState.partStates.length; i++) {
-    if (cachedState.partStates[i] !== currentState.partStates[i]) {
-      messageStateCache.set(cacheKey!, currentState)
-      return false  // Part state changed
-    }
-  }
-
-  // Nothing changed - skip re-render
-  return true
-}
+// P1: The message store now guarantees immutable message snapshots (atoms
+// hold deep-frozen clones replaced only on real content change), so plain
+// shallow prop comparison is sufficient — no external change-tracking cache.
 
 export const AssistantMessageItem = memo(function AssistantMessageItem({
   message,
@@ -1134,4 +1025,4 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
       )}
     </div>
   )
-}, areMessagePropsEqual)
+})
