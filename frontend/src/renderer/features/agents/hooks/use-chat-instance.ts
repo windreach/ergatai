@@ -8,6 +8,7 @@ import { syncMessagesWithStatusAtom } from "../stores/message-store"
 import { useStreamingStatusStore } from "../stores/streaming-status-store"
 import { clearConversationRuntimeCaches } from "../stores/conversation-runtime-cleanup"
 import { trpc } from "@/lib/trpc"
+import { getMessageCorrelationService } from "@/features/conversation/runtime/message-correlation-service"
 import type { ChatConversation, ChatMessage } from "@/features/details-sidebar/lib/chat-contract-api"
 import type { AgentMessageMetadata } from "../ui/agent-message-usage"
 
@@ -185,7 +186,7 @@ export function useChatInstance({
 
   // Send message handler
   const handleSend = useCallback(
-    (parts: UIMessage<AgentMessageMetadata>["parts"]) => {
+    async (parts: UIMessage<AgentMessageMetadata>["parts"]) => {
       if (!backendConversationId || !agentId) {
         toast.error("Chat is not bound to a backend agent conversation.")
         return
@@ -200,7 +201,11 @@ export function useChatInstance({
           status: "pending",
         })
       } else {
-        void sendMessage({ role: "user", parts })
+        const message = await getMessageCorrelationService().createOptimisticMessage({
+          role: "user",
+          parts: parts as any,
+        })
+        void sendMessage(message as UIMessage<AgentMessageMetadata>)
       }
     },
     [agentId, backendConversationId, isStreaming, addToQueue, runtimeConversationId, sendMessage]
@@ -211,19 +216,23 @@ export function useChatInstance({
   // when transportConfig object reference changes
   const fromAgentId = transportConfig?.fromAgentId
   const sendAgentMessage = useCallback(
-    (parts: UIMessage<AgentMessageMetadata>["parts"]) => {
+    async (parts: UIMessage<AgentMessageMetadata>["parts"]) => {
       if (!backendConversationId || !agentId || !fromAgentId) {
         toast.error("Agent-to-agent communication not configured.")
         return
       }
 
-      void sendMessage({ role: "agent", parts })
+      const message = await getMessageCorrelationService().createOptimisticMessage({
+        role: "agent",
+        parts: parts as any,
+      })
+      void sendMessage(message as UIMessage<AgentMessageMetadata>)
     },
     [backendConversationId, agentId, fromAgentId, sendMessage]
   )
 
   const handleSendFromQueue = useCallback(
-    (itemId: string) => {
+    async (itemId: string) => {
       const item = queue.find((q) => q.id === itemId)
       if (!item) return
       removeFromQueue(runtimeConversationId, itemId)
@@ -231,10 +240,11 @@ export function useChatInstance({
       const parts = item.parts && item.parts.length > 0
         ? item.parts
         : [{ type: "text", text: item.message }]
-      void sendMessage({
+      const message = await getMessageCorrelationService().createOptimisticMessage({
         role: "user",
-        parts,
+        parts: parts as any,
       })
+      void sendMessage(message as UIMessage<AgentMessageMetadata>)
     },
     [queue, removeFromQueue, runtimeConversationId, sendMessage]
   )

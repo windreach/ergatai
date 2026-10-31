@@ -28,6 +28,7 @@ describe("buildRuntimeMessages", () => {
     expect(messages).toHaveLength(2)
     expect(messages[0]?.id).toBe("msg-request")
     expect(messages[1]?.id).toBe("runtime-conv-1-turn-1-0")
+    expect((messages[1]?.metadata as any)?.turnId).toBe("turn-1")
 
     const reasoning = (messages[1]?.parts as any[]).find((part) => part.type === "reasoning")
     expect(reasoning?.input?.text).toBe("thinking")

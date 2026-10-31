@@ -12,6 +12,34 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
 
+vi.mock("@/features/conversation/runtime/message-correlation-service", () => {
+  const correlation = {
+    externalMessageId: "msg_1000_000_0001",
+    metadata: {
+      externalMessageId: "msg_1000_000_0001",
+      streamSource: "local-transport",
+    },
+    transportOverrides: { externalMessageId: "msg_1000_000_0001" },
+  }
+  return {
+    getMessageCorrelationService: vi.fn(() => ({
+      allocateExternalMessageId: vi.fn(async () => correlation.externalMessageId),
+      createCorrelation: vi.fn(async () => correlation),
+      createOptimisticMessage: vi.fn(async (input: any) => ({
+        id: input.externalMessageId ?? correlation.externalMessageId,
+        role: input.role,
+        parts: input.parts,
+        metadata: {
+          ...input.metadata,
+          externalMessageId: input.externalMessageId ?? correlation.externalMessageId,
+          streamSource: "local-transport",
+        },
+      })),
+    })),
+    resetMessageCorrelationService: vi.fn(),
+  }
+})
+
 // Mock dependencies - these must be defined before imports
 vi.mock("@/features/conversation/runtime/conversation-resolver", () => {
   const mockResolve = vi.fn((conv) => Promise.resolve(conv))

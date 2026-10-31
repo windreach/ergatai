@@ -112,14 +112,6 @@ export const AgentContextIndicator = memo(function AgentContextIndicator({
   const percentUsed = Math.min(100, (contextTokens / contextWindow) * 100)
   const isEmpty = contextTokens === 0
 
-  console.log("[AgentContextIndicator] Rendering with:", {
-    contextTokens,
-    contextWindow,
-    percentUsed,
-    isEmpty,
-    source: tokenData.contextUsed !== undefined ? "ACP" : "metadata",
-  })
-
   const isClickable = onCompact && !disabled && !isCompacting
 
   return (

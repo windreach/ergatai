@@ -68,7 +68,6 @@ import {
   resolveGroupMentionAgents,
   saveGroupAgents,
 } from "../collaboration/group-agent-storage"
-import { fetchAgentModels } from "../lib/ergatai-agent-manager"
 import {
   agentContractApi,
   CORE_AGENT_OPTIONS,
@@ -559,10 +558,49 @@ export const ChatInputArea = memo(function ChatInputArea({
   const setLastSelectedModelId = useSetAtom(lastSelectedModelIdAtom)
   const setLastSelectedCodexModelId = useSetAtom(lastSelectedCodexModelIdAtom)
   const setLastSelectedCodexThinking = useSetAtom(lastSelectedCodexThinkingAtom)
-  const availableModels = useAvailableModels()
+  const availableModels = useAvailableModels(agentId)
   const isRuntimeModelProvider = provider !== "claude-code" && provider !== "codex"
+
+  // Debug logging: only log when agentId changes
+  useEffect(() => {
+    console.log("[chat-input-area] agentId:", agentId)
+  }, [agentId])
   const [runtimeModel, setRuntimeModel] = useState<string | null>(null)
   const [isDetectingRuntimeModel, setIsDetectingRuntimeModel] = useState(false)
+  const requestedRuntimeModelProfileRef = useRef<string | null>(null)
+
+  // The backend stores model metadata by stable profile name, not by ephemeral
+  // agent ID. Resolve the active agent back to its profile first.
+  const { data: runtimeAgents } = trpc.ergatai.listAgents.useQuery(undefined, {
+    enabled: isRuntimeModelProvider && !!agentId,
+    refetchOnWindowFocus: false,
+  })
+  const runtimeProfileName = useMemo(() => {
+    const activeAgent = runtimeAgents?.find((agent) => agent.agent_id === agentId)
+    // Only the registered agent profile is authoritative. Do not guess from a
+    // provider command, otherwise profiles can share/clobber model metadata.
+    return activeAgent?.profile ?? null
+  }, [agentId, runtimeAgents])
+
+  const {
+    data: runtimeModelData,
+    refetch: refetchRuntimeModelData,
+  } = trpc.ergatai.getAgentProfileModels.useQuery(
+    { profileName: runtimeProfileName ?? "" },
+    {
+      enabled: isRuntimeModelProvider && !!agentId && !!runtimeProfileName,
+      refetchOnWindowFocus: false,
+    },
+  )
+  const refreshRuntimeModelData =
+    trpc.ergatai.refreshAgentProfileModels.useMutation({
+      onSuccess: () => {
+        void refetchRuntimeModelData()
+      },
+    })
+  const refreshRuntimeModelDataRef = useRef(refreshRuntimeModelData)
+  refreshRuntimeModelDataRef.current = refreshRuntimeModelData
+
   const selectedModel = useMemo(
     () =>
       availableModels.models.find((model) => model.id === selectedConversationModelId) ||
@@ -579,35 +617,36 @@ export const ChatInputArea = memo(function ChatInputArea({
   const RuntimeModelIcon = getCoreAgentIcon(provider as CoreAgentId)
 
   useEffect(() => {
-    if (!isRuntimeModelProvider || !agentId) {
+    if (!isRuntimeModelProvider || !agentId || !runtimeProfileName) {
       setRuntimeModel(null)
+      setIsDetectingRuntimeModel(false)
+      requestedRuntimeModelProfileRef.current = null
+      return
+    }
+
+    const models = runtimeModelData?.models ?? []
+    if (models.length > 0) {
+      setRuntimeModel(runtimeModelData?.current ?? models[0] ?? null)
       setIsDetectingRuntimeModel(false)
       return
     }
 
-    let cancelled = false
+    if (requestedRuntimeModelProfileRef.current === runtimeProfileName) return
+    requestedRuntimeModelProfileRef.current = runtimeProfileName
     setIsDetectingRuntimeModel(true)
-
-    // ACP exposes the model as a config option when available; the existing
-    // helper also handles cached snapshots and the /model fallback.
-    const providerCommand = CORE_AGENT_OPTIONS.find(
-      (option) => option.id === provider,
-    )?.defaultCommand ?? provider
-
-    void fetchAgentModels(agentId, providerCommand).then((result) => {
-      if (cancelled) return
-      setRuntimeModel(result?.current ?? result?.models?.[0] ?? null)
-      setIsDetectingRuntimeModel(false)
-    }).catch(() => {
-      if (cancelled) return
-      setRuntimeModel(null)
-      setIsDetectingRuntimeModel(false)
-    })
-
-    return () => {
-      cancelled = true
-    }
-  }, [agentId, isRuntimeModelProvider, provider])
+    refreshRuntimeModelDataRef.current.mutate(
+      { profileName: runtimeProfileName },
+      {
+        onSettled: () => setIsDetectingRuntimeModel(false),
+      },
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshRuntimeModelData is unstable, use ref
+  }, [
+    agentId,
+    isRuntimeModelProvider,
+    runtimeModelData,
+    runtimeProfileName,
+  ])
 
   const hiddenModels = useAtomValue(hiddenModelsAtom)
 

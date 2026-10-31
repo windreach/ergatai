@@ -5,7 +5,6 @@ import {
   Bot,
   CheckCircle2,
   CircleDashed,
-  GitBranch,
   ListTree,
   Loader2,
   ShieldAlert,
@@ -16,7 +15,6 @@ import {
 import { cn } from "../../../lib/utils"
 import type {
   CollaborationContextEvent,
-  CollaborationSessionDetail,
 } from "./collaboration-session-runtime"
 
 type EventStatus = "pending" | "running" | "completed" | "failed" | "neutral"
@@ -173,14 +171,12 @@ function eventSummary(event: CollaborationContextEvent): string {
 interface CollaborationSessionEventCardsProps {
   className?: string
   events: CollaborationContextEvent[]
-  session: CollaborationSessionDetail | null
 }
 
 export const CollaborationSessionEventCards = memo(
   function CollaborationSessionEventCards({
     className,
     events,
-    session,
   }: CollaborationSessionEventCardsProps) {
     const semanticEvents = useMemo(
       () => events
@@ -189,36 +185,12 @@ export const CollaborationSessionEventCards = memo(
       [events],
     )
 
-    if (!session && semanticEvents.length === 0) return null
+    // The collaboration session itself is runtime coordination state. Only
+    // show user-visible outcomes such as task, plan, DAG, and approval events.
+    if (semanticEvents.length === 0) return null
 
     return (
       <div className={cn("mx-auto mb-4 w-full max-w-2xl space-y-2", className)}>
-        {session && session.participants.length > 0 && (
-          <div className="rounded-xl border bg-card/70 px-3 py-2 shadow-sm">
-            <div className="flex items-center gap-2">
-              <GitBranch className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <p className="min-w-0 flex-1 truncate text-sm font-medium">
-                Collaboration session
-              </p>
-              <span className="shrink-0 text-[11px] text-muted-foreground">
-                {session.state?.replace("_", " ") ?? "unknown"}
-              </span>
-            </div>
-            <div className="mt-2 flex flex-wrap gap-1">
-              {session.participants.map((participant) => (
-                <span
-                  key={participant.id}
-                  className="inline-flex h-6 items-center gap-1 rounded-full bg-muted px-2 text-[11px] text-muted-foreground"
-                >
-                  <Bot className="h-3 w-3" />
-                  {participant.agent_id}
-                  <span className="opacity-70">· {participant.status}</span>
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
         {semanticEvents.map((event) => {
           const status = eventStatus(event)
           const config = STATUS_CONFIG[status]

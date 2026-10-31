@@ -10,6 +10,7 @@ use utoipa::ToSchema;
 
 use ergatai_runtime::profile_registry::AgentRegistration;
 
+use super::agents::extract_models_from_config_options;
 use crate::services::profile_service;
 
 /// Request to register a new agent profile
@@ -468,6 +469,165 @@ pub async fn uninstall_agent(Path(id): Path<String>) -> axum::response::Response
                 .into_response()
         }
     }
+}
+
+/// Get cached models for an agent profile
+///
+/// GET /api/v1/agent-profiles/:name/models
+#[utoipa::path(
+    get,
+    path = "/api/v1/agent-profiles/{name}/models",
+    tag = "Agent Profiles",
+    params(("name" = String, Path, description = "Agent profile name")),
+    responses(
+        (status = 200, description = "Cached models"),
+        (status = 404, description = "Profile not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn get_profile_models(Path(name): Path<String>) -> axum::response::Response {
+    match profile_service::get_profile_models_by_name(&name).await {
+        Ok(Some(models)) => (StatusCode::OK, Json(models)).into_response(),
+        Ok(None) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "models": [], "current": null, "updated_at": null })),
+        )
+            .into_response(),
+        Err(e) => crate::http_error::internal(e, "get_profile_models").into_response(),
+    }
+}
+
+/// Trigger model detection for an agent profile via ACP config_options
+///
+/// POST /api/v1/agent-profiles/:name/models/refresh
+///
+/// Rate limited: 1 refresh per 30 seconds per profile to prevent abuse.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agent-profiles/{name}/models/refresh",
+    tag = "Agent Profiles",
+    params(("name" = String, Path, description = "Agent profile name")),
+    responses(
+        (status = 200, description = "Models refreshed"),
+        (status = 404, description = "Profile not found", body = crate::api::ApiError),
+        (status = 429, description = "Rate limit exceeded", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn refresh_profile_models(Path(name): Path<String>) -> axum::response::Response {
+    // Rate limit check: prevent frequent refreshes (30s cooldown per profile)
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    static REFRESH_COOLDOWN: std::sync::LazyLock<Mutex<HashMap<String, Instant>>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    {
+        let mut cooldowns = REFRESH_COOLDOWN.lock().unwrap();
+        if let Some(last_refresh) = cooldowns.get(&name) {
+            if last_refresh.elapsed().as_secs() < 30 {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(serde_json::json!({
+                        "error": "Rate limit exceeded",
+                        "message": format!("Please wait {} seconds before refreshing again",
+                            30 - last_refresh.elapsed().as_secs())
+                    })),
+                )
+                    .into_response();
+            }
+        }
+        cooldowns.insert(name.clone(), Instant::now());
+    }
+
+    // 1. Look up the profile by name
+    let profile = match profile_service::get_profile_by_name(&name).await {
+        Ok(Some(p)) => p,
+        Ok(None) => return crate::http_error::not_found("Agent profile", &name).into_response(),
+        Err(e) => {
+            return crate::http_error::internal(e, "refresh_profile_models_lookup").into_response()
+        }
+    };
+
+    // 2. Find a running agent for this profile
+    let running_agent_id = match find_running_agent_for_profile(&profile.name).await {
+        Ok(agent_id) => agent_id,
+        Err(_e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "No running agent",
+                    "message": format!("No running agent found for profile '{}'. Please start an agent first before refreshing models.", profile.name),
+                    "hint": "Use the spawn agent API or UI to start an agent with this profile."
+                })),
+            ).into_response()
+        }
+    };
+
+    // 3. Call get_agent_config_options on the running agent
+    let models_result =
+        match crate::services::agent_service::get_agent_config_options(&running_agent_id).await {
+            Ok(Some(opts)) => extract_models_from_config_options(&opts),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "get_agent_config_options failed during model refresh"
+                );
+                None
+            }
+        };
+
+    // 4. Extract models and save to DB (using profile name)
+    if let Some((models, current)) = models_result {
+        if let Err(e) =
+            profile_service::save_profile_models_by_name(&name, &models, current.as_deref()).await
+        {
+            return crate::http_error::internal(e, "refresh_profile_models_save").into_response();
+        }
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "success",
+                "models": models,
+                "current": current,
+            })),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "success",
+                "models": [],
+                "current": null,
+                "message": "No models detected from agent",
+            })),
+        )
+            .into_response()
+    }
+}
+
+/// Find a running agent matching the profile name.
+async fn find_running_agent_for_profile(profile_name: &str) -> Result<String, String> {
+    // List running agents and find one matching this profile
+    let agents = crate::services::agent_service::list_agents_filtered(
+        crate::services::agent_service::AgentListFilter::default(),
+    )
+    .await;
+
+    // Look for an alive agent with matching profile name
+    for agent in &agents {
+        if agent.profile.as_deref() == Some(profile_name) && agent.is_alive {
+            return Ok(agent.agent_id.clone());
+        }
+    }
+
+    Err(format!(
+        "No running agent found for profile '{}'",
+        profile_name
+    ))
 }
 
 #[cfg(test)]

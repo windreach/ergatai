@@ -182,6 +182,33 @@ type CollaborationInteractionResult = CollaborationSessionDetail & {
   route?: "auto" | "lightweight" | "collaboration"
 }
 
+type BackendCollaborationSessionDetail = Omit<CollaborationSessionDetail, "id"> & {
+  collaboration_session_id: string
+}
+
+type BackendCollaborationInteractionResult = Omit<CollaborationInteractionResult, "id"> & {
+  collaboration_session_id: string
+  activation?: Record<string, unknown>
+}
+
+function mapCollaborationSessionDetail(
+  session: BackendCollaborationSessionDetail,
+): CollaborationSessionDetail {
+  return {
+    ...session,
+    id: session.collaboration_session_id,
+  }
+}
+
+function mapCollaborationInteractionResult(
+  result: BackendCollaborationInteractionResult,
+): CollaborationInteractionResult {
+  return {
+    ...result,
+    id: result.collaboration_session_id,
+  }
+}
+
 type Project = {
   id: string
   name: string
@@ -1965,6 +1992,12 @@ export const ergataiRouter = router({
       )
     }),
 
+  /** Allocate a backend message ID for optimistic/durable correlation */
+  generateMessageId: publicProcedure.query(async () => {
+    const result = await ergataiFetch<{ message_id: string }>("/api/v1/ids/message")
+    return { id: result.message_id }
+  }),
+
   /** Cancel an active prompt for an agent */
   cancelPrompt: publicProcedure
     .input(z.object({ agentId: agentIdSchema }))
@@ -2266,6 +2299,11 @@ export const ergataiRouter = router({
       })
     }),
 
+  /**
+   * @deprecated Use `getAgentProfileModels` instead.
+   * This procedure reads from the old JSON snapshot store.
+   * Kept for backward compatibility only — will be removed after migration.
+   */
   /** Get latest cached models (no agent required — reads from snapshot store) */
   getLatestCachedModels: publicProcedure.query(async () => {
     const manager = getModelSnapshotManager()
@@ -2291,6 +2329,11 @@ export const ergataiRouter = router({
     }
   }),
 
+  /**
+   * @deprecated Use `refreshAgentProfileModels` instead.
+   * This procedure writes to the old JSON snapshot store.
+   * Kept for backward compatibility only — will be removed after migration.
+   */
   /** Save model snapshot to SQLite cache */
   saveModelSnapshot: publicProcedure
     .input(
@@ -2306,6 +2349,11 @@ export const ergataiRouter = router({
       return { success: true }
     }),
 
+  /**
+   * @deprecated Use `getAgentProfileModels` + `refreshAgentProfileModels` instead.
+   * This procedure uses the old JSON snapshot store.
+   * Kept for backward compatibility only — will be removed after migration.
+   */
   /** Get agent models with cache support */
   getAgentModelsWithCache: publicProcedure
     .input(
@@ -2373,6 +2421,36 @@ export const ergataiRouter = router({
         { method: "DELETE" },
       )
       return { success: true }
+    }),
+
+  // ── Agent Profile Models ──────────────────────────────────────────────────
+
+  /** Get cached models for an agent profile */
+  getAgentProfileModels: publicProcedure
+    .input(z.object({ profileName: z.string() }))
+    .query(async ({ input }) => {
+      try {
+        return await ergataiFetch<{
+          models: string[]
+          current: string | null
+          updated_at: number | null
+        }>(`/api/v1/agent-profiles/${encodeURIComponent(input.profileName)}/models`)
+      } catch {
+        return { models: [], current: null, updated_at: null }
+      }
+    }),
+
+  /** Trigger model detection for an agent profile */
+  refreshAgentProfileModels: publicProcedure
+    .input(z.object({ profileName: z.string() }))
+    .mutation(async ({ input }) => {
+      return ergataiFetch<{
+        status: string
+        models: string[]
+        current: string | null
+      }>(`/api/v1/agent-profiles/${encodeURIComponent(input.profileName)}/models/refresh`, {
+        method: "POST",
+      })
     }),
 
   // ── Lock Monitoring Endpoints ────────────────────────────────────────────
@@ -2444,10 +2522,10 @@ export const ergataiRouter = router({
     .input(z.object({ chatId: chatIdSchema }))
     .query(async ({ input }) => {
       try {
-        const sessions = await ergataiFetch<CollaborationSessionDetail[]>(
+        const sessions = await ergataiFetch<BackendCollaborationSessionDetail[]>(
           `/api/v1/collaboration-sessions?chat_id=${encodeURIComponent(input.chatId)}`,
         )
-        return sessions.length > 0 ? sessions[0] : null
+        return sessions.length > 0 ? mapCollaborationSessionDetail(sessions[0]) : null
       } catch (error) {
         if (isErgataiApiError(error) && error.status === 404) return null
         throw error
@@ -2476,7 +2554,7 @@ export const ergataiRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      return ergataiFetch<CollaborationSessionDetail>(
+      const session = await ergataiFetch<BackendCollaborationSessionDetail>(
         "/api/v1/collaboration-sessions",
         {
           method: "POST",
@@ -2495,6 +2573,7 @@ export const ergataiRouter = router({
           }),
         },
       )
+      return mapCollaborationSessionDetail(session)
     }),
 
   /** Submit an interaction to a collaboration session */
@@ -2514,7 +2593,7 @@ export const ergataiRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      return ergataiFetch<CollaborationInteractionResult>(
+      const result = await ergataiFetch<BackendCollaborationInteractionResult>(
         `/api/v1/collaboration-sessions/${encodeURIComponent(input.sessionId)}/interactions`,
         {
           method: "POST",
@@ -2531,6 +2610,7 @@ export const ergataiRouter = router({
           }),
         },
       )
+      return mapCollaborationInteractionResult(result)
     }),
 
   /** List resumable collaboration session context events */
@@ -2859,10 +2939,10 @@ export const ergataiRouter = router({
   getCollaborationSessionByChat: publicProcedure
     .input(z.object({ chatId: chatIdSchema }))
     .query(async ({ input }) => {
-      const sessions = await ergataiFetch<CollaborationSessionDetail[]>(
+      const sessions = await ergataiFetch<BackendCollaborationSessionDetail[]>(
         `/api/v1/collaboration-sessions?chat_id=${encodeURIComponent(input.chatId)}`,
       )
-      return sessions.length > 0 ? sessions[0] : null
+      return sessions.length > 0 ? mapCollaborationSessionDetail(sessions[0]) : null
     }),
 
   /** Get collaboration session status */

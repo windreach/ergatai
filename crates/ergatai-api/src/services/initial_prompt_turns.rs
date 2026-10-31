@@ -429,6 +429,10 @@ async fn ensure_agent(turn: &InitialPromptTurn) -> Result<String> {
         .map_err(|error| anyhow::anyhow!("Failed to launch agent: {}", error))?;
 
     upsert_agent_binding(&agent_id, &profile, turn).await?;
+
+    // Spawn background model detection (two-phase polling with exponential backoff)
+    crate::api::agents::spawn_model_detection(agent_id.clone(), profile.name.clone());
+
     Ok(agent_id)
 }
 

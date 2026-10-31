@@ -2,8 +2,8 @@
  * ErgataiChatTransport — streams chat through the Rust ergatai backend.
  *
  * Flow:
- *   1. POST /api/v1/agents/:agentId/prompt  (fire-and-forget, sends prompt)
- *   2. GET  /api/v1/agents/:agentId/stream   (SSE — real-time events)
+ *   1. GET  /api/v1/agents/:agentId/stream  (subscribe first; wait for stream_ready)
+ *   2. POST /api/v1/agents/:agentId/prompt  (fire-and-forget, sends prompt)
  *   3. Transform AgentOutputEvent → UIMessageChunk → ReadableStream
  *   4. On abort → POST /api/v1/agents/:agentId/cancel
  *
@@ -12,7 +12,7 @@
  */
 
 import type { ChatTransport, UIMessage, UIMessageChunk } from "ai"
-import { getOrCreateActiveAgent, fetchAgentModels } from "./ergatai-agent-manager"
+import { getOrCreateActiveAgent } from "./ergatai-agent-manager"
 import { trpcClient } from "../../../lib/trpc"
 import { useAgentConversationStore } from "../stores/conversation-store"
 import { getRuntimeSessionStore } from "../../conversation/runtime/runtime-session-store"
@@ -112,6 +112,9 @@ type SendMessageResult = {
 type Unsubscribable = {
   unsubscribe(): void
 }
+
+/** How long to wait for the backend stream handshake before sending a prompt. */
+const STREAM_READY_TIMEOUT_MS = 2_000
 
 function parseStreamedToolInput(value: string | undefined): Record<string, unknown> | null {
   if (!value) return null
@@ -346,6 +349,185 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
           close([{ type: "finish" }])
         }
 
+        let notifyStreamReady: (() => void) | null = null
+        let streamReadyPromise: Promise<void> = Promise.resolve()
+
+        const openAgentStream = (
+          agentId: string,
+          conversationId: string,
+          promptId?: string,
+        ): void => {
+          console.log("[ErgataiChatTransport] Subscribing to agent stream", {
+            agentId,
+            promptId,
+          })
+          streamReadyPromise = new Promise<void>((resolve) => {
+            notifyStreamReady = resolve
+          })
+          subscription = trpcClient.ergatai.subscribeAgentStream.subscribe(
+            {
+              agentId,
+              promptId,
+            },
+            {
+              onData: (event) => {
+                if (finished) {
+                  return
+                }
+
+                // The backend sends this only after the SSE response is bridged
+                // to a live NATS subscription. Waiting for it prevents the
+                // prompt from winning the race against TurnStarted.
+                if (event.type === "stream_ready") {
+                  notifyStreamReady?.()
+                  return
+                }
+
+                // TurnStarted is the backend's authoritative turn identity.
+                // Carry it onto the local AI SDK assistant projection so the
+                // runtime store can merge it with runtime and canonical data.
+                if (event.type === "turn_started") {
+                  if (event.turn_id) {
+                    controller.enqueue({
+                      type: "message-metadata",
+                      messageMetadata: {
+                        turnId: event.turn_id,
+                        streamSource: "local-transport",
+                      },
+                    })
+                  }
+                  return
+                }
+
+                // Handle context_usage event for token counter animation
+                if (event.type === "context_usage") {
+                  console.log("[ErgataiChatTransport] Received context_usage event:", {
+                    used: event.used,
+                    size: event.size,
+                    conversationId,
+                  });
+                  // Notify UI to update context usage display
+                  // The actual animation is handled by the UI component
+                  const sessionStore = getRuntimeSessionStore()
+                  sessionStore.updateContextUsage(conversationId, event.used, event.size)
+                  return
+                }
+
+                // Phase 19: Handle message_inserted event for interrupt queue management
+                if (event.type === "message_inserted") {
+                  // Notify TurnOrchestrator to remove the message from queue
+                  // The message has been successfully inserted at a safe point
+                  const sessionStore = getRuntimeSessionStore()
+                  // Find and remove the queue item by clientRequestId
+                  // Store clientRequestId in queue item's transportOverrides for matching
+                  const session = sessionStore.getSession(conversationId)
+                  if (session && event.client_request_id) {
+                    const queueItem = session.queue.find(
+                      (item) => item.originalInput.transportOverrides?.correlationId === event.client_request_id
+                    )
+                    if (queueItem) {
+                      sessionStore.removeQueueItem(conversationId, queueItem.id)
+                      console.log("[ErgataiChatTransport] Message inserted at safe point, removed from queue:", event.client_request_id)
+                    }
+                  }
+                  return
+                }
+
+                if (event.type === "tool_call_start") {
+                  toolCallInputs.set(event.id, "")
+                } else if (event.type === "tool_call_input") {
+                  toolCallInputs.set(
+                    event.id,
+                    (toolCallInputs.get(event.id) ?? "") + event.delta,
+                  )
+                }
+
+                let streamEvent = event
+                if (event.type === "tool_call_complete") {
+                  const finalInput =
+                    event.input && typeof event.input === "object" && !Array.isArray(event.input)
+                      ? event.input as Record<string, unknown>
+                      : null
+                  const streamedInput = parseStreamedToolInput(toolCallInputs.get(event.id))
+                  const input = finalInput && Object.keys(finalInput).length > 0
+                    ? { ...streamedInput, ...finalInput }
+                    : streamedInput
+                  streamEvent = { ...event, input: input ?? undefined }
+                  // Clean up the Map entry to prevent memory leak
+                  toolCallInputs.delete(event.id)
+                }
+
+                // Handle session title update separately
+                if (event.type === "session_title_update") {
+                  const titleChanged = lastSessionTitle !== event.title
+                  if (titleChanged) {
+                    lastSessionTitle = event.title
+
+                    // Update conversation title in backend only when it changes
+                    trpcClient.ergatai.updateConversation
+                      .mutate({
+                        conversationId,
+                        title: event.title,
+                      })
+                      .then(() => {
+                        // Also update in-memory store so UI reflects the change immediately
+                        useAgentConversationStore.getState().updateConversationName(
+                          conversationId,
+                          event.title,
+                        )
+                      })
+                      .catch(() => {
+                        // Silently fail - title update is not critical
+                      })
+                  }
+                  return
+                }
+
+                if (event.type === "done" || event.type === "error") {
+                  // Let close() handle the closing of text/reasoning blocks
+                  close([...transformEvent(event, getTextBlockId(), getReasoningBlockId())])
+                } else {
+                  if (event.type === "thinking" && activeBlock !== "reasoning") {
+                    if (activeBlock === "text") {
+                      controller.enqueue({ type: "text-end", id: getTextBlockId() })
+                    }
+                    reasoningBlockCounter++
+                    controller.enqueue({ type: "reasoning-start", id: getReasoningBlockId() })
+                    activeBlock = "reasoning"
+                  }
+
+                  if (event.type === "text" && activeBlock !== "text") {
+                    if (activeBlock === "reasoning") {
+                      controller.enqueue({ type: "reasoning-end", id: getReasoningBlockId() })
+                    }
+                    textBlockCounter++
+                    controller.enqueue({ type: "text-start", id: getTextBlockId() })
+                    activeBlock = "text"
+                  }
+
+                  const chunks = transformEvent(streamEvent, getTextBlockId(), getReasoningBlockId())
+                  for (const chunk of chunks) {
+                    controller.enqueue(chunk)
+                  }
+                }
+              },
+              onError: (error) => {
+                console.error("[ErgataiTransport] SSE error:", error)
+                close([
+                  {
+                    type: "error",
+                    errorText: error instanceof Error ? error.message : "SSE connection lost",
+                  },
+                  { type: "finish" },
+                ])
+              },
+              onComplete: () => {
+                close([{ type: "finish" }])
+              },
+            },
+          )
+        }
+
         if (options.abortSignal?.aborted) {
           handleAbort()
           return
@@ -370,18 +552,10 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               throw new Error("Agent ID is not available — cannot send message")
             }
 
-            // Fetch models from agent using two-tier fallback:
-            // 1. PRIMARY: ACP config_options (standard protocol approach)
-            // 2. FALLBACK: Spawn temporary agent and execute /model command (for agents that don't support config_options)
-            // Models are written to the Jotai atom asynchronously; UI updates when ready.
-            // Fire-and-forget with error handling to prevent uncaught Promise rejections
-            fetchAgentModels(effectiveAgentId, this.config.command, undefined, effectiveConversationId)
-              .catch((err) => {
-                console.warn("[ErgataiChatTransport] Failed to fetch agent models:", err)
-              })
+            // Model detection is now handled by the backend.
+            // Use `refreshAgentProfileModels` tRPC mutation to trigger model detection.
+            // The useAvailableModels hook reads from the backend DB automatically.
 
-            // Determine message payload based on message type
-            let promptId: string | null = null
             const isAgentToAgent = !!this.config.fromAgentId
 
             // Lazily create conversation on first message
@@ -435,6 +609,27 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               }
             }
 
+            // Open the conversation-wide stream before publishing the prompt.
+            // The backend emits stream_ready only after NATS subscribers exist,
+            // so TurnStarted can no longer be emitted before this transport
+            // has attached.
+            openAgentStream(effectiveAgentId, effectiveConversationId)
+            try {
+              let streamReadyTimer: ReturnType<typeof setTimeout> | null = null
+              await Promise.race([
+                streamReadyPromise,
+                new Promise<null>((resolve) => {
+                  streamReadyTimer = setTimeout(() => resolve(null), STREAM_READY_TIMEOUT_MS)
+                }),
+              ])
+              if (streamReadyTimer) {
+                clearTimeout(streamReadyTimer)
+              }
+            } catch {
+              // A transport error will close the stream; still let prompt
+              // errors surface in the normal try/catch below.
+            }
+
             if (isAgentToAgent) {
               // Agent-to-agent communication
               // Reuse an already-persisted message ID when available (for
@@ -442,7 +637,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               // Otherwise omit the ID and let the backend assign its canonical
               // Snowflake message ID.
               const clientRequestId = persistedMessageId
-              const result = await trpcClient.ergatai.sendMessage.mutate({
+              await trpcClient.ergatai.sendMessage.mutate({
                 agentId: effectiveAgentId,
                 message: prompt,
                 from: this.config.fromAgentId,
@@ -453,14 +648,12 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                 conversationId: effectiveConversationId,
                 clientRequestId,
               })
-              // sendMessage returns status + session_id; no prompt_id for agent-to-agent path
-              promptId = (result as SendMessageResult | null)?.session_id ?? null
             } else {
               // Reuse an already-persisted message ID when available. For a new
               // optimistic message, let the backend assign the canonical ID; do
               // not create frontend UUIDs for durable message metadata.
               const clientRequestId = persistedMessageId
-              const promptResult = await trpcClient.ergatai.promptAgent.mutate({
+              await trpcClient.ergatai.promptAgent.mutate({
                 agentId: effectiveAgentId,
                 message: prompt,
                 conversationId: effectiveConversationId,
@@ -479,157 +672,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                 clientRequestId,
                 interrupt,  // Phase 19: Pass interrupt flag to backend
               })
-              promptId = promptResult.prompt_id
             }
-
-            console.log("[ErgataiChatTransport] Subscribing to agent stream", {
-              agentId: effectiveAgentId,
-              promptId,
-              conversationId: effectiveConversationId,
-            })
-
-            subscription = trpcClient.ergatai.subscribeAgentStream.subscribe(
-              {
-                agentId: effectiveAgentId,
-                promptId: promptId ?? undefined,
-              },
-              {
-                onData: (event) => {
-                  if (finished) {
-                    return
-                  }
-
-                  // Handle context_usage event for token counter animation
-                  if (event.type === "context_usage") {
-                    console.log("[ErgataiChatTransport] Received context_usage event:", {
-                      used: event.used,
-                      size: event.size,
-                      conversationId: effectiveConversationId,
-                    });
-                    // Notify UI to update context usage display
-                    // The actual animation is handled by the UI component
-                    const sessionStore = getRuntimeSessionStore()
-                    if (effectiveConversationId) {
-                      sessionStore.updateContextUsage(effectiveConversationId, event.used, event.size)
-                    }
-                    return
-                  }
-
-                  // Phase 19: Handle message_inserted event for interrupt queue management
-                  if (event.type === "message_inserted") {
-                    // Notify TurnOrchestrator to remove the message from queue
-                    // The message has been successfully inserted at a safe point
-                    const sessionStore = getRuntimeSessionStore()
-                    const conversationId = effectiveConversationId
-
-                    // Find and remove the queue item by clientRequestId
-                    // Store clientRequestId in queue item's transportOverrides for matching
-                    const session = sessionStore.getSession(conversationId)
-                    if (session && event.client_request_id) {
-                      const queueItem = session.queue.find(
-                        (item) => item.originalInput.transportOverrides?.correlationId === event.client_request_id
-                      )
-                      if (queueItem) {
-                        sessionStore.removeQueueItem(conversationId, queueItem.id)
-                        console.log("[ErgataiChatTransport] Message inserted at safe point, removed from queue:", event.client_request_id)
-                      }
-                    }
-                    return
-                  }
-
-                  if (event.type === "tool_call_start") {
-                    toolCallInputs.set(event.id, "")
-                  } else if (event.type === "tool_call_input") {
-                    toolCallInputs.set(
-                      event.id,
-                      (toolCallInputs.get(event.id) ?? "") + event.delta,
-                    )
-                  }
-
-                  let streamEvent = event
-                  if (event.type === "tool_call_complete") {
-                    const finalInput =
-                      event.input && typeof event.input === "object" && !Array.isArray(event.input)
-                        ? event.input as Record<string, unknown>
-                        : null
-                    const streamedInput = parseStreamedToolInput(toolCallInputs.get(event.id))
-                    const input = finalInput && Object.keys(finalInput).length > 0
-                      ? { ...streamedInput, ...finalInput }
-                      : streamedInput
-                    streamEvent = { ...event, input: input ?? undefined }
-                    // Clean up the Map entry to prevent memory leak
-                    toolCallInputs.delete(event.id)
-                  }
-
-                  // Handle session title update separately
-                  if (event.type === "session_title_update") {
-                    const titleChanged = lastSessionTitle !== event.title
-                    if (titleChanged) {
-                      lastSessionTitle = event.title
-
-                      // Update conversation title in backend only when it changes
-                      trpcClient.ergatai.updateConversation
-                        .mutate({
-                          conversationId: effectiveConversationId,
-                          title: event.title,
-                        })
-                        .then(() => {
-                          // Also update in-memory store so UI reflects the change immediately
-                          useAgentConversationStore.getState().updateConversationName(
-                            effectiveConversationId,
-                            event.title
-                          )
-                        })
-                        .catch(() => {
-                          // Silently fail - title update is not critical
-                        })
-                    }
-                    return
-                  }
-
-                  if (event.type === "done" || event.type === "error") {
-                    // Let close() handle the closing of text/reasoning blocks
-                    close([...transformEvent(event, getTextBlockId(), getReasoningBlockId())])
-                  } else {
-                    if (event.type === "thinking" && activeBlock !== "reasoning") {
-                      if (activeBlock === "text") {
-                        controller.enqueue({ type: "text-end", id: getTextBlockId() })
-                      }
-                      reasoningBlockCounter++
-                      controller.enqueue({ type: "reasoning-start", id: getReasoningBlockId() })
-                      activeBlock = "reasoning"
-                    }
-
-                    if (event.type === "text" && activeBlock !== "text") {
-                      if (activeBlock === "reasoning") {
-                        controller.enqueue({ type: "reasoning-end", id: getReasoningBlockId() })
-                      }
-                      textBlockCounter++
-                      controller.enqueue({ type: "text-start", id: getTextBlockId() })
-                      activeBlock = "text"
-                    }
-
-                    const chunks = transformEvent(streamEvent, getTextBlockId(), getReasoningBlockId())
-                    for (const chunk of chunks) {
-                      controller.enqueue(chunk)
-                    }
-                  }
-                },
-                onError: (error) => {
-                  console.error("[ErgataiTransport] SSE error:", error)
-                  close([
-                    {
-                      type: "error",
-                      errorText: error instanceof Error ? error.message : "SSE connection lost",
-                    },
-                    { type: "finish" },
-                  ])
-                },
-                onComplete: () => {
-                  close([{ type: "finish" }])
-                },
-              },
-            )
           } catch (error) {
             console.error("[ErgataiTransport] Failed to start agent:", error)
             close([

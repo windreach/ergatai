@@ -32,6 +32,9 @@ export type AdapterSendMessageInput = {
 
   /** Correlation ID for queue matching (used by interrupt events) */
   correlationId?: string
+
+  /** Backend-issued message ID used for optimistic/durable correlation */
+  externalMessageId?: string
 }
 
 /**

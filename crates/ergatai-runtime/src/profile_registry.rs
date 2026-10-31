@@ -67,6 +67,10 @@ pub struct AgentRegistration {
     pub avatar_url: Option<String>,
     /// When the profile was registered.
     pub created_at: DateTime<Utc>,
+    /// Available models for this agent profile (JSON: {"models": [...], "current": "..."}).
+    pub models_json: Option<String>,
+    /// When models were last detected (Unix timestamp in milliseconds).
+    pub models_updated_at: Option<i64>,
 }
 
 impl AgentRegistration {
@@ -83,6 +87,8 @@ impl AgentRegistration {
             is_managed: false,
             avatar_url: None,
             created_at: Utc::now(),
+            models_json: None,
+            models_updated_at: None,
         }
     }
 
@@ -103,6 +109,8 @@ impl AgentRegistration {
             is_managed: false,
             avatar_url: None,
             created_at: Utc::now(),
+            models_json: None,
+            models_updated_at: None,
         }
     }
 
@@ -124,6 +132,8 @@ impl AgentRegistration {
             is_managed: false,
             avatar_url,
             created_at: Utc::now(),
+            models_json: None,
+            models_updated_at: None,
         }
     }
 
@@ -145,6 +155,8 @@ impl AgentRegistration {
             is_managed: false,
             avatar_url: None,
             created_at: Utc::now(),
+            models_json: None,
+            models_updated_at: None,
         }
     }
 
@@ -167,6 +179,8 @@ impl AgentRegistration {
             is_managed: false,
             avatar_url: None,
             created_at: Utc::now(),
+            models_json: None,
+            models_updated_at: None,
         }
     }
 
@@ -188,6 +202,8 @@ impl AgentRegistration {
             is_managed: true,
             avatar_url: None,
             created_at: Utc::now(),
+            models_json: None,
+            models_updated_at: None,
         }
     }
 
@@ -405,6 +421,26 @@ impl ProfileRegistry {
             }
         }
 
+        // Add models_json column for storing detected model lists.
+        // Format: JSON string like '{"models": ["opus", "sonnet"], "current": "sonnet"}'
+        if let Err(e) =
+            conn.execute_batch("ALTER TABLE agent_registrations ADD COLUMN models_json TEXT")
+        {
+            if !e.to_string().contains("duplicate column name") {
+                warn!(error = %e, "Failed to add models_json column");
+            }
+        }
+
+        // Add models_updated_at column for cache invalidation.
+        // Unix timestamp in milliseconds.
+        if let Err(e) = conn
+            .execute_batch("ALTER TABLE agent_registrations ADD COLUMN models_updated_at INTEGER")
+        {
+            if !e.to_string().contains("duplicate column name") {
+                warn!(error = %e, "Failed to add models_updated_at column");
+            }
+        }
+
         // Fix-up migration: opencode ACP uses stdio, not HTTP.
         // Earlier versions incorrectly registered it with transport="http",
         // which caused spawn failures (opencode's acp subcommand does not
@@ -558,8 +594,8 @@ impl ProfileRegistry {
         })?;
 
         conn.execute(
-            "INSERT OR IGNORE INTO agent_registrations (id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT OR IGNORE INTO agent_registrations (id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 registration.id,
                 registration.name,
@@ -569,7 +605,9 @@ impl ProfileRegistry {
                 registration.is_managed as i32,
                 registration.package_name,
                 registration.avatar_url,
-                registration.created_at.to_rfc3339()
+                registration.created_at.to_rfc3339(),
+                registration.models_json,
+                registration.models_updated_at
             ],
         )
         .map_err(|e| {
@@ -588,8 +626,8 @@ impl ProfileRegistry {
         })?;
 
         conn.execute(
-            "INSERT INTO agent_registrations (id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO agent_registrations (id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 registration.id,
                 registration.name,
@@ -599,7 +637,9 @@ impl ProfileRegistry {
                 registration.is_managed as i32,
                 registration.package_name,
                 registration.avatar_url,
-                registration.created_at.to_rfc3339()
+                registration.created_at.to_rfc3339(),
+                registration.models_json,
+                registration.models_updated_at
             ],
         )
         .map_err(|e| {
@@ -625,7 +665,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at
+                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at
                  FROM agent_registrations WHERE id = ?1",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -646,7 +686,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at
+                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at
                  FROM agent_registrations WHERE name = ?1",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -667,7 +707,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at
+                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at
                  FROM agent_registrations ORDER BY created_at DESC",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -700,6 +740,128 @@ impl ProfileRegistry {
         }
 
         Ok(rows_affected > 0)
+    }
+
+    /// Update model information for a profile.
+    ///
+    /// Stores the detected models list and current model selection.
+    /// Called after probing an agent's config options via ACP.
+    pub async fn update_models(
+        &self,
+        id: &str,
+        models_json: &str,
+        models_updated_at: i64,
+    ) -> ErgataiResult<()> {
+        let conn = Connection::open(&self.db_path).map_err(|e| {
+            ErgataiError::internal(format!("Failed to open profile registry database: {}", e))
+        })?;
+
+        let rows_affected = conn
+            .execute(
+                "UPDATE agent_registrations SET models_json = ?1, models_updated_at = ?2 WHERE id = ?3",
+                params![models_json, models_updated_at, id],
+            )
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to update models: {}", e))
+            })?;
+
+        if rows_affected == 0 {
+            return Err(ErgataiError::NotFound(format!(
+                "Agent profile with id '{}' not found",
+                id
+            )));
+        }
+
+        info!(id = %id, "Updated model information");
+        Ok(())
+    }
+
+    /// Update model information for a profile by name (single query).
+    ///
+    /// Combines name lookup and model update in a single operation to avoid TOCTOU.
+    pub async fn update_models_by_name(
+        &self,
+        name: &str,
+        models_json: &str,
+        models_updated_at: i64,
+    ) -> ErgataiResult<()> {
+        let conn = Connection::open(&self.db_path).map_err(|e| {
+            ErgataiError::internal(format!("Failed to open profile registry database: {}", e))
+        })?;
+
+        let rows_affected = conn
+            .execute(
+                "UPDATE agent_registrations SET models_json = ?1, models_updated_at = ?2 WHERE name = ?3",
+                params![models_json, models_updated_at, name],
+            )
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to update models by name: {}", e))
+            })?;
+
+        if rows_affected == 0 {
+            return Err(ErgataiError::NotFound(format!(
+                "Agent profile with name '{}' not found",
+                name
+            )));
+        }
+
+        info!(name = %name, "Updated model information by name");
+        Ok(())
+    }
+
+    /// Get model information for a profile.
+    ///
+    /// Returns the cached models list and when it was last updated.
+    /// Returns None if no models have been detected yet.
+    pub async fn get_models(&self, id: &str) -> ErgataiResult<Option<(String, i64)>> {
+        let conn = Connection::open(&self.db_path).map_err(|e| {
+            ErgataiError::internal(format!("Failed to open profile registry database: {}", e))
+        })?;
+
+        let result = conn
+            .query_row(
+                "SELECT models_json, models_updated_at FROM agent_registrations WHERE id = ?1",
+                params![id],
+                |row| {
+                    let models_json: Option<String> = row.get(0)?;
+                    let models_updated_at: Option<i64> = row.get(1)?;
+                    Ok((models_json, models_updated_at))
+                },
+            )
+            .optional()
+            .map_err(|e| ErgataiError::internal(format!("Failed to get models: {}", e)))?;
+
+        match result {
+            Some((Some(json), Some(ts))) => Ok(Some((json, ts))),
+            _ => Ok(None),
+        }
+    }
+
+    /// Get model information for a profile by name (single query).
+    ///
+    /// Combines name lookup and model retrieval in a single operation to avoid TOCTOU.
+    pub async fn get_models_by_name(&self, name: &str) -> ErgataiResult<Option<(String, i64)>> {
+        let conn = Connection::open(&self.db_path).map_err(|e| {
+            ErgataiError::internal(format!("Failed to open profile registry database: {}", e))
+        })?;
+
+        let result = conn
+            .query_row(
+                "SELECT models_json, models_updated_at FROM agent_registrations WHERE name = ?1",
+                params![name],
+                |row| {
+                    let models_json: Option<String> = row.get(0)?;
+                    let models_updated_at: Option<i64> = row.get(1)?;
+                    Ok((models_json, models_updated_at))
+                },
+            )
+            .optional()
+            .map_err(|e| ErgataiError::internal(format!("Failed to get models by name: {}", e)))?;
+
+        match result {
+            Some((Some(json), Some(ts))) => Ok(Some((json, ts))),
+            _ => Ok(None),
+        }
     }
 
     /// Check and update adapters in background (non-blocking).
@@ -1229,7 +1391,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at
+                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at
                  FROM agent_registrations ORDER BY created_at DESC",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -1425,6 +1587,8 @@ fn parse_agent_registration_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRe
         package_name: row.get(6)?,
         avatar_url: row.get(7)?,
         created_at,
+        models_json: row.get(9)?,
+        models_updated_at: row.get(10)?,
     })
 }
 

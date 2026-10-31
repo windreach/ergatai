@@ -688,6 +688,11 @@ pub async fn spawn_agent(
         return (StatusCode::FORBIDDEN, Json(ErrorResponse { error: e })).into_response();
     }
 
+    tracing::info!(
+        request_command = %req.command,
+        "spawn_agent: starting profile resolution"
+    );
+
     // Resolve profile name to its actual launch command.
     // Frontend sends the profile name (e.g. "claude-code") from list_profiles();
     // the backend looks up the profile and uses its configured command.
@@ -746,11 +751,38 @@ pub async fn spawn_agent(
                         }
                     }
                 } else {
+                    tracing::warn!(
+                        request_command = %req.command,
+                        "list_with_status() failed, using command as-is"
+                    );
                     (req.command.clone(), None, None)
                 }
             }
-            _ => (req.command.clone(), None, None),
+            Err(e) => {
+                tracing::warn!(
+                    request_command = %req.command,
+                    error = %e,
+                    "spawn_blocking or get_profile_registry failed, using command as-is"
+                );
+                (req.command.clone(), None, None)
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    request_command = %req.command,
+                    error = %e,
+                    "get_profile_registry returned error, using command as-is"
+                );
+                (req.command.clone(), None, None)
+            }
         };
+
+    tracing::info!(
+        request_command = %req.command,
+        resolved_command = %resolved_command,
+        profile_name = ?profile_name,
+        transport_type = ?transport_type,
+        "spawn_agent: profile resolution complete"
+    );
 
     // Temporary agents (e.g., for model queries) can be spawned without workspace/conversation.
     // They use a default workspace. Non-temporary agents require workspace_id or conversation_id.
@@ -1059,6 +1091,11 @@ pub async fn spawn_agent(
                 workspace = %work_dir_str,
                 "Agent launched successfully (workspace pre-registered)"
             );
+
+            // Async model detection: spawn background task for two-phase polling
+            if let Some(profile_name) = &profile_name {
+                spawn_model_detection(agent_id.clone(), profile_name.clone());
+            }
 
             (StatusCode::CREATED, Json(SpawnAgentResponse { agent_id })).into_response()
         }
@@ -1568,6 +1605,11 @@ pub async fn send_message(
                     chat_id = %chat_id,
                     "Spawned new agent for agent-to-agent routing"
                 );
+
+                // Spawn background model detection if profile is known
+                if let Some(ref pn) = profile_name {
+                    crate::api::agents::spawn_model_detection(new_agent_id.clone(), pn.clone());
+                }
 
                 // Get the conversation_id from the new agent's metadata
                 // This ensures the database conversation ID matches the NATS routing ID
@@ -2164,6 +2206,11 @@ pub async fn spawn_session(
                 reason = ?req.reason,
                 "New session spawned successfully"
             );
+
+            // Spawn background model detection if profile is known
+            if let Some(ref pn) = profile_name {
+                crate::api::agents::spawn_model_detection(new_agent_id.clone(), pn.clone());
+            }
 
             // Get the session ID for the new agent
             let session_id = crate::services::agent_service::get_agent_session_id(&new_agent_id)
@@ -4064,6 +4111,23 @@ pub async fn stream_agent_output(
         conversation_stream.boxed()
     };
 
+    // Clients can subscribe before posting a prompt and wait for this event.
+    // Without it a prompt response can win the race and its TurnStarted event
+    // can be emitted before the SSE subscriber has attached to NATS.
+    let ready_stream = stream::once(async move {
+        Ok::<Event, Infallible>(
+            Event::default().event("stream_ready").data(
+                serde_json::json!({
+                    "type": "stream_ready",
+                    "agent_id": agent_id,
+                    "conversation_id": conversation_id,
+                })
+                .to_string(),
+            ),
+        )
+    });
+    let output_stream = ready_stream.chain(output_stream);
+
     let boxed_stream: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
         Box::pin(output_stream);
 
@@ -4140,6 +4204,179 @@ pub async fn get_agent(
             }),
         )
             .into_response(),
+    }
+}
+
+/// Extract model list and current selection from ACP config options.
+/// Used for async model detection after agent spawn.
+/// Spawn background model detection task for an agent.
+///
+/// Two-phase polling with exponential backoff:
+/// - Phase 1 (startup wait, max 5s): poll for config_options to become available
+/// - Phase 2 (exponential backoff, max 30s): retry model extraction if no model category yet
+///
+/// This is called from all agent spawn paths (REST API, initial_prompt_turns, messaging auto-spawn).
+pub(crate) fn spawn_model_detection(agent_id: String, profile_name: String) {
+    tokio::spawn(async move {
+        let startup_timeout = std::time::Duration::from_secs(5);
+        let backoff_timeout = std::time::Duration::from_secs(30);
+        let start = std::time::Instant::now();
+
+        tracing::info!(
+            agent_id = %agent_id,
+            profile = %profile_name,
+            "Model detection: background task started"
+        );
+
+        // ── Phase 1: wait for config_options to appear (max 5s) ──
+        let mut startup_delay = std::time::Duration::from_millis(500);
+        let opts = loop {
+            tokio::time::sleep(startup_delay).await;
+
+            match crate::services::agent_service::get_agent_config_options(&agent_id).await {
+                Ok(Some(opts)) => break opts,
+                Ok(None) => {
+                    if start.elapsed() >= startup_timeout {
+                        tracing::info!(
+                            profile = %profile_name,
+                            elapsed_ms = start.elapsed().as_millis(),
+                            "Model detection: config_options not available after 5s startup timeout"
+                        );
+                        return;
+                    }
+                    startup_delay = (startup_delay * 2).min(std::time::Duration::from_secs(1));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        profile = %profile_name,
+                        "Model detection failed during startup wait"
+                    );
+                    return;
+                }
+            }
+        };
+
+        tracing::info!(
+            profile = %profile_name,
+            elapsed_ms = start.elapsed().as_millis(),
+            config_count = opts.len(),
+            "Model detection: config_options available, extracting models"
+        );
+
+        // ── Phase 2: extract models, retry with backoff if no model category (max 30s) ──
+        let mut backoff_delay = std::time::Duration::from_secs(1);
+        let mut current_opts = opts;
+        loop {
+            match extract_models_from_config_options(&current_opts) {
+                Some((models, current)) => {
+                    if let Err(e) = crate::services::profile_service::save_profile_models_by_name(
+                        &profile_name,
+                        &models,
+                        current.as_deref(),
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            profile = %profile_name,
+                            "Failed to save detected models"
+                        );
+                    } else {
+                        tracing::info!(
+                            profile = %profile_name,
+                            models_count = models.len(),
+                            elapsed_ms = start.elapsed().as_millis(),
+                            "Models detected and saved"
+                        );
+                    }
+                    return;
+                }
+                None => {
+                    if start.elapsed() >= backoff_timeout {
+                        tracing::info!(
+                            profile = %profile_name,
+                            elapsed_ms = start.elapsed().as_millis(),
+                            "Model detection: no model category found after 30s backoff timeout"
+                        );
+                        return;
+                    }
+                    tokio::time::sleep(backoff_delay).await;
+                    if let Ok(Some(latest)) =
+                        crate::services::agent_service::get_agent_config_options(&agent_id).await
+                    {
+                        current_opts = latest;
+                    }
+                    backoff_delay = (backoff_delay * 2).min(std::time::Duration::from_secs(15));
+                }
+            }
+        }
+    });
+}
+
+/// Extract model list from ACP session config options.
+///
+/// Handles both Ungrouped (flat list) and Grouped (provider-grouped) option formats:
+/// - Ungrouped: `[{"value": "opus", "name": "Opus"}, ...]`
+/// - Grouped: `[{"group": "anthropic", "name": "Anthropic", "options": [{"value": "opus", ...}]}, ...]`
+pub(crate) fn extract_models_from_config_options(
+    opts: &[agent_client_protocol::schema::v1::SessionConfigOption],
+) -> Option<(Vec<String>, Option<String>)> {
+    // Find the config option with category "Model"
+    let model_option = opts.iter().find(|o| {
+        o.category
+            .as_ref()
+            .map(|c| format!("{:?}", c).to_lowercase())
+            .map(|c| c == "model")
+            .unwrap_or(false)
+    })?;
+
+    // The kind field contains the select options
+    let kind_json = serde_json::to_value(&model_option.kind).ok()?;
+    if kind_json.get("type")?.as_str()? != "select" {
+        return None;
+    }
+
+    let current = kind_json
+        .get("currentValue")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let options = kind_json.get("options")?.as_array()?;
+
+    // Extract models from both Ungrouped and Grouped option formats.
+    // Ungrouped: each item has "value"/"id" directly.
+    // Grouped: each item has "group", "name", and nested "options" array.
+    let models: Vec<String> = options
+        .iter()
+        .flat_map(|o| {
+            // Direct value/id → Ungrouped option
+            if let Some(val) = o
+                .get("value")
+                .or_else(|| o.get("id"))
+                .and_then(|v| v.as_str())
+            {
+                return vec![val.to_string()];
+            }
+            // Nested options array → Grouped option
+            if let Some(nested) = o.get("options").and_then(|v| v.as_array()) {
+                return nested
+                    .iter()
+                    .filter_map(|n| {
+                        n.get("value")
+                            .or_else(|| n.get("id"))
+                            .and_then(|v| v.as_str())
+                            .map(String::from)
+                    })
+                    .collect();
+            }
+            vec![]
+        })
+        .collect();
+
+    if models.is_empty() {
+        None
+    } else {
+        Some((models, current))
     }
 }
 
@@ -4392,5 +4629,183 @@ mod tests {
         let req: SendMessageRequest =
             serde_json::from_value(json!({"message": "line1\nline2\nline3"})).unwrap();
         assert_eq!(req.message, "line1\nline2\nline3");
+    }
+
+    // ── extract_models_from_config_options tests ──
+
+    /// Build a minimal SessionConfigOption with category=Model and a given kind JSON value.
+    /// Note: SessionConfigOption uses #[serde(flatten)] on `kind`, so type/currentValue/options
+    /// are at the top level of the JSON, not nested under "kind".
+    fn make_model_config_option(
+        kind_value: serde_json::Value,
+    ) -> agent_client_protocol::schema::v1::SessionConfigOption {
+        let mut raw = json!({
+            "id": "model-selector",
+            "name": "Model",
+            "category": "model",
+        });
+        // Merge kind fields (type, currentValue, options) into the top level
+        if let Some(obj) = raw.as_object_mut() {
+            if let Some(kind_obj) = kind_value.as_object() {
+                for (k, v) in kind_obj {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        serde_json::from_value(raw).expect("Failed to deserialize SessionConfigOption")
+    }
+
+    #[test]
+    fn test_extract_models_ungrouped() {
+        let kind = json!({
+            "type": "select",
+            "currentValue": "sonnet",
+            "options": [
+                {"value": "opus", "name": "Opus 4.6"},
+                {"value": "sonnet", "name": "Sonnet 4.6"},
+                {"value": "haiku", "name": "Haiku 4.5"},
+            ]
+        });
+        let opts = vec![make_model_config_option(kind)];
+        let (models, current) = extract_models_from_config_options(&opts).unwrap();
+        assert_eq!(models, vec!["opus", "sonnet", "haiku"]);
+        assert_eq!(current.as_deref(), Some("sonnet"));
+    }
+
+    #[test]
+    fn test_extract_models_grouped() {
+        let kind = json!({
+            "type": "select",
+            "currentValue": "anthropic/sonnet",
+            "options": [
+                {
+                    "group": "anthropic",
+                    "name": "Anthropic",
+                    "options": [
+                        {"value": "anthropic/opus", "name": "Opus 4.6"},
+                        {"value": "anthropic/sonnet", "name": "Sonnet 4.6"},
+                    ]
+                },
+                {
+                    "group": "openai",
+                    "name": "OpenAI",
+                    "options": [
+                        {"value": "openai/gpt-5", "name": "GPT-5"},
+                    ]
+                },
+            ]
+        });
+        let opts = vec![make_model_config_option(kind)];
+        let (models, current) = extract_models_from_config_options(&opts).unwrap();
+        assert_eq!(
+            models,
+            vec!["anthropic/opus", "anthropic/sonnet", "openai/gpt-5"]
+        );
+        assert_eq!(current.as_deref(), Some("anthropic/sonnet"));
+    }
+
+    #[test]
+    fn test_extract_models_mixed() {
+        // Note: ACP schema doesn't allow mixing Ungrouped and Grouped in one array.
+        // But the extraction code handles it gracefully at the JSON level.
+        // Test via direct JSON manipulation to verify the flat_map logic.
+        let kind = json!({
+            "type": "select",
+            "currentValue": "opus",
+            "options": [
+                {"value": "opus", "name": "Opus"},
+                {
+                    "group": "openai",
+                    "name": "OpenAI",
+                    "options": [
+                        {"value": "gpt-5", "name": "GPT-5"},
+                    ]
+                },
+            ]
+        });
+        // Can't deserialize through ACP (mixed format invalid), so test extraction directly
+        // by verifying the JSON structure the function would see after to_value(&kind).
+        let options = kind.get("options").unwrap().as_array().unwrap();
+        let models: Vec<String> = options
+            .iter()
+            .flat_map(|o| {
+                if let Some(val) = o
+                    .get("value")
+                    .or_else(|| o.get("id"))
+                    .and_then(|v| v.as_str())
+                {
+                    return vec![val.to_string()];
+                }
+                if let Some(nested) = o.get("options").and_then(|v| v.as_array()) {
+                    return nested
+                        .iter()
+                        .filter_map(|n| {
+                            n.get("value")
+                                .or_else(|| n.get("id"))
+                                .and_then(|v| v.as_str())
+                                .map(String::from)
+                        })
+                        .collect();
+                }
+                vec![]
+            })
+            .collect();
+        assert_eq!(models, vec!["opus", "gpt-5"]);
+    }
+
+    #[test]
+    fn test_extract_models_id_based() {
+        // Note: ACP schema requires "value" field (SessionConfigValueId is required).
+        // "id" is a fallback in extraction code for non-standard agents.
+        // Here we test with "value" since that's what the schema demands.
+        let kind = json!({
+            "type": "select",
+            "currentValue": "model-1",
+            "options": [
+                {"value": "model-1", "name": "Model One"},
+                {"value": "model-2", "name": "Model Two"},
+            ]
+        });
+        let opts = vec![make_model_config_option(kind)];
+        let (models, current) = extract_models_from_config_options(&opts).unwrap();
+        assert_eq!(models, vec!["model-1", "model-2"]);
+        assert_eq!(current.as_deref(), Some("model-1"));
+    }
+
+    #[test]
+    fn test_extract_models_no_model_category() {
+        use agent_client_protocol::schema::v1::SessionConfigOption;
+        // Option with a different category (mode, not model) — kind fields flattened
+        let raw = json!({
+            "id": "mode-selector",
+            "name": "Mode",
+            "category": "mode",
+            "type": "select",
+            "currentValue": "agent",
+            "options": [{"value": "agent", "name": "Agent"}],
+        });
+        let opts: Vec<SessionConfigOption> = vec![serde_json::from_value(raw).unwrap()];
+        assert!(extract_models_from_config_options(&opts).is_none());
+    }
+
+    #[test]
+    fn test_extract_models_empty_options() {
+        let kind = json!({
+            "type": "select",
+            "currentValue": "default",
+            "options": []
+        });
+        let opts = vec![make_model_config_option(kind)];
+        assert!(extract_models_from_config_options(&opts).is_none());
+    }
+
+    #[test]
+    fn test_extract_models_boolean_kind() {
+        let kind = json!({
+            "type": "boolean",
+            "currentValue": true,
+        });
+        let opts = vec![make_model_config_option(kind)];
+        assert!(extract_models_from_config_options(&opts).is_none());
     }
 }

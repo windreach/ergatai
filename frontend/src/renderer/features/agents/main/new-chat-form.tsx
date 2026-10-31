@@ -295,6 +295,27 @@ export function NewChatForm({
     agentsConversationsSidebarModeAtom,
   )
 
+  // Query agent bindings to get the backend agent ID for the current chat
+  const agentBindingsQuery = trpc.ergatai.getAgentBindings.useQuery(
+    { chatId: selectedChatId ?? "" },
+    { enabled: !!selectedChatId?.startsWith("chat_") },
+  )
+  const backendAgentId = useMemo(() => {
+    if (!selectedChatId || !agentBindingsQuery.data) return null
+    return agentBindingsQuery.data.find(
+      (binding) => binding.chatId === selectedChatId,
+    )?.agentId ?? null
+  }, [selectedChatId, agentBindingsQuery.data])
+
+  // Debug logging: only log when key values change
+  useEffect(() => {
+    console.log("[new-chat-form] Agent binding:", {
+      selectedChatId,
+      bindingsCount: agentBindingsQuery.data?.length ?? 0,
+      backendAgentId,
+    })
+  }, [selectedChatId, agentBindingsQuery.data, backendAgentId])
+
   // Current draft ID being edited (generated when user starts typing in empty form)
   const currentDraftIdRef = useRef<string | null>(null)
   const unseenChanges = useAtomValue(agentsUnseenChangesAtom)
@@ -521,7 +542,7 @@ export function NewChatForm({
   ])
 
   // Get available models (with offline support)
-  const availableModels = useAvailableModels()
+  const availableModels = useAvailableModels(backendAgentId)
   const [selectedOllamaModel, setSelectedOllamaModel] = useAtom(selectedOllamaModelAtom)
   const [lastSelectedCodexModelId, setLastSelectedCodexModelId] = useAtom(
     lastSelectedCodexModelIdAtom,
@@ -1107,6 +1128,14 @@ export function NewChatForm({
   const utils = trpc.useUtils()
   const createChatMutation = trpc.chats.create.useMutation({
     onSuccess: (data, variables) => {
+      console.log("[new-chat-form] Chat created successfully:", {
+        chatId: data.id,
+        workspaceId: data.workspace_id,
+        worktreePath: data.worktreePath,
+        conversationCount: data.conversations?.length,
+        firstConversationId: data.conversations?.[0]?.id,
+      })
+
       // Save the selected agent command for the first conversation
       const firstConversationId = data.conversations?.[0]?.id
       if (firstConversationId && variables.agentCommand) {
@@ -1153,6 +1182,7 @@ export function NewChatForm({
       clearPastedTexts()
       fileContentsRef.current.clear()
       clearCurrentDraft()
+      console.log("[new-chat-form] About to setSelectedChatId:", data.id)
       setSelectedChatId(data.id)
       // Track this chat and its first conversation as just created for typewriter effect
       const ids = [data.id]

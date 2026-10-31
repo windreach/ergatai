@@ -31,6 +31,7 @@ import { getAgentRuntimeResolver } from "./agent-runtime-resolver"
 import { getRuntimeSessionStore } from "./runtime-session-store"
 import { getAdapterRegistry } from "./runtime-adapter"
 import { generateTicketId, generateQueueItemId } from "./id-generators"
+import { getMessageCorrelationService } from "./message-correlation-service"
 
 // ============================================================================
 // ORCHESTRATOR INTERFACE - Public API
@@ -129,6 +130,18 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
       // Step 3: Ensure session exists and check streaming status
       const session = sessionStore.ensureSession(conversationId)
 
+      // Every locally submitted message gets one correlation identity before it
+      // can be queued or streamed. Adapters use this same ID for the optimistic
+      // UI copy; the backend stores it as externalMessageId on the canonical copy.
+      const messageCorrelation = await getMessageCorrelationService().createCorrelation()
+      input = {
+        ...input,
+        transportOverrides: {
+          ...input.transportOverrides,
+          ...messageCorrelation.transportOverrides,
+        },
+      }
+
       // CRITICAL: Check if already streaming
       let interruptQueueItemId: string | undefined
       if (session.status === "streaming") {
@@ -215,12 +228,14 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
       // The adapter will handle the stream and update UI state
       // We don't await this - the ticket is returned immediately
       // Phase 19: Pass interrupt flag and correlationId to adapter
+      const externalMessageId = input.transportOverrides?.externalMessageId
       void adapter
         .sendMessage({
           role: input.role,
           parts: input.parts,
           interrupt: input.interrupt,
           correlationId: input.transportOverrides?.correlationId,
+          externalMessageId,
         })
         .then(() => {
           // Only update state if this is still the current turn

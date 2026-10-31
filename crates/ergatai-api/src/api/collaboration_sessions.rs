@@ -14,6 +14,7 @@ use ergatai_error::{CollaborationSessionId, ConversationId};
 use serde::Deserialize;
 use std::convert::Infallible;
 
+use crate::services::collaboration_planner::SubmitSessionInteractionRequest;
 use crate::services::collaboration_session::{
     create_approval, create_plan_revision, create_session, decide_approval, get_plan_revision,
     get_session, list_events, list_plan_revisions, transition_state, ApprovalDecisionRequest,
@@ -21,7 +22,8 @@ use crate::services::collaboration_session::{
     CreatePlanRevisionRequest, SessionStateTransitionRequest,
 };
 use crate::services::collaboration_session_dag::{
-    activate_plan_revision, cancel_session_execution, CollaborationSessionDagError,
+    activate_plan_revision, cancel_session_execution, submit_session_interaction,
+    CollaborationSessionDagError,
 };
 
 #[derive(Debug, Deserialize)]
@@ -128,6 +130,31 @@ pub async fn get_collaboration_session(Path(collaboration_session_id): Path<Stri
             crate::http_error::internal(format!("Task join error: {}", error), "spawn_blocking")
                 .into_response()
         }
+    }
+}
+
+/// POST /api/v1/collaboration-sessions/:id/interactions
+#[utoipa::path(
+    post,
+    path = "/api/v1/collaboration-sessions/{collaboration_session_id}/interactions",
+    tag = "Collaboration Sessions",
+    params(("collaboration_session_id" = String, Path, description = "Collaboration session identifier")),
+    request_body = crate::services::collaboration_planner::SubmitSessionInteractionRequest,
+    responses(
+        (status = 200, description = "Collaboration session interaction submitted", body = crate::services::collaboration_session_dag::SessionInteractionSubmitted),
+        (status = 400, description = "Invalid request", body = crate::api::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::ApiError),
+        (status = 404, description = "Collaboration session not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn submit_collaboration_session_interaction(
+    Path(collaboration_session_id): Path<String>,
+    Json(request): Json<SubmitSessionInteractionRequest>,
+) -> Response {
+    match submit_session_interaction(&collaboration_session_id, request).await {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(error) => response_from_dag_error(error, "submit collaboration session interaction"),
     }
 }
 

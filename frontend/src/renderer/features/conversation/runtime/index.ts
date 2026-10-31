@@ -43,6 +43,30 @@ export {
   type ConversationInvocationService,
 } from "./conversation-invocation-service"
 
+export {
+  getConversationProjectionService,
+  resetConversationProjectionService,
+  type ConversationProjectionService,
+  type ConversationProjectionInput,
+  type ConversationProjectionRawMessage,
+  type ConversationProjectionResult,
+} from "./conversation-projection-service"
+
+export {
+  getMessageCorrelationService,
+  resetMessageCorrelationService,
+  type MessageCorrelationService,
+} from "./message-correlation-service"
+
+export {
+  LOCAL_TRANSPORT_STREAM_SOURCE,
+  createMessageCorrelation,
+  createOptimisticMessage,
+  type LocalTransportMessageMetadata,
+  type MessageCorrelation,
+  type OptimisticMessage,
+} from "./message-correlation"
+
 // ============================================================================
 // RESOLVERS
 // ============================================================================

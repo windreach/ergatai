@@ -1632,7 +1632,16 @@ export function AgentsSidebar({
   }, [selectedWorkspaceId, modeWorkspaces, setSelectedWorkspaceId])
 
   // Fetch chats for sidebar entries; UI labels these entries as workspaces, but their IDs are chat IDs.
-  const { data: allChats } = trpc.chats.list.useQuery({})
+  const { data: allChats } = trpc.chats.list.useQuery({}, {
+    onSuccess: (data) => {
+      console.log("[agents-sidebar] trpc.chats.list returned", data.length, "chats")
+    },
+  })
+
+  // Log when allChats changes
+  useEffect(() => {
+    console.log("[agents-sidebar] allChats changed:", allChats?.length ?? "undefined")
+  }, [allChats])
 
   // Prefetch individual chat data on hover
   const prefetchLocalChat = usePrefetchLocalChat()

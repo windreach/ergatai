@@ -2,19 +2,19 @@
  * useAvailableModels — Shared hook for fetching available models
  *
  * Data flow:
- *   1. When a message is sent, fetchAgentModels() retrieves model info from agent's config options via ACP.
- *   2. fetchAgentModels updates ergataiAgentModelInfoAtom via appStore.
- *   3. This hook reads from the atom → UI updates immediately.
+ *   1. Query backend for cached models by profile name (from active agent).
+ *   2. Falls back to hardcoded CLAUDE_MODELS if cache is empty.
+ *   3. Can trigger refresh via refreshAgentProfileModels mutation.
  *
- * Fallback: if atom is empty (no messages sent yet), reads from the cached snapshot.
+ * Migration note: This replaces the old Jotai atom-based approach that keyed
+ * models by ephemeral agent ID. Now uses profile name (stable, user-facing).
  */
 
 import { useAtomValue } from "jotai"
-import { appStore } from "../../../lib/jotai-store"
-import { useEffect, useMemo } from "react"
+import { useEffect, useMemo, useRef } from "react"
 import { showOfflineModeFeaturesAtom } from "../../../lib/atoms"
-import { trpc, trpcClient } from "../../../lib/trpc"
-import { ergataiAgentModelInfoAtom, ergataiActiveAgentIdAtom } from "../lib/ergatai-agent-manager"
+import { trpc } from "../../../lib/trpc"
+import { ergataiActiveAgentIdAtom } from "../lib/ergatai-agent-manager"
 import { CLAUDE_MODELS } from "../lib/models"
 
 // ── Constants ──
@@ -81,29 +81,80 @@ function mapBackendModelToUI(modelName: string): ModelItem | null {
 
 // ── Hook ──
 
-export function useAvailableModels(): UseAvailableModelsReturn {
+export function useAvailableModels(agentId?: string | null): UseAvailableModelsReturn {
   const showOfflineFeatures = useAtomValue(showOfflineModeFeaturesAtom)
+  const globalAgentId = useAtomValue(ergataiActiveAgentIdAtom)
 
-  // PRIMARY source: read from Jotai atom (updated by fetchAgentModels in chat transport)
-  const agentModelInfo = useAtomValue(ergataiAgentModelInfoAtom)
-  const activeAgentId = useAtomValue(ergataiActiveAgentIdAtom)
+  // Prefer passed agentId, fall back to global atom
+  const effectiveAgentId = agentId ?? globalAgentId
 
-  // Derive models from atom — prefer active agent, fall back to most recently updated
-  const atomModels = useMemo(() => {
-    const entries = Object.values(agentModelInfo)
-    if (entries.length === 0) return null
+  // Query active agent to get profile name
+  const { data: agents } = trpc.ergatai.listAgents.useQuery(undefined, {
+    enabled: !!effectiveAgentId,
+    refetchOnWindowFocus: false,
+  })
 
-    // Prefer the active agent's models if available
-    let latest: typeof entries[0] | null = null
-    if (activeAgentId && agentModelInfo[activeAgentId]) {
-      latest = agentModelInfo[activeAgentId]
-    } else {
-      // Fall back to most recently updated entry
-      latest = entries.reduce((a, b) => (a.fetchedAt > b.fetchedAt ? a : b))
+  const activeAgent = useMemo(() => {
+    if (!effectiveAgentId || !agents) return null
+    return agents.find((a) => a.agent_id === effectiveAgentId) ?? null
+  }, [effectiveAgentId, agents])
+
+  // The profile registry is the only authoritative model-cache key. Static
+  // model lists remain a UI fallback when no runtime agent has been resolved.
+  const profileName = activeAgent?.profile ?? null
+
+  // Query cached models from backend by profile name
+  const { data: modelData, refetch, isLoading } = trpc.ergatai.getAgentProfileModels.useQuery(
+    { profileName: profileName ?? "" },
+    { enabled: !!profileName, refetchOnWindowFocus: false },
+  )
+
+  // Debug logging: only log when key values change (not on every render)
+  useEffect(() => {
+    console.log("[useAvailableModels] State:", {
+      agentId,
+      globalAgentId,
+      effectiveAgentId,
+      profileName,
+      modelCount: modelData?.models?.length ?? 0,
+    })
+  }, [agentId, globalAgentId, effectiveAgentId, profileName, modelData?.models?.length])
+
+  const refreshMutation = trpc.ergatai.refreshAgentProfileModels.useMutation({
+    onSuccess: (data) => {
+      console.log("[useAvailableModels] Refresh success:", { profileName, modelsCount: data.models?.length ?? 0 })
+      refetch()
+    },
+    onError: (error) => {
+      console.error("[useAvailableModels] Refresh failed:", { profileName, error: error.message })
+    },
+  })
+
+  // Refresh cache misses from an effect, never during render. Keep one request
+  // per profile so a failed lookup cannot create a mutation loop.
+  const requestedModelProfileRef = useRef<string | null>(null)
+  const refreshMutationRef = useRef(refreshMutation)
+  refreshMutationRef.current = refreshMutation
+
+  useEffect(() => {
+    if (!modelData || !profileName) {
+      console.log("[useAvailableModels] Refresh skipped:", { hasModelData: !!modelData, profileName })
+      return
     }
-    if (!latest || latest.models.length === 0) return null
+    if (modelData.models.length > 0) return
+    if (requestedModelProfileRef.current === profileName) return
 
-    const mapped = latest.models
+    console.log("[useAvailableModels] Triggering refresh for profile:", profileName)
+    requestedModelProfileRef.current = profileName
+    refreshMutationRef.current.mutate({ profileName })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshMutation is unstable, use ref
+  }, [modelData, profileName])
+
+  // Map backend response to UI format
+  const backendModels = useMemo(() => {
+    if (!modelData || modelData.models.length === 0) return null
+
+    const mapped = modelData.models
       .map(mapBackendModelToUI)
       .filter((m): m is NonNullable<typeof m> => m !== null)
 
@@ -117,52 +168,15 @@ export function useAvailableModels(): UseAvailableModelsReturn {
 
     return {
       models: unique,
-      current: latest.current ? normalizeModelId(latest.current) : null,
+      current: modelData.current ? normalizeModelId(modelData.current) : null,
     }
-  }, [agentModelInfo, activeAgentId])
+  }, [modelData])
 
-  // If atom is empty, load from SQLite database into atom (populate cache)
-  useEffect(() => {
-    if (atomModels) return
-
-    let cancelled = false
-
-    // Read from SQLite database (source of truth) and populate Jotai atom (cache)
-    trpcClient.ergatai.getLatestCachedModels.query().then((result) => {
-      if (cancelled) return
-
-      if (result.models.length > 0) {
-        const store = appStore
-        const current = store.get(ergataiAgentModelInfoAtom)
-        store.set(ergataiAgentModelInfoAtom, {
-          ...current,
-          _fromDb: {
-            models: result.models,
-            current: result.current,
-            fetchedAt: Date.now(),
-          },
-        })
-      }
-      // Database empty — models will be fetched when user sends first message.
-      // fetchAgentModels will write to SQLite, then we can read from DB.
-      // We intentionally do NOT fetch here without an agentId, as the
-      // backend requires a real one and would return 404 otherwise.
-    }).catch((error) => {
-      if (!cancelled) {
-        console.warn("[useAvailableModels] Failed to load cached models:", error)
-      }
-    })
-
-    return () => {
-      cancelled = true
-    }
-  }, [atomModels])
-
-  // Use atom-derived models, fall back to hardcoded
-  const baseModels = atomModels && atomModels.models.length > 0
-    ? atomModels.models
+  // Use backend models, fall back to hardcoded
+  const baseModels = backendModels && backendModels.models.length > 0
+    ? backendModels.models
     : CLAUDE_MODELS
-  const currentModelId = atomModels?.current ?? null
+  const currentModelId = backendModels?.current ?? null
 
   // Ollama status
   const { data: ollamaStatus } = trpc.ollama.getStatus.useQuery(undefined, {

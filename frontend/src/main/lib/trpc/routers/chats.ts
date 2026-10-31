@@ -335,10 +335,14 @@ export const chatsRouter = router({
       workspaceId: z.string().optional(),
     }))
     .query(async ({ input }) => {
+      console.log("[chats.list] called with workspaceId:", input.workspaceId)
       const allChats = await trpcClient.listChats({
         workspaceId: input.workspaceId,
       })
-      return allChats.filter((chat) => chat.id.startsWith("chat_") && !chat.archivedAt)
+      console.log("[chats.list] received", allChats.length, "chats from backend")
+      const filtered = allChats.filter((chat) => chat.id.startsWith("chat_") && !chat.archivedAt)
+      console.log("[chats.list] returning", filtered.length, "chats after filtering")
+      return filtered
     }),
 
   /**
@@ -662,6 +666,7 @@ export const chatsRouter = router({
       })
 
       console.log("[chats.create] returning:", response)
+      console.log("[chats.create] created chat with id:", chat.id, "workspace_id:", chat.workspaceId)
       return response
     }),
 

@@ -15,6 +15,8 @@ interface UseCollaborationParticipantsOptions {
   parentChatId: string | null
   conversationId: string
   provider: string
+  /** Resolved backend runtime agent ID; profile aliases are not valid participant IDs. */
+  supervisorAgentId?: string | null
 }
 
 export function useCollaborationParticipants({
@@ -25,6 +27,7 @@ export function useCollaborationParticipants({
   parentChatId,
   conversationId,
   provider,
+  supervisorAgentId,
 }: UseCollaborationParticipantsOptions) {
   const [collaborationParticipants, setCollaborationParticipants] = useState<CollaborationParticipant[]>([])
 
@@ -65,9 +68,17 @@ export function useCollaborationParticipants({
       setCollaborationParticipants(participants)
     } else {
       // For single agent mode: use the current conversation
+      // The backend stores a numeric agent reference. Provider values such as
+      // "claude-code" are adapter aliases, not runtime agent IDs, so wait for
+      // the agent binding instead of sending an invalid participant.
+      if (!supervisorAgentId) {
+        setCollaborationParticipants([])
+        return
+      }
+
       setCollaborationParticipants([{
         conversationId: conversationId || "",
-        agentId: provider,
+        agentId: supervisorAgentId,
         role: "supervisor",
       }])
     }
@@ -79,6 +90,7 @@ export function useCollaborationParticipants({
     parentChatId,
     conversationId,
     provider,
+    supervisorAgentId,
   ])
 
   return {

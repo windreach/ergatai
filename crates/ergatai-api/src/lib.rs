@@ -488,6 +488,14 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/agent-profiles/{name}",
             delete(api::agent_profiles::delete_profile),
         )
+        .route(
+            "/api/v1/agent-profiles/{name}/models",
+            get(api::agent_profiles::get_profile_models),
+        )
+        .route(
+            "/api/v1/agent-profiles/{name}/models/refresh",
+            post(api::agent_profiles::refresh_profile_models),
+        )
         // ════════════════════════════════════════════════════════════════
         // MCP Server Configuration API
         // ════════════════════════════════════════════════════════════════
@@ -517,6 +525,7 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/locks/contention",
             get(api::locks::get_lock_contention),
         )
+        .route("/api/v1/ids/message", get(api::ids::next_message_id))
         // ════════════════════════════════════════════════════════════════
         // Conversation API (full CRUD + archive operations)
         // ════════════════════════════════════════════════════════════════
@@ -615,6 +624,10 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/collaboration-sessions/{collaboration_session_id}/stream",
             get(api::collaboration_sessions::stream_collaboration_session_events),
+        )
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}/interactions",
+            post(api::collaboration_sessions::submit_collaboration_session_interaction),
         )
         .route(
             "/api/v1/collaboration-sessions/{collaboration_session_id}/plans",

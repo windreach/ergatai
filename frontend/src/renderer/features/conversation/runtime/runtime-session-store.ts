@@ -3,7 +3,8 @@
  *
  * Manages runtime state for each conversation session. This store is responsible
  * for:
- * - Merging persisted messages and runtime messages
+ * - Ingesting persisted, runtime, and local message sources
+ * - Delegating render-model projection to ConversationProjectionService
  * - Maintaining visible messages (deduplicated)
  * - Tracking streaming status
  * - Handling runtime turn completion and reconciliation
@@ -36,6 +37,7 @@ import {
   persistSequence,
   removePersistedSequence,
 } from "./runtime-sequence-persistence"
+import { getConversationProjectionService } from "./conversation-projection-service"
 
 // ============================================================================
 // SESSION STATE - Internal state structure
@@ -554,50 +556,15 @@ class RuntimeSessionStoreImpl {
   }
 
   /**
-   * Merge durable history, backend-owned live turns, and the local transport.
-   * Deduplicates by message ID; local transport wins because it is freshest.
-   *
-   * @param session - Session state
-   * @returns Merged messages
+   * Delegate projection to the shared service. The store owns session state and
+   * source lifecycle; the projection service owns the render model rules.
    */
   private mergeMessages(session: RuntimeSessionState): Message[] {
-    const messageMap = new Map<string, Message>()
-
-    // Add persisted messages first
-    for (const message of session.persistedMessages) {
-      messageMap.set(message.id, message)
-    }
-
-    // Backend runtime messages override durable history.
-    for (const message of session.runtimeMessages) {
-      messageMap.set(message.id, message)
-    }
-
-    // Local transport messages override the same ID in older sources.
-    for (const message of session.localMessages) {
-      messageMap.set(message.id, message)
-    }
-
-    // Convert back to array and sort by sequence or createdAt as fallback
-    return Array.from(messageMap.values()).sort((a, b) => {
-      // Prefer sequence number if available (added by runtime)
-      const aSeq = a.sequence ?? Number.MAX_SAFE_INTEGER
-      const bSeq = b.sequence ?? Number.MAX_SAFE_INTEGER
-
-      if (aSeq !== bSeq) {
-        return aSeq - bSeq
-      }
-
-      // Fallback to createdAt, then ID for deterministic ordering.
-      const aTime = a.createdAt?.getTime() ?? 0
-      const bTime = b.createdAt?.getTime() ?? 0
-
-      if (aTime !== bTime) {
-        return aTime - bTime
-      }
-
-      return a.id.localeCompare(b.id)
-    })
+    return getConversationProjectionService().project({
+      persistedMessages: session.persistedMessages,
+      runtimeMessages: session.runtimeMessages,
+      localMessages: session.localMessages,
+    }).visibleMessages
   }
 
   /**

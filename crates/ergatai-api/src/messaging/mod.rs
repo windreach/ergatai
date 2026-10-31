@@ -516,6 +516,10 @@ impl MessageSender {
                 metadata.insert("clientRequestId".to_string(), client_request_id.clone());
             }
             let queued_message_id = format_id(generate(), IdType::Message);
+            let queued_external_message_id = req
+                .client_request_id
+                .clone()
+                .unwrap_or_else(|| queued_message_id.clone());
             let queued_conversation_id = target_conversation_id;
             let queued_conversation_id_for_warn = target_conversation_id;
             let sender_conversation_id = self.get_sender_conversation_id(&resolved_sender_id).await;
@@ -595,7 +599,7 @@ impl MessageSender {
                         .unwrap_or(&sender_display)
                         .to_string();
                     let early_metadata = serde_json::json!({
-                        "externalMessageId": queued_message_id,
+                        "externalMessageId": queued_external_message_id,
                         "clientRequestId": req.client_request_id.clone(),
                         "senderAgentId": resolved_sender_id,
                         "senderAgentName": sender_name,
@@ -827,14 +831,17 @@ impl MessageSender {
                     let from = req.from.clone();
                     let sender_name = sender_display.clone();
                     let message_type = req.message_type.clone();
-                    let direct_message_id_for_meta = direct_message_id.clone();
+                    let direct_external_message_id_for_meta = req
+                        .client_request_id
+                        .clone()
+                        .unwrap_or_else(|| direct_message_id.clone());
                     let correlation_id_for_meta = correlation_id.clone();
                     let conversation_id_for_persist = conversation_id;
                     // Wrap synchronous DB call in spawn_blocking
                     let append_result = tokio::task::spawn_blocking(move || {
                         let role = agent_message_role(&message_type);
                         let metadata = serde_json::json!({
-                            "externalMessageId": direct_message_id_for_meta,
+                            "externalMessageId": direct_external_message_id_for_meta,
                             "senderAgentId": from,
                             "senderAgentName": sender_name,
                             "messageType": message_type,
@@ -1638,6 +1645,9 @@ impl MessageSender {
                     "Agent auto-spawned successfully"
                 );
 
+                // Spawn background model detection (two-phase polling with exponential backoff)
+                crate::api::agents::spawn_model_detection(agent_id.clone(), profile.name.clone());
+
                 // Bind the newly spawned target immediately. A message must not
                 // enter the queue without a resolvable Conversation ID.
                 if self
@@ -1771,6 +1781,8 @@ impl MessageSender {
                     profile = %profile.name,
                     "Sender agent auto-spawned successfully"
                 );
+                // Spawn background model detection (two-phase polling with exponential backoff)
+                crate::api::agents::spawn_model_detection(agent_id.clone(), profile.name.clone());
                 Some(agent_id)
             }
             Err(e) => {

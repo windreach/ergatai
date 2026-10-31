@@ -26,23 +26,12 @@ import { useConversationInvocation, useSessionState } from "../../conversation/r
 import type { MessagePart } from "../../agents/stores/message-store"
 import { getAdapterRegistry } from "../../conversation/runtime/runtime-adapter"
 import { useRuntimeSessionSources } from "../../conversation/runtime/use-runtime-session-sources"
-import type { Message } from "../../agents/stores/message-store"
+import { getConversationProjectionService } from "../../conversation/runtime/conversation-projection-service"
+import { getMessageCorrelationService } from "../../conversation/runtime/message-correlation-service"
 import type { ChatConversation } from "../lib/chat-contract-api"
 import type { UIMessage } from "@ai-sdk/react"
 
-function toSessionMessage(message: any): Message {
-  const metadata = message.metadata
-  const runtimeSequence = metadata?.runtimeSequence
-
-  return {
-    id: message.id,
-    role: message.role,
-    parts: message.parts ?? [],
-    metadata,
-    sequence: typeof runtimeSequence === "number" ? runtimeSequence : undefined,
-    createdAt: message.createdAt ? new Date(message.createdAt) : undefined,
-  }
-}
+const projectionService = getConversationProjectionService()
 
 /**
  * Side chat invocation hook.
@@ -84,12 +73,13 @@ export function useSideChatInvocation({
 
   // Get session state from new service
   const sessionState = useSessionState(runtimeConversationId)
+
   const persistedSessionMessages = useMemo(
-    () => (conversation.messages ?? []).map(toSessionMessage),
+    () => (conversation.messages ?? []).map((message) => projectionService.normalizeRawMessage(message)),
     [conversation.messages],
   )
   const localSessionMessages = useMemo(
-    () => chatInstance.messages.map(toSessionMessage),
+    () => chatInstance.messages.map((message) => projectionService.normalizeRawMessage(message)),
     [chatInstance.messages],
   )
 
@@ -98,7 +88,7 @@ export function useSideChatInvocation({
   const backendRuntimeEnabled =
     runtimeStatus === "streaming" || persistedSessionMessages.length === 0
   const backendRuntimeMessages = useMemo(
-    () => (backendRuntimeEnabled ? runtimeMessages.map(toSessionMessage) : []),
+    () => (backendRuntimeEnabled ? runtimeMessages.map((message) => projectionService.normalizeRawMessage(message)) : []),
     [backendRuntimeEnabled, runtimeMessages],
   )
 
@@ -132,15 +122,22 @@ export function useSideChatInvocation({
   // This allows the service to leverage AI SDK's stream handling
   useEffect(() => {
     const adapter = {
-      sendMessage: async ({ role, parts }: { role: "user" | "agent"; parts: any[] }) => {
+      sendMessage: async ({
+        role,
+        parts,
+        externalMessageId: providedExternalMessageId,
+      }: {
+        role: "user" | "agent"
+        parts: any[]
+        externalMessageId?: string
+      }) => {
         // Delegate to existing Chat instance
-        if (role === "user") {
-          // For user messages, use sendMessage
-          await chatInstance.sendMessage({ role: "user", parts })
-        } else {
-          // For agent messages, use sendAgentMessage
-          await chatInstance.sendAgentMessage(parts)
-        }
+        const message = await getMessageCorrelationService().createOptimisticMessage({
+          role,
+          parts,
+          externalMessageId: providedExternalMessageId,
+        })
+        await chatInstance.sendMessage(message)
       },
       stop: async () => {
         // Delegate to existing Chat instance

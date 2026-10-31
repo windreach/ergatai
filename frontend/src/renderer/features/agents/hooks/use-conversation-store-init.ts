@@ -33,17 +33,26 @@ export function useConversationStoreInit({
   chatId,
 }: UseConversationStoreInitProps) {
   useEffect(() => {
-    if (!agentChat) return
+    console.log("[useConversationStoreInit] called with chatId:", chatId)
+    console.log("[useConversationStoreInit] agentChat:", agentChat?.id, "conversations:", agentChat?.conversations?.length)
+
+    if (!agentChat) {
+      console.log("[useConversationStoreInit] no agentChat, returning")
+      return
+    }
 
     const store = useAgentConversationStore.getState()
+    console.log("[useConversationStoreInit] current store.chatId:", store.chatId)
 
     // Only initialize if chatId changed
     if (store.chatId !== chatId) {
+      console.log("[useConversationStoreInit] chatId changed, calling setChatId")
       store.setChatId(chatId)
     }
 
     // Re-get fresh state after setChatId may have loaded from localStorage
     const freshState = useAgentConversationStore.getState()
+    console.log("[useConversationStoreInit] freshState.allConversations.length:", freshState.allConversations.length)
 
     // Get conversations from DB (like Canvas - no isPersistedInDb flag)
     // Build a map of existing local conversations to preserve their created_at if DB doesn't have it

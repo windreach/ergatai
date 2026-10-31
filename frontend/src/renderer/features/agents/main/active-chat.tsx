@@ -754,13 +754,17 @@ const ChatViewInner = memo(function ChatViewInner({
     { chatId: parentChatId },
     { enabled: isVisiblePane && parentChatId.startsWith("chat_") },
   )
-  const backendAgentId = useMemo(
-    () =>
-      agentBindingsQuery.data?.find(
-        (binding) => binding.conversationId === conversationId,
-      )?.agentId ?? null,
-    [agentBindingsQuery.data, conversationId],
-  )
+
+  const backendAgentId = useMemo(() => {
+    // Try to find by conversationId first, then fall back to chatId
+    const byConversation = agentBindingsQuery.data?.find(
+      (binding) => binding.conversationId === conversationId,
+    )
+    const byChat = agentBindingsQuery.data?.find(
+      (binding) => binding.chatId === parentChatId,
+    )
+    return byConversation?.agentId ?? byChat?.agentId ?? null
+  }, [agentBindingsQuery.data, conversationId, parentChatId])
   const conversationRuntime = useConversationRuntime(conversationId, isVisiblePane)
   const backendRuntimeMessages = useMemo(
     () => buildRuntimeMessages(conversationRuntime),
@@ -1298,6 +1302,7 @@ const ChatViewInner = memo(function ChatViewInner({
     parentChatId,
     conversationId,
     provider,
+    supervisorAgentId: backendAgentId,
   })
 
   const collaborationSession = useCollaborationSession({
@@ -1910,7 +1915,6 @@ const ChatViewInner = memo(function ChatViewInner({
             />
             <CollaborationSessionEventCards
               events={collaborationSession.events}
-              session={collaborationSession.session}
             />
           </>
         }
@@ -2010,6 +2014,7 @@ const ChatViewInner = memo(function ChatViewInner({
         conversationId={conversationId}
         parentChatId={parentChatId}
         provider={provider}
+        agentId={backendAgentId}
         teamId={teamId}
         repository={repository}
         sandboxId={sandboxId}

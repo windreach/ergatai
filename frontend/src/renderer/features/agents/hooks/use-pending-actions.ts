@@ -9,6 +9,7 @@ import {
   isCreatingPrAtom,
 } from "../atoms"
 import { useAgentConversationStore } from "../stores/conversation-store"
+import { getMessageCorrelationService } from "@/features/conversation/runtime/message-correlation-service"
 
 interface UsePendingActionsOptions {
   conversationId: string
@@ -31,15 +32,22 @@ export function usePendingActions({
   const [pendingAuthRetry, setPendingAuthRetry] = useAtom(pendingAuthRetryMessageAtom)
   const [isCreatingPr, setIsCreatingPr] = useAtom(isCreatingPrAtom)
 
+  const sendCorrelatedMessage = async (
+    parts: CreateUIMessage<UIMessage>["parts"],
+  ) => {
+    const message = await getMessageCorrelationService().createOptimisticMessage({
+      role: "user",
+      parts: parts as any,
+    })
+    sendMessage(message as CreateUIMessage<UIMessage>)
+  }
+
   // Watch for pending PR message and send it
   useEffect(() => {
     if (pendingPrMessage?.conversationId === conversationId && !isStreaming) {
       setPendingPrMessage(null)
 
-      sendMessage({
-        role: "user",
-        parts: [{ type: "text", text: pendingPrMessage.message }],
-      })
+      void sendCorrelatedMessage([{ type: "text", text: pendingPrMessage.message }])
 
       setIsCreatingPr(false)
 
@@ -54,10 +62,7 @@ export function usePendingActions({
     if (pendingReviewMessage?.conversationId === conversationId && !isStreaming) {
       setPendingReviewMessage(null)
 
-      sendMessage({
-        role: "user",
-        parts: [{ type: "text", text: pendingReviewMessage.message }],
-      })
+      void sendCorrelatedMessage([{ type: "text", text: pendingReviewMessage.message }])
     }
   }, [pendingReviewMessage, isStreaming, sendMessage, setPendingReviewMessage, conversationId])
 
@@ -66,10 +71,7 @@ export function usePendingActions({
     if (pendingConflictMessage?.conversationId === conversationId && !isStreaming) {
       setPendingConflictMessage(null)
 
-      sendMessage({
-        role: "user",
-        parts: [{ type: "text", text: pendingConflictMessage.message }],
-      })
+      void sendCorrelatedMessage([{ type: "text", text: pendingConflictMessage.message }])
     }
   }, [pendingConflictMessage, isStreaming, sendMessage, setPendingConflictMessage, conversationId])
 

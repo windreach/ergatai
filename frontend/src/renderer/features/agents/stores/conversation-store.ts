@@ -143,7 +143,9 @@ export const useAgentConversationStore = create<AgentConversationStore>((set, ge
   splitRatios: [],
 
   setChatId: (chatId) => {
+    console.log("[ConversationStore.setChatId] called with chatId:", chatId)
     if (!chatId) {
+      console.log("[ConversationStore.setChatId] chatId is null, clearing all state")
       set({
         chatId: null,
         activeConversationId: null,

@@ -13,6 +13,7 @@ import { MENTION_PREFIXES } from "../mentions/agents-mentions-editor"
 import { utf8ToBase64 } from "../utils/base64"
 import type { AgentQueueItem } from "../lib/queue-utils"
 import type { MessagePart } from "../stores/message-store"
+import { getMessageCorrelationService } from "@/features/conversation/runtime/message-correlation-service"
 
 // Delay between processing queue items (ms)
 const QUEUE_PROCESS_DELAY = 1000
@@ -168,8 +169,13 @@ export function QueueProcessor() {
         // only scroll after the response is complete.)
         useMessageQueueStore.getState().triggerQueueSent(conversationId)
 
-        // Send message using Chat's sendMessage method
-        await chat.sendMessage({ role: "user", parts })
+        // Send through the shared correlation helper so queued messages have
+        // the same optimistic -> canonical identity as immediate messages.
+        const message = await getMessageCorrelationService().createOptimisticMessage({
+          role: "user",
+          parts,
+        })
+        await chat.sendMessage(message)
 
       } catch (error) {
         console.error(`[QueueProcessor] Error processing queue:`, error)

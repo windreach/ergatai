@@ -114,6 +114,7 @@ export function buildRuntimeMessages(
 
     currentMessage.metadata = {
       ...(currentMessage.metadata ?? {}),
+      turnId,
       runtime: true,
       runtimeStatus: snapshot?.status,
       runtimeSequence: snapshot?.lastSequence,
@@ -134,6 +135,7 @@ export function buildRuntimeMessages(
         id: `runtime-${conversationId}-${turnId ?? "turn"}-${streamMessageIndex}`,
         role: nextRole,
         metadata: {
+          turnId,
           runtime: true,
           runtimeStatus: snapshot?.status,
           runtimeSequence: snapshot?.lastSequence,

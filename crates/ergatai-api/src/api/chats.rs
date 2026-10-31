@@ -106,8 +106,10 @@ pub async fn list_chats(
         },
         None => None,
     };
+    tracing::info!("[list_chats] workspace_id={:?}", workspace_id);
     match tokio::task::spawn_blocking(move || user_data_db::chats::list(workspace_id)).await {
         Ok(Ok(chats)) => {
+            tracing::info!("[list_chats] returning {} chats", chats.len());
             let response: Vec<ChatResponse> = chats.into_iter().map(chat_to_response).collect();
             (StatusCode::OK, Json(response)).into_response()
         }

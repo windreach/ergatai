@@ -15,12 +15,15 @@
  * - Does not create duplicate Chat/transport state
  */
 
-import { useCallback, useEffect, useMemo } from "react"
+import { useCallback, useEffect, useMemo, useRef } from "react"
 import { useConversationInvocation, useSessionState } from "../../conversation/runtime/use-conversation-invocation"
 import { getAdapterRegistry, type AdapterState } from "../../conversation/runtime/runtime-adapter"
 import type { ConversationStatus } from "../../conversation/runtime/contracts"
 import { useRuntimeSessionSources } from "../../conversation/runtime/use-runtime-session-sources"
-import type { Message, MessageRole, MessagePart } from "../stores/message-store"
+import { getConversationProjectionService } from "../../conversation/runtime/conversation-projection-service"
+import { getMessageCorrelationService } from "../../conversation/runtime/message-correlation-service"
+import { trpc } from "../../../lib/trpc"
+import type { MessagePart } from "../stores/message-store"
 import type { AgentQueueItem, QueuedTextContext, QueuedDiffTextContext, QueuedPastedText } from "../lib/queue-utils"
 import { MENTION_PREFIXES } from "../../mentions/types"
 import { utf8ToBase64 } from "../utils/base64"
@@ -28,7 +31,7 @@ import type { ChatConversation } from "@/features/details-sidebar/lib/chat-contr
 
 /**
  * Raw message shape from various sources (backend API, Chat instance, etc.).
- * These are transformed into Message objects via toSessionMessage().
+ * These are normalized by ConversationProjectionService before ingestion.
  * TODO: Replace with proper API response types once backend typing is standardized.
  */
 type RawMessage = Record<string, unknown> & {
@@ -37,35 +40,18 @@ type RawMessage = Record<string, unknown> & {
   parts?: unknown[]
   metadata?: Record<string, unknown>
   sequence?: number
+  turnId?: string | null
   createdAt?: string | number | Date
 }
 
 const EMPTY_PERSISTED_MESSAGES: RawMessage[] = []
-
-function toSessionMessage(message: RawMessage): Message {
-  const metadata = message.metadata
-  const runtimeSequence = metadata?.runtimeSequence
-
-  return {
-    id: message.id,
-    role: message.role as MessageRole,
-    parts: (message.parts ?? []) as MessagePart[],
-    metadata,
-    sequence:
-      typeof message.sequence === "number"
-        ? message.sequence
-        : typeof runtimeSequence === "number"
-          ? (runtimeSequence as number)
-          : undefined,
-    createdAt: message.createdAt ? new Date(message.createdAt as string | number | Date) : undefined,
-  }
-}
+const projectionService = getConversationProjectionService()
 
 /**
  * Chat instance API (subset of Chat interface we need).
  */
 export interface ChatInstanceAPI {
-  sendMessage?: (message: { role: "user" | "agent" | "assistant"; parts: MessagePart[]; metadata?: Record<string, unknown> } & { interrupt?: boolean }) => void | Promise<void>
+  sendMessage?: (message: { id?: string; role: "user" | "agent" | "assistant"; parts: MessagePart[]; metadata?: Record<string, unknown> } & { interrupt?: boolean }) => void | Promise<void>
   stop?: () => void
   messages?: RawMessage[]
   status?: string
@@ -109,10 +95,12 @@ export function useMainChatInvocation({
 
   // Get session state from new service
   const sessionState = useSessionState(runtimeConversationId)
+  const trpcUtils = trpc.useUtils()
+  const reconciledRuntimeTurnsRef = useRef<Set<string>>(new Set())
 
   const safePersistedMessages = persistedMessages ?? EMPTY_PERSISTED_MESSAGES
   const persistedSessionMessages = useMemo(
-    () => safePersistedMessages.map(toSessionMessage),
+    () => safePersistedMessages.map((message) => projectionService.normalizeRawMessage(message)),
     [safePersistedMessages],
   )
 
@@ -120,14 +108,14 @@ export function useMainChatInvocation({
   const isLocalStreaming =
     existingChat?.status === "streaming" || existingChat?.status === "submitted"
   const localSessionMessages = useMemo(
-    () => rawLocalMessages.map(toSessionMessage),
+    () => rawLocalMessages.map((message) => projectionService.normalizeRawMessage(message)),
     [rawLocalMessages],
   )
 
   // While the local transport streams the current turn, clear the backend
   // preview source. Local Chat is the freshest view of that same turn.
   const backendRuntimeMessages = useMemo(
-    () => (isLocalStreaming ? [] : runtimeMessages.map(toSessionMessage)),
+    () => (isLocalStreaming ? [] : runtimeMessages.map((message) => projectionService.normalizeRawMessage(message))),
     [isLocalStreaming, runtimeMessages],
   )
 
@@ -139,6 +127,46 @@ export function useMainChatInvocation({
     localMessages: localSessionMessages,
     backendRuntimeMessages,
   })
+
+  /**
+   * Backend turns are persisted independently of the AI SDK Chat transport.
+   * As soon as a runtime projection completes, refresh the durable snapshot so
+   * a later `TurnStarted` can discard that runtime projection without losing
+   * the canonical message.
+   */
+  useEffect(() => {
+    if (!chatId || !runtimeConversationId || isLocalStreaming) return
+
+    const completedRuntimeMessage = [...runtimeMessages]
+      .reverse()
+      .find((message) => message.metadata?.runtimeStatus === "completed")
+    if (!completedRuntimeMessage) return
+
+    const metadata = completedRuntimeMessage.metadata as {
+      turnId?: unknown
+      runtimeSequence?: unknown
+    }
+    const turnId = typeof metadata.turnId === "string" ? metadata.turnId : completedRuntimeMessage.id
+    const runtimeSequence = typeof metadata.runtimeSequence === "number"
+      ? metadata.runtimeSequence
+      : 0
+    const reconcileKey = `${runtimeConversationId}:${turnId}:${runtimeSequence}`
+    if (reconciledRuntimeTurnsRef.current.has(reconcileKey)) return
+    reconciledRuntimeTurnsRef.current.add(reconcileKey)
+
+    void Promise.all([
+      trpcUtils.chats.get.invalidate({ id: chatId }),
+      trpcUtils.ergatai.listConversationMessages.invalidate({
+        conversationId: runtimeConversationId,
+      }),
+    ])
+  }, [
+    chatId,
+    isLocalStreaming,
+    runtimeConversationId,
+    runtimeMessages,
+    trpcUtils,
+  ])
 
   const visibleMessages =
     sessionState?.visibleMessages && sessionState.visibleMessages.length > 0
@@ -169,19 +197,20 @@ export function useMainChatInvocation({
     }
 
     const adapter = {
-      sendMessage: async ({ role, parts, interrupt, correlationId }: { role: "user" | "agent"; parts: MessagePart[]; interrupt?: boolean; correlationId?: string }) => {
+      sendMessage: async ({ role, parts, interrupt, correlationId, externalMessageId }: { role: "user" | "agent"; parts: MessagePart[]; interrupt?: boolean; correlationId?: string; externalMessageId?: string }) => {
         // Delegate to existing Chat instance
         // Phase 19: Pass interrupt flag and correlationId via message metadata
         if (existingChat.sendMessage) {
-          await existingChat.sendMessage({
-            role: "user",
+          const message = await getMessageCorrelationService().createOptimisticMessage({
+            role,
             parts,
-            // Pass interrupt and correlationId via metadata so transport can extract them
+            externalMessageId,
             metadata: {
               interrupt: interrupt ?? false,
-              correlationId: correlationId,
-            }
+              correlationId,
+            },
           })
+          await existingChat.sendMessage(message)
         }
       },
       stop: async () => {
@@ -237,6 +266,7 @@ export function useMainChatInvocation({
           },
           role: "user",
           parts,
+          transportOverrides: undefined,
         })
       } catch (error) {
         console.error("[useMainChatInvocation] Failed to send message:", error)
@@ -273,6 +303,7 @@ export function useMainChatInvocation({
         },
         role: "user",
         parts,
+        transportOverrides: undefined,
       })
     },
     [invocation, chatId, runtimeConversationId, conversation.backendConversationId, agentId],
@@ -368,7 +399,7 @@ export function useMainChatInvocation({
         },
         role: "user",
         parts,
-        // Removed originalQueueItem - all data is now in parts
+        transportOverrides: undefined,
       })
     },
     [invocation, chatId, runtimeConversationId, conversation.backendConversationId, agentId],

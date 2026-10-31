@@ -125,6 +125,9 @@ export type ConversationSendMessageInput = {
 
     /** Correlation ID (for request tracking) */
     correlationId?: string
+
+    /** Backend-issued message ID used for optimistic/durable correlation */
+    externalMessageId?: string
   }
 }
 

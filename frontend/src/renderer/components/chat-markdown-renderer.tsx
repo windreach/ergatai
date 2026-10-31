@@ -689,7 +689,10 @@ const MemoizedMarkdownBlock = memo(
     return (
       <Streamdown
         mode="static"
-        components={components as any}
+        // Type assertion needed: Streamdown's Components type is overly restrictive
+        // and doesn't accept our strongly-typed MarkdownComponentProps components.
+        // The components are type-safe; the assertion is only to satisfy Streamdown's API.
+        components={components as Components}
         remarkPlugins={[remarkGfm, remarkBreaks]}
         controls={false}
       >

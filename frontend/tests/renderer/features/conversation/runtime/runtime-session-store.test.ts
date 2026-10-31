@@ -237,6 +237,64 @@ describe("RuntimeSessionStore", () => {
       ])
     })
 
+    it("should collapse different assistant projections by the backend turn id", () => {
+      const store = getRuntimeSessionStore()
+      store.ensureSession("conv-1")
+
+      const userMessage: Message = {
+        id: "user-1",
+        role: "user",
+        parts: [{ type: "text", text: "Question" }],
+        sequence: 0,
+      } as Message
+      const backendMessage: Message = {
+        id: "runtime-conv-1-turn-1-0",
+        role: "assistant",
+        parts: [{ type: "text", text: "Runtime projection" }],
+        metadata: { turnId: "turn-1", runtime: true },
+      } as Message
+      const localMessage: Message = {
+        id: "assistant-local-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "Local projection" }],
+        metadata: { turnId: "turn-1", streamSource: "local-transport" },
+      } as Message
+
+      store.setPersistedMessages("conv-1", [userMessage])
+      store.setRuntimeMessages("conv-1", [backendMessage])
+      store.setLocalMessages("conv-1", [localMessage])
+
+      expect(
+        store.getRuntimeState("conv-1")?.visibleMessages.map((message) => message.id),
+      ).toEqual(["user-1", "assistant-local-1"])
+    })
+
+    it("should prefer canonical persisted output for a completed backend turn", () => {
+      const store = getRuntimeSessionStore()
+      store.ensureSession("conv-1")
+
+      const runtimeMessage: Message = {
+        id: "runtime-conv-1-turn-1-0",
+        role: "assistant",
+        parts: [{ type: "text", text: "Runtime projection" }],
+        metadata: { turnId: "turn-1", runtime: true },
+      } as Message
+      const canonicalMessage: Message = {
+        id: "msg-canonical-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "Canonical output" }],
+        sequence: 1,
+        turnId: "turn-1",
+      } as Message
+
+      store.setRuntimeMessages("conv-1", [runtimeMessage])
+      store.setPersistedMessages("conv-1", [canonicalMessage])
+
+      expect(
+        store.getRuntimeState("conv-1")?.visibleMessages.map((message) => message.id),
+      ).toEqual(["msg-canonical-1"])
+    })
+
     it("should sort messages by sequence number", () => {
       const store = getRuntimeSessionStore()
       store.ensureSession("conv-1")

@@ -203,6 +203,13 @@ const agentOutputEventSchema = z.discriminatedUnion("type", [
     size: z.number(),
     conversation_id: z.string().nullish(),
   }),
+  // Emitted by the raw agent stream immediately after NATS subscribers are
+  // attached. Transports use it as a send gate to avoid missing TurnStarted.
+  z.object({
+    type: z.literal("stream_ready"),
+    agent_id: z.string(),
+    conversation_id: z.string(),
+  }),
 ])
 
 /**
@@ -304,6 +311,11 @@ export type AgentOutputEvent =
       type: "context_usage"
       used: number
       size: number
+    } & AgentOutputEventContext)
+  | ({
+      type: "stream_ready"
+      agent_id: string
+      conversation_id: string
     } & AgentOutputEventContext)
 
 export type UIMessageChunk =
@@ -463,6 +475,7 @@ export function subscribeAgentStream(
           "message_inserted",
           "turn_started",
           "context_usage",
+          "stream_ready",
         ].includes(currentEventName)) return
 
         try {

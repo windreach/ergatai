@@ -165,3 +165,77 @@ pub async fn uninstall_agent(id: &str) -> Result<String> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to uninstall agent: {}", e))
 }
+
+/// 获取指定 profile 的缓存模型列表（按 profile name 查询，单次查询避免 TOCTOU）。
+///
+/// 返回 None 表示尚未探测过模型。
+pub async fn get_profile_models_by_name(name: &str) -> Result<Option<serde_json::Value>> {
+    let registry = get_profile_registry()?;
+    match registry.get_models_by_name(name).await {
+        Ok(Some((json_str, updated_at))) => {
+            // Parse the JSON string and add updated_at
+            let mut models: serde_json::Value = serde_json::from_str(&json_str)
+                .map_err(|e| anyhow::anyhow!("Failed to parse models JSON: {}", e))?;
+            if let Some(obj) = models.as_object_mut() {
+                obj.insert("updated_at".to_string(), serde_json::json!(updated_at));
+            }
+            Ok(Some(models))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("Failed to get profile models: {}", e)),
+    }
+}
+
+/// 保存探测到的模型列表到 profile（按 profile name 保存，单次查询避免 TOCTOU）。
+pub async fn save_profile_models_by_name(
+    name: &str,
+    models: &[String],
+    current: Option<&str>,
+) -> Result<()> {
+    let registry = get_profile_registry()?;
+    let json = serde_json::json!({
+        "models": models,
+        "current": current,
+    })
+    .to_string();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    registry
+        .update_models_by_name(name, &json, now_ms)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to save profile models: {}", e))
+}
+
+/// 获取指定 profile 的缓存模型列表（按 profile ID 查询）。
+///
+/// 返回 None 表示尚未探测过模型。
+pub async fn get_profile_models(id: &str) -> Result<Option<serde_json::Value>> {
+    let registry = get_profile_registry()?;
+    match registry.get_models(id).await {
+        Ok(Some((json_str, updated_at))) => {
+            // Parse the JSON string and add updated_at
+            let mut models: serde_json::Value = serde_json::from_str(&json_str)
+                .map_err(|e| anyhow::anyhow!("Failed to parse models JSON: {}", e))?;
+            if let Some(obj) = models.as_object_mut() {
+                obj.insert("updated_at".to_string(), serde_json::json!(updated_at));
+            }
+            Ok(Some(models))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("Failed to get profile models: {}", e)),
+    }
+}
+
+/// 保存探测到的模型列表到 profile。
+pub async fn save_profile_models(id: &str, models: &[String], current: Option<&str>) -> Result<()> {
+    let registry = get_profile_registry()?;
+    let json = serde_json::json!({
+        "models": models,
+        "current": current,
+    })
+    .to_string();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    registry
+        .update_models(id, &json, now_ms)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to save profile models: {}", e))
+}
