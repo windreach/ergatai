@@ -142,7 +142,7 @@ export const AgentExploringGroup = memo(function AgentExploringGroup({
                 )
               }
               const { isPending, isError } = getToolStatus(part, chatStatus)
-              const filePath = part.input?._locations?.[0]?.path
+              const filePath = (part.input?._locations as Array<{ path?: string }>)?.[0]?.path
               const handleClick =
                 part.type === "tool-Read" && onOpenFile && filePath
                   ? () => onOpenFile(filePath)

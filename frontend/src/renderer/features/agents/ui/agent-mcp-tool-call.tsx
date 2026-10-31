@@ -10,13 +10,11 @@ import { cn } from "../../../lib/utils"
 import { highlightCode } from "../../../lib/themes/shiki-theme-loader"
 import { useCodeTheme } from "../../../lib/hooks/use-code-theme"
 
+import type { MessagePart } from "../stores/message-store"
+
 interface AgentMcpToolCallProps {
   // `part` shape from streaming tool-call pipeline
-  part: {
-    state: string
-    input?: Record<string, unknown>
-    output?: unknown
-  }
+  part: MessagePart
   mcpInfo: McpToolInfo
   chatStatus?: string
 }

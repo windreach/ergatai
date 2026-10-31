@@ -92,7 +92,17 @@ const SELECT_COLUMNS: &str = "turn_id, conversation_id, chat_id, workspace_id, m
 fn row_to_turn(row: &rusqlite::Row<'_>) -> rusqlite::Result<InitialPromptTurn> {
     let status: String = row.get(9)?;
     let images_json: String = row.get(8)?;
-    let images = serde_json::from_str::<Vec<AgentImage>>(&images_json).unwrap_or_default();
+    let images = match serde_json::from_str::<Vec<AgentImage>>(&images_json) {
+        Ok(imgs) => imgs,
+        Err(error) => {
+            warn!(
+                images_json = %images_json,
+                error = %error,
+                "Failed to parse images JSON, defaulting to empty array"
+            );
+            Vec::new()
+        }
+    };
 
     Ok(InitialPromptTurn {
         turn_id: row.get(0)?,

@@ -3,6 +3,7 @@ import { useMessageQueueStore } from "../stores/message-queue-store"
 import { appStore } from "../../../lib/jotai-store"
 import { suppressInputFocusAtom } from "../atoms"
 import { getSavedScrollPosition } from "./use-scroll-management"
+import type { Message } from "../stores/message-store"
 
 interface UseScrollInitProps {
   conversationId: string
@@ -19,8 +20,7 @@ interface UseScrollInitProps {
   scrollToBottom: () => void
   handleScroll: (e: Event) => void
   status: "ready" | "streaming" | "submitted" | "error"
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: replace with proper Message type
-  messages: any[]
+  messages: Message[]
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: replace with specific editor type
   editorRef: React.RefObject<any>
 }

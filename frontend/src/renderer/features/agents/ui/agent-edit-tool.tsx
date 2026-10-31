@@ -18,6 +18,7 @@ import {
 import { getDisplayPath, getToolStatus } from "./agent-tool-registry"
 import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areToolPropsEqual } from "./agent-tool-utils"
+import type { MessagePart } from "../stores/message-store"
 import { getFileIconByExtension } from "../mentions/file-icon-utils"
 import { useFileOpen } from "../mentions"
 import { agentsDiffSidebarOpenAtom, agentsFocusedDiffFileAtom, selectedWorkspaceAtom } from "../atoms"
@@ -32,7 +33,7 @@ const HIGHLIGHT_DEBOUNCE_MS = 50
 
 interface AgentEditToolProps {
   // AI SDK tool part shape varies by provider and version; no stable public type
-  part: any // eslint-disable-line @typescript-eslint/no-explicit-any
+  part: MessagePart // eslint-disable-line @typescript-eslint/no-explicit-any
   messageId?: string
   partIndex?: number
   chatStatus?: string

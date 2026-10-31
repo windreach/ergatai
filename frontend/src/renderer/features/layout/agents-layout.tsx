@@ -202,10 +202,11 @@ export function AgentsLayout() {
   // Worktree setup failures from main process
   useEffect(() => {
     if (typeof window === "undefined") return
-    const desktopApi = window.desktopApi as any
-    if (!desktopApi?.onWorktreeSetupFailed) return
+    const desktopApi = window.desktopApi
+    // Type guard: onWorktreeSetupFailed may not be in all DesktopApi type definitions
+    if (!desktopApi || !("onWorktreeSetupFailed" in desktopApi)) return
 
-    const unsubscribe = desktopApi.onWorktreeSetupFailed((payload: { kind: "create-failed" | "setup-failed"; message: string; projectId: string }) => {
+    const unsubscribe = (desktopApi as any).onWorktreeSetupFailed((payload: { kind: "create-failed" | "setup-failed"; message: string; projectId: string }) => {
       const errorMessage = payload.message.replace(/\s+/g, " ").trim()
       const title =
         payload.kind === "create-failed"

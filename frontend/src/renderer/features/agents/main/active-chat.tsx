@@ -217,6 +217,7 @@ import { useConversationStoreInit } from "../hooks/use-conversation-store-init"
 import { useChatInstanceFactory } from "../hooks/use-chat-instance-factory"
 import { ErgataiChatTransport } from "../lib/ergatai-chat-transport"
 import { GroupChatTransport } from "../lib/group-chat-transport"
+import type { AgentQueueItem } from "../lib/queue-utils"
 import { GroupChatProvider } from "../collaboration/group-chat-context"
 import { CollaborationSessionEventCards } from "../collaboration/collaboration-session-event-cards"
 import {
@@ -286,6 +287,29 @@ import { isPlanFile } from "../ui/agent-tool-utils"
 import { AgentUserQuestion, type AgentUserQuestionHandle } from "../ui/agent-user-question"
 import { PermissionApprovalPanel } from "../../../components/dialogs/permission-approval-dialog"
 import { AgentsHeaderControls } from "../ui/agents-header-controls"
+
+// Extended chat type with Ergatai-specific fields
+interface ExtendedAgentChat {
+  id: string
+  name?: string | null
+  archivedAt?: Date | string | null
+  worktreePath?: string | null
+  collaborationMode?: "group" | "pair" | "individual" | null
+  project?: {
+    path?: string
+    gitRepo?: string | null
+    name?: string | null
+  } | null
+  branch?: string | null
+  conversations?: Array<{
+    id: string
+    name?: string | null
+    mode?: "plan" | "agent" | null
+    created_at?: Date | string | null
+    updated_at?: Date | string | null
+    messages?: unknown
+  }>
+}
 import { ChatTitleEditor } from "../ui/chat-title-editor"
 import { MobileChatHeader } from "../ui/mobile-chat-header"
 import { QuickCommentInput } from "../ui/quick-comment-input"
@@ -760,12 +784,12 @@ const ChatViewInner = memo(function ChatViewInner({
   }), [conversationId])
 
   const chatInvocation = useMainChatInvocation({
-    conversation: conversationForBridge as any,
+    conversation: conversationForBridge as unknown as Parameters<typeof useMainChatInvocation>[0]["conversation"],
     chatId: parentChatId,
     agentId: provider,
     isActive,
     persistedMessages,
-    runtimeMessages: backendRuntimeMessages,
+    runtimeMessages: backendRuntimeMessages as unknown as Parameters<typeof useMainChatInvocation>[0]["runtimeMessages"],
     existingChat: chat, // Pass existing Chat instance to avoid duplicate
   })
 
@@ -1036,7 +1060,30 @@ const ChatViewInner = memo(function ChatViewInner({
   // Use a ref to cache the previous conversion and only update when content actually changes
   const queueCacheRef = useRef<{
     items: typeof invocationQueue
-    result: any[]
+    result: Array<{
+      id: string
+      message: string
+      images: Array<{
+        id: string
+        url: string
+        mediaType: string
+        filename: string
+        base64Data?: string
+        isLoading: boolean
+        preview: string
+      }>
+      files: Array<{
+        id: string
+        url: string
+        mediaType: string
+        filename: string
+        size: number
+        isLoading: boolean
+        preview: string
+      }>
+      timestamp: Date
+      status: "pending" | "processing" | "completed" | "failed"
+    }>
   } | null>(null)
 
   const queue = useMemo(() => {
@@ -1092,7 +1139,9 @@ const ChatViewInner = memo(function ChatViewInner({
     return result
   }, [invocationQueue])
 
-  const addToQueue = chatInvocation.service?.enqueue
+  const addToQueue = useCallback((conversationId: string, item: AgentQueueItem) => {
+    chatInvocation.service?.enqueue(item)
+  }, [chatInvocation.service])
   const removeFromQueue = chatInvocation.removeQueuedItem
   const popItemFromQueue = chatInvocation.removeQueuedItem // Same as remove for now
 
@@ -2439,7 +2488,7 @@ export function ChatView({
 
   // Check if this workspace is archived
   const isArchived = !!agentChat?.archivedAt
-  const isGroupMode = (agentChat as any)?.collaborationMode === "group"
+  const isGroupMode = (agentChat as ExtendedAgentChat | undefined)?.collaborationMode === "group"
 
   // Get user usage data for credit checks
   const { data: usageData } = api.usage.getUserUsage.useQuery()
@@ -2472,16 +2521,16 @@ export function ChatView({
     [chatId, setFileViewerPath, worktreePath],
   )
   // Desktop: original project path for MCP config lookup
-  const originalProjectPath = (agentChat as any)?.project?.path as string | undefined
+  const originalProjectPath = (agentChat as ExtendedAgentChat | undefined)?.project?.path as string | undefined
 
   // Terminal scope key: shared by project path (local mode) or isolated per workspace (worktree)
   const terminalScopeKey = useMemo(() => {
     return getTerminalScopeKey({
-      branch: (agentChat as any)?.branch ?? null,
+      branch: (agentChat as ExtendedAgentChat | undefined)?.branch ?? null,
       worktreePath: worktreePath,
       id: chatId,
     })
-  }, [(agentChat as any)?.branch, worktreePath, chatId])
+  }, [(agentChat as ExtendedAgentChat | undefined)?.branch, worktreePath, chatId])
   // Fallback for web: use sandbox_id
   const sandboxId: string | null = null
   const sandboxUrl = null
@@ -2716,7 +2765,7 @@ export function ChatView({
       const override = conversationProviderOverrides[conversationId]
       if (override) return override
 
-      const conversation = ((agentChat as any)?.conversations || []).find(
+      const conversation = ((agentChat as ExtendedAgentChat | undefined)?.conversations || []).find(
         (sc: any) => sc?.id === conversationId,
       ) as { messages?: any } | undefined
       const rawMessages = conversation?. messages
@@ -2734,7 +2783,7 @@ export function ChatView({
       }
 
       for (const message of messages) {
-        const model = (message as any)?.metadata?.model
+        const model = (message as { metadata?: Record<string, unknown> })?.metadata?.model
         if (typeof model !== "string") continue
         const normalizedModel = model.toLowerCase()
         if (
@@ -2787,7 +2836,7 @@ export function ChatView({
   const handleProviderChange = useCallback(
     (conversationId: string, nextProvider: "claude-code" | "codex") => {
       // Provider switch is only allowed for brand new conversations.
-      const activeChat = agentChatStore.get(conversationId) as any
+      const activeChat = agentChatStore.get(conversationId) as ExtendedAgentChat | undefined
       let messageCount = Array.isArray(activeChat?.messages)
         ? activeChat.messages.length
         : 0
@@ -3240,7 +3289,7 @@ export function ChatView({
                             isGroupMode={isGroupMode}
                             workspaceName={agentChat?.name ?? null}
                             workspaceBranch={agentChat?.branch ?? null}
-                            workspaceRepoName={(agentChat as any)?.project?.gitRepo || (agentChat as any)?.project?.name || null}
+                            workspaceRepoName={(agentChat as ExtendedAgentChat | undefined)?.project?.gitRepo || (agentChat as ExtendedAgentChat | undefined)?.project?.name || null}
                             workspaceId={agentChat?.workspaceId ?? null}
                             projectId={null}
                             persistedMessages={persistedMessagesByConversationId.get(paneId) ?? []}
@@ -3292,7 +3341,7 @@ export function ChatView({
                                 isGroupMode={isGroupMode}
                                 workspaceName={agentChat?.name ?? null}
                                 workspaceBranch={agentChat?.branch ?? null}
-                                workspaceRepoName={(agentChat as any)?.project?.gitRepo || (agentChat as any)?.project?.name || null}
+                                workspaceRepoName={(agentChat as ExtendedAgentChat | undefined)?.project?.gitRepo || (agentChat as ExtendedAgentChat | undefined)?.project?.name || null}
                                 workspaceId={agentChat?.workspaceId ?? null}
                                 projectId={null}
                                 persistedMessages={persistedMessagesByConversationId.get(conversationId) ?? []}
@@ -3357,7 +3406,7 @@ export function ChatView({
                       isGroupMode={isGroupMode}
                       workspaceName={agentChat?.name ?? null}
                       workspaceBranch={agentChat?.branch ?? null}
-                      workspaceRepoName={(agentChat as any)?.project?.gitRepo || (agentChat as any)?.project?.name || null}
+                      workspaceRepoName={(agentChat as ExtendedAgentChat | undefined)?.project?.gitRepo || (agentChat as ExtendedAgentChat | undefined)?.project?.name || null}
                       workspaceId={agentChat?.workspaceId ?? null}
                       projectId={null}
                       persistedMessages={persistedMessagesByConversationId.get(conversationId) ?? []}

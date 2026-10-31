@@ -1,11 +1,12 @@
 import { useCallback, useRef } from "react"
+import type { Message } from "../stores/message-store"
 
 interface UseProviderSelectionOptions {
   conversationId: string
   parentChatId: string | null
   conversationMode: "plan" | "agent"
   isStreaming: boolean
-  messages: any[]
+  messages: Message[]
   onProviderChange?: (conversationId: string, provider: "claude-code" | "codex") => void
   utils?: unknown
   conversationNameRef: React.RefObject<string>

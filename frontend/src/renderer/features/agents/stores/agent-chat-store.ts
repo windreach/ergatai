@@ -5,6 +5,11 @@ import type { Chat } from "@ai-sdk/react"
  * Lives outside React lifecycle so chats persist across component mount/unmount.
  */
 
+// `Chat<any>` is required because @ai-sdk/react's Chat class has a generic constraint
+// `UI_MESSAGE extends UIMessage`, where UIMessage.role is strictly 'system' | 'user' | 'assistant'.
+// Ergatai extends this with an 'agent' role for agent-initiated messages, and uses a different
+// MessagePart structure. We cannot satisfy the UIMessage constraint without forking the Chat class.
+// The Chat class is a runtime container that doesn't validate message types, so `any` is safe here.
 const chats = new Map<string, Chat<any>>()
 const parentChatIds = new Map<string, string>() // conversationId → parentChatId (stored at creation time)
 const manuallyAborted = new Map<string, boolean>() // Track if chat was manually stopped
@@ -22,9 +27,10 @@ export const agentChatStore = {
   has: (id: string) => chats.has(id),
 
   delete: (id: string) => {
-    const chat = chats.get(id) as any
+    const chat = chats.get(id)
     try {
-      chat?.transport?.cleanup?.()
+      // `transport` is a private field on Chat, but we need to call cleanup on deletion
+      ;(chat as unknown as { transport?: { cleanup?: () => void } })?.transport?.cleanup?.()
     } finally {
       chats.delete(id)
       parentChatIds.delete(id)
@@ -47,7 +53,8 @@ export const agentChatStore = {
   clear: () => {
     for (const chat of chats.values()) {
       try {
-        ;(chat as any)?.transport?.cleanup?.()
+        // `transport` is a private field on Chat, but we need to call cleanup on clear
+        ;(chat as unknown as { transport?: { cleanup?: () => void } })?.transport?.cleanup?.()
       } catch (e) {
         console.error('[AgentChatStore] Cleanup failed:', e)
       }

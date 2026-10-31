@@ -1,12 +1,18 @@
 import { cn } from "../lib/utils"
-import { memo, useState, useCallback, useEffect, useMemo } from "react"
-import { Streamdown, parseMarkdownIntoBlocks } from "streamdown"
+import { memo, useState, useCallback, useEffect, useMemo, type ComponentPropsWithoutRef, type ReactNode, type JSX } from "react"
+import { Streamdown, parseMarkdownIntoBlocks, type Components } from "streamdown"
 import remarkBreaks from "remark-breaks"
 import remarkGfm from "remark-gfm"
 import { Copy, Check } from "lucide-react"
 import { useCodeTheme } from "../lib/hooks/use-code-theme"
 import { highlightCode } from "../lib/themes/shiki-theme-loader"
 import { MermaidBlock } from "./mermaid-block"
+
+// Type for markdown component props
+type MarkdownComponentProps<T extends keyof JSX.IntrinsicElements> = ComponentPropsWithoutRef<T> & {
+  children?: ReactNode
+  node?: unknown
+}
 
 // Function to strip emojis from text (only common emojis, preserving markdown symbols)
 export function stripEmojis(text: string): string {
@@ -248,7 +254,7 @@ const sizeStyles: Record<
 
 // Custom code component that uses our theme system
 function createCodeComponent(codeTheme: string, size: MarkdownSize, styles: typeof sizeStyles.md, isStreaming: boolean = false) {
-  return function CodeComponent({ className, children, node, ...props }: any) {
+  return function CodeComponent({ className, children, node, ...props }: MarkdownComponentProps<"code">) {
     const match = /language-(\w+)/.exec(className || "")
     const language = match ? match[1] : undefined
     const codeContent = String(children)
@@ -297,57 +303,57 @@ export const ChatMarkdownRenderer = memo(function ChatMarkdownRenderer({
   // This is critical for Streamdown's block-level memoization to work
   const components = useMemo(
     () => ({
-      h1: ({ children, ...props }: any) => (
+      h1: ({ children, ...props }: MarkdownComponentProps<"h1">) => (
         <h1 className={styles.h1} {...props}>
           {children}
         </h1>
       ),
-      h2: ({ children, ...props }: any) => (
+      h2: ({ children, ...props }: MarkdownComponentProps<"h2">) => (
         <h2 className={styles.h2} {...props}>
           {children}
         </h2>
       ),
-      h3: ({ children, ...props }: any) => (
+      h3: ({ children, ...props }: MarkdownComponentProps<"h3">) => (
         <h3 className={styles.h3} {...props}>
           {children}
         </h3>
       ),
-      h4: ({ children, ...props }: any) => (
+      h4: ({ children, ...props }: MarkdownComponentProps<"h4">) => (
         <h4 className={styles.h4} {...props}>
           {children}
         </h4>
       ),
-      h5: ({ children, ...props }: any) => (
+      h5: ({ children, ...props }: MarkdownComponentProps<"h5">) => (
         <h5 className={styles.h5} {...props}>
           {children}
         </h5>
       ),
-      h6: ({ children, ...props }: any) => (
+      h6: ({ children, ...props }: MarkdownComponentProps<"h6">) => (
         <h6 className={styles.h6} {...props}>
           {children}
         </h6>
       ),
-      p: ({ children, ...props }: any) => (
+      p: ({ children, ...props }: MarkdownComponentProps<"p">) => (
         <p className={styles.p} {...props}>
           {children}
         </p>
       ),
-      ul: ({ children, ...props }: any) => (
+      ul: ({ children, ...props }: MarkdownComponentProps<"ul">) => (
         <ul className={styles.ul} {...props}>
           {children}
         </ul>
       ),
-      ol: ({ children, ...props }: any) => (
+      ol: ({ children, ...props }: MarkdownComponentProps<"ol">) => (
         <ol className={styles.ol} {...props}>
           {children}
         </ol>
       ),
-      li: ({ children, ...props }: any) => (
+      li: ({ children, ...props }: MarkdownComponentProps<"li">) => (
         <li className={styles.li} {...props}>
           {children}
         </li>
       ),
-      a: ({ href, children, ...props }: any) => (
+      a: ({ href, children, ...props }: MarkdownComponentProps<"a">) => (
         <a
           href={href}
           onClick={(e) => {
@@ -362,55 +368,55 @@ export const ChatMarkdownRenderer = memo(function ChatMarkdownRenderer({
           {children}
         </a>
       ),
-      strong: ({ children, ...props }: any) => (
+      strong: ({ children, ...props }: MarkdownComponentProps<"strong">) => (
         <strong className="font-medium text-foreground" {...props}>
           {children}
         </strong>
       ),
-      em: ({ children, ...props }: any) => (
+      em: ({ children, ...props }: MarkdownComponentProps<"em">) => (
         <em className="italic" {...props}>
           {children}
         </em>
       ),
-      blockquote: ({ children, ...props }: any) => (
+      blockquote: ({ children, ...props }: MarkdownComponentProps<"blockquote">) => (
         <blockquote className={styles.blockquote} {...props}>
           {children}
         </blockquote>
       ),
-      hr: ({ ...props }: any) => <hr className={styles.hr} {...props} />,
-      table: ({ children, ...props }: any) => (
+      hr: ({ ...props }: MarkdownComponentProps<"hr">) => <hr className={styles.hr} {...props} />,
+      table: ({ children, ...props }: MarkdownComponentProps<"table">) => (
         <div className="overflow-x-auto my-3 rounded-lg border border-border overflow-hidden">
           <table className={cn(styles.table, "border-collapse")} {...props}>
             {children}
           </table>
         </div>
       ),
-      thead: ({ children, ...props }: any) => (
+      thead: ({ children, ...props }: MarkdownComponentProps<"thead">) => (
         <thead className={styles.thead} {...props}>
           {children}
         </thead>
       ),
-      tbody: ({ children, ...props }: any) => (
+      tbody: ({ children, ...props }: MarkdownComponentProps<"tbody">) => (
         <tbody className={styles.tbody} {...props}>
           {children}
         </tbody>
       ),
-      tr: ({ children, ...props }: any) => (
+      tr: ({ children, ...props }: MarkdownComponentProps<"tr">) => (
         <tr className={styles.tr} {...props}>
           {children}
         </tr>
       ),
-      th: ({ children, ...props }: any) => (
+      th: ({ children, ...props }: MarkdownComponentProps<"th">) => (
         <th className={styles.th} {...props}>
           {children}
         </th>
       ),
-      td: ({ children, ...props }: any) => (
+      td: ({ children, ...props }: MarkdownComponentProps<"td">) => (
         <td className={styles.td} {...props}>
           {children}
         </td>
       ),
-      pre: ({ children }: any) => <>{children}</>,
+      pre: ({ children }: MarkdownComponentProps<"pre">) => <>{children}</>,
       code: createCodeComponent(codeTheme, size, styles, isStreaming),
     }),
     [styles, codeTheme, size, isStreaming],
@@ -561,57 +567,57 @@ const MemoizedMarkdownBlock = memo(
     // Memoize components object - critical for preventing re-renders
     const components = useMemo(
       () => ({
-        h1: ({ children, ...props }: any) => (
+        h1: ({ children, ...props }: MarkdownComponentProps<"h1">) => (
           <h1 className={styles.h1} {...props}>
             {children}
           </h1>
         ),
-        h2: ({ children, ...props }: any) => (
+        h2: ({ children, ...props }: MarkdownComponentProps<"h2">) => (
           <h2 className={styles.h2} {...props}>
             {children}
           </h2>
         ),
-        h3: ({ children, ...props }: any) => (
+        h3: ({ children, ...props }: MarkdownComponentProps<"h3">) => (
           <h3 className={styles.h3} {...props}>
             {children}
           </h3>
         ),
-        h4: ({ children, ...props }: any) => (
+        h4: ({ children, ...props }: MarkdownComponentProps<"h4">) => (
           <h4 className={styles.h4} {...props}>
             {children}
           </h4>
         ),
-        h5: ({ children, ...props }: any) => (
+        h5: ({ children, ...props }: MarkdownComponentProps<"h5">) => (
           <h5 className={styles.h5} {...props}>
             {children}
           </h5>
         ),
-        h6: ({ children, ...props }: any) => (
+        h6: ({ children, ...props }: MarkdownComponentProps<"h6">) => (
           <h6 className={styles.h6} {...props}>
             {children}
           </h6>
         ),
-        p: ({ children, ...props }: any) => (
+        p: ({ children, ...props }: MarkdownComponentProps<"p">) => (
           <p className={styles.p} {...props}>
             {children}
           </p>
         ),
-        ul: ({ children, ...props }: any) => (
+        ul: ({ children, ...props }: MarkdownComponentProps<"ul">) => (
           <ul className={styles.ul} {...props}>
             {children}
           </ul>
         ),
-        ol: ({ children, ...props }: any) => (
+        ol: ({ children, ...props }: MarkdownComponentProps<"ol">) => (
           <ol className={styles.ol} {...props}>
             {children}
           </ol>
         ),
-        li: ({ children, ...props }: any) => (
+        li: ({ children, ...props }: MarkdownComponentProps<"li">) => (
           <li className={styles.li} {...props}>
             {children}
           </li>
         ),
-        a: ({ href, children, ...props }: any) => (
+        a: ({ href, children, ...props }: MarkdownComponentProps<"a">) => (
           <a
             href={href}
             onClick={(e) => {
@@ -626,55 +632,55 @@ const MemoizedMarkdownBlock = memo(
             {children}
           </a>
         ),
-        strong: ({ children, ...props }: any) => (
+        strong: ({ children, ...props }: MarkdownComponentProps<"strong">) => (
           <strong className="font-medium text-foreground" {...props}>
             {children}
           </strong>
         ),
-        em: ({ children, ...props }: any) => (
+        em: ({ children, ...props }: MarkdownComponentProps<"em">) => (
           <em className="italic" {...props}>
             {children}
           </em>
         ),
-        blockquote: ({ children, ...props }: any) => (
+        blockquote: ({ children, ...props }: MarkdownComponentProps<"blockquote">) => (
           <blockquote className={styles.blockquote} {...props}>
             {children}
           </blockquote>
         ),
-        hr: ({ ...props }: any) => <hr className={styles.hr} {...props} />,
-        table: ({ children, ...props }: any) => (
+        hr: ({ ...props }: MarkdownComponentProps<"hr">) => <hr className={styles.hr} {...props} />,
+        table: ({ children, ...props }: MarkdownComponentProps<"table">) => (
           <div className="overflow-x-auto my-3 rounded-lg border border-border overflow-hidden">
             <table className={cn(styles.table, "border-collapse")} {...props}>
               {children}
             </table>
           </div>
         ),
-        thead: ({ children, ...props }: any) => (
+        thead: ({ children, ...props }: MarkdownComponentProps<"thead">) => (
           <thead className={styles.thead} {...props}>
             {children}
           </thead>
         ),
-        tbody: ({ children, ...props }: any) => (
+        tbody: ({ children, ...props }: MarkdownComponentProps<"tbody">) => (
           <tbody className={styles.tbody} {...props}>
             {children}
           </tbody>
         ),
-        tr: ({ children, ...props }: any) => (
+        tr: ({ children, ...props }: MarkdownComponentProps<"tr">) => (
           <tr className={styles.tr} {...props}>
             {children}
           </tr>
         ),
-        th: ({ children, ...props }: any) => (
+        th: ({ children, ...props }: MarkdownComponentProps<"th">) => (
           <th className={styles.th} {...props}>
             {children}
           </th>
         ),
-        td: ({ children, ...props }: any) => (
+        td: ({ children, ...props }: MarkdownComponentProps<"td">) => (
           <td className={styles.td} {...props}>
             {children}
           </td>
         ),
-        pre: ({ children }: any) => <>{children}</>,
+        pre: ({ children }: MarkdownComponentProps<"pre">) => <>{children}</>,
         code: createCodeComponent(codeTheme, size, styles),
       }),
       [styles, codeTheme, size],
@@ -683,7 +689,7 @@ const MemoizedMarkdownBlock = memo(
     return (
       <Streamdown
         mode="static"
-        components={components}
+        components={components as any}
         remarkPlugins={[remarkGfm, remarkBreaks]}
         controls={false}
       >

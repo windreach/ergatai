@@ -8,6 +8,7 @@ import {
 import { useSessionState } from "../../conversation/runtime"
 import { trpcClient } from "../../../lib/trpc"
 import { getRuntimeSessionStore } from "../../conversation/runtime/runtime-session-store"
+import type { MessagePart } from "../stores/message-store"
 
 interface UseQuestionHandlingOptions {
   conversationId: string
@@ -201,10 +202,8 @@ export function useQuestionHandling({
   // This handles: 1) restoring on chat switch, 2) clearing when question is answered/timed out
   useEffect(() => {
     // Check if there's a pending AskUserQuestion in the last assistant message
-    // Using any because AI SDK UIMessagePart types are complex and don't match our runtime structure
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pendingQuestionPart = lastAssistantMessage?.parts?.find(
-      (part: any) =>
+      (part: MessagePart) =>
         part.type === "tool-AskUserQuestion" &&
         part.state !== "output-available" &&
         part.state !== "output-error" &&
@@ -231,10 +230,8 @@ export function useQuestionHandling({
       // But if the question in messages is already answered, clear the atom
       if (!pendingQuestionPart) {
         // Check if the specific toolUseId is now answered
-        // Using any because AI SDK UIMessagePart types are complex and don't match our runtime structure
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const answeredPart = lastAssistantMessage?.parts?.find(
-          (part: any) =>
+          (part: MessagePart) =>
             part.type === "tool-AskUserQuestion" &&
             part.toolCallId === pendingQuestions.toolUseId &&
             (part.state === "output-available" ||

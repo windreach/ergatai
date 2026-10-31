@@ -475,7 +475,7 @@ async fn flush_and_persist_output(
     );
 
     if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
-        tracing::info!(
+        tracing::debug!(
             conversation_id = %token.conversation_id,
             "Got accumulator registry, calling flush"
         );
@@ -485,7 +485,7 @@ async fn flush_and_persist_output(
             if output_data.message_type.is_none() {
                 output_data.message_type = Some("agent_output".to_string());
             }
-            tracing::info!(
+            tracing::debug!(
                 agent_id = %agent_id,
                 conversation_id = %token.conversation_id,
                 generation = token.generation,
@@ -501,7 +501,7 @@ async fn flush_and_persist_output(
                 let cb = callback.clone();
                 let conv_id = token.conversation_id.clone();
                 let context_label_owned = context_label.to_string();
-                tracing::info!(
+                tracing::debug!(
                     conversation_id = %conv_id,
                     "Calling persist callback"
                 );
@@ -514,7 +514,7 @@ async fn flush_and_persist_output(
                             context_label_owned
                         );
                     } else {
-                        tracing::info!(
+                        tracing::debug!(
                             conversation_id = %conv_id,
                             "Agent output persisted successfully ({})",
                             context_label_owned

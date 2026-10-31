@@ -23,6 +23,7 @@
 import { useCallback, useEffect, useMemo } from "react"
 import { useChatInstance } from "../../agents/hooks/use-chat-instance"
 import { useConversationInvocation, useSessionState } from "../../conversation/runtime/use-conversation-invocation"
+import type { MessagePart } from "../../agents/stores/message-store"
 import { getAdapterRegistry } from "../../conversation/runtime/runtime-adapter"
 import { useRuntimeSessionSources } from "../../conversation/runtime/use-runtime-session-sources"
 import type { Message } from "../../agents/stores/message-store"
@@ -165,7 +166,7 @@ export function useSideChatInvocation({
           source: "side",
         },
         role: "user",
-        parts,
+        parts: parts as MessagePart[],
       })
     },
     [invocation, chatId, runtimeConversationId, conversation.backendConversationId, agentId],

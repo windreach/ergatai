@@ -7,6 +7,16 @@
  * and compare cached values, not object references.
  */
 
+// Looser type for comparison functions - accepts any part-like object
+// This allows component-specific part types to be passed without casting
+type ComparablePart = {
+  type: string
+  toolCallId?: string
+  state?: string
+  input?: unknown
+  output?: unknown
+}
+
 // ============================================================================
 // TOOL STATE CACHE
 // ============================================================================
@@ -14,7 +24,7 @@
 // comparison in hasToolStateChanged without side effects.
 // ============================================================================
 
-const toolStateCache = new Map<string, any>()
+const toolStateCache = new Map<string, unknown>()
 
 export function clearToolStateCachesByToolCallIds(toolCallIds: string[]) {
   for (const toolCallId of toolCallIds) {
@@ -22,7 +32,7 @@ export function clearToolStateCachesByToolCallIds(toolCallIds: string[]) {
   }
 }
 
-function hasToolStateChanged(prev: any, next: any): boolean {
+function hasToolStateChanged(prev: ComparablePart, next: ComparablePart): boolean {
   // Pure comparison - no side effects
   // Compare state, input, and output directly
   if (prev.state !== next.state) return true
@@ -46,7 +56,7 @@ function hasToolStateChanged(prev: any, next: any): boolean {
  *
  * IMPORTANT: Uses pure comparison without side effects.
  */
-function arePartsEqual(prev: any, next: any): boolean {
+function arePartsEqual(prev: ComparablePart, next: ComparablePart): boolean {
   // Different toolCallId = different tool
   if (prev.toolCallId !== next.toolCallId) return false
   if (prev.type !== next.type) return false
@@ -69,7 +79,7 @@ function arePartsEqual(prev: any, next: any): boolean {
  * Check if a tool is completed (has output or error state).
  * Completed tools don't need to react to chatStatus changes.
  */
-function isToolCompleted(part: any): boolean {
+function isToolCompleted(part: ComparablePart): boolean {
   // Has output = completed
   if (part.output !== undefined && part.output !== null) return true
   // Error state = completed
@@ -91,8 +101,8 @@ function isToolCompleted(part: any): boolean {
  * OPTIMIZATION: Completed tools don't re-render on chatStatus changes.
  */
 export function areToolPropsEqual(
-  prevProps: { part: any; chatStatus?: string },
-  nextProps: { part: any; chatStatus?: string },
+  prevProps: { part: ComparablePart; chatStatus?: string },
+  nextProps: { part: ComparablePart; chatStatus?: string },
 ): boolean {
   // First check if the tool data itself changed
   const partsEqual = arePartsEqual(prevProps.part, nextProps.part)
@@ -114,8 +124,8 @@ export function areToolPropsEqual(
  * Compare function for AgentTaskTool which has additional nestedTools prop.
  */
 export function areTaskToolPropsEqual(
-  prevProps: { part: any; nestedTools: any[]; chatStatus?: string },
-  nextProps: { part: any; nestedTools: any[]; chatStatus?: string },
+  prevProps: { part: ComparablePart; nestedTools: ComparablePart[]; chatStatus?: string },
+  nextProps: { part: ComparablePart; nestedTools: ComparablePart[]; chatStatus?: string },
 ): boolean {
   // Compare main part first
   if (!arePartsEqual(prevProps.part, nextProps.part)) return false
@@ -149,8 +159,8 @@ export function areTaskToolPropsEqual(
  * Compare function for AgentExploringGroup which has parts array.
  */
 export function areExploringGroupPropsEqual(
-  prevProps: { parts: any[]; chatStatus?: string; isStreaming: boolean },
-  nextProps: { parts: any[]; chatStatus?: string; isStreaming: boolean },
+  prevProps: { parts: ComparablePart[]; chatStatus?: string; isStreaming: boolean },
+  nextProps: { parts: ComparablePart[]; chatStatus?: string; isStreaming: boolean },
 ): boolean {
   const prevParts = prevProps.parts || []
   const nextParts = nextProps.parts || []
@@ -200,8 +210,19 @@ export function isPlanFile(filePath: string): boolean {
 
 export function areAskUserQuestionPropsEqual(
   prevProps: {
-    input: any
-    result?: any
+    input: {
+      questions?: Array<{
+        question: string
+        header: string
+        options: Array<{ label: string; description: string }>
+        multiSelect: boolean
+      }>
+    }
+    result?:
+      | {
+          answers?: Record<string, string>
+        }
+      | string
     errorText?: string
     state: string
     isError?: boolean
@@ -209,8 +230,19 @@ export function areAskUserQuestionPropsEqual(
     toolCallId?: string
   },
   nextProps: {
-    input: any
-    result?: any
+    input: {
+      questions?: Array<{
+        question: string
+        header: string
+        options: Array<{ label: string; description: string }>
+        multiSelect: boolean
+      }>
+    }
+    result?:
+      | {
+          answers?: Record<string, string>
+        }
+      | string
     errorText?: string
     state: string
     isError?: boolean

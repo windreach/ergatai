@@ -10,6 +10,7 @@ interface ExitPlanModeToolPart {
   output?: {
     plan?: string
   }
+  [key: string]: unknown
 }
 
 interface AgentExitPlanModeToolProps {

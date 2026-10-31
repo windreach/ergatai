@@ -6,6 +6,7 @@ import { IconSpinner } from "../../../components/ui/icons"
 import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { getToolStatus } from "./agent-tool-registry"
 import { areToolPropsEqual } from "./agent-tool-utils"
+import type { MessagePart } from "../stores/message-store"
 import { cn } from "../../../lib/utils"
 
 interface AgentGrepToolProps {
@@ -13,7 +14,7 @@ interface AgentGrepToolProps {
   // (pending vs. completed) and output formats (string, object, array).
   // A strict interface would require discriminated unions across multiple
   // call sites; `any` keeps this component permissive to agent output shapes.
-  part: any
+  part: MessagePart
   messageId?: string
   partIndex?: number
   chatStatus?: string

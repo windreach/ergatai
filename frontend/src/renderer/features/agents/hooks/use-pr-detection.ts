@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react"
 import { trpcClient } from "../../../lib/trpc"
 import type { UIMessage } from "@ai-sdk/react"
+import type { MessagePart } from "../stores/message-store"
 
 interface UsePrDetectionOptions {
   messages: UIMessage[]
@@ -40,8 +41,8 @@ export function usePrDetection({
       // Extract text content from message
       const textContent =
         msg.parts
-          ?.filter((p: any) => p.type === "text")
-          .map((p: any) => p.text)
+          ?.filter((p: MessagePart) => p.type === "text")
+          .map((p: MessagePart) => p.text)
           .join(" ") || ""
 
       // Match GitHub PR URL pattern

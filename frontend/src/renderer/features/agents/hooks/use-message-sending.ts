@@ -8,8 +8,11 @@ import { MENTION_PREFIXES } from "../../mentions/types"
 import { utf8ToBase64 } from "../utils/base64"
 import { extractAgentMentions } from "../collaboration/implicit-collaboration"
 import { getCoreAgentProfileName } from "../lib/agent-contract-api"
-import type { CoreAgentOption } from "../types"
+import type { CoreAgentOption, SelectedTextContext, DiffTextContext, PastedTextFile, UploadedImage } from "../types"
 import type { GroupAgentRuntimeStatuses } from "../collaboration/group-agent-runtime"
+import type { Message, MessagePart } from "../stores/message-store"
+import type { AgentQueueItem, QueuedImage, QueuedFile } from "../lib/queue-utils"
+import type { CollaborationSession, CollaborationSessionDetail, CollaborationContextEvent, SubmitCollaborationInteractionInput, CollaborationInteractionResult } from "../collaboration/collaboration-session-runtime"
 import {
   createQueueItem,
   generateQueueId,
@@ -22,6 +25,17 @@ import {
 import { waitForStreamingReady } from "../utils/stream-utils"
 
 const ACKNOWLEDGMENT_TEXT = "收到"
+
+// Collaboration session runtime type (from useCollaborationSession hook)
+interface CollaborationSessionRuntime {
+  session: CollaborationSessionDetail | null
+  events: CollaborationContextEvent[]
+  error: string | null
+  isSubmitting: boolean
+  ensureSession: () => Promise<CollaborationSessionDetail>
+  refreshSession: () => Promise<CollaborationSessionDetail | null>
+  submitInteraction: (input: SubmitCollaborationInteractionInput) => Promise<CollaborationInteractionResult>
+}
 
 interface UseMessageSendingOptions {
   // 会话信息
@@ -44,7 +58,7 @@ interface UseMessageSendingOptions {
 
   // 协作功能
   collaboration: {
-    session: any
+    session: CollaborationSessionRuntime | null
     enabled: boolean
     groupAgents: CoreAgentOption[]
   }
@@ -52,11 +66,11 @@ interface UseMessageSendingOptions {
   // 输入和附件 refs
   inputRefs: {
     editor: React.RefObject<any>
-    images: React.RefObject<any[]>
-    files: React.RefObject<any[]>
-    textContexts: React.RefObject<any[]>
-    diffTextContexts: React.RefObject<any[]>
-    pastedTexts: React.RefObject<any[]>
+    images: React.RefObject<UploadedImage[]>
+    files: React.RefObject<QueuedFile[]>
+    textContexts: React.RefObject<SelectedTextContext[]>
+    diffTextContexts: React.RefObject<DiffTextContext[]>
+    pastedTexts: React.RefObject<PastedTextFile[]>
     fileContents: React.RefObject<Map<string, string>>
     isStreaming: React.RefObject<boolean>
   }
@@ -75,26 +89,26 @@ interface UseMessageSendingOptions {
 
   // 队列管理
   queue: {
-    addToQueue: (conversationId: string, item: any) => void
-    popItemFromQueue: (conversationId: string, itemId: string) => any
+    addToQueue: (conversationId: string, item: AgentQueueItem) => void
+    popItemFromQueue: (conversationId: string, itemId: string) => Promise<void> | AgentQueueItem | undefined
     removeFromQueue: (conversationId: string, itemId: string) => void
   }
 
   // 消息处理
   messaging: {
     handleStop: () => Promise<void>
-    sendMessageRef: React.RefObject<(message: any) => Promise<void>>
-    setMessages: (messages: any[] | ((current: any[]) => any[])) => void
+    sendMessageRef: React.RefObject<(message: Message) => Promise<void>>
+    setMessages: (messages: Message[] | ((current: Message[]) => Message[])) => void
     setExpiredQuestionsMap: (updater: (current: Map<string, any>) => Map<string, any>) => void
     setGroupAgentRuntimeStatuses: (chatId: string, statuses: GroupAgentRuntimeStatuses) => void
-    trackMessageSent: (data: any) => void
+    trackMessageSent: (data: { workspaceId: string; messageLength: number; mode: string }) => void
     submitImplicitInteraction: (text: string) => void
   }
 
   // Phase 17: Service-based sending (unified queue system)
   service: {
-    send: (parts: any[]) => Promise<void>
-    enqueue: (item: any) => Promise<void>
+    send: (parts: MessagePart[]) => Promise<void>
+    enqueue: (item: AgentQueueItem) => Promise<void>
     sendQueuedItem: (itemId: string) => Promise<void>
   }
 }
@@ -245,7 +259,7 @@ export function useMessageSending({
 
     // Build message parts: images first, then files, then text
     // Include base64Data for API transmission
-    const parts: any[] = [
+    const parts: MessagePart[] = [
       ...currentImages
         .filter((img) => !img.isLoading && img.url)
         .map((img) => ({
@@ -263,10 +277,10 @@ export function useMessageSending({
           type: "data-file" as const,
           data: {
             url: f.url,
-            mediaType: (f as any).mediaType,
+            mediaType: f.mediaType,
             filename: f.filename,
             size: f.size,
-            base64Data: (f as any).base64Data,
+            base64Data: f.base64Data,
           },
         })),
     ]
@@ -356,13 +370,18 @@ export function useMessageSending({
           .replace(mentionPrefix, "")
           .trim()
         const imageParts = parts.filter(
-          (part) => part.type === "data-image" && part.data?.base64Data,
+          (part) => part.type === "data-image" && (part.data as { base64Data?: string } | undefined)?.base64Data,
         )
-        const images = imageParts.map((part) => ({
-          base64Data: part.data.base64Data,
-          mediaType: part.data.mediaType,
-          filename: part.data.filename,
-        }))
+        const images = imageParts.map((part) => {
+          const data = part.data as
+            | { base64Data?: string; mediaType?: string; filename?: string }
+            | undefined
+          return {
+            base64Data: data?.base64Data ?? "",
+            mediaType: data?.mediaType ?? "",
+            filename: data?.filename,
+          }
+        })
         const groupParts = [
           ...imageParts,
           ...(message ? [{ type: "text", text: message }] : []),
@@ -370,7 +389,7 @@ export function useMessageSending({
         const messageId = `group-user-${Date.now()}-${Math.random()
           .toString(36)
           .slice(2, 8)}`
-        const acknowledgedMessages = targets.map((target, index) => ({
+        const acknowledgedMessages: Message[] = targets.map((target, index) => ({
           id: `${messageId}-ack-${target.id}-${index}`,
           role: "assistant",
           metadata: {
@@ -386,14 +405,14 @@ export function useMessageSending({
             targets.map((target) => [target.id, "running"]),
           ) as GroupAgentRuntimeStatuses,
         )
-        messagingRef.current.setMessages((current: any) => [
+        messagingRef.current.setMessages((current: Message[]) => [
           ...current,
-          { id: messageId, role: "user", parts: groupParts },
+          { id: messageId, role: "user", parts: groupParts } as Message,
           ...acknowledgedMessages,
         ])
         actionsRef.current.scrollToBottom()
 
-        if (collaborationRef.current.enabled) {
+        if (collaborationRef.current.enabled && collaborationRef.current.session) {
           try {
             const sessionResult = await collaborationRef.current.session.submitInteraction({
               text: message,
@@ -477,14 +496,14 @@ export function useMessageSending({
         q.queryKey[0][1] === 'list'
       )
       if (chatsListQuery) {
-        queryClient.setQueryData(chatsListQuery.queryKey, (old: any[] | undefined) => {
+        queryClient.setQueryData(chatsListQuery.queryKey, (old: Array<{ id: string; updatedAt?: string | Date }> | undefined) => {
           if (!old) return old
           // Update the timestamp and sort by updatedAt descending
-          const updated = old.map((c: any) =>
+          const updated = old.map((c) =>
             c.id === conversationRef.current.parentChatId ? { ...c, updatedAt: now } : c,
           )
           return updated.sort(
-            (a: any, b: any) =>
+            (a, b) =>
               new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
           )
         })
@@ -503,7 +522,7 @@ export function useMessageSending({
       partCount: parts.length,
     })
 
-    if (collaborationRef.current.enabled) {
+    if (collaborationRef.current.enabled && collaborationRef.current.session) {
       try {
         const sessionResult = await collaborationRef.current.session.submitInteraction({
           text,
@@ -515,7 +534,7 @@ export function useMessageSending({
         })
 
         if (sessionResult.route === "collaboration") {
-          messagingRef.current.setMessages((current: any[]) => [
+          messagingRef.current.setMessages((current: Message[]) => [
             ...current,
             {
               id: `collaboration-user-${Date.now()}-${Math.random()
@@ -630,7 +649,7 @@ export function useMessageSending({
     })
 
     // Build message parts
-    const parts: any[] = [
+    const parts: MessagePart[] = [
       ...currentImages
         .filter((img) => !img.isLoading && img.url)
         .map((img) => ({
@@ -674,7 +693,7 @@ export function useMessageSending({
       if (serviceRef.current) {
         await serviceRef.current.send(parts)
       } else {
-        await messagingRef.current.sendMessageRef.current({ role: "user", parts })
+        await messagingRef.current.sendMessageRef.current({ id: `msg-${Date.now()}`, role: "user", parts })
       }
     } catch (error) {
       console.error("[handleForceSend] Error sending message:", error)

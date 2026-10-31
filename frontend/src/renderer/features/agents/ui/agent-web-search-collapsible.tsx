@@ -4,6 +4,7 @@ import { memo, useState, useMemo } from "react"
 import { ChevronRight } from "lucide-react"
 
 import { areToolPropsEqual } from "./agent-tool-utils"
+import type { MessagePart } from "../stores/message-store"
 import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { cn } from "../../../lib/utils"
 
@@ -14,7 +15,7 @@ interface SearchResult {
 
 interface AgentWebSearchCollapsibleProps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  part: any
+  part: MessagePart
   chatStatus?: string
 }
 

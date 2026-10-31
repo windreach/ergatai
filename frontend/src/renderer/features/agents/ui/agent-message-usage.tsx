@@ -27,6 +27,10 @@ export interface AgentMessageMetadata {
   // Undefined for assistant-role stream-persisted messages (e.g. agents.rs
   // Done-event persistence) — they render with the default variant.
   messageType?: "request" | "response" | "broadcast"
+  // Agent-to-agent communication fields
+  fromAgentId?: string
+  fromAgentName?: string
+  agentContent?: string
 }
 
 interface AgentMessageUsageProps {

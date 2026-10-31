@@ -29,6 +29,7 @@ import { AgentTaskToolsGroup } from "../ui/agent-task-tools"
 import { AgentPlanFileTool } from "../ui/agent-plan-file-tool"
 import { isPlanFile } from "../ui/agent-tool-utils"
 import { messageTypeVariantClass } from "../lib/message-type-styles"
+import type { CoreAgentId } from "../lib/agent-contract-api"
 import {
   AgentMessageUsage,
   type AgentMessageMetadata,
@@ -690,13 +691,13 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     // Group agent @mention — intercept send_message MCP tool call
     if (part.type?.includes("send_message")) {
       const targetAgent =
-        (part.input as any)?.target_agent_id
+        part.input?.target_agent_id as string | undefined
         ?? (part.type.match(/target_agent_id[='"]+(\w+)/)?.[1])
         ?? "agent"
       const sideMessage = part.sideMessage as
         | { text?: string; messageId?: string }
         | undefined
-      const message = sideMessage?.text ?? (part.input as any)?.message ?? ""
+      const message = sideMessage?.text ?? (part.input?.message as string | undefined) ?? ""
       return (
         <div
           key={idx}
@@ -808,7 +809,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
           key={idx}
           input={part.input}
           result={part.result}
-          errorText={(part as any).errorText || (part as any).error}
+          errorText={(part.errorText as string | undefined) || (part.error as string | undefined)}
           state={isPending ? "call" : "result"}
           isError={isError}
           isStreaming={isStreaming && isLastMessage}
@@ -875,7 +876,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     >
       {groupAgent && (
         <GroupAgentMessageHeader
-          agentId={groupAgent.id as any}
+          agentId={groupAgent.id as CoreAgentId}
           agentName={msgMetadata?.agentName || groupAgent.name}
         />
       )}

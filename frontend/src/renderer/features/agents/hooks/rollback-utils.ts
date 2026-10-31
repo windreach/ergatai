@@ -9,21 +9,19 @@ import type {
   PastedTextFile,
   UploadedImage,
 } from "../types"
+import type { Message, MessagePart } from "../stores/message-store"
 
 interface RollbackParams {
   isRollingBack: boolean
   isStreaming: boolean
-  // any[] justified: Message structure comes from tRPC backend without strict TypeScript types
-  messages: any[]
+  messages: Message[]
   conversationId: string
-  // any justified: User message has dynamic structure with optional parts array
-  userMsg: any
+  userMsg: Message
 }
 
 interface RollbackCallbacks {
   setIsRollingBack: (value: boolean) => void
-  // any[] justified: Matches the dynamic message structure from backend
-  setMessages: (messages: any[] | ((current: any[]) => any[])) => void
+  setMessages: (messages: Message[] | ((current: Message[]) => Message[])) => void
   recomputeChangedFiles: () => void
   refreshDiff?: () => void
   setImagesFromDraft: (images: UploadedImage[]) => void
@@ -89,11 +87,10 @@ export async function executeRollback(
   }
 
   // Extract raw text from user message (includes mention tokens)
-  // any justified: Message parts have dynamic structure (text, data-image, etc.) without strict types
   const rawText =
     userMsg.parts
-      ?.filter((p: any) => p.type === "text")
-      .map((p: any) => p.text)
+      ?.filter((p: MessagePart) => p.type === "text")
+      .map((p: MessagePart) => p.text)
       .join("\n") || ""
 
   // Parse mention tokens from text to restore text contexts, diff contexts, and pasted texts
@@ -105,17 +102,22 @@ export async function executeRollback(
 
   // Extract images from user message for restoring into input
   const userMsgImages: UploadedImage[] = (userMsg.parts || [])
-    .filter((p: any) => p.type === "data-image" && p.data)
-    .map((p: any) => ({
-      id: createLocalId("local-image"),
-      filename: p.data.filename || "image",
-      url: p.data.url || (p.data.base64Data && p.data.mediaType
-        ? `data:${p.data.mediaType};base64,${p.data.base64Data}`
-        : ""),
-      base64Data: p.data.base64Data,
-      mediaType: p.data.mediaType,
-      isLoading: false,
-    }))
+    .filter((p: MessagePart) => p.type === "data-image" && p.data)
+    .map((p: MessagePart) => {
+      const data = p.data as
+        | { filename?: string; url?: string; base64Data?: string; mediaType?: string }
+        | undefined
+      return {
+        id: createLocalId("local-image"),
+        filename: data?.filename || "image",
+        url: data?.url || (data?.base64Data && data?.mediaType
+          ? `data:${data.mediaType};base64,${data.base64Data}`
+          : ""),
+        base64Data: data?.base64Data,
+        mediaType: data?.mediaType,
+        isLoading: false,
+      }
+    })
     .filter((img: UploadedImage) => img.url && img.url.length > 0)
 
   setIsRollingBack(true)

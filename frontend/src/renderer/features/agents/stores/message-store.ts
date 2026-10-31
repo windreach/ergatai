@@ -44,17 +44,17 @@ export interface MessagePart {
   text?: string
   toolCallId?: string
   state?: string
-  input?: any
-  output?: any
-  result?: any
-  [key: string]: any
+  input?: Record<string, unknown>
+  output?: unknown
+  result?: unknown
+  [key: string]: unknown
 }
 
 export interface Message {
   id: string
   role: MessageRole
   parts?: MessagePart[]
-  metadata?: any
+  metadata?: Record<string, unknown>
   createdAt?: Date
   /** Local sequence number for stable ordering (added by runtime) */
   sequence?: number
@@ -226,7 +226,7 @@ interface MessageStructure {
   id: string
   role: MessageRole
   partsStructure: PartStructure[]
-  metadata?: any
+  metadata?: Record<string, unknown>
 }
 
 // Cache for message structure
@@ -238,7 +238,7 @@ export const messageStructureAtomFamily = atomFamily((messageKey: string) =>
     if (!message) return null
 
     // Build structure without text content
-    const partsStructure: PartStructure[] = (message.parts || []).map((part: any) => {
+    const partsStructure: PartStructure[] = (message.parts || []).map((part: MessagePart) => {
       const structure: PartStructure = {
         type: part.type,
       }
@@ -545,7 +545,7 @@ export const isFirstUserMessageAtomFamily = atomFamily((userMsgId: string) =>
 
 type RollbackLookupMessage = {
   role: MessageRole
-  metadata?: any
+  metadata?: Record<string, unknown>
   parts?: MessagePart[]
 }
 
@@ -585,7 +585,7 @@ export function findRollbackTargetSdkUuidForUserIndex(
   }
 
   // 3) No compact after target assistant: allow rollback only if target has SDK UUID.
-  const sdkUuid = (targetAssistantMessage.metadata as any)?.sdkMessageUuid
+  const sdkUuid = targetAssistantMessage.metadata?.sdkMessageUuid
   return typeof sdkUuid === "string" && sdkUuid.length > 0 ? sdkUuid : null
 }
 
@@ -750,10 +750,10 @@ export const messageTokenDataAtom = atom((get) => {
   const lastId = ids[ids.length - 1]
   const lastMsg = lastId ? get(messageAtomFamily(getPerChatMessageKey(conversationId, lastId))) : null
   // Note: metadata has flat structure (metadata.outputTokens), not nested (metadata.usage.outputTokens)
-  const lastMsgOutputTokens = (lastMsg?.metadata as any)?.outputTokens || 0
-  const lastMsgParts = (lastMsg as any)?.parts as Array<{ type?: string; state?: string }> | undefined
+  const lastMsgOutputTokens = (lastMsg?.metadata?.outputTokens as number) || 0
+  const lastMsgParts = lastMsg?.parts as Array<{ type?: string; state?: string }> | undefined
   const lastPart = lastMsgParts?.[lastMsgParts.length - 1]
-  const lastMsgPartsKey = `${lastMsgParts?.length ?? 0}:${lastPart?.type ?? ""}:${(lastPart as any)?.state ?? ""}`
+  const lastMsgPartsKey = `${lastMsgParts?.length ?? 0}:${lastPart?.type ?? ""}:${lastPart?.state ?? ""}`
 
   const cached = tokenDataCacheByChat.get(conversationId)
 
@@ -773,7 +773,7 @@ export const messageTokenDataAtom = atom((get) => {
   let startIndex = 0
   for (let i = 0; i < ids.length; i++) {
     const msg = get(messageAtomFamily(getPerChatMessageKey(conversationId, ids[i]!)))
-    const parts = (msg as any)?.parts as Array<{ type?: string; state?: string }> | undefined
+    const parts = msg?.parts as Array<{ type?: string; state?: string }> | undefined
     if (
       parts?.some(
         (part) =>
@@ -793,16 +793,16 @@ export const messageTokenDataAtom = atom((get) => {
   let reasoningTokens = 0
   for (let i = startIndex; i < ids.length; i++) {
     const msg = get(messageAtomFamily(getPerChatMessageKey(conversationId, ids[i]!)))
-    const metadata = msg?.metadata as any
+    const metadata = msg?.metadata
     // Note: metadata has flat structure from transform.ts (metadata.inputTokens, metadata.outputTokens)
     // Extended fields like cacheReadInputTokens are not currently in MessageMetadata type
     if (metadata) {
-      inputTokens += metadata.inputTokens || 0
-      outputTokens += metadata.outputTokens || 0
+      inputTokens += (metadata.inputTokens as number) || 0
+      outputTokens += (metadata.outputTokens as number) || 0
       // These fields are not in current MessageMetadata but kept for future compatibility
-      cacheReadTokens += metadata.cacheReadInputTokens || 0
-      cacheWriteTokens += metadata.cacheCreationInputTokens || 0
-      reasoningTokens += metadata.reasoningTokens || 0
+      cacheReadTokens += (metadata.cacheReadInputTokens as number) || 0
+      cacheWriteTokens += (metadata.cacheCreationInputTokens as number) || 0
+      reasoningTokens += (metadata.reasoningTokens as number) || 0
     }
   }
   const messageCount = Math.max(0, ids.length - startIndex)

@@ -9,13 +9,15 @@ import {
   conversationCodexThinkingAtomFamily,
 } from "../../../lib/atoms"
 import { useAgentConversationStore } from "../stores/conversation-store"
+import type { Message } from "../stores/message-store"
+import type { TRPCUtils } from "@trpc/react-query"
 
 interface UseForkConversationOptions {
   conversationId: string
   parentChatId: string | null
   isStreaming: boolean
-  messages: any[]
-  utils: any
+  messages: Message[]
+  utils: TRPCUtils
 }
 
 export function useForkConversation({

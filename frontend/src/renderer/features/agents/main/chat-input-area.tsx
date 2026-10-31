@@ -1617,7 +1617,7 @@ export const ChatInputArea = memo(function ChatInputArea({
                     type="file"
                     ref={folderInputRef}
                     hidden
-                    {...({ webkitdirectory: "", directory: "" } as any)}
+                    {...({ webkitdirectory: "", directory: "" } as React.InputHTMLAttributes<HTMLInputElement>)}
                     onChange={handleFolderSelected}
                   />
                   {/* Voice wave indicator / transcribing state / normal toolbar */}

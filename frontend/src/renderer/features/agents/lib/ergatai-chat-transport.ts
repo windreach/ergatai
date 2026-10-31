@@ -63,6 +63,39 @@ type FileAttachment = {
   size?: number
 }
 
+// ── Message part types ──
+type TextPart = {
+  type: "text"
+  text: string
+}
+
+type FileContentPart = {
+  type: "file-content"
+  filePath?: string
+  content: string
+}
+
+type DataImagePart = {
+  type: "data-image"
+  data: {
+    base64Data: string
+    mediaType: string
+    filename?: string
+  }
+}
+
+type DataFilePart = {
+  type: "data-file"
+  data: {
+    base64Data: string
+    mediaType?: string
+    filename: string
+    size?: number
+  }
+}
+
+type MessagePart = TextPart | FileContentPart | DataImagePart | DataFilePart | { type: string; [key: string]: unknown }
+
 // ── sendMessage response shape (from Rust /api/v1/agents/:id/send) ──
 type SendMessageResult = {
   status: "queued" | "direct_delivered" | "rejected"
@@ -636,22 +669,25 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
   private extractPrompt(message: UIMessage | undefined): string {
     if (!message) return ""
 
-    // Simple string content
-    if (typeof (message as any).content === "string") {
-      return (message as any).content as string
+    // Simple string content (legacy format)
+    if (typeof (message as unknown as { content?: string }).content === "string") {
+      return (message as unknown as { content: string }).content
     }
 
     if (!message.parts) return ""
 
     const textParts: string[] = []
     const fileContents: string[] = []
+    const parts = message.parts as MessagePart[]
 
-    for (const part of message.parts) {
-      const partType = (part as any).type
-      if (partType === "text" && (part as any).text) {
-        textParts.push((part as any).text)
-      } else if (partType === "file-content") {
-        const filePart = part as any
+    for (const part of parts) {
+      if (part.type === "text" && "text" in part) {
+        const textPart = part as TextPart
+        if (textPart.text) {
+          textParts.push(textPart.text)
+        }
+      } else if (part.type === "file-content" && "content" in part) {
+        const filePart = part as FileContentPart
         const fileName =
           filePart.filePath?.split("/").pop() || filePart.filePath || "file"
         fileContents.push(`\n--- ${fileName} ---\n${filePart.content}`)
@@ -668,10 +704,12 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
     if (!message?.parts) return []
 
     const images: ImageAttachment[] = []
+    const parts = message.parts as MessagePart[]
 
-    for (const part of message.parts) {
-      if (part.type === "data-image" && (part as any).data) {
-        const data = (part as any).data
+    for (const part of parts) {
+      if (part.type === "data-image" && "data" in part) {
+        const dataPart = part as DataImagePart
+        const data = dataPart.data
         if (data.base64Data && data.mediaType) {
           images.push({
             base64Data: data.base64Data,
@@ -692,10 +730,12 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
     if (!message?.parts) return []
 
     const files: FileAttachment[] = []
+    const parts = message.parts as MessagePart[]
 
-    for (const part of message.parts) {
-      if (part.type === "data-file" && (part as any).data) {
-        const data = (part as any).data
+    for (const part of parts) {
+      if (part.type === "data-file" && "data" in part) {
+        const dataPart = part as DataFilePart
+        const data = dataPart.data
         if (data.base64Data && data.filename) {
           files.push({
             base64Data: data.base64Data,

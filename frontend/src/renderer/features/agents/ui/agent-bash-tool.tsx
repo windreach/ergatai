@@ -8,12 +8,13 @@ import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { getToolStatus } from "./agent-tool-registry"
 import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areToolPropsEqual } from "./agent-tool-utils"
+import type { MessagePart } from "../stores/message-store"
 import { cn } from "../../../lib/utils"
 import { selectedWorkspaceAtom } from "../atoms"
 
 interface AgentBashToolProps {
   // AI SDK tool part shape is dynamic/loosely typed
-  part: any
+  part: MessagePart
   messageId?: string
   partIndex?: number
   chatStatus?: string

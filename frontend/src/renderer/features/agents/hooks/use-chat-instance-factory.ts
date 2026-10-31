@@ -14,6 +14,26 @@ import { useMessageQueueStore } from "../stores/message-queue-store"
 import { clearConversationRuntimeCaches } from "../stores/conversation-runtime-cleanup"
 import { loadGroupAgents } from "../collaboration/group-agent-storage"
 import { conversationAgentStorage } from "../lib/conversation-agent-storage"
+import type { UIMessage } from "@ai-sdk/react"
+import type { TRPCUtils } from "@trpc/react-query"
+
+// Type definitions for replacing any
+interface SubConversation {
+  id: string
+  messages?: UIMessage[] | string
+  [key: string]: unknown
+}
+
+interface AgentChatData {
+  conversations?: SubConversation[]
+  [key: string]: unknown
+}
+
+// Extended Chat type for accessing internal properties
+interface ExtendedChat<T = any> extends Chat<T> {
+  messages?: UIMessage[]
+  transport?: unknown
+}
 
 interface UseChatInstanceFactoryProps {
   // 聊天实例信息
@@ -38,16 +58,14 @@ interface UseChatInstanceFactoryProps {
     setUnseenChanges: React.Dispatch<React.SetStateAction<Set<string>>>
     setLoadingConversations: (fn: (prev: Map<string, string>) => Map<string, string>) => void
     selectedChatId: string | null
-    agentConversations: any[]
+    agentConversations: SubConversation[]
     isGroupMode: boolean
   }
 
   // 工具函数
-  // `utils` and `trpcUtils` are typed as `any` because they are injected trpc helper
-  // objects whose concrete type is generated per-router and not easy to thread here.
   utils: {
-    utils: any
-    trpcUtils: any
+    utils: TRPCUtils
+    trpcUtils: TRPCUtils
     fetchDiffStatsRef: React.MutableRefObject<() => void>
     forceUpdate: (val: {}) => void
   }
@@ -78,22 +96,22 @@ export function useChatInstanceFactory({
   // Sync finished messages to cache and backend
   const syncFinishedMessagesToChatCache = useCallback(
     (conversationId: string, chatInstance: Chat<any>) => {
-      const latestMessages = (chatInstance as any)?.messages
+      const latestMessages = (chatInstance as ExtendedChat)?.messages
       if (!Array.isArray(latestMessages)) return
       if (latestMessages.length === 0) return
 
       // Backend no longer supports replacing messages
-      if ((chatInstance as any)?.transport instanceof ErgataiChatTransport) {
+      if ((chatInstance as ExtendedChat)?.transport instanceof ErgataiChatTransport) {
         console.debug("[AgentChat] Backend owns message persistence; skipping client-side replace")
       }
 
       const latestMessagesJson = JSON.stringify(latestMessages)
 
-      utilsRef.current.utils.agents.getAgentChat.setData({ chatId: chatRef.current.chatId }, (old: any) => {
+      utilsRef.current.utils.agents.getAgentChat.setData({ chatId: chatRef.current.chatId }, (old: AgentChatData) => {
         if (!old?.conversations || !Array.isArray(old.conversations)) return old
 
         let found = false
-        const conversations = old.conversations.map((sc: any) => {
+        const conversations = old.conversations.map((sc: SubConversation) => {
           if (sc.id !== conversationId) return sc
           found = true
           return { ...sc, messages: latestMessagesJson }
@@ -147,12 +165,12 @@ export function useChatInstanceFactory({
       // Create transport based on chat type (local worktree vs remote sandbox)
       // Note: Extended thinking setting is read dynamically inside the transport
       // projectPath: original project path for MCP config lookup (chat.worktreePath is the cwd)
-      const projectPath = (chatRef.current.agentChat as any)?.project?.path as string | undefined
+      const projectPath = (chatRef.current.agentChat as { project?: { path?: string } })?.project?.path as string | undefined
       // Fast path for existing chats. Only inspect messages when a local empty-chat provider override
       // might require transport recreation.
       const existing = agentChatStore.get(conversationId)
       if (existing) {
-        const existingTransport = (existing as any)?.transport
+        const existingTransport = (existing as ExtendedChat)?.transport
         const existingIsMock = existingTransport instanceof MockChatTransport
         if (existingIsMock !== isMockChatEnabled()) {
           agentChatStore.delete(conversationId)
@@ -164,7 +182,7 @@ export function useChatInstanceFactory({
       // Find conversation data
       const conversation = stateRef.current.agentConversations.find((sc) => sc.id === conversationId)
       const rawMessages = conversation?.messages
-      let messages: any[] = []
+      let messages: UIMessage[] = []
       if (Array.isArray(rawMessages)) {
         messages = rawMessages
       } else if (typeof rawMessages === "string") {

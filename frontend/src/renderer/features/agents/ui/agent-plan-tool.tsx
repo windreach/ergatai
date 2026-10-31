@@ -42,6 +42,7 @@ interface PlanToolPart {
     success?: boolean
     message?: string
   }
+  [key: string]: unknown
 }
 
 interface AgentPlanToolProps {

@@ -457,7 +457,9 @@ export function TerminalSidebar({
           [scopeKey]: instances[0]?.id || null,
         }))
       })
-      .catch(() => {})
+      .catch((error) => {
+        console.error("Failed to discover terminal sessions:", error)
+      })
 
     return () => {
       cancelled = true

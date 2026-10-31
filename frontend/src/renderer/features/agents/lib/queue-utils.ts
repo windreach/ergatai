@@ -12,6 +12,8 @@ export interface QueuedImage {
   mediaType: string
   filename?: string
   base64Data?: string
+  isLoading?: boolean
+  preview?: string
 }
 
 export interface QueuedFile {
@@ -20,6 +22,8 @@ export interface QueuedFile {
   filename: string
   mediaType?: string
   size?: number
+  isLoading?: boolean
+  preview?: string
 }
 
 // Text context selected from assistant messages
@@ -77,7 +81,7 @@ export type AgentQueueItem = {
   diffTextContexts?: QueuedDiffTextContext[]
   pastedTexts?: QueuedPastedText[]
   timestamp: Date
-  status: "pending" | "processing"
+  status: "pending" | "processing" | "completed" | "failed"
   retryCount?: number // Number of failed send attempts
 }
 

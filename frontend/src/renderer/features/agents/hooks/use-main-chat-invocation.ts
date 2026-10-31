@@ -20,7 +20,8 @@ import { useConversationInvocation, useSessionState } from "../../conversation/r
 import { getAdapterRegistry, type AdapterState } from "../../conversation/runtime/runtime-adapter"
 import type { ConversationStatus } from "../../conversation/runtime/contracts"
 import { useRuntimeSessionSources } from "../../conversation/runtime/use-runtime-session-sources"
-import type { Message } from "../stores/message-store"
+import type { Message, MessageRole, MessagePart } from "../stores/message-store"
+import type { AgentQueueItem, QueuedTextContext, QueuedDiffTextContext, QueuedPastedText } from "../lib/queue-utils"
 import { MENTION_PREFIXES } from "../../mentions/types"
 import { utf8ToBase64 } from "../utils/base64"
 import type { ChatConversation } from "@/features/details-sidebar/lib/chat-contract-api"
@@ -47,8 +48,8 @@ function toSessionMessage(message: RawMessage): Message {
 
   return {
     id: message.id,
-    role: message.role,
-    parts: message.parts ?? [],
+    role: message.role as MessageRole,
+    parts: (message.parts ?? []) as MessagePart[],
     metadata,
     sequence:
       typeof message.sequence === "number"
@@ -64,11 +65,11 @@ function toSessionMessage(message: RawMessage): Message {
  * Chat instance API (subset of Chat interface we need).
  */
 export interface ChatInstanceAPI {
-  sendMessage?: (message: any & { interrupt?: boolean }) => void | Promise<void>
+  sendMessage?: (message: { role: "user" | "agent" | "assistant"; parts: MessagePart[]; metadata?: Record<string, unknown> } & { interrupt?: boolean }) => void | Promise<void>
   stop?: () => void
-  messages?: any[]
+  messages?: RawMessage[]
   status?: string
-  queue?: any[]
+  queue?: AgentQueueItem[]
 }
 
 /**
@@ -168,7 +169,7 @@ export function useMainChatInvocation({
     }
 
     const adapter = {
-      sendMessage: async ({ role, parts, interrupt, correlationId }: { role: "user" | "agent"; parts: any[]; interrupt?: boolean; correlationId?: string }) => {
+      sendMessage: async ({ role, parts, interrupt, correlationId }: { role: "user" | "agent"; parts: MessagePart[]; interrupt?: boolean; correlationId?: string }) => {
         // Delegate to existing Chat instance
         // Phase 19: Pass interrupt flag and correlationId via message metadata
         if (existingChat.sendMessage) {
@@ -195,7 +196,7 @@ export function useMainChatInvocation({
         const syncState = () => {
           const status = mapChatStatus(existingChat.status)
           const streamingMessage = existingChat.messages?.findLast(
-            (m: any) => m.isStreaming || m.role === "assistant"
+            (m: RawMessage) => (m as Record<string, unknown>).isStreaming || m.role === "assistant"
           )
 
           listener({
@@ -224,7 +225,7 @@ export function useMainChatInvocation({
   // Wrap send handler - use service for sending
   // Phase 16: Now uses invocation.send() which goes through service -> adapter -> Chat
   const handleSend = useCallback(
-    async (parts: any) => {
+    async (parts: MessagePart[]) => {
       try {
         await invocation.send({
           conversation: {
@@ -261,7 +262,7 @@ export function useMainChatInvocation({
   // Phase 17: Service-based send function for useMessageSending
   // This unifies the queue system - all sends go through service
   const serviceSend = useCallback(
-    async (parts: any[]) => {
+    async (parts: MessagePart[]) => {
       await invocation.send({
         conversation: {
           chatId,
@@ -280,10 +281,10 @@ export function useMainChatInvocation({
   // Phase 17: Service-based enqueue function for useMessageSending
   // This unifies the queue system - all queue operations go through service
   const serviceEnqueue = useCallback(
-    async (item: any) => {
+    async (item: AgentQueueItem) => {
       // Convert AgentQueueItem to ConversationSendMessageInput
       // Build parts from queue item (images, files, textContexts, etc.)
-      const parts: any[] = []
+      const parts: MessagePart[] = []
 
       // Add images
       if (item.images && item.images.length > 0) {
@@ -320,9 +321,9 @@ export function useMainChatInvocation({
 
       // Convert textContexts to mention tokens
       if (item.textContexts && item.textContexts.length > 0) {
-        const quoteMentions = item.textContexts.map((tc: any) => {
+        const quoteMentions = item.textContexts.map((tc: QueuedTextContext) => {
           const text = tc.text || "" // defensive default
-          const preview = (tc.preview || text.slice(0, 50)).replace(/[:\[\]]/g, "")
+          const preview = text.slice(0, 50).replace(/[:\[\]]/g, "")
           const encodedText = utf8ToBase64(text)
           return `@[${MENTION_PREFIXES.QUOTE}${preview}:${encodedText}]`
         })
@@ -331,9 +332,9 @@ export function useMainChatInvocation({
 
       // Convert diffTextContexts to mention tokens
       if (item.diffTextContexts && item.diffTextContexts.length > 0) {
-        const diffMentions = item.diffTextContexts.map((dtc: any) => {
+        const diffMentions = item.diffTextContexts.map((dtc: QueuedDiffTextContext) => {
           const text = dtc.text || "" // defensive default
-          const preview = (dtc.preview || text.slice(0, 50)).replace(/[:\[\]]/g, "")
+          const preview = text.slice(0, 50).replace(/[:\[\]]/g, "")
           const encodedText = utf8ToBase64(text)
           const lineNum = dtc.lineNumber || 0
           return `@[${MENTION_PREFIXES.DIFF}${dtc.filePath}:${lineNum}:${preview}:${encodedText}]`
@@ -343,7 +344,7 @@ export function useMainChatInvocation({
 
       // Convert pastedTexts to mention tokens
       if (item.pastedTexts && item.pastedTexts.length > 0) {
-        const pastedMentions = item.pastedTexts.map((pt: any) => {
+        const pastedMentions = item.pastedTexts.map((pt: QueuedPastedText) => {
           const preview = pt.preview || "" // defensive default
           const sanitizedPreview = preview.replace(/[:\[\]|]/g, "")
           const prefix = pt.kind === "chatHistory" ? MENTION_PREFIXES.CHAT_HISTORY : MENTION_PREFIXES.PASTED

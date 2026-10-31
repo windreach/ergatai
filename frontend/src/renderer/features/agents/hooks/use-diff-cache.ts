@@ -1,27 +1,16 @@
 import { useCallback } from "react"
-
-interface DiffCacheData {
-  diffStats: {
-    fileCount: number
-    additions: number
-    deletions: number
-    isLoading: boolean
-    hasChanges: boolean
-  }
-  parsedFileDiffs: any
-  prefetchedFileContents: Record<string, string>
-  diffContent: string | null
-}
+import type { WorkspaceDiffCache, DiffStatsCache, CachedParsedDiffFile } from "../atoms"
+import type { ParsedDiffFile } from "../ui/agent-diff-view"
 
 interface UseDiffCacheProps {
-  setDiffCache: (updater: (prev: DiffCacheData) => DiffCacheData) => void
+  setDiffCache: (updater: (prev: WorkspaceDiffCache) => WorkspaceDiffCache) => void
 }
 
 /**
  * Hook to provide smart setters for diff cache that prevent unnecessary re-renders
  */
 export function useDiffCache({ setDiffCache }: UseDiffCacheProps) {
-  const setDiffStats = useCallback((val: any) => {
+  const setDiffStats = useCallback((val: DiffStatsCache | ((prev: DiffStatsCache) => DiffStatsCache)) => {
     setDiffCache((prev) => {
       const newVal = typeof val === 'function' ? val(prev.diffStats) : val
       // Only update if something changed
@@ -38,8 +27,8 @@ export function useDiffCache({ setDiffCache }: UseDiffCacheProps) {
     })
   }, [setDiffCache])
 
-  const setParsedFileDiffs = useCallback((files: any[] | null) => {
-    setDiffCache((prev) => ({ ...prev, parsedFileDiffs: files as any }))
+  const setParsedFileDiffs = useCallback((files: ParsedDiffFile[] | null) => {
+    setDiffCache((prev) => ({ ...prev, parsedFileDiffs: files as CachedParsedDiffFile[] | null }))
   }, [setDiffCache])
 
   const setPrefetchedFileContents = useCallback((contents: Record<string, string>) => {

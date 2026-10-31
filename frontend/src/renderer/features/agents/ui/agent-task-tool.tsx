@@ -9,6 +9,7 @@ import { AgentToolRegistry, getToolStatus } from "./agent-tool-registry"
 import { AgentToolCall } from "./agent-tool-call"
 import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areTaskToolPropsEqual } from "./agent-tool-utils"
+import type { MessagePart } from "../stores/message-store"
 import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { cn } from "../../../lib/utils"
 
@@ -18,7 +19,7 @@ import { cn } from "../../../lib/utils"
 // interface AgentTaskPart { input?: { description?: string }; output?: any; ... }
 // but the full shape is too dynamic to capture concisely.
 interface AgentTaskToolProps {
-  part: any
+  part: MessagePart
   nestedTools: any[]
   chatStatus?: string
 }

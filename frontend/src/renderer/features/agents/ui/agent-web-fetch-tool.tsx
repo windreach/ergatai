@@ -11,6 +11,7 @@ import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { getToolStatus } from "./agent-tool-registry"
 import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areToolPropsEqual } from "./agent-tool-utils"
+import type { MessagePart } from "../stores/message-store"
 import { cn } from "../../../lib/utils"
 
 /**
@@ -30,7 +31,7 @@ function formatBytes(bytes: number): string {
  * shape (url, result, bytes, code) that doesn't fit a generic interface.
  */
 interface AgentWebFetchToolProps {
-  part: any
+  part: MessagePart
   chatStatus?: string
 }
 

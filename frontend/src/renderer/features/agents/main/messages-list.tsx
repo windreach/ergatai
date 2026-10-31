@@ -10,6 +10,7 @@ import {
   messageAtomFamily,
   MessageRolePolicy,
 } from "../stores/message-store"
+import type { Message, MessagePart } from "../stores/message-store"
 import { useStreamingStatusStore } from "../stores/streaming-status-store"
 import { MessageJsonDisplay } from "../ui/message-json-display"
 import { AssistantMessageItem } from "./assistant-message-item"
@@ -17,8 +18,6 @@ import { AssistantMessageItem } from "./assistant-message-item"
 // ============================================================================
 // MESSAGE STORE - External store for fine-grained subscriptions
 // ============================================================================
-
-type Message = any
 
 interface MessageStore {
   messages: Message[]
@@ -53,8 +52,8 @@ function createMessageStore(): MessageStore {
     const parts = msg.parts || []
     return {
       partsCount: parts.length,
-      textLengths: parts.map((p: any) => p.type === "text" ? (p.text?.length || 0) : -1),
-      partStates: parts.map((p: any) => p.state),
+      textLengths: parts.map((p: MessagePart) => p.type === "text" ? (p.text?.length || 0) : -1),
+      partStates: parts.map((p: MessagePart) => p.state),
     }
   }
 
@@ -189,14 +188,14 @@ export function useMessage(messageId: string) {
   const store = useContext(MessageStoreContext)
   if (!store) throw new Error("useMessage must be used within MessageStoreProvider")
 
-  const prevMessageRef = useRef<any>(null)
+  const prevMessageRef = useRef<Message | null>(null)
 
   const subscribe = useCallback((onStoreChange: () => void) => {
     return store.subscribe(() => {
       // Only notify if THIS message changed
       const currentMsg = store.messages.find(m => m.id === messageId)
       if (currentMsg !== prevMessageRef.current) {
-        prevMessageRef.current = currentMsg
+        prevMessageRef.current = currentMsg ?? null
         onStoreChange()
       }
     })
@@ -204,7 +203,7 @@ export function useMessage(messageId: string) {
 
   const getSnapshot = useCallback(() => {
     const msg = store.messages.find(m => m.id === messageId)
-    prevMessageRef.current = msg
+    prevMessageRef.current = msg ?? null
     return msg
   }, [store, messageId])
 
@@ -447,7 +446,7 @@ function useMessageWithLastStatus(messageId: string) {
   if (!store) throw new Error("useMessageWithLastStatus must be used within MessageStoreProvider")
 
   // Track what we last returned to detect changes
-  const lastReturnedRef = useRef<{ message: any; isLast: boolean } | null>(null)
+  const lastReturnedRef = useRef<{ message: Message | undefined; isLast: boolean } | null>(null)
 
   const subscribe = useCallback((onStoreChange: () => void) => {
     return store.subscribe(() => {
@@ -923,17 +922,17 @@ interface SimpleIsolatedGroupProps {
   UserBubbleComponent: React.ComponentType<{
     messageId: string
     textContent: string
-    imageParts: any[]
+    imageParts: MessagePart[]
     skipTextMentionBlocks?: boolean
   }>
   ToolCallComponent: React.ComponentType<{
-    icon: any
+    icon: React.ComponentType<any>
     title: string
     isPending: boolean
     isError: boolean
   }>
   MessageGroupComponent: React.ComponentType<{ children: React.ReactNode }>
-  toolRegistry: Record<string, { icon: any; title: (args: any) => string }>
+  toolRegistry: Record<string, { icon: React.ComponentType<any>; title: (args: any) => string }>
 }
 
 function areSimpleGroupPropsEqual(
@@ -979,11 +978,11 @@ export const SimpleIsolatedGroup = memo(function SimpleIsolatedGroup({
 
   // User message data
   const rawTextContent = userMsg.parts
-    ?.filter((p: any) => p.type === "text")
-    .map((p: any) => p.text)
+    ?.filter((p: MessagePart) => p.type === "text")
+    .map((p: MessagePart) => p.text)
     .join("\n") || ""
 
-  const imageParts = userMsg.parts?.filter((p: any) => p.type === "data-image") || []
+  const imageParts = userMsg.parts?.filter((p: MessagePart) => p.type === "data-image") || []
 
   // Extract text mentions (quote/diff) to render separately above sticky block
   const { textMentions, cleanedText: textContent } = useMemo(

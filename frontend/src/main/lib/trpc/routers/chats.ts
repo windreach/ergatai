@@ -508,7 +508,7 @@ export const chatsRouter = router({
         title: initialTitle,
         mode: input.mode,
       })
-      let initialMessages: any[] = []
+      let initialMessages: ReturnType<typeof mapBackendMessagesToUiMessages> = []
       if (initialMessagesPayload.length > 0) {
         const persistedMessages = await updateConversationMessages(
           conversation.id,
@@ -749,14 +749,14 @@ export const chatsRouter = router({
 
       // Get all chats to identify worktree-mode workspaces
       const allChats = await trpcClient.listChats()
-      const chatsToArchive = allChats.filter((c: any) => input.chatIds.includes(c.id))
-      const worktreeChats = chatsToArchive.filter((c: any) => c.branch != null)
+      const chatsToArchive = allChats.filter((c: ChatRecord) => input.chatIds.includes(c.id))
+      const worktreeChats = chatsToArchive.filter((c: ChatRecord) => c.branch != null)
 
       // Archive all chats - use archiveChat for chat containers, not archiveConversation
       const results = []
       for (const chatId of input.chatIds) {
         await trpcClient.archiveChat({ id: chatId })
-        const chat = chatsToArchive.find((c: any) => c.id === chatId)
+        const chat = chatsToArchive.find((c: ChatRecord) => c.id === chatId)
         if (chat) results.push(chat)
       }
 
@@ -764,7 +764,7 @@ export const chatsRouter = router({
       // Local-mode terminals are shared and should not be killed.
       if (worktreeChats.length > 0) {
         Promise.all(
-          worktreeChats.map((c: any) => terminalManager.killByWorkspaceId(c.id)),
+          worktreeChats.map((c: ChatRecord) => terminalManager.killByWorkspaceId(c.id)),
         ).then((killResults) => {
           const totalKilled = killResults.reduce((sum, r) => sum + r.killed, 0)
           if (totalKilled > 0) {
@@ -895,7 +895,7 @@ export const chatsRouter = router({
 
       // Find cutoff point — prefer messageIndex since DB IDs differ from client IDs
       let cutoffIndex = allMessages.findIndex(
-        (m: any) => m.id === input.messageId,
+        (m: ReturnType<typeof mapBackendMessagesToUiMessages>[number]) => m.id === input.messageId,
       )
       if (cutoffIndex === -1 && input.messageIndex !== undefined && input.messageIndex < allMessages.length) {
         cutoffIndex = input.messageIndex
@@ -908,11 +908,11 @@ export const chatsRouter = router({
       // Find sdkMessageUuid of last assistant message (for resumeSessionAt)
       const lastAssistant = [...messagesToFork]
         .reverse()
-        .find((m: any) => m.role === "assistant")
+        .find((m: ReturnType<typeof mapBackendMessagesToUiMessages>[number]) => m.role === "assistant")
       const forkAtSdkUuid = lastAssistant?.metadata?.sdkMessageUuid || null
 
       // Generate new IDs for all messages + set shouldForkResume on last assistant
-      const forkedMessages = messagesToFork.map((msg: any, i: number) => ({
+      const forkedMessages = messagesToFork.map((msg: ReturnType<typeof mapBackendMessagesToUiMessages>[number], i: number) => ({
         ...msg,
         id: `fork-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`,
         metadata: {
@@ -971,7 +971,7 @@ export const chatsRouter = router({
     )
     .mutation(async ({ input }): Promise<
       | { success: false; error: string }
-      | { success: true; messages: any[] }
+      | { success: true; messages: ReturnType<typeof mapBackendMessagesToUiMessages> }
     > => {
       const targetConversation = await getConversation(input.conversationId)
       if (!targetConversation) {
@@ -987,7 +987,7 @@ export const chatsRouter = router({
       const backendMessages = await listConversationMessages(targetConversation.id)
       const messages = mapBackendMessagesToUiMessages(backendMessages)
       const targetIndex = messages.findIndex(
-        (m: any) => m.metadata?.sdkMessageUuid === input.sdkMessageUuid,
+        (m: ReturnType<typeof mapBackendMessagesToUiMessages>[number]) => m.metadata?.sdkMessageUuid === input.sdkMessageUuid,
       )
 
       if (targetIndex === -1) {
@@ -1011,7 +1011,7 @@ export const chatsRouter = router({
       let truncatedMessages = messages.slice(0, targetIndex + 1)
 
       // 4.5. Clear any old shouldResume flags, then set on the target message
-      truncatedMessages = truncatedMessages.map((m: any, i: number) => {
+      truncatedMessages = truncatedMessages.map((m: ReturnType<typeof mapBackendMessagesToUiMessages>[number], i: number) => {
         const { shouldResume, ...restMeta } = m.metadata || {}
         return {
           ...m,
@@ -1823,7 +1823,7 @@ export const chatsRouter = router({
       const allChatConversations = await listConversationsForChat(chat)
       let chatConversations
       if (input.conversationId) {
-        const singleConversation = allChatConversations.find((sc: any) => sc.id === input.conversationId)
+        const singleConversation = allChatConversations.find((sc: ChatsRouterConversation) => sc.id === input.conversationId)
         if (!singleConversation) {
           throw new Error("Conversation not found")
         }
@@ -1839,15 +1839,20 @@ export const chatsRouter = router({
         messages: Array<{
           id: string
           role: string
-          parts: Array<any>
-          metadata?: any
+          parts: Array<Record<string, unknown>>
+          metadata?: Record<string, unknown>
         }>
       }> = []
 
       for (const conversation of chatConversations) {
         try {
           const backendMessages = await listConversationMessages(conversation.id)
-          const messages = mapBackendMessagesToUiMessages(backendMessages)
+          const messages = mapBackendMessagesToUiMessages(backendMessages).map((msg) => ({
+            id: msg.id,
+            role: msg.role,
+            parts: (msg.parts as Array<Record<string, unknown>>) ?? [],
+            metadata: (msg.metadata ?? undefined) as Record<string, unknown> | undefined,
+          }))
           allMessages.push({
             conversationId: conversation.id,
             conversationName: conversation.name,
@@ -1915,10 +1920,11 @@ export const chatsRouter = router({
             text += `${role}:\n`
 
             for (const part of msg.parts || []) {
-              if (part.type === "text" && part.text) {
-                text += `${part.text}\n`
-              } else if (part.type?.startsWith("tool-") && part.toolName) {
-                text += `[used ${part.toolName} tool]\n`
+              const partObj = part as Record<string, unknown>
+              if (partObj.type === "text" && partObj.text) {
+                text += `${partObj.text}\n`
+              } else if (typeof partObj.type === "string" && partObj.type.startsWith("tool-") && partObj.toolName) {
+                text += `[used ${partObj.toolName} tool]\n`
               }
             }
             text += "\n"
@@ -1953,19 +1959,21 @@ export const chatsRouter = router({
           markdown += `### ${role}\n\n`
 
           for (const part of msg.parts || []) {
-            if (part.type === "text" && part.text) {
-              markdown += `${part.text}\n\n`
-            } else if (part.type?.startsWith("tool-") && part.toolName) {
-              const toolName = part.toolName
-              if (toolName === "Bash" && part.input?.command) {
-                markdown += `\`\`\`bash\n${part.input.command}\n\`\`\`\n\n`
+            const partObj = part as Record<string, unknown>
+            if (partObj.type === "text" && partObj.text) {
+              markdown += `${partObj.text}\n\n`
+            } else if (typeof partObj.type === "string" && partObj.type.startsWith("tool-") && partObj.toolName) {
+              const toolName = partObj.toolName as string
+              const input = partObj.input as Record<string, unknown> | undefined
+              if (toolName === "Bash" && input?.command) {
+                markdown += `\`\`\`bash\n${input.command}\n\`\`\`\n\n`
               } else if (
                 (toolName === "Edit" || toolName === "Write") &&
-                part.input?.file_path
+                input?.file_path
               ) {
-                markdown += `> Modified: \`${part.input.file_path}\`\n\n`
-              } else if (toolName === "Read" && part.input?.file_path) {
-                markdown += `> Read: \`${part.input.file_path}\`\n\n`
+                markdown += `> Modified: \`${input.file_path}\`\n\n`
+              } else if (toolName === "Read" && input?.file_path) {
+                markdown += `> Read: \`${input.file_path}\`\n\n`
               } else {
                 markdown += `> *Used ${toolName} tool*\n\n`
               }
@@ -1996,7 +2004,7 @@ export const chatsRouter = router({
       const allConversations = chat ? await listConversationsForChat(chat) : []
       let chatConversations
       if (input.conversationId) {
-        const singleConversation = allConversations.find((sc: any) => sc.id === input.conversationId)
+        const singleConversation = allConversations.find((sc: ChatsRouterConversation) => sc.id === input.conversationId)
         chatConversations = singleConversation ? [singleConversation] : []
       } else {
         chatConversations = allConversations

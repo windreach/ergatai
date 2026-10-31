@@ -215,9 +215,15 @@ function TaskActivityBoard({
 
     taskBoardContractApi.getTask(taskId).then((result) => {
       if (!cancelled) setTask(result)
+    }).catch((error) => {
+      console.error("Failed to fetch task:", error)
+      if (!cancelled) setTask(null)
     })
     taskBoardContractApi.listActivities(taskId).then((result) => {
       if (!cancelled) setActivities(result)
+    }).catch((error) => {
+      console.error("Failed to fetch activities:", error)
+      if (!cancelled) setActivities([])
     })
 
     return () => {

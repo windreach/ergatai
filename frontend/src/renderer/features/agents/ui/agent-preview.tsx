@@ -340,11 +340,11 @@ export function AgentPreview({
       }
 
       const cleanup = () => {
-        // Using `any` cast because PointerEvent handlers expect specific event types
-        // but we're attaching to HTMLElement which has broader event signatures
-        handle.removeEventListener("pointermove", handlePointerMove as any)
-        handle.removeEventListener("pointerup", handlePointerUp as any)
-        handle.removeEventListener("pointercancel", handlePointerCancel as any)
+        // Cast to EventListener because pointer event handlers expect specific event types
+        // but HTMLElement.addEventListener expects broader EventListener signatures
+        handle.removeEventListener("pointermove", handlePointerMove as EventListener)
+        handle.removeEventListener("pointerup", handlePointerUp as EventListener)
+        handle.removeEventListener("pointercancel", handlePointerCancel as EventListener)
         document.body.style.userSelect = ""
         document.body.style.cursor = ""
         resizeCleanupRef.current = null
@@ -352,10 +352,10 @@ export function AgentPreview({
 
       document.body.style.userSelect = "none"
       document.body.style.cursor = "ew-resize"
-      // Using `any` cast for consistency with cleanup above
-      handle.addEventListener("pointermove", handlePointerMove as any)
-      handle.addEventListener("pointerup", handlePointerUp as any)
-      handle.addEventListener("pointercancel", handlePointerCancel as any)
+      // Cast to EventListener for consistency with cleanup above
+      handle.addEventListener("pointermove", handlePointerMove as EventListener)
+      handle.addEventListener("pointerup", handlePointerUp as EventListener)
+      handle.addEventListener("pointercancel", handlePointerCancel as EventListener)
       resizeCleanupRef.current = cleanup
     },
     [device, maxWidth, setDevice],

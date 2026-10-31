@@ -1,19 +1,16 @@
 import { useEffect } from "react"
-
-interface GitStatus {
-  staged?: any[]
-  unstaged?: any[]
-  untracked?: any[]
-}
+import type { GitChangesStatus } from "../../../../shared/changes-types"
+import type { ParsedDiffFile } from "../ui/agent-diff-view"
+import type { DiffStatsCache } from "../atoms"
 
 interface UseGitStatusSyncProps {
-  gitStatus: GitStatus | null | undefined
+  gitStatus: GitChangesStatus | null | undefined
   isGitStatusLoading: boolean
-  parsedFileDiffs: any[] | null | undefined
-  setParsedFileDiffs: (files: any[] | null) => void
+  parsedFileDiffs: ParsedDiffFile[] | null
+  setParsedFileDiffs: (files: ParsedDiffFile[] | null) => void
   setPrefetchedFileContents: (contents: Record<string, string>) => void
   setDiffContent: (content: string | null) => void
-  setDiffStats: (val: any) => void
+  setDiffStats: (val: DiffStatsCache | ((prev: DiffStatsCache) => DiffStatsCache)) => void
 }
 
 /**

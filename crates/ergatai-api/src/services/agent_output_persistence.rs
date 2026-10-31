@@ -322,17 +322,8 @@ pub async fn persist_agent_output(
             // Note: thinking/tool_calls/text_chunks are already JSON strings in AgentOutputData,
             // so we pass them through directly without re-encoding
             // Parse metadata to extract stop_reason, duration_ms, and context usage
-            tracing::debug!(
-                conversation_id = %output_data.conversation_id,
-                has_metadata = output_data.metadata.is_some(),
-                "Parsing output metadata for context usage"
-            );
             let (stop_reason, duration_ms, context_used, context_window) =
                 if let Some(ref metadata_json) = output_data.metadata {
-                    tracing::debug!(
-                        conversation_id = %output_data.conversation_id,
-                        "Parsing metadata JSON"
-                    );
                     if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(metadata_json) {
                         let sr = metadata
                             .get("stop_reason")
@@ -350,12 +341,6 @@ pub async fn persist_agent_output(
                             .get("context_window")
                             .and_then(|v| v.as_u64())
                             .map(|v| v as i64);
-                        tracing::debug!(
-                            conversation_id = %output_data.conversation_id,
-                            context_used = ?cu,
-                            context_window = ?cw,
-                            "Extracted context usage from metadata"
-                        );
                         (sr, dm, cu, cw)
                     } else {
                         tracing::warn!(
@@ -365,10 +350,6 @@ pub async fn persist_agent_output(
                         (None, None, None, None)
                     }
                 } else {
-                    tracing::debug!(
-                        conversation_id = %output_data.conversation_id,
-                        "No metadata in output data"
-                    );
                     (None, None, None, None)
                 };
 

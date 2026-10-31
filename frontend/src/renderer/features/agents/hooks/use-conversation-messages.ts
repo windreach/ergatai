@@ -43,6 +43,12 @@ export type Message = {
  * the shared state object actually changes.
  */
 
+/**
+ * How long to keep a pipeline alive after all subscribers disconnect.
+ * 5 seconds balances between:
+ * - Avoiding teardown/rebuild churn during rapid tab/component switches
+ * - Not holding resources too long when genuinely done
+ */
 const PIPELINE_CLEANUP_GRACE_MS = 5_000
 /** Delay before re-fetching history after a turn completes (persist settle). */
 const HISTORY_REFETCH_AFTER_DONE_MS = 1_000
