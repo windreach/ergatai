@@ -21,9 +21,11 @@ export interface QueuedFile {
   url: string
   filename: string
   mediaType?: string
+  type?: string // MIME type (alias compat with UploadedFile)
   size?: number
   isLoading?: boolean
   preview?: string
+  base64Data?: string // base64 encoded data for API
 }
 
 // Text context selected from assistant messages

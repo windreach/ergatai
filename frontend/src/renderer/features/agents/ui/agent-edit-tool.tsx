@@ -19,6 +19,7 @@ import { getDisplayPath, getToolStatus } from "./agent-tool-registry"
 import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areToolPropsEqual } from "./agent-tool-utils"
 import type { MessagePart } from "../stores/message-store"
+import type { EditToolOutput } from "./tool-types"
 import { getFileIconByExtension } from "../mentions/file-icon-utils"
 import { useFileOpen } from "../mentions"
 import { agentsDiffSidebarOpenAtom, agentsFocusedDiffFileAtom, selectedWorkspaceAtom } from "../atoms"
@@ -250,15 +251,24 @@ export const AgentEditTool = memo(function AgentEditTool({
   const isActivelyStreaming = chatStatus === "streaming" || chatStatus === "submitted"
   const isInputStreaming = part.state === "input-streaming" && isActivelyStreaming
 
-  const filePath = part.input?._locations?.[0]?.path || ""
-  const oldString = part.input?.old_string || ""
-  const newString = part.input?.new_string || ""
+  // Cast input to expected shape for Edit/Write tools
+  const toolInput = part.input as {
+    _locations?: Array<{ path?: string }>
+    old_string?: string
+    new_string?: string
+    content?: string
+  } | undefined
+
+  const filePath = toolInput?._locations?.[0]?.path || ""
+  const oldString = toolInput?.old_string || ""
+  const newString = toolInput?.new_string || ""
 
   // For Write mode, content is in input.content
-  const writeContent = part.input?.content || ""
+  const writeContent = toolInput?.content || ""
 
   // Get structuredPatch from output (only available when complete)
-  const structuredPatch = part.output?.structuredPatch
+  const output = part.output as EditToolOutput | undefined
+  const structuredPatch = output?.structuredPatch
 
   // Extract filename from path
   const filename = filePath ? filePath.split("/").pop() || "file" : ""
@@ -310,12 +320,14 @@ export const AgentEditTool = memo(function AgentEditTool({
   // For Edit mode without structuredPatch, count new_string lines as preview
   const diffStats = useMemo(() => {
     if (isWriteMode) {
-      const content = writeContent || part.output?.content || ""
+      const content = writeContent || output?.content || ""
       const addedLines = content ? content.split("\n").length : 0
       return { addedLines, removedLines: 0 }
     }
     if (structuredPatch) {
-      return calculateDiffStatsFromPatch(structuredPatch)
+      // Flatten hunks into a single lines array for stats calculation
+      const allLines = (structuredPatch.hunks || []).flatMap((h) => h.lines || [])
+      return calculateDiffStatsFromPatch([{ lines: allLines }])
     }
     // Fallback: count new_string lines as preview (for input-available state)
     if (newString) {
@@ -326,7 +338,7 @@ export const AgentEditTool = memo(function AgentEditTool({
     structuredPatch,
     isWriteMode,
     writeContent,
-    part.output?.content,
+    output?.content,
     newString,
   ])
 
@@ -335,7 +347,7 @@ export const AgentEditTool = memo(function AgentEditTool({
   // For Edit mode without structuredPatch, show new_string as preview
   const diffLines = useMemo(() => {
     if (isWriteMode) {
-      const content = writeContent || part.output?.content || ""
+      const content = writeContent || output?.content || ""
       if (!content) return []
       return content.split("\n").map((line: string) => ({
         type: "added" as const,
@@ -344,7 +356,9 @@ export const AgentEditTool = memo(function AgentEditTool({
     }
     // If we have structuredPatch, use it for proper diff display
     if (structuredPatch) {
-      return getDiffLines(structuredPatch)
+      // Flatten hunks into a single lines array for diff display
+      const allLines = (structuredPatch.hunks || []).flatMap((h) => h.lines || [])
+      return getDiffLines([{ lines: allLines }])
     }
     // Fallback: show new_string as preview (for input-available state before execution)
     if (newString) {
@@ -358,7 +372,7 @@ export const AgentEditTool = memo(function AgentEditTool({
     structuredPatch,
     isWriteMode,
     writeContent,
-    part.output?.content,
+    output?.content,
     newString,
   ])
 

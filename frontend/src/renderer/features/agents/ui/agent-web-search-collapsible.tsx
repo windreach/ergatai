@@ -5,6 +5,7 @@ import { ChevronRight } from "lucide-react"
 
 import { areToolPropsEqual } from "./agent-tool-utils"
 import type { MessagePart } from "../stores/message-store"
+import type { WebSearchToolOutput } from "./tool-types"
 import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { cn } from "../../../lib/utils"
 
@@ -41,13 +42,14 @@ export const AgentWebSearchCollapsible = memo(
     const isActivelyStreaming = chatStatus === "streaming" || chatStatus === "submitted"
     const isStreaming = isPending && isActivelyStreaming
 
-    const query = part.input?.query || ""
+    const query = (part.input?.query as string) || ""
+    const searchOutput = part.output as WebSearchToolOutput | undefined
 
     // Parse results from output
     const results = useMemo(() => {
-      if (!part.output?.results) return []
+      if (!searchOutput?.results) return []
 
-      const rawResults = part.output.results
+      const rawResults = searchOutput.results
       const allResults: SearchResult[] = []
 
       for (const result of rawResults) {
@@ -67,7 +69,7 @@ export const AgentWebSearchCollapsible = memo(
       }
 
       return allResults
-    }, [part.output?.results])
+    }, [searchOutput?.results])
 
     const resultCount = results.length
     const hasResults = resultCount > 0

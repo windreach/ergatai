@@ -8,7 +8,6 @@ import {
 import { useSessionState } from "../../conversation/runtime"
 import { trpcClient } from "../../../lib/trpc"
 import { getRuntimeSessionStore } from "../../conversation/runtime/runtime-session-store"
-import type { MessagePart } from "../stores/message-store"
 
 interface UseQuestionHandlingOptions {
   conversationId: string
@@ -203,12 +202,11 @@ export function useQuestionHandling({
   useEffect(() => {
     // Check if there's a pending AskUserQuestion in the last assistant message
     const pendingQuestionPart = lastAssistantMessage?.parts?.find(
-      (part: MessagePart) =>
+      (part) =>
         part.type === "tool-AskUserQuestion" &&
         part.state !== "output-available" &&
         part.state !== "output-error" &&
-        part.state !== "result" &&
-        part.input?.questions,
+        (part.input as Record<string, unknown> | undefined)?.questions,
     )
 
 
@@ -231,12 +229,11 @@ export function useQuestionHandling({
       if (!pendingQuestionPart) {
         // Check if the specific toolUseId is now answered
         const answeredPart = lastAssistantMessage?.parts?.find(
-          (part: MessagePart) =>
+          (part) =>
             part.type === "tool-AskUserQuestion" &&
             part.toolCallId === pendingQuestions.toolUseId &&
             (part.state === "output-available" ||
-              part.state === "output-error" ||
-              part.state === "result"),
+              part.state === "output-error"),
         )
         if (answeredPart) {
           clearPendingQuestion()

@@ -8,6 +8,7 @@ import type {
   UploadedImage,
 } from "../types"
 import type { AgentsMentionsEditorHandle } from "../mentions"
+import type { Message } from "../stores/message-store"
 import { executeRollback } from "./rollback-utils"
 
 interface UseConversationActionsOptions {
@@ -45,10 +46,10 @@ export function useConversationActions({
     async (userMsg: (typeof messages)[0]) => {
       try {
         await executeRollback(
-          { isRollingBack, isStreaming, messages, conversationId, userMsg },
+          { isRollingBack, isStreaming, messages: messages as unknown as Message[], conversationId, userMsg: userMsg as unknown as Message },
           {
             setIsRollingBack,
-            setMessages,
+            setMessages: setMessages as unknown as (messages: Message[] | ((current: Message[]) => Message[])) => void,
             recomputeChangedFiles,
             refreshDiff,
             setImagesFromDraft,

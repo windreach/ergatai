@@ -12,6 +12,7 @@ import { getToolStatus } from "./agent-tool-registry"
 import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areToolPropsEqual } from "./agent-tool-utils"
 import type { MessagePart } from "../stores/message-store"
+import type { WebSearchToolOutput } from "./tool-types"
 import { cn } from "../../../lib/utils"
 
 /**
@@ -48,17 +49,18 @@ export const AgentWebSearchTool = memo(function AgentWebSearchTool({
   const [isExpanded, setIsExpanded] = useState(false)
   const { isPending, isError, isInterrupted } = getToolStatus(part, chatStatus)
 
-  const query = part.input?.query || ""
+  const query = (part.input?.query as string) || ""
   const truncatedQuery = query.length > 40 ? query.slice(0, 37) + "..." : query
-  
+  const searchOutput = part.output as WebSearchToolOutput | undefined
+
   // Parse results from output
   const results = useMemo(() => {
-    if (!part.output?.results) return []
-    
+    if (!searchOutput?.results) return []
+
     // Results can be nested in content array
-    const rawResults = part.output.results
+    const rawResults = searchOutput.results
     const allResults: SearchResult[] = []
-    
+
     for (const result of rawResults) {
       if (result.content && Array.isArray(result.content)) {
         for (const item of result.content) {
@@ -70,9 +72,9 @@ export const AgentWebSearchTool = memo(function AgentWebSearchTool({
         allResults.push({ title: result.title, url: result.url })
       }
     }
-    
+
     return allResults
-  }, [part.output?.results])
+  }, [searchOutput?.results])
 
   const resultCount = results.length
   const hasResults = resultCount > 0

@@ -1,7 +1,6 @@
 import { useCallback } from "react"
-import type { TRPCUtils } from "@trpc/react-query"
 import type { Chat } from "@ai-sdk/react"
-import type { AgentChatStore } from "../stores/agent-chat-store"
+import type { agentChatStore } from "../stores/agent-chat-store"
 
 interface UseCreateNewConversationOptions {
   worktreePath: string | null
@@ -9,7 +8,6 @@ interface UseCreateNewConversationOptions {
   defaultAgentMode: "plan" | "agent"
   activeConversationId: string | null
   inferProviderFromMessages: (conversationId?: string) => "claude-code" | "codex"
-  utils: TRPCUtils
   setConversationUnseenChanges: (updater: (prev: Set<string>) => Set<string>) => void
   selectedChatId: string | null
   setUnseenChanges: (updater: (prev: Set<string>) => Set<string>) => void
@@ -20,7 +18,7 @@ interface UseCreateNewConversationOptions {
   isGroupMode: boolean
   setJustCreatedIds: (updater: (prev: Set<string>) => Set<string>) => void
   setConversationProviderOverrides: React.Dispatch<React.SetStateAction<Record<string, "claude-code" | "codex">>>
-  agentChatStore: AgentChatStore
+  agentChatStore: typeof agentChatStore
   forceUpdate: (value: string) => void
   setLoadingConversations: React.Dispatch<React.SetStateAction<Map<string, string>>>
   fetchDiffStatsRef: React.RefObject<() => void>
@@ -32,7 +30,6 @@ export function useCreateNewConversation({
   defaultAgentMode,
   activeConversationId,
   inferProviderFromMessages,
-  utils,
   setConversationUnseenChanges,
   selectedChatId,
   setUnseenChanges,

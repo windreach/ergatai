@@ -1130,7 +1130,7 @@ export function NewChatForm({
     onSuccess: (data, variables) => {
       console.log("[new-chat-form] Chat created successfully:", {
         chatId: data.id,
-        workspaceId: data.workspace_id,
+        workspaceId: data.workspaceId,
         worktreePath: data.worktreePath,
         conversationCount: data.conversations?.length,
         firstConversationId: data.conversations?.[0]?.id,

@@ -1002,6 +1002,7 @@ export const askUserQuestionResultsAtom = atom<Map<string, unknown>>(new Map())
 export type UndoItem =
   | { type: "workspace"; chatId: string; timeoutId: ReturnType<typeof setTimeout>; isRemote?: boolean }
   | { type: "conversation"; conversationId: string; chatId: string; timeoutId: ReturnType<typeof setTimeout> }
+  | { type: "chat"; chatId: string; timeoutId: ReturnType<typeof setTimeout> }
 
 export const undoStackAtom = atom<UndoItem[]>([])
 

@@ -194,7 +194,6 @@ export function SideChat({
     parentChatId: chatId,
     isStreaming,
     messages,
-    utils: trpc.useUtils(),
   })
 
   // Surface a visible state when the bound agent is not running

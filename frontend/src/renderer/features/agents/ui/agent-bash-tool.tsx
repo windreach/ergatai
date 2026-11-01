@@ -9,6 +9,7 @@ import { getToolStatus } from "./agent-tool-registry"
 import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areToolPropsEqual } from "./agent-tool-utils"
 import type { MessagePart } from "../stores/message-store"
+import type { BashToolOutput } from "./tool-types"
 import { cn } from "../../../lib/utils"
 import { selectedWorkspaceAtom } from "../atoms"
 
@@ -62,9 +63,10 @@ export const AgentBashTool = memo(function AgentBashTool({
 
   const rawCommand = part.input?.command
   const command = typeof rawCommand === "string" ? rawCommand : rawCommand ? String(rawCommand) : ""
-  const stdout = part.output?.stdout || part.output?.output || ""
-  const stderr = part.output?.stderr || ""
-  const rawExitCode = part.output?.exitCode ?? part.output?.exit_code
+  const output = part.output as BashToolOutput | undefined
+  const stdout = output?.stdout || output?.output || ""
+  const stderr = output?.stderr || ""
+  const rawExitCode = output?.exitCode ?? output?.exit_code
   const exitCode = rawExitCode !== undefined ? Number(rawExitCode) : undefined
 
   // For bash tools, success/error is determined by exitCode, not by state

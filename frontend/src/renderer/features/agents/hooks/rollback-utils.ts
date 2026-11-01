@@ -152,7 +152,7 @@ export async function executeRollback(
 
   // Phase 2: UI restoration - update local state (errors here are non-fatal)
   try {
-    setMessages(result.messages)
+    setMessages(result.messages as unknown as Message[])
     recomputeChangedFiles()
     refreshDiff?.()
 

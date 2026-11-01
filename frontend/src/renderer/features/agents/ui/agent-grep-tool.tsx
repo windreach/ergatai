@@ -7,6 +7,7 @@ import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { getToolStatus } from "./agent-tool-registry"
 import { areToolPropsEqual } from "./agent-tool-utils"
 import type { MessagePart } from "../stores/message-store"
+import type { GrepToolOutput } from "./tool-types"
 import { cn } from "../../../lib/utils"
 
 interface AgentGrepToolProps {
@@ -49,9 +50,9 @@ export const AgentGrepTool = memo(function AgentGrepTool({
   const [isExpanded, setIsExpanded] = useState(false)
   const { isPending } = getToolStatus(part, chatStatus)
 
-  const pattern = part.input?.pattern || ""
-  const path = part.input?.path || ""
-  const output = part.output
+  const pattern = (part.input?.pattern as string) || ""
+  const path = (part.input?.path as string) || ""
+  const output = part.output as GrepToolOutput | undefined
 
   // Only trust match counts when the output actually carries stats,
   // otherwise the result shape is unknown and "No matches" would be a lie.

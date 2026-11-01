@@ -201,7 +201,6 @@ export function useMessageSending({
         .map(toQueuedImage)
       const queuedFiles = currentFiles
         .filter((f) => !f.isLoading && f.url)
-        .map(toQueuedFile)
       const queuedTextContexts = currentTextContexts.map(toQueuedTextContext)
       const queuedDiffTextContexts = currentDiffTextContexts.map(toQueuedDiffTextContext)
       const queuedPastedTexts = currentPastedTexts.map(toQueuedPastedText)
@@ -504,7 +503,7 @@ export function useMessageSending({
           )
           return updated.sort(
             (a, b) =>
-              new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+              new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime(),
           )
         })
       }

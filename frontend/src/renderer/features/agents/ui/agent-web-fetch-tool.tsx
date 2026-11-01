@@ -12,6 +12,7 @@ import { getToolStatus } from "./agent-tool-registry"
 import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areToolPropsEqual } from "./agent-tool-utils"
 import type { MessagePart } from "../stores/message-store"
+import type { WebFetchToolOutput } from "./tool-types"
 import { cn } from "../../../lib/utils"
 
 /**
@@ -42,10 +43,11 @@ export const AgentWebFetchTool = memo(function AgentWebFetchTool({
   const [isExpanded, setIsExpanded] = useState(false)
   const { isPending, isError, isInterrupted } = getToolStatus(part, chatStatus)
 
-  const url = part.input?.url || ""
-  const result = part.output?.result || ""
-  const bytes = part.output?.bytes || 0
-  const statusCode = part.output?.code
+  const url = (part.input?.url as string) || ""
+  const fetchOutput = part.output as WebFetchToolOutput | undefined
+  const result = fetchOutput?.result || ""
+  const bytes = fetchOutput?.bytes || 0
+  const statusCode = fetchOutput?.code
   // Check for 2xx success codes, not just 200
   const isSuccess = statusCode !== undefined && statusCode >= 200 && statusCode < 300
 

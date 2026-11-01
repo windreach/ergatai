@@ -1,3 +1,16 @@
+/**
+ * @deprecated This component has been replaced by WorkspaceChatsSidebar
+ *
+ * This sidebar incorrectly showed conversations (tabs) instead of chats.
+ * The new WorkspaceChatsSidebar correctly displays workspace-level chats.
+ *
+ * Migration:
+ * - Use WorkspaceChatsSidebar from './workspace-chats-sidebar'
+ * - It uses useWorkspaceChatsStore for proper workspace-level state management
+ * - See workspace-chats-store.ts for the new store implementation
+ *
+ * This file will be removed in a future cleanup.
+ */
 "use client"
 
 import React, { useMemo, useState, useCallback, useRef, useEffect, memo } from "react"

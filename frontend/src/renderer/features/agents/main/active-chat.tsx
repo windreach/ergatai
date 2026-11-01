@@ -301,6 +301,7 @@ interface ExtendedAgentChat {
     name?: string | null
   } | null
   branch?: string | null
+  messages?: unknown[] // AI SDK Chat messages (runtime, not from backend)
   conversations?: Array<{
     id: string
     name?: string | null
@@ -1584,7 +1585,6 @@ const ChatViewInner = memo(function ChatViewInner({
     parentChatId,
     isStreaming,
     messages,
-    utils,
   })
 
   // Keyboard shortcuts for stopping stream (ESC, Ctrl+C, Cmd+Shift+Backspace)
@@ -1806,7 +1806,6 @@ const ChatViewInner = memo(function ChatViewInner({
     isStreaming,
     messages,
     onProviderChange,
-    utils,
     conversationNameRef,
   })
 
@@ -2831,7 +2830,6 @@ export function ChatView({
       isGroupMode,
     },
     utils: {
-      utils,
       trpcUtils,
       fetchDiffStatsRef,
       forceUpdate,
@@ -2882,7 +2880,6 @@ export function ChatView({
     defaultAgentMode,
     activeConversationId,
     inferProviderFromMessages,
-    utils,
     setConversationUnseenChanges,
     selectedChatId,
     setUnseenChanges,
@@ -3294,7 +3291,7 @@ export function ChatView({
                             isGroupMode={isGroupMode}
                             workspaceName={agentChat?.name ?? null}
                             workspaceBranch={agentChat?.branch ?? null}
-                            workspaceRepoName={(agentChat as ExtendedAgentChat | undefined)?.project?.gitRepo || (agentChat as ExtendedAgentChat | undefined)?.project?.name || null}
+                            workspaceRepoName={(agentChat as unknown as ExtendedAgentChat | undefined)?.project?.gitRepo || (agentChat as unknown as ExtendedAgentChat | undefined)?.project?.name || null}
                             workspaceId={agentChat?.workspaceId ?? null}
                             projectId={null}
                             persistedMessages={persistedMessagesByConversationId.get(paneId) ?? []}
@@ -3346,7 +3343,7 @@ export function ChatView({
                                 isGroupMode={isGroupMode}
                                 workspaceName={agentChat?.name ?? null}
                                 workspaceBranch={agentChat?.branch ?? null}
-                                workspaceRepoName={(agentChat as ExtendedAgentChat | undefined)?.project?.gitRepo || (agentChat as ExtendedAgentChat | undefined)?.project?.name || null}
+                                workspaceRepoName={(agentChat as unknown as ExtendedAgentChat | undefined)?.project?.gitRepo || (agentChat as unknown as ExtendedAgentChat | undefined)?.project?.name || null}
                                 workspaceId={agentChat?.workspaceId ?? null}
                                 projectId={null}
                                 persistedMessages={persistedMessagesByConversationId.get(conversationId) ?? []}
@@ -3411,7 +3408,7 @@ export function ChatView({
                       isGroupMode={isGroupMode}
                       workspaceName={agentChat?.name ?? null}
                       workspaceBranch={agentChat?.branch ?? null}
-                      workspaceRepoName={(agentChat as ExtendedAgentChat | undefined)?.project?.gitRepo || (agentChat as ExtendedAgentChat | undefined)?.project?.name || null}
+                      workspaceRepoName={(agentChat as unknown as ExtendedAgentChat | undefined)?.project?.gitRepo || (agentChat as unknown as ExtendedAgentChat | undefined)?.project?.name || null}
                       workspaceId={agentChat?.workspaceId ?? null}
                       projectId={null}
                       persistedMessages={persistedMessagesByConversationId.get(conversationId) ?? []}

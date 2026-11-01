@@ -10,6 +10,7 @@ import { AgentToolCall } from "./agent-tool-call"
 import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areTaskToolPropsEqual } from "./agent-tool-utils"
 import type { MessagePart } from "../stores/message-store"
+import type { TaskToolOutput } from "./tool-types"
 import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { cn } from "../../../lib/utils"
 
@@ -66,10 +67,11 @@ export const AgentTaskTool = memo(function AgentTaskTool({
   // Track elapsed time for running tasks
   const [elapsedMs, setElapsedMs] = useState(0)
 
-  const description = part.input?.description || ""
+  const description = (part.input?.description as string) || ""
 
   // Get startedAt from providerMetadata (passed through AI SDK)
-  const startedAt = (part.callProviderMetadata?.custom?.startedAt as number | undefined)
+  const callMetadata = part.callProviderMetadata as { custom?: { startedAt?: number } } | undefined
+  const startedAt = callMetadata?.custom?.startedAt
     ?? (part.startedAt as number | undefined)
 
   // Tick elapsed time while task is running
@@ -85,7 +87,8 @@ export const AgentTaskTool = memo(function AgentTaskTool({
   }, [isPending, startedAt])
 
   // Use output duration from Claude Code if available, otherwise use our tracked time
-  const outputDuration = part.output?.totalDurationMs || part.output?.duration || part.output?.duration_ms
+  const taskOutput = part.output as TaskToolOutput | undefined
+  const outputDuration = taskOutput?.totalDurationMs || taskOutput?.duration || taskOutput?.duration_ms
   const displayMs = !isPending && outputDuration ? outputDuration : elapsedMs
   const elapsedTimeDisplay = formatElapsedTime(displayMs)
 

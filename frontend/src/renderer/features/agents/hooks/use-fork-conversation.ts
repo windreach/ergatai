@@ -10,14 +10,12 @@ import {
 } from "../../../lib/atoms"
 import { useAgentConversationStore } from "../stores/conversation-store"
 import type { Message } from "../stores/message-store"
-import type { TRPCUtils } from "@trpc/react-query"
 
 interface UseForkConversationOptions {
   conversationId: string
   parentChatId: string | null
   isStreaming: boolean
   messages: Message[]
-  utils: TRPCUtils
 }
 
 export function useForkConversation({
@@ -25,7 +23,7 @@ export function useForkConversation({
   parentChatId,
   isStreaming,
   messages,
-  utils,
+
 }: UseForkConversationOptions) {
   const isForkingRef = useRef(false)
   // Use ref to access latest messages without recreating callback

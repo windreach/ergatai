@@ -51,7 +51,7 @@ import { api } from "../../../lib/api-adapter"
 import { trpc } from "../../../lib/trpc"
 import { useIsMobile } from "../../../lib/hooks/use-mobile"
 import { AgentsSidebar } from "../../sidebar/agents-sidebar"
-import { AgentsConversationsSidebar } from "../../sidebar/agents-conversations-sidebar"
+import { WorkspaceChatsSidebar } from "../../sidebar/workspace-chats-sidebar"
 import { AgentPreview } from "./agent-preview"
 import { AgentDiffView } from "./agent-diff-view"
 import { TerminalSidebar, terminalSidebarOpenAtomFamily } from "../../terminal"
@@ -60,6 +60,7 @@ import {
   useAgentConversationStore,
   type ConversationMeta,
 } from "../stores/conversation-store"
+import { useWorkspaceChatsStore } from "../stores/workspace-chats-store"
 import { useShallow } from "zustand/react/shallow"
 import { motion, AnimatePresence } from "motion/react"
 // import { ResizableSidebar } from "@/app/(alpha)/canvas/[id]/{components}/resizable-sidebar"
@@ -117,6 +118,28 @@ export function AgentsContent() {
       setSelectedWorkspaceId(null)
     }
   }, [workspaceError, selectedWorkspace, selectedWorkspaceId, setSelectedWorkspaceId])
+
+  // Initialize workspace chats store
+  useEffect(() => {
+    if (selectedWorkspaceId) {
+      useWorkspaceChatsStore.getState().setWorkspaceId(selectedWorkspaceId)
+    } else {
+      // Reset store when workspace is deselected to avoid stale data
+      useWorkspaceChatsStore.getState().reset()
+    }
+  }, [selectedWorkspaceId])
+
+  // Fetch workspace chats and update store
+  const { data: workspaceChats } = trpc.chats.list.useQuery(
+    { workspaceId: selectedWorkspaceId! },
+    { enabled: !!selectedWorkspaceId }
+  )
+
+  useEffect(() => {
+    if (workspaceChats && selectedWorkspaceId) {
+      useWorkspaceChatsStore.getState().setChats(workspaceChats)
+    }
+  }, [workspaceChats, selectedWorkspaceId])
 
   // Per-chat terminal sidebar state
   const terminalSidebarAtom = useMemo(
@@ -1070,18 +1093,10 @@ export function AgentsContent() {
           disableClickToClose={true}
           persistContent={true}
         >
-          <AgentsConversationsSidebar
-            onClose={() => {
-              setShouldAnimateConversationsSidebar(true)
-              setConversationsSidebarMode("tabs")
-            }}
-            isMobile={isMobile}
-            isSidebarOpen={sidebarOpen}
-            onBackToChats={() => setSidebarOpen((prev) => !prev)}
-            isLoading={isLoadingConversations}
+          <WorkspaceChatsSidebar
             workspaceId={selectedWorkspaceId}
             workspaceName={selectedWorkspace?.name ?? null}
-            agentName={chatData?.name ?? undefined}
+            agentName={chatData?.name ?? null}
             onChatSelect={handleSidebarChatSelect}
             onNewChatClick={handleNewChatClick}
           />
