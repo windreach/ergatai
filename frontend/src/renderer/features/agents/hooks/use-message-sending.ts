@@ -23,6 +23,7 @@ import {
   toQueuedPastedText,
 } from "../lib/queue-utils"
 import { waitForStreamingReady } from "../utils/stream-utils"
+import { buildQuoteMentionToken, buildDiffMentionToken, buildPastedMentionToken } from "../mentions/mentions-utils"
 
 const ACKNOWLEDGMENT_TEXT = "收到"
 
@@ -291,14 +292,14 @@ export function useMessageSending({
       const quoteMentions = currentTextContexts.map((tc) => {
         const preview = tc.preview.replace(/[:\[\]]/g, "") // Sanitize preview
         const encodedText = utf8ToBase64(tc.text) // Base64 encode full text
-        return `@[${MENTION_PREFIXES.QUOTE}${preview}:${encodedText}]`
+        return buildQuoteMentionToken(preview, encodedText)
       })
 
       const diffMentions = currentDiffTextContexts.map((dtc) => {
         const preview = dtc.preview.replace(/[:\[\]]/g, "") // Sanitize preview
         const encodedText = utf8ToBase64(dtc.text) // Base64 encode full text
         const lineNum = dtc.lineNumber || 0
-        return `@[${MENTION_PREFIXES.DIFF}${dtc.filePath}:${lineNum}:${preview}:${encodedText}]`
+        return buildDiffMentionToken(dtc.filePath, lineNum, preview, encodedText)
       })
 
       // Add pasted text / chat history as mentions (format: prefix:size:preview|filepath)
@@ -306,7 +307,7 @@ export function useMessageSending({
       const pastedTextMentions = currentPastedTexts.map((pt) => {
         const sanitizedPreview = pt.preview.replace(/[:\[\]|]/g, "")
         const prefix = pt.kind === "chatHistory" ? MENTION_PREFIXES.CHAT_HISTORY : MENTION_PREFIXES.PASTED
-        return `@[${prefix}${pt.size}:${sanitizedPreview}|${pt.filePath}]`
+        return buildPastedMentionToken(prefix, pt.size, sanitizedPreview, pt.filePath)
       })
 
       mentionPrefix = [...quoteMentions, ...diffMentions, ...pastedTextMentions].join(" ") + " "

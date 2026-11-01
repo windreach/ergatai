@@ -32,7 +32,7 @@
  *     // Return matching items
  *     return { items: [...], hasMore: false }
  *   },
- *   serialize: (item) => `@[my:${item.id}]`,
+ *   serialize: (item) => buildGenericMentionToken(`my:${item.id}`),
  *   deserialize: (token) => {
  *     if (!token.startsWith('my:')) return null
  *     // Parse and return item

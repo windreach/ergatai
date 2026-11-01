@@ -11,13 +11,9 @@ import {
   agentsConversationUnseenChangesAtom,
   selectedAgentChatIdAtom,
   previousAgentChatIdAtom,
-  MAX_CHAT_AGENT_LOGOS,
-  chatAgentLogosAtom,
-  createChatAgentLogos,
-  type ChatAgentLogo,
+  conversationFilesAtom,
   justCreatedIdsAtom,
   pendingUserQuestionsAtom,
-  registeredAgentsAtom,
   undoStackAtom,
   suppressInputFocusAtom,
   type UndoItem,
@@ -41,10 +37,9 @@ import {
   LoadingDot,
   PlanIcon,
   AgentIcon,
-  IconOpenSidebar,
-  ClockIcon,
   QuestionIcon,
 } from "../../components/ui/icons"
+import { AlignJustify } from "lucide-react"
 import {
   Tooltip,
   TooltipContent,
@@ -54,138 +49,236 @@ import { Kbd } from "../../components/ui/kbd"
 import { isDesktopApp, getShortcutKey } from "../../lib/utils/platform"
 import { useResolvedHotkeyDisplay } from "../../lib/hotkeys"
 import { TrafficLightSpacer } from "../agents/components/traffic-light-spacer"
-import { PopoverTrigger } from "../../components/ui/popover"
-import { AlignJustify } from "lucide-react"
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
-  ContextMenuSeparator,
   ContextMenuTrigger,
 } from "../../components/ui/context-menu"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "../../components/ui/alert-dialog"
 import { api } from "../../lib/api-adapter"
 import { toast } from "sonner"
-import { SearchCombobox } from "../../components/ui/search-combobox"
 import { formatTimeAgo } from "../../lib/utils/format-time-ago"
-import { pluralize } from "../../lib/utils/pluralize"
-import { useHotkeys } from "react-hotkeys-hook"
-import { Checkbox } from "../../components/ui/checkbox"
+import { useConversationDraftsCache, getConversationDraftKey } from "../agents/lib/drafts"
 import { TypewriterText } from "../../components/ui/typewriter-text"
-import { getCoreAgentIcon } from "../agents/components/core-agent-selector"
+import { ConversationDropdownMenu } from "../agents/ui/conversation-dropdown-menu"
+
+interface FileChange {
+  additions: number
+  deletions: number
+}
+
+interface FileStats {
+  fileCount: number
+  additions: number
+  deletions: number
+}
+
+interface ChatSectionProps {
+  title: string
+  items: WorkspaceChat[]
+  startIndex: number
+  bottomMargin?: boolean
+  renderChatItem: (chat: WorkspaceChat, index: number) => React.ReactNode
+}
+
+function ChatSection({ title, items, startIndex, bottomMargin, renderChatItem }: ChatSectionProps) {
+  return (
+    <>
+      <div className="flex items-center h-4 mb-1 pl-2">
+        <h3 className="text-xs font-medium text-muted-foreground whitespace-nowrap">
+          {title}
+        </h3>
+      </div>
+      {items.length > 0 && (
+        <div className={cn("list-none p-0 m-0", bottomMargin && "mb-3")}>
+          {items.map((chat, idx) => renderChatItem(chat, startIndex + idx))}
+        </div>
+      )}
+    </>
+  )
+}
 
 interface WorkspaceChatsSidebarProps {
+  onClose?: () => void
+  onBackToChats?: () => void
+  isSidebarOpen?: boolean
   workspaceId: string | null
   workspaceName: string | null
   agentName: string | null
   onNewChatClick: () => void
   onChatSelect: (chatId: string) => void
 }
-// Memoized chat item component for better performance
+
+// Memoized chat item component with restored styles from old sidebar
 const ChatItem = memo(function ChatItem({
   chat,
   isActive,
   isPinned,
   isJustCreated,
   hasPendingQuestion,
+  hasUnseen,
+  isLoading,
+  mode,
+  draftText,
+  fileChanges,
   onChatClick,
   onPinChat,
   onArchiveChat,
   chatNameRefs,
+  globalIndex,
+  totalCount,
 }: {
   chat: WorkspaceChat
   isActive: boolean
   isPinned: boolean
   isJustCreated: boolean
   hasPendingQuestion: boolean
+  hasUnseen: boolean
+  isLoading: boolean
+  mode: string
+  draftText: string | null
+  fileChanges: FileChange[]
   onChatClick: (chatId: string) => void
   onPinChat: (chatId: string) => void
   onArchiveChat: (chatId: string) => void
   chatNameRefs: React.MutableRefObject<Map<string, HTMLSpanElement>>
+  globalIndex: number
+  totalCount: number
 }) {
+  // Calculate file stats
+  const stats = useMemo<FileStats | null>(() => {
+    if (fileChanges.length === 0) return null
+    return fileChanges.reduce<FileStats>(
+      (acc, f) => ({
+        fileCount: acc.fileCount + 1,
+        additions: acc.additions + f.additions,
+        deletions: acc.deletions + f.deletions,
+      }),
+      { fileCount: 0, additions: 0, deletions: 0 }
+    )
+  }, [fileChanges])
+
   return (
-    <div
-      className={cn(
-        "group relative flex items-center gap-2 rounded-md px-2 py-1.5 text-sm cursor-pointer transition-colors",
-        isActive
-          ? "bg-accent text-accent-foreground"
-          : "hover:bg-accent/50 text-muted-foreground"
-      )}
-      onClick={() => onChatClick(chat.id)}
-    >
-      {/* Pin indicator */}
-      {isPinned && (
-        <div className="flex-shrink-0 text-xs text-muted-foreground">📌</div>
-      )}
-
-      {/* Chat name */}
-      <div className="flex-1 truncate">
-        <span
-          ref={(el) => {
-            if (el) chatNameRefs.current.set(chat.id, el)
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          data-testid={`chat-item-${chat.id}`}
+          data-conversation-index={globalIndex}
+          onClick={() => onChatClick(chat.id)}
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault()
+              onChatClick(chat.id)
+            }
           }}
-          className="truncate"
+          className={cn(
+            "w-full text-left py-1.5 transition-colors duration-75 cursor-pointer group relative",
+            "outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70",
+            "pl-2 pr-2 rounded-md",
+            isActive
+              ? "bg-foreground/5 text-foreground"
+              : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+          )}
         >
-          {chat.name || "New Chat"}
-        </span>
-      </div>
-
-      {/* Just created indicator */}
-      {isJustCreated && (
-        <div className="flex-shrink-0">
-          <LoadingDot isLoading={true} />
+          <div className="flex items-start gap-2.5">
+            {/* Icon container with status badge */}
+            <div className="pt-0.5 flex-shrink-0 w-4 h-4 flex items-center justify-center relative">
+              {/* Mode icon or Question icon */}
+              <div className="transition-[opacity,transform] duration-150 ease-out">
+                {hasPendingQuestion ? (
+                  <QuestionIcon className="w-4 h-4 text-blue-500" />
+                ) : mode === "plan" ? (
+                  <PlanIcon className="w-4 h-4 text-muted-foreground" />
+                ) : (
+                  <AgentIcon className="w-4 h-4 text-muted-foreground" />
+                )}
+              </div>
+              {/* Status badge in bottom-right corner */}
+              {(isLoading || hasUnseen) && !hasPendingQuestion && (
+                <div
+                  className={cn(
+                    "absolute -bottom-1 -right-1 w-3 h-3 rounded-full flex items-center justify-center",
+                    isActive
+                      ? "bg-[#E8E8E8] dark:bg-[#1B1B1B]"
+                      : "bg-[#F4F4F4] group-hover:bg-[#E8E8E8] dark:bg-[#101010] dark:group-hover:bg-[#1B1B1B]"
+                  )}
+                >
+                  {isLoading ? (
+                    <LoadingDot isLoading={true} className="w-2.5 h-2.5 text-muted-foreground" />
+                  ) : (
+                    <LoadingDot isLoading={false} className="w-2.5 h-2.5 text-muted-foreground" />
+                  )}
+                </div>
+              )}
+            </div>
+            {/* Content area */}
+            <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+              <div className="flex items-center gap-1">
+                <span
+                  ref={(el) => {
+                    if (el) chatNameRefs.current.set(chat.id, el)
+                  }}
+                  className="truncate block text-sm leading-tight flex-1"
+                >
+                  <TypewriterText
+                    text={chat.name || ""}
+                    placeholder="New Chat"
+                    id={chat.id}
+                    isJustCreated={isJustCreated}
+                    showPlaceholder={true}
+                  />
+                </span>
+                <ConversationDropdownMenu
+                  conversation={{
+                    id: chat.id,
+                    name: chat.name || "New Chat",
+                    created_at: chat.createdAt?.toISOString(),
+                    updated_at: chat.updatedAt?.toISOString(),
+                  }}
+                  isPinned={isPinned}
+                  onTogglePin={onPinChat}
+                  onRename={() => {}} // Not supported in workspace chats sidebar
+                  onArchive={onArchiveChat}
+                  onArchiveOthers={() => {}} // Not supported in workspace chats sidebar
+                  isOnlyChat={totalCount === 1}
+                  currentIndex={globalIndex}
+                  totalCount={totalCount}
+                  chatId={chat.id}
+                  isActiveTab={isActive}
+                  isSplitTab={false}
+                />
+              </div>
+              {/* Second line: draft or file stats + timestamp */}
+              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60 min-w-0">
+                {draftText ? (
+                  <span className="truncate flex-1 min-w-0">
+                    <span className="text-blue-500">Draft:</span> {draftText}
+                  </span>
+                ) : (
+                  <span className="truncate flex-1 min-w-0">
+                    {stats ? (
+                      <>
+                        {stats.fileCount} {stats.fileCount === 1 ? "file" : "files"}
+                      </>
+                    ) : null}
+                  </span>
+                )}
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  {!draftText && stats && (stats.additions > 0 || stats.deletions > 0) && (
+                    <>
+                      <span className="text-green-600 dark:text-green-400">+{stats.additions}</span>
+                      <span className="text-red-600 dark:text-red-400">-{stats.deletions}</span>
+                    </>
+                  )}
+                  <span>{formatTimeAgo(chat.updatedAt)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-      )}
-
-      {/* Pending question indicator */}
-      {hasPendingQuestion && (
-        <div className="flex-shrink-0">
-          <QuestionIcon className="h-3 w-3 text-orange-500" />
-        </div>
-      )}
-
-      {/* Timestamp */}
-      <div className="flex-shrink-0 text-xs text-muted-foreground">
-        {formatTimeAgo(chat.updatedAt)}
-      </div>
-
-      {/* Actions (visible on hover) */}
-      <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-6 w-6 p-0"
-          onClick={(e) => {
-            e.stopPropagation()
-            onPinChat(chat.id)
-          }}
-        >
-          <span className="sr-only">{isPinned ? "Unpin" : "Pin"}</span>
-          📌
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-6 w-6 p-0"
-          onClick={(e) => {
-            e.stopPropagation()
-            onArchiveChat(chat.id)
-          }}
-        >
-          <ArchiveIcon className="h-3 w-3" />
-          <span className="sr-only">Archive</span>
-        </Button>
-      </div>
-    </div>
+      </ContextMenuTrigger>
+    </ContextMenu>
   )
 })
 
@@ -194,6 +287,9 @@ const ChatItem = memo(function ChatItem({
  * This replaces the old agents-conversations-sidebar which incorrectly showed conversations (tabs)
  */
 export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
+  onClose,
+  onBackToChats,
+  isSidebarOpen = false,
   workspaceId,
   workspaceName,
   agentName,
@@ -252,8 +348,9 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
       utils.chats.listArchived.invalidate()
 
       // Navigate to previous chat or new workspace
-      if (selectedChatId === variables.id) {
-        const isPreviousAvailable = previousChatId && previousChatId !== variables.id
+      if (variables && 'id' in variables && selectedChatId === variables.id) {
+        const chatId = variables.id
+        const isPreviousAvailable = previousChatId && previousChatId !== chatId
         if (isPreviousAvailable) {
           setSelectedChatId(previousChatId)
           setActiveChat(previousChatId)
@@ -267,12 +364,47 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
 
   const setConversationUnseenChanges = useSetAtom(agentsConversationUnseenChangesAtom)
 
+  // File changes and drafts for stats display
+  const conversationFiles = useAtomValue(conversationFilesAtom)
+  const draftsCache = useConversationDraftsCache()
+
   // Resolved hotkey for tooltip
   const newAgentHotkey = useResolvedHotkeyDisplay("new-agent")
   const [justCreatedIds, setJustCreatedIds] = useAtom(justCreatedIdsAtom)
   const pendingQuestionsMap = useAtomValue(pendingUserQuestionsAtom)
+  const unseenChanges = useAtomValue(agentsConversationUnseenChangesAtom)
   const rawMode = useAtomValue(defaultAgentModeAtom)
   const defaultAgentMode = rawMode === "plan" ? "plan" : "agent"
+  const isDesktop = useAtomValue(isDesktopAtom)
+  const isFullscreen = useAtomValue(isFullscreenAtom)
+
+  // Gradient state for scroll indicators
+  const [showTopGradient, setShowTopGradient] = useState(false)
+  const [showBottomGradient, setShowBottomGradient] = useState(true)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+
+  // Update gradients based on scroll position
+  const updateGradients = useCallback(() => {
+    const container = scrollContainerRef.current
+    if (!container) return
+
+    const { scrollTop, scrollHeight, clientHeight } = container
+    setShowTopGradient(scrollTop > 0)
+    setShowBottomGradient(scrollTop + clientHeight < scrollHeight - 1)
+  }, [])
+
+  // Observe scroll container for gradient updates
+  useEffect(() => {
+    const container = scrollContainerRef.current
+    if (!container) return
+
+    updateGradients()
+
+    const observer = new ResizeObserver(updateGradients)
+    observer.observe(container)
+
+    return () => observer.disconnect()
+  }, [updateGradients])
 
   // Undo stack
   const [undoStack, setUndoStack] = useAtom(undoStackAtom)
@@ -396,11 +528,22 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
 
   // Render chat item using memoized component
   const renderChatItem = useCallback(
-    (chat: WorkspaceChat) => {
+    (chat: WorkspaceChat, index: number) => {
       const isActive = chat.id === activeChatId
       const isPinned = pinnedChatIds.includes(chat.id)
       const isJustCreated = justCreatedIds.has(chat.id)
       const hasPendingQuestion = pendingQuestionsMap.has(chat.id)
+      const hasUnseen = unseenChanges.has(chat.id)
+      const isLoading = false // Workspace chats don't have loading state per chat
+      const mode = defaultAgentMode
+
+      // Get draft text for this chat
+      const draftKey = workspaceId ? getConversationDraftKey(workspaceId, chat.id) : null
+      const draftText: string | null = draftKey ? (draftsCache[draftKey] as string) || null : null
+
+      // Get file changes for this chat
+      const fileChanges = conversationFiles.get(chat.id) || []
+
       return (
         <ChatItem
           key={chat.id}
@@ -409,89 +552,186 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
           isPinned={isPinned}
           isJustCreated={isJustCreated}
           hasPendingQuestion={hasPendingQuestion}
+          hasUnseen={hasUnseen}
+          isLoading={isLoading}
+          mode={mode}
+          draftText={draftText}
+          fileChanges={fileChanges}
           onChatClick={handleChatClick}
           onPinChat={handlePinChat}
           onArchiveChat={handleArchiveChat}
           chatNameRefs={chatNameRefs}
+          globalIndex={index}
+          totalCount={filteredChats.length}
         />
       )
     },
-    [activeChatId, pinnedChatIds, justCreatedIds, pendingQuestionsMap, handleChatClick, handlePinChat, handleArchiveChat]
+    [activeChatId, pinnedChatIds, justCreatedIds, pendingQuestionsMap, unseenChanges, defaultAgentMode, draftsCache, workspaceId, conversationFiles, handleChatClick, handlePinChat, handleArchiveChat, filteredChats.length]
   )
 
   return (
-    <div className="flex h-full flex-col bg-background">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b px-3 py-2">
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold">Chats</h2>
-          {workspaceName && (
-            <span className="text-xs text-muted-foreground">({workspaceName})</span>
-          )}
-        </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onNewChatClick}
-          title="New Chat"
-        >
-          <PlusIcon className="h-4 w-4" />
-          <span className="sr-only">New Chat</span>
-        </Button>
-      </div>
-
-      {/* Search and filters */}
-      <div className="border-b px-3 py-2">
-        <Input
-          placeholder="Search chats..."
-          value={filterQuery}
-          onChange={(e) => setFilterQuery(e.target.value)}
-          className="h-8 text-sm"
+    <div
+      data-testid="conversation-sidebar"
+      className="flex flex-col h-full bg-background border-r overflow-hidden relative"
+      style={{ borderRightWidth: "0.5px" }}
+    >
+      {/* Draggable area for window movement */}
+      {isDesktop && !isFullscreen && (
+        <div
+          className="absolute inset-0 z-0"
+          style={{
+            WebkitAppRegion: "drag",
+          } as React.CSSProperties}
         />
-        <div className="mt-2 flex items-center gap-2">
-          <select
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as "updatedAt" | "createdAt" | "name")}
-            className="h-7 rounded border bg-background px-2 text-xs"
+      )}
+
+      {/* Spacer for macOS traffic lights */}
+      <TrafficLightSpacer isDesktop={isDesktop} isFullscreen={isFullscreen} />
+
+      {/* Header buttons - positioned at top left and right */}
+      {/* Open agents sidebar button - shown when agents sidebar is closed */}
+      {!isSidebarOpen && onBackToChats && (
+        <div
+          className="absolute left-2 top-2 z-20"
+          style={{
+            WebkitAppRegion: "no-drag",
+          } as React.CSSProperties}
+        >
+          <Tooltip delayDuration={500}>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onBackToChats}
+                tabIndex={-1}
+                className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md"
+                aria-label="Toggle agents sidebar"
+              >
+                <AlignJustify className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Open chats sidebar</TooltipContent>
+          </Tooltip>
+        </div>
+      )}
+
+      {/* Close chats sidebar button - right side */}
+      {onClose && (
+        <div
+          className="absolute right-2 top-2 z-20"
+          style={{
+            WebkitAppRegion: "no-drag",
+          } as React.CSSProperties}
+        >
+          <Tooltip delayDuration={500}>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onClose}
+                tabIndex={-1}
+                className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md"
+                aria-label="Close sidebar"
+              >
+                <IconDoubleChevronLeft className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Close chats pane</TooltipContent>
+          </Tooltip>
+        </div>
+      )}
+
+      {/* Header */}
+      <div className="p-2 pb-3 flex-shrink-0 relative z-10">
+        <div className="space-y-2">
+          {/* Spacer for buttons area - always show to maintain consistent layout */}
+          <div className="h-6" />
+
+          {/* Search input */}
+          <div
+            className="relative"
+            style={{
+              WebkitAppRegion: "no-drag",
+            } as React.CSSProperties}
           >
-            <option value="updatedAt">Last updated</option>
-            <option value="createdAt">Created date</option>
-            <option value="name">Name</option>
-          </select>
+            <Input
+              placeholder="Search chats..."
+              value={filterQuery}
+              onChange={(e) => setFilterQuery(e.target.value)}
+              className="h-7 w-full rounded-lg text-sm bg-muted border border-input placeholder:text-muted-foreground/40"
+            />
+          </div>
+          {/* New Chat Button */}
+          <div
+            style={{
+              WebkitAppRegion: "no-drag",
+            } as React.CSSProperties}
+          >
+            <Tooltip delayDuration={500}>
+              <TooltipTrigger asChild>
+                <Button
+                  data-testid="new-conversation-button"
+                  onClick={() => onNewChatClick?.()}
+                  disabled={!workspaceId}
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 w-full hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground rounded-lg"
+                >
+                  <span className="text-sm font-medium">New Chat</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                Create new chat
+                {newAgentHotkey && <Kbd>{newAgentHotkey}</Kbd>}
+              </TooltipContent>
+            </Tooltip>
+          </div>
         </div>
       </div>
 
-      {/* Chat list */}
-      <div className="flex-1 overflow-y-auto">
-        {filteredChats.length === 0 ? (
-          <div className="flex h-full items-center justify-center p-4 text-center text-sm text-muted-foreground">
-            {filterQuery ? "No chats match your search" : "No chats yet. Create one to get started!"}
-          </div>
-        ) : (
-          <div className="space-y-1 p-2">
-            {/* Pinned chats */}
-            {pinnedChats.length > 0 && (
-              <div className="space-y-1">
-                <div className="px-2 py-1 text-xs font-semibold text-muted-foreground">
-                  Pinned
-                </div>
-                {pinnedChats.map(renderChatItem)}
-              </div>
-            )}
+      {/* Scrollable chat list with gradients */}
+      <div
+        className="flex-1 min-h-0 relative z-10"
+        style={{
+          WebkitAppRegion: "no-drag",
+        } as React.CSSProperties}
+      >
+        <div className="relative h-full">
+          {/* Top gradient */}
+          {showTopGradient && (
+            <div className="absolute left-0 right-0 top-0 h-8 bg-gradient-to-b from-background to-transparent pointer-events-none z-10" />
+          )}
 
-            {/* Unpinned chats */}
-            {unpinnedChats.length > 0 && (
-              <div className="space-y-1">
-                {pinnedChats.length > 0 && (
-                  <div className="px-2 py-1 text-xs font-semibold text-muted-foreground">
-                    All Chats
-                  </div>
-                )}
-                {unpinnedChats.map(renderChatItem)}
-              </div>
-            )}
+          {/* Bottom gradient */}
+          {showBottomGradient && (
+            <div className="absolute left-0 right-0 bottom-0 h-8 bg-gradient-to-t from-background to-transparent pointer-events-none z-10" />
+          )}
+
+          <div
+            data-sidebar-scroll
+            ref={scrollContainerRef}
+            onScroll={updateGradients}
+            className="h-full overflow-y-auto scrollbar-thin scrollbar-thumb-muted-foreground/20 scrollbar-track-transparent px-2"
+          >
+            <div className="mb-4 -mx-1">
+              {pinnedChats.length > 0 && (
+                <ChatSection
+                  title="Pinned Chats"
+                  items={pinnedChats}
+                  startIndex={0}
+                  bottomMargin
+                  renderChatItem={renderChatItem}
+                />
+              )}
+              <ChatSection
+                title="Chats"
+                items={unpinnedChats}
+                startIndex={pinnedChats.length}
+                renderChatItem={renderChatItem}
+              />
+            </div>
           </div>
-        )}
+        </div>
       </div>
 
       {/* Undo toast */}

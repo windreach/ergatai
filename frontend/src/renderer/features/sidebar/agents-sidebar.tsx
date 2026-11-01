@@ -1623,13 +1623,20 @@ export function AgentsSidebar({
 
   useEffect(() => {
     if (!modeWorkspaces) return
+    // Only clear if we have workspaces but the selected one is not in the list
+    // Don't clear on empty list - it might be a transient loading state
+    if (modeWorkspaces.length === 0) {
+      return
+    }
     if (
       selectedWorkspaceId &&
       !modeWorkspaces.some((workspace) => workspace.id === selectedWorkspaceId)
     ) {
       setSelectedWorkspaceId(null)
+      // Also clear chat when workspace is cleared to avoid showing orphaned chat
+      setSelectedChatId(null)
     }
-  }, [selectedWorkspaceId, modeWorkspaces, setSelectedWorkspaceId])
+  }, [selectedWorkspaceId, modeWorkspaces, setSelectedWorkspaceId, setSelectedChatId])
 
   // Fetch chats for sidebar entries; UI labels these entries as workspaces, but their IDs are chat IDs.
   const { data: allChats } = trpc.chats.list.useQuery({})
@@ -1792,13 +1799,19 @@ export function AgentsSidebar({
 
   // Restore chat mutation (for undo) - use unarchiveChat for chat container, not unarchiveConversation
   const restoreChatMutation = trpc.ergatai.unarchiveChat.useMutation({
-    onSuccess: (_, variables) => {
-      utils.chats.list.invalidate()
-      utils.ergatai.listManagedWorkspaces.invalidate()
-      void utils.ergatai.workspaceStatus.invalidate()
-      utils.chats.listArchived.invalidate()
-      // Select the restored chat
+    onSuccess: async (_, variables) => {
+      await Promise.all([
+        utils.chats.list.invalidate(),
+        utils.ergatai.listManagedWorkspaces.invalidate(),
+        utils.ergatai.workspaceStatus.invalidate(),
+        utils.chats.listArchived.invalidate(),
+      ])
+      // Select the restored chat and sync workspace context
+      const restoredChat = utils.chats.list.getData()?.find((c) => c.id === variables.id)
       setSelectedChatId(variables.id)
+      setSelectedWorkspaceId(restoredChat?.workspaceId ?? null)
+      setShowNewChatForm(false)
+      setDesktopView(null)
     },
   })
 
@@ -2528,12 +2541,8 @@ export function AgentsSidebar({
   const handleArchiveSingle = useCallback(async (chatId: string) => {
     try {
       // Fetch both session count and worktree status in parallel
-      const isLocalMode = true
       const [sessionCount, worktreeStatus] = await Promise.all([
-        // Local mode: terminals are shared and won't be killed on archive, so skip count
-        isLocalMode
-          ? Promise.resolve(0)
-          : utils.terminal.getActiveSessionCount.fetch({ workspaceId: chatId }),
+        utils.terminal.getActiveSessionCount.fetch({ workspaceId: chatId }),
         utils.chats.getWorktreeStatus.fetch({ chatId }),
       ])
 
@@ -2554,17 +2563,7 @@ export function AgentsSidebar({
       console.error("Failed to check workspace status before archiving:", error)
       toast.error("Failed to check workspace status")
     }
-  }, [
-    archiveChatMutation,
-    utils.terminal.getActiveSessionCount,
-    utils.chats.getWorktreeStatus,
-    selectedChatId,
-    autoAdvanceTarget,
-    previousChatId,
-    setSelectedChatId,
-    removeWorkspaceFromStack,
-    setUndoStack,
-  ])
+  }, [archiveChatMutation, utils.terminal.getActiveSessionCount, utils.chats.getWorktreeStatus])
 
   // Confirm archive after user accepts dialog (optimistic - closes immediately)
   const handleConfirmArchive = useCallback((deleteWorktree: boolean) => {

@@ -14,6 +14,7 @@ import {
   type MentionSearchResult,
   MENTION_PREFIXES,
 } from "../types"
+import { buildGenericMentionToken } from "../../agents/mentions/mentions-utils"
 
 /**
  * Data payload for file/folder mentions
@@ -151,7 +152,7 @@ export const filesProvider = createMentionProvider<FileData>({
   },
 
   serialize(item: MentionItem<FileData>): string {
-    return `@[${item.id}]`
+    return buildGenericMentionToken(item.id)
   },
 
   deserialize(token: string): MentionItem<FileData> | null {

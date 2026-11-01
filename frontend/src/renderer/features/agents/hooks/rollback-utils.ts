@@ -1,6 +1,6 @@
 import { toast } from "sonner"
 import { trpcClient } from "../../../lib/trpc"
-import { findRollbackTargetSdkUuidForUserIndex } from "../stores/message-store"
+import { findRollbackTargetSdkUuidForUserIndex, type MessageRole } from "../stores/message-store"
 import { parseMentionTokensFromText } from "../lib/mention-token-parser"
 import { createLocalId } from "../../../../shared/id"
 import type {
@@ -11,17 +11,64 @@ import type {
 } from "../types"
 import type { Message, MessagePart } from "../stores/message-store"
 
+/**
+ * Minimal shape required for rollback operations.
+ * Accepts UIMessage, Message, or similar message objects from TRPC.
+ * Uses `unknown` for metadata to accept both strict (UIMessage) and loose (Message) types.
+ * No index signature to maintain compatibility with UIMessage's strict typing.
+ */
+interface RollbackMessageLike {
+  id: string
+  role: string
+  parts?: Array<{ type: string; text?: string; data?: unknown; [key: string]: unknown }>
+  metadata?: unknown
+}
+
+/**
+ * Convert a TRPC response (unknown) to Message[] safely.
+ * Validates the shape and extracts only the fields Message requires.
+ */
+function coerceToMessages(raw: unknown): Message[] {
+  if (!Array.isArray(raw)) {
+    throw new TypeError("Expected an array of messages")
+  }
+  return raw.map((item, idx) => {
+    if (!item || typeof item !== "object") {
+      throw new TypeError(`Invalid message at index ${idx}`)
+    }
+    const obj = item as Record<string, unknown>
+    if (typeof obj.id !== "string") {
+      throw new TypeError(`Message at index ${idx} missing string id`)
+    }
+    if (typeof obj.role !== "string") {
+      throw new TypeError(`Message at index ${idx} missing string role`)
+    }
+    return {
+      id: obj.id,
+      role: obj.role as Message["role"],
+      parts: Array.isArray(obj.parts) ? (obj.parts as MessagePart[]) : undefined,
+      metadata:
+        obj.metadata && typeof obj.metadata === "object"
+          ? (obj.metadata as Record<string, unknown>)
+          : undefined,
+      createdAt: obj.createdAt instanceof Date ? obj.createdAt : undefined,
+      sequence: typeof obj.sequence === "number" ? obj.sequence : undefined,
+    }
+  })
+}
+
 interface RollbackParams {
   isRollingBack: boolean
   isStreaming: boolean
-  messages: Message[]
+  messages: RollbackMessageLike[]
   conversationId: string
-  userMsg: Message
+  userMsg: RollbackMessageLike
 }
 
 interface RollbackCallbacks {
   setIsRollingBack: (value: boolean) => void
-  setMessages: (messages: Message[] | ((current: Message[]) => Message[])) => void
+  // setMessages accepts any message-like type; executeRollback coerces to Message[] before calling
+  setMessages: (messages: unknown[] | ((current: unknown[]) => unknown[])) => void
   recomputeChangedFiles: () => void
   refreshDiff?: () => void
   setImagesFromDraft: (images: UploadedImage[]) => void
@@ -75,10 +122,20 @@ export async function executeRollback(
     return
   }
 
+  // Type cast is safe: findRollbackTargetSdkUuidForUserIndex only checks role === "assistant"
+  const getMessageAt = (index: number) => {
+    const msg = messages[index]
+    if (!msg) return null
+    return {
+      role: msg.role as MessageRole,
+      metadata: msg.metadata as Record<string, unknown> | undefined,
+      parts: msg.parts as MessagePart[] | undefined,
+    }
+  }
   const sdkUuid = findRollbackTargetSdkUuidForUserIndex(
     userMsgIndex,
     messages.length,
-    (index) => messages[index],
+    getMessageAt,
   )
 
   if (!sdkUuid) {
@@ -152,7 +209,9 @@ export async function executeRollback(
 
   // Phase 2: UI restoration - update local state (errors here are non-fatal)
   try {
-    setMessages(result.messages as unknown as Message[])
+    // Coerce TRPC response to Message[] (validates shape and extracts required fields)
+    const coercedMessages = coerceToMessages(result.messages)
+    setMessages(coercedMessages)
     recomputeChangedFiles()
     refreshDiff?.()
 

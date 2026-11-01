@@ -329,6 +329,7 @@ Commit message:`
 export const chatsRouter = router({
   /**
    * List all non-archived chats (optionally filter by project or workspace)
+   * For archived workspaces, include archived chats in that workspace
    */
   list: publicProcedure
     .input(z.object({
@@ -340,7 +341,24 @@ export const chatsRouter = router({
         workspaceId: input.workspaceId,
       })
       console.log("[chats.list] received", allChats.length, "chats from backend")
-      const filtered = allChats.filter((chat) => chat.id.startsWith("chat_") && !chat.archivedAt)
+
+      let includeArchived = false
+      if (input?.workspaceId) {
+        try {
+          const workspace = await trpcClient.getManagedWorkspace({ id: input.workspaceId })
+          if (workspace?.status === "archived") {
+            includeArchived = true
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      const filtered = allChats.filter((chat) => {
+        if (!chat.id.startsWith("chat_")) return false
+        if (chat.archivedAt && !includeArchived) return false
+        return true
+      })
       console.log("[chats.list] returning", filtered.length, "chats after filtering")
       return filtered
     }),

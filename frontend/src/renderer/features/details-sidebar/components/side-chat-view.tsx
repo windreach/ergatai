@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useAtom } from "jotai"
+import { useAtom, useAtomValue } from "jotai"
 import { Plus, X } from "lucide-react"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
@@ -24,6 +24,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { loadingConversationsAtom } from "../../agents/atoms"
+import { LoadingDot } from "../../../components/ui/icons"
 
 // ============================================================================
 // SideChatView
@@ -51,6 +53,12 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
   const [sideChats, setSideChats] = useState<ChatConversation[]>([])
   const [activeSideChatId, setActiveSideChatId] = useState<string | null>(null)
   const [isCreatingSideChat, setIsCreatingSideChat] = useState(false)
+
+  const loadingConversations = useAtomValue(loadingConversationsAtom)
+  const loadingSideChatIds = useMemo(
+    () => new Set(loadingConversations.keys()),
+    [loadingConversations],
+  )
 
   const activeSideChat = useMemo(
     () => sideChats.find((conversation) => conversation.id === activeSideChatId) ?? null,
@@ -253,6 +261,8 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
             {sideChats.map((conversation) => {
               const Icon = getCoreAgentIcon(conversation.agent.id as CoreAgentId)
               const isActive = conversation.id === activeSideChatId
+              const loadingKey = conversation.backendConversationId ?? conversation.id
+              const isLoading = loadingSideChatIds.has(loadingKey)
 
               return (
                 <div
@@ -269,7 +279,21 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
                     onClick={() => setActiveSideChatId(conversation.id)}
                     className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden rounded-sm px-1 py-0.5 text-left"
                   >
-                    <Icon className="h-3.5 w-3.5 flex-shrink-0" />
+                    <div className="relative flex-shrink-0">
+                      <Icon className="h-3.5 w-3.5" />
+                      {isLoading && (
+                        <div
+                          className={cn(
+                            "absolute -bottom-1 -right-1 w-3 h-3 rounded-full flex items-center justify-center",
+                            isActive
+                              ? "bg-[#E8E8E8] dark:bg-[#1B1B1B]"
+                              : "bg-[#F4F4F4] dark:bg-[#101010]",
+                          )}
+                        >
+                          <LoadingDot isLoading={true} className="w-2.5 h-2.5 text-muted-foreground" />
+                        </div>
+                      )}
+                    </div>
                     <span className="min-w-0 truncate text-xs font-medium">
                       {conversation.agent.name}
                     </span>

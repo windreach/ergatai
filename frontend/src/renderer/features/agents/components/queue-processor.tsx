@@ -14,6 +14,7 @@ import { utf8ToBase64 } from "../utils/base64"
 import type { AgentQueueItem } from "../lib/queue-utils"
 import type { MessagePart } from "../stores/message-store"
 import { getMessageCorrelationService } from "@/features/conversation/runtime/message-correlation-service"
+import { buildQuoteMentionToken, buildDiffMentionToken, buildPastedMentionToken } from "../mentions/mentions-utils"
 
 // Delay between processing queue items (ms)
 const QUEUE_PROCESS_DELAY = 1000
@@ -106,7 +107,7 @@ export function QueueProcessor() {
           const quoteMentions = item.textContexts.map((tc) => {
             const preview = tc.text.slice(0, 50).replace(/[:\[\]]/g, "")
             const encodedText = utf8ToBase64(tc.text)
-            return `@[${MENTION_PREFIXES.QUOTE}${preview}:${encodedText}]`
+            return buildQuoteMentionToken(preview, encodedText)
           })
           mentionPrefix += quoteMentions.join(" ") + " "
         }
@@ -116,7 +117,7 @@ export function QueueProcessor() {
             const preview = dtc.text.slice(0, 50).replace(/[:\[\]]/g, "")
             const encodedText = utf8ToBase64(dtc.text)
             const lineNum = dtc.lineNumber || 0
-            return `@[${MENTION_PREFIXES.DIFF}${dtc.filePath}:${lineNum}:${preview}:${encodedText}]`
+            return buildDiffMentionToken(dtc.filePath, lineNum, preview, encodedText)
           })
           mentionPrefix += diffMentions.join(" ") + " "
         }
@@ -124,7 +125,7 @@ export function QueueProcessor() {
         if (item.pastedTexts && item.pastedTexts.length > 0) {
           const pastedMentions = item.pastedTexts.map((pt) => {
             const sanitizedPreview = pt.preview.replace(/[:\[\]|]/g, "")
-            return `@[${MENTION_PREFIXES.PASTED}${pt.size}:${sanitizedPreview}|${pt.filePath}]`
+            return buildPastedMentionToken(MENTION_PREFIXES.PASTED, pt.size, sanitizedPreview, pt.filePath)
           })
           mentionPrefix += pastedMentions.join(" ") + " "
         }

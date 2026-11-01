@@ -49,6 +49,12 @@ const ArchivedWorkspaceItem = memo(({
   const utils = trpc.useUtils()
   const isSelected = selectedWorkspaceId === workspace.id
 
+  const { data: status } = trpc.ergatai.workspaceStatus.useQuery(
+    { id: workspace.id },
+    { staleTime: 10_000 },
+  )
+  const activeAgents = status?.activeAgentCount ?? 0
+
   const invalidateArchivedWorkspaceCaches = () => {
     void utils.ergatai.listArchivedWorkspaces.invalidate()
     void utils.ergatai.listManagedWorkspaces.invalidate()
@@ -142,6 +148,16 @@ const ArchivedWorkspaceItem = memo(({
               from disk. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+
+          {activeAgents > 0 && (
+            <div className="mx-5 mb-4 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs text-foreground">
+              <p className="font-medium">Warning: {activeAgents} active agent(s) will be stopped</p>
+              <p className="mt-1 text-muted-foreground">
+                Deleting this workspace will automatically stop all running agents. Any unsaved progress will be lost.
+              </p>
+            </div>
+          )}
+
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction

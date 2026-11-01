@@ -31,6 +31,8 @@ export interface AgentMessageMetadata {
   fromAgentId?: string
   fromAgentName?: string
   agentContent?: string
+  /** Backend-assigned turn identifier for cross-source deduplication. */
+  turnId?: string
 }
 
 interface AgentMessageUsageProps {

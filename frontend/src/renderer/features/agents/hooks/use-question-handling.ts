@@ -201,13 +201,19 @@ export function useQuestionHandling({
   // This handles: 1) restoring on chat switch, 2) clearing when question is answered/timed out
   useEffect(() => {
     // Check if there's a pending AskUserQuestion in the last assistant message
-    const pendingQuestionPart = lastAssistantMessage?.parts?.find(
-      (part) =>
+    // Note: "result" state is a legacy state from older backends, still treated as "done"
+    // We use runtime checks because UIMessage types are strict but legacy data may have other values
+    const pendingQuestionPart = lastAssistantMessage?.parts?.find((part) => {
+      const state = (part as { state?: string }).state
+      const input = (part as { input?: Record<string, unknown> }).input
+      return (
         part.type === "tool-AskUserQuestion" &&
-        part.state !== "output-available" &&
-        part.state !== "output-error" &&
-        (part.input as Record<string, unknown> | undefined)?.questions,
-    )
+        state !== "output-available" &&
+        state !== "output-error" &&
+        state !== "result" &&
+        input?.questions
+      )
+    })
 
 
     // Helper to clear pending question for this conversation
@@ -228,13 +234,16 @@ export function useQuestionHandling({
       // But if the question in messages is already answered, clear the atom
       if (!pendingQuestionPart) {
         // Check if the specific toolUseId is now answered
-        const answeredPart = lastAssistantMessage?.parts?.find(
-          (part) =>
+        const answeredPart = lastAssistantMessage?.parts?.find((part) => {
+          const state = (part as { state?: string }).state
+          return (
             part.type === "tool-AskUserQuestion" &&
             part.toolCallId === pendingQuestions.toolUseId &&
-            (part.state === "output-available" ||
-              part.state === "output-error"),
-        )
+            (state === "output-available" ||
+              state === "output-error" ||
+              state === "result")
+          )
+        })
         if (answeredPart) {
           clearPendingQuestion()
         }

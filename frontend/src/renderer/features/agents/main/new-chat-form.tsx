@@ -87,6 +87,7 @@ import {
   type AgentsMentionsEditorHandle,
   type FileMentionOption,
 } from "../mentions"
+import { buildPastedMentionToken } from "../mentions/mentions-utils"
 import { AgentFileItem } from "../ui/agent-file-item"
 import { AgentImageItem } from "../ui/agent-image-item"
 import { AgentPastedTextItem } from "../ui/agent-pasted-text-item"
@@ -1269,7 +1270,7 @@ export function NewChatForm({
           // Sanitize preview to remove special characters that break mention parsing
           const sanitizedPreview = pt.preview.replace(/[:\[\]|]/g, "")
           const prefix = pt.kind === "chatHistory" ? MENTION_PREFIXES.CHAT_HISTORY : MENTION_PREFIXES.PASTED
-          return `@[${prefix}${pt.size}:${sanitizedPreview}|${pt.filePath}]`
+          return buildPastedMentionToken(prefix, pt.size, sanitizedPreview, pt.filePath)
         })
         .join(" ")
       finalMessage = pastedMentions + (finalMessage ? " " + finalMessage : "")

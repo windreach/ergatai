@@ -77,6 +77,13 @@ export function useChatInstance({
       agentContent: message.content,  // Use content field from backend
       senderAgentId: message.senderAgentId ?? undefined,
       senderAgentName: message.senderAgentName ?? undefined,
+      // Carry backend-assigned turnId into metadata so the projection service
+      // can deduplicate across sources (persisted / runtime / local transport).
+      // Prefer the top-level turnId field; fall back to metadata.turnId.
+      turnId: message.turnId
+        ?? (typeof (restMetadata as Record<string, unknown>).turnId === "string"
+          ? ((restMetadata as Record<string, unknown>).turnId as string)
+          : undefined),
     }
 
     return {

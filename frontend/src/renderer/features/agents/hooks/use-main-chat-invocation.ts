@@ -15,7 +15,8 @@
  * - Does not create duplicate Chat/transport state
  */
 
-import { useCallback, useEffect, useMemo, useRef } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react"
+import { useSetAtom } from "jotai"
 import { useConversationInvocation, useSessionState } from "../../conversation/runtime/use-conversation-invocation"
 import { getAdapterRegistry, type AdapterState } from "../../conversation/runtime/runtime-adapter"
 import type { ConversationStatus } from "../../conversation/runtime/contracts"
@@ -24,10 +25,12 @@ import { getConversationProjectionService } from "../../conversation/runtime/con
 import { getMessageCorrelationService } from "../../conversation/runtime/message-correlation-service"
 import { trpc } from "../../../lib/trpc"
 import type { MessagePart } from "../stores/message-store"
+import { syncMessagesWithStatusAtom } from "../stores/message-store"
 import type { AgentQueueItem, QueuedTextContext, QueuedDiffTextContext, QueuedPastedText } from "../lib/queue-utils"
 import { MENTION_PREFIXES } from "../../mentions/types"
 import { utf8ToBase64 } from "../utils/base64"
 import type { ChatConversation } from "@/features/details-sidebar/lib/chat-contract-api"
+import { buildQuoteMentionToken, buildDiffMentionToken, buildPastedMentionToken } from "../mentions/mentions-utils"
 
 /**
  * Raw message shape from various sources (backend API, Chat instance, etc.).
@@ -171,7 +174,37 @@ export function useMainChatInvocation({
   const visibleMessages =
     sessionState?.visibleMessages && sessionState.visibleMessages.length > 0
       ? sessionState.visibleMessages
-      : rawLocalMessages
+      : localSessionMessages
+
+  // Sync the merged visibleMessages (from projection service) to the Jotai store.
+  // This ensures all three data sources (persisted/runtime/local) flow through
+  // the same rendering path (main path via Jotai store) instead of falling back
+  // to simpler rendering when localMessages is empty (e.g., UI remount).
+  const syncMessages = useSetAtom(syncMessagesWithStatusAtom)
+  const mapChatStatus = (chatStatus?: string): string => {
+    switch (chatStatus) {
+      case "submitted":
+      case "streaming":
+        return "streaming"
+      case "ready":
+        return "ready"
+      case "error":
+        return "error"
+      case "loading":
+        return "loading"
+      default:
+        return "ready"
+    }
+  }
+  const computedStatus = mapChatStatus(existingChat?.status)
+  useLayoutEffect(() => {
+    syncMessages({
+      messages: visibleMessages,
+      status: computedStatus,
+      conversationId: runtimeConversationId,
+      updateGlobal: false,
+    })
+  }, [visibleMessages, computedStatus, runtimeConversationId, syncMessages])
 
   // Phase 16: Register runtime adapter that delegates to existing Chat instance
   // This allows the service to leverage AI SDK's stream handling
@@ -356,7 +389,7 @@ export function useMainChatInvocation({
           const text = tc.text || "" // defensive default
           const preview = text.slice(0, 50).replace(/[:\[\]]/g, "")
           const encodedText = utf8ToBase64(text)
-          return `@[${MENTION_PREFIXES.QUOTE}${preview}:${encodedText}]`
+          return buildQuoteMentionToken(preview, encodedText)
         })
         mentionPrefix += quoteMentions.join(" ") + " "
       }
@@ -368,7 +401,7 @@ export function useMainChatInvocation({
           const preview = text.slice(0, 50).replace(/[:\[\]]/g, "")
           const encodedText = utf8ToBase64(text)
           const lineNum = dtc.lineNumber || 0
-          return `@[${MENTION_PREFIXES.DIFF}${dtc.filePath}:${lineNum}:${preview}:${encodedText}]`
+          return buildDiffMentionToken(dtc.filePath, lineNum, preview, encodedText)
         })
         mentionPrefix += diffMentions.join(" ") + " "
       }
@@ -379,7 +412,7 @@ export function useMainChatInvocation({
           const preview = pt.preview || "" // defensive default
           const sanitizedPreview = preview.replace(/[:\[\]|]/g, "")
           const prefix = pt.kind === "chatHistory" ? MENTION_PREFIXES.CHAT_HISTORY : MENTION_PREFIXES.PASTED
-          return `@[${prefix}${pt.size}:${sanitizedPreview}|${pt.filePath}]`
+          return buildPastedMentionToken(prefix, pt.size, sanitizedPreview, pt.filePath)
         })
         mentionPrefix += pastedMentions.join(" ") + " "
       }

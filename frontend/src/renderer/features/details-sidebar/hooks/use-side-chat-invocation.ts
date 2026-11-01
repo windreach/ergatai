@@ -20,16 +20,18 @@
  * - This avoids reimplementing stream consumption logic
  */
 
-import { useCallback, useEffect, useMemo } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo } from "react"
 import { useChatInstance } from "../../agents/hooks/use-chat-instance"
 import { useConversationInvocation, useSessionState } from "../../conversation/runtime/use-conversation-invocation"
 import type { MessagePart } from "../../agents/stores/message-store"
+import { syncMessagesWithStatusAtom } from "../../agents/stores/message-store"
 import { getAdapterRegistry } from "../../conversation/runtime/runtime-adapter"
 import { useRuntimeSessionSources } from "../../conversation/runtime/use-runtime-session-sources"
 import { getConversationProjectionService } from "../../conversation/runtime/conversation-projection-service"
 import { getMessageCorrelationService } from "../../conversation/runtime/message-correlation-service"
 import type { ChatConversation } from "../lib/chat-contract-api"
 import type { UIMessage } from "@ai-sdk/react"
+import { useSetAtom } from "jotai"
 
 const projectionService = getConversationProjectionService()
 
@@ -117,6 +119,21 @@ export function useSideChatInvocation({
     : isStreaming
       ? "streaming"
       : chatInstance.status
+
+  // Sync the merged visibleMessages (from projection service) to the Jotai store.
+  // This ensures all three data sources (persisted/runtime/local) flow through
+  // the same rendering path (main path via Jotai store) instead of falling back
+  // to simpler rendering when localMessages is empty (e.g., UI remount).
+  // This overrides the localMessages-only sync from useChatInstance.
+  const syncMessages = useSetAtom(syncMessagesWithStatusAtom)
+  useLayoutEffect(() => {
+    syncMessages({
+      messages: visibleMessages,
+      status: streamingStatus,
+      conversationId: runtimeConversationId,
+      updateGlobal: false,
+    })
+  }, [visibleMessages, streamingStatus, runtimeConversationId, syncMessages])
 
   // Phase 16: Register runtime adapter that delegates to existing Chat instance
   // This allows the service to leverage AI SDK's stream handling

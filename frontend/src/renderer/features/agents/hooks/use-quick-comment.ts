@@ -4,6 +4,7 @@ import { MENTION_PREFIXES } from "../../mentions/types"
 import { utf8ToBase64 } from "../utils/base64"
 import { createQueueItem, generateQueueId, type AgentQueueItem } from "../lib/queue-utils"
 import type { TextSelectionSource } from "../types"
+import { buildQuoteMentionToken, buildDiffMentionToken } from "../mentions/mentions-utils"
 
 interface UserMessage {
   role: string
@@ -44,9 +45,9 @@ export function useQuickComment({
     let mentionToken: string
     if (source.type === "diff" || source.type === "tool-edit") {
       const lineNum = source.type === "diff" ? (source.lineNumber || 0) : 0
-      mentionToken = `@[${MENTION_PREFIXES.DIFF}${source.filePath}:${lineNum}:${preview}:${encodedText}]`
+      mentionToken = buildDiffMentionToken(source.filePath, lineNum, preview, encodedText)
     } else {
-      mentionToken = `@[${MENTION_PREFIXES.QUOTE}${preview}:${encodedText}]`
+      mentionToken = buildQuoteMentionToken(preview, encodedText)
     }
 
     const message = `${mentionToken} ${comment}`

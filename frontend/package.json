@@ -11,7 +11,7 @@
   "scripts": {
     "dev": "bash ../scripts/dev.sh",
     "dev:frontend": "electron-vite dev",
-    "build": "electron-vite build",
+    "build": "NODE_OPTIONS='--max-old-space-size=8192' electron-vite build",
     "preview": "electron-vite preview",
     "package": "electron-builder --dir",
     "package:mac": "electron-builder --mac",

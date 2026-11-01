@@ -242,44 +242,6 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
             FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );
 
-        CREATE TABLE IF NOT EXISTS messages (
-            message_id INTEGER PRIMARY KEY,
-            conversation_id INTEGER NOT NULL,
-            sequence INTEGER NOT NULL,
-            role TEXT NOT NULL,
-            parts TEXT,
-            metadata TEXT,
-
-            -- Agent 间消息字段（role="agent" 时使用）
-            from_agent_id INTEGER,        -- 发送者 agent ID (雪花ID)
-            from_agent_name TEXT,         -- 发送者显示名称
-            message_type TEXT,            -- "request" | "response" | "broadcast"
-            content TEXT,                 -- 实际消息内容（纯文本）
-
-            -- Turn aggregate / projection metadata
-            turn_id TEXT,                 -- Stable agent execution-turn identifier
-            projection_kind TEXT,         -- canonical | side_copy
-            origin_message_id TEXT,       -- Canonical message for a projection
-
-            -- Agent 输出字段（role="assistant" 时使用，统一存储 agent 的详细输出）
-            thinking TEXT,                -- JSON: [{text, duration_ms}]
-            tool_calls TEXT,              -- JSON: [{id, name, input, output, status}]
-            text_chunks TEXT,             -- JSON: [{text, timestamp}]
-            stop_reason TEXT,             -- "end_turn" | "max_tokens" | "tool_use"
-            duration_ms INTEGER,          -- 总耗时（毫秒）
-
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
-        );
-        -- Core indexes for message queries
-        CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
-        CREATE INDEX IF NOT EXISTS idx_messages_sequence ON messages(conversation_id, sequence);
-        CREATE INDEX IF NOT EXISTS idx_messages_role ON messages(role);
-        CREATE INDEX IF NOT EXISTS idx_messages_from_agent_id ON messages(from_agent_id);
-        CREATE INDEX IF NOT EXISTS idx_messages_message_type ON messages(message_type);
-        CREATE INDEX IF NOT EXISTS idx_messages_turn_id ON messages(turn_id);
-        CREATE INDEX IF NOT EXISTS idx_messages_origin_message_id ON messages(origin_message_id);
 
         CREATE TABLE IF NOT EXISTS terminal_sessions (
             session_id INTEGER PRIMARY KEY,
@@ -411,51 +373,107 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Get the table name for a conversation's messages
+/// Format: messages_{conversation_id}
+fn message_table_name(conversation_id: ConversationId) -> String {
+    format!("messages_{}", conversation_id)
+}
+
+/// Create a messages table for a specific conversation
+pub fn create_message_table(conversation_id: ConversationId) -> Result<()> {
+    let db = get_user_data_db();
+    let conn = db.lock().unwrap();
+    let table_name = message_table_name(conversation_id);
+
+    conn.execute(
+        &format!(
+            "CREATE TABLE IF NOT EXISTS {} (
+                message_id INTEGER PRIMARY KEY,
+                sequence INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                parts TEXT,
+                metadata TEXT,
+
+                -- Agent 间消息字段（role=\"agent\" 时使用）
+                from_agent_id INTEGER,        -- 发送者 agent ID (雪花 ID)
+                from_agent_name TEXT,         -- 发送者显示名称
+                message_type TEXT,            -- \"request\" | \"response\" | \"broadcast\"
+                content TEXT,                 -- 实际消息内容（纯文本）
+
+                -- Turn aggregate metadata
+                turn_id TEXT,                 -- Stable agent execution-turn identifier
+
+                -- Agent 输出字段（role=\"assistant\" 时使用，统一存储 agent 的详细输出）
+                thinking TEXT,                -- JSON array of text blocks
+                tool_calls TEXT,              -- JSON array of tool calls
+                text_chunks TEXT,             -- JSON array of text chunks
+                stop_reason TEXT,             -- \"end_turn\" | \"max_tokens\" | \"tool_use\"
+                duration_ms INTEGER,          -- 总耗时（毫秒）
+
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            table_name
+        ),
+        [],
+    )?;
+
+    // Create indexes
+    conn.execute(
+        &format!(
+            "CREATE INDEX IF NOT EXISTS idx_{}_sequence ON {}(sequence)",
+            table_name, table_name
+        ),
+        [],
+    )?;
+    conn.execute(
+        &format!(
+            "CREATE INDEX IF NOT EXISTS idx_{}_role ON {}(role)",
+            table_name, table_name
+        ),
+        [],
+    )?;
+    conn.execute(
+        &format!(
+            "CREATE INDEX IF NOT EXISTS idx_{}_from_agent_id ON {}(from_agent_id)",
+            table_name, table_name
+        ),
+        [],
+    )?;
+    conn.execute(
+        &format!(
+            "CREATE INDEX IF NOT EXISTS idx_{}_message_type ON {}(message_type)",
+            table_name, table_name
+        ),
+        [],
+    )?;
+    conn.execute(
+        &format!(
+            "CREATE INDEX IF NOT EXISTS idx_{}_turn_id ON {}(turn_id)",
+            table_name, table_name
+        ),
+        [],
+    )?;
+
+    Ok(())
+}
+
+/// Drop the messages table for a specific conversation
+pub fn drop_message_table(conversation_id: ConversationId) -> Result<()> {
+    let db = get_user_data_db();
+    let conn = db.lock().unwrap();
+    let table_name = message_table_name(conversation_id);
+
+    conn.execute(&format!("DROP TABLE IF EXISTS {}", table_name), [])?;
+    Ok(())
+}
+
 /// Add columns to the messages table that may be missing from older databases.
 /// SQLite has no `ADD COLUMN IF NOT EXISTS`, so we check PRAGMA table_info.
-fn migrate_message_columns(conn: &Connection) -> Result<()> {
-    let existing_columns: std::collections::HashSet<String> = {
-        let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        let mut columns = std::collections::HashSet::new();
-        for column in rows {
-            let column = column?;
-            columns.insert(column);
-        }
-        columns
-    };
-
-    for (column, definition) in [
-        // Agent message columns (inter-agent messaging)
-        ("from_agent_id", "INTEGER"),
-        ("from_agent_name", "TEXT"),
-        ("message_type", "TEXT"),
-        ("content", "TEXT"),
-        // Agent output columns (assistant turn output)
-        ("thinking", "TEXT"),
-        ("tool_calls", "TEXT"),
-        ("text_chunks", "TEXT"),
-        ("stop_reason", "TEXT"),
-        ("duration_ms", "INTEGER"),
-        // Turn model columns
-        ("turn_id", "TEXT"),
-        ("projection_kind", "TEXT"),
-        ("origin_message_id", "TEXT"),
-    ] {
-        if !existing_columns.contains(column) {
-            conn.execute(
-                &format!("ALTER TABLE messages ADD COLUMN {column} {definition}"),
-                [],
-            )?;
-        }
-    }
-
-    conn.execute_batch(
-        r#"
-        CREATE INDEX IF NOT EXISTS idx_messages_turn_id ON messages(turn_id);
-        CREATE INDEX IF NOT EXISTS idx_messages_origin_message_id ON messages(origin_message_id);
-        "#,
-    )?;
+fn migrate_message_columns(_conn: &Connection) -> Result<()> {
+    // NOTE: This function is deprecated since messages table is now per-conversation.
+    // New conversations will have the correct schema via create_message_table().
+    // Existing shared messages table (if any) can be dropped.
     Ok(())
 }
 
@@ -594,14 +612,16 @@ pub struct Message {
     pub metadata: Option<String>,
 
     // Agent 间消息字段（role="agent" 时使用）
-    pub from_agent_id: Option<i64>,      // 发送者 agent ID (雪花ID)
+    pub from_agent_id: Option<i64>,      // 发送者 agent ID (雪花 ID)
     pub from_agent_name: Option<String>, // 发送者显示名称
     pub message_type: Option<String>,    // "request" | "response" | "broadcast"
     pub content: Option<String>,         // 实际消息内容（纯文本）
 
-    // Turn aggregate / projection metadata
+    // Turn aggregate metadata
     pub turn_id: Option<String>, // Stable agent execution-turn identifier
-    pub projection_kind: Option<String>, // canonical | side_copy
+    #[serde(default)]
+    pub projection_kind: Option<String>,
+    #[serde(default)]
     pub origin_message_id: Option<String>,
 
     // Agent 输出字段（role="assistant" 时使用）
@@ -617,28 +637,29 @@ pub struct Message {
 
 /// Helper function to map a database row to a Message struct.
 /// Used across multiple query functions to avoid code duplication.
-pub fn map_row_to_message(row: &rusqlite::Row) -> rusqlite::Result<Message> {
+/// NOTE: With per-conversation tables, conversation_id is passed separately.
+pub fn map_row_to_message(conversation_id: ConversationId, row: &rusqlite::Row) -> rusqlite::Result<Message> {
     Ok(Message {
         message_id: row.get(0)?,
-        conversation_id: row.get(1)?,
-        sequence: row.get(2)?,
-        role: row.get(3)?,
-        parts: row.get(4)?,
-        metadata: row.get(5)?,
-        from_agent_id: row.get(6)?,
-        from_agent_name: row.get(7)?,
-        message_type: row.get(8)?,
-        content: row.get(9)?,
-        turn_id: row.get(10)?,
-        projection_kind: row.get(11)?,
-        origin_message_id: row.get(12)?,
-        thinking: row.get(13)?,
-        tool_calls: row.get(14)?,
-        text_chunks: row.get(15)?,
-        stop_reason: row.get(16)?,
-        duration_ms: row.get(17)?,
-        created_at: row.get(18)?,
-        updated_at: row.get(19)?,
+        conversation_id,
+        sequence: row.get(1)?,
+        role: row.get(2)?,
+        parts: row.get(3)?,
+        metadata: row.get(4)?,
+        from_agent_id: row.get(5)?,
+        from_agent_name: row.get(6)?,
+        message_type: row.get(7)?,
+        content: row.get(8)?,
+        turn_id: row.get(9)?,
+        projection_kind: None,
+        origin_message_id: None,
+        thinking: row.get(10)?,
+        tool_calls: row.get(11)?,
+        text_chunks: row.get(12)?,
+        stop_reason: row.get(13)?,
+        duration_ms: row.get(14)?,
+        created_at: row.get(15)?,
+        updated_at: row.get(16)?,
     })
 }
 
@@ -712,16 +733,25 @@ pub mod workspaces {
         Ok(workspace)
     }
 
-    pub fn list(collaboration_mode: Option<&str>) -> Result<Vec<Workspace>> {
+    pub fn list(collaboration_mode: Option<&str>, archived: Option<bool>) -> Result<Vec<Workspace>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
-        let mut stmt = conn.prepare(
+        // Build SQL with optional status filter
+        let status_filter = match archived {
+            Some(true) => " AND status = 'archived'",
+            Some(false) => " AND status != 'archived'",
+            None => "",
+        };
+        let sql = format!(
             "SELECT workspace_id, name, work_dir, env, resources, config, collaboration_mode, status, default_project_id, created_at, updated_at
              FROM workspaces
-             WHERE ?1 IS NULL OR collaboration_mode = ?1
+             WHERE (?1 IS NULL OR collaboration_mode = ?1){}
              ORDER BY created_at DESC",
-        )?;
+            status_filter
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
         let workspaces = stmt.query_map(params![collaboration_mode], |row| {
             Ok(Workspace {
                 workspace_id: row.get(0)?,
@@ -1212,6 +1242,34 @@ pub mod chats {
         Ok(())
     }
 
+    pub fn archive_by_workspace(ws_id: WorkspaceId) -> Result<usize> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let affected = conn.execute(
+            "UPDATE chats SET archived_at = ?1, updated_at = ?1 WHERE workspace_id = ?2 AND archived_at IS NULL",
+            params![now, ws_id],
+        )?;
+        Ok(affected)
+    }
+
+    pub fn unarchive_by_workspace(ws_id: WorkspaceId) -> Result<usize> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let affected = conn.execute(
+            "UPDATE chats SET archived_at = NULL, updated_at = ?1 WHERE workspace_id = ?2 AND archived_at IS NOT NULL",
+            params![now, ws_id],
+        )?;
+        Ok(affected)
+    }
+
     pub fn find_by_worktree_path(path: &str) -> Result<Option<Chat>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
@@ -1450,6 +1508,10 @@ pub mod conversations {
                 conversation.context_updated_at,
             ],
         )?;
+
+        // Create per-conversation message table
+        drop(conn); // Release lock before creating table (table creation acquires its own lock)
+        create_message_table(conversation.conversation_id)?;
 
         Ok(conversation)
     }
@@ -1705,6 +1767,8 @@ pub mod conversations {
             "DELETE FROM conversations WHERE conversation_id = ?1",
             params![conversation_id],
         )?;
+        drop(conn); // Release lock before dropping table (drop acquires its own lock)
+        drop_message_table(conversation_id)?;
         Ok(())
     }
 
@@ -1882,21 +1946,23 @@ pub mod messages {
         Ok(message)
     }
 
-    /// Get a single message by message_id
-    pub fn get(message_id: MessageId) -> Result<Option<Message>> {
+    /// Get a single message by message_id from a specific conversation
+    pub fn get(conversation_id: ConversationId, message_id: MessageId) -> Result<Option<Message>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
+        let table_name = message_table_name(conversation_id);
 
-        let mut stmt = conn.prepare(
-            "SELECT message_id, conversation_id, sequence, role, parts, metadata,
+        let mut stmt = conn.prepare(&format!(
+            "SELECT message_id, sequence, role, parts, metadata,
                     from_agent_id, from_agent_name, message_type, content,
-                    turn_id, projection_kind, origin_message_id,
+                    turn_id,
                     thinking, tool_calls, text_chunks, stop_reason, duration_ms,
                     created_at, updated_at
-             FROM messages WHERE message_id = ?1",
-        )?;
+             FROM {} WHERE message_id = ?1",
+            table_name
+        ))?;
 
-        let mut rows = stmt.query_map(params![message_id], map_row_to_message)?;
+        let mut rows = stmt.query_map(params![message_id], |row| map_row_to_message(conversation_id, row))?;
 
         match rows.next() {
             Some(Ok(msg)) => Ok(Some(msg)),
@@ -1907,6 +1973,7 @@ pub mod messages {
 
     /// Update a message's parts and metadata
     pub async fn update(
+        conversation_id: ConversationId,
         message_id: MessageId,
         parts: Option<String>,
         metadata: Option<String>,
@@ -1914,7 +1981,7 @@ pub mod messages {
         // Check if nothing to update
         if parts.is_none() && metadata.is_none() {
             // Nothing to update, just return current state
-            return get(message_id);
+            return get(conversation_id, message_id);
         }
 
         // Execute the synchronous DB update first
@@ -1943,8 +2010,10 @@ pub mod messages {
 
             param_values.push(Box::new(message_id));
 
+            let table_name = message_table_name(conversation_id);
             let query = format!(
-                "UPDATE messages SET {} WHERE message_id = ?",
+                "UPDATE {} SET {} WHERE message_id = ?",
+                table_name,
                 updates.join(", ")
             );
 
@@ -1957,15 +2026,16 @@ pub mod messages {
 
         update_result?;
 
-        get(message_id)
+        get(conversation_id, message_id)
     }
 
-    /// Delete a message by message_id
-    pub async fn delete(message_id: MessageId) -> Result<bool> {
+    /// Delete a message by message_id from a specific conversation
+    pub async fn delete(conversation_id: ConversationId, message_id: MessageId) -> Result<bool> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
+        let table_name = message_table_name(conversation_id);
         let count = conn.execute(
-            "DELETE FROM messages WHERE message_id = ?1",
+            &format!("DELETE FROM {} WHERE message_id = ?1", table_name),
             params![message_id],
         )?;
         Ok(count > 0)
@@ -1975,15 +2045,28 @@ pub mod messages {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
-        let mut stmt = conn.prepare(
-            "SELECT message_id, conversation_id, sequence, role, parts, metadata,
+        // Check if conversation exists (may have been deleted via CASCADE)
+        let conversation_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM conversations WHERE conversation_id = ?1",
+            params![conversation_id],
+            |row| row.get::<_, i64>(0),
+        )? > 0;
+
+        if !conversation_exists {
+            return Ok(Vec::new());
+        }
+
+        let table_name = message_table_name(conversation_id);
+        let mut stmt = conn.prepare(&format!(
+            "SELECT message_id, sequence, role, parts, metadata,
                     from_agent_id, from_agent_name, message_type, content,
-                    turn_id, projection_kind, origin_message_id,
+                    turn_id,
                     thinking, tool_calls, text_chunks, stop_reason, duration_ms,
                     created_at, updated_at
-             FROM messages WHERE conversation_id = ?1 ORDER BY sequence ASC",
-        )?;
-        let messages = stmt.query_map(params![conversation_id], map_row_to_message)?;
+             FROM {} ORDER BY sequence ASC",
+            table_name
+        ))?;
+        let messages = stmt.query_map([], |row| map_row_to_message(conversation_id, row))?;
         messages.collect()
     }
 
@@ -1993,38 +2076,41 @@ pub mod messages {
     ) -> Result<Vec<Message>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
+        let table_name = message_table_name(conversation_id);
 
-        let mut stmt = conn.prepare(
-            "SELECT message_id, conversation_id, sequence, role, parts, metadata,
+        let mut stmt = conn.prepare(&format!(
+            "SELECT message_id, sequence, role, parts, metadata,
                     from_agent_id, from_agent_name, message_type, content,
-                    turn_id, projection_kind, origin_message_id,
+                    turn_id,
                     thinking, tool_calls, text_chunks, stop_reason, duration_ms,
                     created_at, updated_at
-             FROM messages
-             WHERE conversation_id = ?1 AND sequence > ?2
+             FROM {}
+             WHERE sequence > ?1
              ORDER BY sequence ASC",
-        )?;
+            table_name
+        ))?;
         let messages =
-            stmt.query_map(params![conversation_id, after_sequence], map_row_to_message)?;
+            stmt.query_map(params![after_sequence], |row| map_row_to_message(conversation_id, row))?;
         messages.collect()
     }
 
     pub fn get_last(conversation_id: ConversationId) -> Result<Option<Message>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
+        let table_name = message_table_name(conversation_id);
 
-        let mut stmt = conn.prepare(
-            "SELECT message_id, conversation_id, sequence, role, parts, metadata,
+        let mut stmt = conn.prepare(&format!(
+            "SELECT message_id, sequence, role, parts, metadata,
                     from_agent_id, from_agent_name, message_type, content,
-                    turn_id, projection_kind, origin_message_id,
+                    turn_id,
                     thinking, tool_calls, text_chunks, stop_reason, duration_ms,
                     created_at, updated_at
-             FROM messages
-             WHERE conversation_id = ?1
+             FROM {}
              ORDER BY sequence DESC
              LIMIT 1",
-        )?;
-        let mut rows = stmt.query_map(params![conversation_id], map_row_to_message)?;
+            table_name
+        ))?;
+        let mut rows = stmt.query_map([], |row| map_row_to_message(conversation_id, row))?;
 
         match rows.next() {
             Some(Ok(msg)) => Ok(Some(msg)),
@@ -2155,53 +2241,15 @@ pub mod messages {
 
     /// Reorder side-copy projections after their completed turn.
     ///
-    /// A side copy is persisted as soon as `send_message` accepts the outbound
-    /// message, while the producing turn is persisted after all events finish.
-    /// Assigning sequence at insert time therefore puts the projection before
-    /// reasoning/tool events even though causally it is an output of that turn.
+    /// DEPRECATED: With per-conversation tables, side_copy projections are no longer used.
+    /// Messages are stored only in their target conversation, eliminating duplicates.
     pub fn link_side_copies_to_turn(
-        conversation_id: ConversationId,
-        correlation_id: &str,
-        turn_id: &str,
+        _conversation_id: ConversationId,
+        _correlation_id: &str,
+        _turn_id: &str,
     ) -> Result<usize> {
-        let db = get_user_data_db();
-        let mut conn = db.lock().unwrap();
-        let transaction = conn.transaction()?;
-        let next_sequence: i64 = transaction.query_row(
-            "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
-            params![conversation_id],
-            |row| row.get(0),
-        )?;
-
-        let mut stmt = transaction.prepare(
-            "SELECT message_id FROM messages
-             WHERE conversation_id = ?1
-               AND projection_kind = 'side_copy'
-               AND json_extract(metadata, '$.correlationId') = ?2
-             ORDER BY sequence ASC",
-        )?;
-        let message_ids = stmt
-            .query_map(params![conversation_id, correlation_id], |row| {
-                row.get::<_, i64>(0)
-            })?
-            .collect::<Result<Vec<_>>>()?;
-        drop(stmt);
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        for (offset, message_id) in message_ids.iter().enumerate() {
-            transaction.execute(
-                "UPDATE messages
-                 SET sequence = ?1, turn_id = ?2, updated_at = ?3
-                 WHERE message_id = ?4",
-                params![next_sequence + offset as i64, turn_id, now, message_id],
-            )?;
-        }
-
-        transaction.commit()?;
-        Ok(message_ids.len())
+        // No-op: per-conversation tables eliminate the need for side_copy reordering
+        Ok(0)
     }
 
     pub fn append(
@@ -2232,14 +2280,15 @@ pub mod messages {
     ) -> Result<Message> {
         let db = get_user_data_db();
         let mut conn = db.lock().unwrap();
+        let table_name = message_table_name(conversation_id);
         let transaction = conn.transaction()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
         let sequence: i64 = transaction.query_row(
-            "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
-            params![conversation_id],
+            &format!("SELECT COALESCE(MAX(sequence), -1) + 1 FROM {}", table_name),
+            [],
             |row| row.get(0),
         )?;
 
@@ -2267,8 +2316,8 @@ pub mod messages {
             message_type: agent_fields.message_type,
             content: agent_fields.content,
             turn_id: agent_fields.turn_id,
-            projection_kind: agent_fields.projection_kind,
-            origin_message_id: agent_fields.origin_message_id,
+            projection_kind: None, // Deprecated: per-conversation tables eliminate side_copy
+            origin_message_id: None, // Deprecated: per-conversation tables eliminate side_copy
             thinking: output_fields.thinking,
             tool_calls: output_fields.tool_calls,
             text_chunks: output_fields.text_chunks,
@@ -2279,17 +2328,18 @@ pub mod messages {
         };
 
         transaction.execute(
-            "INSERT INTO messages (message_id, conversation_id, sequence, role, parts, metadata,
-             from_agent_id, from_agent_name, message_type, content,
-             turn_id, projection_kind, origin_message_id,
-             thinking, tool_calls, text_chunks, stop_reason, duration_ms,
-             created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                     ?11, ?12, ?13,
-                     ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            &format!(
+                "INSERT INTO {} (message_id, sequence, role, parts, metadata,
+                 from_agent_id, from_agent_name, message_type, content,
+                 turn_id,
+                 thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                 created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                         ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                table_name
+            ),
             params![
                 message.message_id,
-                message.conversation_id,
                 message.sequence,
                 message.role,
                 message.parts,
@@ -2299,8 +2349,6 @@ pub mod messages {
                 message.message_type,
                 message.content,
                 message.turn_id,
-                message.projection_kind,
-                message.origin_message_id,
                 message.thinking,
                 message.tool_calls,
                 message.text_chunks,
@@ -2326,6 +2374,7 @@ pub mod messages {
     ) -> Result<Vec<Message>> {
         let db = get_user_data_db();
         let mut conn = db.lock().unwrap();
+        let table_name = message_table_name(conversation_id);
         let transaction = conn.transaction()?;
 
         let now = std::time::SystemTime::now()
@@ -2337,8 +2386,8 @@ pub mod messages {
 
         for (role, parts, metadata) in messages {
             let sequence: i64 = transaction.query_row(
-                "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
-                params![conversation_id],
+                &format!("SELECT COALESCE(MAX(sequence), -1) + 1 FROM {}", table_name),
+                [],
                 |row| row.get(0),
             )?;
 
@@ -2376,8 +2425,8 @@ pub mod messages {
                 message_type: agent_fields.message_type,
                 content: agent_fields.content,
                 turn_id: agent_fields.turn_id,
-                projection_kind: agent_fields.projection_kind,
-                origin_message_id: agent_fields.origin_message_id,
+                projection_kind: None, // Deprecated: per-conversation tables eliminate side_copy
+                origin_message_id: None, // Deprecated: per-conversation tables eliminate side_copy
                 thinking: output_fields.thinking,
                 tool_calls: output_fields.tool_calls,
                 text_chunks: output_fields.text_chunks,
@@ -2388,17 +2437,18 @@ pub mod messages {
             };
 
             transaction.execute(
-                "INSERT INTO messages (message_id, conversation_id, sequence, role, parts, metadata,
-                 from_agent_id, from_agent_name, message_type, content,
-                 turn_id, projection_kind, origin_message_id,
-                 thinking, tool_calls, text_chunks, stop_reason, duration_ms,
-                 created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                         ?11, ?12, ?13,
-                         ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                &format!(
+                    "INSERT INTO {} (message_id, sequence, role, parts, metadata,
+                     from_agent_id, from_agent_name, message_type, content,
+                     turn_id,
+                     thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                     created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                             ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                    table_name
+                ),
                 params![
                     message.message_id,
-                    message.conversation_id,
                     message.sequence,
                     message.role,
                     message.parts,
@@ -2408,8 +2458,6 @@ pub mod messages {
                     message.message_type,
                     message.content,
                     message.turn_id,
-                    message.projection_kind,
-                    message.origin_message_id,
                     message.thinking,
                     message.tool_calls,
                     message.text_chunks,
@@ -2439,38 +2487,70 @@ pub mod messages {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
+        // First get all conversation_ids for this collaboration session
         let mut stmt = conn.prepare(
-            "SELECT m.message_id, m.conversation_id, m.sequence, m.role, m.parts, m.metadata,
-                    m.from_agent_id, m.from_agent_name, m.message_type, m.content,
-                    m.turn_id, m.projection_kind, m.origin_message_id,
-                    m.thinking, m.tool_calls, m.text_chunks, m.stop_reason, m.duration_ms,
-                    m.created_at, m.updated_at
-             FROM messages m
-             JOIN conversations c ON m.conversation_id = c.conversation_id
-             WHERE c.collaboration_session_id = ?1
-             ORDER BY m.created_at ASC",
+            "SELECT conversation_id FROM conversations WHERE collaboration_session_id = ?1"
         )?;
-        let messages = stmt.query_map(params![collaboration_session_id], map_row_to_message)?;
-        messages.collect()
+        let conversation_ids: Vec<ConversationId> = stmt
+            .query_map(params![collaboration_session_id], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        // Query each conversation's message table and merge results
+        let mut all_messages = Vec::new();
+        for conv_id in conversation_ids {
+            let table_name = message_table_name(conv_id);
+            let mut stmt = conn.prepare(&format!(
+                "SELECT message_id, sequence, role, parts, metadata,
+                        from_agent_id, from_agent_name, message_type, content,
+                        turn_id,
+                        thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                        created_at, updated_at
+                 FROM {} ORDER BY created_at ASC",
+                table_name
+            ))?;
+            let messages = stmt.query_map([], |row| map_row_to_message(conv_id, row))?;
+            all_messages.extend(messages.collect::<std::result::Result<Vec<_>, _>>()?);
+        }
+
+        // Sort by created_at
+        all_messages.sort_by_key(|m| m.created_at);
+        Ok(all_messages)
     }
 
     pub fn list_by_chat(chat_id: ChatId) -> Result<Vec<Message>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
+        // First get all conversation_ids for this chat
         let mut stmt = conn.prepare(
-            "SELECT m.message_id, m.conversation_id, m.sequence, m.role, m.parts, m.metadata,
-                    m.from_agent_id, m.from_agent_name, m.message_type, m.content,
-                    m.turn_id, m.projection_kind, m.origin_message_id,
-                    m.thinking, m.tool_calls, m.text_chunks, m.stop_reason, m.duration_ms,
-                    m.created_at, m.updated_at
-             FROM messages m
-             JOIN conversations c ON m.conversation_id = c.conversation_id
-             WHERE c.chat_id = ?1
-             ORDER BY m.created_at ASC",
+            "SELECT conversation_id FROM conversations WHERE chat_id = ?1"
         )?;
-        let messages = stmt.query_map(params![chat_id], map_row_to_message)?;
-        messages.collect()
+        let conversation_ids: Vec<ConversationId> = stmt
+            .query_map(params![chat_id], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        // Query each conversation's message table and merge results
+        let mut all_messages = Vec::new();
+        for conv_id in conversation_ids {
+            let table_name = message_table_name(conv_id);
+            let mut stmt = conn.prepare(&format!(
+                "SELECT message_id, sequence, role, parts, metadata,
+                        from_agent_id, from_agent_name, message_type, content,
+                        turn_id,
+                        thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                        created_at, updated_at
+                 FROM {} ORDER BY created_at ASC",
+                table_name
+            ))?;
+            let messages = stmt.query_map([], |row| map_row_to_message(conv_id, row))?;
+            all_messages.extend(messages.collect::<std::result::Result<Vec<_>, _>>()?);
+        }
+
+        // Sort by created_at
+        all_messages.sort_by_key(|m| m.created_at);
+        Ok(all_messages)
     }
 
     fn parts_text(parts: &Option<String>) -> String {
@@ -2682,11 +2762,26 @@ pub mod messages {
     pub fn delete_older_than(cutoff_timestamp: i64) -> Result<usize> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
-        let count = conn.execute(
-            "DELETE FROM messages WHERE created_at < ?1",
-            params![cutoff_timestamp],
-        )?;
-        Ok(count)
+
+        // Get all conversation_ids
+        let mut stmt = conn.prepare("SELECT conversation_id FROM conversations")?;
+        let conversation_ids: Vec<ConversationId> = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        // Delete old messages from each conversation's table
+        let mut total_deleted = 0;
+        for conv_id in conversation_ids {
+            let table_name = message_table_name(conv_id);
+            let count = conn.execute(
+                &format!("DELETE FROM {} WHERE created_at < ?1", table_name),
+                params![cutoff_timestamp],
+            )?;
+            total_deleted += count;
+        }
+
+        Ok(total_deleted)
     }
 
     /// List messages by conversation with pagination
@@ -2697,46 +2792,56 @@ pub mod messages {
     ) -> Result<Vec<Message>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
+        let table_name = message_table_name(conversation_id);
 
         // Build query with optional LIMIT and OFFSET
         let query = match (limit, offset) {
             (Some(_l), Some(_o)) => {
-                "SELECT message_id, conversation_id, sequence, role, parts, metadata,
-                        from_agent_id, from_agent_name, message_type, content,
-                        turn_id, projection_kind, origin_message_id,
-                        thinking, tool_calls, text_chunks, stop_reason, duration_ms,
-                        created_at, updated_at
-                 FROM messages WHERE conversation_id = ?1 ORDER BY sequence ASC LIMIT ?2 OFFSET ?3"
+                format!(
+                    "SELECT message_id, sequence, role, parts, metadata,
+                            from_agent_id, from_agent_name, message_type, content,
+                            turn_id,
+                            thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                            created_at, updated_at
+                     FROM {} ORDER BY sequence ASC LIMIT ?1 OFFSET ?2",
+                    table_name
+                )
             }
             (Some(_l), None) => {
-                "SELECT message_id, conversation_id, sequence, role, parts, metadata,
-                        from_agent_id, from_agent_name, message_type, content,
-                        turn_id, projection_kind, origin_message_id,
-                        thinking, tool_calls, text_chunks, stop_reason, duration_ms,
-                        created_at, updated_at
-                 FROM messages WHERE conversation_id = ?1 ORDER BY sequence ASC LIMIT ?2"
+                format!(
+                    "SELECT message_id, sequence, role, parts, metadata,
+                            from_agent_id, from_agent_name, message_type, content,
+                            turn_id,
+                            thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                            created_at, updated_at
+                     FROM {} ORDER BY sequence ASC LIMIT ?1",
+                    table_name
+                )
             }
             _ => {
-                "SELECT message_id, conversation_id, sequence, role, parts, metadata,
-                        from_agent_id, from_agent_name, message_type, content,
-                        turn_id, projection_kind, origin_message_id,
-                        thinking, tool_calls, text_chunks, stop_reason, duration_ms,
-                        created_at, updated_at
-                 FROM messages WHERE conversation_id = ?1 ORDER BY sequence ASC"
+                format!(
+                    "SELECT message_id, sequence, role, parts, metadata,
+                            from_agent_id, from_agent_name, message_type, content,
+                            turn_id,
+                            thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                            created_at, updated_at
+                     FROM {} ORDER BY sequence ASC",
+                    table_name
+                )
             }
         };
 
-        let mut stmt = conn.prepare(query)?;
+        let mut stmt = conn.prepare(&query)?;
 
         let messages = match (limit, offset) {
             (Some(l), Some(o)) => stmt
-                .query_map(params![conversation_id, l, o], map_row_to_message)?
+                .query_map(params![l, o], |row| map_row_to_message(conversation_id, row))?
                 .collect::<Result<Vec<_>>>()?,
             (Some(l), None) => stmt
-                .query_map(params![conversation_id, l], map_row_to_message)?
+                .query_map(params![l], |row| map_row_to_message(conversation_id, row))?
                 .collect::<Result<Vec<_>>>()?,
             _ => stmt
-                .query_map(params![conversation_id], map_row_to_message)?
+                .query_map([], |row| map_row_to_message(conversation_id, row))?
                 .collect::<Result<Vec<_>>>()?,
         };
 
@@ -3517,7 +3622,7 @@ mod tests {
         let retrieved = workspaces::get(workspace.workspace_id).unwrap().unwrap();
         assert_eq!(retrieved.name, workspace.name);
 
-        let all = workspaces::list(None).unwrap();
+        let all = workspaces::list(None, None).unwrap();
         assert!(!all.is_empty());
 
         workspaces::delete(workspace.workspace_id).unwrap();

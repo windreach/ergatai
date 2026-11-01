@@ -158,6 +158,12 @@ export const useAgentConversationStore = create<AgentConversationStore>((set, ge
       return
     }
 
+    const currentChatId = get().chatId
+    if (currentChatId === chatId) {
+      // Already viewing this chat, don't reset state
+      return
+    }
+
     // Load open/active/pinned IDs from localStorage
     // allConversations will be populated from DB + placeholders in init effect
     const openConversationIds = loadFromLS<string[]>(chatId, "open", [])

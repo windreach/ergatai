@@ -51,7 +51,7 @@ impl WorkspaceService {
 
     /// 列出 Workspace
     pub fn list_workspaces(collaboration_mode: Option<&str>) -> anyhow::Result<Vec<Workspace>> {
-        let workspaces = workspaces::list(collaboration_mode)?;
+        let workspaces = workspaces::list(collaboration_mode, None)?;
         Ok(workspaces)
     }
 

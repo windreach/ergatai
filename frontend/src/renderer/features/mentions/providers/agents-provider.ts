@@ -14,6 +14,7 @@ import {
   MENTION_PREFIXES,
   sortByRelevance,
 } from "../types"
+import { buildGenericMentionToken } from "../../agents/mentions/mentions-utils"
 
 /**
  * Valid model values for agents
@@ -117,7 +118,7 @@ export const agentsProvider = createMentionProvider<AgentData>({
   },
 
   serialize(item: MentionItem<AgentData>): string {
-    return `@[${item.id}]`
+    return buildGenericMentionToken(item.id)
   },
 
   deserialize(token: string): MentionItem<AgentData> | null {

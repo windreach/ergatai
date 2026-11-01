@@ -1832,7 +1832,7 @@ pub async fn get_conversation_output(
         };
 
     match tokio::task::spawn_blocking(move || {
-        let output = user_data_db::messages::get(output_id_i64)?;
+        let output = user_data_db::messages::get(conversation_id_i64, output_id_i64)?;
         // Verify the output belongs to the specified conversation
         if let Some(ref out) = output {
             if out.conversation_id != conversation_id_i64 {

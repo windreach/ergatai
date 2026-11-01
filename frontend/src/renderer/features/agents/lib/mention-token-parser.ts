@@ -6,11 +6,11 @@ import { base64ToUtf8 } from "../utils/base64"
  * Result of parsing mention tokens from message text
  */
 export interface ParsedMentionTokens {
-  /** Text contexts extracted from @[quote:...] tokens */
+  /** Text contexts extracted from at-quote tokens */
   textContexts: SelectedTextContext[]
-  /** Diff text contexts extracted from @[diff:...] tokens */
+  /** Diff text contexts extracted from at-diff tokens */
   diffTextContexts: DiffTextContext[]
-  /** Pasted text files extracted from @[pasted:...] tokens */
+  /** Pasted text files extracted from at-pasted tokens */
   pastedTexts: PastedTextFile[]
   /** Clean text with all mention tokens removed */
   cleanedText: string
@@ -19,10 +19,10 @@ export interface ParsedMentionTokens {
 /**
  * Parse mention tokens from message text to restore text contexts, diff contexts, and pasted texts.
  *
- * Mention tokens have the format: @[type:data]
- * - @[quote:preview:base64] - Text context with preview and base64-encoded full text
- * - @[diff:filePath:lineNumber:preview:base64] - Diff text context with file location
- * - @[pasted:size:preview|filePath] - Pasted text file with size and preview
+ * Mention tokens have the format: at-open-bracket type colon data close-bracket
+ * - at-open-bracket quote colon preview colon base64 close-bracket - Text context with preview and base64-encoded full text
+ * - at-open-bracket diff colon filePath colon lineNumber colon preview colon base64 close-bracket - Diff text context with file location
+ * - at-open-bracket pasted colon size colon preview pipe filePath close-bracket - Pasted text file with size and preview
  *
  * @param rawText - Text containing mention tokens
  * @returns Parsed mention tokens and cleaned text

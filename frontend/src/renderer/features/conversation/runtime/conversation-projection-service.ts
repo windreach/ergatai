@@ -159,6 +159,33 @@ class ConversationProjectionServiceImpl implements ConversationProjectionService
       return undefined
     }
 
+    /**
+     * Merge metadata from `donor` into `base`, producing a new Message.
+     * Fills in fields that are missing or empty in `base`.
+     * This ensures that when two versions of the same message arrive through
+     * different sources (persisted / runtime / local transport), the final
+     * output carries the UNION of metadata fields — so the renderer sees
+     * consistent metadata regardless of which source "wins" dedup.
+     */
+    const mergeWithMetadata = (base: Message, donor: Message): Message => {
+      const baseMeta = getMetadata(base)
+      const donorMeta = getMetadata(donor)
+      let changed = false
+      const merged: ProjectionMetadata = { ...baseMeta }
+
+      for (const [key, value] of Object.entries(donorMeta)) {
+        if (value === undefined || value === null) continue
+        const baseValue = merged[key]
+        if (baseValue === undefined || baseValue === null || baseValue === "") {
+          merged[key] = value
+          changed = true
+        }
+      }
+
+      if (!changed) return base
+      return { ...base, metadata: merged }
+    }
+
     const addMessage = (message: Message): void => {
       const projectionKey = getProjectionKey(message)
       const ephemeral = isEphemeralStreamProjection(message)
@@ -168,6 +195,13 @@ class ConversationProjectionServiceImpl implements ConversationProjectionService
         // A durable copy wins regardless of source order. This handles user
         // turns, where there is no backend TurnStarted to key the projection.
         if (ephemeral && canonicalByExternalMessageId.has(externalMessageId)) {
+          // Merge ephemeral metadata into existing canonical (keep both in sync)
+          const existing = canonicalByExternalMessageId.get(externalMessageId)!
+          const merged = mergeWithMetadata(existing, message)
+          if (merged !== existing) {
+            messageById.set(merged.id, merged)
+            canonicalByExternalMessageId.set(externalMessageId, merged)
+          }
           return
         }
         if (!ephemeral) {
@@ -184,11 +218,25 @@ class ConversationProjectionServiceImpl implements ConversationProjectionService
 
       if (ephemeral && projectionKey) {
         // Never let a live projection overwrite the durable canonical copy.
-        if (findCanonicalByProjectionKey(projectionKey)) return
+        const canonical = findCanonicalByProjectionKey(projectionKey)
+        if (canonical) {
+          // Merge ephemeral metadata into canonical (enrich the durable copy)
+          const merged = mergeWithMetadata(canonical, message)
+          if (merged !== canonical) {
+            messageById.set(merged.id, merged)
+          }
+          return
+        }
 
         const existingEphemeral = ephemeralByProjectionKey.get(projectionKey)
         if (existingEphemeral) {
+          // Merge existing ephemeral metadata with new ephemeral (unify across sources)
+          const mergedNew = mergeWithMetadata(message, existingEphemeral)
+          const mergedExisting = mergeWithMetadata(mergedNew, existingEphemeral)
           messageById.delete(existingEphemeral.id)
+          ephemeralByProjectionKey.set(projectionKey, mergedExisting)
+          messageById.set(mergedExisting.id, mergedExisting)
+          return
         }
         ephemeralByProjectionKey.set(projectionKey, message)
         messageById.set(message.id, message)
@@ -200,6 +248,9 @@ class ConversationProjectionServiceImpl implements ConversationProjectionService
       if (projectionKey && ephemeralByProjectionKey.has(projectionKey)) {
         const existingEphemeral = ephemeralByProjectionKey.get(projectionKey)
         if (existingEphemeral) {
+          // Merge ephemeral metadata into canonical before replacing
+          // so the renderer sees consistent metadata
+          message = mergeWithMetadata(message, existingEphemeral)
           messageById.delete(existingEphemeral.id)
         }
         ephemeralByProjectionKey.delete(projectionKey)

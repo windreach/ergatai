@@ -18,6 +18,45 @@ interface ParsedMention {
 }
 
 /**
+ * Build a mention token string without using template literals with brackets.
+ * This prevents Tailwind from incorrectly parsing the token as a CSS arbitrary property.
+ * @internal
+ */
+function buildMentionToken(type: string, data: string): string {
+  // Use string concatenation to avoid Tailwind scanning mention tokens as arbitrary CSS properties
+  return "@".concat("[").concat(type).concat(data).concat("]")
+}
+
+/**
+ * Build a generic mention token from an ID.
+ * Use this to serialize any mention type.
+ */
+export function buildGenericMentionToken(id: string): string {
+  return "@".concat("[").concat(id).concat("]")
+}
+
+/**
+ * Build a quote mention token.
+ */
+export function buildQuoteMentionToken(preview: string, encodedText: string): string {
+  return buildMentionToken(MENTION_PREFIXES.QUOTE, `${preview}:${encodedText}`)
+}
+
+/**
+ * Build a diff mention token.
+ */
+export function buildDiffMentionToken(filePath: string, lineNumber: number, preview: string, encodedText: string): string {
+  return buildMentionToken(MENTION_PREFIXES.DIFF, `${filePath}:${lineNumber}:${preview}:${encodedText}`)
+}
+
+/**
+ * Build a pasted or chat history mention token.
+ */
+export function buildPastedMentionToken(prefix: string, size: number, preview: string, filePath: string): string {
+  return buildMentionToken(prefix, `${size}:${preview}|${filePath}`)
+}
+
+/**
  * Parse file/folder/skill/agent/tool/quote/diff/pasted mention ID into its components
  * Format: file:owner/repo:path/to/file.tsx or folder:owner/repo:path/to/folder or skill:skill-name or agent:agent-name or tool:servername
  * Quote format: quote:preview_text:full_text (base64 encoded full text)
@@ -237,7 +276,7 @@ export function parseMention(id: string): ParsedMention | null {
 export function extractFileMentionIds(text: string): string[] {
   const ids: string[] = []
   // Use a robust pattern that handles escaped brackets in mention IDs.
-  // Mentions are formatted as @[id], where id may contain paths with colons.
+  // Mentions are formatted as serialized tokens, where id may contain paths with colons.
   // The pattern matches either non-bracket/non-backslash chars, or escaped sequences (\.).
   const regex = /@\[((?:[^\]\\]|\\.)+)\]/g
   let match: RegExpExecArray | null

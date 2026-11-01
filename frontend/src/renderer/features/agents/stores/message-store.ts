@@ -874,10 +874,67 @@ function freezeDeep<T>(value: T): T {
   return value
 }
 
+/**
+ * Extract turnId from message metadata. Checks both `metadata.turnId` and
+ * top-level `turnId` field for compatibility with different message shapes.
+ */
+function getMessageTurnId(message: Message): string | null {
+  const metadata = message.metadata
+  if (metadata && typeof metadata === "object") {
+    const mdTurnId = (metadata as Record<string, unknown>).turnId
+    if (typeof mdTurnId === "string" && mdTurnId) return mdTurnId
+  }
+  const topTurnId = (message as unknown as Record<string, unknown>).turnId
+  if (typeof topTurnId === "string" && topTurnId) return topTurnId
+  return null
+}
+
+/**
+ * Deduplicate messages by id and by role+turnId.
+ *
+ * - By id: exact duplicate messages (same source, same id) are collapsed.
+ * - By role+turnId: the same logical message arriving through different sources
+ *   (persisted, runtime, local transport) with different ids but the same
+ *   backend-assigned turnId is kept only once.
+ *
+ * Preserves message order by keeping the first occurrence.
+ */
+function deduplicateMessages(messages: Message[]): Message[] {
+  if (messages.length === 0) return messages
+
+  const result: Message[] = []
+  const seenIds = new Set<string>()
+  // Track seen role+turnId pairs for cross-source dedup
+  const seenTurnKeys = new Set<string>()
+
+  for (const message of messages) {
+    // Dedup by exact id
+    if (seenIds.has(message.id)) continue
+
+    // Dedup by role+turnId (cross-source dedup for assistant messages)
+    const turnId = getMessageTurnId(message)
+    if (turnId) {
+      const turnKey = `${message.role}:${turnId}`
+      if (seenTurnKeys.has(turnKey)) continue
+      seenTurnKeys.add(turnKey)
+    }
+
+    seenIds.add(message.id)
+    result.push(message)
+  }
+
+  return result
+}
+
 export const syncMessagesWithStatusAtom = atom(
   null,
   (get, set, payload: { messages: Message[]; status: string; conversationId?: string; updateGlobal?: boolean }) => {
-    const { messages, status, conversationId, updateGlobal = true } = payload
+    const { messages: rawMessages, status, conversationId, updateGlobal = true } = payload
+
+    // Deduplicate messages by id and role+turnId to prevent the same response
+    // from appearing multiple times when it arrives through different sources
+    // (persisted, runtime, local transport) with different IDs but the same turnId.
+    const messages = deduplicateMessages(rawMessages)
 
     const prevConversationId = get(currentConversationIdAtom)
     const currentConversationId = conversationId ?? prevConversationId
@@ -900,10 +957,18 @@ export const syncMessagesWithStatusAtom = atom(
     }
 
     // Build new IDs list and roles map
-    const newIds = messages.map((m) => m.id)
+    // Filter out side_copy messages - they are rendered by InterAgentRepliesDisclosure
+    // and should not appear in the main chat message list (avoid duplicate rendering)
+    const newIds = messages
+      .filter((m) => {
+        const projectionKind = (m.metadata as Record<string, unknown> | undefined)?.projectionKind
+        return projectionKind !== "side_copy"
+      })
+      .map((m) => m.id)
     const newRoles = new Map<string, MessageRole>()
 
     for (const msg of messages) {
+      // Still store roles for side_copy messages (needed for messageAtomFamily)
       newRoles.set(msg.id, msg.role)
     }
 

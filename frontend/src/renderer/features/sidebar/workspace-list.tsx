@@ -47,6 +47,7 @@ const WorkspaceItem = memo(({
   onWorkspaceDeleted?: (workspaceId: string) => void
 }) => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [archiveDialogOpen, setArchiveDialogOpen] = useState(false)
   const [editDialogOpen, setEditDialogOpen] = useState(false)
   const utils = trpc.useUtils()
   const isSelected = selectedWorkspaceId === workspace.id
@@ -92,9 +93,6 @@ const WorkspaceItem = memo(({
   })
 
   const activeAgents = status?.activeAgentCount ?? 0
-  const blockers = [
-    activeAgents > 0 && `${activeAgents} active agent(s)`,
-  ].filter((blocker): blocker is string => Boolean(blocker))
 
   return (
     <div
@@ -170,7 +168,10 @@ const WorkspaceItem = memo(({
           <DropdownMenuSeparator />
           <DropdownMenuItem
             disabled={archiveMutation.isPending}
-            onSelect={() => archiveMutation.mutate({ workspaceId: workspace.id })}
+            onSelect={(event) => {
+              event.preventDefault()
+              setArchiveDialogOpen(true)
+            }}
           >
             <Archive className="h-3.5 w-3.5" />
             {archiveMutation.isPending ? "Archiving..." : "Archive"}
@@ -199,14 +200,12 @@ const WorkspaceItem = memo(({
             </AlertDialogDescription>
           </AlertDialogHeader>
 
-          {blockers.length > 0 && (
-            <div className="mx-5 mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-foreground">
-              <p className="font-medium">Resolve these before deleting:</p>
-              <ul className="mt-1 list-disc pl-4">
-                {blockers.map((blocker) => (
-                  <li key={blocker}>{blocker}</li>
-                ))}
-              </ul>
+          {activeAgents > 0 && (
+            <div className="mx-5 mb-4 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs text-foreground">
+              <p className="font-medium">Warning: {activeAgents} active agent(s) will be stopped</p>
+              <p className="mt-1 text-muted-foreground">
+                Deleting this workspace will automatically stop all running agents. Any unsaved progress will be lost.
+              </p>
             </div>
           )}
 
@@ -214,14 +213,46 @@ const WorkspaceItem = memo(({
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              disabled={
-                blockers.length > 0 ||
-                !status ||
-                deleteMutation.isPending
-              }
-              onClick={() => deleteMutation.mutate({ id: workspace.id, force: false })}
+              disabled={deleteMutation.isPending}
+              onClick={() => deleteMutation.mutate({ id: workspace.id, force: true })}
             >
               {deleteMutation.isPending ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={archiveDialogOpen} onOpenChange={setArchiveDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Archive workspace?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will archive the workspace and hide it from the active list.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {activeAgents > 0 && (
+            <div className="mx-5 mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-foreground">
+              <p className="font-medium">Warning: {activeAgents} active agent(s) will be stopped</p>
+              <p className="mt-1 text-muted-foreground">
+                Archiving this workspace will automatically stop all running agents. Any unsaved progress will be lost.
+              </p>
+            </div>
+          )}
+
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={archiveMutation.isPending}
+              onClick={() => {
+                archiveMutation.mutate({
+                  workspaceId: workspace.id,
+                  force: true
+                })
+                setArchiveDialogOpen(false)
+              }}
+            >
+              {archiveMutation.isPending ? "Archiving..." : "Archive"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

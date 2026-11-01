@@ -1144,26 +1144,32 @@ export const ergataiRouter = router({
     )
     .mutation(async ({ input }) => {
       const query = input.force ? "?force=true" : ""
-      const status = await ergataiFetch<BackendWorkspaceStatus>(
-        `/api/v1/workspaces/managed/${encodeURIComponent(input.id)}/status`,
-      )
-      if (status.active_agent_count > 0) {
-        throw new Error(
-          "Workspace has active agents running; stop them before deletion",
+
+      // Only check for active agents if force is not specified
+      // When force=true, let the backend handle stopping agents automatically
+      if (!input.force) {
+        const status = await ergataiFetch<BackendWorkspaceStatus>(
+          `/api/v1/workspaces/managed/${encodeURIComponent(input.id)}/status`,
+        )
+        if (status.active_agent_count > 0) {
+          throw new Error(
+            "Workspace has active agents running; stop them before deletion",
+          )
+        }
+
+        // Only kill terminal sessions if not forcing
+        const chats = await ergataiFetch<BackendChat[]>(
+          `/api/v1/chats?workspace_id=${encodeURIComponent(input.id)}`,
+        )
+        const terminalWorkspaceIds = [
+          ...new Set(
+            chats.flatMap(chat => [chat.id, chat.worktree_path].filter(Boolean) as string[]),
+          ),
+        ]
+        await Promise.all(
+          terminalWorkspaceIds.map(id => terminalManager.killByWorkspaceId(id)),
         )
       }
-
-      const chats = await ergataiFetch<BackendChat[]>(
-        `/api/v1/chats?workspace_id=${encodeURIComponent(input.id)}`,
-      )
-      const terminalWorkspaceIds = [
-        ...new Set(
-          chats.flatMap(chat => [chat.id, chat.worktree_path].filter(Boolean) as string[]),
-        ),
-      ]
-      await Promise.all(
-        terminalWorkspaceIds.map(id => terminalManager.killByWorkspaceId(id)),
-      )
 
       await ergataiFetch(
         `/api/v1/workspaces/managed/${encodeURIComponent(input.id)}${query}`,
@@ -1175,9 +1181,11 @@ export const ergataiRouter = router({
   archiveManagedWorkspace: publicProcedure
     .input(z.object({
       workspaceId: z.string(),
+      force: z.boolean().optional(),
     }))
     .mutation(async ({ input }) => {
-      return ergataiFetch(`/api/v1/workspaces/managed/${encodeURIComponent(input.workspaceId)}/archive`, {
+      const query = input.force ? "?force=true" : ""
+      return ergataiFetch(`/api/v1/workspaces/managed/${encodeURIComponent(input.workspaceId)}/archive${query}`, {
         method: "POST",
       })
     }),

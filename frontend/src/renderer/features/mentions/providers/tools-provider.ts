@@ -13,6 +13,7 @@ import {
   MENTION_PREFIXES,
   sortByRelevance,
 } from "../types"
+import { buildGenericMentionToken } from "../../agents/mentions/mentions-utils"
 
 /**
  * Data payload for MCP server mentions
@@ -131,7 +132,7 @@ export const toolsProvider = createMentionProvider<ToolData>({
   },
 
   serialize(item: MentionItem<ToolData>): string {
-    return `@[${item.id}]`
+    return buildGenericMentionToken(item.id)
   },
 
   deserialize(token: string): MentionItem<ToolData> | null {

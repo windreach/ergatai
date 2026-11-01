@@ -8,7 +8,6 @@ import type {
   UploadedImage,
 } from "../types"
 import type { AgentsMentionsEditorHandle } from "../mentions"
-import type { Message } from "../stores/message-store"
 import { executeRollback } from "./rollback-utils"
 
 interface UseConversationActionsOptions {
@@ -46,10 +45,14 @@ export function useConversationActions({
     async (userMsg: (typeof messages)[0]) => {
       try {
         await executeRollback(
-          { isRollingBack, isStreaming, messages: messages as unknown as Message[], conversationId, userMsg: userMsg as unknown as Message },
+          // Both UIMessage (AI SDK) and Message (local) share the minimal shape
+          // (id, role, parts, metadata) that rollback operations require.
+          { isRollingBack, isStreaming, messages, conversationId, userMsg },
           {
             setIsRollingBack,
-            setMessages: setMessages as unknown as (messages: Message[] | ((current: Message[]) => Message[])) => void,
+            // Type assertion safe: executeRollback coerces to Message[] before calling setMessages,
+            // and the underlying UIMessage[] setter accepts structurally compatible objects.
+            setMessages: setMessages as (messages: unknown[] | ((current: unknown[]) => unknown[])) => void,
             recomputeChangedFiles,
             refreshDiff,
             setImagesFromDraft,

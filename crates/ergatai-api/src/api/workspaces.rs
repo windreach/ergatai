@@ -36,8 +36,16 @@ pub struct DeleteManagedWorkspaceQuery {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ArchiveManagedWorkspaceQuery {
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ListManagedWorkspacesQuery {
     pub collaboration_mode: Option<crate::services::collaboration_session::CollaborationMode>,
+    #[serde(default)]
+    pub archived: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,7 +95,7 @@ pub async fn get_registered_path(
 pub async fn list_managed_workspaces(
     JsonQuery(query): JsonQuery<ListManagedWorkspacesQuery>,
 ) -> impl IntoResponse {
-    match manager::list(query.collaboration_mode.map(|m| m.as_str())).await {
+    match manager::list(query.collaboration_mode.map(|m| m.as_str()), query.archived).await {
         Ok(workspaces) => (StatusCode::OK, Json(workspaces)).into_response(),
         Err(error) => managed_error(error, "list_managed_workspaces"),
     }
@@ -161,15 +169,22 @@ pub async fn update_managed_workspace(
     post,
     path = "/api/v1/workspaces/managed/{id}/archive",
     tag = "ManagedWorkspaces",
-    params(("id" = String, Path, description = "Workspace ID")),
+    params(
+        ("id" = String, Path, description = "Workspace ID"),
+        ("force" = Option<bool>, Query, description = "Stop active agents before archiving")
+    ),
     responses(
         (status = 200, description = "Managed workspace archived", body = manager::ManagedWorkspace),
         (status = 404, description = "Workspace not found", body = crate::api::ApiError),
+        (status = 409, description = "Workspace has active runtime resources", body = crate::api::ApiError),
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
         (status = 400, description = "Invalid request parameters", body = crate::api::ApiError),)
 )]
-pub async fn archive_managed_workspace(Path(id): Path<String>) -> impl IntoResponse {
-    match manager::set_status(&id, "archived").await {
+pub async fn archive_managed_workspace(
+    Path(id): Path<String>,
+    JsonQuery(query): JsonQuery<ArchiveManagedWorkspaceQuery>,
+) -> impl IntoResponse {
+    match manager::archive(&id, query.force).await {
         Ok(workspace) => (StatusCode::OK, Json(workspace)).into_response(),
         Err(error) => managed_error(error, "archive_managed_workspace"),
     }

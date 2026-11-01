@@ -3,6 +3,7 @@
 use ergatai_core::id::{format as format_id, generate, parse_to_i64, IdType};
 use ergatai_error::{ProjectId, WorkspaceId};
 use ergatai_runtime::ResourceLimits;
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use utoipa::ToSchema;
@@ -246,6 +247,7 @@ pub async fn to_managed(workspace: Workspace) -> Result<ManagedWorkspace, Worksp
 
 pub async fn list(
     collaboration_mode: Option<&str>,
+    archived: Option<bool>,
 ) -> Result<Vec<ManagedWorkspace>, WorkspaceManagerError> {
     let collaboration_mode = collaboration_mode.filter(|mode| !mode.is_empty());
     if let Some(mode) = collaboration_mode {
@@ -258,7 +260,7 @@ pub async fn list(
 
     let collaboration_mode_owned = collaboration_mode.map(|s| s.to_string());
     let workspaces =
-        tokio::task::spawn_blocking(move || workspaces::list(collaboration_mode_owned.as_deref()))
+        tokio::task::spawn_blocking(move || workspaces::list(collaboration_mode_owned.as_deref(), archived))
             .await
             .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
             .map_err(WorkspaceManagerError::from)?;
@@ -285,40 +287,25 @@ pub async fn get(workspace_id: &str) -> Result<ManagedWorkspace, WorkspaceManage
 pub async fn create(
     request: CreateManagedWorkspaceRequest,
 ) -> Result<ManagedWorkspace, WorkspaceManagerError> {
-    let workspace_id = match &request.id {
-        None => WorkspaceId::generate(),
-        Some(id) if WorkspaceId::decode(id).is_ok() => WorkspaceId::decode(id).unwrap(),
-        Some(_) => {
-            return Err(WorkspaceManagerError::Validation(
-                "Invalid workspace ID format".to_string(),
-            ))
-        }
-    };
-    let id_check = workspace_id;
-    let exists = tokio::task::spawn_blocking(move || workspaces::get(id_check))
-        .await
-        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
-        .map_err(WorkspaceManagerError::from)?
-        .is_some();
-    if exists {
-        return Err(WorkspaceManagerError::Conflict(format!(
-            "Workspace {} already exists",
-            workspace_id
-        )));
-    }
-
+    // Validate inputs
     if request.work_dir.trim().is_empty() {
         return Err(WorkspaceManagerError::Validation(
             "Work directory cannot be empty".to_string(),
         ));
     }
-    if let Some(name) = &request.name {
-        if name.trim().is_empty() {
-            return Err(WorkspaceManagerError::Validation(
-                "Name cannot be empty".to_string(),
-            ));
+    let name = match request.name.clone() {
+        Some(n) if !n.trim().is_empty() => n,
+        _ => {
+            // Auto-generate a name from work_dir
+            let path = std::path::Path::new(&request.work_dir);
+            path.file_name()
+                .and_then(|s| s.to_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("workspace")
+                .to_string()
         }
-    }
+    };
+
     let work_dir = canonical_path(&request.work_dir)?;
     let (env, resources) = validate_json_settings(request.env, request.resources)?;
     let config = request.config.unwrap_or_else(|| "{}".to_string());
@@ -355,16 +342,76 @@ pub async fn create(
         }
     };
 
+    // Default status for new workspaces is "active"
+    let target_status = "active";
+
+    // If an explicit id is provided, try to use it
+    if let Some(ref id_str) = request.id {
+        let workspace_id = WorkspaceId::decode(id_str).map_err(|_| {
+            WorkspaceManagerError::Validation(format!("Invalid workspace ID format: {}", id_str))
+        })?;
+        // Check if workspace with this id already exists
+        let existing_by_id = tokio::task::spawn_blocking({
+            let ws_id_check = workspace_id;
+            move || workspaces::get(ws_id_check)
+        })
+        .await
+        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+        .map_err(WorkspaceManagerError::from)?;
+        if existing_by_id.is_some() {
+            return get(id_str).await;
+        }
+
+        let timestamp = now();
+        let workspace = Workspace {
+            workspace_id,
+            name,
+            work_dir,
+            env,
+            resources,
+            config,
+            collaboration_mode: collaboration_mode.as_str().to_string(),
+            status: target_status.to_string(),
+            default_project_id,
+            created_at: timestamp,
+            updated_at: timestamp,
+        };
+        let workspace_clone = workspace.clone();
+        tokio::task::spawn_blocking(move || workspaces::create(workspace_clone))
+            .await
+            .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+            .map_err(WorkspaceManagerError::from)?;
+        return to_managed(workspace).await;
+    }
+
+    // Check if an identical workspace already exists (name + work_dir + status)
+    // If found, return it directly (idempotent creation)
+    let all_workspaces = tokio::task::spawn_blocking(move || workspaces::list(None, None))
+        .await
+        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+        .map_err(WorkspaceManagerError::from)?;
+
+    let existing_identical = all_workspaces.iter().find(|w| {
+        w.name == name && w.work_dir == work_dir && w.status == target_status
+    });
+
+    if let Some(existing) = existing_identical {
+        // Workspace already exists with same name, path, and status - return it
+        return to_managed(existing.clone()).await;
+    }
+
+    // No identical workspace found - create a new one
+    let workspace_id = WorkspaceId::generate();
     let timestamp = now();
     let workspace = Workspace {
         workspace_id,
-        name: request.name.unwrap_or_default(),
+        name,
         work_dir,
         env,
         resources,
         config,
         collaboration_mode: collaboration_mode.as_str().to_string(),
-        status: "active".to_string(),
+        status: target_status.to_string(),
         default_project_id,
         created_at: timestamp,
         updated_at: timestamp,
@@ -374,7 +421,7 @@ pub async fn create(
         .await
         .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
         .map_err(WorkspaceManagerError::from)?;
-    // Return the workspace we just created, avoiding a redundant database query
+    // Return the workspace we just created
     to_managed(workspace).await
 }
 
@@ -602,7 +649,13 @@ pub async fn delete(workspace_id: &str, force: bool) -> Result<(), WorkspaceMana
     }
 
     for agent in active_agents {
-        let _ = runtime.stop_agent(&agent.agent_id).await;
+        if let Err(e) = runtime.stop_agent(&agent.agent_id).await {
+            tracing::warn!(
+                agent_id = %agent.agent_id,
+                error = %e,
+                "Failed to stop agent during workspace deletion"
+            );
+        }
     }
 
     // Unregister workspace from permission handler to prevent memory leak.
@@ -621,10 +674,100 @@ pub async fn delete(workspace_id: &str, force: bool) -> Result<(), WorkspaceMana
     let workspace_id = WorkspaceId::decode(workspace_id).map_err(|_| {
         WorkspaceManagerError::NotFound(format!("Invalid workspace ID format: {}", workspace_id))
     })?;
-    tokio::task::spawn_blocking(move || workspaces::delete(workspace_id))
-        .await
-        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
-        .map_err(WorkspaceManagerError::from)?;
+
+    // Delete explicitly in dependency order to avoid relying on implicit SQLite
+    // ON DELETE CASCADE behavior (more predictable, observable, and lock-friendly).
+    let ws_id = workspace_id;
+    tokio::task::spawn_blocking(move || {
+        let db = crate::user_data_db::get_user_data_db();
+        let mut conn = db.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        let ws_id_i64 = ws_id.as_i64();
+
+        // Drop per-conversation message tables first
+        {
+            let mut stmt = tx.prepare(
+                "SELECT conversation_id FROM conversations WHERE chat_id IN (SELECT chat_id FROM chats WHERE workspace_id = ?1) OR collaboration_session_id IN (SELECT collaboration_session_id FROM collaboration_sessions WHERE workspace_id = ?1)",
+            )?;
+            let conv_ids: Vec<i64> = stmt
+                .query_map(params![ws_id_i64], |row| row.get::<_, i64>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            drop(stmt);
+            for cid in conv_ids {
+                tx.execute(&format!("DROP TABLE IF EXISTS messages_{}", cid), [])?;
+            }
+        }
+
+        // Leaf tables first
+
+        tx.execute(
+            "DELETE FROM agent_sessions WHERE conversation_id IN (SELECT conversation_id FROM conversations WHERE chat_id IN (SELECT chat_id FROM chats WHERE workspace_id = ?1) OR collaboration_session_id IN (SELECT collaboration_session_id FROM collaboration_sessions WHERE workspace_id = ?1))",
+            params![ws_id_i64],
+        )?;
+
+        tx.execute(
+            "DELETE FROM collaboration_session_participants WHERE conversation_id IN (SELECT conversation_id FROM conversations WHERE chat_id IN (SELECT chat_id FROM chats WHERE workspace_id = ?1) OR collaboration_session_id IN (SELECT collaboration_session_id FROM collaboration_sessions WHERE workspace_id = ?1)) OR session_id IN (SELECT collaboration_session_id FROM collaboration_sessions WHERE workspace_id = ?1)",
+            params![ws_id_i64],
+        )?;
+
+        tx.execute(
+            "DELETE FROM initial_prompt_turns WHERE chat_id IN (SELECT chat_id FROM chats WHERE workspace_id = ?1) OR workspace_id = ?1 OR conversation_id IN (SELECT conversation_id FROM conversations WHERE chat_id IN (SELECT chat_id FROM chats WHERE workspace_id = ?1) OR collaboration_session_id IN (SELECT collaboration_session_id FROM collaboration_sessions WHERE workspace_id = ?1))",
+            params![ws_id_i64],
+        )?;
+
+        tx.execute(
+            "DELETE FROM conversation_execution_contexts WHERE conversation_id IN (SELECT conversation_id FROM conversations WHERE chat_id IN (SELECT chat_id FROM chats WHERE workspace_id = ?1) OR collaboration_session_id IN (SELECT collaboration_session_id FROM collaboration_sessions WHERE workspace_id = ?1))",
+            params![ws_id_i64],
+        )?;
+
+        tx.execute(
+            "DELETE FROM group_agent_bindings WHERE chat_id IN (SELECT chat_id FROM chats WHERE workspace_id = ?1) OR workspace_id = ?1",
+            params![ws_id_i64],
+        )?;
+
+        tx.execute(
+            "DELETE FROM collaboration_context_events WHERE session_id IN (SELECT collaboration_session_id FROM collaboration_sessions WHERE workspace_id = ?1)",
+            params![ws_id_i64],
+        )?;
+        tx.execute(
+            "DELETE FROM collaboration_plan_revisions WHERE session_id IN (SELECT collaboration_session_id FROM collaboration_sessions WHERE workspace_id = ?1)",
+            params![ws_id_i64],
+        )?;
+        tx.execute(
+            "DELETE FROM collaboration_approvals WHERE session_id IN (SELECT collaboration_session_id FROM collaboration_sessions WHERE workspace_id = ?1)",
+            params![ws_id_i64],
+        )?;
+
+        // Conversations
+        tx.execute(
+            "DELETE FROM conversations WHERE chat_id IN (SELECT chat_id FROM chats WHERE workspace_id = ?1) OR collaboration_session_id IN (SELECT collaboration_session_id FROM collaboration_sessions WHERE workspace_id = ?1)",
+            params![ws_id_i64],
+        )?;
+
+        // Sessions
+        tx.execute(
+            "DELETE FROM collaboration_sessions WHERE workspace_id = ?1 OR chat_id IN (SELECT chat_id FROM chats WHERE workspace_id = ?1)",
+            params![ws_id_i64],
+        )?;
+
+        // Chats
+        tx.execute("DELETE FROM chats WHERE workspace_id = ?1", params![ws_id_i64])?;
+
+        // Projects (no FK cascade in schema)
+        tx.execute("DELETE FROM projects WHERE workspace_id = ?1", params![ws_id_i64])?;
+
+        // Terminal sessions (no FK)
+        tx.execute("DELETE FROM terminal_sessions WHERE workspace_id = ?1", params![ws_id_i64])?;
+
+        // Workspace
+        tx.execute("DELETE FROM workspaces WHERE workspace_id = ?1", params![ws_id_i64])?;
+
+        tx.commit()?;
+        Ok::<usize, rusqlite::Error>(1)
+    })
+    .await
+    .map_err(|e| WorkspaceManagerError::Internal(e.into()))??;
     Ok(())
 }
 
@@ -803,6 +946,83 @@ pub async fn archive_workspace(workspace_id: &str) -> Result<Workspace, Workspac
     Ok(updated_workspace)
 }
 
+/// Archive a workspace with optional force flag to stop active agents
+pub async fn archive(
+    workspace_id: &str,
+    force: bool,
+) -> Result<ManagedWorkspace, WorkspaceManagerError> {
+    // 1. Get workspace and check it exists
+    let workspace = get(workspace_id).await?;
+
+    if workspace.status == "archived" {
+        return Err(WorkspaceManagerError::Conflict(
+            "Workspace already archived".to_string(),
+        ));
+    }
+
+    // 2. Check for active agents
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    let active_agents: Vec<_> = runtime
+        .list_agents()
+        .await
+        .into_iter()
+        .filter(|agent| agent.workspace_id == workspace_id && agent.lifecycle.is_alive())
+        .collect();
+
+    if !active_agents.is_empty() && !force {
+        return Err(WorkspaceManagerError::Conflict(format!(
+            "Workspace has {} active agent(s); stop them or use force=true",
+            active_agents.len()
+        )));
+    }
+
+    // 3. If force=true, stop all active agents
+    for agent in active_agents {
+        if let Err(e) = runtime.stop_agent(&agent.agent_id).await {
+            tracing::warn!(
+                agent_id = %agent.agent_id,
+                error = %e,
+                "Failed to stop agent during workspace archive"
+            );
+        }
+    }
+
+    // 3b. Cascade archive all active chats for this workspace
+    let ws_id = WorkspaceId::decode(workspace_id).ok();
+    if let Some(typed_id) = ws_id {
+        if let Err(e) = tokio::task::spawn_blocking(move || chats::archive_by_workspace(typed_id)).await {
+            tracing::warn!(error = %e, "Failed to spawn chat archive task");
+        }
+    }
+
+    // 4. Cleanup runtime workspace
+    if let Ok(workspaces) = runtime.backend().list_workspaces().await {
+        if let Some(ws) = workspaces
+            .into_iter()
+            .find(|w| w.id == workspace_id)
+        {
+            if let Err(e) = runtime.backend().cleanup_workspace(&ws).await {
+                tracing::warn!(error = %e, "Failed to cleanup runtime workspace");
+            }
+        }
+    }
+
+    // 5. Unregister from permission handler
+    // Key format must match register_workspace() in main.rs: raw i64 decimal string
+    if let Some(permission_handler) = crate::get_permission_handler() {
+        let unregister_key = match WorkspaceId::decode(workspace_id) {
+            Ok(typed_id) => typed_id.as_i64().to_string(),
+            Err(_) => workspace_id.to_string(),
+        };
+        permission_handler
+            .unregister_workspace(&unregister_key)
+            .await;
+    }
+
+    // 6. Update database status to archived
+    set_status(workspace_id, "archived").await
+}
+
 /// 从归档恢复 workspace
 pub async fn restore_workspace(workspace_id: &str) -> Result<Workspace, WorkspaceManagerError> {
     let workspace_id = WorkspaceId::decode(workspace_id).map_err(|_| {
@@ -832,6 +1052,12 @@ pub async fn restore_workspace(workspace_id: &str) -> Result<Workspace, Workspac
         .await
         .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
         .map_err(WorkspaceManagerError::from)?;
+
+    // 3. 级联恢复该 workspace 下所有已归档的 chats（对称于归档时的级联）
+    let ws_id_typed = workspace_id;
+    if let Err(e) = tokio::task::spawn_blocking(move || chats::unarchive_by_workspace(ws_id_typed)).await {
+        tracing::warn!(error = %e, "Failed to spawn chat unarchive task");
+    }
 
     Ok(updated_workspace)
 }

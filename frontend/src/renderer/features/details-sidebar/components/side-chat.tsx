@@ -27,6 +27,7 @@ import { syncMessagesWithStatusAtom } from "../../agents/stores/message-store"
 import { clearConversationRuntimeCaches } from "../../agents/stores/conversation-runtime-cleanup"
 import { useChatInstance } from "../../agents/hooks/use-chat-instance"
 import { useSideChatInvocation } from "../hooks/use-side-chat-invocation"
+import { clearLoading, loadingConversationsAtom, setLoading } from "../../agents/atoms"
 
 interface SideChatProps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- messages type is dynamic from backend
@@ -69,6 +70,8 @@ export function SideChat({
 }: SideChatProps) {
   const backendConversationId = conversation.backendConversationId
   const runtimeConversationId = backendConversationId ?? conversation.id
+
+  const setLoadingConversations = useSetAtom(loadingConversationsAtom)
 
   const editorRef = useRef<AgentsMentionsEditorHandle>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -141,6 +144,19 @@ export function SideChat({
   const isRuntimeStreaming = runtimeStatus === "streaming"
   const displayMessages = messages
 
+  useEffect(() => {
+    if (!runtimeConversationId) return
+    if (status === "streaming" || status === "submitted") {
+      if (chatId) {
+        setLoading(setLoadingConversations, runtimeConversationId, chatId)
+      }
+      return
+    }
+    if (status === "ready" || status === "error") {
+      clearLoading(setLoadingConversations, runtimeConversationId)
+    }
+  }, [status, runtimeConversationId, chatId, setLoadingConversations])
+
   // ChatMessagesRenderer reads the optimized per-conversation message store,
   // not the messages prop. Seed it from backend-generated runtime turns so a
   // side chat attached mid-turn (or before persistence catches up) is visible.
@@ -170,6 +186,15 @@ export function SideChat({
     status,
     isActive,
   })
+
+  useEffect(() => {
+    return () => {
+      if (runtimeConversationId) {
+        clearLoading(setLoadingConversations, runtimeConversationId)
+      }
+      clearConversationRuntimeCaches(runtimeConversationId)
+    }
+  }, [runtimeConversationId, setLoadingConversations])
 
   // Rollback handler - unified with main chat
   // Note: Side chat has simplified functionality - no diff view or draft restoration
@@ -232,6 +257,10 @@ export function SideChat({
       })),
     ]
 
+    if (runtimeConversationId && chatId) {
+      setLoading(setLoadingConversations, runtimeConversationId, chatId)
+    }
+
     sendUserMessage(parts)
 
     editorRef.current?.clear()
@@ -245,16 +274,26 @@ export function SideChat({
     clearTextContexts,
     scrollToBottom,
     sendUserMessage,
+    runtimeConversationId,
+    chatId,
+    setLoadingConversations,
   ])
 
   const handleForceSend = useCallback(async () => {
+    if (runtimeConversationId && chatId) {
+      clearLoading(setLoadingConversations, runtimeConversationId)
+      setLoading(setLoadingConversations, runtimeConversationId, chatId)
+    }
     await stop()
     handleSend()
-  }, [stop, handleSend])
+  }, [stop, handleSend, runtimeConversationId, chatId, setLoadingConversations])
 
   const handleStop = useCallback(async () => {
+    if (runtimeConversationId) {
+      clearLoading(setLoadingConversations, runtimeConversationId)
+    }
     stop()
-  }, [stop])
+  }, [stop, runtimeConversationId, setLoadingConversations])
 
   const handleCompact = useCallback(() => {
     console.log("Compact not implemented for side chat")

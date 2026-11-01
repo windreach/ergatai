@@ -24,7 +24,7 @@ use ergatai_core::id::{format as format_id, generate, parse_to_i64, IdType};
 use ergatai_error::{AgentId, ConversationId};
 use ergatai_runtime::AgentRuntime;
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::mcp::conversation::{ConversationConfig, ConversationManager};
 use crate::mcp::request_monitor::RequestMonitor;
@@ -523,7 +523,7 @@ impl MessageSender {
             let queued_conversation_id = target_conversation_id;
             let queued_conversation_id_for_warn = target_conversation_id;
             let sender_conversation_id = self.get_sender_conversation_id(&resolved_sender_id).await;
-            let sender_conversation_id_for_copy =
+            let _sender_conversation_id_for_copy =
                 ConversationId::decode(&sender_conversation_id).ok();
 
             let payload = ergatai_nats::AgentMessagePayload {
@@ -620,7 +620,6 @@ impl MessageSender {
                             from_agent_name: Some(early_sender_name),
                             message_type: Some(early_message_type),
                             content: Some(early_content),
-                            projection_kind: Some("canonical".to_string()),
                             ..Default::default()
                         };
 
@@ -661,88 +660,8 @@ impl MessageSender {
                         }
                     }
 
-                    // A response is delivered to the requesting conversation,
-                    // but the responding agent's side conversation should also
-                    // show what it sent. Persist a display copy there so the
-                    // side transcript is not limited to thinking/tool/END.
-                    if matches!(req.message_type.as_str(), "response" | "broadcast")
-                        && sender_conversation_id_for_copy
-                            .is_some_and(|id| id != queued_conversation_id_for_warn)
-                    {
-                        let Some(sender_conversation_id_for_copy) = sender_conversation_id_for_copy
-                        else {
-                            unreachable!("guarded above");
-                        };
-                        let copy_message_id = format_id(generate(), IdType::Message);
-                        let copy_conversation_id = sender_conversation_id_for_copy;
-                        let copy_parts = serde_json::json!([
-                            { "type": "text", "text": actual_message }
-                        ]);
-                        let copy_metadata = serde_json::json!({
-                            "externalMessageId": copy_message_id,
-                            "senderAgentId": resolved_sender_id,
-                            "senderAgentName": sender_name,
-                            "messageType": req.message_type,
-                            "correlationId": correlation_id.clone(),
-                            "deliveryStatus": "sent",
-                            "sideConversationCopy": true,
-                            "projectionKind": "side_copy",
-                            "originMessageId": queued_message_id.clone(),
-                        });
-                        let copy_from = resolved_sender_id.clone();
-                        let copy_sender_name = sender_name.clone();
-                        let copy_message_type = req.message_type.clone();
-                        let copy_content = actual_message.clone();
-                        let copy_origin_message_id = queued_message_id.clone();
-                        let copy_result = tokio::task::spawn_blocking(move || {
-                            let role = agent_message_role(&copy_message_type);
-                            let agent_fields = user_data_db::messages::AgentMessageFields {
-                                from_agent_id: parse_to_i64(&copy_from),
-                                from_agent_name: Some(copy_sender_name),
-                                message_type: Some(copy_message_type),
-                                content: Some(copy_content),
-                                projection_kind: Some("side_copy".to_string()),
-                                origin_message_id: Some(copy_origin_message_id),
-                                ..Default::default()
-                            };
-
-                            user_data_db::messages::append(
-                                copy_conversation_id,
-                                role,
-                                copy_parts,
-                                copy_metadata,
-                                Some(agent_fields),
-                            )
-                        })
-                        .await;
-
-                        match copy_result {
-                            Ok(Ok(persisted_msg)) => {
-                                publish_to_conversation_subject_with_message(
-                                    persisted_msg,
-                                    Some(resolved_sender_id.clone()),
-                                    Some(sender_display.clone()),
-                                )
-                                .await;
-                            }
-                            Ok(Err(error)) => {
-                                warn!(
-                                    message_id = %copy_message_id,
-                                    conversation_id = %sender_conversation_id_for_copy,
-                                    error = %error,
-                                    "Failed to persist side-conversation response copy"
-                                );
-                            }
-                            Err(error) => {
-                                warn!(
-                                    message_id = %copy_message_id,
-                                    conversation_id = %sender_conversation_id_for_copy,
-                                    error = %error,
-                                    "Failed to join side-conversation response copy task"
-                                );
-                            }
-                        }
-                    }
+                    // Note: With per-conversation tables, messages are only stored in the
+                    // target conversation. No side-copy is needed, eliminating duplicate rendering.
 
                     self.mark_response_delivered(
                         &req.message_type,
@@ -854,7 +773,6 @@ impl MessageSender {
                             from_agent_name: Some(sender_name),
                             message_type: Some(message_type),
                             content: Some(message.clone()),
-                            projection_kind: Some("canonical".to_string()),
                             ..Default::default()
                         };
 
@@ -2021,18 +1939,8 @@ pub async fn publish_to_conversation_subject_with_message(
     let conversation_id_for_log = persisted_msg.conversation_id;
     let msg_id_for_log = persisted_msg.message_id;
 
-    // Side copies are persistence projections, not turn events. Publishing
-    // them while the sender's own turn is still streaming splits the active
-    // trace and makes the renderer race between runtime and durable views.
-    // They become visible when the turn's durable projection is reconciled.
-    if persisted_msg.projection_kind.as_deref() == Some("side_copy") {
-        debug!(
-            message_id = %msg_id_for_log,
-            conversation_id = %conversation_id_for_log,
-            "Skipping SSE publish for side-copy projection"
-        );
-        return;
-    }
+    // Note: With per-conversation tables, side_copy projections are no longer created.
+    // Messages are stored only in their target conversation, eliminating duplicates.
 
     // Structured agent messages keep the user-facing content in `content`,
     // while `parts` preserves the original wire envelope (for example a JSON

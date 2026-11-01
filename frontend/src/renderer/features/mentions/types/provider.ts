@@ -60,10 +60,10 @@ export interface MentionProvider<TData = unknown> {
 
   /**
    * Serialize a mention item for storage in messages
-   * Returns the @[...] token format
+   * Returns the mention token format
    *
    * @param item - The mention item to serialize
-   * @returns Serialized string (e.g., "@[file:local:/src/index.ts]")
+   * @returns Serialized string (e.g., mention token for "file:local:/src/index.ts")
    */
   serialize(item: MentionItem<TData>): string
 
@@ -71,7 +71,7 @@ export interface MentionProvider<TData = unknown> {
    * Deserialize a stored token back to a mention item
    * Used when rendering messages with mentions
    *
-   * @param token - The token without @[] wrapper (e.g., "file:local:/src/index.ts")
+   * @param token - The token without wrapper brackets (e.g., "file:local:/src/index.ts")
    * @returns Mention item or null if not owned by this provider
    */
   deserialize(token: string): MentionItem<TData> | null

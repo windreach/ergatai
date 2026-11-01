@@ -14,6 +14,7 @@ import {
   MENTION_PREFIXES,
   sortByRelevance,
 } from "../types"
+import { buildGenericMentionToken } from "../../agents/mentions/mentions-utils"
 
 /**
  * Data payload for skill mentions
@@ -103,7 +104,7 @@ export const skillsProvider = createMentionProvider<SkillData>({
   },
 
   serialize(item: MentionItem<SkillData>): string {
-    return `@[${item.id}]`
+    return buildGenericMentionToken(item.id)
   },
 
   deserialize(token: string): MentionItem<SkillData> | null {

@@ -717,7 +717,7 @@ async fn async_main(args: Args) -> Result<()> {
             // lock manager initialized and file writes would fall back to auto-approve.
             if let Some(permission_handler) = ergatai_api::get_permission_handler() {
                 let list_result = tokio::task::spawn_blocking(|| {
-                    ergatai_api::user_data_db::workspaces::list(None)
+                    ergatai_api::user_data_db::workspaces::list(None, None)
                 })
                 .await;
 

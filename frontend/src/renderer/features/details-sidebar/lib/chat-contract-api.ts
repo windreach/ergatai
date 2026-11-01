@@ -26,6 +26,8 @@ export interface ChatMessage {
   agentContent?: string | null
   metadata?: Record<string, unknown>
   parts?: unknown[]
+  /** Backend-assigned turn identifier for deduplication across sources. */
+  turnId?: string | null
 }
 
 export interface ChatConversation {

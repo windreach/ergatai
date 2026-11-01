@@ -185,11 +185,21 @@ export function buildRuntimeMessages(
         role: normalizeRuntimeMessageRole(event.role),
         metadata: {
           ...persistedMetadata,
+          // Ensure turnId is always present so the projection service can
+          // deduplicate across sources (persisted / runtime / local transport).
+          // Prefer the event's own turn_id (from backend message metadata);
+          // fall back to the snapshot's turnId which covers the current turn.
+          turnId: (typeof persistedMetadata.turnId === "string" && persistedMetadata.turnId)
+            ? persistedMetadata.turnId
+            : (typeof persistedMetadata.turn_id === "string" && persistedMetadata.turn_id)
+              ? persistedMetadata.turn_id
+              : turnId ?? persistedMetadata.turnId,
+          // 统一设置 agentContent：与 mapMessage (use-chat-instance.ts) 保持一致
+          // 所有消息都设置 agentContent，不仅仅限于 agent role
+          agentContent: structuredContent ?? event.content,
           senderAgentId: event.sender_agent_id ?? persistedMetadata.senderAgentId,
           senderAgentName: event.sender_agent_name ?? persistedMetadata.senderAgentName,
           messageType: event.message_type ?? persistedMetadata.messageType,
-          // AgentMessageItem prefers this structured content for agent requests.
-          agentContent: event.role === "agent" ? structuredContent : undefined,
         },
         parts: shouldUseStructuredContent && structuredContent
           ? [{ type: "text", text: structuredContent }]

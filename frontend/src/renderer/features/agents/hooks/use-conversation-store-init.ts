@@ -72,9 +72,12 @@ export function useConversationStoreInit({
         typeof sc.updated_at === "string"
           ? sc.updated_at
           : sc.updated_at?.toISOString()
+      const dbName = typeof sc.name === "string" && sc.name.trim() ? sc.name : null
+      const localName = existingLocal?.name && existingLocal.name.trim() ? existingLocal.name : null
+      const name = dbName || localName || "New Chat"
       return {
         id: sc.id,
-        name: sc.name || "New Chat",
+        name,
         // Prefer DB timestamp, fall back to local timestamp, then current time
         created_at:
           createdAt ?? existingLocal?.created_at ?? new Date().toISOString(),

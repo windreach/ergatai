@@ -106,18 +106,45 @@ export function AgentsContent() {
   )
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useAtom(selectedWorkspaceIdAtom)
   const [selectedProjectEntry] = useAtom(selectedWorkspaceAtom)
-  const { data: selectedWorkspace, error: workspaceError } = trpc.ergatai.getManagedWorkspace.useQuery(
+
+  // Only validate workspace after initial load is complete
+  // This prevents clearing workspace due to transient errors during app startup
+  const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
+
+  // Delay before enabling workspace/chat validation to allow backend to stabilize
+  const INITIAL_LOAD_DELAY_MS = 500
+
+  useEffect(() => {
+    // Mark initial load as complete after a short delay to allow backend to initialize
+    const timer = setTimeout(() => {
+      setIsInitialLoadComplete(true)
+    }, INITIAL_LOAD_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [])
+
+  const { data: selectedWorkspace, error: workspaceError, isLoading: isWorkspaceLoading } = trpc.ergatai.getManagedWorkspace.useQuery(
     { id: selectedWorkspaceId! },
-    { enabled: !!selectedWorkspaceId },
+    {
+      enabled: !!selectedWorkspaceId && isInitialLoadComplete, // Only query after initial load
+      retry: 2, // Retry failed queries
+      retryDelay: 1000, // Wait 1s between retries
+    },
   )
 
   // Clear invalid workspace ID if workspace no longer exists (returns null for 404)
+  // Only do this after initial load is complete to avoid clearing due to transient errors
   useEffect(() => {
+    if (!isInitialLoadComplete) return // Wait for initial load
+
     if ((workspaceError || selectedWorkspace === null) && selectedWorkspaceId) {
       console.warn("[Workspace] Selected workspace no longer exists, clearing selection:", selectedWorkspaceId)
       setSelectedWorkspaceId(null)
+      // Also clear selected chat when workspace is cleared to avoid showing orphaned chat
+      if (selectedChatId) {
+        setSelectedChatId(null)
+      }
     }
-  }, [workspaceError, selectedWorkspace, selectedWorkspaceId, setSelectedWorkspaceId])
+  }, [workspaceError, selectedWorkspace, selectedWorkspaceId, setSelectedWorkspaceId, selectedChatId, setSelectedChatId, isInitialLoadComplete])
 
   // Initialize workspace chats store
   useEffect(() => {
@@ -285,10 +312,33 @@ export function AgentsContent() {
   useEffect(() => {
     if (!selectedChatId) return
 
-    if (!selectedChatId.startsWith("chat_") || chatData === null) {
+    // Wait for initial load before validating chat
+    if (!isInitialLoadComplete) return
+
+    // Validate chat ID format
+    if (!selectedChatId.startsWith("chat_")) {
       setSelectedChatId(null)
+      return
     }
-  }, [selectedChatId, chatData, setSelectedChatId])
+
+    // Validate chat exists
+    if (chatData === null) {
+      setSelectedChatId(null)
+      return
+    }
+
+    // Validate chat belongs to the selected workspace
+    // This prevents showing a chat from a different workspace after app restart
+    // Only check if workspace is loaded and valid
+    if (chatData && selectedWorkspace && chatData.workspaceId !== selectedWorkspace.id) {
+      console.warn(
+        "[Chat] Selected chat belongs to a different workspace, clearing selection:",
+        { chatId: selectedChatId, chatWorkspace: chatData.workspaceId, selectedWorkspace: selectedWorkspace.id }
+      )
+      setSelectedChatId(null)
+      return
+    }
+  }, [selectedChatId, chatData, selectedWorkspace, setSelectedChatId, isInitialLoadComplete])
 
   // Track previous chat ID for navigation after archive
   const [previousChatId, setPreviousChatId] = useAtom(previousAgentChatIdAtom)
@@ -1019,11 +1069,21 @@ export function AgentsContent() {
             className="h-full w-full flex flex-col overflow-hidden select-text"
             data-mobile-chat-mode
           >
-            {selectedChatId && isChatDataLoading ? (
+            {!selectedWorkspaceId ? (
+              // No workspace selected - show default view
+              <AgentsDefaultView
+                onWorkspaceCreated={handleWorkspaceCreated}
+              />
+            ) : isWorkspaceLoading ? (
+              // Workspace is still loading - show loading spinner
               <div className="flex h-full items-center justify-center">
                 <IconSpinner className="h-5 w-5 text-muted-foreground" />
               </div>
-            ) : selectedChatId ? (
+            ) : selectedChatId && isChatDataLoading ? (
+              <div className="flex h-full items-center justify-center">
+                <IconSpinner className="h-5 w-5 text-muted-foreground" />
+              </div>
+            ) : selectedChatId && selectedWorkspace ? (
               <ChatView
                 key={selectedChatId}
                 chatId={selectedChatId}
@@ -1094,6 +1154,12 @@ export function AgentsContent() {
           persistContent={true}
         >
           <WorkspaceChatsSidebar
+            onClose={() => {
+              setShouldAnimateConversationsSidebar(true)
+              setConversationsSidebarMode("tabs")
+            }}
+            onBackToChats={() => setSidebarOpen((prev) => !prev)}
+            isSidebarOpen={sidebarOpen}
             workspaceId={selectedWorkspaceId}
             workspaceName={selectedWorkspace?.name ?? null}
             agentName={chatData?.name ?? null}
@@ -1121,11 +1187,23 @@ export function AgentsContent() {
                 <TaskBoardView />
               ) : desktopView === "add-agent" ? (
                 <AddAgentViewPage />
+              ) : !selectedWorkspaceId ? (
+                // No workspace selected - show default view
+                <div className="h-full flex relative overflow-hidden">
+                  <AgentsDefaultView
+                    onWorkspaceCreated={handleWorkspaceCreated}
+                  />
+                </div>
+              ) : isWorkspaceLoading ? (
+                // Workspace is still loading - show loading spinner
+                <div className="h-full flex items-center justify-center">
+                  <IconSpinner className="h-5 w-5 text-muted-foreground" />
+                </div>
               ) : selectedChatId && isChatDataLoading ? (
                 <div className="h-full flex items-center justify-center">
                   <IconSpinner className="h-5 w-5 text-muted-foreground" />
                 </div>
-              ) : selectedChatId ? (
+              ) : selectedChatId && selectedWorkspace ? (
                 <div className="h-full flex flex-col relative overflow-hidden">
                   <ChatView
                     key={selectedChatId}

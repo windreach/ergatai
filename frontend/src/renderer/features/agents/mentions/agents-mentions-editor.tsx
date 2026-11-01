@@ -11,6 +11,7 @@ import {
   memo,
 } from "react"
 import { createFileIconElement } from "./file-icon-utils"
+import { buildGenericMentionToken } from "./mentions-utils"
 
 // Threshold for skipping expensive trigger detection (characters)
 // Should be >= MAX_PASTE_LENGTH from paste-text.ts to avoid processing large pasted content
@@ -25,7 +26,7 @@ interface UndoState {
   cursorOffset: number
 }
 
-// Parse a serialized mention id (the part inside @[...]) into a FileMentionOption.
+// Parse a serialized mention id (the part inside mention token brackets) into a FileMentionOption.
 // Used as a fallback when resolveMention is not provided (e.g., during restore from serialized text).
 function parseMentionId(id: string): FileMentionOption | null {
   if (id.startsWith(MENTION_PREFIXES.FILE) || id.startsWith(MENTION_PREFIXES.FOLDER)) {
@@ -158,7 +159,7 @@ function createMentionNode(option: FileMentionOption): HTMLSpanElement {
   return span
 }
 
-// Serialize DOM to text with @[id] tokens
+// Serialize DOM to text with mention tokens
 function serializeContent(root: HTMLElement): string {
   let result = ""
   const walker = document.createTreeWalker(
@@ -210,7 +211,7 @@ function serializeContent(root: HTMLElement): string {
     }
     if (el.hasAttribute("data-mention-id")) {
       const id = el.getAttribute("data-mention-id") || ""
-      result += `@[${id}]`
+      result += buildGenericMentionToken(id)
       // Skip subtree
       let next: Node | null = el.nextSibling
       if (next) {
@@ -261,7 +262,7 @@ function buildContentFromSerialized(
       root.appendChild(document.createTextNode(" "))
     } else {
       // Fallback: just show the id
-      root.appendChild(document.createTextNode(`@[${id}]`))
+      root.appendChild(document.createTextNode(buildGenericMentionToken(id)))
     }
     lastIndex = match.index + match[0].length
   }
@@ -440,7 +441,7 @@ function walkTreeOnce(root: HTMLElement, range: Range | null): TreeWalkResult {
 
       if (el.hasAttribute("data-mention-id")) {
         const id = el.getAttribute("data-mention-id") || ""
-        const mentionToken = `@[${id}]`
+        const mentionToken = buildGenericMentionToken(id)
         serialized += mentionToken
         if (!reachedCursor) {
           textBeforeCursor += mentionToken
@@ -547,7 +548,7 @@ export const AgentsMentionsEditor = memo(
         if (sel && sel.rangeCount > 0 && editorRef.current.contains(sel.anchorNode)) {
           const range = sel.getRangeAt(0)
           // Calculate offset by walking through all nodes
-          // Mentions count by their serialized length @[id] for consistency with walkTreeOnce/insertMention
+          // Mentions count by their serialized length for consistency with walkTreeOnce/insertMention
           const walker = document.createTreeWalker(
             editorRef.current,
             NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
@@ -564,7 +565,7 @@ export const AgentsMentionsEditor = memo(
               const el = node as HTMLElement
               if (el.hasAttribute("data-mention-id")) {
                 const id = el.getAttribute("data-mention-id") || ""
-                cursorOffset += `@[${id}]`.length
+                cursorOffset += buildGenericMentionToken(id).length
                 // Skip children of mention node - jump to parent's next sibling
                 let parent: Node | null = el.parentNode
                 while (parent && parent !== editorRef.current && !parent.nextSibling) parent = parent.parentNode
@@ -623,7 +624,7 @@ export const AgentsMentionsEditor = memo(
 
       // Restore cursor position after undo/redo
       // Handles both text nodes and mention nodes
-      // Mentions count by their serialized length @[id] for consistency with getCurrentState
+      // Mentions count by their serialized length for consistency with getCurrentState
       const restoreCursor = useCallback((offset: number) => {
         if (!editorRef.current) return
         const sel = window.getSelection()
@@ -653,7 +654,7 @@ export const AgentsMentionsEditor = memo(
             const el = node as HTMLElement
             if (el.hasAttribute("data-mention-id")) {
               const id = el.getAttribute("data-mention-id") || ""
-              const mentionLen = `@[${id}]`.length
+              const mentionLen = buildGenericMentionToken(id).length
               if (currentOffset + mentionLen >= offset) {
                 // Place cursor after mention
                 const range = document.createRange()
@@ -1087,7 +1088,7 @@ export const AgentsMentionsEditor = memo(
             editor.blur()
           },
 
-          // Get serialized value with @[id] tokens
+          // Get serialized value with mention tokens
           getValue: () => {
             if (!editorRef.current) return ""
             return serializeContent(editorRef.current)
@@ -1168,7 +1169,7 @@ export const AgentsMentionsEditor = memo(
                   const el = walkNode as HTMLElement
                   if (el.hasAttribute("data-mention-id")) {
                     const id = el.getAttribute("data-mention-id") || ""
-                    serializedCharCount += `@[${id}]`.length
+                    serializedCharCount += buildGenericMentionToken(id).length
                     // Skip mention children - jump to parent's next sibling
                     let parent: Node | null = el.parentNode
                     while (parent && parent !== editorRef.current && !parent.nextSibling) parent = parent.parentNode
@@ -1258,7 +1259,7 @@ export const AgentsMentionsEditor = memo(
                   const el = walkNode as HTMLElement
                   if (el.hasAttribute("data-mention-id")) {
                     const id = el.getAttribute("data-mention-id") || ""
-                    serializedCharCount += `@[${id}]`.length
+                    serializedCharCount += buildGenericMentionToken(id).length
                     // Skip mention children - jump to parent's next sibling
                     let parent: Node | null = el.parentNode
                     while (parent && parent !== editorRef.current && !parent.nextSibling) parent = parent.parentNode
