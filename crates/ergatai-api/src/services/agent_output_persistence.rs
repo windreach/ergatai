@@ -380,7 +380,7 @@ pub async fn persist_agent_output(
                 metadata,
                 Some(crate::user_data_db::messages::AgentMessageFields {
                     turn_id: Some(output_data.turn_id.clone()),
-                    projection_kind: Some("canonical".to_string()),
+                    projection_kind: Some(crate::constants::PROJECTION_KIND_CANONICAL.to_string()),
                     ..Default::default()
                 }),
                 Some(output_fields),

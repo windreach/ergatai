@@ -44,6 +44,7 @@ pub mod agent_registry;
 pub mod bash_path_extractor;
 pub mod binary_detection;
 pub mod cgroups;
+pub mod constants;
 pub mod dirs;
 pub mod mcp_config;
 pub mod mcp_lifecycle;

@@ -472,7 +472,7 @@ impl TurnAccumulator {
             role: "assistant".to_string(),
             sender_agent_id: None,
             sender_agent_name: None,
-            message_type: Some("agent_output".to_string()),
+            message_type: Some(crate::constants::MESSAGE_TYPE_AGENT_OUTPUT.to_string()),
             reply_to_message_id: self.context.reply_to_message_id,
             correlation_id: self.context.correlation_id,
             source_conversation_id: self.context.source_conversation_id,

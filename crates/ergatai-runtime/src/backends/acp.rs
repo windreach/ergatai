@@ -483,7 +483,7 @@ async fn flush_and_persist_output(
             let mut output_data = output_data;
             output_data.sender_agent_id = Some(agent_id.to_string());
             if output_data.message_type.is_none() {
-                output_data.message_type = Some("agent_output".to_string());
+                output_data.message_type = Some(crate::constants::MESSAGE_TYPE_AGENT_OUTPUT.to_string());
             }
             tracing::debug!(
                 agent_id = %agent_id,

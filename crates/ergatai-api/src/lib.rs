@@ -24,6 +24,7 @@ use utoipa::OpenApi;
 use ergatai_core::nats;
 
 pub mod api;
+pub mod constants;
 pub mod context;
 pub mod lock_permission;
 pub mod mcp;

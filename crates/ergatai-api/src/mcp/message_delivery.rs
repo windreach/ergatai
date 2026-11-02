@@ -669,7 +669,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                     from_agent_name: Some(from_agent_name),
                     message_type: Some(message_type),
                     content: Some(actual_message),
-                    projection_kind: Some("canonical".to_string()),
+                    projection_kind: Some(crate::constants::PROJECTION_KIND_CANONICAL.to_string()),
                     ..Default::default()
                 };
 

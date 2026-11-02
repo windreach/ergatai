@@ -546,7 +546,6 @@ impl MessageSender {
                 .clone()
                 .unwrap_or_else(|| queued_message_id.clone());
             let queued_conversation_id = target_conversation_id;
-            let queued_conversation_id_for_warn = target_conversation_id;
             let sender_conversation_id = self.get_sender_conversation_id(&resolved_sender_id).await;
             let _sender_conversation_id_for_copy =
                 ConversationId::decode(&sender_conversation_id).ok();
@@ -670,7 +669,7 @@ impl MessageSender {
                         Ok(Err(error)) => {
                             warn!(
                                 message_id = %queued_message_id,
-                                conversation_id = %queued_conversation_id_for_warn,
+                                conversation_id = %queued_conversation_id,
                                 error = %error,
                                 "Failed to persist queued agent message early"
                             );
@@ -678,7 +677,7 @@ impl MessageSender {
                         Err(error) => {
                             warn!(
                                 message_id = %queued_message_id,
-                                conversation_id = %queued_conversation_id_for_warn,
+                                conversation_id = %queued_conversation_id,
                                 error = %error,
                                 "Failed to join early queued message persistence task"
                             );
