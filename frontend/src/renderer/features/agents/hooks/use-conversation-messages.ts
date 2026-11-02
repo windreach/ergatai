@@ -298,6 +298,11 @@ class ConversationPipeline {
   private fetchEpoch = 0
   private consecutiveStreamErrors = 0
   private doneReceived = false
+  // Smoothed typewriter state for text deltas.
+  private receivedText = ""
+  private revealedLength = 0
+  private revealTimer: ReturnType<typeof setTimeout> | null = null
+  private turnFinished = false
 
   constructor(conversationId: string, agentId: string | null) {
     this.conversationId = conversationId
@@ -385,6 +390,21 @@ class ConversationPipeline {
         onData: (event) => {
           const type = (event as { type?: string }).type
           const deltaEvent = event as StreamDeltaEvent
+
+          // Reset per-turn smoothing state when a new turn begins.
+          if (this.turnFinished && type !== "done") {
+            this.turnFinished = false
+            this.receivedText = ""
+            this.revealedLength = 0
+            this.state = { ...this.state, messages: this.state.messages.filter((m) => !isPreview(m)) }
+          }
+
+          if (type === "text") {
+            this.handleTextDelta(deltaEvent.delta ?? "")
+            this.consecutiveStreamErrors = 0
+            return
+          }
+
           this.dispatch({ type: "stream_delta", event: deltaEvent })
           if (type !== "done") {
             // Healthy traffic — reset the reconnect backoff counter only on
@@ -392,6 +412,8 @@ class ConversationPipeline {
             this.consecutiveStreamErrors = 0
           }
           if (type === "done") {
+            this.turnFinished = true
+            this.finishReveal()
             this.doneReceived = true
             // The turn finished; its durable copy lands moments later.
             this.scheduleHistoryRefetch()
@@ -423,6 +445,99 @@ class ConversationPipeline {
         this.openStream()
       }
     }, STREAM_RECONNECT_DELAY_MS)
+  }
+
+  private static readonly REVEAL_INTERVAL_MS = 16
+  private static readonly REVEAL_CHUNK = 2
+
+  private handleTextDelta(delta: string) {
+    if (!delta) return
+    // A new turn may have started without an explicit reset (e.g. the first
+    // event after `done` already cleared state); guard against stale buffers.
+    if (this.turnFinished) {
+      this.turnFinished = false
+      this.receivedText = ""
+      this.revealedLength = 0
+      this.state = { ...this.state, messages: this.state.messages.filter((m) => !isPreview(m)) }
+    }
+
+    this.receivedText += delta
+
+    // Ensure a preview message exists so the disclosure can mount once text
+    // has been revealed.
+    if (!this.state.messages.some(isPreview)) {
+      const preview: Message = {
+        id: PREVIEW_MESSAGE_ID,
+        conversationId: this.conversationId,
+        sequence: Number.MAX_SAFE_INTEGER,
+        role: "assistant",
+        parts: [{ type: "text", text: this.receivedText.slice(0, this.revealedLength) }],
+        metadata: { streaming: true },
+        createdAt: new Date(),
+      }
+      this.setState({ ...this.state, messages: [...this.state.messages, preview] })
+    }
+
+    this.scheduleReveal()
+  }
+
+  private scheduleReveal() {
+    if (this.revealTimer) return
+    this.revealTimer = setTimeout(() => this.revealStep(), ConversationPipeline.REVEAL_INTERVAL_MS)
+  }
+
+  private revealStep() {
+    this.revealTimer = null
+    if (!this.state.messages.some(isPreview)) return
+    if (this.revealedLength >= this.receivedText.length) return
+
+    const chunk = Math.min(
+      ConversationPipeline.REVEAL_CHUNK,
+      this.receivedText.length - this.revealedLength,
+    )
+    this.revealedLength = Math.min(this.revealedLength + chunk, this.receivedText.length)
+    const revealed = this.receivedText.slice(0, this.revealedLength)
+
+    const messages = this.state.messages.map((m) => {
+      if (!isPreview(m)) return m
+      const parts = [...(m.parts as Array<Record<string, unknown>>)]
+      const idx = parts.findIndex((p) => p.type === "text")
+      if (idx >= 0) {
+        parts[idx] = { ...parts[idx], text: revealed }
+      } else {
+        parts.push({ type: "text", text: revealed })
+      }
+      return { ...m, parts }
+    })
+    this.setState({ ...this.state, messages })
+
+    if (this.revealedLength < this.receivedText.length) {
+      this.revealTimer = setTimeout(() => this.revealStep(), ConversationPipeline.REVEAL_INTERVAL_MS)
+    }
+  }
+
+  private finishReveal() {
+    if (this.revealTimer) {
+      clearTimeout(this.revealTimer)
+      this.revealTimer = null
+    }
+    if (!this.state.messages.some(isPreview)) return
+    if (this.revealedLength < this.receivedText.length) {
+      this.revealedLength = this.receivedText.length
+      const revealed = this.receivedText
+      const messages = this.state.messages.map((m) => {
+        if (!isPreview(m)) return m
+        const parts = [...(m.parts as Array<Record<string, unknown>>)]
+        const idx = parts.findIndex((p) => p.type === "text")
+        if (idx >= 0) {
+          parts[idx] = { ...parts[idx], text: revealed }
+        } else {
+          parts.push({ type: "text", text: revealed })
+        }
+        return { ...m, parts }
+      })
+      this.setState({ ...this.state, messages })
+    }
   }
 
   private scheduleHistoryRefetch() {
@@ -458,9 +573,16 @@ class ConversationPipeline {
       clearTimeout(this.refetchTimer)
       this.refetchTimer = null
     }
+    if (this.revealTimer) {
+      clearTimeout(this.revealTimer)
+      this.revealTimer = null
+    }
     this.unsubStream?.()
     this.unsubStream = null
     this.lastSequence = 0
+    this.receivedText = ""
+    this.revealedLength = 0
+    this.turnFinished = false
     this.state = { ...INITIAL_STATE }
     pipelines.delete(this.conversationId)
   }

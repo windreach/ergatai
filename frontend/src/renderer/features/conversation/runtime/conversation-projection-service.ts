@@ -29,6 +29,7 @@ export type ConversationProjectionRawMessage = {
 }
 
 export type ConversationProjectionInput = {
+  conversationId?: string
   persistedMessages?: Message[]
   runtimeMessages?: Message[]
   localMessages?: Message[]
@@ -107,6 +108,21 @@ function compareMessages(a: Message, b: Message): number {
 }
 
 class ConversationProjectionServiceImpl implements ConversationProjectionService {
+  // Per-conversation cache so concurrent conversations don't evict each other's
+  // cached projection (the previous single-slot cache caused cache misses and
+  // redundant O(n) projections on every render in multi-conversation scenarios).
+  // Bounded LRU to avoid unbounded memory growth across many conversations.
+  private static readonly MAX_PROJECTION_CACHE_SIZE = 64
+  private projectionCache = new Map<
+    string,
+    {
+      persisted: Message[] | undefined
+      runtime: Message[] | undefined
+      local: Message[] | undefined
+      result: ConversationProjectionResult
+    }
+  >()
+
   normalizeRawMessage(message: ConversationProjectionRawMessage): Message {
     const normalizedMetadata: ProjectionMetadata = {
       ...(message.metadata && typeof message.metadata === "object" && !Array.isArray(message.metadata)
@@ -140,6 +156,20 @@ class ConversationProjectionServiceImpl implements ConversationProjectionService
   }
 
   project(input: ConversationProjectionInput): ConversationProjectionResult {
+    const cacheKey = input.conversationId ?? "__global__"
+    const cached = this.projectionCache.get(cacheKey)
+    if (
+      cached &&
+      cached.persisted === input.persistedMessages &&
+      cached.runtime === input.runtimeMessages &&
+      cached.local === input.localMessages
+    ) {
+      // LRU touch: move to end.
+      this.projectionCache.delete(cacheKey)
+      this.projectionCache.set(cacheKey, cached)
+      return cached.result
+    }
+
     const messageById = new Map<string, Message>()
     const ephemeralByProjectionKey = new Map<string, Message>()
     const ephemeralByExternalMessageId = new Map<string, Message>()
@@ -269,9 +299,21 @@ class ConversationProjectionServiceImpl implements ConversationProjectionService
       addMessage(message)
     }
 
-    return {
+    const result = {
       visibleMessages: Array.from(messageById.values()).sort(compareMessages),
     }
+
+    if (this.projectionCache.size >= ConversationProjectionServiceImpl.MAX_PROJECTION_CACHE_SIZE) {
+      const oldest = this.projectionCache.keys().next().value
+      if (oldest !== undefined) this.projectionCache.delete(oldest)
+    }
+    this.projectionCache.set(cacheKey, {
+      persisted: input.persistedMessages,
+      runtime: input.runtimeMessages,
+      local: input.localMessages,
+      result,
+    })
+    return result
   }
 }
 

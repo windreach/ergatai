@@ -153,18 +153,27 @@ function mergeArrays(existing?: string[], toAdd?: string[]): string[] | undefine
  * Shared helper for TaskList and TaskGet processing
  */
 function createOrUpdateTaskSnapshot(
-  task: any,
+  task: unknown,
   existing: TaskSnapshot | undefined
 ): TaskSnapshot {
-  const id = task.id
+  const t = (task ?? {}) as {
+    id?: string
+    subject?: string
+    description?: string
+    activeForm?: string
+    status?: string
+    blockedBy?: TaskSnapshot["blockedBy"]
+    blocks?: TaskSnapshot["blocks"]
+  }
+  const id = t.id ?? ""
   return {
     id,
-    subject: task.subject ?? "Task",
-    description: task.description ?? existing?.description,
-    activeForm: task.activeForm ?? existing?.activeForm,
-    status: task.status ?? "pending",
-    blockedBy: task.blockedBy,
-    blocks: task.blocks,
+    subject: t.subject ?? "Task",
+    description: t.description ?? existing?.description,
+    activeForm: t.activeForm ?? existing?.activeForm,
+    status: (t.status ?? "pending") as TaskSnapshot["status"],
+    blockedBy: t.blockedBy,
+    blocks: t.blocks,
   }
 }
 
@@ -172,18 +181,27 @@ function createOrUpdateTaskSnapshot(
  * Build a TaskInfo from raw task data (for TaskList/TaskGet display).
  * Shared helper to avoid duplicating the TaskInfo construction logic.
  */
-function buildTaskInfo(task: any): TaskInfo {
-  const id = task.id ?? ""
-  const rawSubject = task.subject ?? "Task"
+function buildTaskInfo(task: unknown): TaskInfo {
+  const t = (task ?? {}) as {
+    id?: string
+    subject?: string
+    description?: string
+    status?: string
+    blockedBy?: TaskInfo["blockedBy"]
+    blocks?: TaskInfo["blocks"]
+    owner?: string
+  }
+  const id = t.id ?? ""
+  const rawSubject = t.subject ?? "Task"
   return {
     id,
     subject: id ? formatTaskSubject(id, rawSubject) : rawSubject,
     rawSubject,
-    description: task.description,
-    status: task.status ?? "pending",
-    blockedBy: task.blockedBy,
-    blocks: task.blocks,
-    owner: task.owner,
+    description: t.description,
+    status: (t.status ?? "pending") as TaskSnapshot["status"],
+    blockedBy: t.blockedBy,
+    blocks: t.blocks,
+    owner: t.owner,
   }
 }
 
@@ -191,7 +209,7 @@ function buildTaskInfo(task: any): TaskInfo {
  * Yield all tasks referenced by a read-only tool part (TaskList, TaskGet).
  * Shared helper to avoid duplicating the extraction logic across functions.
  */
-function* iterateReadOnlyTasks(part: TaskToolPart): Generator<any> {
+function* iterateReadOnlyTasks(part: TaskToolPart): Generator<unknown> {
   if (!part || part.state === "input-streaming") return
   if (part.type === "tool-TaskList" && Array.isArray(part.output?.tasks)) {
     for (const task of part.output.tasks) {
@@ -258,7 +276,8 @@ function updateTaskSnapshotFromParts(
 
     // TaskList and TaskGet - update snapshot with retrieved tasks (authoritative source of truth)
     for (const task of iterateReadOnlyTasks(part)) {
-      const id = task.id
+      const id = (task as { id?: string })?.id
+      if (!id) continue
       const existing = tasks.get(id)
       tasks.set(id, createOrUpdateTaskSnapshot(task, existing))
     }

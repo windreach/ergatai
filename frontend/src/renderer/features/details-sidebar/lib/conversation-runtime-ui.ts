@@ -1,5 +1,6 @@
 import type { UIMessage } from "@ai-sdk/react"
 import type { ConversationRuntimeState } from "./conversation-runtime-gateway"
+import { PROJECTION_KINDS } from "@/lib/projection-kinds"
 
 type RuntimeEvent = {
   sequence: number
@@ -162,7 +163,7 @@ export function buildRuntimeMessages(
       // the sender's active turn timeline.
       if (
         runtimeMetadata.sideConversationCopy === true ||
-        runtimeMetadata.projectionKind === "side_copy"
+        runtimeMetadata.projectionKind === PROJECTION_KINDS.SIDE_COPY
       ) {
         continue
       }

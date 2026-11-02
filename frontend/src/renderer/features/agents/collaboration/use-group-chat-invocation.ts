@@ -69,7 +69,7 @@ export function useGroupChatInvocation({
   transportConfig,
   onMessagePersisted,
 }: {
-  conversation: ChatConversation & { messages?: any[] }
+  conversation: ChatConversation
   chatId: string
   agentId?: string | null
   isActive?: boolean
@@ -106,7 +106,7 @@ export function useGroupChatInvocation({
   // Wrap send handler to use new service
   // For group chat, we may need to route messages to specific agents
   const handleSend = useCallback(
-    async (parts: UIMessage<any>["parts"]) => {
+    async (parts: UIMessage["parts"]) => {
       // For now, delegate to existing chat instance
       // Future: Replace with invocation.send() with agent routing logic
       //
@@ -156,7 +156,7 @@ export function useGroupChatInvocation({
   // Group-specific: Send message to a specific agent in the group
   // This is useful for @mention routing and direct agent communication
   const sendToAgent = useCallback(
-    async (targetAgentId: string, parts: UIMessage<any>["parts"]) => {
+    async (targetAgentId: string, parts: UIMessage["parts"]) => {
       // Phase 11: Implement agent-specific routing
       // For now, this is a placeholder for future implementation
       //
@@ -189,7 +189,7 @@ export function useGroupChatInvocation({
   // Group-specific: Broadcast message to all agents in the group
   // This is useful for system-wide notifications or group commands
   const broadcastToGroup = useCallback(
-    async (parts: UIMessage<any>["parts"]) => {
+    async (parts: UIMessage["parts"]) => {
       // Phase 11: Implement broadcast logic
       // For now, this is a placeholder for future implementation
       //

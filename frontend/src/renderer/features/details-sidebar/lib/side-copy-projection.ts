@@ -29,14 +29,16 @@ function getMessageText(parts: unknown[]) {
     .join("\n\n")
 }
 
+import { PROJECTION_KINDS } from "@/lib/projection-kinds"
+
 export function isSideCopyProjection(message: PersistedSideCopyMessage): boolean {
   const metadata = message.metadata as
     | { sideConversationCopy?: unknown; projectionKind?: unknown }
     | null
     | undefined
   return (
-    message.projectionKind === "side_copy" ||
-    metadata?.projectionKind === "side_copy" ||
+    message.projectionKind === PROJECTION_KINDS.SIDE_COPY ||
+    metadata?.projectionKind === PROJECTION_KINDS.SIDE_COPY ||
     metadata?.sideConversationCopy === true
   )
 }

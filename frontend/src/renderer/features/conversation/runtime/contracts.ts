@@ -213,8 +213,7 @@ export type ConversationRuntimeError = {
   message: string
 
   /** Error details (for debugging) */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Error details vary by source; typed as any for flexibility
-  details?: any
+  details?: unknown
 
   /** Timestamp */
   timestamp: Date

@@ -57,7 +57,7 @@ type RuntimeChannel = {
   retryAttempt: number
 }
 
-const MAX_EVENTS = 2_000
+const MAX_EVENTS = 5_000
 const STOP_DELAY_MS = 5_000
 const MAX_RETRY_DELAY_MS = 10_000
 

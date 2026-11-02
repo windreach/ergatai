@@ -53,6 +53,7 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
   const [sideChats, setSideChats] = useState<ChatConversation[]>([])
   const [activeSideChatId, setActiveSideChatId] = useState<string | null>(null)
   const [isCreatingSideChat, setIsCreatingSideChat] = useState(false)
+  const [bindingLoadingTimedOut, setBindingLoadingTimedOut] = useState(false)
 
   const loadingConversations = useAtomValue(loadingConversationsAtom)
   const loadingSideChatIds = useMemo(
@@ -73,6 +74,15 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
     { chatId },
     { enabled: isActive && chatId.startsWith("chat_") },
   )
+
+  useEffect(() => {
+    if (!agentBindingsQuery.isLoading) {
+      setBindingLoadingTimedOut(false)
+      return
+    }
+    const timer = setTimeout(() => setBindingLoadingTimedOut(true), 3000)
+    return () => clearTimeout(timer)
+  }, [agentBindingsQuery.isLoading])
   // Get list of agents already bound to this chat
   const boundAgentIds = useMemo(() => {
     return new Set(agentBindingsQuery.data?.map((b) => b.agentId) ?? [])
@@ -345,6 +355,14 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
         </div>
       )}
       {activeSideChat ? (
+        agentBindingsQuery.isLoading &&
+        !agentBindingsQuery.isError &&
+        !bindingLoadingTimedOut &&
+        chatId.startsWith("chat_") ? (
+          <div className="flex flex-1 items-center justify-center">
+            <div className="text-xs text-muted-foreground">Loading agent binding…</div>
+          </div>
+        ) : (
         <SideChat
           key={activeSideChat.id}
           conversation={{
@@ -359,6 +377,7 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
           runtimeStatus={runtime?.status}
           runtimeConnectionStatus={runtime?.connectionStatus}
         />
+        )
       ) : (
         <div className="flex flex-1 items-center justify-center">
           <div className="w-full max-w-64 px-6 text-center">

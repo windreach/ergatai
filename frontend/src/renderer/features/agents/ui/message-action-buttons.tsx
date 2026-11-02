@@ -4,6 +4,7 @@ import { memo, useState, useCallback, useRef, useEffect } from "react"
 import { CheckIcon, CopyIcon } from "../../../components/ui/icons"
 import { cn } from "../../../lib/utils"
 import { useHaptic } from "../hooks/use-haptic"
+import type { MessagePart } from "../stores/message-store"
 
 interface CopyButtonProps {
   text: string
@@ -64,13 +65,10 @@ export const CopyButton = memo(function CopyButton({
   )
 })
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- message shape varies across providers
-export function getMessageTextContent(msg: any): string {
+export function getMessageTextContent(msg: { parts?: MessagePart[] }): string {
   if (!msg?.parts) return ""
   return msg.parts
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- part shape varies
-    .filter((p: any) => p.type === "text")
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- part shape varies
-    .map((p: any) => p.text || "")
+    .filter((p: MessagePart) => p.type === "text")
+    .map((p: MessagePart) => p.text || "")
     .join("\n")
 }

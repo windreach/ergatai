@@ -1325,7 +1325,7 @@ ${input.prompt}
         command: z.string().min(1, 'Command is required'),
         agent_type: z.string().min(1, 'Agent type is required'),
         instruction: z.string().optional(),
-        env_overrides: z.record(z.string()).optional(),
+        env_overrides: z.record(z.string(), z.string()).optional(),
       }))
       .mutation(({ input }) => {
         if (testAgentProfileStore.get(input.name)) {

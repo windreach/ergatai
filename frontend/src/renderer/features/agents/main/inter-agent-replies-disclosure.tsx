@@ -10,6 +10,7 @@ import {
 } from "../../../components/ui/collapsible"
 import { ChevronDown } from "lucide-react"
 import { cn } from "../../../lib/utils"
+import { PROJECTION_KINDS } from "@/lib/projection-kinds"
 import { trpc } from "../../../lib/trpc"
 import {
   useConversationMessages,
@@ -190,8 +191,8 @@ function AgentReplyDisclosure({
           | null
         const isSideCopy =
           metadata?.sideConversationCopy === true ||
-          metadata?.projectionKind === "side_copy" ||
-          message.projectionKind === "side_copy"
+          metadata?.projectionKind === PROJECTION_KINDS.SIDE_COPY ||
+          message.projectionKind === PROJECTION_KINDS.SIDE_COPY
 
         // The disclosure shows the outbound reply projection, not the whole
         // agent turn. Reasoning/tool events are queried separately as trace.

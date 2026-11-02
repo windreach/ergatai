@@ -9,6 +9,7 @@ import { utf8ToBase64 } from "../utils/base64"
 import { extractAgentMentions } from "../collaboration/implicit-collaboration"
 import { getCoreAgentProfileName } from "../lib/agent-contract-api"
 import type { CoreAgentOption, SelectedTextContext, DiffTextContext, PastedTextFile, UploadedImage } from "../types"
+import type { PendingUserQuestion } from "../atoms"
 import type { GroupAgentRuntimeStatuses } from "../collaboration/group-agent-runtime"
 import type { Message, MessagePart } from "../stores/message-store"
 import type { AgentQueueItem, QueuedImage, QueuedFile } from "../lib/queue-utils"
@@ -100,7 +101,7 @@ interface UseMessageSendingOptions {
     handleStop: () => Promise<void>
     sendMessageRef: React.RefObject<(message: Message) => Promise<void>>
     setMessages: (messages: Message[] | ((current: Message[]) => Message[])) => void
-    setExpiredQuestionsMap: (updater: (current: Map<string, any>) => Map<string, any>) => void
+    setExpiredQuestionsMap: (updater: (current: Map<string, PendingUserQuestion>) => Map<string, PendingUserQuestion>) => void
     setGroupAgentRuntimeStatuses: (chatId: string, statuses: GroupAgentRuntimeStatuses) => void
     trackMessageSent: (data: { workspaceId: string; messageLength: number; mode: string }) => void
     submitImplicitInteraction: (text: string) => void

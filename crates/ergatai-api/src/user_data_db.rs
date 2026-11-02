@@ -2130,22 +2130,28 @@ pub mod messages {
     ) -> Result<bool> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
+        let table_name = message_table_name(conversation_id);
         // Initial messages are persisted before the prompt is queued. Older
         // records did not yet carry externalMessageId in metadata, but the
         // frontend reuses their message_id as the prompt's clientRequestId.
         let legacy_message_id = MessageId::decode(external_message_id).ok();
         let legacy_message_id_i64 = legacy_message_id.map_or(-1, |id| id.as_i64());
         // Use JSON extraction to check metadata.externalMessageId
-        let exists: bool = conn.query_row(
+        let sql = format!(
             "SELECT EXISTS(
-                SELECT 1 FROM messages
-                WHERE conversation_id = ?1
-                  AND (json_extract(metadata, '$.externalMessageId') = ?2
-                       OR message_id = ?3)
+                SELECT 1 FROM {}
+                WHERE (json_extract(metadata, '$.externalMessageId') = ?1
+                       OR message_id = ?2)
             )",
-            params![conversation_id, external_message_id, legacy_message_id_i64],
-            |row| row.get(0),
-        )?;
+            table_name
+        );
+        let exists: bool = match conn.query_row(&sql, params![external_message_id, legacy_message_id_i64], |row| row.get(0)) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "message_exists query failed; treating as not exists");
+                false
+            }
+        };
         Ok(exists)
     }
 
@@ -2161,16 +2167,23 @@ pub mod messages {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
+        let table_name = message_table_name(conversation_id);
+
         // First check if the message exists
-        let message_exists: bool = conn.query_row(
+        let message_exists_sql = format!(
             "SELECT EXISTS(
-                SELECT 1 FROM messages
-                WHERE conversation_id = ?1
-                  AND json_extract(metadata, '$.externalMessageId') = ?2
+                SELECT 1 FROM {}
+                WHERE json_extract(metadata, '$.externalMessageId') = ?1
             )",
-            params![conversation_id, external_message_id],
-            |row| row.get(0),
-        )?;
+            table_name
+        );
+        let message_exists: bool = match conn.query_row(&message_exists_sql, params![external_message_id], |row| row.get(0)) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "message_exists query failed; treating as not exists");
+                false
+            }
+        };
 
         if !message_exists {
             tracing::debug!(
@@ -2184,18 +2197,18 @@ pub mod messages {
 
         // Message exists, attempt to update delivery status
         // Use JSON patch to update the deliveryStatus field in metadata
-        let rows_affected = conn.execute(
-            "UPDATE messages
+        let update_sql = format!(
+            "UPDATE {}
              SET metadata = json_set(
-                 COALESCE(metadata, '{}'),
+                 COALESCE(metadata, '{{}}'),
                  '$.deliveryStatus',
-                 ?3
+                 ?2
              ),
              updated_at = strftime('%s', 'now')
-             WHERE conversation_id = ?1
-               AND json_extract(metadata, '$.externalMessageId') = ?2",
-            params![conversation_id, external_message_id, status],
-        )?;
+             WHERE json_extract(metadata, '$.externalMessageId') = ?1",
+            table_name
+        );
+        let rows_affected = conn.execute(&update_sql, params![external_message_id, status])?;
 
         if rows_affected == 0 {
             // Message exists but update failed - likely due to malformed metadata

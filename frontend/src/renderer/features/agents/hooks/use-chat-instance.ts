@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react"
 import { Chat, useChat, type UIMessage } from "@ai-sdk/react"
 import { useSetAtom } from "jotai"
 import { toast } from "sonner"
 import { ErgataiChatTransport } from "../lib/ergatai-chat-transport"
 import { useMessageQueueStore, EMPTY_QUEUE } from "../stores/message-queue-store"
 import { syncMessagesWithStatusAtom } from "../stores/message-store"
+import type { MessagePart } from "../stores/message-store"
 import { useStreamingStatusStore } from "../stores/streaming-status-store"
 import { clearConversationRuntimeCaches } from "../stores/conversation-runtime-cleanup"
 import { trpc } from "@/lib/trpc"
@@ -210,7 +211,7 @@ export function useChatInstance({
       } else {
         const message = await getMessageCorrelationService().createOptimisticMessage({
           role: "user",
-          parts: parts as any,
+          parts: parts as MessagePart[],
         })
         void sendMessage(message as UIMessage<AgentMessageMetadata>)
       }
@@ -231,7 +232,7 @@ export function useChatInstance({
 
       const message = await getMessageCorrelationService().createOptimisticMessage({
         role: "agent",
-        parts: parts as any,
+        parts: parts as MessagePart[],
       })
       void sendMessage(message as UIMessage<AgentMessageMetadata>)
     },
@@ -249,25 +250,44 @@ export function useChatInstance({
         : [{ type: "text", text: item.message }]
       const message = await getMessageCorrelationService().createOptimisticMessage({
         role: "user",
-        parts: parts as any,
+        parts: parts as MessagePart[],
       })
       void sendMessage(message as UIMessage<AgentMessageMetadata>)
     },
     [queue, removeFromQueue, runtimeConversationId, sendMessage]
   )
 
-  return {
-    chat,
-    messages,
-    sendMessage,
-    sendAgentMessage,
-    status,
-    stop,
-    setMessages,
-    isStreaming,
-    queue,
-    handleSend,
-    handleSendFromQueue,
-    noopPersist,
-  }
+  // Memoize the returned object so consumers (e.g. useSideChatInvocation) that
+  // depend on this hook's identity don't recompute on every render unless one
+  // of the underlying values actually changed.
+  return useMemo(
+    () => ({
+      chat,
+      messages,
+      sendMessage,
+      sendAgentMessage,
+      status,
+      stop,
+      setMessages,
+      isStreaming,
+      queue,
+      handleSend,
+      handleSendFromQueue,
+      noopPersist,
+    }),
+    [
+      chat,
+      messages,
+      sendMessage,
+      sendAgentMessage,
+      status,
+      stop,
+      setMessages,
+      isStreaming,
+      queue,
+      handleSend,
+      handleSendFromQueue,
+      noopPersist,
+    ],
+  )
 }

@@ -33,7 +33,7 @@ export async function checkOllamaStatus(): Promise<OllamaStatus> {
     }
 
     const data = await response.json()
-    const models = data.models?.map((m: any) => m.name) || []
+    const models = data.models?.map((m: { name?: string }) => m.name) || []
 
     // Recommended coding models (in order of preference)
     // Check for exact matches first, then check for any qwen/deepseek/codestral variant

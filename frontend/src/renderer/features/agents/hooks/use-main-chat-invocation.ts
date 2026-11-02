@@ -15,9 +15,9 @@
  * - Does not create duplicate Chat/transport state
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react"
-import { useSetAtom } from "jotai"
+import { useCallback, useEffect, useMemo, useRef } from "react"
 import { useConversationInvocation, useSessionState } from "../../conversation/runtime/use-conversation-invocation"
+import { useRuntimeSessionMessageProjection } from "../../conversation/runtime"
 import { getAdapterRegistry, type AdapterState } from "../../conversation/runtime/runtime-adapter"
 import type { ConversationStatus } from "../../conversation/runtime/contracts"
 import { useRuntimeSessionSources } from "../../conversation/runtime/use-runtime-session-sources"
@@ -25,7 +25,6 @@ import { getConversationProjectionService } from "../../conversation/runtime/con
 import { getMessageCorrelationService } from "../../conversation/runtime/message-correlation-service"
 import { trpc } from "../../../lib/trpc"
 import type { MessagePart } from "../stores/message-store"
-import { syncMessagesWithStatusAtom } from "../stores/message-store"
 import type { AgentQueueItem, QueuedTextContext, QueuedDiffTextContext, QueuedPastedText } from "../lib/queue-utils"
 import { MENTION_PREFIXES } from "../../mentions/types"
 import { utf8ToBase64 } from "../utils/base64"
@@ -37,7 +36,7 @@ import { buildQuoteMentionToken, buildDiffMentionToken, buildPastedMentionToken 
  * These are normalized by ConversationProjectionService before ingestion.
  * TODO: Replace with proper API response types once backend typing is standardized.
  */
-type RawMessage = Record<string, unknown> & {
+export type RawMessage = Record<string, unknown> & {
   id: string
   role: string
   parts?: unknown[]
@@ -177,10 +176,8 @@ export function useMainChatInvocation({
       : localSessionMessages
 
   // Sync the merged visibleMessages (from projection service) to the Jotai store.
-  // This ensures all three data sources (persisted/runtime/local) flow through
-  // the same rendering path (main path via Jotai store) instead of falling back
-  // to simpler rendering when localMessages is empty (e.g., UI remount).
-  const syncMessages = useSetAtom(syncMessagesWithStatusAtom)
+  // Centralized through the runtime message projection adapter to avoid
+  // duplicated layout-effect sync logic across chat contexts.
   const mapChatStatus = (chatStatus?: string): string => {
     switch (chatStatus) {
       case "submitted":
@@ -197,15 +194,12 @@ export function useMainChatInvocation({
     }
   }
   const computedStatus = mapChatStatus(existingChat?.status)
-  useLayoutEffect(() => {
-    syncMessages({
-      messages: visibleMessages,
-      status: computedStatus,
-      conversationId: runtimeConversationId,
-      updateGlobal: false,
-    })
-  }, [visibleMessages, computedStatus, runtimeConversationId, syncMessages])
-
+  useRuntimeSessionMessageProjection({
+    conversationId: runtimeConversationId,
+    messages: visibleMessages,
+    status: computedStatus,
+    updateGlobal: false,
+  })
   // Phase 16: Register runtime adapter that delegates to existing Chat instance
   // This allows the service to leverage AI SDK's stream handling
   // Phase 18: Added subscribe() to synchronize adapter state with service

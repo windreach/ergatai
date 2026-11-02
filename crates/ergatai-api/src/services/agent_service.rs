@@ -227,14 +227,13 @@ pub async fn resolve_to_runtime_id(agent_id: &str) -> Option<String> {
 /// Returns the new agent ID if resume succeeded, or the existing agent ID
 /// if a running agent with matching conversation_id is found.
 ///
-/// # Race Condition Warning
+/// # Concurrency
 ///
-/// Step 3 performs a non-atomic check-then-act: it lists all agents, filters
-/// by conversation_id, and returns if found. Two concurrent requests for the
-/// same conversation_id can both pass this check and both attempt to resume,
-/// potentially creating duplicate agents. A proper fix would require distributed
-/// locking or a unique constraint at the database level. For now, this is a
-/// known limitation with low probability in practice.
+/// Step 3 performs a check-then-act over the running agent list. Callers in
+/// `MessageSender::send` serialize target resolution with a per-target lock
+/// (`spawn_lock`) so concurrent sends cannot both observe "no agent" and
+/// create duplicates. Direct callers should hold an equivalent lock when
+/// invoking this in a concurrent context.
 pub async fn try_auto_resume_suspended_agent(
     runtime: &ergatai_runtime::AgentRuntime,
     target: &str,

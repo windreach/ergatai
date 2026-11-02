@@ -21,8 +21,7 @@ interface UseScrollInitProps {
   handleScroll: (e: Event) => void
   status: "ready" | "streaming" | "submitted" | "error"
   messages: Message[]
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: replace with specific editor type
-  editorRef: React.RefObject<any>
+  editorRef: React.RefObject<{ focus: () => void } | null>
 }
 
 /**

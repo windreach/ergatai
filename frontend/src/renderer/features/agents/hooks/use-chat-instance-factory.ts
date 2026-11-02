@@ -41,7 +41,7 @@ interface UseChatInstanceFactoryProps {
   // 聊天实例信息
   // `any` used here because agentChat shape varies across call sites and is not centrally typed
   chat: {
-    agentChat: any
+    agentChat: unknown
     chatWorkingDir: string | null
     worktreePath: string | null
     chatId: string

@@ -30,8 +30,7 @@ import { useSideChatInvocation } from "../hooks/use-side-chat-invocation"
 import { clearLoading, loadingConversationsAtom, setLoading } from "../../agents/atoms"
 
 interface SideChatProps {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- messages type is dynamic from backend
-  conversation: ChatConversation & { messages?: any[] }
+  conversation: ChatConversation
   chatId: string
   agentId?: string | null
   isActive?: boolean
@@ -234,8 +233,7 @@ export function SideChat({
     const inputValue = editorRef.current?.getValue() || ""
     if (!inputValue.trim() && images.length === 0 && files.length === 0) return
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- UIMessage generic requires type parameter
-    const parts: UIMessage<any>["parts"] = [
+    const parts: UIMessage["parts"] = [
       { type: "text" as const, text: inputValue },
       ...images.map((image) => ({
         type: "data-image" as const,

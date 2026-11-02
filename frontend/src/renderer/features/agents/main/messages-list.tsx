@@ -926,13 +926,13 @@ interface SimpleIsolatedGroupProps {
     skipTextMentionBlocks?: boolean
   }>
   ToolCallComponent: React.ComponentType<{
-    icon: React.ComponentType<any>
+    icon: React.ComponentType
     title: string
     isPending: boolean
     isError: boolean
   }>
   MessageGroupComponent: React.ComponentType<{ children: React.ReactNode }>
-  toolRegistry: Record<string, { icon: React.ComponentType<any>; title: (args: any) => string }>
+  toolRegistry: Record<string, { icon: React.ComponentType; title: (args: unknown) => string }>
 }
 
 function areSimpleGroupPropsEqual(

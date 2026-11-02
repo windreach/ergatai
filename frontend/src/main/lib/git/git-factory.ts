@@ -1,4 +1,4 @@
-import simpleGit, { SimpleGit, SimpleGitOptions } from "simple-git";
+import { simpleGit, type SimpleGit, type SimpleGitOptions } from "simple-git";
 import { stat, unlink } from "fs/promises";
 import { join } from "path";
 

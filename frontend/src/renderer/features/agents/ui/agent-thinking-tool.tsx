@@ -8,7 +8,7 @@ import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areToolPropsEqual } from "./agent-tool-utils"
 
-interface ThinkingToolPart {
+export interface ThinkingToolPart {
   type: string
   state: string
   input?: {

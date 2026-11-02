@@ -96,8 +96,8 @@ export type RuntimeSessionState = {
   currentTurnId: string | null
 
   /** ACP context window usage snapshot (from SSE UsageUpdate events) */
-  contextUsed: number
-  contextWindow: number
+  contextUsed?: number
+  contextWindow?: number
 }
 
 // ============================================================================
@@ -267,6 +267,27 @@ class RuntimeSessionStoreImpl {
    */
   setPersistedMessages(conversationId: string, messages: Message[]): void {
     const session = this.ensureSession(conversationId)
+
+    // Guard against stale/partial persisted snapshots: a shorter list that is
+    // only a prefix of the already-known persisted messages must not replace
+    // the richer current view (e.g. a late refetch racing with SSE updates).
+    // Only skip when the prefix is byte-identical (same ids AND signatures);
+    // otherwise a metadata/content update in the prefix must still apply.
+    if (
+      session.persistedMessages.length > messages.length &&
+      messages.length > 0 &&
+      messages.every((message, index) => {
+        const existing = session.persistedMessages[index]
+        return (
+          existing !== undefined &&
+          message.id === existing.id &&
+          this.messageSignature(message) === this.messageSignature(existing)
+        )
+      })
+    ) {
+      return
+    }
+
     if (!this.messagesChanged(session.persistedMessages, messages)) return
 
     session.persistedMessages = this.normalizeMessages(session, messages)
@@ -283,6 +304,22 @@ class RuntimeSessionStoreImpl {
    */
   setLocalMessages(conversationId: string, messages: Message[]): void {
     const session = this.ensureSession(conversationId)
+
+    if (
+      session.localMessages.length > messages.length &&
+      messages.length > 0 &&
+      messages.every((message, index) => {
+        const existing = session.localMessages[index]
+        return (
+          existing !== undefined &&
+          message.id === existing.id &&
+          this.messageSignature(message) === this.messageSignature(existing)
+        )
+      })
+    ) {
+      return
+    }
+
     if (!this.messagesChanged(session.localMessages, messages)) return
 
     session.localMessages = this.normalizeMessages(session, messages)
@@ -301,6 +338,22 @@ class RuntimeSessionStoreImpl {
    */
   setRuntimeMessages(conversationId: string, messages: Message[]): void {
     const session = this.ensureSession(conversationId)
+
+    if (
+      session.runtimeMessages.length > messages.length &&
+      messages.length > 0 &&
+      messages.every((message, index) => {
+        const existing = session.runtimeMessages[index]
+        return (
+          existing !== undefined &&
+          message.id === existing.id &&
+          this.messageSignature(message) === this.messageSignature(existing)
+        )
+      })
+    ) {
+      return
+    }
+
     if (!this.messagesChanged(session.runtimeMessages, messages)) return
 
     session.runtimeMessages = this.normalizeMessages(session, messages)
@@ -550,8 +603,8 @@ class RuntimeSessionStoreImpl {
       updatedAt: now,
       cachedPublicState: null,
       currentTurnId: null,
-      contextUsed: 0,
-      contextWindow: 0,
+      contextUsed: undefined,
+      contextWindow: undefined,
     }
   }
 
@@ -561,6 +614,7 @@ class RuntimeSessionStoreImpl {
    */
   private mergeMessages(session: RuntimeSessionState): Message[] {
     return getConversationProjectionService().project({
+      conversationId: session.conversationId,
       persistedMessages: session.persistedMessages,
       runtimeMessages: session.runtimeMessages,
       localMessages: session.localMessages,
@@ -577,23 +631,45 @@ class RuntimeSessionStoreImpl {
     messages: Message[],
   ): Message[] {
     return messages.map((message) => {
+      // Normalize metadata across sources so dedup keys (turnId / externalMessageId)
+      // are consistent regardless of whether the message came from persisted
+      // history, SSE, or the local transport. Top-level fields are folded into
+      // metadata because some sources attach them at the top level.
+      const rawMetadata =
+        message.metadata && typeof message.metadata === "object" && !Array.isArray(message.metadata)
+          ? (message.metadata as Record<string, unknown>)
+          : {}
+      const metadata: Record<string, unknown> = { ...rawMetadata }
+      const topTurnId = (message as unknown as { turnId?: unknown }).turnId
+      if (typeof topTurnId === "string" && topTurnId && !metadata.turnId) {
+        metadata.turnId = topTurnId
+      }
+      const topExternalMessageId = (message as unknown as { externalMessageId?: unknown }).externalMessageId
+      if (
+        typeof topExternalMessageId === "string" &&
+        topExternalMessageId &&
+        !metadata.externalMessageId
+      ) {
+        metadata.externalMessageId = topExternalMessageId
+      }
+
       if (typeof message.sequence === "number") {
         session.sequenceByMessageId.set(message.id, message.sequence)
         if (session.localSequence < message.sequence) {
           session.localSequence = message.sequence
         }
-        return message
+        return { ...message, metadata }
       }
 
       const existingSequence = session.sequenceByMessageId.get(message.id)
       if (existingSequence !== undefined) {
-        return { ...message, sequence: existingSequence }
+        return { ...message, metadata, sequence: existingSequence }
       }
 
       session.localSequence += 1
       const sequence = session.localSequence
       session.sequenceByMessageId.set(message.id, sequence)
-      return { ...message, sequence }
+      return { ...message, metadata, sequence }
     })
   }
 

@@ -105,4 +105,23 @@ describe("ConversationProjectionService", () => {
     expect(result.visibleMessages).toHaveLength(1)
     expect(result.visibleMessages[0]?.id).toBe("msg-canonical-user")
   })
+
+  it("memoizes projection results for identical source references", () => {
+    const service = getConversationProjectionService()
+    const persisted: Message[] = [
+      {
+        id: "msg-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "hello" }],
+        sequence: 1,
+        metadata: { turnId: "turn-1" },
+      } as Message,
+    ]
+
+    const first = service.project({ persistedMessages: persisted })
+    const second = service.project({ persistedMessages: persisted })
+
+    expect(second).toBe(first)
+    expect(second.visibleMessages).toBe(first.visibleMessages)
+  })
 })

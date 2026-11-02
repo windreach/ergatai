@@ -1,7 +1,7 @@
 import { BrowserWindow } from "electron"
 import * as fs from "fs/promises"
 import * as path from "path"
-import simpleGit from "simple-git"
+import { simpleGit } from "simple-git"
 import { z } from "zod"
 import { getOllamaUrl } from "../../config"
 import {

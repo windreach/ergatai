@@ -1,5 +1,5 @@
 import type { ChangedFile, GitChangesStatus } from "../../../shared/changes-types";
-import simpleGit from "simple-git";
+import { simpleGit } from "simple-git";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import { assertRegisteredWorktree, secureFs } from "./security";

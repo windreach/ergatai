@@ -20,19 +20,17 @@
  * - This avoids reimplementing stream consumption logic
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo } from "react"
+import { useCallback, useEffect, useMemo, useRef } from "react"
 import { useChatInstance } from "../../agents/hooks/use-chat-instance"
-import { useConversationInvocation, useSessionState } from "../../conversation/runtime/use-conversation-invocation"
 import type { MessagePart } from "../../agents/stores/message-store"
-import { syncMessagesWithStatusAtom } from "../../agents/stores/message-store"
+import { useConversationInvocation, useSessionState } from "../../conversation/runtime/use-conversation-invocation"
+import { useRuntimeSessionMessageProjection } from "../../conversation/runtime"
 import { getAdapterRegistry } from "../../conversation/runtime/runtime-adapter"
 import { useRuntimeSessionSources } from "../../conversation/runtime/use-runtime-session-sources"
 import { getConversationProjectionService } from "../../conversation/runtime/conversation-projection-service"
 import { getMessageCorrelationService } from "../../conversation/runtime/message-correlation-service"
 import type { ChatConversation } from "../lib/chat-contract-api"
 import type { UIMessage } from "@ai-sdk/react"
-import { useSetAtom } from "jotai"
-
 const projectionService = getConversationProjectionService()
 
 /**
@@ -52,7 +50,7 @@ export function useSideChatInvocation({
   runtimeMessages = [],
   runtimeStatus,
 }: {
-  conversation: ChatConversation & { messages?: any[] }
+  conversation: ChatConversation
   chatId: string
   agentId?: string | null
   isActive?: boolean
@@ -70,6 +68,11 @@ export function useSideChatInvocation({
     isActive,
   })
 
+  // Keep a stable ref to the latest chat instance so the adapter registration
+  // effect does not re-run (and tear down the in-flight stream) on every render.
+  const chatInstanceRef = useRef(chatInstance)
+  chatInstanceRef.current = chatInstance
+
   // Use new invocation service for queue management
   const invocation = useConversationInvocation()
 
@@ -85,10 +88,19 @@ export function useSideChatInvocation({
     [chatInstance.messages],
   )
 
+  // While the local transport is streaming the current turn, it is the freshest
+  // view of that turn; clear the backend runtime projection to avoid
+  // duplicate/flickering messages (mirrors the main-chat behavior).
+  // Exception: when the local Chat has no messages yet (e.g. the side chat
+  // was attached mid-turn), keep the backend runtime projection so the
+  // in-progress reply stays visible instead of a blank pane.
   // Backend live turns are visible while streaming, or before durable history
   // has loaded. Completed backend turns are reconciled through persisted data.
+  const localIsEmpty = localSessionMessages.length === 0
   const backendRuntimeEnabled =
-    runtimeStatus === "streaming" || persistedSessionMessages.length === 0
+    (localIsEmpty ||
+      !(chatInstance.status === "streaming" || chatInstance.status === "submitted")) &&
+    (runtimeStatus === "streaming" || persistedSessionMessages.length === 0)
   const backendRuntimeMessages = useMemo(
     () => (backendRuntimeEnabled ? runtimeMessages.map((message) => projectionService.normalizeRawMessage(message)) : []),
     [backendRuntimeEnabled, runtimeMessages],
@@ -121,54 +133,63 @@ export function useSideChatInvocation({
       : chatInstance.status
 
   // Sync the merged visibleMessages (from projection service) to the Jotai store.
-  // This ensures all three data sources (persisted/runtime/local) flow through
-  // the same rendering path (main path via Jotai store) instead of falling back
-  // to simpler rendering when localMessages is empty (e.g., UI remount).
-  // This overrides the localMessages-only sync from useChatInstance.
-  const syncMessages = useSetAtom(syncMessagesWithStatusAtom)
-  useLayoutEffect(() => {
-    syncMessages({
-      messages: visibleMessages,
-      status: streamingStatus,
-      conversationId: runtimeConversationId,
-      updateGlobal: false,
-    })
-  }, [visibleMessages, streamingStatus, runtimeConversationId, syncMessages])
-
+  // Centralized through the runtime message projection adapter to avoid
+  // duplicated layout-effect sync logic across chat contexts.
+  useRuntimeSessionMessageProjection({
+    conversationId: runtimeConversationId,
+    messages: visibleMessages,
+    status: streamingStatus,
+    updateGlobal: false,
+  })
   // Phase 16: Register runtime adapter that delegates to existing Chat instance
-  // This allows the service to leverage AI SDK's stream handling
+  // This allows the service to leverage AI SDK's stream handling.
+  // NOTE: Register only once per conversation. Depending on `chatInstance`
+  // (which is a new object every render) would tear down and re-register the
+  // adapter on every render, aborting in-flight streams and making the side
+  // chat appear non-streaming.
   useEffect(() => {
     const adapter = {
       sendMessage: async ({
         role,
         parts,
+        interrupt,
+        correlationId,
         externalMessageId: providedExternalMessageId,
       }: {
         role: "user" | "agent"
-        parts: any[]
+        parts: MessagePart[]
+        interrupt?: boolean
+        correlationId?: string
         externalMessageId?: string
       }) => {
-        // Delegate to existing Chat instance
+        // Delegate to existing Chat instance.
+        // Keep parity with the main-chat adapter: carry interrupt and
+        // correlationId in metadata so the transport can forward them.
+        const ci = chatInstanceRef.current
         const message = await getMessageCorrelationService().createOptimisticMessage({
           role,
           parts,
           externalMessageId: providedExternalMessageId,
+          metadata: {
+            interrupt: interrupt ?? false,
+            correlationId,
+          },
         })
-        await chatInstance.sendMessage(message)
+        await ci.sendMessage(message)
       },
       stop: async () => {
         // Delegate to existing Chat instance
-        chatInstance.stop()
+        chatInstanceRef.current.stop()
       },
     }
 
     // Register adapter for this conversation
     return getAdapterRegistry().register(runtimeConversationId, adapter)
-  }, [runtimeConversationId, chatInstance])
+  }, [runtimeConversationId])
 
   // Wrap send handler to use new service (FIXED: no longer delegates to old queue)
   const handleSend = useCallback(
-    async (parts: UIMessage<any>["parts"]) => {
+    async (parts: UIMessage["parts"]) => {
       // Use new ConversationInvocationService for sending
       // This ensures all messages go through the same queue system
       await invocation.send({

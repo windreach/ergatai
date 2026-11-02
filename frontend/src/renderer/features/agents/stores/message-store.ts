@@ -3,6 +3,7 @@
 import { atom } from "jotai"
 import { atomFamily } from "jotai/utils"
 import { appStore } from "../../../lib/jotai-store"
+import { PROJECTION_KINDS } from "@/lib/projection-kinds"
 
 // Types
 export type MessageRole = "user" | "assistant" | "system" | "agent"
@@ -84,6 +85,31 @@ export interface Message {
 // This guarantees full per-chat isolation even when message IDs overlap across chats.
 export const getPerChatMessageKey = (conversationId: string, messageId: string) =>
   `${conversationId}:::${messageId}`
+
+// Cheap signature for historical (non-streaming) messages. Used to skip the
+// expensive JSON.stringify + deep clone when nothing observable changed.
+// This is intentionally conservative: a same-length content mutation may be
+// missed, but streaming messages are always fully fingerprinted.
+export function getMessageCheapSignature(msg: Message): string {
+  const parts = Array.isArray(msg.parts) ? msg.parts : []
+  return [
+    msg.id,
+    msg.role,
+    parts.length,
+    ...parts.map((part) => {
+      const p = part as { type?: unknown; text?: unknown; state?: unknown; input?: unknown }
+      const text = typeof p.text === "string" ? p.text : ""
+      const inputKeys =
+        p.input && typeof p.input === "object" && !Array.isArray(p.input)
+          ? Object.keys(p.input as Record<string, unknown>).length
+          : 0
+      // Sample text boundaries to catch same-length content mutations without
+      // paying for a full stringify of historical messages.
+      const textSample = text.length > 16 ? `${text.slice(0, 8)}…${text.slice(-8)}` : text
+      return `${String(p.type ?? "")}:${text.length}:${textSample}:${String(p.state ?? "")}:${inputKeys}`
+    }),
+  ].join("|")
+}
 
 // This is the key optimization: updating one message doesn't affect others.
 export const messageAtomFamily = atomFamily((_messageKey: string) =>
@@ -842,10 +868,13 @@ export const messageTokenDataAtom = atom((get) => {
 //    atoms always hold immutable values and downstream memoization can rely
 //    on plain identity comparison. No external change-tracking caches needed.
 //
-// Perf note: fingerprinting JSON-stringifies every message on every sync tick.
-// If profiling shows this matters on very long chats, cache fingerprints per
-// source-object reference (WeakMap) and recompute only the streaming message.
+// Perf note: the streaming (last) message is always fully fingerprinted.
+// Historical messages are guarded by a cheap signature so unchanged ones skip
+// the expensive JSON.stringify + deep clone. The fingerprint cache is bounded
+// (MAX_MESSAGE_FINGERPRINTS) to avoid unbounded growth in long-running sessions.
+const MAX_MESSAGE_FINGERPRINTS = 5000
 const messageFingerprints = new Map<string, string>()
+const messageCheapSignatures = new Map<string, string>()
 
 function deepClonePlain<T>(value: T): T {
   if (value instanceof Date) {
@@ -962,7 +991,7 @@ export const syncMessagesWithStatusAtom = atom(
     const newIds = messages
       .filter((m) => {
         const projectionKind = (m.metadata as Record<string, unknown> | undefined)?.projectionKind
-        return projectionKind !== "side_copy"
+        return projectionKind !== PROJECTION_KINDS.SIDE_COPY
       })
       .map((m) => m.id)
     const newRoles = new Map<string, MessageRole>()
@@ -1034,9 +1063,28 @@ export const syncMessagesWithStatusAtom = atom(
     // 1. msg object itself is mutated in-place
     // 2. msg.parts array is mutated in-place
     // 3. Individual part objects inside parts are mutated in-place
-    for (const msg of messages) {
+    //
+    // Performance: only the streaming (last) message is always fully
+    // fingerprinted. Historical messages are guarded by a cheap signature so
+    // an unchanged message skips the expensive JSON.stringify + deep clone.
+    const lastMessageIndex = messages.length - 1
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i]
       const messageKey = getPerChatMessageKey(currentConversationId, msg.id)
       const currentAtomValue = get(messageAtomFamily(messageKey))
+
+      // For historical (non-last) messages, skip when the cheap signature is
+      // unchanged since the last sync. This avoids re-stringifying messages
+      // that are no longer streaming.
+      const isStreamingMessage = i === lastMessageIndex
+      if (!isStreamingMessage && currentAtomValue !== null) {
+        const cheapSig = getMessageCheapSignature(msg)
+        if (messageCheapSignatures.get(messageKey) === cheapSig) {
+          continue
+        }
+        messageCheapSignatures.set(messageKey, cheapSig)
+      }
+
       const fingerprint = JSON.stringify(msg)
 
       // Update the atom only when content actually changed. The fingerprint is
@@ -1044,7 +1092,19 @@ export const syncMessagesWithStatusAtom = atom(
       // message (all parts, not just the last one) while skipping no-op syncs.
       if (currentAtomValue === null || messageFingerprints.get(messageKey) !== fingerprint) {
         messageFingerprints.set(messageKey, fingerprint)
+        if (!isStreamingMessage) {
+          messageCheapSignatures.set(messageKey, getMessageCheapSignature(msg))
+        }
         set(messageAtomFamily(messageKey), freezeDeep(deepClonePlain(msg)))
+      }
+
+      // Bound cache size: drop the oldest entry when we exceed the cap.
+      if (messageFingerprints.size > MAX_MESSAGE_FINGERPRINTS) {
+        const oldestKey = messageFingerprints.keys().next().value
+        if (oldestKey !== undefined) {
+          messageFingerprints.delete(oldestKey)
+          messageCheapSignatures.delete(oldestKey)
+        }
       }
     }
 
@@ -1057,6 +1117,7 @@ export const syncMessagesWithStatusAtom = atom(
         const messageKey = getPerChatMessageKey(currentConversationId, oldId)
         messageAtomFamily.remove(messageKey)
         messageFingerprints.delete(getPerChatMessageKey(currentConversationId, oldId))
+        messageCheapSignatures.delete(getPerChatMessageKey(currentConversationId, oldId))
         assistantIdsCacheByChat.delete(`${currentConversationId}:${oldId}`)
         assistantIdsPerChatCache.delete(`${currentConversationId}:::${oldId}`)
         isLastMessagePerChatAtomFamily.remove(`${currentConversationId}:::${oldId}`)
@@ -1134,6 +1195,7 @@ export function clearConversationCaches(conversationId: string): {
 
       messageAtomFamily.remove(messageKey)
       messageFingerprints.delete(messageKey)
+      messageCheapSignatures.delete(messageKey)
       assistantIdsCacheByChat.delete(`${conversationId}:${id}`)
       assistantIdsPerChatCache.delete(`${conversationId}:::${id}`)
       isLastMessagePerChatAtomFamily.remove(`${conversationId}:::${id}`)

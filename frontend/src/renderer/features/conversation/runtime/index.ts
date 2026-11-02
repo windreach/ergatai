@@ -126,3 +126,8 @@ export {
   useRuntimeSessionSources,
   type RuntimeSessionSources,
 } from "./use-runtime-session-sources"
+
+export {
+  useRuntimeSessionMessageProjection,
+  type RuntimeSessionMessageProjectionInput,
+} from "./use-runtime-session-message-projection"

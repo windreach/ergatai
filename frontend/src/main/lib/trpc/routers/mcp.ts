@@ -162,8 +162,8 @@ export const mcpRouter = router({
         command: z.string().optional(),
         args: z.array(z.string()).optional(),
         url: z.string().optional(),
-        env: z.record(z.string()).optional(),
-        headers: z.record(z.string()).optional(),
+        env: z.record(z.string(), z.string()).optional(),
+        headers: z.record(z.string(), z.string()).optional(),
         projectPath: z.string().nullish(),
       }),
     )
@@ -380,7 +380,7 @@ export const mcpRouter = router({
         toolUseId: z.string(),
         approved: z.boolean(),
         message: z.string().optional(),
-        updatedInput: z.record(z.any()).optional(),
+        updatedInput: z.record(z.string(), z.unknown()).optional(),
       }),
     )
     .mutation(async ({ input }) => {

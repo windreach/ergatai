@@ -499,7 +499,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
       const plan = part.input?.plan
       if (!plan) return ""
       const steps = plan.steps || []
-      const completed = steps.filter((s: any) => s.status === "completed").length
+      const completed = steps.filter((s: { status?: string }) => s.status === "completed").length
       if (plan.title) {
         return steps.length > 0 
           ? `${plan.title} (${completed}/${steps.length})`

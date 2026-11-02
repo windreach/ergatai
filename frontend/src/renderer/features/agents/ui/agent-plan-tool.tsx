@@ -30,7 +30,7 @@ interface Plan {
   status: "draft" | "awaiting_approval" | "approved" | "in_progress" | "completed"
 }
 
-interface PlanToolPart {
+export interface PlanToolPart {
   type: string
   toolCallId: string
   state?: string

@@ -4,7 +4,7 @@ import { mkdir, readFile, stat } from "node:fs/promises";
 import { devNull, homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import simpleGit from "simple-git";
+import { simpleGit } from "simple-git";
 import {
 	adjectives,
 	animals,

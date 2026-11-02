@@ -167,6 +167,25 @@ struct PendingResponseContext {
 ///
 /// Encapsulates the full send pipeline so both REST API and MCP
 /// use identical protection logic.
+/// Process-wide per-target spawn locks.
+///
+/// Concurrent sends to the same target (agent ID, profile name or conversation
+/// ID) are serialized so that auto-resume / auto-spawn cannot both observe
+/// "no agent" and create duplicates. The lock is held only for the duration of
+/// target resolution (including spawn), not for the whole send pipeline.
+static SPAWN_LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+
+fn spawn_locks() -> &'static std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>> {
+    SPAWN_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn spawn_lock(key: &str) -> Arc<Mutex<()>> {
+    let mut map = spawn_locks().lock().unwrap_or_else(|e| e.into_inner());
+    map.entry(key.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
 pub struct MessageSender {
     peer_registry: Arc<AgentRegistry>,
     admission_gate: CompositeGate,
@@ -308,7 +327,12 @@ impl MessageSender {
         };
 
         // 1b. Resolve target agent (auto-spawn if it's a profile name)
-        let resolved_target_id = match self.resolve_target_agent(&runtime, &req.to).await {
+        // Serialize concurrent sends to the same target so auto-resume / auto-spawn
+        // cannot both observe "no agent" and create duplicates.
+        let resolved_target_id = {
+            let _target_spawn_mutex = spawn_lock(&req.to);
+            let _target_resolution_guard = _target_spawn_mutex.lock().await;
+            match self.resolve_target_agent(&runtime, &req.to).await {
             Some(id) => id,
             None => {
                 // Target may also be identified directly by its bound Conversation.
@@ -357,7 +381,8 @@ impl MessageSender {
                     }
                 }
             }
-        };
+        } // close match expression
+    }; // close target resolution block
 
         // 1c. Create resolved request with actual runtime agent IDs
         let resolved_req = SendRequest {

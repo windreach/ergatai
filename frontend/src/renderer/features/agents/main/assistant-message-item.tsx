@@ -16,6 +16,9 @@ import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { ChatMarkdownRenderer } from "../../../components/chat-markdown-renderer"
 import { cn } from "../../../lib/utils"
 import { selectedWorkspaceAtom, showMessageJsonAtom } from "../atoms"
+import type { Message, MessagePart } from "../stores/message-store"
+import type { ThinkingToolPart } from "../ui/agent-thinking-tool"
+import type { PlanToolPart } from "../ui/agent-plan-tool"
 import { GroupAgentMessageHeader } from "../collaboration/group-agent-message-header"
 import { GroupAgentMentionTool } from "../collaboration/group-agent-mention-tool"
 import { useGroupChat } from "../collaboration/group-chat-context"
@@ -113,7 +116,7 @@ const LOWERCASE_EXACT_TOOL_TYPES: Record<string, string> = {
 // Handles two formats:
 // 1. Streaming: type="tool-acp.acp_provider_agent_dynamic_tool", input={toolName, args}
 // 2. Persisted/live: type="tool-Read README.md", input={toolName, args}
-function normalizeAcpParts(parts: any[]): any[] {
+function normalizeAcpParts(parts: MessagePart[]): MessagePart[] {
   return parts.map((part) => {
     if (!part.type?.startsWith("tool-")) return part
 
@@ -256,13 +259,13 @@ function mapReasoningStateToThinkingState(state: unknown): string {
   return "output-available"
 }
 
-function getThinkingText(part: any): string {
+function getThinkingText(part: MessagePart): string {
   if (typeof part?.input?.text === "string") return part.input.text
   if (typeof part?.text === "string") return part.text
   return ""
 }
 
-function toThinkingToolPart(part: any, messageId: string | undefined, index: number): any {
+function toThinkingToolPart(part: MessagePart, messageId: string | undefined, index: number): MessagePart {
   const normalizedState = mapReasoningStateToThinkingState(part.state)
   const text = getThinkingText(part)
   const normalizedPart = {
@@ -296,9 +299,9 @@ function toThinkingToolPart(part: any, messageId: string | undefined, index: num
 
 
 // Group consecutive exploring tools into exploring-group
-function groupExploringTools(parts: any[], nestedToolIds: Set<string>): any[] {
-  const result: any[] = []
-  let currentGroup: any[] = []
+function groupExploringTools(parts: MessagePart[], nestedToolIds: Set<string>): MessagePart[] {
+  const result: MessagePart[] = []
+  let currentGroup: MessagePart[] = []
 
   for (const part of parts) {
     const isNested = part.toolCallId && nestedToolIds.has(part.toolCallId)
@@ -324,9 +327,9 @@ function groupExploringTools(parts: any[], nestedToolIds: Set<string>): any[] {
 }
 
 // Group consecutive task tools into task-group
-function groupTaskTools(parts: any[], nestedToolIds: Set<string>): any[] {
-  const result: any[] = []
-  let currentGroup: any[] = []
+function groupTaskTools(parts: MessagePart[], nestedToolIds: Set<string>): MessagePart[] {
+  const result: MessagePart[] = []
+  let currentGroup: MessagePart[] = []
 
   for (const part of parts) {
     const isNested = part.toolCallId && nestedToolIds.has(part.toolCallId)
@@ -408,7 +411,7 @@ function CollapsibleSteps({
 // ============================================================================
 
 export interface AssistantMessageItemProps {
-  message: any
+  message: Message
   isLastMessage: boolean
   isStreaming: boolean
   status: string
@@ -447,13 +450,13 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
   // Note: no useMemo — AI SDK mutates parts in-place, so the array reference
   // doesn't change and useMemo would return stale results.
   const messageParts = normalizeAcpParts(
-    (message?.parts || []).map((part: any) =>
-      normalizeCodexToolPart(part) as any,
+    (message?.parts || []).map((part: MessagePart) =>
+      normalizeCodexToolPart(part) as MessagePart,
     ),
   )
 
   const contentParts = useMemo(() =>
-    messageParts.filter((p: any) => p.type !== "step-start"),
+    messageParts.filter((p: MessagePart) => p.type !== "step-start"),
     [messageParts]
   )
 
@@ -464,14 +467,14 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     contentParts.length === 0
 
   const { nestedToolsMap, nestedToolIds, orphanTaskGroups, orphanToolCallIds, orphanFirstToolCallIds } = useMemo(() => {
-    const nestedToolsMap = new Map<string, any[]>()
+    const nestedToolsMap = new Map<string, MessagePart[]>()
     const nestedToolIds = new Set<string>()
     const taskPartIds = new Set(
       messageParts
-        .filter((p: any) => p.type === "tool-Task" && p.toolCallId)
-        .map((p: any) => p.toolCallId)
+        .filter((p: MessagePart) => p.type === "tool-Task" && p.toolCallId)
+        .map((p: MessagePart) => p.toolCallId)
     )
-    const orphanTaskGroups = new Map<string, { parts: any[]; firstToolCallId: string }>()
+    const orphanTaskGroups = new Map<string, { parts: MessagePart[]; firstToolCallId: string }>()
     const orphanToolCallIds = new Set<string>()
     const orphanFirstToolCallIds = new Set<string>()
 
@@ -502,7 +505,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
 
   // Collect all plan operations (Write/Edit) for unified handling
   const planOpsSummary = useMemo(() => {
-    const operations: Array<{ type: "write" | "edit"; part: any; index: number }> = []
+    const operations: Array<{ type: "write" | "edit"; part: MessagePart; index: number }> = []
 
     for (let i = 0; i < messageParts.length; i++) {
       const part = messageParts[i]
@@ -513,7 +516,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
       }
 
       // Extract file path from locations (backend provides locations, not file_path)
-      const locations = part.input?._locations
+      const locations = (part.input as { _locations?: Array<{ path?: string }> } | undefined)?._locations
       const filePath = locations?.[0]?.path
 
       if (!filePath) {
@@ -578,7 +581,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
 
     // Calculate visible steps count for collapsible header
     const stepParts = shouldCollapse && collapseBeforeIndex !== -1 ? messageParts.slice(0, collapseBeforeIndex) : []
-    const visibleStepsCount = stepParts.filter((p: any) => {
+    const visibleStepsCount = stepParts.filter((p: MessagePart) => {
       if (p.type === "step-start") return false
       if (p.type === "tool-TaskOutput") return false
       if (p.type === "tool-ExitPlanMode") return false
@@ -615,7 +618,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
   }, [messageParts, shouldCollapse, collapseBeforeIndex])
 
   const hasTextContent = useMemo(() =>
-    messageParts.some((p: any) => p.type === "text" && p.text?.trim()),
+    messageParts.some((p: MessagePart) => p.type === "text" && p.text?.trim()),
     [messageParts]
   )
 
@@ -640,7 +643,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
       ? { id: agentIdentity.id, name: agentIdentity.name }
       : null
 
-  const renderPart = useCallback((part: any, idx: number, isFinal = false) => {
+  const renderPart = useCallback((part: MessagePart, idx: number, isFinal = false) => {
     if (part.type === "step-start") return null
     if (part.type === "tool-TaskOutput") return null
     if (part.type === "control-end") return null
@@ -684,7 +687,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     }
 
     if (part.type === "tool-Task") {
-      const nestedTools = nestedToolsMap.get(part.toolCallId) || []
+      const nestedTools = nestedToolsMap.get(part.toolCallId ?? "") || []
       return <AgentTaskTool key={idx} part={part} nestedTools={nestedTools} chatStatus={status} />
     }
 
@@ -722,7 +725,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
       return (
         <AgentThinkingTool
           key={idx}
-          part={toThinkingToolPart(part, message?.id, idx)}
+          part={toThinkingToolPart(part, message?.id, idx) as unknown as ThinkingToolPart}
           chatStatus={status}
         />
       )
@@ -732,7 +735,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     // - In collapsed steps: all show mini indicator, last collapsed op's card shown separately after finalParts
     // - In final parts: all but last show mini indicator, last shows full card
     if (part.type === "tool-Write" || part.type === "tool-Edit") {
-      const filePath = part.input?._locations?.[0]?.path
+      const filePath = (part.input as { _locations?: Array<{ path?: string }> } | undefined)?._locations?.[0]?.path
       if (!filePath) return null
       if (isPlanFile(filePath)) {
         // Use part.toolCallId to find operation since idx may be adjusted for collapsed parts
@@ -791,7 +794,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     if (part.type === "tool-Write") return <AgentEditTool key={idx} part={part} messageId={message.id} partIndex={idx} chatStatus={status} />
     if (part.type === "tool-WebSearch") return <AgentWebSearchCollapsible key={idx} part={part} chatStatus={status} />
     if (part.type === "tool-WebFetch") return <AgentWebFetchTool key={idx} part={part} chatStatus={status} />
-    if (part.type === "tool-PlanWrite") return <AgentPlanTool key={idx} part={part} chatStatus={status} />
+    if (part.type === "tool-PlanWrite") return <AgentPlanTool key={idx} part={part as unknown as PlanToolPart} chatStatus={status} />
 
     // ExitPlanMode tool is hidden - plan is shown in sidebar instead
     if (part.type === "tool-ExitPlanMode") {
@@ -799,7 +802,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     }
 
     if (part.type === "tool-TodoWrite") {
-      return <AgentTodoTool key={idx} part={part} chatStatus={status} conversationId={conversationId} />
+      return <AgentTodoTool key={idx} part={part as unknown as Parameters<typeof AgentTodoTool>[0]["part"]} chatStatus={status} conversationId={conversationId} />
     }
 
     if (part.type === "tool-AskUserQuestion") {
@@ -807,8 +810,8 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
       return (
         <AgentAskUserQuestionTool
           key={idx}
-          input={part.input}
-          result={part.result}
+          input={part.input as { questions?: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> }}
+          result={part.result as { answers?: Record<string, string> } | string | undefined}
           errorText={(part.errorText as string | undefined) || (part.error as string | undefined)}
           state={isPending ? "call" : "result"}
           isError={isError}
@@ -821,7 +824,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     if (part.type in AgentToolRegistry) {
       const meta = AgentToolRegistry[part.type]
       const { isPending, isError } = getToolStatus(part, status)
-      const filePath = part.input?._locations?.[0]?.path
+      const filePath = (part.input as { _locations?: Array<{ path?: string }> } | undefined)?._locations?.[0]?.path
       const handleClick = part.type === "tool-Read" && onOpenFile && filePath
         ? () => onOpenFile(filePath)
         : undefined
@@ -893,14 +896,14 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
               // Apply both grouping functions: first task tools, then exploring tools
               const taskGrouped = groupTaskTools(stepParts, nestedToolIds)
               const grouped = groupExploringTools(taskGrouped, nestedToolIds)
-              return grouped.map((part: any, idx: number) => {
+              return grouped.map((part: MessagePart, idx: number) => {
                 if (part.type === "exploring-group") {
                   const isLast = idx === grouped.length - 1
                   const isGroupStreaming = isStreaming && isLastMessage && isLast
                   return (
                     <AgentExploringGroup
                       key={idx}
-                      parts={part.parts}
+                      parts={part.parts as MessagePart[]}
                       chatStatus={status}
                       isStreaming={isGroupStreaming}
                     />
@@ -912,7 +915,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
                   return (
                     <AgentTaskToolsGroup
                       key={idx}
-                      parts={part.parts}
+                      parts={part.parts as unknown as Parameters<typeof AgentTaskToolsGroup>[0]["parts"]}
                       chatStatus={status}
                       isStreaming={isGroupStreaming}
                       conversationId={conversationId}
@@ -929,14 +932,14 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
           // Apply both grouping functions: first task tools, then exploring tools
           const taskGrouped = groupTaskTools(finalParts, nestedToolIds)
           const grouped = groupExploringTools(taskGrouped, nestedToolIds)
-          return grouped.map((part: any, idx: number) => {
+          return grouped.map((part: MessagePart, idx: number) => {
             if (part.type === "exploring-group") {
               const isLast = idx === grouped.length - 1
               const isGroupStreaming = isStreaming && isLastMessage && isLast
               return (
                 <AgentExploringGroup
                   key={idx}
-                  parts={part.parts}
+                  parts={part.parts as MessagePart[]}
                   chatStatus={status}
                   isStreaming={isGroupStreaming}
                 />
@@ -948,7 +951,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
               return (
                 <AgentTaskToolsGroup
                   key={idx}
-                  parts={part.parts}
+                  parts={part.parts as unknown as Parameters<typeof AgentTaskToolsGroup>[0]["parts"]}
                   chatStatus={status}
                   isStreaming={isGroupStreaming}
                   conversationId={conversationId}
