@@ -124,4 +124,59 @@ describe("ConversationProjectionService", () => {
     expect(second).toBe(first)
     expect(second.visibleMessages).toBe(first.visibleMessages)
   })
+
+  it("recomputes when a new array with the same length but different content is passed", () => {
+    const service = getConversationProjectionService()
+    const firstInput: Message[] = [
+      {
+        id: "msg-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "hello" }],
+        sequence: 1,
+        metadata: { turnId: "turn-1" },
+      } as Message,
+    ]
+    const secondInput: Message[] = [
+      {
+        id: "msg-2",
+        role: "assistant",
+        parts: [{ type: "text", text: "world" }],
+        sequence: 1,
+        metadata: { turnId: "turn-1" },
+      } as Message,
+    ]
+
+    const first = service.project({ persistedMessages: firstInput })
+    const second = service.project({ persistedMessages: secondInput })
+
+    expect(second).not.toBe(first)
+    expect(second.visibleMessages[0]?.id).toBe("msg-2")
+  })
+
+  it("does not return a stale projection after in-place mutation of a reused array", () => {
+    const service = getConversationProjectionService()
+    const persisted: Message[] = [
+      {
+        id: "msg-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "hello" }],
+        sequence: 1,
+        metadata: { turnId: "turn-1" },
+      } as Message,
+    ]
+
+    const first = service.project({ persistedMessages: persisted })
+    persisted[0] = {
+      id: "msg-2",
+      role: "assistant",
+      parts: [{ type: "text", text: "world" }],
+      sequence: 1,
+      metadata: { turnId: "turn-1" },
+    } as Message
+
+    const second = service.project({ persistedMessages: persisted })
+
+    expect(second).not.toBe(first)
+    expect(second.visibleMessages[0]?.id).toBe("msg-2")
+  })
 })

@@ -12,7 +12,7 @@ interface AgentsQuickSwitchDialogProps {
   chats: Array<{
     id: string
     name: string | null
-    meta: any
+    meta: unknown
     sandbox_id: string | null
     updated_at: Date
     projectId: string | null
@@ -29,7 +29,7 @@ export function AgentsQuickSwitchDialog({
   projectsMap,
   onHover,
 }: AgentsQuickSwitchDialogProps) {
-  // All hooks must be called before any conditional returns (Rules of Hooks)
+  // All hooks must be called before unknown conditional returns (Rules of Hooks)
   const loadingConversations = useAtomValue(loadingConversationsAtom)
   const loadingChatIds = useMemo(
     () => new Set([...loadingConversations.values()]),

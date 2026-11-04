@@ -1,3 +1,4 @@
+ 
 "use client"
 
 import { ChevronsUpDown } from "lucide-react"
@@ -54,12 +55,12 @@ interface TaskSnapshot {
 // TaskList, TaskGet) with different input/output shapes. Helper functions narrow
 // by `part.type` and read specific fields.
 //
-// JUSTIFICATION for `any` on input/output:
+// JUSTIFICATION for `unknown` on input/output:
 // The AI SDK's tool-use parts have a dynamic structure that varies by tool type.
 // Each tool (TaskCreate, TaskUpdate, TaskList, TaskGet) has a unique input/output schema.
 // Defining a union type would require exhaustive matching on `part.type` at every usage site,
 // adding significant complexity without meaningful safety (the SDK doesn't enforce these types).
-// Instead, we use `any` here and rely on runtime checks in helper functions like
+// Instead, we use `unknown` here and rely on runtime checks in helper functions like
 // `extractChangesFromParts` and `updateTaskSnapshotFromParts` to safely access fields.
 // A minimal interface capturing common fields:
 // interface ToolPart { type?: string; state?: string; toolCallId?: string; input?: unknown; output?: unknown }
@@ -68,6 +69,7 @@ type TaskToolPart = {
   type?: string
   state?: string
   toolCallId?: string
+   
   input?: any
   output?: any
 } | null | undefined
@@ -76,10 +78,7 @@ type TaskToolPart = {
 // Task Snapshot History Cache
 // ============================================================================
 
-// Snapshots keyed by groupKey (first toolCallId of each group)
-// Map<conversationId, Map<groupKey, Map<taskId, TaskSnapshot>>>
-// Each entry is the snapshot AFTER that group was applied
-const snapshotHistoryCache = new Map<string, Map<string, Map<string, TaskSnapshot>>>()
+const MAX_CACHED_CONVERSATIONS = 20
 
 // Track group order to find "previous" snapshot
 // Map<conversationId, groupKey[]>
@@ -91,19 +90,15 @@ const groupOrderCache = new Map<string, string[]>()
 // for better type safety and clarity.
 const cachedGroupKeys = new Map<string, Set<string>>()
 
-const MAX_CACHED_CONVERSATIONS = 20
+import { BoundedCache } from "../../../lib/bounded-cache"
 
-function evictOldestCaches() {
-  if (snapshotHistoryCache.size > MAX_CACHED_CONVERSATIONS) {
-    const keys = Array.from(snapshotHistoryCache.keys())
-    for (const key of keys.slice(0, keys.length - MAX_CACHED_CONVERSATIONS)) {
-      snapshotHistoryCache.delete(key)
-      groupOrderCache.delete(key)
-      // Also clean up tracking set entries for evicted conversation
-      cachedGroupKeys.delete(key)
-    }
-  }
-}
+// Snapshots keyed by groupKey (first toolCallId of each group)
+// Map<conversationId, Map<groupKey, Map<taskId, TaskSnapshot>>>
+// Each entry is the snapshot AFTER that group was applied
+const snapshotHistoryCache = new BoundedCache<string, Map<string, Map<string, TaskSnapshot>>>(MAX_CACHED_CONVERSATIONS, (key) => {
+  groupOrderCache.delete(key)
+  cachedGroupKeys.delete(key)
+})
 
 /**
  * Clear cached task snapshots for a specific conversation.
@@ -407,7 +402,7 @@ function extractChangesFromParts(
         : taskSubjects.get(taskId) ?? formatTaskSubject(taskId, `Task #${taskId}`)
 
       // Check if this task was already in our changes (e.g., created then updated in same group)
-      let existingIdx = changes.findIndex(c => c.id === taskId)
+      const existingIdx = changes.findIndex(c => c.id === taskId)
 
       if (part.input?.status === "deleted") {
         if (existingIdx !== -1) {
@@ -927,7 +922,6 @@ export const AgentTaskToolsGroup = memo(function AgentTaskToolsGroup({
         groupOrder.push(groupKey)
       }
 
-      evictOldestCaches()
     } else {
       // Already tracked — still update the snapshot in case parts changed
       // (e.g. new streaming data arrived for the same groupKey)
@@ -1014,7 +1008,7 @@ export const AgentTaskToolsGroup = memo(function AgentTaskToolsGroup({
   // Extract read-only data from TaskList and TaskGet
   const { taskList, taskGet } = useMemo(() => extractReadDataFromParts(parts), [parts])
 
-  // Check if any part is still pending (for shimmer effects)
+  // Check if unknown part is still pending (for shimmer effects)
   const anyPending = useMemo(() => {
     return parts.some((part) => {
       if (!part) return false

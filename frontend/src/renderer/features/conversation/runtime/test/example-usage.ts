@@ -6,8 +6,6 @@
  */
 
 import {
-  useConversationInvocation,
-  useSessionState,
   getConversationInvocationService,
 } from "../index"
 
@@ -24,43 +22,13 @@ import {
  * Demonstrates how to use useConversationInvocation and useSessionState hooks
  * to send messages and track streaming status in a React component.
  */
-function ExampleChatInput({ conversationId, chatId }: { conversationId: string; chatId: string }) {
-  const invocation = useConversationInvocation()
-  const sessionState = useSessionState(conversationId)
-
-  const handleSend = async (message: string) => {
-    const ticket = await invocation.send({
-      conversation: {
-        chatId,
-        conversationId,
-        source: "main",
-      },
-      role: "user",
-      parts: [{ type: "text", text: message }],
-    })
-
-    console.log("Send ticket:", ticket)
-  }
-
-  const handleStop = async () => {
-    await invocation.stop({ conversationId, chatId })
-  }
-
-  return {
-    isStreaming: sessionState?.isStreaming ?? false,
-    queueLength: sessionState?.queue.length ?? 0,
-    send: handleSend,
-    stop: handleStop,
-  }
-}
-
 /**
  * Example 2: Using service directly (non-React context)
  *
  * Demonstrates how to use getConversationInvocationService() to send messages
  * and manage sessions without React hooks.
  */
-async function exampleServiceUsage() {
+async function _exampleServiceUsage() {
   const service = getConversationInvocationService()
 
   // Send a message

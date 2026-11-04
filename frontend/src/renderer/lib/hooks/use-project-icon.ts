@@ -1,7 +1,10 @@
 import { useState, useEffect } from "react"
+import { BoundedCache } from "../bounded-cache"
 
 // Module-level cache for local file icons: projectId → blob URL
-const fileIconCache = new Map<string, string>()
+const fileIconCache = new BoundedCache<string, string>(200, (_key, value) => {
+  if (value) URL.revokeObjectURL(value)
+})
 // Deduplicate concurrent fetches
 const pendingFetches = new Map<string, Promise<string | null>>()
 
@@ -118,7 +121,7 @@ export function useProjectIcon(project: ProjectIconData | null | undefined): Use
     return () => {
       cancelled = true
     }
-  }, [project?.id, project?.iconPath, project?.updatedAt, project?.gitOwner, project?.gitProvider])
+  }, [project, project?.id, project?.iconPath, project?.updatedAt, project?.gitOwner, project?.gitProvider])
 
   return { src, isLoading, hasError }
 }

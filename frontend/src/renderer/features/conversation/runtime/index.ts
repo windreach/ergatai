@@ -84,6 +84,18 @@ export {
 } from "./agent-runtime-resolver"
 
 export {
+  getAdapterRegistry,
+  resetAdapterRegistry,
+  type AdapterState,
+} from "./runtime-adapter"
+
+export {
+  persistSequence,
+  readPersistedSequence,
+  removePersistedSequence,
+} from "./runtime-sequence-persistence"
+
+export {
   getTransportResolver,
   resetTransportResolver,
   type TransportResolver,

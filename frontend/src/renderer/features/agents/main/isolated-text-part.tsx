@@ -202,7 +202,7 @@ function highlightTextInDom(
     if (fragments.length > 0) {
       const parent = textNode.parentNode
       if (parent) {
-        fragments.forEach((frag, i) => {
+        fragments.forEach((frag, _i) => {
           if (typeof frag === "string") {
             parent.insertBefore(document.createTextNode(frag), textNode)
           } else {
@@ -219,8 +219,8 @@ export const IsolatedTextPart = memo(function IsolatedTextPart({
   conversationId,
   messageId,
   partIndex,
-  isFinalText,
-  visibleStepsCount,
+  isFinalText: _isFinalText,
+  visibleStepsCount: _visibleStepsCount,
 }: IsolatedTextPartProps) {
   const contentRef = useRef<HTMLDivElement>(null)
 
@@ -246,19 +246,20 @@ export const IsolatedTextPart = memo(function IsolatedTextPart({
   // Apply DOM-based highlighting after render
   // If currentHighlight exists, use its indexInPart to mark the correct match as current
   useEffect(() => {
-    if (!contentRef.current || isTextStreaming) return
+    const content = contentRef.current
+    if (!content || isTextStreaming) return
 
     // Apply highlighting
     highlightTextInDom(
-      contentRef.current,
+      content,
       searchQuery,
       currentMatchIndexInPart
     )
 
     // Cleanup on unmount or when highlights change
     return () => {
-      if (contentRef.current) {
-        const existingHighlights = contentRef.current.querySelectorAll(".search-highlight")
+      if (content) {
+        const existingHighlights = content.querySelectorAll(".search-highlight")
         existingHighlights.forEach((el) => {
           const parent = el.parentNode
           if (parent) {
@@ -349,7 +350,7 @@ export const IsolatedTextPartsList = memo(function IsolatedTextPartsList({
     }
 
     return indices
-  }, [message?.parts?.length, finalTextIndex, showOnlyFinalText])
+  }, [message?.parts, finalTextIndex, showOnlyFinalText])
 
   if (textPartIndices.length === 0) return null
 

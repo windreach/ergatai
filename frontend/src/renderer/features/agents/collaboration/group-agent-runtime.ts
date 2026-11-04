@@ -24,7 +24,9 @@ export type GroupAgentRuntimeStatuses = Partial<
 type GroupAgentRuntimeListener = () => void
 
 const EMPTY_STATUSES: GroupAgentRuntimeStatuses = {}
-const snapshots = new Map<string, GroupAgentRuntimeStatuses>()
+import { BoundedCache } from "../../../lib/bounded-cache"
+
+const snapshots = new BoundedCache<string, GroupAgentRuntimeStatuses>(500)
 const listeners = new Map<string, Set<GroupAgentRuntimeListener>>()
 
 function notify(chatId: string) {

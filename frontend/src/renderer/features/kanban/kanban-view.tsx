@@ -13,7 +13,7 @@ import {
   agentsUnseenChangesAtom,
   selectedWorkspaceAtom,
   agentsSidebarOpenAtom,
-} from "../agents/atoms"
+} from "../agents"
 import {
   selectedAgentChatIdsAtom,
   isAgentMultiSelectModeAtom,
@@ -22,16 +22,16 @@ import {
 import { KanbanBoard } from "./components/kanban-board"
 import type { KanbanCardData } from "./components/kanban-card"
 import { deriveWorkspaceStatus } from "./lib/derive-status"
-import { useNewChatDrafts } from "../agents/lib/drafts"
-import { exportChat, copyChat } from "../agents/lib/export-chat"
-import { AgentsRenameConversationDialog } from "../agents/components/agents-rename-conversation-dialog"
+import { useNewChatDrafts } from "../agents"
+import { exportChat, copyChat } from "../agents"
+import { AgentsRenameConversationDialog } from "../agents"
 import { ConfirmArchiveDialog } from "../../components/confirm-archive-dialog"
-import { AgentsHeaderControls } from "../agents/ui/agents-header-controls"
+import { AgentsHeaderControls } from "../agents"
 
 // Event for open conversations changes
 const OPEN_CONVERSATION_CHANGE_EVENT = "open-conversation-change"
 
-type BackendChatRow = {
+type _BackendChatRow = {
   id: string
   name: string | null
   project_id: string

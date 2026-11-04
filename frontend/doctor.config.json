@@ -1,0 +1,11 @@
+{
+  "$schema": "https://react.doctor/schema.json",
+  "ignore": {
+    "overrides": [
+      {
+        "files": ["out/**"],
+        "rules": ["react-doctor/artifact-env-leak"]
+      }
+    ]
+  }
+}

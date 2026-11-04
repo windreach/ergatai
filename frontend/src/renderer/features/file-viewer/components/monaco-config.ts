@@ -8,7 +8,6 @@ import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker"
 import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker"
 
 // Configure Monaco workers for Vite
-// @ts-ignore - Monaco's global window setup
 self.MonacoEnvironment = {
   getWorker(_: unknown, label: string) {
     if (label === "json") return new jsonWorker()
@@ -80,8 +79,10 @@ export function getMonacoTheme(appTheme: string): string {
   return isDark ? "vs-dark" : "vs"
 }
 
+import { BoundedCache } from "../../../lib/bounded-cache"
+
 // Track which custom themes have been defined (with version hash to detect changes)
-const definedThemes = new Map<string, string>()
+const definedThemes = new BoundedCache<string, string>(100)
 
 /**
  * Normalize a hex color to 6-digit format for Monaco.
@@ -116,7 +117,7 @@ function normalizeHex(color: string): string {
  * creates matching Monarch token rules so syntax highlighting works correctly.
  */
 function buildMonarchRules(
-  tokenColors: any[],
+  tokenColors: Array<{ name?: string; scope?: string | string[]; settings?: { foreground?: string; background?: string; fontStyle?: string } }>,
 ): editor.ITokenThemeRule[] {
   const rules: editor.ITokenThemeRule[] = []
 
@@ -242,7 +243,7 @@ function buildMonarchRules(
  */
 export function registerMonacoTheme(
   monacoInstance: typeof monaco,
-  theme: { id: string; type: "light" | "dark"; colors: Record<string, string>; tokenColors?: any[] },
+  theme: { id: string; type: "light" | "dark"; colors: Record<string, string>; tokenColors?: Array<{ name?: string; scope?: string | string[]; settings?: { foreground?: string; background?: string; fontStyle?: string } }> },
 ): string {
   const themeName = `custom-${theme.id}`
 

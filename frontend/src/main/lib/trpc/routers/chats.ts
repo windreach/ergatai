@@ -1,51 +1,76 @@
-import { BrowserWindow } from "electron"
+import {
+  BrowserWindow
+} from "electron"
 import * as fs from "fs/promises"
 import * as path from "path"
-import { simpleGit } from "simple-git"
-import { z } from "zod"
-import { getOllamaUrl } from "../../config"
+import {
+  simpleGit
+} from "simple-git"
+import {
+  z
+} from "zod"
+import {
+  getOllamaUrl
+} from "../../config"
 import {
   trackPRCreated,
   trackWorkspaceArchived,
   trackWorkspaceCreated,
-  trackWorkspaceDeleted,
+  trackWorkspaceDeleted
 } from "../../analytics"
 import {
   createWorktreeForChat,
   fetchGitHubPRStatus,
   getWorktreeDiff,
   removeWorktree,
-  sanitizeProjectName,
+  sanitizeProjectName
 } from "../../git"
-import type { WorktreeSetupResult } from "../../git/worktree-config"
-import { computeContentHash, gitCache } from "../../git/cache"
-import { splitUnifiedDiffByFile } from "../../git/diff-parser"
-import { execWithShellEnv } from "../../git/shell-env"
-import { applyRollbackStash } from "../../git/stash"
-import { checkOllamaStatus } from "../../ollama"
-import { terminalManager } from "../../terminal/manager"
-import { publicProcedure, router } from "../index"
+import type {
+  WorktreeSetupResult
+} from "../../git/worktree-config"
 import {
-  archiveConversation,
+  computeContentHash,
+  gitCache
+} from "../../git/cache"
+import {
+  splitUnifiedDiffByFile
+} from "../../git/diff-parser"
+import {
+  execWithShellEnv
+} from "../../git/shell-env"
+import {
+  applyRollbackStash
+} from "../../git/stash"
+import {
+  checkOllamaStatus
+} from "../../ollama"
+import {
+  terminalManager
+} from "../../terminal/manager"
+import {
+  publicProcedure,
+  router
+} from "../index"
+import {
   deleteConversation,
   getConversation,
   listConversationMessages,
   listChats,
   updateConversation,
   updateConversationMessages,
-  listConversationMessages as listMessages,
   createInitialPromptTurn,
-  type BackendMessage,
   type BackendConversation,
   type BackendChat,
-  mapBackendMessagesToUiMessages,
+  mapBackendMessagesToUiMessages
 } from "../../ergatai/user-data"
-import { ergataiCaller as trpcClient } from "../../ergatai/caller"
+import {
+  ergataiCaller as trpcClient
+} from "../../ergatai/caller"
 import {
   chatIdSchema,
   conversationIdSchema,
   messageIdSchema,
-  projectIdSchema,
+  projectIdSchema
 } from "../../validation/ids"
 
 type WorktreeSetupFailurePayload = {
@@ -171,27 +196,6 @@ function mapBackendConversation(conversation: BackendConversation): MappedConver
     createdAt: new Date(conversation.created_at * 1000),
     updatedAt: new Date(conversation.updated_at * 1000),
   }
-}
-
-function findLegacyChatOwner(
-  chatCandidates: ChatRecord[],
-  conversation: BackendConversation,
-): ChatRecord | null {
-  let ownerChat: ChatRecord | null = null
-  for (const candidateChat of chatCandidates) {
-    if (candidateChat.createdAt.getTime() <= conversation.created_at * 1000) {
-      ownerChat = candidateChat
-    } else {
-      break
-    }
-  }
-  return ownerChat
-}
-
-async function listWorkspaceChatCandidates(workspaceId: string): Promise<ChatRecord[]> {
-  return (await trpcClient.listChats({ workspaceId }))
-    .filter((chat) => chat.id.startsWith("chat_"))
-    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
 }
 
 async function findChatForConversation(
@@ -349,7 +353,7 @@ export const chatsRouter = router({
           if (workspace?.status === "archived") {
             includeArchived = true
           }
-        } catch (e) {
+        } catch {
           // ignore
         }
       }
@@ -689,7 +693,7 @@ export const chatsRouter = router({
     }),
 
   /**
-   * Archive a chat (also kills any terminal processes in the workspace)
+   * Archive a chat (also kills unknown terminal processes in the workspace)
    * Optionally deletes the worktree to free disk space
    */
   archive: publicProcedure
@@ -935,7 +939,7 @@ export const chatsRouter = router({
       const forkAtSdkUuid = lastAssistant?.metadata?.sdkMessageUuid || null
 
       // Generate new IDs for all messages + set shouldForkResume on last assistant
-      const forkedMessages = messagesToFork.map((msg: ReturnType<typeof mapBackendMessagesToUiMessages>[number], i: number) => ({
+      const _forkedMessages = messagesToFork.map((msg: ReturnType<typeof mapBackendMessagesToUiMessages>[number], i: number) => ({
         ...msg,
         id: `fork-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`,
         metadata: {
@@ -1033,9 +1037,9 @@ export const chatsRouter = router({
       // 4. Truncate messages to include up to and including the target message
       let truncatedMessages = messages.slice(0, targetIndex + 1)
 
-      // 4.5. Clear any old shouldResume flags, then set on the target message
+      // 4.5. Clear unknown old shouldResume flags, then set on the target message
       truncatedMessages = truncatedMessages.map((m: ReturnType<typeof mapBackendMessagesToUiMessages>[number], i: number) => {
-        const { shouldResume, ...restMeta } = m.metadata || {}
+        const { shouldResume: _shouldResume, ...restMeta } = m.metadata || {}
         return {
           ...m,
           metadata: {
@@ -1082,8 +1086,6 @@ export const chatsRouter = router({
       // Write to the conversation table and its legacy compatibility table
       // to keep data consistent during migration
       const updated = await updateConversation(input.id, { mode: input.mode })
-
-
 
       return mapBackendConversation(updated)
     }),
@@ -1841,8 +1843,6 @@ export const chatsRouter = router({
       }
 
       // Backend no longer provides project endpoint
-      const project = null
-
       const allChatConversations = await listConversationsForChat(chat)
       let chatConversations
       if (input.conversationId) {

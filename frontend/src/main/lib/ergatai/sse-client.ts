@@ -1,7 +1,16 @@
-import { z } from "zod"
-import { getErgataiAuthConfig } from "./api"
-import type { BackendMessage, BackendSseMessage } from "./user-data"
-import { createLogger } from "../logger"
+import {
+  z
+} from "zod"
+import {
+  getErgataiAuthConfig
+} from "./api"
+import type {
+  BackendMessage,
+  BackendSseMessage
+} from "./user-data"
+import {
+  createLogger
+} from "../logger"
 
 const log = createLogger("SSE")
 
@@ -25,7 +34,7 @@ function createSseStream(
   onError?: (error: Error) => void,
   onComplete?: () => void,
 ): () => void {
-  const { apiUrl, token } = getErgataiAuthConfig()
+  const { apiUrl: _apiUrl, token } = getErgataiAuthConfig()
   const controller = new AbortController()
   let cleanedUp = false
 
@@ -77,7 +86,7 @@ function createSseStream(
         }
       }
 
-      // Flush any remaining data in the buffer
+      // Flush unknown remaining data in the buffer
       buffer += decoder.decode()
       if (buffer.trim()) {
         onEvent(buffer)

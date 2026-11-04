@@ -248,6 +248,11 @@ export function useCollaborationSession({
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const lastSequenceRef = useRef(0)
+  const sessionRef = useRef<CollaborationSessionDetail | null>(null)
+
+  useEffect(() => {
+    sessionRef.current = session
+  }, [session])
 
   const loadEvents = useCallback(async (sessionId: string, reset = false) => {
     const after = reset ? 0 : lastSequenceRef.current
@@ -394,38 +399,71 @@ export function useCollaborationSession({
   }, [chatId, enabled, loadExistingSession])
 
   useEffect(() => {
-    if (!pollingEnabled || !enabled || !session) return
+    if (!pollingEnabled || !enabled || !session?.id) return
 
     let isActive = true
-    let timeoutId: number | undefined
+    let unsubscribe: { unsubscribe: () => void } | undefined
+    let reconnectTimer: number | undefined
+    let attempt = 0
 
-    const poll = async () => {
-      if (!isActive) return
+    const connect = () => {
+      if (!isActive || !session?.id) return
+      unsubscribe?.unsubscribe()
+      unsubscribe = undefined
 
-      try {
-        await refreshSession()
-        await loadEvents(session.id)
-      } catch (caught: unknown) {
-        log.debug("Event poll failed", caught as Error)
-      }
+      unsubscribe = trpcClient.ergatai.subscribeCollaborationSessionStream.subscribe(
+        { sessionId: session.id },
+        {
+          onData: (rawEvent) => {
+            if (!isActive) return
+            const event = normalizeEvent(rawEvent)
+            if (!event) return
 
-      // Schedule next poll only after current one completes
-      if (isActive) {
-        timeoutId = window.setTimeout(poll, 1000)
-      }
+            lastSequenceRef.current = Math.max(lastSequenceRef.current, event.sequence)
+            setEvents((current) => mergeEvents(current, [event]))
+
+            if (event.type === "session_state_changed") {
+              const payload = event.payload as SessionStatePayload
+              const nextState = readString(payload.to)
+              if (nextState && isValidSessionState(nextState)) {
+                setSession((current) =>
+                  current ? { ...current, state: nextState as CollaborationSessionState } : current,
+                )
+              }
+            }
+          },
+          onError: (caught) => {
+            if (!isActive) return
+            setError(caught instanceof Error ? caught.message : "Collaboration stream failed")
+            scheduleReconnect()
+          },
+          onComplete: () => {
+            if (!isActive) return
+            scheduleReconnect()
+          },
+        },
+      )
     }
 
-    // Start polling
-    timeoutId = window.setTimeout(poll, 1000)
+    const scheduleReconnect = () => {
+      unsubscribe?.unsubscribe()
+      unsubscribe = undefined
+      const delay = Math.min(1_000 * 2 ** attempt, 10_000)
+      attempt += 1
+      reconnectTimer = window.setTimeout(connect, delay)
+    }
+
+    connect()
 
     return () => {
       isActive = false
-      if (timeoutId !== undefined) {
-        window.clearTimeout(timeoutId)
+      if (reconnectTimer !== undefined) {
+        window.clearTimeout(reconnectTimer)
       }
+      unsubscribe?.unsubscribe()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, loadEvents, pollingEnabled, refreshSession])
+  }, [enabled, pollingEnabled, session?.id])
 
   const sessionEvents = useMemo(() => {
     if (!session) return []

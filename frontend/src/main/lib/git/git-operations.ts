@@ -1,19 +1,35 @@
-import { shell } from "electron";
-import { simpleGit } from "simple-git";
-import { z } from "zod";
-import { publicProcedure, router } from "../trpc";
-import { isUpstreamMissingError } from "./git-utils";
-import { assertRegisteredWorktree } from "./security";
-import { fetchGitHubPRStatus } from "./github";
-import { gitCache } from "./cache";
 import {
-	createGit,
-	createGitForNetwork,
-	withGitLock,
-	withLockRetry,
-	hasUncommittedChanges,
-	getRepositoryState,
-	GIT_TIMEOUTS,
+  shell
+} from "electron";
+import {
+  simpleGit
+} from "simple-git";
+import {
+  z
+} from "zod";
+import {
+  publicProcedure,
+  router
+} from "../trpc";
+import {
+  isUpstreamMissingError
+} from "./git-utils";
+import {
+  assertRegisteredWorktree
+} from "./security";
+import {
+  fetchGitHubPRStatus
+} from "./github";
+import {
+  gitCache
+} from "./cache";
+import {
+  createGit,
+  createGitForNetwork,
+  withGitLock,
+  withLockRetry,
+  hasUncommittedChanges,
+  getRepositoryState
 } from "./git-factory";
 
 export { isUpstreamMissingError };
@@ -33,7 +49,7 @@ async function hasUpstreamBranch(
 const PROTECTED_BRANCHES = ["main", "master", "develop", "production", "staging"];
 
 /** Validate commit hash format (hex string, 7-40 chars) */
-function validateCommitHash(hash: string): void {
+function _validateCommitHash(hash: string): void {
 	if (!/^[0-9a-fA-F]{7,40}$/.test(hash)) {
 		throw new Error("Invalid commit hash format");
 	}
@@ -329,7 +345,7 @@ export const createGitOperationsRouter = () => {
 							// Pop stashed changes
 							try {
 								await git.stash(["pop"]);
-							} catch (stashError) {
+							} catch {
 								// Stash pop failed (likely conflict)
 								throw new Error(
 									"Pull succeeded but failed to restore your stashed changes. Your changes are saved in git stash. Run 'git stash pop' to restore them."
@@ -631,7 +647,7 @@ export const createGitOperationsRouter = () => {
 								git.push(["--set-upstream", "origin", branch])
 							);
 						} else {
-							// Push any unpushed commits
+							// Push unknown unpushed commits
 							await withLockRetry(input.worktreePath, () => git.push());
 						}
 

@@ -1,30 +1,72 @@
-import { router } from "../index"
-import { mcpRouter } from "./mcp"
-import { projectsRouter } from "./projects"
-import { chatsRouter } from "./chats"
-import { claudeSettingsRouter } from "./claude-settings"
-import { claudeCodeRouter } from "./claude-code"
-import { ollamaRouter } from "./ollama"
-import { terminalRouter } from "./terminal"
-import { externalRouter } from "./external"
-import { filesRouter } from "./files"
-import { debugRouter } from "./debug"
-import { skillsRouter } from "./skills"
-import { agentsRouter } from "./agents"
-import { ergataiRouter } from "./ergatai"
-import { backendTerminalRouter } from "./backend-terminal"
-import { worktreeConfigRouter } from "./worktree-config"
-import { pluginsRouter } from "./plugins"
-import { groupChatRouter } from "./group-chat"
-import { testRouter } from "./test"
-import { createGitRouter } from "../../git"
-import { BrowserWindow } from "electron"
+import {
+  router
+} from "../index"
+import {
+  mcpRouter
+} from "./mcp"
+import {
+  projectsRouter
+} from "./projects"
+import {
+  chatsRouter
+} from "./chats"
+import {
+  claudeSettingsRouter
+} from "./claude-settings"
+import {
+  claudeCodeRouter
+} from "./claude-code"
+import {
+  ollamaRouter
+} from "./ollama"
+import {
+  terminalRouter
+} from "./terminal"
+import {
+  externalRouter
+} from "./external"
+import {
+  filesRouter
+} from "./files"
+import {
+  debugRouter
+} from "./debug"
+import {
+  skillsRouter
+} from "./skills"
+import {
+  agentsRouter
+} from "./agents"
+import {
+  ergataiRouter
+} from "./ergatai"
+import {
+  backendTerminalRouter
+} from "./backend-terminal"
+import {
+  worktreeConfigRouter
+} from "./worktree-config"
+import {
+  pluginsRouter
+} from "./plugins"
+import {
+  groupChatRouter
+} from "./group-chat"
+import {
+  testRouter
+} from "./test"
+import {
+  createGitRouter
+} from "../../git"
+import {
+  BrowserWindow
+} from "electron"
 
 /**
  * Create the main app router
  * Uses getter pattern to avoid stale window references
  */
-export function createAppRouter(getWindow: () => BrowserWindow | null) {
+export function createAppRouter(_getWindow: () => BrowserWindow | null) {
   // SECURITY: Only register test router in test environment.
   // This prevents the test router from being accessible in production,
   // even if environment variables are injected.

@@ -15,7 +15,7 @@
  * local transport replaces the backend runtime projection of the same turn.
  */
 
-import type { Message, MessagePart, MessageRole } from "../../agents/stores/message-store"
+import type { Message, MessagePart, MessageRole } from "../../agents"
 import { LOCAL_TRANSPORT_STREAM_SOURCE } from "./message-correlation"
 
 export type ConversationProjectionRawMessage = {
@@ -42,7 +42,10 @@ export type ConversationProjectionResult = {
 
 export interface ConversationProjectionService {
   /** Normalize a raw API/Chat message into the common projection message. */
-  normalizeRawMessage(message: ConversationProjectionRawMessage): Message
+  normalizeRawMessage(
+    message: ConversationProjectionRawMessage,
+    source?: "persisted" | "runtime" | "local",
+  ): Message
 
   /** Project independent message sources into one visible render model. */
   project(input: ConversationProjectionInput): ConversationProjectionResult
@@ -123,11 +126,32 @@ class ConversationProjectionServiceImpl implements ConversationProjectionService
     }
   >()
 
-  normalizeRawMessage(message: ConversationProjectionRawMessage): Message {
+  normalizeRawMessage(
+    message: ConversationProjectionRawMessage,
+    source?: "persisted" | "runtime" | "local",
+  ): Message {
     const normalizedMetadata: ProjectionMetadata = {
       ...(message.metadata && typeof message.metadata === "object" && !Array.isArray(message.metadata)
         ? message.metadata
         : {}),
+    }
+
+    // Force source identity so downstream ephemeral/canonical classification
+    // does not depend on whether the transport happened to attach metadata.
+    if (source === "runtime" && normalizedMetadata.runtime !== true) {
+      normalizedMetadata.runtime = true
+    }
+    if (
+      source === "local" &&
+      normalizedMetadata.streamSource !== LOCAL_TRANSPORT_STREAM_SOURCE
+    ) {
+      normalizedMetadata.streamSource = LOCAL_TRANSPORT_STREAM_SOURCE
+    }
+    if (source === "persisted") {
+      // Persisted messages are canonical; strip ephemeral markers that may
+      // have leaked from a previous normalized copy.
+      delete normalizedMetadata.runtime
+      delete normalizedMetadata.streamSource
     }
     if (
       typeof message.turnId === "string" &&
@@ -156,7 +180,11 @@ class ConversationProjectionServiceImpl implements ConversationProjectionService
   }
 
   project(input: ConversationProjectionInput): ConversationProjectionResult {
-    const cacheKey = input.conversationId ?? "__global__"
+    const fingerprint = (msgs?: Message[]) => (msgs ?? []).map((m) => m.id).join(",")
+    const persistedFp = fingerprint(input.persistedMessages)
+    const runtimeFp = fingerprint(input.runtimeMessages)
+    const localFp = fingerprint(input.localMessages)
+    const cacheKey = `${input.conversationId ?? "__global__"}:${input.persistedMessages?.length ?? 0}:${input.runtimeMessages?.length ?? 0}:${input.localMessages?.length ?? 0}:${persistedFp}:${runtimeFp}:${localFp}`
     const cached = this.projectionCache.get(cacheKey)
     if (
       cached &&

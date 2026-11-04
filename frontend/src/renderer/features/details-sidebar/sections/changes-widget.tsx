@@ -14,13 +14,13 @@ import {
 import { Kbd } from "@/components/ui/kbd"
 import { cn } from "@/lib/utils"
 import { useResolvedHotkeyDisplay } from "@/lib/hotkeys"
-import { viewedFilesAtomFamily, fileViewerOpenAtomFamily, diffSidebarOpenAtomFamily } from "@/features/agents/atoms"
-import { getSyncActionKind } from "@/features/changes/utils"
+import { viewedFilesAtomFamily, fileViewerOpenAtomFamily, diffSidebarOpenAtomFamily } from "@/features/agents"
+import { getSyncActionKind } from "@/features/changes"
 import {
   FileListItem,
   getFileName,
   getFileDir,
-} from "@/features/changes/components/file-list-item"
+} from "@/features/changes"
 import { trpc } from "@/lib/trpc"
 import { preferredEditorAtom } from "@/lib/atoms"
 import { APP_META } from "../../../../shared/external-apps"
@@ -89,7 +89,7 @@ export const ChangesWidget = memo(function ChangesWidget({
 }: ChangesWidgetProps) {
   // Data is now cached at the ActiveChat level via workspaceDiffCacheAtomFamily
   // So parsedFileDiffs and diffStats persist across workspace switches
-  const displayFiles = parsedFileDiffs ?? []
+  const displayFiles = useMemo(() => parsedFileDiffs ?? [], [parsedFileDiffs])
   const displayStats = diffStats
 
   const hasChanges = displayStats && displayStats.fileCount > 0

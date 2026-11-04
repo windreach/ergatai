@@ -7,7 +7,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   DropdownMenuSeparator,
-  DropdownMenuLabel,
 } from "../../../components/ui/dropdown-menu"
 import { ArrowUpRight } from "lucide-react"
 import { KeyboardIcon } from "../../../components/ui/icons"
@@ -38,7 +37,7 @@ function parseFirstItemFromSection(lines: string[], sectionPattern: RegExp): str
   return null
 }
 
-function parseFirstHighlight(content: string): string {
+function _parseFirstHighlight(content: string): string {
   const lines = content.split("\n")
   return (
     parseFirstItemFromSection(lines, /^###\s+Features/i) ??

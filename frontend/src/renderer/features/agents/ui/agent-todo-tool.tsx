@@ -372,7 +372,7 @@ export const AgentTodoTool = memo(function AgentTodoTool({
   // If output doesn't exist yet or oldTodos is undefined, we can't determine if it's new generation
   // Use optional chaining so `undefined === 0` is false, and an empty array yields true.
   const hasOutputWithEmptyOldTodos = part.output?.oldTodos?.length === 0
-  const { isNewGeneration, isCreationToolCall } = useMemo(
+  const { isNewGeneration: _isNewGeneration, isCreationToolCall } = useMemo(
     () =>
       computeCreationFlags(
         hasOutputWithEmptyOldTodos,

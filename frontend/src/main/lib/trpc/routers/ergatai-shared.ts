@@ -6,32 +6,7 @@
  */
 
 import { z } from "zod"
-import { observable } from "@trpc/server/observable"
-import { publicProcedure, router } from "../index"
-import { ergataiFetch, getErgataiAuthConfig, isErgataiApiError, ErgataiApiError } from "../../ergatai/api"
-import {
-  agentIdSchema,
-  chatIdSchema,
-  clientRequestIdSchema,
-  conversationKeySchema,
-  messageIdSchema,
-  projectIdSchema,
-} from "../../validation/ids"
-import {
-  subscribeRawAgentStream,
-  subscribeConversationMessages,
-  subscribeConversationRuntime,
-  type AgentOutputEvent,
-  type ConversationRuntimeStreamEvent,
-} from "../../ergatai/sse-client"
-import { getModelSnapshotManager } from "../../model-snapshot-manager"
-import { loadSnapshots } from "../../model-snapshot-store"
-import { terminalManager } from "../../terminal"
-import { mkdir } from "fs/promises"
-import { tmpdir } from "os"
-import { join } from "path"
 import type {
-  AgentPlan,
   BackendAgentBinding,
   BackendChat,
   BackendConversation,

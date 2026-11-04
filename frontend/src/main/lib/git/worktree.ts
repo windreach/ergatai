@@ -1,19 +1,45 @@
-import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { mkdir, readFile, stat } from "node:fs/promises";
-import { devNull, homedir } from "node:os";
-import { join } from "node:path";
-import { promisify } from "node:util";
-import { simpleGit } from "simple-git";
 import {
-	adjectives,
-	animals,
-	uniqueNamesGenerator,
+  execFile
+} from "node:child_process";
+import {
+  randomBytes
+} from "node:crypto";
+import {
+  mkdir,
+  readFile,
+  stat
+} from "node:fs/promises";
+import {
+  devNull,
+  homedir
+} from "node:os";
+import {
+  join
+} from "node:path";
+import {
+  promisify
+} from "node:util";
+import {
+  simpleGit
+} from "simple-git";
+import {
+  adjectives,
+  animals,
+  uniqueNamesGenerator
 } from "unique-names-generator";
-import { checkGitLfsAvailable, getShellEnvironment } from "./shell-env";
-import { executeWorktreeSetup } from "./worktree-config";
-import type { WorktreeSetupResult } from "./worktree-config";
-import { generateWorktreeFolderName } from "./worktree-naming";
+import {
+  checkGitLfsAvailable,
+  getShellEnvironment
+} from "./shell-env";
+import {
+  executeWorktreeSetup
+} from "./worktree-config";
+import type {
+  WorktreeSetupResult
+} from "./worktree-config";
+import {
+  generateWorktreeFolderName
+} from "./worktree-naming";
 
 const execFileAsync = promisify(execFile);
 
@@ -249,7 +275,7 @@ export async function getGitRoot(path: string): Promise<string> {
 		const git = simpleGit(path);
 		const root = await git.revparse(["--show-toplevel"]);
 		return root.trim();
-	} catch (_error) {
+	} catch {
 		throw new Error(`Not a git repository: ${path}`);
 	}
 }
@@ -335,7 +361,7 @@ export async function getDefaultBranch(mainRepoPath: string): Promise<string> {
 					return candidate;
 				}
 			}
-			// If we have any local branches, use the first one
+			// If we have unknown local branches, use the first one
 			if (localBranches.all.length > 0) {
 				return localBranches.all[0];
 			}
@@ -989,7 +1015,7 @@ export async function getWorktreeDiff(
 	try {
 		const git = simpleGit(worktreePath);
 		const status = await git.status();
-		const currentBranch = status.current;
+		const _currentBranch = status.current;
 
 		// Has uncommitted changes - diff against HEAD
 		if (!status.isClean()) {

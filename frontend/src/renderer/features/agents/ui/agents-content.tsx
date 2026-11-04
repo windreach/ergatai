@@ -44,18 +44,18 @@ import {
 } from "../../../lib/atoms"
 import { NewChatForm } from "../main/new-chat-form"
 import { AgentsDefaultView } from "./agents-default-view"
-import { TaskBoardView } from "../../task-board/task-board-view"
+import { TaskBoardView } from "../../task-board"
 import { AddAgentViewPage } from "../components/add-agent-view"
 import { ChatView } from "../main/active-chat"
 import { api } from "../../../lib/api-adapter"
 import { trpc } from "../../../lib/trpc"
 import { useIsMobile } from "../../../lib/hooks/use-mobile"
-import { AgentsSidebar } from "../../sidebar/agents-sidebar"
-import { WorkspaceChatsSidebar } from "../../sidebar/workspace-chats-sidebar"
+import { AgentsSidebar } from "../../sidebar"
+import { WorkspaceChatsSidebar } from "../../sidebar"
 import { AgentPreview } from "./agent-preview"
 import { AgentDiffView } from "./agent-diff-view"
 import { TerminalSidebar, terminalSidebarOpenAtomFamily } from "../../terminal"
-import { getTerminalScopeKey } from "../../terminal/utils"
+import { getTerminalScopeKey } from "../../terminal"
 import {
   useAgentConversationStore,
   type ConversationMeta,
@@ -70,13 +70,10 @@ import { ResizableSidebar } from "../../../components/ui/resizable-sidebar"
 // TODO(ergatai#1202): Replace with real desktop auth hook
 // Desktop mock — returns null userId, disabling user-specific features.
 const useCombinedAuth = () => ({ userId: null })
-import { Button } from "../../../components/ui/button"
 import { IconSpinner } from "../../../components/ui/icons"
-import { AlignJustify } from "lucide-react"
 import { AgentsQuickSwitchDialog } from "../components/agents-quick-switch-dialog"
 import { ConversationsQuickSwitchDialog } from "../components/conversations-quick-switch-dialog"
-import { isDesktopApp } from "../../../lib/utils/platform"
-import { SettingsContent } from "../../settings/settings-content"
+import { SettingsContent } from "../../settings"
 import { useCollaborationMode } from "../collaboration/use-collaboration-mode"
 // TODO(ergatai#1203): Implement real admin role check for desktop
 // Desktop mock — always returns false, hiding admin-only UI in production.
@@ -97,7 +94,7 @@ export function AgentsContent() {
   )
   const setApiKeyOnboardingCompleted = useSetAtom(apiKeyOnboardingCompletedAtom)
   const [sidebarOpen, setSidebarOpen] = useAtom(agentsSidebarOpenAtom)
-  const [previewSidebarOpen, setPreviewSidebarOpen] = useAtom(
+  const [_previewSidebarOpen, setPreviewSidebarOpen] = useAtom(
     agentsPreviewSidebarOpenAtom,
   )
   const [mobileViewMode, setMobileViewMode] = useAtom(agentsMobileViewModeAtom)
@@ -105,7 +102,7 @@ export function AgentsContent() {
     agentsConversationsSidebarModeAtom,
   )
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useAtom(selectedWorkspaceIdAtom)
-  const [selectedProjectEntry] = useAtom(selectedWorkspaceAtom)
+  const [_selectedProjectEntry] = useAtom(selectedWorkspaceAtom)
 
   // Only validate workspace after initial load is complete
   // This prevents clearing workspace due to transient errors during app startup
@@ -198,7 +195,7 @@ export function AgentsContent() {
 
   const hasOpenedConversationsSidebar = useRef(false)
   const wasConversationsSidebarOpen = useRef(false)
-  const [shouldAnimateConversationsSidebar, setShouldAnimateConversationsSidebar] =
+  const [_shouldAnimateConversationsSidebar, setShouldAnimateConversationsSidebar] =
     useState(conversationsSidebarMode !== "sidebar")
   const searchParams = useSearchParams()
   const router = useRouter()
@@ -248,7 +245,7 @@ export function AgentsContent() {
   conversationQuickSwitchSelectedIndexRef.current = conversationQuickSwitchSelectedIndex
 
   // Get conversations from store with shallow comparison
-  const { allConversations, openConversationIds, activeConversationId, setActiveConversation } = useAgentConversationStore(
+  const { allConversations, openConversationIds, activeConversationId, setActiveConversation: _setActiveConversation } = useAgentConversationStore(
     useShallow((state) => ({
       allConversations: state.allConversations,
       openConversationIds: state.openConversationIds,
@@ -341,7 +338,7 @@ export function AgentsContent() {
   }, [selectedChatId, chatData, selectedWorkspace, setSelectedChatId, isInitialLoadComplete])
 
   // Track previous chat ID for navigation after archive
-  const [previousChatId, setPreviousChatId] = useAtom(previousAgentChatIdAtom)
+  const [_previousChatId, setPreviousChatId] = useAtom(previousAgentChatIdAtom)
   const prevSelectedChatIdRef = useRef<string | null>(null)
 
   // Update previousChatId when selectedChatId changes
@@ -649,6 +646,7 @@ export function AgentsContent() {
         clearTimeout(holdTimerRef.current)
       }
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     agentChats,
     selectedChatId,
@@ -658,7 +656,7 @@ export function AgentsContent() {
     quickSwitchSelectedIndex,
     setQuickSwitchSelectedIndex,
     ctrlTabTarget,
-    // Note: recentChats removed - we use frozenRecentChatsRef instead
+    // Note: recentChats intentionally omitted - we use frozenRecentChatsRef instead to avoid listener churn
   ])
 
   // Get open conversations for quick-switch (only tabs that are open in the selector)
@@ -885,15 +883,12 @@ export function AgentsContent() {
   }
 
   // Check if conversations data is loaded (use separate selectors to avoid object creation)
-  const conversationsStoreChatId = useAgentConversationStore((state) => state.chatId)
-  const conversationsCount = useAgentConversationStore(
+  const _conversationsStoreChatId = useAgentConversationStore((state) => state.chatId)
+  const _conversationsCount = useAgentConversationStore(
     (state) => state.allConversations.length,
   )
 
-  // Check if conversations are still loading (store not yet initialized for this chat)
-  const isLoadingConversations =
-    selectedChatId !== null &&
-    (conversationsStoreChatId !== selectedChatId || conversationsCount === 0)
+  // (conversations loading check removed - unused)
 
   const handleSidebarChatSelect = useCallback((chatId: string) => {
     setSelectedChatId(chatId)
@@ -1036,7 +1031,7 @@ export function AgentsContent() {
           <AgentPreview
             chatId={selectedChatId}
             sandboxId={chatData!.sandbox_id!}
-            port={chatMeta?.sandboxConfig?.port!}
+            port={chatMeta?.sandboxConfig?.port as number}
             isMobile={true}
             onClose={() => setMobileViewMode("chat")}
           />

@@ -88,7 +88,7 @@ export function PermissionApprovalPanel({
   const [dismissedToolIds, setDismissedToolIds] = useState<Set<string>>(
     () => new Set(),
   )
-  const [isPermissionStreamConnected, setIsPermissionStreamConnected] =
+  const [_isPermissionStreamConnected, setIsPermissionStreamConnected] =
     useState(false)
   const utils = trpc.useUtils()
 

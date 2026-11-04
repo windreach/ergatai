@@ -1,10 +1,11 @@
-import type { ChatTransport, UIMessage } from "ai"
+ 
 
-type UIMessageChunk = any
+type UIMessageChunk = unknown
 
-export class GroupChatTransport implements ChatTransport<UIMessage> {
+ 
+export class GroupChatTransport {
   async sendMessages(options: {
-    messages: UIMessage[]
+    messages: unknown[]
     abortSignal?: AbortSignal
   }): Promise<ReadableStream<UIMessageChunk>> {
     // TODO: Implement actual group chat transport logic

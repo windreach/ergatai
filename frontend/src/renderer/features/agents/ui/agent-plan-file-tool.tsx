@@ -15,7 +15,6 @@ import {
   planSidebarOpenAtomFamily,
   conversationModeAtomFamily,
 } from "../atoms"
-import { useAgentConversationStore } from "../stores/conversation-store"
 import { getToolStatus } from "./agent-tool-registry"
 import { areToolPropsEqual } from "./agent-tool-utils"
 
@@ -287,7 +286,7 @@ export const AgentPlanFileTool = memo(function AgentPlanFileTool({
 
         <div
           ref={contentRef}
-          onClick={(e) => {
+          onClick={(_e) => {
             if (window.getSelection()?.toString()) return
             setIsExpanded(true)
           }}

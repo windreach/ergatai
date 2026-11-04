@@ -29,7 +29,7 @@ function buildMentionToken(type: string, data: string): string {
 
 /**
  * Build a generic mention token from an ID.
- * Use this to serialize any mention type.
+ * Use this to serialize unknown mention type.
  */
 export function buildGenericMentionToken(id: string): string {
   return "@".concat("[").concat(id).concat("]")
@@ -309,7 +309,7 @@ export function extractFileMentions(text: string): ParsedMention[] {
 }
 
 /**
- * Check if text contains any file, folder, skill, agent, tool, quote, diff, or pasted mentions
+ * Check if text contains unknown file, folder, skill, agent, tool, quote, diff, or pasted mentions
  */
 export function hasFileMentions(text: string): boolean {
   // See extractFileMentionIds for regex pattern explanation

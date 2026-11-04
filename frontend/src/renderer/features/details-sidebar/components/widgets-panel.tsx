@@ -9,10 +9,10 @@ import { PlanWidget } from "../sections/plan-widget"
 import { TerminalWidget } from "../sections/terminal-widget"
 import { ChangesWidget } from "../sections/changes-widget"
 import { McpWidget } from "../sections/mcp-widget"
-import { MonitoringPanel } from "../../agents/collaboration/monitoring-panel"
+import { MonitoringPanel } from "../../agents"
 import type { ParsedDiffFile } from "../types"
-import type { AgentMode } from "../../agents/atoms"
-import { getTerminalScopeKey } from "../../terminal/utils"
+import type { AgentMode } from "../../agents"
+import { getTerminalScopeKey } from "../../terminal"
 
 interface WidgetsPanelProps {
   chatId: string

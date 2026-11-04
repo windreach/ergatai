@@ -1,13 +1,14 @@
 import { useCallback, useRef } from "react"
 import { toast } from "sonner"
 import { executeRollback } from "./rollback-utils"
+import type { RollbackMessageLike } from "./rollback-utils"
 import type { SelectedTextContext, DiffTextContext, PastedTextFile, UploadedImage } from "../types"
 
-// any justified: messages have a complex union type from the conversation system
+// unknown justified: messages have a complex union type from the conversation system
 // that varies by role and content type. Using a generic array type is simpler
 // than importing and maintaining the full Message union here.
-type MessagesArray = any[]
-type SetMessagesFn = (messages: MessagesArray | ((current: MessagesArray) => MessagesArray)) => void
+type MessagesArray = RollbackMessageLike[]
+type SetMessagesFn = (messages: RollbackMessageLike[] | ((current: RollbackMessageLike[]) => RollbackMessageLike[])) => void
 
 interface UseRollbackOptions {
   isRollingBack: boolean
@@ -22,7 +23,7 @@ interface UseRollbackOptions {
   setTextContextsFromDraft: (contexts: SelectedTextContext[]) => void
   setDiffTextContextsFromDraft: (contexts: DiffTextContext[]) => void
   setPastedTextsFromDraft: (texts: PastedTextFile[]) => void
-  editorRef: React.RefObject<any> // any justified: editor ref type is complex and varies by editor implementation
+  editorRef: React.RefObject<unknown> // unknown justified: editor ref type is complex and varies by editor implementation
 }
 
 export function useRollback({

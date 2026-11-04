@@ -1,4 +1,4 @@
-import { useEffect } from "react"
+import { useEffect, useCallback } from "react"
 import { useAtom } from "jotai"
 import type { CreateUIMessage, UIMessage } from "@ai-sdk/react"
 import {
@@ -9,7 +9,8 @@ import {
   isCreatingPrAtom,
 } from "../atoms"
 import { useAgentConversationStore } from "../stores/conversation-store"
-import { getMessageCorrelationService } from "@/features/conversation/runtime/message-correlation-service"
+import type { MessagePart } from "../stores/message-store"
+import { getMessageCorrelationService } from "@/features/conversation"
 
 interface UsePendingActionsOptions {
   conversationId: string
@@ -32,15 +33,16 @@ export function usePendingActions({
   const [pendingAuthRetry, setPendingAuthRetry] = useAtom(pendingAuthRetryMessageAtom)
   const [isCreatingPr, setIsCreatingPr] = useAtom(isCreatingPrAtom)
 
-  const sendCorrelatedMessage = async (
-    parts: CreateUIMessage<UIMessage>["parts"],
-  ) => {
-    const message = await getMessageCorrelationService().createOptimisticMessage({
-      role: "user",
-      parts: parts as any,
-    })
-    sendMessage(message as CreateUIMessage<UIMessage>)
-  }
+  const sendCorrelatedMessage = useCallback(
+    async (parts: CreateUIMessage<UIMessage>["parts"]) => {
+      const message = await getMessageCorrelationService().createOptimisticMessage({
+        role: "user",
+        parts: parts as MessagePart[],
+      })
+      sendMessage(message as CreateUIMessage<UIMessage>)
+    },
+    [sendMessage],
+  )
 
   // Watch for pending PR message and send it
   useEffect(() => {
@@ -55,7 +57,7 @@ export function usePendingActions({
       store.addToOpenConversations(conversationId)
       store.setActiveConversation(conversationId)
     }
-  }, [pendingPrMessage, isStreaming, sendMessage, setPendingPrMessage, setIsCreatingPr, conversationId])
+  }, [pendingPrMessage, isStreaming, sendMessage, setPendingPrMessage, setIsCreatingPr, conversationId, sendCorrelatedMessage])
 
   // Watch for pending Review message and send it
   useEffect(() => {
@@ -64,7 +66,7 @@ export function usePendingActions({
 
       void sendCorrelatedMessage([{ type: "text", text: pendingReviewMessage.message }])
     }
-  }, [pendingReviewMessage, isStreaming, sendMessage, setPendingReviewMessage, conversationId])
+  }, [pendingReviewMessage, isStreaming, sendMessage, setPendingReviewMessage, conversationId, sendCorrelatedMessage])
 
   // Watch for pending conflict resolution message and send it
   useEffect(() => {
@@ -73,7 +75,7 @@ export function usePendingActions({
 
       void sendCorrelatedMessage([{ type: "text", text: pendingConflictMessage.message }])
     }
-  }, [pendingConflictMessage, isStreaming, sendMessage, setPendingConflictMessage, conversationId])
+  }, [pendingConflictMessage, isStreaming, sendMessage, setPendingConflictMessage, conversationId, sendCorrelatedMessage])
 
   return {
     isCreatingPr,

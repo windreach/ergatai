@@ -1,9 +1,15 @@
-import { app } from "electron"
-import { execSync, spawnSync } from "node:child_process"
+import {
+  app
+} from "electron"
+import {
+  spawnSync
+} from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { stripVTControlCharacters } from "node:util"
+import {
+  stripVTControlCharacters
+} from "node:util"
 import {
   getDefaultShell,
   isWindows,
@@ -231,7 +237,7 @@ export function buildClaudeEnv(options?: {
   // 1. Start with shell environment (has HOME, full PATH, etc.)
   try {
     Object.assign(env, getClaudeShellEnvironment())
-  } catch (error) {
+  } catch {
     console.error("[claude-env] Shell env failed, using process.env")
   }
 

@@ -22,7 +22,7 @@ export function containsClearScrollbackSequence(data: string): boolean {
  * Returns the remaining content that should be kept after the clear.
  */
 export function extractContentAfterClear(data: string): string {
-  // Find the last occurrence of any clear sequence
+  // Find the last occurrence of unknown clear sequence
   let lastIndex = -1
   let seqLength = 0
 

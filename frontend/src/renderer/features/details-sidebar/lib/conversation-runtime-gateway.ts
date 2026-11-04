@@ -1,11 +1,13 @@
 import { useCallback, useSyncExternalStore } from "react"
 
 import { trpcClient } from "../../../lib/trpc"
+import { createLogger } from "../../../../main/lib/logger"
 
 import {
   readPersistedSequence,
   persistSequence,
-} from "../../conversation/runtime/runtime-sequence-persistence"
+  removePersistedSequence,
+} from "../../conversation"
 
 export type RuntimeAgentEvent = {
   type: string
@@ -55,10 +57,12 @@ type RuntimeChannel = {
   reconnectTimer?: ReturnType<typeof setTimeout>
   stopTimer?: ReturnType<typeof setTimeout>
   retryAttempt: number
+  forceSnapshot?: boolean
 }
 
 const MAX_EVENTS = 5_000
-const STOP_DELAY_MS = 5_000
+const log = createLogger("ConversationRuntime")
+const STOP_DELAY_MS = 30_000
 const MAX_RETRY_DELAY_MS = 10_000
 
 function resolveRuntimeStatus(
@@ -85,7 +89,7 @@ function notify(channel: RuntimeChannel) {
   }
 }
 
-function shouldResnapshot(
+export function shouldResnapshot(
   previous: ConversationRuntimeState | undefined,
   snapshot: {
     epoch: string
@@ -98,7 +102,7 @@ function shouldResnapshot(
   return snapshot.firstSequence > previous.lastSequence + 1
 }
 
-function mergeSnapshot(
+export function mergeSnapshot(
   conversationId: string,
   previous: ConversationRuntimeState | undefined,
   snapshot: {
@@ -119,7 +123,15 @@ function mergeSnapshot(
     : (previous?.events ?? []).filter(event => !turnId || event.turnId === turnId)
 
   const events = [...base]
-  let lastSequence = reset ? snapshot.lastSequence : previous?.lastSequence ?? 0
+  const firstEventSequence =
+    snapshot.events.length > 0
+      ? snapshot.events[0].sequence
+      : (snapshot.firstSequence ?? null)
+  let lastSequence = reset
+    ? (snapshot.events.length > 0 && firstEventSequence != null
+        ? firstEventSequence - 1
+        : snapshot.lastSequence)
+    : (previous?.lastSequence ?? 0)
   for (const event of snapshot.events) {
     if (event.conversationId !== conversationId) continue
     if (event.sequence <= lastSequence) continue
@@ -160,6 +172,7 @@ function mergeSnapshot(
 function connect(conversationId: string) {
   const channel = channels.get(conversationId)
   if (!channel || channel.unsubscribe) return
+  log.debug("connect", { conversationId, afterSequence: channel.state.epoch ? channel.state.lastSequence : undefined })
 
   if (channel.reconnectTimer) {
     clearTimeout(channel.reconnectTimer)
@@ -175,15 +188,23 @@ function connect(conversationId: string) {
   channel.unsubscribe = trpcClient.ergatai.subscribeConversationRuntime.subscribe(
     {
       conversationId,
-      afterSequence: channel.state.epoch ? channel.state.lastSequence : undefined,
+      afterSequence: channel.forceSnapshot
+        ? undefined
+        : (channel.state.epoch ? channel.state.lastSequence : undefined),
     },
     {
       onData: (message) => {
         if (message.kind === "snapshot") {
           channel.state = mergeSnapshot(conversationId, channel.state, message.snapshot)
           channel.retryAttempt = 0
-          // Persist lastSequence after snapshot merge for stream resumption
-          persistSequence(conversationId, channel.state.lastSequence)
+          channel.forceSnapshot = false
+          // Keep persisted sequence only while a turn is active. Clearing it on
+          // terminal turns avoids stale high-water marks blocking the next turn.
+          if (channel.state.status === "completed" || channel.state.status === "error") {
+            removePersistedSequence(conversationId)
+          } else {
+            persistSequence(conversationId, channel.state.lastSequence)
+          }
         } else {
           const event = message.event
           if (event.conversationId !== conversationId) return
@@ -197,14 +218,26 @@ function connect(conversationId: string) {
               startedAtMs: event.timestampMs,
               updatedAtMs: event.timestampMs,
             }
-            // Persist lastSequence for new turn
-            persistSequence(conversationId, channel.state.lastSequence)
+            // Persist lastSequence for new turn, but clear it if the turn is
+            // already terminal so the next turn starts from a clean snapshot.
+            if (channel.state.status === "completed" || channel.state.status === "error") {
+              removePersistedSequence(conversationId)
+            } else {
+              persistSequence(conversationId, channel.state.lastSequence)
+            }
             notify(channel)
             return
           }
           if (event.sequence <= channel.state.lastSequence) return
 
           if (event.sequence > channel.state.lastSequence + 1) {
+            log.warn("runtime event gap detected", {
+              conversationId,
+              expected: channel.state.lastSequence + 1,
+              received: event.sequence,
+            })
+            channel.forceSnapshot = true
+            removePersistedSequence(conversationId)
             channel.state = {
               ...channel.state,
               connectionStatus: "reconnecting",
@@ -222,8 +255,13 @@ function connect(conversationId: string) {
             events: [...channel.state.events, event].slice(-MAX_EVENTS),
             updatedAtMs: event.timestampMs,
           }
-          // Persist lastSequence after receiving new event
-          persistSequence(conversationId, channel.state.lastSequence)
+          // Persist lastSequence while streaming; clear it once terminal so a
+          // later turn cannot be skipped due to a stale high-water mark.
+          if (channel.state.status === "completed" || channel.state.status === "error") {
+            removePersistedSequence(conversationId)
+          } else {
+            persistSequence(conversationId, channel.state.lastSequence)
+          }
         }
 
         notify(channel)
@@ -251,6 +289,7 @@ function connect(conversationId: string) {
 function reconnect(conversationId: string, attempt?: number) {
   const channel = channels.get(conversationId)
   if (!channel) return
+  log.debug("reconnect", { conversationId, attempt: channel.retryAttempt })
 
   channel.unsubscribe?.unsubscribe()
   channel.unsubscribe = undefined
@@ -281,6 +320,9 @@ function scheduleStop(conversationId: string) {
       connectionStatus: "stopped",
     }
     notify(channel)
+    // Drop the channel after it has been idle to avoid unbounded growth
+    // across many conversations in long-running sessions.
+    channels.delete(conversationId)
   }, STOP_DELAY_MS)
 }
 

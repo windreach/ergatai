@@ -143,14 +143,13 @@ export const MemoizedTextPart = memo(function MemoizedTextPart({
   // Apply DOM-based highlighting after render
   // Skip during streaming to avoid performance issues
   useEffect(() => {
-    if (!containerRef.current || isStreaming || !searchQuery) return
+    const container = containerRef.current
+    if (!container || isStreaming || !searchQuery) return
 
-    highlightTextInDOM(containerRef.current, searchQuery, currentMatchIndexInPart)
+    highlightTextInDOM(container, searchQuery, currentMatchIndexInPart)
 
     return () => {
-      if (containerRef.current) {
-        removeHighlights(containerRef.current)
-      }
+      removeHighlights(container)
     }
   }, [searchQuery, currentMatchIndexInPart, isStreaming, text])
 

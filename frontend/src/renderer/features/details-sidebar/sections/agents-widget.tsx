@@ -4,17 +4,16 @@ import { memo } from "react"
 import { useSetAtom } from "jotai"
 import { trpc } from "../../../lib/trpc"
 import { WidgetCard } from "../components/widget-card"
-import { getCoreAgentIcon } from "../../agents/components/core-agent-selector"
+import { getCoreAgentIcon } from "../../agents"
 import {
-  detailsSidebarOpenAtom,
   sideChatSidebarOpenAtom,
 } from "../atoms"
-import { useAgentParticipants } from "../../agents/collaboration/use-agent-participants"
-import { groupAgentChatRequestAtomFamily } from "../../agents/collaboration/group-chat-context"
+import { useAgentParticipants } from "../../agents"
+import { groupAgentChatRequestAtomFamily } from "../../agents"
 import {
   type CoreAgentId,
   getCoreAgentDisplayName,
-} from "../../agents/lib/agent-contract-api"
+} from "../../agents/public"
 import { cn } from "../../../lib/utils"
 
 // Backend auto-spawns runtime agents named like "ws_5019..._agent-12".

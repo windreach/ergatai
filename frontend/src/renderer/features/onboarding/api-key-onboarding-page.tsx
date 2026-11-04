@@ -48,6 +48,7 @@ export function ApiKeyOnboardingPage() {
     }
     if (storedConfig.model) setModel(storedConfig.model)
     if (storedConfig.baseUrl) setBaseUrl(storedConfig.baseUrl)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const handleBack = () => {

@@ -1,3 +1,4 @@
+ 
 "use client"
 
 import { createContext, useContext, useEffect, useRef, type ReactNode } from "react"
@@ -38,6 +39,7 @@ export function useChatActions() {
 }
 
 // Props
+ 
 interface ChatDataSyncProps {
   chat: Chat<any>
   conversationId: string

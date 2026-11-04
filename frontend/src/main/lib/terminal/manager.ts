@@ -277,7 +277,6 @@ export class TerminalManager extends EventEmitter {
 
 		return new Promise<boolean>((resolve) => {
 			let resolved = false
-			let sigtermTimeout: ReturnType<typeof setTimeout> | undefined
 			let sigkillTimeout: ReturnType<typeof setTimeout> | undefined
 
 			const cleanup = (success: boolean) => {
@@ -293,7 +292,7 @@ export class TerminalManager extends EventEmitter {
 			this.once(`exit:${paneId}`, exitHandler)
 
 			// Escalate to SIGKILL after 2s
-			sigtermTimeout = setTimeout(() => {
+			const sigtermTimeout = setTimeout(() => {
 				if (resolved || !session.isAlive) return
 
 				try {
@@ -387,7 +386,6 @@ export class TerminalManager extends EventEmitter {
 		for (const [paneId, session] of this.sessions.entries()) {
 			if (session.isAlive) {
 				const exitPromise = new Promise<void>((resolve) => {
-					let timeoutId: ReturnType<typeof setTimeout> | undefined
 					const exitHandler = () => {
 						this.off(`exit:${paneId}`, exitHandler)
 						if (timeoutId !== undefined) {
@@ -397,7 +395,7 @@ export class TerminalManager extends EventEmitter {
 					}
 					this.once(`exit:${paneId}`, exitHandler)
 
-					timeoutId = setTimeout(() => {
+					const timeoutId = setTimeout(() => {
 						this.off(`exit:${paneId}`, exitHandler)
 						resolve()
 					}, 2000)

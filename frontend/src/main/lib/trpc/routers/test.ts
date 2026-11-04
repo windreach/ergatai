@@ -1,6 +1,13 @@
-import { z } from "zod"
-import { router, publicProcedure } from "../index"
-import { observable } from "@trpc/server/observable"
+import {
+  z
+} from "zod"
+import {
+  router,
+  publicProcedure
+} from "../index"
+import {
+  observable
+} from "@trpc/server/observable"
 import * as fs from "fs/promises"
 import * as path from "path"
 import * as os from "os"
@@ -32,7 +39,7 @@ const testProcedure = publicProcedure.use(async ({ next }) => {
  * Prevents arbitrary file system access even in test mode.
  *
  * SECURITY: process.cwd() is intentionally excluded because it could be
- * any directory (e.g., /home/user, /) depending on where the app was launched.
+ * unknown directory (e.g., /home/user, /) depending on where the app was launched.
  */
 function validateTestPath(inputPath: string): string {
   const fullPath = path.resolve(inputPath)
@@ -675,7 +682,7 @@ export const testRouter = router({
         try {
           const content = await fs.readFile(fullPath, 'utf-8')
           return { success: true, content, path: fullPath }
-        } catch (error) {
+        } catch {
           throw new Error(`File not found: ${fullPath}`)
         }
       }),
@@ -695,7 +702,7 @@ export const testRouter = router({
             timestamp: new Date().toISOString(),
           })
           return { success: true }
-        } catch (error) {
+        } catch {
           throw new Error(`File not found: ${fullPath}`)
         }
       }),
@@ -963,7 +970,7 @@ ${input.prompt}
         prompt: z.string(),
         interrupt: z.boolean().optional(),
       }))
-      .mutation(({ input }) => {
+      .mutation(() => {
         // Mock prompt agent - 返回 queued 状态
         return { status: "queued" as const, promptId: uniqueId('prompt') }
       }),
@@ -1078,7 +1085,7 @@ ${input.prompt}
 
         // Raw lines preserve indentation for top-level detection
         const rawLines = yaml.split('\n')
-        const trimmedLines = rawLines.map(l => l.trim()).filter(l => l && !l.startsWith('#'))
+        const _trimmedLines = rawLines.map(l => l.trim()).filter(l => l && !l.startsWith('#'))
 
         // Allowed top-level fields
         const allowedTopLevel = new Set([
@@ -1108,7 +1115,7 @@ ${input.prompt}
           const taskNameMatches = tasksBlock.matchAll(/^\s*-\s*name:\s*(.+)$/gm)
           for (const match of taskNameMatches) {
             // Strip quotes and trim
-            let name = match[1].trim().replace(/^["']|["']$/g, '').trim()
+            const name = match[1].trim().replace(/^["']|["']$/g, '').trim()
             taskNames.push(name)
           }
         }
@@ -1412,7 +1419,7 @@ ${input.prompt}
   groupChat: router({
     listMembers: testProcedure
       .input(z.object({ chatId: z.string() }))
-      .query(({ input }) => {
+      .query(() => {
         // 返回空数组或测试数据
         return []
       }),
@@ -1424,14 +1431,14 @@ ${input.prompt}
         agentName: z.string(),
         workspaceId: z.string().optional(),
       }))
-      .mutation(({ input }) => {
+      .mutation(() => {
         // 抛出错误（后端已禁用）
         throw new Error("Adding group chat members is no longer supported")
       }),
 
     removeMember: testProcedure
       .input(z.object({ chatId: z.string(), agentId: z.string() }))
-      .mutation(({ input }) => {
+      .mutation(() => {
         throw new Error("Removing group chat members is no longer supported")
       }),
 
@@ -1447,7 +1454,7 @@ ${input.prompt}
           filename: z.string().optional(),
         })).nullable().optional(),
       }))
-      .mutation(({ input }) => {
+      .mutation(() => {
         return { success: true, conversationId: uniqueId('conv') }
       }),
   }),
@@ -1506,7 +1513,7 @@ ${input.prompt}
       .input(z.string())
       .subscription(() => {
         // 返回空的 observable
-        return observable((emit) => {
+        return observable((_emit) => {
           // 不发送任何数据
           return () => {
             // cleanup

@@ -11,7 +11,7 @@ import {
 import {
   widgetVisibilityAtomFamily,
   unifiedSidebarEnabledAtom,
-} from "../../details-sidebar/atoms"
+} from "../../details-sidebar"
 import { trpc } from "../../../lib/trpc"
 import { Plus, AlignJustify, Play, TerminalSquare, X } from "lucide-react"
 import {
@@ -39,7 +39,6 @@ import {
   TooltipTrigger,
 } from "../../../components/ui/tooltip"
 import { Kbd } from "../../../components/ui/kbd"
-import { getShortcutKey } from "../../../lib/utils/platform"
 import { useResolvedHotkeyDisplay } from "../../../lib/hotkeys"
 import {
   ContextMenu,
@@ -238,7 +237,7 @@ export function ConversationSelector({
   // Pending plan approvals from DB - only for open conversations
   const { data: pendingPlanApprovalsData } = trpc.chats.getPendingPlanApprovals.useQuery(
     { openConversationIds },
-    { refetchInterval: 5000, enabled: openConversationIds.length > 0, placeholderData: (prev) => prev }
+    { refetchInterval: 10000, enabled: openConversationIds.length > 0, placeholderData: (prev) => prev }
   )
   const pendingPlanApprovals = useMemo(() => {
     const set = new Set<string>()

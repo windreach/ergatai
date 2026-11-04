@@ -1,6 +1,6 @@
 /**
  * Typed module for DevTools unlock state.
- * Replaces the (global as any).__unlockDevTools anti-pattern.
+ * Replaces the (global as unknown).__unlockDevTools anti-pattern.
  *
  * The DevTools menu item is hidden by default in packaged builds.
  * Users can unlock it via a hidden feature (5 clicks on Beta tab),

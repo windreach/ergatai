@@ -4,7 +4,7 @@ import {
   agentsSettingsDialogActiveTabAtom,
   devToolsUnlockedAtom,
 } from "../../lib/atoms"
-import { desktopViewAtom } from "../agents/atoms"
+import { desktopViewAtom } from "../agents"
 import { AgentsAppearanceTab } from "../../components/dialogs/settings-tabs/agents-appearance-tab"
 import { AgentsDebugTab } from "../../components/dialogs/settings-tabs/agents-debug-tab"
 import { AgentsKeyboardTab } from "../../components/dialogs/settings-tabs/agents-keyboard-tab"

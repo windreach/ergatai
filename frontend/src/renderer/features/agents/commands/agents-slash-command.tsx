@@ -270,8 +270,6 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
   // Get dropdown dimensions with dynamic scaling based on window size
   const scale = useDropdownScale()
 
-  if (!isOpen) return null
-
   const dimensions = getDropdownDimensions(scale)
 
   // Calculate dropdown dimensions (matching file mention style)
@@ -308,10 +306,13 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
   useLayoutEffect(() => {
     placementRef.current = placement
   }, [placement])
+
+  if (!isOpen) return null
+
   const placeAbove = placement === "above"
 
   // Compute final top based on placement
-  let finalTop = placeAbove
+  const finalTop = placeAbove
     ? position.top - gap
     : position.top + gap + caretOffsetBelow
 

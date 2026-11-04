@@ -5,7 +5,6 @@
  * Provides file and folder search with icons and relevance sorting.
  */
 
-import { FolderOpen as FolderOpenIcon, Files as FilesIcon } from "lucide-react"
 import { trpcClient } from "../../../lib/trpc"
 import {
   createMentionProvider,
@@ -14,7 +13,7 @@ import {
   type MentionSearchResult,
   MENTION_PREFIXES,
 } from "../types"
-import { buildGenericMentionToken } from "../../agents/mentions/mentions-utils"
+import { buildGenericMentionToken } from "../../agents"
 
 /**
  * Data payload for file/folder mentions

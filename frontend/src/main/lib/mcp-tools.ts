@@ -1,7 +1,7 @@
 /**
  * Generic MCP tool fetching using the official MCP SDK
  *
- * These functions are not tied to Claude or any specific agent.
+ * These functions are not tied to Claude or unknown specific agent.
  * They use the standard MCP protocol to discover tools from MCP servers.
  */
 

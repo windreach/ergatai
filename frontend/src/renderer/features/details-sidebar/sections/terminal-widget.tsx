@@ -14,14 +14,14 @@ import {
 } from "@/components/ui/tooltip"
 import { Kbd } from "@/components/ui/kbd"
 import { useResolvedHotkeyDisplay } from "@/lib/hotkeys"
-import { getDefaultTerminalBg } from "@/features/terminal/helpers"
+import { getDefaultTerminalBg } from "@/features/terminal"
 import {
   terminalsAtom,
   activeTerminalIdAtom,
-} from "@/features/terminal/atoms"
-import type { TerminalInstance } from "@/features/terminal/types"
+} from "@/features/terminal"
+import type { TerminalInstance } from "@/features/terminal"
 import { cn } from "@/lib/utils"
-import { killTerminalSession } from "@/features/terminal/providers"
+import { killTerminalSession } from "@/features/terminal"
 import { randomToken } from "../../../../shared/id"
 
 interface TerminalWidgetProps {

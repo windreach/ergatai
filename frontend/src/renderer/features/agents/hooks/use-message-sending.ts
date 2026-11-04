@@ -1,10 +1,10 @@
+ 
 import { useCallback, useRef } from "react"
 import { trpc, trpcClient } from "../../../lib/trpc"
 import { toast } from "sonner"
 import { useAgentConversationStore } from "../stores/conversation-store"
-import { useMessageQueueStore } from "../stores/message-queue-store"
 import { getQueryClient } from "../../../contexts/TRPCProvider"
-import { MENTION_PREFIXES } from "../../mentions/types"
+import { MENTION_PREFIXES } from "../../mentions"
 import { utf8ToBase64 } from "../utils/base64"
 import { extractAgentMentions } from "../collaboration/implicit-collaboration"
 import { getCoreAgentProfileName } from "../lib/agent-contract-api"
@@ -12,13 +12,12 @@ import type { CoreAgentOption, SelectedTextContext, DiffTextContext, PastedTextF
 import type { PendingUserQuestion } from "../atoms"
 import type { GroupAgentRuntimeStatuses } from "../collaboration/group-agent-runtime"
 import type { Message, MessagePart } from "../stores/message-store"
-import type { AgentQueueItem, QueuedImage, QueuedFile } from "../lib/queue-utils"
-import type { CollaborationSession, CollaborationSessionDetail, CollaborationContextEvent, SubmitCollaborationInteractionInput, CollaborationInteractionResult } from "../collaboration/collaboration-session-runtime"
+import type { AgentQueueItem, QueuedFile } from "../lib/queue-utils"
+import type { CollaborationSessionDetail, CollaborationContextEvent, SubmitCollaborationInteractionInput, CollaborationInteractionResult } from "../collaboration/collaboration-session-runtime"
 import {
   createQueueItem,
   generateQueueId,
   toQueuedImage,
-  toQueuedFile,
   toQueuedTextContext,
   toQueuedDiffTextContext,
   toQueuedPastedText,
@@ -67,7 +66,7 @@ interface UseMessageSendingOptions {
 
   // 输入和附件 refs
   inputRefs: {
-    editor: React.RefObject<any>
+    editor: React.RefObject<unknown>
     images: React.RefObject<UploadedImage[]>
     files: React.RefObject<QueuedFile[]>
     textContexts: React.RefObject<SelectedTextContext[]>
@@ -131,7 +130,6 @@ export function useMessageSending({
   utilsRef.current = utils
 
   // Refs for handleSend to avoid recreating callback on every messages change
-  const messagesLengthRef = useRef(0)
   const conversationModeRef = useRef(conversation.mode)
   conversationModeRef.current = conversation.mode
   const imagesRefLocal = useRef(inputRefs.images.current)
@@ -170,7 +168,7 @@ export function useMessageSending({
       return
     }
 
-    // Clear any expired questions when user sends a new message
+    // Clear unknown expired questions when user sends a new message
     messagingRef.current.setExpiredQuestionsMap((current) => {
       if (current.has(conversationRef.current.id)) {
         const newMap = new Map(current)
@@ -181,7 +179,7 @@ export function useMessageSending({
     })
 
     // Get value from uncontrolled editor
-    const inputValue = inputRefsRef.current.editor.current?.getValue() || ""
+    const inputValue = (inputRefsRef.current.editor.current as { getValue?: () => string; clear?: () => void; setValue?: (value: string) => void } | null)?.getValue?.() || ""
     const hasText = inputValue.trim().length > 0
     const currentImages = imagesRefLocal.current
     const currentFiles = filesRefLocal.current
@@ -227,7 +225,7 @@ export function useMessageSending({
       }
 
       // Clear input and attachments
-      inputRefsRef.current.editor.current?.clear()
+      (inputRefsRef.current.editor.current as { getValue?: () => string; clear?: () => void; setValue?: (value: string) => void } | null)?.clear?.()
       if (conversationRef.current.parentChatId) {
         actionsRef.current.clearConversationDraft(conversationRef.current.parentChatId, conversationRef.current.id)
       }
@@ -243,10 +241,14 @@ export function useMessageSending({
       actionsRef.current.onRestoreWorkspace()
     }
 
-    const text = inputValue.trim()
+    const editorValue = ((inputRefsRef.current.editor.current as { getValue?: () => string } | null)?.getValue?.() || "") as string
+    let text = ""
+    if (typeof editorValue === "string") {
+      text = editorValue.trim()
+    }
 
     // Clear editor and draft from localStorage
-    inputRefsRef.current.editor.current?.clear()
+    (inputRefsRef.current.editor.current as { getValue?: () => string; clear?: () => void; setValue?: (value: string) => void } | null)?.clear?.()
     if (conversationRef.current.parentChatId) {
       actionsRef.current.clearConversationDraft(conversationRef.current.parentChatId, conversationRef.current.id)
     }
@@ -562,10 +564,10 @@ export function useMessageSending({
     try {
       await serviceRef.current!.send(parts)
     } catch (error) {
-      console.error("[ChatSend] Failed to send message:", error)
-      toast.error(error instanceof Error ? error.message : "Failed to send message")
+      (console as any).error("[ChatSend] Failed to send message:", error)
+      (toast as any).error(error instanceof Error ? error.message : "Failed to send message")
       // Restore editor content so the user can retry
-      inputRefsRef.current.editor.current?.setValue(
+      (inputRefsRef.current.editor.current as { getValue?: () => string; clear?: () => void; setValue?: (value: string) => void } | null)?.setValue?.(
         mentionPrefix + (text || ""),
       )
     }
@@ -612,7 +614,7 @@ export function useMessageSending({
     }
 
     // Get value from uncontrolled editor
-    const inputValue = inputRefsRef.current.editor.current?.getValue() || ""
+    const inputValue = (inputRefsRef.current.editor.current as { getValue?: () => string; clear?: () => void; setValue?: (value: string) => void } | null)?.getValue?.() || ""
     const hasText = inputValue.trim().length > 0
     const currentImages = imagesRefLocal.current
     const currentFiles = filesRefLocal.current
@@ -634,10 +636,14 @@ export function useMessageSending({
       actionsRef.current.onRestoreWorkspace()
     }
 
-    const text = inputValue.trim()
+    const editorValue = ((inputRefsRef.current.editor.current as { getValue?: () => string } | null)?.getValue?.() || "") as string
+    let text = ""
+    if (typeof editorValue === "string") {
+      text = editorValue.trim()
+    }
 
     // Clear editor and draft from localStorage
-    inputRefsRef.current.editor.current?.clear()
+    (inputRefsRef.current.editor.current as { getValue?: () => string; clear?: () => void; setValue?: (value: string) => void } | null)?.clear?.()
     if (conversationRef.current.parentChatId) {
       actionsRef.current.clearConversationDraft(conversationRef.current.parentChatId, conversationRef.current.id)
     }
@@ -697,9 +703,9 @@ export function useMessageSending({
         await messagingRef.current.sendMessageRef.current({ id: `msg-${Date.now()}`, role: "user", parts })
       }
     } catch (error) {
-      console.error("[handleForceSend] Error sending message:", error)
+      (console as any).error("[handleForceSend] Error sending message:", error)
       // Restore editor content so the user can retry
-      inputRefsRef.current.editor.current?.setValue(text)
+      (inputRefsRef.current.editor.current as { getValue?: () => string; clear?: () => void; setValue?: (value: string) => void } | null)?.setValue?.(text)
     }
   }, [])
 

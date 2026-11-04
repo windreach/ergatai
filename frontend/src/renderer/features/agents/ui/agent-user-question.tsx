@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useState, useEffect, useCallback, useRef, forwardRef, useImperativeHandle } from "react"
+import { memo, useState, useEffect, useCallback, useRef, forwardRef, useImperativeHandle, useMemo } from "react"
 import { ChevronUp, ChevronDown, CornerDownLeft } from "lucide-react"
 import { Button } from "../../../components/ui/button"
 import { cn } from "../../../lib/utils"
@@ -45,7 +45,7 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
       }
     }
     return formattedAnswers
-  }, [])
+  }, [pendingQuestions])
 
   // Cleanup timeout on unmount
   useEffect(() => {
@@ -85,12 +85,8 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
     }
   }, [currentQuestionIndex])
 
-  if (questions.length === 0) {
-    return null
-  }
-
   const currentQuestion = questions[currentQuestionIndex]
-  const currentOptions = currentQuestion?.options || []
+  const currentOptions = useMemo(() => currentQuestion?.options || [], [currentQuestion?.options])
 
   const isOptionSelected = (questionText: string, optionLabel: string) => {
     return answers[questionText]?.includes(optionLabel) || false
@@ -276,6 +272,10 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
     questions,
     isSubmitting,
   ])
+
+  if (questions.length === 0) {
+    return null
+  }
 
   return (
     <div ref={containerRef} className="border rounded-t-xl border-b-0 border-border bg-muted/30 overflow-hidden">

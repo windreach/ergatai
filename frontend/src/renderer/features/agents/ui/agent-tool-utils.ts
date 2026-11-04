@@ -7,7 +7,7 @@
  * and compare cached values, not object references.
  */
 
-// Looser type for comparison functions - accepts any part-like object
+// Looser type for comparison functions - accepts unknown part-like object
 // This allows component-specific part types to be passed without casting
 type ComparablePart = {
   type: string
@@ -24,7 +24,9 @@ type ComparablePart = {
 // comparison in hasToolStateChanged without side effects.
 // ============================================================================
 
-const toolStateCache = new Map<string, unknown>()
+import { BoundedCache } from "../../../lib/bounded-cache"
+
+const toolStateCache = new BoundedCache<string, unknown>(1000)
 
 export function clearToolStateCachesByToolCallIds(toolCallIds: string[]) {
   for (const toolCallId of toolCallIds) {

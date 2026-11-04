@@ -7,7 +7,7 @@
  */
 
 import type { ConversationRole } from "./contracts"
-import type { MessagePart } from "../../agents/stores/message-store"
+import type { MessagePart } from "../../agents"
 
 export const LOCAL_TRANSPORT_STREAM_SOURCE = "local-transport"
 

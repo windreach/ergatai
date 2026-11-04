@@ -1,19 +1,15 @@
 "use client"
 import { ChatViewSidebars } from "./active-chat-sidebars"
-import {
-  stripEmojis
-} from "../../../components/chat-markdown-renderer"
+
+
 import { Button } from "../../../components/ui/button"
 import {
   AgentIcon,
   AttachIcon,
   ClaudeCodeIcon,
-  IconCloseSidebarRight,
   IconOpenSidebarRight,
   IconSpinner,
-  PauseIcon,
-  UnarchiveIcon,
-  VolumeIcon
+  UnarchiveIcon
 } from "../../../components/ui/icons"
 import { Kbd } from "../../../components/ui/kbd"
 import {
@@ -28,241 +24,120 @@ import {
 // e2b API routes are used instead of useSandboxManager for agents
 // import { clearConversationSelectionAtom, isConversationMultiSelectModeAtom, selectedConversationIdsAtom } from "@/lib/atoms/agent-subchat-selection"
 import { ResizableBottomPanel } from "@/components/ui/resizable-bottom-panel"
-import { Chat, useChat, type UIMessage } from "@ai-sdk/react"
+import { Chat, type UIMessage } from "@ai-sdk/react"
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai"
 import {
-  ArrowDown,
   ChevronDown,
   Folder,
-  GitFork,
   TerminalSquare
 } from "lucide-react"
-import { AnimatePresence, motion } from "motion/react"
 import {
-  createContext,
   memo,
   useCallback,
-  useContext,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState
 } from "react"
-import { flushSync } from "react-dom"
 import { toast } from "sonner"
 import { useShallow } from "zustand/react/shallow"
-import type { FileStatus } from "../../../../shared/changes-types"
 import {
   customClaudeConfigAtom,
   defaultAgentModeAtom,
   isDesktopAtom, isFullscreenAtom,
   normalizeCustomClaudeConfig,
   sessionInfoAtom,
-  selectedOllamaModelAtom,
-  soundNotificationsEnabledAtom
+  selectedOllamaModelAtom
 } from "../../../lib/atoms"
-import { useChatAutoScroll } from "../hooks/use-chat-auto-scroll"
 import { useSidebarStates } from "../hooks/use-sidebar-states"
-import { usePendingActions } from "../hooks/use-pending-actions"
-import { useQuestionHandling } from "../hooks/use-question-handling"
-import { useQuestionAnswers } from "../hooks/use-question-answers"
-import { useMessageSending } from "../hooks/use-message-sending"
-import { useConversationActions } from "../hooks/use-conversation-actions"
-import { usePlanApproval } from "../hooks/use-plan-approval"
-import { useQuickComment } from "../hooks/use-quick-comment"
-import { usePrDetection } from "../hooks/use-pr-detection"
-import { useScrollManagement, getSavedScrollPosition } from "../hooks/use-scroll-management"
-import { useProviderSelection } from "../hooks/use-provider-selection"
-import { useCollaborationParticipants } from "../hooks/use-collaboration-participants"
-import { useUnapprovedPlanDetection } from "../hooks/use-unapproved-plan-detection"
 import { useGitOperations } from "../hooks/use-git-operations"
 import { useCreateNewConversation } from "../hooks/use-create-new-conversation"
 import { useDiffStatsManagement } from "../hooks/use-diff-stats-management"
-import { useForkConversation } from "../hooks/use-fork-conversation"
 import { useTabsToRender } from "../hooks/use-tabs-to-render"
-import { useRollback } from "../hooks/use-rollback"
-import { useDraftRecovery } from "../hooks/use-draft-recovery"
-import { useSearchScroll } from "../hooks/use-search-scroll"
-import { useKeyboardStop } from "../hooks/use-keyboard-stop"
-import { useScrollInit } from "../hooks/use-scroll-init"
-import { useCustomEventListeners } from "../hooks/use-custom-event-listeners"
 import { useSidebarMutex } from "../hooks/use-sidebar-mutex"
 import { useDiffSidebarConflicts } from "../hooks/use-diff-sidebar-conflicts"
-import { useScrollToBottomShortcut } from "../hooks/use-scroll-to-bottom-shortcut"
-import { useMessageSync } from "../hooks/use-message-sync"
 import { useDiffCache } from "../hooks/use-diff-cache"
-import { useMainChatInvocation } from "../hooks/use-main-chat-invocation"
 import type { RawMessage } from "../hooks/use-main-chat-invocation"
-import type { MessagePart } from "../stores/message-store"
-import {
-  DiffStateProvider,
-  DiffSidebarRenderer,
-  useDiffState,
-} from "../components/diff/diff-components"
+
+
 import { useFileChangeListener, useGitWatcher } from "../../../lib/hooks/use-file-change-listener"
 import { appStore } from "../../../lib/jotai-store"
 import { api } from "../../../lib/api-adapter"
 import { trpc } from "../../../lib/trpc"
 import { cn } from "../../../lib/utils"
 import { isDesktopApp } from "../../../lib/utils/platform"
-import { useCommitActions } from "../../changes/components/commit-input"
-import { DiffSidebarHeader } from "../../changes/components/diff-sidebar-header"
-import { usePushAction } from "../../changes/hooks/use-push-action"
-import {
-  detailsSidebarOpenAtom,
-  detailsSidebarTabAtom,
-  sideChatSidebarOpenAtom,
-  unifiedSidebarEnabledAtom,
-} from "../../details-sidebar/atoms"
+import { useCommitActions } from "../../changes"
+import { usePushAction } from "../../changes"
+
+
 import {
   createPanelLinkScopeKey,
   panelLinkCommandAtomFamily,
 } from "@/features/panel-link"
-import { FileSearchDialog } from "../../file-viewer/components/file-search-dialog"
-import { terminalBottomHeightAtom } from "../../terminal/atoms"
-import { TerminalBottomPanelContent } from "../../terminal/terminal-sidebar"
-import { getTerminalScopeKey } from "../../terminal/utils"
+import { FileSearchDialog } from "../../file-viewer"
+import { terminalBottomHeightAtom } from "../../terminal"
+import { TerminalBottomPanelContent } from "../../terminal"
+import { getTerminalScopeKey } from "../../terminal"
 import {
-  agentsChangesPanelCollapsedAtom,
-  agentsChangesPanelWidthAtom,
   agentsDiffSidebarWidthAtom,
-  agentsPlanSidebarWidthAtom,
-  agentsPreviewSidebarOpenAtom,
-  agentsPreviewSidebarWidthAtom,
   agentsConversationsSidebarModeAtom,
   agentsConversationUnseenChangesAtom,
   agentsUnseenChangesAtom,
-  clearLoading,
-  compactingConversationsAtom,
-  currentPlanPathAtomFamily,
-  diffActiveTabAtom,
-  diffSidebarOpenAtomFamily,
   diffViewDisplayModeAtom,
-  expiredUserQuestionsAtom,
-  fileSearchDialogOpenAtom,
-  fileViewerDisplayModeAtom,
-  fileViewerOpenAtomFamily,
-  fileViewerSidebarWidthAtom,
   filteredDiffFilesAtom,
   filteredConversationIdAtom,
   isCreatingPrAtom,
   justCreatedIdsAtom,
   loadingConversationsAtom,
-  MODEL_ID_MAP,
-  pendingAuthRetryMessageAtom,
-  pendingBuildPlanConversationIdAtom,
-  pendingConflictResolutionMessageAtom,
-  pendingChatHistoryAtom,
-  type PendingChatHistory,
-  pendingMentionAtom,
-  pendingInitialPromptAtomFamily,
-  pendingPlanApprovalsAtom,
-  pendingPrMessageAtom,
-  pendingReviewMessageAtom,
-  pendingUserQuestionsAtom,
-  planSidebarOpenAtomFamily,
-  QUESTIONS_SKIPPED_MESSAGE,
   selectedAgentChatIdAtom,
-  selectedCommitAtom,
   selectedDiffFilePathAtom,
-  setLoading,
   conversationFilesAtom,
   agentsSidebarOpenAtom,
-  conversationCodexModelIdAtomFamily,
-  conversationCodexThinkingAtomFamily,
-  conversationModelIdAtomFamily,
   conversationModeAtomFamily,
   suppressInputFocusAtom,
   undoStackAtom,
   workspaceDiffCacheAtomFamily,
-  type AgentMode,
-  type SelectedCommit
+  type AgentMode
 } from "../atoms"
 import { AgentSendButton } from "../components/agent-send-button"
 import { PreviewSetupHoverCard } from "../components/preview-setup-hover-card"
-import type { TextSelectionSource } from "../context/text-selection-context"
 import { TextSelectionProvider } from "../context/text-selection-context"
-import { useAgentsFileUpload, type UploadedImage } from "../hooks/use-agents-file-upload"
-import { useAgentPlan } from "../hooks/use-agent-plan"
-import { useChangedFilesTracking } from "../hooks/use-changed-files-tracking"
 import { useDesktopNotifications } from "../hooks/use-desktop-notifications"
-import { useFocusInputOnEnter } from "../hooks/use-focus-input-on-enter"
-import { usePastedTextFiles, type PastedTextFile } from "../hooks/use-pasted-text-files"
-import { useTextContextSelection } from "../hooks/use-text-context-selection"
-import { useToggleFocusOnCmdEsc } from "../hooks/use-toggle-focus-on-cmd-esc"
-import { usePendingAuthRetry } from "../hooks/use-pending-auth-retry"
 import { useDiffSidebarWidth } from "../hooks/use-diff-sidebar-width"
 import { useGitStatusSync } from "../hooks/use-git-status-sync"
 import { useConversationShortcuts } from "../hooks/use-conversation-shortcuts"
 import { useConversationStoreInit } from "../hooks/use-conversation-store-init"
 import { useChatInstanceFactory } from "../hooks/use-chat-instance-factory"
-import { ErgataiChatTransport } from "../lib/ergatai-chat-transport"
-import { GroupChatTransport } from "../lib/group-chat-transport"
-import type { AgentQueueItem } from "../lib/queue-utils"
 import { GroupChatProvider } from "../collaboration/group-chat-context"
-import {
-  isCollaborationSessionRuntimeEnabled,
-  useCollaborationSession,
-} from "../collaboration/collaboration-session-runtime"
-import { extractAgentMentions } from "../collaboration/implicit-collaboration"
-import {
-  setGroupAgentRuntimeStatuses,
-  type GroupAgentRuntimeStatuses,
-} from "../collaboration/group-agent-runtime"
-import { useAgentParticipants } from "../collaboration/use-agent-participants"
-import { useImplicitCollaborationTasks } from "../collaboration/use-implicit-collaboration-tasks"
-import { loadGroupAgents } from "../collaboration/group-agent-storage"
-import {
-  getCoreAgentProfileName,
-  type CoreAgentOption,
-} from "../lib/agent-contract-api"
-import { formatHistoryForContext } from "../lib/export-chat"
-import {
-  clearConversationDraft,
-  getConversationDraftFull
-} from "../lib/drafts"
-import {
-  createQueueItem, createTextPreview, generateQueueId,
-  toQueuedFile,
-  toQueuedImage,
-  toQueuedTextContext, toQueuedDiffTextContext, toQueuedPastedText, type DiffTextContext, type SelectedTextContext
-} from "../lib/queue-utils"
-import { isMockChatEnabled, MockChatTransport } from "../lib/mock-chat-transport"
+
+
+
+
+
+
+
+
+
 import {
   FileOpenProvider,
-  MENTION_PREFIXES,
-  type AgentsMentionsEditorHandle,
 } from "../mentions"
 import {
   ChatSearchBar,
-  chatSearchCurrentMatchAtom,
   SearchHighlightProvider
 } from "../search"
 import { agentChatStore } from "../stores/agent-chat-store"
-import { EMPTY_QUEUE, useMessageQueueStore } from "../stores/message-queue-store"
-import {
-  findRollbackTargetSdkUuidForUserIndex,
-  isRollingBackAtom,
-  syncMessagesWithStatusAtom
-} from "../stores/message-store"
+import { useMessageQueueStore } from "../stores/message-queue-store"
+
+
 import { useStreamingStatusStore } from "../stores/streaming-status-store"
 import {
   useAgentConversationStore,
-  type ConversationMeta,
 } from "../stores/conversation-store"
-import type { DiffViewMode } from "../ui/agent-diff-view"
 import {
-  AgentDiffView,
   diffViewModeAtom,
-  splitUnifiedDiffByFile,
   type AgentDiffViewRef,
   type ParsedDiffFile,
 } from "../ui/agent-diff-view"
-import { AgentPlanSidebar } from "../ui/agent-plan-sidebar"
-import { AgentPreview } from "../ui/agent-preview"
-import { isPlanFile } from "../ui/agent-tool-utils"
-import { type AgentUserQuestionHandle } from "../ui/agent-user-question"
 import { AgentsHeaderControls } from "../ui/agents-header-controls"
 
 // Extended chat type with Ergatai-specific fields
@@ -278,7 +153,7 @@ interface ExtendedAgentChat {
     name?: string | null
   } | null
   branch?: string | null
-  messages?: unknown[] // AI SDK Chat messages (runtime, not from backend)
+  messages?: UIMessage[] // AI SDK Chat messages (runtime, not from backend)
   conversations?: Array<{
     id: string
     name?: string | null
@@ -294,35 +169,32 @@ import { QuickCommentInput } from "../ui/quick-comment-input"
 import { ConversationSelector } from "../ui/conversation-selector"
 import { SplitViewContainer } from "../ui/split-view-container"
 import { TextSelectionPopover } from "../ui/text-selection-popover"
-import { generateCommitToPrMessage, generatePrMessage, generateReviewMessage } from "../utils/pr-message"
-import { ChatInputArea } from "./chat-input-area"
 import { ActiveChatDock } from "./active-chat-dock"
 import { ActiveChatMessages } from "./active-chat-messages"
-import { MessageGroup } from "./message-group"
 const clearConversationSelectionAtom = atom(null, () => {})
 const isConversationMultiSelectModeAtom = atom(false)
 const selectedConversationIdsAtom = atom(new Set<string>())
 // import { selectedTeamIdAtom } from "@/lib/atoms/team"
 const selectedTeamIdAtom = atom<string | null>(null)
 // import type { PlanType } from "@/lib/config/subscription-plans"
-type PlanType = string
+type _PlanType = string
 
 // Module-level scroll position cache moved to use-scroll-management hook
-const mountedChatViewInnerCounts = new Map<string, number>()
-const pendingConversationCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const _mountedChatViewInnerCounts = new Map<string, number>()
+const _pendingConversationCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
-import { utf8ToBase64, base64ToUtf8 } from "../utils/base64"
 import {
   clearRuntimeCachesForConversation,
   getFirstConversationId,
   CHAT_LAYOUT,
 } from "./active-chat-helpers"
 import { useActiveChatController } from "./use-active-chat-controller";
+import { parsePersistedMessagesByConversation } from "../lib/parse-persisted-messages";
 
 // Inner chat component - only rendered when chat object is ready
 // Memoized to prevent re-renders when parent state changes (e.g., selectedFilePath)
 const ChatViewInner = memo(function ChatViewInner(props: {
-      chat: Chat<any>
+      chat: Chat<UIMessage>
       conversationId: string
       parentChatId: string
       provider?: "claude-code" | "codex"
@@ -356,14 +228,14 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       persistedMessages?: RawMessage[]
     }) {
     const {
-      chat,
+      chat: _chat,
       conversationId,
       parentChatId,
       provider = "claude-code",
-      isFirstConversation,
+      isFirstConversation: _isFirstConversation,
       onCreateNewConversation,
-      onProviderChange,
-      refreshDiff,
+      onProviderChange: _onProviderChange,
+      refreshDiff: _refreshDiff,
       teamId,
       repository,
       isMobile = false,
@@ -373,71 +245,71 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       isConversationsSidebarOpen = false,
       sandboxId,
       projectPath,
-      isArchived = false,
-      onRestoreWorkspace,
-      existingPrUrl,
+      isArchived: _isArchived = false,
+      onRestoreWorkspace: _onRestoreWorkspace,
+      existingPrUrl: _existingPrUrl,
       isActive = true,
       isSplitPane = false,
       isGroupMode = false,
-      workspaceName,
+      workspaceName: _workspaceName,
       workspaceBranch,
       workspaceRepoName,
-      workspaceId,
-      projectId,
-      persistedMessages,
+      workspaceId: _workspaceId,
+      projectId: _projectId,
+      persistedMessages: _persistedMessages,
     } = props
 
     const controller = useActiveChatController(props)
     const {
-      groupAgents,
-      setGroupAgents,
+      groupAgents: _groupAgents,
+      setGroupAgents: _setGroupAgents,
       handleGroupAgentsChange,
       groupContextValue,
-      agentParticipants,
+      agentParticipants: _agentParticipants,
       implicitCollaborationTasks,
       isVisiblePane,
-      agentBindingsQuery,
+      agentBindingsQuery: _agentBindingsQuery,
       backendAgentId,
-      conversationRuntime,
-      backendRuntimeMessages,
-      pendingInitialPrompt,
-      setPendingInitialPrompt,
-      isVisiblePaneRef,
-      conversationForBridge,
-      chatInvocation,
-      sessionState,
-      invocationQueue,
-      shouldAutoScrollRef,
-      isAutoScrollingRef,
-      isInitializingScrollRef,
-      scrollInitializedRef,
-      hasUnapprovedPlanRef,
+      conversationRuntime: _conversationRuntime,
+      backendRuntimeMessages: _backendRuntimeMessages,
+      pendingInitialPrompt: _pendingInitialPrompt,
+      setPendingInitialPrompt: _setPendingInitialPrompt,
+      isVisiblePaneRef: _isVisiblePaneRef,
+      conversationForBridge: _conversationForBridge,
+      chatInvocation: _chatInvocation,
+      sessionState: _sessionState,
+      invocationQueue: _invocationQueue,
+      shouldAutoScrollRef: _shouldAutoScrollRef,
+      isAutoScrollingRef: _isAutoScrollingRef,
+      isInitializingScrollRef: _isInitializingScrollRef,
+      scrollInitializedRef: _scrollInitializedRef,
+      hasUnapprovedPlanRef: _hasUnapprovedPlanRef,
       chatContainerRef,
       chatContainerObserverRef,
       contentWrapperRef,
-      prevScrollTopRef,
-      saveScrollPosition,
-      isAtBottom,
-      handleScroll,
+      prevScrollTopRef: _prevScrollTopRef,
+      saveScrollPosition: _saveScrollPosition,
+      isAtBottom: _isAtBottom,
+      handleScroll: _handleScroll,
       scrollToBottom,
       editorRef,
       fileInputRef,
       questionRef,
-      prevChatKeyRef,
-      prevConversationIdRef,
-      pendingMention,
-      setPendingMention,
-      isRollingBack,
-      setIsRollingBack,
-      utils,
+      prevChatKeyRef: _prevChatKeyRef,
+      prevConversationIdRef: _prevConversationIdRef,
+      pendingMention: _pendingMention,
+      setPendingMention: _setPendingMention,
+      isRollingBack: _isRollingBack,
+      setIsRollingBack: _setIsRollingBack,
+      utils: _utils,
       conversationName,
-      renameConversationMutation,
-      renameConversationMutationRef,
-      conversationNameRef,
+      renameConversationMutation: _renameConversationMutation,
+      renameConversationMutationRef: _renameConversationMutationRef,
+      conversationNameRef: _conversationNameRef,
       handleRenameConversation,
-      conversationMode,
-      setConversationMode,
-      updateConversationModeMutation,
+      conversationMode: _conversationMode,
+      setConversationMode: _setConversationMode,
+      updateConversationModeMutation: _updateConversationModeMutation,
       handleModeChange,
       images,
       files,
@@ -445,117 +317,117 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       handleAddFolder,
       removeImage,
       removeFile,
-      clearAll,
+      clearAll: _clearAll,
       isUploading,
-      setImagesFromDraft,
-      setFilesFromDraft,
+      setImagesFromDraft: _setImagesFromDraft,
+      setFilesFromDraft: _setFilesFromDraft,
       textContexts,
       diffTextContexts,
-      addTextContextOriginal,
-      addDiffTextContext,
+      addTextContextOriginal: _addTextContextOriginal,
+      addDiffTextContext: _addDiffTextContext,
       removeTextContext,
       removeDiffTextContext,
-      clearTextContexts,
-      clearDiffTextContexts,
-      textContextsRef,
-      diffTextContextsRef,
-      setTextContextsFromDraft,
-      setDiffTextContextsFromDraft,
+      clearTextContexts: _clearTextContexts,
+      clearDiffTextContexts: _clearDiffTextContexts,
+      textContextsRef: _textContextsRef,
+      diffTextContextsRef: _diffTextContextsRef,
+      setTextContextsFromDraft: _setTextContextsFromDraft,
+      setDiffTextContextsFromDraft: _setDiffTextContextsFromDraft,
       pastedTexts,
       addPastedText,
-      addChatHistoryFile,
+      addChatHistoryFile: _addChatHistoryFile,
       removePastedText,
-      clearPastedTexts,
-      pastedTextsRef,
-      setPastedTextsFromDraft,
-      fileContentsRef,
+      clearPastedTexts: _clearPastedTexts,
+      pastedTextsRef: _pastedTextsRef,
+      setPastedTextsFromDraft: _setPastedTextsFromDraft,
+      fileContentsRef: _fileContentsRef,
       cacheFileContent,
-      clearFileContents,
-      queueCacheRef,
+      clearFileContents: _clearFileContents,
+      queueCacheRef: _queueCacheRef,
       queue,
-      addToQueue,
-      removeFromQueue,
-      popItemFromQueue,
-      planApprovalPending,
-      setPlanApprovalPending,
-      chatRef,
-      chatMessages,
-      sendMessage,
+      addToQueue: _addToQueue,
+      removeFromQueue: _removeFromQueue,
+      popItemFromQueue: _popItemFromQueue,
+      planApprovalPending: _planApprovalPending,
+      setPlanApprovalPending: _setPlanApprovalPending,
+      chatRef: _chatRef,
+      chatMessages: _chatMessages,
+      sendMessage: _sendMessage,
       status,
-      stop,
-      setMessages,
+      stop: _stop,
+      setMessages: _setMessages,
       messages,
-      sendMessageRef,
-      stopRef,
-      isLocalStreaming,
-      isInitialPromptBusy,
-      isBackendStreaming,
-      isRuntimeStreaming,
+      sendMessageRef: _sendMessageRef,
+      stopRef: _stopRef,
+      isLocalStreaming: _isLocalStreaming,
+      isInitialPromptBusy: _isInitialPromptBusy,
+      isBackendStreaming: _isBackendStreaming,
+      isRuntimeStreaming: _isRuntimeStreaming,
       isStreaming,
-      streamingStatus,
-      isStreamingRef,
-      currentPlanPathAtom,
-      setCurrentPlanPath,
-      apiPlanPath,
-      planLoading,
-      refetchPlan,
-      collaborationParticipants,
-      collaborationSessionEnabled,
+      streamingStatus: _streamingStatus,
+      isStreamingRef: _isStreamingRef,
+      currentPlanPathAtom: _currentPlanPathAtom,
+      setCurrentPlanPath: _setCurrentPlanPath,
+      apiPlanPath: _apiPlanPath,
+      planLoading: _planLoading,
+      refetchPlan: _refetchPlan,
+      collaborationParticipants: _collaborationParticipants,
+      collaborationSessionEnabled: _collaborationSessionEnabled,
       collaborationSession,
-      compactingConversations,
+      compactingConversations: _compactingConversations,
       isCompacting,
-      isDesktop,
-      isFullscreen,
+      isDesktop: _isDesktop,
+      isFullscreen: _isFullscreen,
       handleCompact,
       handleStop,
       addTextContext,
       handleFocusInput,
       quickCommentState,
-      setQuickCommentState,
+      setQuickCommentState: _setQuickCommentState,
       handleQuickComment,
       handleQuickCommentSubmit,
       handleQuickCommentCancel,
-      setLoadingConversations,
-      isCreatingPr,
-      setIsCreatingPr,
-      pendingAuthRetry,
-      setPendingAuthRetry,
-      pendingBuildPlanConversationId,
-      setPendingBuildPlanConversationId,
-      pendingQuestions,
-      expiredQuestions,
+      setLoadingConversations: _setLoadingConversations,
+      isCreatingPr: _isCreatingPr,
+      setIsCreatingPr: _setIsCreatingPr,
+      pendingAuthRetry: _pendingAuthRetry,
+      setPendingAuthRetry: _setPendingAuthRetry,
+      pendingBuildPlanConversationId: _pendingBuildPlanConversationId,
+      setPendingBuildPlanConversationId: _setPendingBuildPlanConversationId,
+      pendingQuestions: _pendingQuestions,
+      expiredQuestions: _expiredQuestions,
       displayQuestions,
-      isQuestionExpired,
+      isQuestionExpired: _isQuestionExpired,
       inputHasContent,
       setInputHasContent,
-      lastAssistantMessage,
+      lastAssistantMessage: _lastAssistantMessage,
       messageTokenData,
-      setPendingQuestionsMap,
-      setExpiredQuestionsMap,
-      recentlyStoppedStreamRef,
-      clearPendingQuestionCallback,
-      formatAnswersAsText,
+      setPendingQuestionsMap: _setPendingQuestionsMap,
+      setExpiredQuestionsMap: _setExpiredQuestionsMap,
+      recentlyStoppedStreamRef: _recentlyStoppedStreamRef,
+      clearPendingQuestionCallback: _clearPendingQuestionCallback,
+      formatAnswersAsText: _formatAnswersAsText,
       handleQuestionsAnswer,
       handleQuestionsSkip,
-      handleSubmitWithQuestionAnswer,
+      handleSubmitWithQuestionAnswer: _handleSubmitWithQuestionAnswer,
       submitWithQuestionAnswerCallback,
-      isSubmittingQuestionAnswerRef,
-      handlePlanApproval,
-      handleApprovePlan,
-      detectedPrUrlRef,
+      isSubmittingQuestionAnswerRef: _isSubmittingQuestionAnswerRef,
+      handlePlanApproval: _handlePlanApproval,
+      handleApprovePlan: _handleApprovePlan,
+      detectedPrUrlRef: _detectedPrUrlRef,
       changedFilesForConversation,
-      recomputeChangedFiles,
+      recomputeChangedFiles: _recomputeChangedFiles,
       handleRollback,
       handleForkFromMessage,
-      isForkingRef,
+      isForkingRef: _isForkingRef,
       handleSend,
       handleSendFromQueue,
       handleRemoveFromQueue,
       handleForceSend,
-      getMessageTextContent,
-      copyMessageContent,
-      hasUnapprovedPlan,
-      setPendingPlanApprovals,
+      getMessageTextContent: _getMessageTextContent,
+      copyMessageContent: _copyMessageContent,
+      hasUnapprovedPlan: _hasUnapprovedPlan,
+      setPendingPlanApprovals: _setPendingPlanApprovals,
       stickyTopClass,
       searchBarTopOffset,
       shouldShowStatusCard,
@@ -564,7 +436,7 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       setHasPermissionApproval,
       handleInputProviderChange,
       handleContinueWithProvider,
-      isContinuingRef
+      isContinuingRef: _isContinuingRef
     } = controller
   // Subscribe to backend-owned turns (such as new-chat initial prompts) so
   // they remain visible even though no local Chat transport started them.
@@ -815,8 +687,8 @@ export function ChatView({
   chatId,
   isSidebarOpen,
   onToggleSidebar,
-  selectedTeamName,
-  selectedTeamImageUrl,
+  selectedTeamName: _selectedTeamName,
+  selectedTeamImageUrl: _selectedTeamImageUrl,
   isMobileFullscreen = false,
   onBackToChats,
   onOpenPreview,
@@ -855,7 +727,7 @@ export function ChatView({
   const isFullscreen = useAtomValue(isFullscreenAtom)
   const sidebarOpen = useAtomValue(agentsSidebarOpenAtom)
   const customClaudeConfig = useAtomValue(customClaudeConfigAtom)
-  const selectedOllamaModel = useAtomValue(selectedOllamaModelAtom)
+  const _selectedOllamaModel = useAtomValue(selectedOllamaModelAtom)
   const normalizedCustomClaudeConfig =
     normalizeCustomClaudeConfig(customClaudeConfig)
   const hasCustomClaudeConfig = Boolean(normalizedCustomClaudeConfig)
@@ -870,7 +742,7 @@ export function ChatView({
   const setFilteredDiffFiles = useSetAtom(filteredDiffFilesAtom)
   const { notifyAgentComplete } = useDesktopNotifications()
 
-  // Check if any chat has unseen changes
+  // Check if unknown chat has unseen changes
   const hasAnyUnseenChanges = unseenChanges.size > 0
   const [, forceUpdate] = useState({})
 
@@ -885,7 +757,7 @@ export function ChatView({
     isPlanSidebarOpen,
     setIsPlanSidebarOpen,
     currentPlanPath,
-    setCurrentPlanPath,
+    setCurrentPlanPath: _setCurrentPlanPath,
     handleApprovePlanFromSidebar,
     fileViewerPath,
     setFileViewerPath,
@@ -982,14 +854,14 @@ export function ChatView({
   const diffViewRef = useRef<AgentDiffViewRef>(null)
 
   // Diff sidebar width tracking with ResizeObserver
-  const { diffSidebarWidth, setDiffSidebarWidth } = useDiffSidebarWidth({
+  const { diffSidebarWidth, setDiffSidebarWidth: _setDiffSidebarWidth } = useDiffSidebarWidth({
     isDiffSidebarOpen,
     storedDiffSidebarWidth,
     diffSidebarRef,
   })
 
   // Track if all diff files are collapsed/expanded for button disabled states
-  const [diffCollapseState, setDiffCollapseState] = useState({
+  const [_diffCollapseState, setDiffCollapseState] = useState({
     allCollapsed: false,
     allExpanded: true,
   })
@@ -1054,7 +926,7 @@ export function ChatView({
   const utils = api.useUtils()
 
   // tRPC mutations for renaming
-  const renameConversationMutation = api.agents.renameConversation.useMutation()
+  const _renameConversationMutation = api.agents.renameConversation.useMutation()
 
   // PR creation loading state - using atom to allow ChatViewInner to reset it
   const [isCreatingPr, setIsCreatingPr] = useAtom(isCreatingPrAtom)
@@ -1062,7 +934,7 @@ export function ChatView({
   const [isReviewing, setIsReviewing] = useState(false)
   // Conversation filter setter - used by handleReview to filter by active conversation
   const setFilteredConversationId = useSetAtom(filteredConversationIdAtom)
-  const setSessionInfo = useSetAtom(sessionInfoAtom)
+  const _setSessionInfo = useSetAtom(sessionInfoAtom)
 
   // Fetch chat data from local or remote based on mode
   // Only fetch if chatId looks like a valid chat ID (starts with "chat_")
@@ -1073,46 +945,38 @@ export function ChatView({
   )
 
   const agentChat = localAgentChat
-  const isLoading = isLocalLoading
+  const _isLoading = isLocalLoading
 
   // Compute if we're waiting for local chat data (used as loading gate)
   const isLocalChatLoading = isLocalLoading
 
-  const agentConversations = (agentChat?.conversations ?? []) as Array<{
+  const agentConversations = useMemo(() => (agentChat?.conversations ?? []) as Array<{
     id: string
     name?: string | null
     mode?: "plan" | "agent" | null
     created_at?: Date | string | null
     updated_at?: Date | string | null
     messages?: UIMessage[] | string
-  }>
+  }>, [agentChat?.conversations])
 
   // Parse the durable chat snapshot once per query result. This gives the
   // runtime session cache a history source that is independent of the local
   // streaming Chat instance.
-  const persistedMessagesByConversationId = useMemo(() => {
-    const messagesById = new Map<string, unknown[]>()
-
-    for (const conversation of agentConversations) {
-      const rawMessages = conversation.messages
-      let parsedMessages: unknown[] = []
-
-      if (Array.isArray(rawMessages)) {
-        parsedMessages = rawMessages
-      } else if (typeof rawMessages === "string") {
-        try {
-          const parsed = JSON.parse(rawMessages)
-          parsedMessages = Array.isArray(parsed) ? parsed : []
-        } catch {
-          parsedMessages = []
-        }
-      }
-
-      messagesById.set(conversation.id, parsedMessages)
-    }
-
-    return messagesById
-  }, [agentConversations])
+  // Keep a React Query-backed, memoized view of the parsed durable messages.
+  // This leverages the query cache instead of re-parsing on every render.
+  const persistedMessagesQuery = api.agents.getAgentChat.useQuery(
+    { chatId },
+    {
+      enabled: !!isValidChatId,
+      select: (data: any) =>
+        parsePersistedMessagesByConversation(
+          (data?.conversations ?? []) as Array<{ id: string; messages?: unknown }>,
+        ),
+    },
+  )
+  const persistedMessagesByConversationId =
+    (persistedMessagesQuery.data as Map<string, unknown[]> | undefined) ??
+    new Map<string, unknown[]>()
 
   // Workspace isolation: limit mounted tabs to prevent memory growth
   // Tabs to render - handles filtering and validation of conversation tabs
@@ -1258,7 +1122,7 @@ export function ChatView({
   const isGroupMode = (agentChat as ExtendedAgentChat | undefined)?.collaborationMode === "group"
 
   // Get user usage data for credit checks
-  const { data: usageData } = api.usage.getUserUsage.useQuery()
+  const { data: _usageData } = api.usage.getUserUsage.useQuery()
 
   // Desktop: use worktreePath instead of sandbox
   const worktreePath = agentChat?.worktreePath as string | null
@@ -1285,19 +1149,20 @@ export function ChatView({
       })
       setFileViewerPath(filePath)
     },
-    [chatId, setFileViewerPath, worktreePath],
+    [chatId, setFileViewerPath, worktreePath, dispatchPanelLink],
   )
   // Desktop: original project path for MCP config lookup
-  const originalProjectPath = (agentChat as ExtendedAgentChat | undefined)?.project?.path as string | undefined
+  const _originalProjectPath = (agentChat as ExtendedAgentChat | undefined)?.project?.path as string | undefined
 
   // Terminal scope key: shared by project path (local mode) or isolated per workspace (worktree)
+  const agentBranch = (agentChat as ExtendedAgentChat | undefined)?.branch ?? null
   const terminalScopeKey = useMemo(() => {
     return getTerminalScopeKey({
-      branch: (agentChat as ExtendedAgentChat | undefined)?.branch ?? null,
+      branch: agentBranch,
       worktreePath: worktreePath,
       id: chatId,
     })
-  }, [(agentChat as ExtendedAgentChat | undefined)?.branch, worktreePath, chatId])
+  }, [agentBranch, worktreePath, chatId])
   // Fallback for web: use sandbox_id
   const sandboxId: string | null = null
   const sandboxUrl = null
@@ -1317,7 +1182,7 @@ export function ChatView({
   const repository = meta?.repository
 
   // Remote info for Details sidebar (when worktreePath is null but sandboxId exists)
-  const remoteInfo = null
+  const _remoteInfo = null
 
   // Track if we've already triggered sandbox setup for this chat
   // Check if this is a quick setup (no preview available)
@@ -1389,7 +1254,7 @@ export function ChatView({
   // Diff stats management - handles fetching, debouncing, and throttling
   const {
     fetchDiffStats,
-    fetchDiffStatsDebounced,
+    fetchDiffStatsDebounced: _fetchDiffStatsDebounced,
     fetchDiffStatsRef,
     scheduleDiffRefresh,
   } = useDiffStatsManagement({
@@ -1566,7 +1431,7 @@ export function ChatView({
     [agentChat, conversationProviderOverrides],
   )
 
-  const activeConversationProvider = useMemo(
+  const _activeConversationProvider = useMemo(
     () => inferProviderFromMessages(activeConversationId || undefined),
     [activeConversationId, inferProviderFromMessages],
   )
@@ -1723,7 +1588,7 @@ export function ChatView({
 
     window.addEventListener("keydown", handleKeyDown, true)
     return () => window.removeEventListener("keydown", handleKeyDown, true)
-  }, [isDiffSidebarOpen])
+  }, [isDiffSidebarOpen, setIsDiffSidebarOpen])
 
 
   // Keyboard shortcut: Cmd + Shift + E to restore archived workspace
@@ -1749,16 +1614,16 @@ export function ChatView({
   }, [isArchived, restoreWorkspaceMutation.isPending, handleRestoreWorkspace])
 
   // Get or create Chat instance for active conversation
-  const activeChat = useMemo(() => {
+  const _activeChat = useMemo(() => {
     if (!activeConversationId || !agentChat) {
       return null
     }
     return getOrCreateChat(activeConversationId)
-  }, [activeConversationId, agentChat, getOrCreateChat, chatId, chatWorkingDir])
+  }, [activeConversationId, agentChat, getOrCreateChat])
 
   // Check if active conversation is the first one (for renaming parent chat)
   // Use agentConversations directly to avoid race condition with store initialization
-  const isFirstConversationActive = useMemo(() => {
+  const _isFirstConversationActive = useMemo(() => {
     if (!activeConversationId) return false
     return getFirstConversationId(agentConversations) === activeConversationId
   }, [activeConversationId, agentConversations])

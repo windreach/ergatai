@@ -11,7 +11,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "../../../components/ui/dropdown-menu"
-import { CollapseIcon, ExpandIcon, PlanIcon } from "../../../components/ui/icons"
+import { CollapseIcon, ExpandIcon } from "../../../components/ui/icons"
 import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { ChatMarkdownRenderer } from "../../../components/chat-markdown-renderer"
 import { cn } from "../../../lib/utils"
@@ -20,7 +20,6 @@ import type { Message, MessagePart } from "../stores/message-store"
 import type { ThinkingToolPart } from "../ui/agent-thinking-tool"
 import type { PlanToolPart } from "../ui/agent-plan-tool"
 import { GroupAgentMessageHeader } from "../collaboration/group-agent-message-header"
-import { GroupAgentMentionTool } from "../collaboration/group-agent-mention-tool"
 import { useGroupChat } from "../collaboration/group-chat-context"
 import { MessageJsonDisplay } from "../ui/message-json-display"
 import { AgentAskUserQuestionTool } from "../ui/agent-ask-user-question-tool"
@@ -126,7 +125,7 @@ function normalizeAcpParts(parts: MessagePart[]): MessagePart[] {
     if (part.type.toLowerCase() === "tool-terminal") {
       const input =
         part.input && typeof part.input === "object"
-          ? (part.input as Record<string, any>)
+          ? (part.input as Record<string, unknown>)
           : {}
       return {
         ...part,
@@ -152,20 +151,20 @@ function normalizeAcpParts(parts: MessagePart[]): MessagePart[] {
 
     const partInput =
       part.input && typeof part.input === "object"
-        ? (part.input as Record<string, any>)
+        ? (part.input as Record<string, unknown>)
         : {}
 
     // Determine the ACP title — either from the type itself or from input.toolName
     let title: string | null = null
-    let args: Record<string, any> = {}
+    let args: Record<string, unknown> = {}
 
     // Case 1: type is already the title-based type (e.g. "tool-Read README.md")
     const verb = getAcpVerb(part.type)
     if (verb) {
-      title = partInput.toolName || part.type.slice(5)
+      title = (partInput.toolName as string) || part.type.slice(5)
       args =
         partInput.args && typeof partInput.args === "object"
-          ? (partInput.args as Record<string, any>)
+          ? (partInput.args as Record<string, unknown>)
           : partInput
     }
 
@@ -177,13 +176,13 @@ function normalizeAcpParts(parts: MessagePart[]): MessagePart[] {
       }
       const parsedInput =
         input && typeof input === "object"
-          ? (input as Record<string, any>)
+          ? (input as Record<string, unknown>)
           : {}
       if (parsedInput.toolName) {
-        title = parsedInput.toolName
+        title = (parsedInput.toolName as string) || title
         args =
           parsedInput.args && typeof parsedInput.args === "object"
-            ? (parsedInput.args as Record<string, any>)
+            ? (parsedInput.args as Record<string, unknown>)
             : parsedInput
       }
     }
@@ -199,7 +198,7 @@ function normalizeAcpParts(parts: MessagePart[]): MessagePart[] {
     if (!canonicalType) return part
 
     // Enrich input with fields that the tool registry expects for display
-    const enrichedInput: Record<string, any> = { ...args, _acpTitle: title, _acpDetail: detail }
+    const enrichedInput: Record<string, unknown> = { ...args, _acpTitle: title, _acpDetail: detail }
 
     // For Bash tools, handle array command format from Codex
     if (canonicalType === "Bash") {
@@ -432,7 +431,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
   isLastMessage,
   isStreaming,
   status,
-  isMobile,
+  isMobile: _isMobile,
   conversationId,
   chatId,
   sandboxSetupStatus = "ready",
@@ -592,9 +591,9 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     }).length
 
     return { shouldCollapse, visibleStepsCount, collapseBeforeIndex }
-  }, [messageParts, isStreaming, isLastMessage, nestedToolIds, orphanToolCallIds, orphanFirstToolCallIds])
+  }, [messageParts, isStreaming, isLastMessage, nestedToolIds, orphanToolCallIds, orphanFirstToolCallIds, isGroupChat])
 
-  // Check if any plan operation is in collapsed steps (before collapseBeforeIndex)
+  // Check if unknown plan operation is in collapsed steps (before collapseBeforeIndex)
   const hasPlanInCollapsedSteps = useMemo(() => {
     if (!shouldCollapse || collapseBeforeIndex === -1) return false
     return planOpsSummary.operations.some(op => op.index < collapseBeforeIndex)
@@ -673,7 +672,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
 
     if (part.type === "text") {
       if (!part.text?.trim()) return null
-      const isFinalText = isFinal && idx === collapseBeforeIndex
+      const _isFinalText = isFinal && idx === collapseBeforeIndex
       const isTextStreaming = isLastMessage && isStreaming
       return (
         <MemoizedTextPart
@@ -864,7 +863,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     }
 
     return null
-  }, [nestedToolsMap, nestedToolIds, orphanToolCallIds, orphanFirstToolCallIds, orphanTaskGroups, collapseBeforeIndex, visibleStepsCount, status, isLastMessage, isStreaming, conversationId, message.id, planOpsSummary, shouldCollapse, lastCollapsedPlanOp])
+  }, [nestedToolsMap, nestedToolIds, orphanToolCallIds, orphanFirstToolCallIds, orphanTaskGroups, collapseBeforeIndex, status, isLastMessage, isStreaming, conversationId, message.id, planOpsSummary, shouldCollapse, lastCollapsedPlanOp, onOpenFile, projectPath])
 
   if (!message) return null
 
@@ -962,7 +961,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
           })
         })()}
 
-        {/* Show plan card after finalParts if any plan operation was in collapsed steps */}
+        {/* Show plan card after finalParts if unknown plan operation was in collapsed steps */}
         {shouldCollapse && lastCollapsedPlanOp && (
           <AgentPlanFileTool
             part={lastCollapsedPlanOp.part}

@@ -1,11 +1,9 @@
 export { Terminal } from "./terminal"
 export { TerminalSidebar } from "./terminal-sidebar"
+export { TerminalBottomPanelContent } from "./terminal-sidebar"
+export { getTerminalScopeKey } from "./utils"
+export { getDefaultTerminalBg } from "./helpers"
+export { killTerminalSession } from "./providers"
 export { TerminalSearch } from "./TerminalSearch"
-export {
-  terminalSidebarOpenAtom,
-  terminalSidebarOpenAtomFamily,
-  terminalSidebarWidthAtom,
-  terminalCwdAtom,
-  terminalSearchOpenAtom,
-} from "./atoms"
-export type { TerminalProps, TerminalStreamEvent } from "./types"
+export * from "./atoms"
+export type { TerminalProps, TerminalStreamEvent, TerminalInstance } from "./types"

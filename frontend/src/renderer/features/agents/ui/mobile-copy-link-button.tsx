@@ -49,7 +49,7 @@ export function MobileCopyLinkButton({ url }: MobileCopyLinkButtonProps) {
 
       triggerHaptic("medium")
       setCopied(true)
-      // Clear any existing timer before setting a new one
+      // Clear unknown existing timer before setting a new one
       if (timerRef.current) clearTimeout(timerRef.current)
       timerRef.current = setTimeout(() => setCopied(false), 2000)
     } catch (error) {

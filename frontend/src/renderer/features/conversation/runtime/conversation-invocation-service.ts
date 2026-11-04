@@ -25,7 +25,7 @@ import { getTurnOrchestrator } from "./turn-orchestrator"
 import { getRuntimeSessionStore } from "./runtime-session-store"
 import { getAdapterRegistry } from "./runtime-adapter"
 import { generateTicketId, generateQueueItemId } from "./id-generators"
-import { useStreamingStatusStore } from "../../agents/stores/streaming-status-store"
+import { useStreamingStatusStore } from "../../agents"
 import { trpcClient } from "../../../lib/trpc"
 
 // ============================================================================

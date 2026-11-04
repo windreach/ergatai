@@ -22,15 +22,13 @@ import {
   isDesktopAtom,
   isFullscreenAtom,
   showOfflineModeFeaturesAtom,
-  selectedTeamIdAtom,
   showWorkspaceIconAtom,
   betaKanbanEnabledAtom,
 } from "../../lib/atoms"
 import type { SettingsTab } from "../../lib/atoms"
 import { usePrefetchLocalChat } from "../../lib/hooks/use-prefetch-local-chat"
-import { ArchivePopover } from "../agents/ui/archive-popover"
-import { ChevronDown, MoreHorizontal, Columns3, ArrowUpRight } from "lucide-react"
-import { useQuery } from "@tanstack/react-query"
+import { ArchivePopover } from "../agents"
+import { ChevronDown, Columns3 } from "lucide-react"
 // import { useRouter } from "next/navigation" // Desktop doesn't use next/navigation
 // import { useCombinedAuth } from "@/lib/hooks/use-combined-auth"
 // import { AuthDialog } from "@/components/auth/auth-dialog"
@@ -40,7 +38,7 @@ const AuthDialog = (_props: { open: boolean; onOpenChange: (open: boolean) => vo
 import { DiscordIcon } from "../../icons"
 // Desktop: mock Clerk hook (matches pattern in agents-content.tsx — Clerk is not installed)
 const useClerk = () => ({ signOut: () => {} })
-import { AgentsRenameConversationDialog } from "../agents/components/agents-rename-conversation-dialog"
+import { AgentsRenameConversationDialog } from "../agents"
 import { ConfirmArchiveDialog } from "../../components/confirm-archive-dialog"
 import { WorkspaceList } from "./workspace-list"
 import { ArchivedWorkspaceList } from "./archived-workspace-list"
@@ -62,32 +60,17 @@ import {
   TooltipTrigger,
 } from "../../components/ui/tooltip"
 import { Kbd } from "../../components/ui/kbd"
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-  ContextMenuSub,
-  ContextMenuSubTrigger,
-  ContextMenuSubContent,
-} from "../../components/ui/context-menu"
+
+
 import {
   IconDoubleChevronLeft,
   SettingsIcon,
-  PlusIcon,
   ProfileIcon,
-  PublisherStudioIcon,
-  SearchIcon,
   GitHubLogo,
-  LoadingDot,
   ArchiveIcon,
   TrashIcon,
   QuestionCircleIcon,
-  QuestionIcon,
   KeyboardIcon,
-  TicketIcon,
-  CloudIcon,
 } from "../../components/ui/icons"
 import { Logo } from "../../components/ui/logo"
 import { Input } from "../../components/ui/input"
@@ -110,41 +93,37 @@ import {
   selectedWorkspaceIdAtom,
   agentsConversationsSidebarModeAtom,
   type UndoItem,
-} from "../agents/atoms"
+} from "../agents"
 import { NetworkStatus } from "../../components/ui/network-status"
-import { useAgentConversationStore, OPEN_CONVERSATION_CHANGE_EVENT } from "../agents/stores/conversation-store"
+import { useAgentConversationStore, OPEN_CONVERSATION_CHANGE_EVENT } from "../agents"
 import { getWindowId } from "../../contexts/WindowContext"
-import { AgentsHelpPopover } from "../agents/components/agents-help-popover"
-import { getShortcutKey, isDesktopApp } from "../../lib/utils/platform"
+import { AgentsHelpPopover } from "../agents"
+import { isDesktopApp } from "../../lib/utils/platform"
 import { useResolvedHotkeyDisplay, useResolvedHotkeyDisplayWithAlt } from "../../lib/hotkeys"
-import { pluralize } from "../../lib/utils/pluralize"
-import { useNewChatDrafts, deleteNewChatDraft, type NewChatDraft } from "../agents/lib/drafts"
-import { getPathDeduplicatedNames } from "../agents/lib/workspace-naming"
+import { useNewChatDrafts, deleteNewChatDraft } from "../agents"
+import { getPathDeduplicatedNames } from "../agents"
 import {
   TrafficLightSpacer,
   TrafficLights,
-} from "../agents/components/traffic-light-spacer"
+} from "../agents"
 import { useHotkeys } from "react-hotkeys-hook"
-import { Checkbox } from "../../components/ui/checkbox"
 import { useHaptic } from "./hooks/use-haptic"
-import { TypewriterText } from "../../components/ui/typewriter-text"
-import { exportChat, copyChat, type ExportFormat } from "../agents/lib/export-chat"
 import {
   COLLABORATION_MODES,
   getCollaborationModeConfig,
   type CollaborationMode,
-} from "../agents/collaboration/collaboration-mode"
+} from "../agents"
 import {
   filterChatsByCollaborationMode,
   findChatOutsideCollaborationMode,
-} from "../agents/collaboration/collaboration-mode-utils"
-import { useCollaborationMode } from "../agents/collaboration/use-collaboration-mode"
+} from "../agents"
+import { useCollaborationMode } from "../agents"
 
 // Feedback URL: uses env variable for hosted version, falls back to public Discord for open source
 const FEEDBACK_URL =
   import.meta.env.VITE_FEEDBACK_URL || "https://discord.gg/8ektTZGnj4"
 
-function getWorkspaceCollaborationMode(chat: {
+function _getWorkspaceCollaborationMode(chat: {
   id: string
   name: string | null
 }): CollaborationMode {
@@ -187,148 +166,8 @@ const GitHubAvatar = React.memo(function GitHubAvatar({
 })
 
 // Component to render chat icon with loading status
-const ChatIcon = React.memo(function ChatIcon({
-  isSelected,
-  isLoading,
-  hasUnseenChanges = false,
-  hasPendingPlan = false,
-  hasPendingQuestion = false,
-  isMultiSelectMode = false,
-  isChecked = false,
-  onCheckboxClick,
-  gitOwner,
-  gitProvider,
-  showIcon = true,
-}: {
-  isSelected: boolean
-  isLoading: boolean
-  hasUnseenChanges?: boolean
-  hasPendingPlan?: boolean
-  hasPendingQuestion?: boolean
-  isMultiSelectMode?: boolean
-  isChecked?: boolean
-  onCheckboxClick?: (e: React.MouseEvent) => void
-  gitOwner?: string | null
-  gitProvider?: string | null
-  showIcon?: boolean
-}) {
-  // Show GitHub avatar if available, otherwise blank project icon
-  const renderMainIcon = () => {
-    if (gitOwner && gitProvider === "github") {
-      return <GitHubAvatar gitOwner={gitOwner} />
-    }
-    return (
-      <GitHubLogo
-        className={cn(
-          "h-4 w-4 flex-shrink-0 transition-colors",
-          isSelected ? "text-foreground" : "text-muted-foreground",
-        )}
-      />
-    )
-  }
-
-  // When icon is hidden and not in multi-select mode, render nothing
-  // The loader/status will be rendered inline by the parent component
-  if (!showIcon && !isMultiSelectMode) {
-    return null
-  }
-
-  return (
-    <div className="relative flex-shrink-0 w-4 h-4">
-      {/* Checkbox slides in from left, icon slides out */}
-      <div
-        className={cn(
-          "absolute inset-0 flex items-center justify-center transition-[opacity,transform] duration-150 ease-out",
-          isMultiSelectMode
-            ? "opacity-100 scale-100"
-            : "opacity-0 scale-95 pointer-events-none",
-        )}
-        onClick={onCheckboxClick}
-      >
-        <Checkbox
-          checked={isChecked}
-          className="cursor-pointer h-4 w-4"
-          tabIndex={isMultiSelectMode ? 0 : -1}
-        />
-      </div>
-      {/* Main icon fades out when multi-select is active or when showIcon is false */}
-      <div
-        className={cn(
-          "transition-[opacity,transform] duration-150 ease-out",
-          isMultiSelectMode || !showIcon
-            ? "opacity-0 scale-95 pointer-events-none"
-            : "opacity-100 scale-100",
-        )}
-      >
-        {renderMainIcon()}
-      </div>
-      {/* Badge in bottom-right corner: question > loader > amber dot > blue dot - hidden during multi-select or when icon is hidden */}
-      <AnimatePresence mode="wait">
-        {(hasPendingQuestion || isLoading || hasUnseenChanges || hasPendingPlan) && !isMultiSelectMode && showIcon && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.5 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.5 }}
-            transition={{ duration: 0.15 }}
-            className={cn(
-              "absolute -bottom-1 -right-1 w-3 h-3 rounded-full flex items-center justify-center",
-              isSelected
-                ? "bg-[#E8E8E8] dark:bg-[#1B1B1B]"
-                : "bg-[#F4F4F4] group-hover:bg-[#E8E8E8] dark:bg-[#101010] dark:group-hover:bg-[#1B1B1B]",
-            )}
-          >
-            {/* Priority: question > loader > amber dot (pending plan) > blue dot (unseen) */}
-            <AnimatePresence mode="wait">
-              {hasPendingQuestion ? (
-                <motion.div
-                  key="question"
-                  initial={{ opacity: 0, scale: 0.5 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.5 }}
-                  transition={{ duration: 0.15 }}
-                >
-                  <QuestionIcon className="w-2.5 h-2.5 text-blue-500" />
-                </motion.div>
-              ) : isLoading ? (
-                <motion.div
-                  key="loading"
-                  initial={{ opacity: 0, scale: 0.5 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.5 }}
-                  transition={{ duration: 0.15 }}
-                >
-                  <LoadingDot isLoading={true} className="w-2.5 h-2.5 text-muted-foreground" />
-                </motion.div>
-              ) : hasPendingPlan ? (
-                <motion.div
-                  key="plan"
-                  initial={{ opacity: 0, scale: 0.5 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.5 }}
-                  transition={{ duration: 0.15 }}
-                  className="w-1.5 h-1.5 rounded-full bg-amber-500"
-                />
-              ) : (
-                <motion.div
-                  key="unseen"
-                  initial={{ opacity: 0, scale: 0.5 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.5 }}
-                  transition={{ duration: 0.15 }}
-                >
-                  <LoadingDot isLoading={false} className="w-2.5 h-2.5 text-muted-foreground" />
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  )
-})
-
 // Memoized Draft Item component to prevent re-renders on hover
-const DraftItem = React.memo(function DraftItem({
+const _DraftItem = React.memo(function _DraftItem({
   draftId,
   draftText,
   draftUpdatedAt,
@@ -426,586 +265,10 @@ const DraftItem = React.memo(function DraftItem({
 })
 
 // Memoized Agent Chat Item component to prevent re-renders on hover
-const AgentChatItem = React.memo(function AgentChatItem({
-  chatId,
-  chatName,
-  chatTitle,
-  chatBranch,
-  chatUpdatedAt,
-  chatProjectId,
-  globalIndex,
-  isSelected,
-  isLoading,
-  hasUnseenChanges,
-  hasPendingPlan,
-  hasPendingQuestion,
-  isMultiSelectMode,
-  isChecked,
-  isFocused,
-  isMobileFullscreen,
-  isDesktop,
-  isPinned,
-  gitOwner,
-  gitProvider,
-  stats,
-  selectedChatIdsSize,
-  canShowPinOption,
-  areAllSelectedPinned,
-  filteredChatsLength,
-  isLastInFilteredChats,
-  showIcon,
-  onChatClick,
-  onCheckboxClick,
-  onMouseEnter,
-  onMouseLeave,
-  onArchive,
-  onTogglePin,
-  onRenameClick,
-  onCopyBranch,
-  onArchiveAllBelow,
-  onArchiveOthers,
-  onBulkPin,
-  onBulkUnpin,
-  onBulkArchive,
-  archiveBatchPending,
-  nameRefCallback,
-  formatTime,
-  isJustCreated,
-}: {
-  chatId: string
-  chatName: string | null
-  chatTitle: string | null
-  chatBranch: string | null
-  chatUpdatedAt: Date | null
-  chatProjectId: string
-  globalIndex: number
-  isSelected: boolean
-  isLoading: boolean
-  hasUnseenChanges: boolean
-  hasPendingPlan: boolean
-  hasPendingQuestion: boolean
-  isMultiSelectMode: boolean
-  isChecked: boolean
-  isFocused: boolean
-  isMobileFullscreen: boolean
-  isDesktop: boolean
-  isPinned: boolean
-  gitOwner: string | null | undefined
-  gitProvider: string | null | undefined
-  stats: { fileCount: number; additions: number; deletions: number } | undefined
-  selectedChatIdsSize: number
-  canShowPinOption: boolean
-  areAllSelectedPinned: boolean
-  filteredChatsLength: number
-  isLastInFilteredChats: boolean
-  showIcon: boolean
-  onChatClick: (chatId: string, e?: React.MouseEvent, globalIndex?: number) => void
-  onCheckboxClick: (e: React.MouseEvent, chatId: string) => void
-  onMouseEnter: (chatId: string, chatName: string | null, element: HTMLElement, globalIndex: number) => void
-  onMouseLeave: () => void
-  onArchive: (chatId: string) => void
-  onTogglePin: (chatId: string) => void
-  onRenameClick: (chat: { id: string; name: string | null }) => void
-  onCopyBranch: (branch: string) => void
-  onArchiveAllBelow: (chatId: string) => void
-  onArchiveOthers: (chatId: string) => void
-  onBulkPin: () => void
-  onBulkUnpin: () => void
-  onBulkArchive: () => void
-  archiveBatchPending: boolean
-  nameRefCallback: (chatId: string, el: HTMLSpanElement | null) => void
-  formatTime: (dateStr: string) => string
-  isJustCreated: boolean
-}) {
-  // Resolved hotkey for context menu
-  const archiveWorkspaceHotkey = useResolvedHotkeyDisplay("archive-workspace")
-
-  // Hover/text color class — flattened from nested ternary for readability
-  const hoverClass =
-    isSelected || isFocused
-      ? "bg-foreground/5 text-foreground"
-      : isMobileFullscreen
-        ? "text-muted-foreground"
-        : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
-
-  return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <div
-          data-chat-item
-          data-chat-index={globalIndex}
-          onClick={(e) => {
-            // On real mobile (touch devices), onTouchEnd handles the click
-            // In desktop app with narrow window, we still use mouse clicks
-            if (isMobileFullscreen && !isDesktop) return
-            onChatClick(chatId, e, globalIndex)
-          }}
-          onTouchEnd={(e) => {
-            // On real mobile touch devices, use touchEnd directly to bypass ContextMenu's click delay
-            if (isMobileFullscreen && !isDesktop) {
-              e.preventDefault()
-              onChatClick(chatId, undefined, globalIndex)
-            }
-          }}
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault()
-              onChatClick(chatId, undefined, globalIndex)
-            }
-          }}
-          onMouseEnter={(e) => {
-            onMouseEnter(chatId, chatName, e.currentTarget, globalIndex)
-          }}
-          onMouseLeave={onMouseLeave}
-          className={cn(
-            "w-full text-left py-1.5 cursor-pointer group relative",
-            "transition-colors duration-75",
-            "outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70",
-            // In multi-select: px-3 compensates for removed container px-2, keeping text aligned
-            isMultiSelectMode ? "px-3" : "pl-2 pr-2",
-            !isMultiSelectMode && "rounded-md",
-            hoverClass,
-            isChecked &&
-              (isMobileFullscreen
-                ? "bg-primary/10"
-                : "bg-primary/10 hover:bg-primary/15"),
-          )}
-        >
-          <div className="flex items-start gap-2.5">
-            {/* Icon container - only render if showIcon or in multi-select mode */}
-            {(showIcon || isMultiSelectMode) && (
-              <div className="pt-0.5">
-                <ChatIcon
-                  isSelected={isSelected}
-                  isLoading={isLoading}
-                  hasUnseenChanges={hasUnseenChanges}
-                  hasPendingPlan={hasPendingPlan}
-                  hasPendingQuestion={hasPendingQuestion}
-                  isMultiSelectMode={isMultiSelectMode}
-                  isChecked={isChecked}
-                  onCheckboxClick={(e) => onCheckboxClick(e, chatId)}
-                  gitOwner={gitOwner}
-                  gitProvider={gitProvider}
-                  showIcon={showIcon}
-                />
-              </div>
-            )}
-            <div className="flex-1 min-w-0 flex flex-col gap-0.5">
-              <div className="flex items-center gap-1">
-                <span
-                  ref={(el) => nameRefCallback(chatId, el)}
-                  className="truncate block text-sm leading-tight flex-1"
-                >
-                  <TypewriterText
-                    text={chatName || ""}
-                    placeholder="New workspace"
-                    id={chatId}
-                    isJustCreated={isJustCreated}
-                    showPlaceholder={true}
-                    />
-                </span>
-                <span className="flex-shrink-0 text-[11px] text-muted-foreground/60">
-                  {formatTime(
-                    chatUpdatedAt?.toISOString() ?? new Date().toISOString(),
-                  )}
-                </span>
-                {/* Archive button or inline loader/status when icon is hidden */}
-                {!isMultiSelectMode && !isMobileFullscreen && (
-                  <div className="flex-shrink-0 w-3.5 h-3.5 flex items-center justify-center relative">
-                    {/* Inline loader/status when icon is hidden - always visible, hides on hover */}
-                    {!showIcon && (hasPendingQuestion || isLoading || hasUnseenChanges || hasPendingPlan) && (
-                      <div className="absolute inset-0 flex items-center justify-center transition-opacity duration-150 group-hover:opacity-0">
-                        <AnimatePresence mode="wait">
-                          {hasPendingQuestion ? (
-                            <motion.div
-                              key="question"
-                              initial={{ opacity: 0, scale: 0.5 }}
-                              animate={{ opacity: 1, scale: 1 }}
-                              exit={{ opacity: 0, scale: 0.5 }}
-                              transition={{ duration: 0.15 }}
-                            >
-                              <QuestionIcon className="w-2.5 h-2.5 text-blue-500" />
-                            </motion.div>
-                          ) : isLoading ? (
-                            <motion.div
-                              key="loading"
-                              initial={{ opacity: 0, scale: 0.5 }}
-                              animate={{ opacity: 1, scale: 1 }}
-                              exit={{ opacity: 0, scale: 0.5 }}
-                              transition={{ duration: 0.15 }}
-                            >
-                              <LoadingDot isLoading={true} className="w-2.5 h-2.5 text-muted-foreground" />
-                            </motion.div>
-                          ) : hasPendingPlan ? (
-                            <motion.div
-                              key="plan"
-                              initial={{ opacity: 0, scale: 0.5 }}
-                              animate={{ opacity: 1, scale: 1 }}
-                              exit={{ opacity: 0, scale: 0.5 }}
-                              transition={{ duration: 0.15 }}
-                              className="w-1.5 h-1.5 rounded-full bg-amber-500"
-                            />
-                          ) : (
-                            <motion.div
-                              key="unseen"
-                              initial={{ opacity: 0, scale: 0.5 }}
-                              animate={{ opacity: 1, scale: 1 }}
-                              exit={{ opacity: 0, scale: 0.5 }}
-                              transition={{ duration: 0.15 }}
-                            >
-                              <LoadingDot isLoading={false} className="w-2.5 h-2.5 text-muted-foreground" />
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </div>
-                    )}
-                    {/* Archive button - appears on hover */}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onArchive(chatId)
-                      }}
-                      tabIndex={-1}
-                      className="absolute inset-0 flex items-center justify-center text-muted-foreground hover:text-foreground active:text-foreground transition-[opacity,transform,color] duration-150 ease-out opacity-0 scale-95 pointer-events-none group-hover:opacity-100 group-hover:scale-100 group-hover:pointer-events-auto active:scale-[0.97]"
-                      aria-label="Archive workspace"
-                    >
-                      <ArchiveIcon className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent className="w-48">
-        {/* Multi-select context menu */}
-        {isMultiSelectMode && isChecked ? (
-          <>
-            {canShowPinOption && (
-              <>
-                <ContextMenuItem onClick={areAllSelectedPinned ? onBulkUnpin : onBulkPin}>
-                  {areAllSelectedPinned
-                    ? `Unpin ${selectedChatIdsSize} ${pluralize(selectedChatIdsSize, "workspace")}`
-                    : `Pin ${selectedChatIdsSize} ${pluralize(selectedChatIdsSize, "workspace")}`}
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-              </>
-            )}
-            <ContextMenuItem onClick={onBulkArchive} disabled={archiveBatchPending}>
-              {archiveBatchPending
-                ? "Archiving..."
-                : `Archive ${selectedChatIdsSize} ${pluralize(selectedChatIdsSize, "workspace")}`}
-            </ContextMenuItem>
-          </>
-        ) : (
-          <>
-            <ContextMenuItem onClick={() => onTogglePin(chatId)}>
-              {isPinned ? "Unpin workspace" : "Pin workspace"}
-            </ContextMenuItem>
-            <ContextMenuItem onClick={() => onRenameClick({ id: chatId, name: chatTitle })}>
-              Rename workspace
-            </ContextMenuItem>
-            {chatBranch && (
-              <ContextMenuItem onClick={() => onCopyBranch(chatBranch)}>
-                Copy branch name
-              </ContextMenuItem>
-            )}
-            <ContextMenuSub>
-              <ContextMenuSubTrigger>Export workspace</ContextMenuSubTrigger>
-              <ContextMenuSubContent sideOffset={6} alignOffset={-4}>
-                <ContextMenuItem onClick={() => exportChat({ chatId, format: "markdown" })}>
-                  Download as Markdown
-                </ContextMenuItem>
-                <ContextMenuItem onClick={() => exportChat({ chatId, format: "json" })}>
-                  Download as JSON
-                </ContextMenuItem>
-                <ContextMenuItem onClick={() => exportChat({ chatId, format: "text" })}>
-                  Download as Text
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem onClick={() => copyChat({ chatId, format: "markdown" })}>
-                  Copy as Markdown
-                </ContextMenuItem>
-                <ContextMenuItem onClick={() => copyChat({ chatId, format: "json" })}>
-                  Copy as JSON
-                </ContextMenuItem>
-                <ContextMenuItem onClick={() => copyChat({ chatId, format: "text" })}>
-                  Copy as Text
-                </ContextMenuItem>
-              </ContextMenuSubContent>
-            </ContextMenuSub>
-            {isDesktop && (
-              <ContextMenuItem onClick={async () => {
-                try {
-                  const result = await window.desktopApi?.newWindow({ chatId })
-                  if (result?.blocked) {
-                    toast.info("This workspace is already open in another window", {
-                      description: "Switching to the existing window.",
-                      duration: 3000,
-                    })
-                  }
-                } catch (error) {
-                  console.error("[NewWindow] Failed:", error)
-                  toast.error("Failed to open in new window")
-                }
-              }}>
-                Open in new window
-              </ContextMenuItem>
-            )}
-            <ContextMenuSeparator />
-            <ContextMenuItem onClick={() => onArchive(chatId)} className="justify-between">
-              Archive workspace
-              {archiveWorkspaceHotkey && <Kbd>{archiveWorkspaceHotkey}</Kbd>}
-            </ContextMenuItem>
-            <ContextMenuItem
-              onClick={() => onArchiveAllBelow(chatId)}
-              disabled={isLastInFilteredChats}
-            >
-              Archive all below
-            </ContextMenuItem>
-            <ContextMenuItem
-              onClick={() => onArchiveOthers(chatId)}
-              disabled={filteredChatsLength === 1}
-            >
-              Archive others
-            </ContextMenuItem>
-          </>
-        )}
-      </ContextMenuContent>
-    </ContextMenu>
-  )
-})
-
 // Custom comparator for ChatListSection to handle Set/Map props correctly
 // Sets and Maps from Jotai atoms are stable by reference when unchanged,
 // but we add explicit size checks for extra safety
-function chatListSectionPropsAreEqual(
-  prevProps: ChatListSectionProps,
-  nextProps: ChatListSectionProps
-): boolean {
-  // Quick checks for primitive props that change often
-  if (prevProps.selectedChatId !== nextProps.selectedChatId) return false
-  if (prevProps.focusedChatIndex !== nextProps.focusedChatIndex) return false
-  if (prevProps.isMultiSelectMode !== nextProps.isMultiSelectMode) return false
-  if (prevProps.canShowPinOption !== nextProps.canShowPinOption) return false
-  if (prevProps.areAllSelectedPinned !== nextProps.areAllSelectedPinned) return false
-  if (prevProps.archiveBatchPending !== nextProps.archiveBatchPending) return false
-  if (prevProps.title !== nextProps.title) return false
-  if (prevProps.isMobileFullscreen !== nextProps.isMobileFullscreen) return false
-  if (prevProps.isDesktop !== nextProps.isDesktop) return false
-  if (prevProps.showIcon !== nextProps.showIcon) return false
-
-  // Check arrays by reference (they're stable from useMemo in parent)
-  if (prevProps.chats !== nextProps.chats) return false
-  if (prevProps.filteredChats !== nextProps.filteredChats) return false
-
-  // Check Sets by reference - Jotai atoms return same reference if unchanged
-  if (prevProps.loadingChatIds !== nextProps.loadingChatIds) return false
-  if (prevProps.unseenChanges !== nextProps.unseenChanges) return false
-  if (prevProps.workspacePendingPlans !== nextProps.workspacePendingPlans) return false
-  if (prevProps.workspacePendingQuestions !== nextProps.workspacePendingQuestions) return false
-  if (prevProps.selectedChatIds !== nextProps.selectedChatIds) return false
-  if (prevProps.pinnedChatIds !== nextProps.pinnedChatIds) return false
-  if (prevProps.justCreatedIds !== nextProps.justCreatedIds) return false
-
-  // Check Maps by reference
-  if (prevProps.projectsMap !== nextProps.projectsMap) return false
-  if (prevProps.workspaceFileStats !== nextProps.workspaceFileStats) return false
-
-  // Callback functions are stable from useCallback in parent
-  // No need to compare them - they only change when their deps change
-
-  return true
-}
-
-interface ChatListSectionProps {
-  title: string
-  chats: Array<{
-    id: string
-    name: string | null
-    branch: string | null
-    updatedAt: Date | null
-    projectId: string | null
-    meta?: { repository?: string; branch?: string | null } | null
-  }>
-  selectedChatId: string | null
-  focusedChatIndex: number
-  loadingChatIds: Set<string>
-  unseenChanges: Set<string>
-  workspacePendingPlans: Set<string>
-  workspacePendingQuestions: Set<string>
-  isMultiSelectMode: boolean
-  selectedChatIds: Set<string>
-  isMobileFullscreen: boolean
-  isDesktop: boolean
-  pinnedChatIds: Set<string>
-  projectsMap: Map<string, { gitOwner?: string | null; gitProvider?: string | null; gitRepo?: string | null; name?: string | null; path?: string | null }>
-  workspaceDisplayNames: Map<string, string>
-  workspaceFileStats: Map<string, { fileCount: number; additions: number; deletions: number }>
-  filteredChats: Array<{ id: string }>
-  canShowPinOption: boolean
-  areAllSelectedPinned: boolean
-  showIcon: boolean
-  onChatClick: (chatId: string, e?: React.MouseEvent, globalIndex?: number) => void
-  onCheckboxClick: (e: React.MouseEvent, chatId: string) => void
-  onMouseEnter: (chatId: string, chatName: string | null, element: HTMLElement, globalIndex: number) => void
-  onMouseLeave: () => void
-  onArchive: (chatId: string) => void
-  onTogglePin: (chatId: string) => void
-  onRenameClick: (chat: { id: string; name: string | null }) => void
-  onCopyBranch: (branch: string) => void
-  onArchiveAllBelow: (chatId: string) => void
-  onArchiveOthers: (chatId: string) => void
-  onBulkPin: () => void
-  onBulkUnpin: () => void
-  onBulkArchive: () => void
-  archiveBatchPending: boolean
-  nameRefCallback: (chatId: string, el: HTMLSpanElement | null) => void
-  formatTime: (dateStr: string) => string
-  justCreatedIds: Set<string>
-}
-
 // Memoized Chat List Section component
-const ChatListSection = React.memo(function ChatListSection({
-  title,
-  chats,
-  selectedChatId,
-  focusedChatIndex,
-  loadingChatIds,
-  unseenChanges,
-  workspacePendingPlans,
-  workspacePendingQuestions,
-  isMultiSelectMode,
-  selectedChatIds,
-  isMobileFullscreen,
-  isDesktop,
-  pinnedChatIds,
-  projectsMap,
-  workspaceDisplayNames,
-  workspaceFileStats,
-  filteredChats,
-  canShowPinOption,
-  areAllSelectedPinned,
-  showIcon,
-  onChatClick,
-  onCheckboxClick,
-  onMouseEnter,
-  onMouseLeave,
-  onArchive,
-  onTogglePin,
-  onRenameClick,
-  onCopyBranch,
-  onArchiveAllBelow,
-  onArchiveOthers,
-  onBulkPin,
-  onBulkUnpin,
-  onBulkArchive,
-  archiveBatchPending,
-  nameRefCallback,
-  formatTime,
-  justCreatedIds,
-}: ChatListSectionProps) {
-  if (!chats || chats.length === 0) return null
-
-  // Pre-compute global indices map to avoid O(n²) findIndex in map()
-  const globalIndexMap = useMemo(() => {
-    const map = new Map<string, number>()
-    filteredChats.forEach((c, i) => map.set(c.id, i))
-    return map
-  }, [filteredChats])
-
-  return (
-    <>
-      <div
-        className={cn(
-          "flex items-center h-4 mb-1",
-          isMultiSelectMode ? "pl-3" : "pl-2",
-        )}
-      >
-        <h3 className="text-xs font-medium text-muted-foreground whitespace-nowrap">
-          {title}
-        </h3>
-      </div>
-      <div className="list-none p-0 m-0 mb-3">
-        {chats.map((chat) => {
-          const isLoading = loadingChatIds.has(chat.id)
-          const isSelected = selectedChatId === chat.id
-          const isPinned = pinnedChatIds.has(chat.id)
-          const globalIndex = globalIndexMap.get(chat.id) ?? -1
-          const isFocused = focusedChatIndex === globalIndex && focusedChatIndex >= 0
-
-          const project = chat.projectId ? projectsMap.get(chat.projectId) : null
-          const workspaceName = chat.projectId
-            ? workspaceDisplayNames.get(chat.projectId) ?? chat.name
-            : chat.name
-
-          const isChecked = selectedChatIds.has(chat.id)
-          const stats = workspaceFileStats.get(chat.id)
-          const hasPendingPlan = workspacePendingPlans.has(chat.id)
-          const hasPendingQuestion = workspacePendingQuestions.has(chat.id)
-          const isLastInFilteredChats = globalIndex === filteredChats.length - 1
-          const isJustCreated = justCreatedIds.has(chat.id)
-
-          const gitOwner = project?.gitOwner
-          const gitProvider = project?.gitProvider
-
-          return (
-            <AgentChatItem
-              key={chat.id}
-              chatId={chat.id}
-              chatName={workspaceName}
-              chatTitle={chat.name}
-              chatBranch={chat.branch}
-              chatUpdatedAt={chat.updatedAt}
-              chatProjectId={chat.projectId ?? ""}
-              globalIndex={globalIndex}
-              isSelected={isSelected}
-              isLoading={isLoading}
-              hasUnseenChanges={unseenChanges.has(chat.id)}
-              hasPendingPlan={hasPendingPlan}
-              hasPendingQuestion={hasPendingQuestion}
-              isMultiSelectMode={isMultiSelectMode}
-              isChecked={isChecked}
-              isFocused={isFocused}
-              isMobileFullscreen={isMobileFullscreen}
-              isDesktop={isDesktop}
-              isPinned={isPinned}
-              gitOwner={gitOwner}
-              gitProvider={gitProvider}
-              stats={stats ?? undefined}
-              selectedChatIdsSize={selectedChatIds.size}
-              canShowPinOption={canShowPinOption}
-              areAllSelectedPinned={areAllSelectedPinned}
-              filteredChatsLength={filteredChats.length}
-              isLastInFilteredChats={isLastInFilteredChats}
-              showIcon={showIcon}
-              onChatClick={onChatClick}
-              onCheckboxClick={onCheckboxClick}
-              onMouseEnter={onMouseEnter}
-              onMouseLeave={onMouseLeave}
-              onArchive={onArchive}
-              onTogglePin={onTogglePin}
-              onRenameClick={onRenameClick}
-              onCopyBranch={onCopyBranch}
-              onArchiveAllBelow={onArchiveAllBelow}
-              onArchiveOthers={onArchiveOthers}
-              onBulkPin={onBulkPin}
-              onBulkUnpin={onBulkUnpin}
-              onBulkArchive={onBulkArchive}
-              archiveBatchPending={archiveBatchPending}
-              nameRefCallback={nameRefCallback}
-              formatTime={formatTime}
-              isJustCreated={isJustCreated}
-            />
-          )
-        })}
-      </div>
-    </>
-  )
-}, chatListSectionPropsAreEqual)
-
 interface AgentsSidebarProps {
   userId?: string | null | undefined
   clerkUser?: { username?: string; email?: string } | null
@@ -1476,7 +739,7 @@ const HelpSection = memo(function HelpSection({ isMobile }: HelpSectionProps) {
 
 export function AgentsSidebar({
   userId = "demo-user-id",
-  clerkUser = null,
+  clerkUser: _clerkUser = null,
   desktopUser = {
     id: "demo-user-id",
     email: "demo@example.com",
@@ -1534,11 +797,11 @@ export function AgentsSidebar({
   const scrollContainerRef = useRef<HTMLDivElement>(null)
 
   // Multiple drafts state - uses event-based sync instead of polling
-  const drafts = useNewChatDrafts()
+  const _drafts = useNewChatDrafts()
 
   // Read unseen changes from global atoms
-  const unseenChanges = useAtomValue(agentsUnseenChangesAtom)
-  const justCreatedIds = useAtomValue(justCreatedIdsAtom)
+  const _unseenChanges = useAtomValue(agentsUnseenChangesAtom)
+  const _justCreatedIds = useAtomValue(justCreatedIdsAtom)
 
   // Haptic feedback
   const { trigger: triggerHaptic } = useHaptic()
@@ -1592,13 +855,13 @@ export function AgentsSidebar({
     }
   }, [setDesktopViewForSettings, setSidebarOpenForSettings])
   const [showAuthDialog, setShowAuthDialog] = useState(false)
-  const setCreateTeamDialogOpen = useSetAtom(createTeamDialogOpenAtom)
+  const _setCreateTeamDialogOpen = useSetAtom(createTeamDialogOpenAtom)
 
   // Debug mode for testing first-time user experience
-  const debugMode = useAtomValue(agentsDebugModeAtom)
+  const _debugMode = useAtomValue(agentsDebugModeAtom)
 
   // Sidebar appearance settings
-  const showWorkspaceIcon = useAtomValue(showWorkspaceIconAtom)
+  const _showWorkspaceIcon = useAtomValue(showWorkspaceIconAtom)
 
   // Desktop: use selectedWorkspace instead of teams
   const [selectedWorkspace, setSelectedWorkspace] = useAtom(selectedWorkspaceAtom)
@@ -1773,16 +1036,16 @@ export function AgentsSidebar({
   // File changes stats from DB - only for open conversations
   const { data: fileStatsData } = trpc.chats.getFileStats.useQuery(
     { openConversationIds: allOpenConversationIds },
-    { refetchInterval: 5000, enabled: allOpenConversationIds.length > 0, placeholderData: (prev) => prev }
+    { refetchInterval: 10000, enabled: allOpenConversationIds.length > 0, placeholderData: (prev) => prev }
   )
 
   // Pending plan approvals from DB - only for open conversations
   const { data: pendingPlanApprovalsData } = trpc.chats.getPendingPlanApprovals.useQuery(
     { openConversationIds: allOpenConversationIds },
-    { refetchInterval: 5000, enabled: allOpenConversationIds.length > 0, placeholderData: (prev) => prev }
+    { refetchInterval: 10000, enabled: allOpenConversationIds.length > 0, placeholderData: (prev) => prev }
   )
 
-  const workspaceDisplayNames = useMemo(
+  const _workspaceDisplayNames = useMemo(
     () => getPathDeduplicatedNames(projects ?? []),
     [projects],
   )
@@ -1917,7 +1180,7 @@ export function AgentsSidebar({
 
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [undoStack, setUndoStack, restoreChatMutation.mutate])
+  }, [undoStack, setUndoStack, restoreChatMutation])
 
   // Batch archive mutation
   const archiveChatsBatchMutation = trpc.chats.archiveBatch.useMutation({
@@ -1962,7 +1225,8 @@ export function AgentsSidebar({
       setSelectedChatId(null)
     }
     prevProjectIdRefForChats.current = selectedWorkspace?.id ?? null
-  }, [selectedWorkspace?.id]) // Don't include selectedChatId in deps to avoid loops
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedChatId intentionally excluded to avoid loops
+  }, [selectedWorkspace?.id, setSelectedChatId])
 
   // Load pinned IDs from localStorage when project changes
   useEffect(() => {
@@ -2008,7 +1272,7 @@ export function AgentsSidebar({
     },
   })
 
-  const handleTogglePin = useCallback((chatId: string) => {
+  const _handleTogglePin = useCallback((chatId: string) => {
     setPinnedChatIds((prev) => {
       const next = new Set(prev)
       if (next.has(chatId)) {
@@ -2020,7 +1284,7 @@ export function AgentsSidebar({
     })
   }, [])
 
-  const handleRenameClick = useCallback((chat: { id: string; name: string | null }) => {
+  const _handleRenameClick = useCallback((chat: { id: string; name: string | null }) => {
     setRenamingChat(chat as { id: string; name: string })
     setRenameDialogOpen(true)
   }, [])
@@ -2074,10 +1338,10 @@ export function AgentsSidebar({
   }, [selectedChatIds, pinnedChatIds])
 
   // Show pin option only if all selected have same pin state
-  const canShowPinOption = areAllSelectedPinned || areAllSelectedUnpinned
+  const _canShowPinOption = areAllSelectedPinned || areAllSelectedUnpinned
 
   // Handle bulk pin of selected chats
-  const handleBulkPin = useCallback(() => {
+  const _handleBulkPin = useCallback(() => {
     const chatIdsToPin = Array.from(selectedChatIds)
     if (chatIdsToPin.length > 0) {
       setPinnedChatIds((prev) => {
@@ -2090,7 +1354,7 @@ export function AgentsSidebar({
   }, [selectedChatIds, clearChatSelection])
 
   // Handle bulk unpin of selected chats
-  const handleBulkUnpin = useCallback(() => {
+  const _handleBulkUnpin = useCallback(() => {
     const chatIdsToUnpin = Array.from(selectedChatIds)
     if (chatIdsToUnpin.length > 0) {
       setPinnedChatIds((prev) => {
@@ -2103,7 +1367,7 @@ export function AgentsSidebar({
   }, [selectedChatIds, clearChatSelection])
 
   // Filter and separate pinned/unpinned agents
-  const { pinnedAgents, unpinnedAgents, filteredChats } = useMemo(() => {
+  const { pinnedAgents: _pinnedAgents, unpinnedAgents: _unpinnedAgents, filteredChats } = useMemo(() => {
     if (!agentChats)
       return { pinnedAgents: [], unpinnedAgents: [], filteredChats: [] }
 
@@ -2196,7 +1460,7 @@ export function AgentsSidebar({
     setUndoStack,
   ])
 
-  const handleArchiveAllBelow = useCallback(
+  const _handleArchiveAllBelow = useCallback(
     (chatId: string) => {
       const currentIndex = filteredChats.findIndex((c) => c.id === chatId)
       if (currentIndex === -1 || currentIndex === filteredChats.length - 1)
@@ -2217,7 +1481,7 @@ export function AgentsSidebar({
     [filteredChats, archiveChatsBatchMutation, removeWorkspaceFromStack, setUndoStack],
   )
 
-  const handleArchiveOthers = useCallback(
+  const _handleArchiveOthers = useCallback(
     (chatId: string) => {
       const otherChats = filteredChats.filter((c) => c.id !== chatId)
 
@@ -2235,7 +1499,7 @@ export function AgentsSidebar({
   )
 
   // Delete a draft from localStorage
-  const handleDeleteDraft = useCallback(
+  const _handleDeleteDraft = useCallback(
     (draftId: string) => {
       deleteNewChatDraft(draftId)
       // If the deleted draft was selected, clear selection
@@ -2247,7 +1511,7 @@ export function AgentsSidebar({
   )
 
   // Select a draft for editing
-  const handleDraftSelect = useCallback(
+  const _handleDraftSelect = useCallback(
     (draftId: string) => {
       // Navigate to NewChatForm with this draft selected
       setSelectedChatId(null)
@@ -2281,14 +1545,14 @@ export function AgentsSidebar({
   }, [focusedChatIndex, filteredChats.length])
 
   // Derive which chats have loading conversations
-  const loadingChatIds = useMemo(
+  const _loadingChatIds = useMemo(
     () => new Set([...loadingConversations.values()]),
     [loadingConversations],
   )
 
   // Convert file stats to a Map for easy lookup (only for local chats)
   // Remote chat stats are provided directly via chat.remoteStats
-  const workspaceFileStats = useMemo(() => {
+  const _workspaceFileStats = useMemo(() => {
     const statsMap = new Map<string, { fileCount: number; additions: number; deletions: number }>()
 
     // For local mode, use stats from DB query
@@ -2306,7 +1570,7 @@ export function AgentsSidebar({
   }, [fileStatsData])
 
   // Aggregate pending plan approvals by workspace (chatId) from DB
-  const workspacePendingPlans = useMemo(() => {
+  const _workspacePendingPlans = useMemo(() => {
     const chatIdsWithPendingPlans = new Set<string>()
     if (pendingPlanApprovalsData) {
       for (const { chatId } of pendingPlanApprovalsData) {
@@ -2317,7 +1581,7 @@ export function AgentsSidebar({
   }, [pendingPlanApprovalsData])
 
   // Get workspace IDs that have pending user questions
-  const workspacePendingQuestions = useMemo(() => {
+  const _workspacePendingQuestions = useMemo(() => {
     const chatIds = new Set<string>()
     for (const question of pendingQuestions.values()) {
       chatIds.add(question.parentChatId)
@@ -2514,12 +1778,12 @@ export function AgentsSidebar({
     }
   }, [filteredChats, selectedChatId, selectedChatIds, toggleChatSelection, setSelectedChatIds, setSelectedChatId, setSelectedWorkspaceId, setShowNewChatForm, setDesktopView, isMobileFullscreen, onChatSelect])
 
-  const handleCheckboxClick = useCallback((e: React.MouseEvent, chatId: string) => {
+  const _handleCheckboxClick = useCallback((e: React.MouseEvent, chatId: string) => {
     e.stopPropagation()
     toggleChatSelection(chatId)
   }, [toggleChatSelection])
 
-  const formatTime = useCallback((dateStr: string) => {
+  const _formatTime = useCallback((dateStr: string) => {
     const date = new Date(dateStr)
     const now = new Date()
     const diffMs = now.getTime() - date.getTime()
@@ -2580,13 +1844,13 @@ export function AgentsSidebar({
   }, [])
 
   // Copy branch name to clipboard
-  const handleCopyBranch = useCallback((branch: string) => {
+  const _handleCopyBranch = useCallback((branch: string) => {
     navigator.clipboard.writeText(branch)
     toast.success("Branch name copied", { description: branch })
   }, [])
 
   // Ref callback for name elements
-  const nameRefCallback = useCallback((chatId: string, el: HTMLSpanElement | null) => {
+  const _nameRefCallback = useCallback((chatId: string, el: HTMLSpanElement | null) => {
     if (el) {
       nameRefs.current.set(chatId, el)
     }
@@ -2594,7 +1858,7 @@ export function AgentsSidebar({
 
   // Handle agent card hover for truncated name tooltip (1s delay)
   // Uses DOM manipulation instead of state to avoid re-renders
-  const handleAgentMouseEnter = useCallback(
+  const _handleAgentMouseEnter = useCallback(
     (chatId: string, name: string | null, cardElement: HTMLElement, globalIndex: number) => {
       // Update hovered index ref
       hoveredChatIndexRef.current = globalIndex
@@ -2604,7 +1868,7 @@ export function AgentsSidebar({
         prefetchLocalChat(chatId)
       }
 
-      // Clear any existing timer
+      // Clear unknown existing timer
       if (agentTooltipTimerRef.current) {
         clearTimeout(agentTooltipTimerRef.current)
       }
@@ -2631,7 +1895,7 @@ export function AgentsSidebar({
     [prefetchLocalChat, ENABLE_CHAT_HOVER_PREFETCH],
   )
 
-  const handleAgentMouseLeave = useCallback(() => {
+  const _handleAgentMouseLeave = useCallback(() => {
     // Reset hovered index
     hoveredChatIndexRef.current = -1
     // Clear timer if hovering ends before delay

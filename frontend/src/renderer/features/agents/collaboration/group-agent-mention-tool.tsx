@@ -22,7 +22,7 @@ interface GroupAgentMentionToolProps {
       message?: string
       message_type?: string
     }
-    output?: any
+    output?: unknown
     result?: string
     errorText?: string
     state?: string

@@ -35,12 +35,12 @@ import {
 } from "../../../lib/atoms"
 import { cn } from "../../../lib/utils"
 import { ResizableSidebar } from "../../ui/resizable-sidebar"
-import { settingsProjectsSidebarWidthAtom } from "../../../features/agents/atoms"
+import { settingsProjectsSidebarWidthAtom } from "../../../features/agents"
 
 // --- Detail Panel ---
 function ProjectDetail({ projectId }: { projectId: string }) {
   // Get config for selected project
-  const { data: configData, refetch: refetchConfig } =
+  const { data: configData, refetch: _refetchConfig } =
     trpc.worktreeConfig.get.useQuery(
       { projectId },
       { enabled: !!projectId },

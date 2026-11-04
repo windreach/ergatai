@@ -43,11 +43,11 @@ export function WorkspaceEditDialog({
   const registerProjectMutation = trpc.ergatai.registerWorkspaceProject.useMutation()
   const removeProjectMutation = trpc.ergatai.removeWorkspaceProject.useMutation()
 
-  const invalidateWorkspaceCaches = () => {
+  const invalidateWorkspaceCaches = useCallback(() => {
     void utils.ergatai.listWorkspaceProjects.invalidate({ id: workspaceId })
     void utils.ergatai.listManagedWorkspaces.invalidate()
     void utils.ergatai.workspaceStatus.invalidate({ id: workspaceId })
-  }
+  }, [utils, workspaceId])
 
   const handleAddFolder = useCallback(async () => {
     const folderPath = await pickFolderMutation.mutateAsync()
@@ -71,7 +71,7 @@ export function WorkspaceEditDialog({
         },
       },
     )
-  }, [pickFolderMutation, projects, workspaceId, registerProjectMutation, utils])
+  }, [pickFolderMutation, projects, workspaceId, registerProjectMutation, invalidateWorkspaceCaches])
 
   const handleRemoveFolder = useCallback(
     (project: { projectId: string; projectName: string; isDefault: boolean }) => {
@@ -85,7 +85,7 @@ export function WorkspaceEditDialog({
         },
       )
     },
-    [workspaceId, removeProjectMutation, utils],
+    [workspaceId, removeProjectMutation, invalidateWorkspaceCaches],
   )
 
   const handleSave = useCallback(async () => {
@@ -101,7 +101,7 @@ export function WorkspaceEditDialog({
     } finally {
       setSaving(false)
     }
-  }, [workspaceId, name, updateNameMutation, utils, onOpenChange])
+  }, [workspaceId, name, updateNameMutation, onOpenChange, invalidateWorkspaceCaches])
 
   const handleOpenChange = useCallback(
     (newOpen: boolean) => {

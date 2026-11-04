@@ -602,6 +602,7 @@ export const diffSidebarOpenAtomFamily = atomFamily((chatId: string) =>
   ),
 )
 
+
 // Legacy global atom - kept for backwards compatibility, maps to empty string key
 // TODO: Remove after migration
 export const agentsDiffSidebarOpenAtom = atomWithWindowStorage<boolean>(
@@ -955,7 +956,7 @@ export type PendingInitialPrompt = {
 }
 
 export const pendingInitialPromptAtomFamily = atomFamily(
-  (conversationId: string) => atom<PendingInitialPrompt | null>(null),
+  (_conversationId: string) => atom<PendingInitialPrompt | null>(null),
 )
 
 // Pending user questions from AskUserQuestion tool

@@ -20,9 +20,9 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "../../../../components/ui/tooltip";
-import { IconCloseSidebarRight, IconFetch, IconForcePush, IconSpinner, AgentIcon, CircleFilterIcon, IconReview, ExternalLinkIcon } from "../../../../components/ui/icons";
+import { IconCloseSidebarRight, IconFetch, IconForcePush, IconSpinner, IconReview, ExternalLinkIcon } from "../../../../components/ui/icons";
 import { DiffViewModeSwitcher } from "./diff-view-mode-switcher";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { HiArrowPath, HiChevronDown } from "react-icons/hi2";
 import { LuGitBranch } from "react-icons/lu";
 import {
@@ -47,7 +47,7 @@ import { cn } from "../../../../lib/utils";
 import { usePRStatus } from "../../../../hooks/usePRStatus";
 import { PRIcon } from "../pr-icon";
 import { toast } from "sonner";
-import type { DiffViewMode } from "@/features/agents/ui/agent-diff-view";
+import type { DiffViewMode } from "@/features/agents";
 import { getSyncActionKind } from "../../utils/sync-actions";
 import { usePushAction } from "../../hooks/use-push-action";
 
@@ -157,7 +157,6 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 	onDisplayModeChange,
 }: DiffSidebarHeaderProps) {
 	// Responsive breakpoints - progressive disclosure
-	const isCompact = sidebarWidth < 350;
 	const showViewModeToggle = sidebarWidth >= 450; // Show Split/Unified toggle
 	const showReviewButton = sidebarWidth >= 550; // Show Review button
 

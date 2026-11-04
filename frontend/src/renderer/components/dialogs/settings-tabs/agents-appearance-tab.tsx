@@ -337,11 +337,11 @@ export function AgentsAppearanceTab() {
   )
 
   // Group imported themes by type
-  const importedDarkThemes = useMemo(
+  const _importedDarkThemes = useMemo(
     () => importedThemes.filter((t) => t.type === "dark"),
     [importedThemes],
   )
-  const importedLightThemes = useMemo(
+  const _importedLightThemes = useMemo(
     () => importedThemes.filter((t) => t.type === "light"),
     [importedThemes],
   )

@@ -36,7 +36,7 @@ export function ChangesHeader({
 	const handleRefresh = () => {
 		setIsManualRefresh(true);
 		onRefresh();
-		// Clear any existing timeout
+		// Clear unknown existing timeout
 		if (timeoutRef.current) {
 			clearTimeout(timeoutRef.current);
 		}

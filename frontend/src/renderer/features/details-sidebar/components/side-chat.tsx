@@ -1,33 +1,29 @@
+ 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useSetAtom } from "jotai"
 import { type UIMessage } from "@ai-sdk/react"
-import { toast } from "sonner"
-import { ConversationStatusCard } from "../../agents/ui/conversation-status-card"
-import { useAgentsFileUpload } from "../../agents/hooks/use-agents-file-upload"
-import { useChatAutoScroll } from "../../agents/hooks/use-chat-auto-scroll"
-import { useTextContextSelection } from "../../agents/hooks/use-text-context-selection"
-import { usePastedTextFiles } from "../../agents/hooks/use-pasted-text-files"
-import { useRollback } from "../../agents/hooks/use-rollback"
-import { useForkConversation } from "../../agents/hooks/use-fork-conversation"
-import { ChatInputArea } from "../../agents/main/chat-input-area"
-import type { AgentsMentionsEditorHandle } from "../../agents/mentions"
-import type { MessageTokenData } from "../../agents/ui/agent-context-indicator"
-import type { ChatConversation, ChatMessage } from "../lib/chat-contract-api"
-import { ChatMessagesRenderer } from "../../agents/main/chat-messages-renderer"
-import {
-  CORE_AGENT_OPTIONS,
-  type CoreAgentId,
-} from "../../agents/lib/agent-contract-api"
-import { useAgentRuntimeAgents } from "../../agents/lib/agent-runtime-status-store"
-import { AgentUserMessageBubble } from "../../agents/ui"
+import { ConversationStatusCard } from "../../agents"
+import { useAgentsFileUpload } from "../../agents"
+import { useChatAutoScroll } from "../../agents"
+import { useTextContextSelection } from "../../agents"
+import { usePastedTextFiles } from "../../agents"
+import { useRollback } from "../../agents"
+import { useForkConversation } from "../../agents"
+import { ChatInputArea } from "../../agents"
+import type { AgentsMentionsEditorHandle } from "../../agents"
+import type { MessageTokenData } from "../../agents"
+import type { ChatConversation } from "../lib/chat-contract-api"
+import { ChatMessagesRenderer } from "../../agents"
+
+
+import { useAgentRuntimeAgents } from "../../agents/public"
 import { cn } from "@/lib/utils"
-import { trpc, trpcClient } from "@/lib/trpc"
-import { useStreamingStatusStore } from "../../agents/stores/streaming-status-store"
-import { syncMessagesWithStatusAtom } from "../../agents/stores/message-store"
-import { clearConversationRuntimeCaches } from "../../agents/stores/conversation-runtime-cleanup"
-import { useChatInstance } from "../../agents/hooks/use-chat-instance"
-import { useSideChatInvocation } from "../hooks/use-side-chat-invocation"
-import { clearLoading, loadingConversationsAtom, setLoading } from "../../agents/atoms"
+import { useStreamingStatusStore } from "../../agents"
+import { syncMessagesWithStatusAtom } from "../../agents"
+import { clearConversationRuntimeCaches } from "../../agents"
+import { useChatInstance } from "../../agents"
+import { useMainChatInvocation } from "@/features/agents"
+import { clearLoading, loadingConversationsAtom, setLoading } from "../../agents"
 
 interface SideChatProps {
   conversation: ChatConversation
@@ -106,42 +102,69 @@ export function SideChat({
     removePastedText,
   } = usePastedTextFiles(runtimeConversationId)
 
-  // Phase 9: Use bridge hook for progressive migration
-  // This hook combines useChatInstance (for message rendering) with
-  // useConversationInvocation (for queue management)
-  const chatInvocation = useSideChatInvocation({
+  // Shared rendering abstraction: reuse the same invocation controller as the
+  // main chat, differing only in presentation/scroll. The local Chat instance
+  // is created here and handed to the controller as `existingChat`.
+  const chatInstance = useChatInstance({
     conversation,
     chatId,
     agentId,
     isActive,
-    runtimeMessages: externalMessages,
+  })
+
+  // Type assertions needed because SideChat uses ChatConversation type which is
+  // structurally compatible with but not nominally identical to the types expected
+  // by useMainChatInvocation. This is a progressive migration artifact.
+  const chatInvocation = useMainChatInvocation({
+    conversation: conversation as any,
+    chatId,
+    agentId,
+    isActive,
+    persistedMessages: (conversation.messages ?? []) as any,
+    runtimeMessages: externalMessages as any,
+    existingChat: chatInstance as any,
     runtimeStatus,
   })
 
-  // Destructure from bridge hook
   const {
-    chat,
     messages,
-    sendMessage,
-    sendAgentMessage,
-    status,
-    stop,
-    setMessages,
-    isStreaming,
-    // Phase 16: Use invocationQueue from new service instead of old queue
-    // invocationQueue is the source of truth for queued messages
-    invocationQueue,
     handleSend: sendUserMessage,
     handleSendFromQueue,
-    // New: session state from ConversationInvocationService
+    stop: stopInvocation,
     sessionState,
+    invocationQueue,
   } = chatInvocation
 
+  const setMessages = chatInstance.setMessages
+  const stop = stopInvocation
+
+  const isLocalStreaming =
+    chatInstance.status === "streaming" || chatInstance.status === "submitted"
+  const isBackendStreaming =
+    runtimeStatus === "streaming" || sessionState?.isStreaming === true
+  const isStreaming = isLocalStreaming || isBackendStreaming
+  const status = isLocalStreaming
+    ? chatInstance.status
+    : isStreaming
+      ? "streaming"
+      : chatInstance.status
+
   // `messages` is now the unified RuntimeSessionStore view: persisted history,
-  // the local Chat stream, and externally started agent-to-agent turns. While
-  // the local instance is streaming, useChatInstance already syncs the store.
+  // the local Chat stream, and externally started agent-to-agent turns.
   const isRuntimeStreaming = runtimeStatus === "streaming"
   const displayMessages = messages
+
+  // Propagate the (local or backend) streaming state into the shared store so
+  // isolated message groups / rollback logic see side-chat turns as streaming,
+  // including agent-to-agent turns and turns resumed after reopening.
+  const setStreamingStatus = useStreamingStatusStore((store) => store.setStatus)
+  useEffect(() => {
+    if (status === "streaming" || status === "submitted") {
+      setStreamingStatus(runtimeConversationId, status as "streaming" | "submitted")
+    } else {
+      setStreamingStatus(runtimeConversationId, "ready")
+    }
+  }, [status, runtimeConversationId, setStreamingStatus])
 
   useEffect(() => {
     if (!runtimeConversationId) return
@@ -162,10 +185,13 @@ export function SideChat({
   const syncExternalMessages = useSetAtom(syncMessagesWithStatusAtom)
   const externalRuntimeStatus = isRuntimeStreaming ? "streaming" : "ready"
   useLayoutEffect(() => {
-    if (isStreaming || displayMessages.length === 0) {
+    if (displayMessages.length === 0) {
       return
     }
 
+    // Keep the per-conversation store in sync with the merged runtime view at
+    // all times (including mid-stream), so ChatMessagesRenderer does not fall
+    // back to the simplified text-only rendering while a turn is streaming.
     syncExternalMessages({
       messages: displayMessages,
       status: externalRuntimeStatus,
@@ -175,7 +201,6 @@ export function SideChat({
   }, [
     displayMessages,
     externalRuntimeStatus,
-    isStreaming,
     runtimeConversationId,
     syncExternalMessages,
   ])
@@ -213,7 +238,7 @@ export function SideChat({
   })
 
   // Fork handler - unified with main chat
-  const { handleForkFromMessage, isForkingRef } = useForkConversation({
+  const { handleForkFromMessage, isForkingRef: _isForkingRef } = useForkConversation({
     conversationId: runtimeConversationId,
     parentChatId: chatId,
     isStreaming,
@@ -259,7 +284,9 @@ export function SideChat({
       setLoading(setLoadingConversations, runtimeConversationId, chatId)
     }
 
-    sendUserMessage(parts)
+    // Type assertion needed because UIMessage parts format differs slightly from
+    // the internal MessagePart type during the progressive migration.
+    sendUserMessage(parts as any)
 
     editorRef.current?.clear()
     clearAll()
@@ -294,8 +321,9 @@ export function SideChat({
   }, [stop, runtimeConversationId, setLoadingConversations])
 
   const handleCompact = useCallback(() => {
-    console.log("Compact not implemented for side chat")
-  }, [])
+    if (isStreaming) return
+    sendUserMessage([{ type: "text", text: "/compact" }] as any)
+  }, [isStreaming, sendUserMessage])
 
   // Message token data (simplified)
   const messageTokenData = useMemo<MessageTokenData>(() => {
@@ -313,7 +341,7 @@ export function SideChat({
   }, [])
 
   const sideChatLoadingState =
-    isLoadingMessages && displayMessages.length === 0 ? (
+    (isLoadingMessages || isStreaming) && displayMessages.length === 0 ? (
       <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6">
         <div className="w-full max-w-[280px] space-y-3">
           <div className="ml-auto h-9 w-2/3 animate-pulse rounded-xl bg-muted/60" />
@@ -350,8 +378,17 @@ export function SideChat({
             </div>
           </div>
         )}
+        {runtimeConnectionStatus !== "reconnecting" && runtimeStatus === "streaming" && (
+          <div className="px-3 pt-2">
+            <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-600 dark:text-emerald-400">
+              Live streaming side-chat updates…
+            </div>
+          </div>
+        )}
         <ChatMessagesRenderer
-          messages={displayMessages}
+          // Type assertion needed because ChatMessagesRenderer expects a slightly different
+          // message type during the progressive migration to the new conversation runtime.
+          messages={displayMessages as any}
           status={status}
           conversationId={runtimeConversationId}
           chatId={chatId}

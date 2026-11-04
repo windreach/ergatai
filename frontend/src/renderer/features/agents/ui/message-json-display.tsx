@@ -13,7 +13,7 @@ import { useCodeTheme } from "../../../lib/hooks/use-code-theme"
 
 interface MessageJsonDisplayProps {
   // Using unknown because the message shape varies across different tool outputs
-  // and providers. JSON.stringify handles any JSON-serializable value.
+  // and providers. JSON.stringify handles unknown JSON-serializable value.
   message: unknown
   label?: string
 }

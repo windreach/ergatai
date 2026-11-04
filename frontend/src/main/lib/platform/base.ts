@@ -3,8 +3,12 @@
  * Contains shared logic for all platforms
  */
 
-import { execFile } from "node:child_process"
-import { promisify } from "node:util"
+import {
+  execFile
+} from "node:child_process"
+import {
+  promisify
+} from "node:util"
 import * as os from "node:os"
 import * as path from "node:path"
 import type {
@@ -12,7 +16,7 @@ import type {
   ShellConfig,
   PathConfig,
   CliConfig,
-  EnvironmentConfig,
+  EnvironmentConfig
 } from "./types"
 
 const execFileAsync = promisify(execFile)
@@ -92,7 +96,7 @@ export abstract class BasePlatformProvider implements PlatformProvider {
 
   buildEnvironment(baseEnv?: Record<string, string>): Record<string, string> {
     const envConfig = this.getEnvironmentConfig()
-    const pathConfig = this.getPathConfig()
+    const _pathConfig = this.getPathConfig()
     const home = this.getHome()
     const user = this.getUsername()
 

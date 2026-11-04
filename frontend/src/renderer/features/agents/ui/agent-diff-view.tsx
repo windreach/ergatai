@@ -38,7 +38,6 @@ import {
   ClipboardIcon,
   ExternalLinkIcon,
   FolderIcon,
-  UndoIcon,
 } from "../../../components/ui/icons"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { getFileIconByExtension } from "../mentions/file-icon-utils"
@@ -128,7 +127,7 @@ class DiffErrorBoundary extends Component<
     return null
   }
 
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+  componentDidCatch(_error: Error, _errorInfo: ErrorInfo) {
     // Error already captured in state, no need to log
   }
 
@@ -573,8 +572,8 @@ const FileDiffCard = memo(function FileDiffCard({
         }
         const lang = langMap[ext] || ext || undefined
         const result = parseDiffFromFile(
-          { name: file.oldPath || displayPath, contents: oldContent, lang: lang as any },
-          { name: file.newPath || displayPath, contents: fileContent, lang: lang as any },
+          { name: file.oldPath || displayPath, contents: oldContent, lang: lang as unknown as NonNullable<Parameters<typeof parseDiffFromFile>[0]>["lang"] },
+          { name: file.newPath || displayPath, contents: fileContent, lang: lang as unknown as NonNullable<Parameters<typeof parseDiffFromFile>[0]>["lang"] },
         )
         setFileDiffMeta(result)
       } catch {
@@ -646,7 +645,7 @@ const FileDiffCard = memo(function FileDiffCard({
     }
   }
 
-  const handleOpenInEditor = () => {
+  const _handleOpenInEditor = () => {
     if (absolutePath && worktreePath) {
       openInEditorMutation({ path: absolutePath, cwd: worktreePath })
     }
@@ -1045,14 +1044,14 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
       chatId,
       sandboxId,
       worktreePath,
-      repository,
+      repository: _repository,
       onStatsChange,
       initialDiff,
       initialParsedFiles,
       prefetchedFileContents,
-      showFooter = true,
-      onCreatePr: externalOnCreatePr,
-      isCreatingPr: externalIsCreatingPr,
+      showFooter: _showFooter = true,
+      onCreatePr: _externalOnCreatePr,
+      isCreatingPr: _externalIsCreatingPr,
       isMobile = false,
       onClose,
       onCollapsedStateChange,
@@ -1131,7 +1130,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
     // Height for collapsed header (file name + stats)
     const COLLAPSED_HEIGHT = 44
     // Estimated height for expanded diff
-    const EXPANDED_HEIGHT_ESTIMATE = 300
+    const _EXPANDED_HEIGHT_ESTIMATE = 300
 
     // Fetch diff on mount (only if initialDiff not provided)
     useEffect(() => {
@@ -1266,7 +1265,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
 
     // Filter files if filteredDiffFiles is set (for conversation Review)
     // Use initialSelectedFile as fallback for first render before atom updates
-    const effectiveFilter = filteredDiffFiles ?? (initialSelectedFile ? [initialSelectedFile] : null)
+    const effectiveFilter = useMemo(() => filteredDiffFiles ?? (initialSelectedFile ? [initialSelectedFile] : null), [filteredDiffFiles, initialSelectedFile])
 
     const fileDiffs = useMemo(() => {
       // First, filter out invalid files without proper paths (file-N keys indicate parse failure)
@@ -1350,14 +1349,11 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
       // For many files, expand in batches to avoid UI freeze
       const BATCH_SIZE = 5
       let currentBatch = 0
-      let isExpanding = true
-
       const expandBatch = () => {
         const start = currentBatch * BATCH_SIZE
         const end = Math.min(start + BATCH_SIZE, files.length)
 
         if (start >= files.length) {
-          isExpanding = false
           onComplete?.()
           return
         }
@@ -1378,7 +1374,6 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
           // Use requestAnimationFrame for next batch to allow UI to breathe
           requestAnimationFrame(() => setTimeout(expandBatch, 0))
         } else {
-          isExpanding = false
           onComplete?.()
         }
       }
@@ -1609,6 +1604,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
       }
 
       fetchAllContents()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [fileDiffs, worktreePath])
 
     const toggleFileCollapsed = useCallback((fileKey: string) => {
@@ -1871,7 +1867,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
     // Keyboard shortcut: V to mark current file as viewed
     useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
-        // Use e.code for physical key position (works with any keyboard layout)
+        // Use e.code for physical key position (works with unknown keyboard layout)
         if (e.code !== "KeyV") return
         if (e.metaKey || e.ctrlKey || e.altKey) return
 
@@ -1907,7 +1903,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
     // Keyboard shortcut: Cmd+Z / Ctrl+Z to undo last viewed action
     useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
-        // Use e.code for physical key position (works with any keyboard layout)
+        // Use e.code for physical key position (works with unknown keyboard layout)
         if (e.code !== "KeyZ") return
         const isUndo = e.metaKey || e.ctrlKey
         if (!isUndo || e.shiftKey || e.altKey) return // Only Cmd+Z / Ctrl+Z, not with Shift/Alt

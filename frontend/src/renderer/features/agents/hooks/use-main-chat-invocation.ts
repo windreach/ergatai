@@ -16,19 +16,19 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef } from "react"
-import { useConversationInvocation, useSessionState } from "../../conversation/runtime/use-conversation-invocation"
-import { useRuntimeSessionMessageProjection } from "../../conversation/runtime"
-import { getAdapterRegistry, type AdapterState } from "../../conversation/runtime/runtime-adapter"
-import type { ConversationStatus } from "../../conversation/runtime/contracts"
-import { useRuntimeSessionSources } from "../../conversation/runtime/use-runtime-session-sources"
-import { getConversationProjectionService } from "../../conversation/runtime/conversation-projection-service"
-import { getMessageCorrelationService } from "../../conversation/runtime/message-correlation-service"
+import { useConversationInvocation, useSessionState } from "../../conversation"
+import { useRuntimeSessionMessageProjection } from "../../conversation"
+import { getAdapterRegistry, type AdapterState } from "../../conversation"
+import type { ConversationStatus } from "../../conversation"
+import { useRuntimeSessionSources } from "../../conversation"
+import { getConversationProjectionService } from "../../conversation"
+import { getMessageCorrelationService } from "../../conversation"
 import { trpc } from "../../../lib/trpc"
 import type { MessagePart } from "../stores/message-store"
 import type { AgentQueueItem, QueuedTextContext, QueuedDiffTextContext, QueuedPastedText } from "../lib/queue-utils"
-import { MENTION_PREFIXES } from "../../mentions/types"
+import { MENTION_PREFIXES } from "../../mentions"
 import { utf8ToBase64 } from "../utils/base64"
-import type { ChatConversation } from "@/features/details-sidebar/lib/chat-contract-api"
+import type { ChatConversation } from "@/features/details-sidebar"
 import { buildQuoteMentionToken, buildDiffMentionToken, buildPastedMentionToken } from "../mentions/mentions-utils"
 
 /**
@@ -47,7 +47,10 @@ export type RawMessage = Record<string, unknown> & {
 }
 
 const EMPTY_PERSISTED_MESSAGES: RawMessage[] = []
-const projectionService = getConversationProjectionService()
+// Getter function instead of module-level constant to avoid forcing early initialization
+// of the projection service. This allows the service to be lazily created on first use,
+// which can help with module loading order and test isolation.
+const getProjectionService = () => getConversationProjectionService()
 
 /**
  * Chat instance API (subset of Chat interface we need).
@@ -73,10 +76,11 @@ export function useMainChatInvocation({
   conversation,
   chatId,
   agentId,
-  isActive = true,
+  isActive: _isActive = true,
   persistedMessages,
   runtimeMessages = [],
   existingChat,
+  runtimeStatus,
 }: {
   conversation: ChatConversation & { messages?: RawMessage[] }
   chatId: string
@@ -88,6 +92,8 @@ export function useMainChatInvocation({
   runtimeMessages?: RawMessage[]
   /** Existing Chat instance to avoid creating duplicate */
   existingChat?: ChatInstanceAPI
+  /** Backend runtime status for turns started outside the local Chat transport. */
+  runtimeStatus?: string
 }) {
   const backendConversationId = conversation.backendConversationId
   const runtimeConversationId = backendConversationId ?? conversation.id
@@ -102,22 +108,22 @@ export function useMainChatInvocation({
 
   const safePersistedMessages = persistedMessages ?? EMPTY_PERSISTED_MESSAGES
   const persistedSessionMessages = useMemo(
-    () => safePersistedMessages.map((message) => projectionService.normalizeRawMessage(message)),
+    () => safePersistedMessages.map((message) => getProjectionService().normalizeRawMessage(message, "persisted")),
     [safePersistedMessages],
   )
 
-  const rawLocalMessages = existingChat?.messages ?? []
+  const rawLocalMessages = useMemo(() => existingChat?.messages ?? [], [existingChat?.messages])
   const isLocalStreaming =
     existingChat?.status === "streaming" || existingChat?.status === "submitted"
   const localSessionMessages = useMemo(
-    () => rawLocalMessages.map((message) => projectionService.normalizeRawMessage(message)),
+    () => rawLocalMessages.map((message) => getProjectionService().normalizeRawMessage(message, "local")),
     [rawLocalMessages],
   )
 
   // While the local transport streams the current turn, clear the backend
   // preview source. Local Chat is the freshest view of that same turn.
   const backendRuntimeMessages = useMemo(
-    () => (isLocalStreaming ? [] : runtimeMessages.map((message) => projectionService.normalizeRawMessage(message))),
+    () => (isLocalStreaming ? [] : runtimeMessages.map((message) => getProjectionService().normalizeRawMessage(message, "runtime"))),
     [isLocalStreaming, runtimeMessages],
   )
 
@@ -193,7 +199,14 @@ export function useMainChatInvocation({
         return "ready"
     }
   }
-  const computedStatus = mapChatStatus(existingChat?.status)
+  const isLocalStreamingForStatus =
+    existingChat?.status === "streaming" || existingChat?.status === "submitted"
+  const isBackendStreamingForStatus =
+    runtimeStatus === "streaming" || sessionState?.isStreaming === true
+  const computedStatus =
+    !isLocalStreamingForStatus && isBackendStreamingForStatus
+      ? "streaming"
+      : mapChatStatus(existingChat?.status)
   useRuntimeSessionMessageProjection({
     conversationId: runtimeConversationId,
     messages: visibleMessages,
@@ -411,7 +424,7 @@ export function useMainChatInvocation({
         mentionPrefix += pastedMentions.join(" ") + " "
       }
 
-      // Add text (message with mention prefix if any)
+      // Add text (message with mention prefix if unknown)
       if (item.message || mentionPrefix) {
         parts.push({ type: "text", text: mentionPrefix + (item.message || "") })
       }
@@ -484,6 +497,7 @@ export function useMainChatInvocation({
       handleStop,
       sessionState,
       invocation.removeQueuedItem,
+      invocation.sendQueuedItem,
       serviceSend,
       serviceEnqueue,
       runtimeConversationId,

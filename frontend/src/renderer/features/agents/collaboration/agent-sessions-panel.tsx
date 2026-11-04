@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Clock, FolderOpen, Play, Trash2 } from "lucide-react"
+import { Clock, Play, Trash2 } from "lucide-react"
 
 import { trpc } from "../../../lib/trpc"
 import { Badge } from "../../../components/ui/badge"

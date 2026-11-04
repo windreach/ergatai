@@ -8,7 +8,7 @@
  * Phase 1: Type definitions only - no behavior changes.
  */
 
-import type { Message, MessagePart } from "../../agents/stores/message-store"
+import type { Message, MessagePart } from "../../agents"
 
 // ============================================================================
 // CONVERSATION PROVIDER - Provider type aliases
@@ -256,7 +256,7 @@ export type ConversationRuntimeState = {
   /** Queued messages */
   queue: ConversationQueueItem[]
 
-  /** Current error (if any) */
+  /** Current error (if unknown) */
   error?: ConversationRuntimeError
 
   /** Streaming message ID (if streaming) */

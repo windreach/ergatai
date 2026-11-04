@@ -1,6 +1,6 @@
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { ChevronLeft } from "lucide-react"
-import { useCallback, useEffect, useMemo, useRef } from "react"
+import { useCallback, useEffect, useMemo } from "react"
 import {
   EyeOpenFilledIcon,
   ProfileIconFilled,
@@ -14,13 +14,12 @@ import {
 } from "../../lib/atoms"
 import { cn } from "../../lib/utils"
 import {
-  BrainFilledIcon,
   BugFilledIcon,
   FolderFilledIcon,
   GitBranchFilledIcon,
   KeyboardFilledIcon,
 } from "../../components/ui/icons"
-import { desktopViewAtom } from "../agents/atoms"
+import { desktopViewAtom } from "../agents"
 
 // Check if we're in development mode
 const isDevelopment = import.meta.env.DEV
@@ -74,14 +73,14 @@ interface TabButtonProps {
   tab: {
     id: SettingsTab
     label: string
-    icon: React.ComponentType<{ className?: string }> | any
+    icon: React.ComponentType<{ className?: string }> | unknown
   }
   isActive: boolean
   onClick: () => void
 }
 
 function TabButton({ tab, isActive, onClick }: TabButtonProps) {
-  const Icon = tab.icon
+  const Icon = tab.icon as React.ComponentType<{ className?: string }>
   const isProjectTab = "projectId" in tab
 
   return (
@@ -108,7 +107,7 @@ function TabButton({ tab, isActive, onClick }: TabButtonProps) {
 
 export function SettingsSidebar() {
   const [activeTab, setActiveTab] = useAtom(agentsSettingsDialogActiveTabAtom)
-  const [devToolsUnlocked, setDevToolsUnlocked] = useAtom(devToolsUnlockedAtom)
+  const [devToolsUnlocked, _setDevToolsUnlocked] = useAtom(devToolsUnlockedAtom)
   const setDesktopView = useSetAtom(desktopViewAtom)
   const isDesktop = useAtomValue(isDesktopAtom)
 

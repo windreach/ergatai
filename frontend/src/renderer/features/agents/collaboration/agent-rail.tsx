@@ -5,7 +5,7 @@ import { useSetAtom } from "jotai"
 import { Bot } from "lucide-react"
 
 import { cn } from "../../../lib/utils"
-import { sideChatSidebarOpenAtom } from "../../details-sidebar/atoms"
+import { sideChatSidebarOpenAtom } from "../../details-sidebar"
 import { groupAgentChatRequestAtomFamily } from "./group-chat-context"
 import { getCoreAgentIcon } from "../components/core-agent-selector"
 import { resolveCoreAgentId, type CoreAgentId } from "../lib/agent-contract-api"

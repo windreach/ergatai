@@ -27,24 +27,7 @@ const LOG_LEVELS: Record<LogLevel, number> = {
 }
 
 // Current log level (can be adjusted based on environment)
-let currentLogLevel: LogLevel = process.env.NODE_ENV === "development" ? "debug" : "warn"
-
-/**
- * Set the current log level
- *
- * Note: This is a global setting that affects all logger instances created with createLogger().
- * In test environments, be aware that changing the log level will affect all tests sharing this module.
- */
-export function setLogLevel(level: LogLevel): void {
-  currentLogLevel = level
-}
-
-/**
- * Get the current log level
- */
-export function getLogLevel(): LogLevel {
-  return currentLogLevel
-}
+const currentLogLevel: LogLevel = process.env.NODE_ENV === "development" ? "debug" : "warn"
 
 /**
  * Check if a log level should be output

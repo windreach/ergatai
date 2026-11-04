@@ -112,7 +112,7 @@ export function ChatSearchBar({ messages, className, topOffset }: ChatSearchBarP
         clearTimeout(debounceTimeoutRef.current)
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- messages intentionally read via ref
+     
   }, [inputValue, setSearchQuery, setMatches, setCurrentIndex])
 
   // Keyboard navigation

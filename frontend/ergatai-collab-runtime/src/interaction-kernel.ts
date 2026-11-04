@@ -46,7 +46,7 @@ export class InteractionKernel {
 
     // Reject empty chatId to prevent session collision
     if (!chatId) {
-      return { route: "error", events: [{ type: "error", message: "Missing chatId" }] }
+      return { route: "error", events: [{ type: "protocol_error", reason: "Missing chatId" }] }
     }
 
     const existing = this.sessions.get(chatId)

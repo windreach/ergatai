@@ -67,7 +67,9 @@ export const chatSearchCountInfoAtom = atom((get) => {
 
 // Cache for highlight ranges by message and part
 // Key format: `${messageId}:${partIndex}:${partType}`
-const highlightRangesCache = new Map<string, HighlightRange[]>()
+import { BoundedCache } from "../../../lib/bounded-cache"
+
+const highlightRangesCache = new BoundedCache<string, HighlightRange[]>(500)
 
 // Atom family for getting highlight ranges for a specific message part
 export const highlightRangesAtomFamily = atomFamily(

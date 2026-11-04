@@ -1,7 +1,12 @@
-import type { MCPServer, MCPServerStatus, MessageMetadata, UIMessageChunk } from "./types";
+import type {
+  MCPServer,
+  MCPServerStatus,
+  MessageMetadata,
+  UIMessageChunk
+} from "./types";
 
 export function createTransformer(options?: { isUsingOllama?: boolean; emitSdkMessageUuid?: boolean }) {
-  const isUsingOllama = options?.isUsingOllama === true
+  const _isUsingOllama = options?.isUsingOllama === true
   let textId: string | null = null
   let textStarted = false
   let started = false
@@ -96,6 +101,7 @@ export function createTransformer(options?: { isUsingOllama?: boolean; emitSdkMe
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return function* transform(msg: any): Generator<UIMessageChunk> {
 
     // Track parent_tool_use_id for nested tools

@@ -20,7 +20,7 @@ export function useMessageSync({
   messages,
   status,
   isActive,
-  isSplitPane,
+  isSplitPane: _isSplitPane,
 }: UseMessageSyncProps) {
   // Sync messages to Jotai store for isolated rendering.
   // Each ChatViewInner writes to its own per-chat bucket.

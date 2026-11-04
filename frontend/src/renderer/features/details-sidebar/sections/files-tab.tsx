@@ -18,8 +18,8 @@ import {
 import { RenameDialog } from "@/components/rename-dialog"
 import { preferredEditorAtom } from "@/lib/atoms"
 import { getAppOption } from "@/components/open-in-button"
-import { getFileIconByExtension } from "../../agents/mentions/file-icon-utils"
-import { fileSearchDialogOpenAtom } from "../../agents/atoms"
+import { getFileIconByExtension } from "../../agents"
+import { fileSearchDialogOpenAtom } from "../../agents"
 import { fileTreeExpandedAtomFamily } from "../atoms"
 
 // ============================================================================
@@ -596,8 +596,8 @@ export const FilesTab = memo(forwardRef<FilesTabHandle, FilesTabProps>(function 
 
       invalidateFiles()
       setRenameTarget(null)
-    } catch (err: any) {
-      toast.error("Failed to rename", { description: err.message })
+    } catch (err: unknown) {
+      toast.error("Failed to rename", { description: err instanceof Error ? err.message : String(err) })
       throw err // Keep dialog open
     } finally {
       setRenameLoading(false)

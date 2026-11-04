@@ -7,7 +7,7 @@ import { RotateCcw, Settings2 } from "lucide-react"
 import { cn } from "../../../lib/utils"
 import { CmdIcon, OptionIcon, ShiftIcon, ControlIcon } from "../../ui/icons"
 import { ResizableSidebar } from "../../ui/resizable-sidebar"
-import { settingsKeyboardSidebarWidthAtom } from "../../../features/agents/atoms"
+import { settingsKeyboardSidebarWidthAtom } from "../../../features/agents"
 import {
   customHotkeysAtom,
   ctrlTabTargetAtom,
@@ -414,7 +414,7 @@ export function AgentsKeyboardTab() {
     [selectedActionId]
   )
 
-  // Has any custom hotkeys
+  // Has unknown custom hotkeys
   const hasCustomHotkeys = useMemo(
     () => Object.keys(customHotkeys.bindings).length > 0,
     [customHotkeys]

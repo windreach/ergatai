@@ -21,7 +21,7 @@ export function UpdateBanner() {
     justUpdated: realJustUpdated,
     justUpdatedVersion,
     dismissJustUpdated,
-    openChangelog,
+    openChangelog: _openChangelog,
   } = useJustUpdated()
   const hasTriggeredInstall = useRef(false)
 

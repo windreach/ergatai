@@ -1,10 +1,17 @@
-import { z } from "zod"
-import { publicProcedure, router } from "../index"
-import { ergataiCaller } from "../../ergatai/caller"
+import {
+  z
+} from "zod"
+import {
+  publicProcedure,
+  router
+} from "../index"
+import {
+  ergataiCaller
+} from "../../ergatai/caller"
 import {
   agentIdSchema,
   chatIdSchema,
-  workspaceIdSchema,
+  workspaceIdSchema
 } from "../../validation/ids"
 
 export const groupChatRouter = router({
@@ -45,7 +52,7 @@ export const groupChatRouter = router({
   /** Remove a member from a group chat */
   removeMember: publicProcedure
     .input(z.object({ chatId: chatIdSchema, agentId: agentIdSchema }))
-    .mutation(async ({ input }) => {
+    .mutation(async () => {
       // Backend no longer supports agent unbinding
       console.warn("[group-chat.removeMember] Group chat member removal disabled - backend endpoints removed")
       throw new Error("Removing group chat members is no longer supported")

@@ -73,7 +73,7 @@ const ArchivedWorkspaceItem = memo(({
 
   const deleteMutation = trpc.ergatai.deleteManagedWorkspace.useMutation({
     onSuccess: () => {
-      toast.success("Workspace deleted")
+      toast.success("Workspace deleted (cleanup runs in background)")
       setDeleteDialogOpen(false)
       onWorkspaceDeleted?.(workspace.id)
       invalidateArchivedWorkspaceCaches()

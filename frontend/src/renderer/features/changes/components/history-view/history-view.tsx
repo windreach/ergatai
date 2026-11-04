@@ -4,7 +4,6 @@ import { formatRelativeDate } from "../../utils/date";
 import { FileText, ArrowUp } from "lucide-react";
 import { cn } from "../../../../lib/utils";
 import { getStatusIndicator } from "../../utils/status";
-import { Button } from "../../../../components/ui/button";
 import type { ChangedFile } from "../../../../../shared/changes-types";
 import {
 	ContextMenu,
@@ -14,7 +13,7 @@ import {
 } from "../../../../components/ui/context-menu";
 import { toast } from "sonner";
 import { useAtomValue } from "jotai";
-import { selectedWorkspaceAtom } from "../../../agents/atoms";
+import { selectedWorkspaceAtom } from "../../../agents";
 
 export interface CommitInfo {
 	hash: string;
@@ -60,8 +59,8 @@ export const HistoryView = memo(function HistoryView({
 	// Fetch files for selected commit
 	const {
 		data: commitFiles,
-		isLoading: isLoadingFiles,
-		error: filesError,
+		isLoading: _isLoadingFiles,
+		error: _filesError,
 		refetch: refetchFiles,
 	} = trpc.changes.getCommitFiles.useQuery(
 		{ worktreePath, commitHash: selectedCommitHash! },
@@ -109,7 +108,7 @@ export const HistoryView = memo(function HistoryView({
 		[onCommitSelect],
 	);
 
-	const handleFileClick = useCallback(
+	const _handleFileClick = useCallback(
 		(file: ChangedFile) => {
 			if (selectedCommitHash) {
 				onFileSelect?.(file, selectedCommitHash);
@@ -245,7 +244,7 @@ const HistoryCommitItem = memo(function HistoryCommitItem({
 	);
 });
 
-const CommitFileItem = memo(function CommitFileItem({
+const _CommitFileItem = memo(function _CommitFileItem({
 	file,
 	isSelected,
 	onClick,

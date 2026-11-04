@@ -712,6 +712,11 @@ async fn async_main(args: Args) -> Result<()> {
                 publisher_for_cleanup,
             );
 
+            // Spawn deletion queue worker (batched archive/unarchive cleanup).
+            let _deletion_queue_handle = ergatai_api::services::deletion_queue_worker::spawn_worker(
+                mcp_cancellation_token.clone(),
+            );
+
             // Register existing workspaces with the permission handler so file access control
             // works after server restart. Without this, pre-existing workspaces would have no
             // lock manager initialized and file writes would fall back to auto-approve.

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef } from "react"
 import { useAtom } from "jotai"
 import { toast } from "sonner"
 
@@ -15,15 +15,15 @@ export function useActiveChatConversationMeta({
 }: {
   conversationId: string
   parentChatId: string
-  utils: any
+  utils: ReturnType<typeof api.useUtils>
 }) {
   const conversationName = useAgentConversationStore(
     (state) => state.allConversations.find((sc) => sc.id === conversationId)?.name || "",
   )
 
   const renameConversationMutation = api.agents.renameConversation.useMutation({
-    onError: (error: any) => {
-      if (error.data?.code === "NOT_FOUND") {
+    onError: (error: unknown) => {
+      if ((error as { data?: { code?: string } })?.data?.code === "NOT_FOUND") {
         toast.error("Send a message first before renaming this chat")
       } else {
         toast.error("Failed to rename chat")
@@ -60,15 +60,16 @@ export function useActiveChatConversationMeta({
     onSuccess: () => {
       utils.agents.getAgentChat.invalidate({ chatId: parentChatId })
     },
-    onError: (error: any, variables: any) => {
-      if (error.message === "Conversation not found") {
+    onError: (error: unknown, variables: unknown) => {
+      if ((error as { message?: string })?.message === "Conversation not found") {
         console.warn("Conversation not found in DB, keeping local mode state")
         return
       }
-      const revertedMode: AgentMode = variables.mode === "plan" ? "agent" : "plan"
+      const v = variables as { mode?: string; conversationId?: string }
+      const revertedMode: AgentMode = v.mode === "plan" ? "agent" : "plan"
       setConversationMode(revertedMode)
-      useAgentConversationStore.getState().updateConversationMode(variables.conversationId, revertedMode)
-      console.error("Failed to update conversation mode:", error.message)
+      useAgentConversationStore.getState().updateConversationMode(v.conversationId ?? conversationId, revertedMode)
+      console.error("Failed to update conversation mode:", (error as { message?: string })?.message)
     },
   })
 

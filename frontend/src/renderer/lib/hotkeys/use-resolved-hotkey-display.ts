@@ -1,6 +1,6 @@
 import { useAtomValue } from "jotai"
 import { customHotkeysAtom } from "../atoms"
-import { getResolvedHotkey, hotkeyToDisplay, getShortcutAction, keysToDisplay, keysToHotkeyString } from "./shortcut-registry"
+import { getResolvedHotkey, hotkeyToDisplay, getShortcutAction, keysToHotkeyString } from "./shortcut-registry"
 import type { ShortcutActionId } from "./types"
 
 /**

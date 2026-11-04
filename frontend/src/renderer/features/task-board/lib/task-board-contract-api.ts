@@ -204,7 +204,7 @@ export const taskBoardContractApi: TaskBoardContractApi = {
     }
   },
 
-  async validateTask(definition: string, parameters?: Record<string, unknown>): Promise<ValidateTaskResult> {
+  async validateTask(_definition: string, _parameters?: Record<string, unknown>): Promise<ValidateTaskResult> {
     // Backend no longer supports DAG validation
     console.warn("[TaskBoard] validateDag is no longer supported")
     return { valid: true, errors: [], warnings: ["DAG validation is no longer supported by backend"] }

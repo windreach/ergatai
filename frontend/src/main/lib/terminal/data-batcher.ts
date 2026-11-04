@@ -45,7 +45,7 @@ export class DataBatcher {
   }
 
   /**
-   * Flush any buffered data immediately.
+   * Flush unknown buffered data immediately.
    */
   flush(): void {
     if (this.timeout !== null) {
@@ -60,13 +60,13 @@ export class DataBatcher {
   }
 
   /**
-   * Dispose of the batcher, flushing any remaining data.
-   * Calls decoder.end() to handle any trailing incomplete sequences.
+   * Dispose of the batcher, flushing unknown remaining data.
+   * Calls decoder.end() to handle unknown trailing incomplete sequences.
    */
   dispose(): void {
     this.flush()
 
-    // Flush any incomplete multi-byte sequences
+    // Flush unknown incomplete multi-byte sequences
     const remaining = this.decoder.end()
     if (remaining) {
       this.onFlush(remaining)

@@ -1,4 +1,4 @@
-type AnyRecord = Record<string, any>
+type AnyRecord = Record<string, unknown>
 
 const CODEX_VERB_TO_TOOL_TYPE: Record<string, string> = {
   Read: "Read",
@@ -62,10 +62,10 @@ function getFirstParsedCmdValue(
   key: string,
 ): string | undefined {
   const match = entries.find(
-    (entry) => typeof entry[key] === "string" && entry[key].trim().length > 0,
+    (entry) => typeof entry[key] === "string" && (entry[key] as string).trim().length > 0,
   )
   if (!match) return undefined
-  return match[key].trim()
+  return (match[key] as string).trim()
 }
 
 function normalizeReadInputFromPayload(

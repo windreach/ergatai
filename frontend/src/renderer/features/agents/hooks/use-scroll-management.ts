@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from "react"
+import { BoundedCache } from "../../../lib/bounded-cache"
 
 // Threshold in pixels for "at bottom" detection
 const AUTO_SCROLL_THRESHOLD = 50
@@ -9,29 +10,10 @@ const MAX_SCROLL_CACHE_SIZE = 50
 // Module-level scroll position cache (per conversationId, session-only)
 // Stores { scrollTop, scrollHeight, wasAtBottom } so we can restore position on tab switch
 // Uses LRU eviction to prevent unbounded memory growth in long-running sessions
-export const scrollPositionCache = new Map<
+export const scrollPositionCache = new BoundedCache<
   string,
   { scrollTop: number; scrollHeight: number; wasAtBottom: boolean }
->()
-
-// Helper to enforce LRU eviction on the scroll position cache
-function setScrollPositionCacheEntry(
-  key: string,
-  value: { scrollTop: number; scrollHeight: number; wasAtBottom: boolean },
-) {
-  // If key already exists, delete it first so it becomes the most recent
-  if (scrollPositionCache.has(key)) {
-    scrollPositionCache.delete(key)
-  }
-  // Evict oldest entry if at capacity
-  if (scrollPositionCache.size >= MAX_SCROLL_CACHE_SIZE) {
-    const oldestKey = scrollPositionCache.keys().next().value
-    if (oldestKey !== undefined) {
-      scrollPositionCache.delete(oldestKey)
-    }
-  }
-  scrollPositionCache.set(key, value)
-}
+>(MAX_SCROLL_CACHE_SIZE)
 
 // Export function to get saved scroll position
 export function getSavedScrollPosition(conversationId: string) {
@@ -63,7 +45,7 @@ export function useScrollManagement({
   useEffect(() => {
     return () => {
       isAutoScrollingRef.current = false
-      // Cancel any pending animation frame on cleanup
+      // Cancel unknown pending animation frame on cleanup
       if (animationFrameRef.current !== null) {
         cancelAnimationFrame(animationFrameRef.current)
         animationFrameRef.current = null
@@ -81,7 +63,7 @@ export function useScrollManagement({
 
     const wasAtBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight <= AUTO_SCROLL_THRESHOLD
-    setScrollPositionCacheEntry(conversationId, {
+    scrollPositionCache.set(conversationId, {
       scrollTop: container.scrollTop,
       scrollHeight: container.scrollHeight,
       wasAtBottom,
@@ -162,7 +144,7 @@ export function useScrollManagement({
     const container = chatContainerRef.current
     if (!container) return
 
-    // Cancel any previous animation to prevent concurrent animations
+    // Cancel unknown previous animation to prevent concurrent animations
     if (animationFrameRef.current !== null) {
       cancelAnimationFrame(animationFrameRef.current)
     }

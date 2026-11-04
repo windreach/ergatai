@@ -19,7 +19,7 @@ interface AgentTextContextItemProps {
 }
 
 export function AgentTextContextItem({
-  text,
+  text: _text,
   preview,
   onRemove,
 }: AgentTextContextItemProps) {

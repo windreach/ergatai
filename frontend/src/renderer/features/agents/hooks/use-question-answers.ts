@@ -91,7 +91,7 @@ export function useQuestionAnswers({
           })
           clearPendingQuestionCallback()
         }
-      } catch (error) {
+      } catch {
         // Ensure cleanup on error
         clearPendingQuestionCallback()
         // Error will be handled by tRPC/query client error boundaries

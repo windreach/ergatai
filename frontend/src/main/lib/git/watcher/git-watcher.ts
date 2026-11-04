@@ -1,7 +1,11 @@
-import { EventEmitter } from "events";
+import {
+  EventEmitter
+} from "events";
 
 // Chokidar is ESM-only, so we need to dynamically import it
-import type { FSWatcher } from "chokidar";
+import type {
+  FSWatcher
+} from "chokidar";
 
 // Simple debounce implementation to avoid lodash-es dependency in main process
 function debounce<T extends (...args: unknown[]) => unknown>(
@@ -35,7 +39,7 @@ interface GitWatcherConfig {
 	ignorePatterns?: string[];
 }
 
-const DEFAULT_IGNORE_PATTERNS = [
+const _DEFAULT_IGNORE_PATTERNS = [
 	// Node/JS
 	"**/node_modules/**",
 	"**/dist/**",

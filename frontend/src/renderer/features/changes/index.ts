@@ -1,2 +1,12 @@
 export { ChangesView } from "./changes-view";
 export { ChangesPanel } from "./changes-panel";
+export { getStatusIndicator } from "./utils/status";
+export { DiffCenterPeekDialog } from "./components/diff-center-peek-dialog";
+export { DiffFullPageView } from "./components/diff-full-page-view";
+export { DiffSidebarHeader } from "./components/diff-sidebar-header";
+export { useCommitActions } from "./components/commit-input";
+export { usePushAction } from "./hooks/use-push-action";
+export { DiffPageView } from "./diff-page-view";
+export { GitStatusBar } from "./components/git-status-bar";
+export { FileListItem, getFileName, getFileDir } from "./components/file-list-item";
+export * from "./utils";

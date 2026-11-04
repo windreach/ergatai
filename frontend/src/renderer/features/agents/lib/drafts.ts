@@ -12,7 +12,11 @@ export const DRAFTS_CHANGE_EVENT = "drafts-changed"
 const MAX_DRAFT_STORAGE_BYTES = 4 * 1024 * 1024 // 4MB safe limit
 
 // Track blob URLs for cleanup (prevents memory leaks)
-const draftBlobUrls = new Map<string, string[]>()
+import { BoundedCache } from "../../../lib/bounded-cache"
+
+const draftBlobUrls = new BoundedCache<string, string[]>(200, (_key, urls) => {
+  urls?.forEach((url) => URL.revokeObjectURL(url))
+})
 
 // Types for persisted attachments
 export interface DraftImage {
@@ -196,7 +200,7 @@ export function saveConversationDraft(
   saveGlobalDrafts(globalDrafts)
 }
 
-// Clear conversation draft (also revokes any blob URLs)
+// Clear conversation draft (also revokes unknown blob URLs)
 export function clearConversationDraft(chatId: string, conversationId: string): void {
   const globalDrafts = loadGlobalDrafts()
   const key = getConversationDraftKey(chatId, conversationId)
@@ -417,20 +421,13 @@ export function toDraftTextContext(
  * Revoke blob URLs associated with a draft item
  */
 export function revokeDraftBlobUrls(draftId: string): void {
-  const urls = draftBlobUrls.get(draftId)
-  if (urls) {
-    urls.forEach((url) => URL.revokeObjectURL(url))
-    draftBlobUrls.delete(draftId)
-  }
+  draftBlobUrls.delete(draftId)
 }
 
 /**
  * Revoke all tracked blob URLs (call on unmount or cleanup)
  */
 export function revokeAllDraftBlobUrls(): void {
-  draftBlobUrls.forEach((urls) => {
-    urls.forEach((url) => URL.revokeObjectURL(url))
-  })
   draftBlobUrls.clear()
 }
 

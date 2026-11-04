@@ -1,8 +1,13 @@
 import * as fs from "fs/promises"
 import * as path from "path"
 import * as os from "os"
-import { z } from "zod"
-import { router, publicProcedure } from "../index"
+import {
+  z
+} from "zod"
+import {
+  router,
+  publicProcedure
+} from "../index"
 
 const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), ".claude", "settings.json")
 
@@ -38,7 +43,7 @@ async function readClaudeSettings(): Promise<Record<string, unknown>> {
   try {
     const content = await fs.readFile(CLAUDE_SETTINGS_PATH, "utf-8")
     return JSON.parse(content)
-  } catch (error) {
+  } catch {
     // File doesn't exist or is invalid JSON
     return {}
   }

@@ -5,9 +5,9 @@ import {
   pendingUserQuestionsAtom,
   expiredUserQuestionsAtom,
 } from "../atoms"
-import { useSessionState } from "../../conversation/runtime"
+import { useSessionState } from "../../conversation"
 import { trpcClient } from "../../../lib/trpc"
-import { getRuntimeSessionStore } from "../../conversation/runtime/runtime-session-store"
+import { getRuntimeSessionStore } from "../../conversation"
 
 interface UseQuestionHandlingOptions {
   conversationId: string
@@ -152,7 +152,7 @@ export function useQuestionHandling({
       contextWindow: sessionContextWindow || contextWindow,
       contextUsed,
     }
-  }, [messages, provider, conversationId, sessionState])
+  }, [messages, provider, sessionState])
 
   // Track previous streaming state to detect stream stop
   const prevIsStreamingRef = useRef(isStreaming)

@@ -17,13 +17,13 @@ import { cn } from "../../../lib/utils"
 
 /**
  * Props for AgentWebSearchTool component.
- * Note: `part` is typed as `any` because it represents a tool-specific part structure
+ * Note: `part` is typed as `unknown` because it represents a tool-specific part structure
  * from the AI SDK that varies by tool type. The web search tool has its own input/output
  * shape (query, results) that doesn't fit a generic interface. The AI SDK's tool part
  * structure is dynamic and tool-specific, making a shared interface impractical.
  */
 interface AgentWebSearchToolProps {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   part: MessagePart
   chatStatus?: string
 }

@@ -36,7 +36,7 @@ export async function checkOllamaStatus(): Promise<OllamaStatus> {
     const models = data.models?.map((m: { name?: string }) => m.name) || []
 
     // Recommended coding models (in order of preference)
-    // Check for exact matches first, then check for any qwen/deepseek/codestral variant
+    // Check for exact matches first, then check for unknown qwen/deepseek/codestral variant
     const codingModels = [
       'qwen2.5-coder:7b',
       'qwen2.5-coder:3b',
@@ -52,7 +52,7 @@ export async function checkOllamaStatus(): Promise<OllamaStatus> {
 
     let recommendedModel = codingModels.find(m => models.includes(m))
 
-    // If no exact match, try to find any qwen-coder, deepseek-coder, or codestral variant
+    // If no exact match, try to find unknown qwen-coder, deepseek-coder, or codestral variant
     if (!recommendedModel) {
       recommendedModel = models.find((m: string) =>
         m.includes('qwen') && m.includes('coder') ||
@@ -64,7 +64,7 @@ export async function checkOllamaStatus(): Promise<OllamaStatus> {
     return {
       available: true,
       models,
-      recommendedModel: recommendedModel || models[0], // Fallback to any model
+      recommendedModel: recommendedModel || models[0], // Fallback to unknown model
       version: data.version,
     }
   } catch {

@@ -21,7 +21,7 @@ interface AgentExitPlanModeToolProps {
 // This component remains for potential future use.
 // Tracking: Add issue link when component is needed again.
 export const AgentExitPlanModeTool = memo(function AgentExitPlanModeTool({
-  part,
+  part: _part,
 }: AgentExitPlanModeToolProps) {
   return null
 }, areToolPropsEqual)

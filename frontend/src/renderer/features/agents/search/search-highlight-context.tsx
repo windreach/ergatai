@@ -58,7 +58,7 @@ export function SearchHighlightProvider({
   const isOpen = useAtomValue(chatSearchOpenAtom)
 
   // When search is closed, render with static empty context
-  // This prevents any subscriptions to query/matches/currentMatch
+  // This prevents unknown subscriptions to query/matches/currentMatch
   if (!isOpen) {
     return (
       <SearchHighlightContext.Provider value={CLOSED_SEARCH_VALUE}>

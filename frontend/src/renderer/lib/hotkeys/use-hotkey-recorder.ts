@@ -194,7 +194,7 @@ export function useHotkeyRecorder({
         setMainKey(key)
       }
     },
-    [isRecording, modifiers, onCancel]
+    [isRecording, onCancel]
   )
 
   // Handle keyup

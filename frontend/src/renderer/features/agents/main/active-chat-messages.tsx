@@ -14,7 +14,7 @@ type CollaborationSession = ReturnType<
 >
 
 interface ActiveChatMessagesProps {
-  messages: UIMessage<any>[]
+  messages: UIMessage<unknown>[]
   status: string
   conversationId: string
   chatId: string
@@ -29,7 +29,7 @@ interface ActiveChatMessagesProps {
   contentWrapperRef: RefObject<HTMLDivElement | null>
   implicitCollaborationTasks: ImplicitCollaborationTask[]
   collaborationSession: CollaborationSession
-  handleRollback: (msg: UIMessage<any>) => void
+  handleRollback: (msg: UIMessage<unknown>) => void
   handleForkFromMessage: (messageId: string) => void
 }
 

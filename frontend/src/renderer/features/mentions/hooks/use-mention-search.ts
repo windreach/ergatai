@@ -14,6 +14,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { mentionSearchEngine } from "../search"
 import type { MentionItem, AggregatedSearchResult } from "../types"
+import type { MentionSearchContext } from "../index"
 
 /**
  * Debounce delay before starting search
@@ -242,7 +243,7 @@ export function useMentionSearch(
             // Pass MCP context for tools provider
             ...(mcpTools && { mcpTools }),
             ...(mcpServers && { mcpServers }),
-          } as any, // Extended context
+          } as Omit<MentionSearchContext, "query" | "signal" | "limit">, // Extended context
           {
             providerIds,
           }

@@ -23,7 +23,6 @@ import type {
   ConversationSendTicket,
   ConversationQueueItem,
   ResolvedConversation,
-  ResolvedAgentRuntime,
 } from "./contracts"
 
 import { getConversationResolver } from "./conversation-resolver"
@@ -373,7 +372,7 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
 
   /**
    * Process the queue after a turn completes.
-   * Sends the next pending item if any.
+   * Sends the next pending item if unknown.
    * If send fails, the item remains in queue for retry.
    * If send re-enqueues (e.g., session still streaming), the old item is removed
    * to avoid duplicates (send() creates a new item with a new ID).
@@ -399,7 +398,6 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
     // If we remove first, the original item is lost and we can't track it.
     // Instead, send first, then remove based on the result.
     try {
-      const ticket = await this.send(nextItem.originalInput)
 
       // Remove the old item from queue in all success cases:
       // - If ticket.queued === true: send() re-enqueued with a new ID, so remove old item to avoid duplicates

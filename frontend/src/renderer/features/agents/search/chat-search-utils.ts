@@ -1,4 +1,4 @@
-import type { Message, MessagePart, MessageRole } from "../stores/message-store"
+import type { Message, MessagePart } from "../stores/message-store"
 import { MessageRolePolicy } from "../stores/message-store"
 import type { SearchMatch } from "./chat-search-atoms"
 

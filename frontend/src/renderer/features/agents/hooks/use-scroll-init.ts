@@ -1,4 +1,4 @@
-import { useLayoutEffect, useEffect, useRef } from "react"
+import { useLayoutEffect, useEffect, useRef, useCallback } from "react"
 import { useMessageQueueStore } from "../stores/message-queue-store"
 import { appStore } from "../../../lib/jotai-store"
 import { suppressInputFocusAtom } from "../atoms"
@@ -52,7 +52,7 @@ export function useScrollInit({
 
   // Helper function to perform auto-scroll to bottom with proper flag management
   // Used by both ResizeObserver and streaming useEffect to avoid duplication
-  const performAutoScrollToBottom = (container: HTMLElement) => {
+  const performAutoScrollToBottom = useCallback((container: HTMLElement) => {
     requestAnimationFrame(() => {
       isAutoScrollingRef.current = true
       container.scrollTop = container.scrollHeight
@@ -60,7 +60,7 @@ export function useScrollInit({
         isAutoScrollingRef.current = false
       })
     })
-  }
+  }, [isAutoScrollingRef])
 
   // Initialize scroll position on mount or tab re-activation.
   // Strategy: restore saved position if user was scrolled up, otherwise scroll to bottom.
@@ -102,7 +102,7 @@ export function useScrollInit({
       isInitializingScrollRef.current = false
     })
 
-    // ResizeObserver on content wrapper to detect any height change
+    // ResizeObserver on content wrapper to detect unknown height change
     // (markdown rendering, syntax highlighting, image loads, content-visibility reflows, etc.)
     // This is more reliable than MutationObserver which only catches childList changes.
     const contentWrapper = contentWrapperRef.current
@@ -176,7 +176,7 @@ export function useScrollInit({
         performAutoScrollToBottom(container)
       }
     }
-  }, [isVisiblePane, messages, status, conversationId, chatContainerRef, shouldAutoScrollRef, isAutoScrollingRef, scrollInitializedRef])
+  }, [isVisiblePane, messages, status, conversationId, chatContainerRef, shouldAutoScrollRef, isAutoScrollingRef, scrollInitializedRef, performAutoScrollToBottom])
 
   // Scroll to bottom when QueueProcessor auto-sends a queued message.
   // QueueProcessor runs globally and can't access scroll refs, so it
@@ -192,9 +192,9 @@ export function useScrollInit({
       },
     )
     return unsub
-  }, [conversationId, scrollToBottom])
+  }, [conversationId, scrollToBottom, shouldAutoScrollRef])
 
-  // Auto-focus input when switching to this chat (any conversation change)
+  // Auto-focus input when switching to this chat (unknown conversation change)
   // Skip on mobile to prevent keyboard from opening automatically
   useEffect(() => {
     // Skip if not active (keep-alive: don't focus hidden tabs)

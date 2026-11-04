@@ -52,7 +52,8 @@ export function AgentImageItem({
   }, [imageIndex])
 
   // Use allImages if provided, otherwise create stable single-image array
-  const images = allImages || useMemo(() => [{ id, filename, url }], [id, filename, url])
+  const singleImage = useMemo(() => [{ id, filename, url }], [id, filename, url])
+  const images = allImages || singleImage
   const hasMultipleImages = images.length > 1
   const currentImage = images[currentIndex] || images[0]
 

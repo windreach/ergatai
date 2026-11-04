@@ -85,9 +85,34 @@ impl WorkspaceService {
         }
     }
 
-    /// 删除 Workspace（事务性级联删除 Chat、Conversation、Message 等）
+    /// 删除 Workspace（同步删除行，异步清理消息表等重资源）
     pub fn delete_workspace(workspace_id: WorkspaceId) -> anyhow::Result<bool> {
+        // Collect conversation ids before cascade delete so their message tables
+        // can be dropped asynchronously by the queue worker.
+        let conversation_ids =
+            match crate::user_data_db::conversations::list_conversation_ids_by_workspace(
+                workspace_id,
+            ) {
+                Ok(ids) => ids,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to list conversation IDs for cleanup; proceeding with workspace deletion but message tables may not be cleaned up");
+                    Vec::new()
+                }
+            };
+
         let deleted = workspaces::delete(workspace_id)?;
+
+        if deleted {
+            // Enqueue heavy cleanup (drop message tables, runtime cleanup)
+            let entity_id = workspace_id.encode();
+            crate::services::deletion_helpers::enqueue_conversation_cleanup(
+                "workspace",
+                &entity_id,
+                "cleanup_workspace",
+                conversation_ids,
+            );
+        }
+
         Ok(deleted)
     }
 

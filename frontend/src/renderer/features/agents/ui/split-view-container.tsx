@@ -91,7 +91,7 @@ function SplitDivider({
 
   useEffect(() => {
     return () => {
-      // Cleanup any in-progress drag on unmount
+      // Cleanup unknown in-progress drag on unmount
       if (abortRef.current) {
         abortRef.current.abort()
         abortRef.current = null
@@ -117,7 +117,7 @@ function SplitDivider({
 
       target.setPointerCapture(pointerId)
 
-      // Abort any previous drag session
+      // Abort unknown previous drag session
       if (abortRef.current) abortRef.current.abort()
       const controller = new AbortController()
       abortRef.current = controller

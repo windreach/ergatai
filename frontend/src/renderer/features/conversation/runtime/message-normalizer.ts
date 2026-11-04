@@ -19,8 +19,8 @@
  * - fromAgentName: 来源 agent 名称（A2A 消息）
  */
 
-import type { Message, MessageRole, MessagePart } from "../../agents/stores/message-store"
-import type { AgentMessageMetadata } from "../../agents/ui/agent-message-usage"
+import type { Message, MessageRole, MessagePart } from "../../agents"
+import type { AgentMessageMetadata } from "../../agents/public"
 
 /**
  * 后端 API 返回的消息格式（tRPC router 返回）

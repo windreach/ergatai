@@ -19,6 +19,7 @@ import type { MentionProvider, MentionProviderId } from "./types"
  * Listener type for registry changes
  */
 type RegistryListener = () => void
+import { BoundedCache } from "../../lib/bounded-cache"
 
 /**
  * Provider Registry class - manages all registered providers
@@ -30,7 +31,7 @@ class MentionProviderRegistry {
 
   // Memoization for preventing re-renders
   private cachedProviders: MentionProvider[] | null = null
-  private cachedByTrigger = new Map<string, MentionProvider[]>()
+  private cachedByTrigger = new BoundedCache<string, MentionProvider[]>(200)
   private cachedCategories: Array<{ id: string; label: string; priority: number }> | null = null
   private cacheVersion = 0
 

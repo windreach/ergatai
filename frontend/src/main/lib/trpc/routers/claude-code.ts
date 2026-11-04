@@ -1,13 +1,29 @@
-import { randomUUID } from "node:crypto"
-import { safeStorage, shell } from "electron"
-import { z } from "zod"
-import { getAuthManager } from "../../../index"
-import { getClaudeShellEnvironment } from "../../claude"
-import { getExistingClaudeToken } from "../../claude-token"
-import { getApiUrl } from "../../config"
-import { publicProcedure, router } from "../index"
 
-function getDesktopUserId(): string {
+import {
+  safeStorage,
+  shell
+} from "electron"
+import {
+  z
+} from "zod"
+import {
+  getAuthManager
+} from "../../../index"
+import {
+  getClaudeShellEnvironment
+} from "../../claude"
+import {
+  getExistingClaudeToken
+} from "../../claude-token"
+import {
+  getApiUrl
+} from "../../config"
+import {
+  publicProcedure,
+  router
+} from "../index"
+
+function _getDesktopUserId(): string {
   const user = getAuthManager().getUser()
   return user?.id ?? "desktop-default"
 }
@@ -23,7 +39,7 @@ async function getDesktopToken(): Promise<string | null> {
 /**
  * Encrypt token using Electron's safeStorage
  */
-function encryptToken(token: string): string {
+function _encryptToken(token: string): string {
   if (!safeStorage.isEncryptionAvailable()) {
     console.warn("[ClaudeCode] Encryption not available, storing as base64")
     return Buffer.from(token).toString("base64")
@@ -34,7 +50,7 @@ function encryptToken(token: string): string {
 /**
  * Decrypt token using Electron's safeStorage
  */
-function decryptToken(encrypted: string): string {
+function _decryptToken(encrypted: string): string {
   if (!safeStorage.isEncryptionAvailable()) {
     return Buffer.from(encrypted, "base64").toString("utf-8")
   }
@@ -202,7 +218,7 @@ export const claudeCodeRouter = router({
         token: z.string().min(1),
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async () => {
       // Token storage removed - anthropic accounts backend deleted
       console.log("[ClaudeCode] Token import skipped (backend removed)")
       return { success: true }

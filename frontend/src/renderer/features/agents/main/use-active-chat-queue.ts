@@ -1,3 +1,4 @@
+ 
 import { useCallback, useMemo, useRef, useState } from "react"
 import type { MessagePart } from "../stores/message-store"
 import type { AgentQueueItem } from "../lib/queue-utils"
@@ -7,7 +8,8 @@ export function useActiveChatQueue({
   chatInvocation,
 }: {
   invocationQueue: any[]
-  chatInvocation: { service?: { enqueue: (item: any) => void }; removeQueuedItem: (conversationId: string, itemId: string) => any }}) {
+  chatInvocation: any,
+}) {
   const queueCacheRef = useRef<{
     items: typeof invocationQueue
     result: Array<{

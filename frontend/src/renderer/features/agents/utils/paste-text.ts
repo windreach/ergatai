@@ -61,7 +61,6 @@ export function insertTextAtCursor(text: string, editableElement: Element): void
   // Insert using execCommand to preserve undo history
   // execCommand is deprecated but it's the only way to properly integrate with
   // the browser's undo stack in contenteditable elements
-  // eslint-disable-next-line deprecation/deprecation
   document.execCommand("insertText", false, textToInsert)
 }
 

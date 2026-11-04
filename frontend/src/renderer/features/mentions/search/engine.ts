@@ -56,7 +56,7 @@ export class MentionSearchEngine {
     const startTime = performance.now()
     const opts = { ...DEFAULT_OPTIONS, ...options }
 
-    // Cancel any pending search for this trigger
+    // Cancel unknown pending search for this trigger
     const searchKey = `${trigger}:${baseContext.projectPath ?? "global"}`
     const existingController = this.pendingSearches.get(searchKey)
     if (existingController) {

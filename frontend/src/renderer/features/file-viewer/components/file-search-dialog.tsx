@@ -8,8 +8,8 @@ import { trpc } from "@/lib/trpc"
 import { Input } from "@/components/ui/input"
 import { SearchIcon } from "@/components/ui/icons"
 import { UnknownFileIcon } from "@/icons/framework-icons"
-import { getFileIconByExtension } from "../../agents/mentions/file-icon-utils"
-import { recentlyOpenedFilesAtom } from "../../agents/atoms"
+import { getFileIconByExtension } from "../../agents"
+import { recentlyOpenedFilesAtom } from "../../agents"
 
 // ============================================================================
 // Highlight helper – splits text into segments with matching parts marked

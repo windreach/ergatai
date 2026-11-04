@@ -15,13 +15,15 @@
  * - Group context (agents, isGroupChat) must be preserved across the migration
  */
 
-import { useCallback, useMemo } from "react"
+import { useCallback, useEffect, useMemo, useRef } from "react"
 import { useChatInstance } from "../hooks/use-chat-instance"
-import { useConversationInvocation, useSessionState } from "../../conversation/runtime/use-conversation-invocation"
+import { useConversationInvocation, useSessionState } from "../../conversation"
+import { getAdapterRegistry } from "../../conversation"
+import { getMessageCorrelationService } from "../../conversation"
+import type { MessagePart } from "../stores/message-store"
 import { useGroupChat } from "./group-chat-context"
-import type { ChatConversation } from "@/features/details-sidebar/lib/chat-contract-api"
+import type { ChatConversation } from "@/features/details-sidebar"
 import type { UIMessage } from "@ai-sdk/react"
-import type { CoreAgentOption } from "../lib/agent-contract-api"
 
 /**
  * Group chat invocation hook.
@@ -97,27 +99,70 @@ export function useGroupChatInvocation({
     onMessagePersisted,
   })
 
+  // Keep a stable ref to the latest chat instance so the adapter registration
+  // effect does not re-run (and tear down the in-flight stream) on every render.
+  const chatInstanceRef = useRef(chatInstance)
+  chatInstanceRef.current = chatInstance
+
   // Use new invocation service for queue management
   const invocation = useConversationInvocation()
+
+  // Phase 11: Register runtime adapter that delegates to existing Chat instance
+  useEffect(() => {
+    const adapter = {
+      sendMessage: async ({
+        role,
+        parts,
+        interrupt,
+        correlationId,
+        externalMessageId: providedExternalMessageId,
+      }: {
+        role: "user" | "agent"
+        parts: MessagePart[]
+        interrupt?: boolean
+        correlationId?: string
+        externalMessageId?: string
+      }) => {
+        const ci = chatInstanceRef.current
+        const message = await getMessageCorrelationService().createOptimisticMessage({
+          role,
+          parts,
+          externalMessageId: providedExternalMessageId,
+          metadata: {
+            interrupt: interrupt ?? false,
+            correlationId,
+          },
+        })
+        await ci.sendMessage(message as unknown as Parameters<typeof ci.sendMessage>[0])
+      },
+      stop: async () => {
+        chatInstanceRef.current.stop()
+      },
+    }
+
+    return getAdapterRegistry().register(runtimeConversationId, adapter)
+  }, [runtimeConversationId])
 
   // Get session state from new service
   const sessionState = useSessionState(runtimeConversationId)
 
   // Wrap send handler to use new service
-  // For group chat, we may need to route messages to specific agents
+  // Phase 11: Route messages through ConversationInvocationService
   const handleSend = useCallback(
     async (parts: UIMessage["parts"]) => {
-      // For now, delegate to existing chat instance
-      // Future: Replace with invocation.send() with agent routing logic
-      //
-      // Group chat routing logic (Phase 11+):
-      // 1. Parse @mentions from message text
-      // 2. Determine target agent(s) from mentions
-      // 3. If no mentions, use supervisor agent or broadcast to all
-      // 4. Call invocation.send() with appropriate agent routing metadata
-      chatInstance.handleSend(parts)
+      await invocation.send({
+        conversation: {
+          chatId,
+          conversationId: runtimeConversationId,
+          backendConversationId: conversation.backendConversationId,
+          agentId,
+          source: "group",
+        },
+        role: "user",
+        parts: parts as MessagePart[],
+      })
     },
-    [chatInstance],
+    [invocation, chatId, runtimeConversationId, conversation.backendConversationId, agentId],
   )
 
   // Wrap send from queue to use new service
@@ -157,65 +202,61 @@ export function useGroupChatInvocation({
   // This is useful for @mention routing and direct agent communication
   const sendToAgent = useCallback(
     async (targetAgentId: string, parts: UIMessage["parts"]) => {
-      // Phase 11: Implement agent-specific routing
-      // For now, this is a placeholder for future implementation
-      //
-      // Implementation plan:
-      // 1. Find target agent in groupContext.agents
-      // 2. Construct transport config with target agent command
-      // 3. Call invocation.send() with agent routing metadata
-      //
-      // Example:
-      // const targetAgent = groupContext.agents.find(a => a.id === targetAgentId)
-      // if (!targetAgent) {
-      //   console.error(`Agent ${targetAgentId} not found in group`)
-      //   return
-      // }
-      // await invocation.send({
-      //   conversation: { chatId, conversationId: runtimeConversationId, source: "group" },
-      //   role: "user",
-      //   parts,
-      //   metadata: { targetAgentCommand: targetAgent.id }
-      // })
+      const targetAgent = groupContext.agents.find((agent) => agent.id === targetAgentId)
+      if (!targetAgent) {
+        console.error(`[useGroupChatInvocation] Agent ${targetAgentId} not found in group`)
+        return
+      }
 
-      console.warn(
-        "[useGroupChatInvocation] sendToAgent not yet implemented in Phase 11",
-        { targetAgentId, parts },
-      )
+      await invocation.send({
+        conversation: {
+          chatId,
+          conversationId: runtimeConversationId,
+          backendConversationId: conversation.backendConversationId,
+          agentId: targetAgentId,
+          source: "group",
+        },
+        role: "user",
+        parts: parts as MessagePart[],
+        transportOverrides: {
+          command: targetAgentId,
+        },
+      })
     },
-    [groupContext.agents],
+    [invocation, chatId, runtimeConversationId, conversation.backendConversationId, groupContext.agents],
   )
 
   // Group-specific: Broadcast message to all agents in the group
   // This is useful for system-wide notifications or group commands
   const broadcastToGroup = useCallback(
     async (parts: UIMessage["parts"]) => {
-      // Phase 11: Implement broadcast logic
-      // For now, this is a placeholder for future implementation
-      //
-      // Implementation plan:
-      // 1. Iterate through groupContext.agents
-      // 2. Send message to each agent (possibly in parallel)
-      // 3. Handle partial failures gracefully
-      //
-      // Example:
-      // await Promise.all(
-      //   groupContext.agents.map(agent =>
-      //     invocation.send({
-      //       conversation: { chatId, conversationId: runtimeConversationId, source: "group" },
-      //       role: "user",
-      //       parts,
-      //       metadata: { broadcast: true }
-      //     })
-      //   )
-      // )
+      if (groupContext.agents.length === 0) {
+        console.warn("[useGroupChatInvocation] No agents in group to broadcast to")
+        return
+      }
 
-      console.warn(
-        "[useGroupChatInvocation] broadcastToGroup not yet implemented in Phase 11",
-        { parts },
+      await Promise.all(
+        groupContext.agents.map((agent) =>
+          invocation.send({
+            conversation: {
+              chatId,
+              conversationId: runtimeConversationId,
+              backendConversationId: conversation.backendConversationId,
+              agentId: agent.id,
+              source: "group",
+            },
+            role: "user",
+            parts: parts as MessagePart[],
+            transportOverrides: {
+              command: agent.id,
+            },
+          }).catch((error) => {
+            console.error(`[useGroupChatInvocation] Broadcast to ${agent.id} failed:`, error)
+          }),
+        ),
       )
     },
-    [groupContext.agents],
+    [invocation, chatId, runtimeConversationId, conversation.backendConversationId, groupContext.agents],
   )
 
   // Return combined API with group context

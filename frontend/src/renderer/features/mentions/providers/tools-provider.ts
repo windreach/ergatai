@@ -13,7 +13,7 @@ import {
   MENTION_PREFIXES,
   sortByRelevance,
 } from "../types"
-import { buildGenericMentionToken } from "../../agents/mentions/mentions-utils"
+import { buildGenericMentionToken } from "../../agents"
 
 /**
  * Data payload for MCP server mentions

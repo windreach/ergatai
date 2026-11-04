@@ -1,12 +1,44 @@
-import { z } from "zod"
-import { router, publicProcedure } from "../index"
-import { readdir, stat, readFile, writeFile, mkdir, rename as fsRename, rm } from "node:fs/promises"
-import { join, relative, basename, extname, dirname, resolve, isAbsolute } from "node:path"
-import { app, shell } from "electron"
-import { watch, type FSWatcher } from "node:fs"
-import { observable } from "@trpc/server/observable"
-import { assertRegisteredWorktree } from "../../git/security/path-validation"
-import { conversationKeySchema } from "../../validation/ids"
+import {
+  z
+} from "zod"
+import {
+  router,
+  publicProcedure
+} from "../index"
+import {
+  readdir,
+  stat,
+  readFile,
+  writeFile,
+  mkdir,
+  rename as fsRename
+} from "node:fs/promises"
+import {
+  join,
+  relative,
+  basename,
+  extname,
+  dirname,
+  resolve,
+  isAbsolute
+} from "node:path"
+import {
+  app,
+  shell
+} from "electron"
+import {
+  watch,
+  type FSWatcher
+} from "node:fs"
+import {
+  observable
+} from "@trpc/server/observable"
+import {
+  assertRegisteredWorktree
+} from "../../git/security/path-validation"
+import {
+  conversationKeySchema
+} from "../../validation/ids"
 
 // Directories to ignore when scanning
 const IGNORED_DIRS = new Set([
@@ -155,7 +187,6 @@ function validatePathSafe(targetPath: string, allowedParent?: string): void {
  */
 async function assertPathInRegisteredScope(filePath: string): Promise<void> {
   let current = isAbsolute(filePath) ? filePath : resolve(filePath)
-  const root = dirname(current)
 
   // Walk up the directory tree looking for a registered worktree/project
   while (true) {

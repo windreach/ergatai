@@ -61,14 +61,14 @@ function forceRemoveLinkPopup(): void {
  * Remove the link popup with a small delay to allow mouse to move to it.
  */
 export function removeLinkPopup(): void {
-  // Clear any pending show timeout
+  // Clear unknown pending show timeout
   if (_showTimeout) {
     clearTimeout(_showTimeout)
     _showTimeout = undefined
   }
   _pendingUrl = undefined
 
-  // Clear any existing remove timeout
+  // Clear unknown existing remove timeout
   if (_removeTimeout) {
     clearTimeout(_removeTimeout)
   }
@@ -100,12 +100,12 @@ export function showLinkPopup(
     return
   }
 
-  // Cancel any existing popup for a different URL
+  // Cancel unknown existing popup for a different URL
   if (_linkPopup || _showTimeout) {
     forceRemoveLinkPopup()
   }
 
-  // Clear any pending removal
+  // Clear unknown pending removal
   if (_removeTimeout) {
     clearTimeout(_removeTimeout)
     _removeTimeout = undefined

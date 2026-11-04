@@ -333,56 +333,56 @@ impl MessageSender {
             let _target_spawn_mutex = spawn_lock(&req.to);
             let _target_resolution_guard = _target_spawn_mutex.lock().await;
             match self.resolve_target_agent(&runtime, &req.to).await {
-            Some(id) => id,
-            None => {
-                // Target may also be identified directly by its bound Conversation.
-                if let Some(agent_id) = find_agent_by_conversation(&runtime, &req.to).await {
-                    agent_id
-                } else if let Some(auto_resumed_id) = self
-                    .try_auto_resume_suspended_agent(
-                        &runtime,
-                        &req.to,
-                        req.conversation_id
-                            .as_deref()
-                            .or(req.target_conversation_id.as_deref()),
-                    )
-                    .await
-                {
-                    info!(
-                        target = %req.to,
-                        conversation_id = ?req.conversation_id,
-                        resumed_agent_id = %auto_resumed_id,
-                        "Auto-resumed suspended target agent"
-                    );
-                    auto_resumed_id
-                } else {
-                    // Not a suspended agent — try to spawn from profile
-                    match self
-                        .try_auto_spawn_agent(&runtime, &req.to, &resolved_sender_id)
+                Some(id) => id,
+                None => {
+                    // Target may also be identified directly by its bound Conversation.
+                    if let Some(agent_id) = find_agent_by_conversation(&runtime, &req.to).await {
+                        agent_id
+                    } else if let Some(auto_resumed_id) = self
+                        .try_auto_resume_suspended_agent(
+                            &runtime,
+                            &req.to,
+                            req.conversation_id
+                                .as_deref()
+                                .or(req.target_conversation_id.as_deref()),
+                        )
                         .await
                     {
-                        Some(agent_id) => {
-                            info!(
-                                target = %req.to,
-                                agent_id = %agent_id,
-                                "Spawned target agent from profile (message-driven)"
-                            );
-                            agent_id
-                        }
-                        None => {
-                            return SendMessageResult::Rejected {
+                        info!(
+                            target = %req.to,
+                            conversation_id = ?req.conversation_id,
+                            resumed_agent_id = %auto_resumed_id,
+                            "Auto-resumed suspended target agent"
+                        );
+                        auto_resumed_id
+                    } else {
+                        // Not a suspended agent — try to spawn from profile
+                        match self
+                            .try_auto_spawn_agent(&runtime, &req.to, &resolved_sender_id)
+                            .await
+                        {
+                            Some(agent_id) => {
+                                info!(
+                                    target = %req.to,
+                                    agent_id = %agent_id,
+                                    "Spawned target agent from profile (message-driven)"
+                                );
+                                agent_id
+                            }
+                            None => {
+                                return SendMessageResult::Rejected {
                                 reason: format!(
                                     "Agent {} not found. Agent must connect via MCP or be running as an ACP agent. \
                                      or be a valid profile name.",
                                     req.to
                                 ),
                             };
+                            }
                         }
                     }
                 }
-            }
-        } // close match expression
-    }; // close target resolution block
+            } // close match expression
+        }; // close target resolution block
 
         // 1c. Create resolved request with actual runtime agent IDs
         let resolved_req = SendRequest {

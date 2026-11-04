@@ -1,3 +1,4 @@
+ 
 "use client"
 
 import { memo, useMemo } from "react"
@@ -7,13 +8,12 @@ import { MemoizedTextPart } from "./memoized-text-part"
 import { CopyButton } from "../ui/message-action-buttons"
 import { InterAgentRepliesDisclosure } from "./inter-agent-replies-disclosure"
 import {
-  CORE_AGENT_OPTIONS,
   getCoreAgentDisplayName,
   type CoreAgentId,
 } from "../lib/agent-contract-api"
 
 interface AgentMessageItemProps {
-  message: UIMessage<any>
+  message: UIMessage<unknown>
   chatId: string
   isMobile: boolean
   displaySenderName?: string
@@ -61,7 +61,7 @@ function unwrapAgentMessage(value: string): string {
 export const AgentMessageItem = memo(function AgentMessageItem({
   message,
   chatId,
-  isMobile,
+  isMobile: _isMobile,
   displaySenderName,
   senderCoreAgentId,
 }: AgentMessageItemProps) {

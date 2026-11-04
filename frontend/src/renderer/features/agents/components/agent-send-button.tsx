@@ -14,7 +14,6 @@ import {
   TooltipTrigger,
 } from "../../../components/ui/tooltip"
 import { useResolvedHotkeyDisplayWithAlt, useResolvedHotkeyDisplay } from "../../../lib/hotkeys"
-import { cn } from "../../../lib/utils"
 import type { AgentMode } from "../atoms"
 
 interface AgentSendButtonProps {

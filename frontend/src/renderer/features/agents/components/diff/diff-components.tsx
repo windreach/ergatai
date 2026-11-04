@@ -18,11 +18,11 @@ import { Button } from '../../../../components/ui/button'
 import { IconCloseSidebarRight } from '../../../../components/ui/icons'
 import { ResizableSidebar } from '../../../../components/ui/resizable-sidebar'
 import type { FileStatus } from '../../../../../shared/changes-types'
-import { getStatusIndicator } from '../../../changes/utils/status'
+import { getStatusIndicator } from '../../../changes'
 import { ChangesPanel } from '../../../changes'
-import { DiffCenterPeekDialog } from '../../../changes/components/diff-center-peek-dialog'
-import { DiffFullPageView } from '../../../changes/components/diff-full-page-view'
-import { DiffSidebarHeader } from '../../../changes/components/diff-sidebar-header'
+import { DiffCenterPeekDialog } from '../../../changes'
+import { DiffFullPageView } from '../../../changes'
+import { DiffSidebarHeader } from '../../../changes'
 import {
   createPanelLinkScopeKey,
   panelLinkCommandAtomFamily,
@@ -146,20 +146,14 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
   chatId,
   sandboxId,
   repository,
-  diffStats,
-  setDiffStats,
+    setDiffStats,
   diffContent,
   parsedFileDiffs,
   prefetchedFileContents,
   setDiffCollapseState,
   diffViewRef,
-  agentChat,
-  sidebarWidth,
-  onCommitWithAI,
-  isCommittingWithAI = false,
-  diffMode,
-  setDiffMode,
-  onCreatePr,
+    sidebarWidth,
+          onCreatePr,
   onDiscardSuccess,
   conversations = [],
 }: Omit<DiffSidebarContentProps, 'selectedFilePath' | 'onFileSelect' | 'onCommitSuccess' | 'initialConversationFilter' | 'onSelectNextFile'>) {
@@ -188,8 +182,7 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
     return null
   }, [selectedFilePath, parsedFileDiffs])
   const [changesPanelWidth, setChangesPanelWidth] = useAtom(agentsChangesPanelWidthAtom)
-  const [isChangesPanelCollapsed, setIsChangesPanelCollapsed] = useAtom(agentsChangesPanelCollapsedAtom)
-  const [isResizing, setIsResizing] = useState(false)
+  const [_isResizing, setIsResizing] = useState(false)
 
   // Active tab state (Changes/History) - atom so external components can switch tabs
   const [activeTab, setActiveTab] = useAtom(diffActiveTabAtom)
@@ -201,7 +194,7 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
     return () => {
       resetActiveTabRef.current = null
     }
-  }, [resetActiveTabRef])
+  }, [resetActiveTabRef, setActiveTab])
 
   // Selected commit for History tab
   const [selectedCommit, setSelectedCommit] = useAtom(selectedCommitAtom)
@@ -266,7 +259,7 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
   }, [setSelectedCommit])
 
   // Handle file selection in commit (History tab)
-  const handleCommitFileSelect = useCallback((file: { path: string }, commitHash: string) => {
+  const handleCommitFileSelect = useCallback((file: { path: string }, _commitHash: string) => {
     // Set selected file path for highlighting
     handleDiffFileSelect(file, "")
   }, [handleDiffFileSelect])
@@ -737,7 +730,7 @@ interface DiffSidebarRendererProps {
   diffSidebarRef: React.RefObject<HTMLDivElement | null>
   agentChat: { prUrl?: string; prNumber?: number } | null | undefined
   branchData: { current: string } | undefined
-  gitStatus: { pushCount?: number; pullCount?: number; hasUpstream?: boolean; ahead?: number; behind?: number; staged?: any[]; unstaged?: any[]; untracked?: any[] } | undefined
+  gitStatus: { pushCount?: number; pullCount?: number; hasUpstream?: boolean; ahead?: number; behind?: number; staged?: unknown[]; unstaged?: unknown[]; untracked?: unknown[] } | undefined
   isGitStatusLoading: boolean
   isDiffSidebarOpen: boolean
   diffDisplayMode: "side-peek" | "center-peek" | "full-page"
@@ -776,13 +769,13 @@ export const DiffSidebarRenderer = memo(function DiffSidebarRenderer({
   sandboxId,
   repository,
   diffStats,
-  diffContent,
+    diffContent,
   parsedFileDiffs,
   prefetchedFileContents,
   setDiffCollapseState,
   diffViewRef,
   diffSidebarRef,
-  agentChat,
+    agentChat,
   branchData,
   gitStatus,
   isGitStatusLoading,
@@ -805,7 +798,7 @@ export const DiffSidebarRenderer = memo(function DiffSidebarRenderer({
   handleCollapseAll,
   diffMode,
   setDiffMode,
-  handleMarkAllViewed,
+      handleMarkAllViewed,
   handleMarkAllUnviewed,
   isDesktop,
   isFullscreen,
@@ -817,7 +810,7 @@ export const DiffSidebarRenderer = memo(function DiffSidebarRenderer({
   onDiscardSuccess,
 }: DiffSidebarRendererProps) {
   // Get callbacks and state from context
-  const { handleCloseDiff, viewedCount, handleViewedCountChange } = useDiffState()
+  const { handleCloseDiff, viewedCount } = useDiffState()
 
   const handleReviewWithAI = useCallback(() => {
     if (diffDisplayMode !== "side-peek") {

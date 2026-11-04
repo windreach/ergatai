@@ -1,7 +1,7 @@
 import { useEffect } from "react"
 
 import { getRuntimeSessionStore } from "./runtime-session-store"
-import type { Message } from "../../agents/stores/message-store"
+import type { Message } from "../../agents"
 
 export type RuntimeSessionSources = {
   conversationId?: string | null

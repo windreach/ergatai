@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils"
 import { ChatMarkdownRenderer } from "../../../components/chat-markdown-renderer"
 
 interface ChatMessagesRendererProps {
-  messages: UIMessage<any>[]
+  messages: UIMessage<unknown>[]
   status: string
   conversationId: string
   chatId: string
@@ -45,10 +45,10 @@ interface ChatMessagesRendererProps {
 
 export const ChatMessagesRenderer = memo(function ChatMessagesRenderer({
   messages,
-  status,
+  status: _status,
   conversationId,
   chatId,
-  isActive = true,
+  isActive: _isActive = true,
   isEmpty = false,
   isMobile = false,
   sandboxSetupStatus = "ready",
@@ -153,7 +153,10 @@ export const ChatMessagesRenderer = memo(function ChatMessagesRenderer({
           {messages.map((message) => {
             const role = message.role as string
             const text = message.parts
-              ?.map((part: any) => (part?.type === "text" ? part.text || "" : ""))
+              ?.map((part: unknown) => {
+                const p = part as { type?: string; text?: string }
+                return p?.type === "text" ? p.text || "" : ""
+              })
               .join("\n") || ""
 
             // Only human user messages use the user bubble

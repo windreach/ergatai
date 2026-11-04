@@ -9,8 +9,12 @@
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import { randomToken } from "../../../shared/id"
-import { authIdSchema } from "../validation/ids"
+import {
+  randomToken
+} from "../../../shared/id"
+import {
+  authIdSchema
+} from "../validation/ids"
 
 export const ERGATAI_API_URL =
   process.env.ERGATAI_API_URL || "http://127.0.0.1:3000"
@@ -249,7 +253,7 @@ async function performErgataiRequest<T>(
 
     try {
       return JSON.parse(text)
-    } catch (parseError) {
+    } catch {
       console.error(`[ergataiFetch] Failed to parse JSON: ${text}`)
       throw new ErgataiApiError(0, `Failed to parse response: ${text.substring(0, 100)}`)
     }

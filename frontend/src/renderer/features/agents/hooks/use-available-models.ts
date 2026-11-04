@@ -104,7 +104,7 @@ export function useAvailableModels(agentId?: string | null): UseAvailableModelsR
   const profileName = activeAgent?.profile ?? null
 
   // Query cached models from backend by profile name
-  const { data: modelData, refetch, isLoading } = trpc.ergatai.getAgentProfileModels.useQuery(
+  const { data: modelData, refetch, isLoading: _isLoading } = trpc.ergatai.getAgentProfileModels.useQuery(
     { profileName: profileName ?? "" },
     { enabled: !!profileName, refetchOnWindowFocus: false },
   )
@@ -147,7 +147,7 @@ export function useAvailableModels(agentId?: string | null): UseAvailableModelsR
     console.log("[useAvailableModels] Triggering refresh for profile:", profileName)
     requestedModelProfileRef.current = profileName
     refreshMutationRef.current.mutate({ profileName })
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshMutation is unstable, use ref
+     
   }, [modelData, profileName])
 
   // Map backend response to UI format

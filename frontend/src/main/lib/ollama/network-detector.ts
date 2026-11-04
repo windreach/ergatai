@@ -3,8 +3,13 @@
  * Checks if internet is available for Claude API
  */
 
-import { CACHE_TTL, TIMEOUT } from '../config'
-import { isOfflineSimulated } from '../trpc/routers/debug'
+import {
+  CACHE_TTL,
+  TIMEOUT
+} from '../config'
+import {
+  isOfflineSimulated
+} from '../trpc/routers/debug'
 
 export interface NetworkStatus {
   online: boolean
@@ -54,13 +59,13 @@ export async function checkInternetConnection(): Promise<boolean> {
 
       clearTimeout(timeoutId)
 
-      // If we get any response, internet is available
+      // If we get unknown response, internet is available
       if (response.ok || response.status >= 400) {
         cachedStatus = { online: true, lastCheck: now }
         console.log(`[Network] Internet check: ONLINE (via ${endpoint})`)
         return true
       }
-    } catch (error) {
+    } catch {
       // Try next endpoint
       continue
     }

@@ -9,7 +9,6 @@
  */
 
 import { atom } from "jotai"
-import { appStore } from "../../../lib/jotai-store"
 import { trpcClient } from "../../../lib/trpc"
 import { createLogger } from "../../../../main/lib/logger"
 
@@ -236,7 +235,7 @@ export async function getOrCreateActiveAgent(
   // Use conversationId as the lock key to prevent duplicate agents per conversation
   const lockKey = conversationId || chatId
 
-  // FIX #1: Create the creation promise IMMEDIATELY to lock this key BEFORE any async work.
+  // FIX #1: Create the creation promise IMMEDIATELY to lock this key BEFORE unknown async work.
   // Without this, two concurrent callers could both pass the pendingFetches.get check below,
   // both call checkExistingAgentBinding, both find no live agent, and both spawn new agents.
   const creationPromise = (async () => {

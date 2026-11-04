@@ -1,6 +1,8 @@
 import fs from "node:fs/promises"
 import path from "node:path"
-import { app } from "electron"
+import {
+  app
+} from "electron"
 
 const MAX_SCROLLBACK_CHARS = 500_000
 
@@ -109,7 +111,7 @@ export class HistoryWriter {
   }
 
   /**
-   * Close the history writer, flushing any remaining data.
+   * Close the history writer, flushing unknown remaining data.
    */
   async close(exitCode?: number): Promise<void> {
     await this.flush()
@@ -171,7 +173,7 @@ export class HistoryReader {
       }
 
       return { scrollback }
-    } catch (err) {
+    } catch {
       // File doesn't exist or can't be read
       return { scrollback: "" }
     }

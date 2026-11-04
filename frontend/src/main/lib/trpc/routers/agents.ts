@@ -1,5 +1,10 @@
-import { z } from "zod"
-import { router, publicProcedure } from "../index"
+import {
+  z
+} from "zod"
+import {
+  router,
+  publicProcedure
+} from "../index"
 import * as fs from "fs/promises"
 import * as path from "path"
 import * as os from "os"
@@ -7,11 +12,18 @@ import {
   parseAgentMd,
   generateAgentMd,
   VALID_AGENT_MODELS,
-  type FileAgent,
+  type FileAgent
 } from "./agent-utils"
-import { discoverInstalledPlugins, getPluginComponentPaths } from "../../plugins"
-import { getEnabledPlugins } from "./claude-settings"
-import { ergataiFetch } from "../../ergatai/api"
+import {
+  discoverInstalledPlugins,
+  getPluginComponentPaths
+} from "../../plugins"
+import {
+  getEnabledPlugins
+} from "./claude-settings"
+import {
+  ergataiFetch
+} from "../../ergatai/api"
 
 // Helper: fetch backend agent profiles and convert to FileAgent format
 async function fetchBackendAgents(): Promise<FileAgent[]> {
@@ -39,7 +51,7 @@ async function fetchBackendAgents(): Promise<FileAgent[]> {
       source: "backend" as const,
       path: profile.command, // Use command as path for backend agents
     }))
-  } catch (error) {
+  } catch {
     // Backend unreachable - silently return empty array
     // This ensures filesystem agents still work even if backend is down
     return []
@@ -55,7 +67,7 @@ const listAgentsProcedure = publicProcedure
       })
       .optional(),
   )
-  .query(async ({ input }) => {
+  .query(async () => {
     // Fetch backend profiles (agents registered via Ergatai API)
     const backendAgents = await fetchBackendAgents()
     return backendAgents

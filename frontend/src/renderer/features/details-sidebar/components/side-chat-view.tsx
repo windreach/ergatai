@@ -1,22 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useAtom, useAtomValue } from "jotai"
+import { useAtomValue } from "jotai"
 import { Plus, X } from "lucide-react"
-import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import { trpc } from "@/lib/trpc"
-import { groupAgentChatRequestAtomFamily } from "../../agents/collaboration/group-chat-context"
-import { chatContractApi } from "../lib/chat-contract-api"
-import { useConversationSession } from "../lib/use-conversation-session"
+import { useConversationRuntime } from "../lib/conversation-runtime-gateway"
+import type { ConversationRuntimeState } from "../lib/conversation-runtime-gateway"
+import { buildRuntimeMessages } from "../lib/conversation-runtime-ui"
+import { mapSessionMessage } from "../lib/session-message-mapper"
+import { attachSideCopyProjectionsToTrace } from "../lib/side-copy-projection"
 import {
   type ChatConversation,
 } from "../lib/chat-contract-api"
-import {
-  agentContractApi,
-  CORE_AGENT_OPTIONS,
-  type CoreAgentId,
-  type CoreAgentOption,
-} from "../../agents/lib/agent-contract-api"
-import { getCoreAgentIcon } from "../../agents/components/core-agent-selector"
+import { getCoreAgentIcon } from "../../agents"
 import { SideChat } from "./side-chat"
 import {
   DropdownMenu,
@@ -24,8 +19,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { loadingConversationsAtom } from "../../agents/atoms"
+import { loadingConversationsAtom } from "../../agents"
 import { LoadingDot } from "../../../components/ui/icons"
+import { useSideChatController } from "../hooks/use-side-chat-controller"
 
 // ============================================================================
 // SideChatView
@@ -48,12 +44,26 @@ interface SideChatViewProps {
 }
 
 export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }: SideChatViewProps) {
-  const allAgentsRef = useRef<CoreAgentOption[]>([])
-  const [chatAgentsLoaded, setChatAgentsLoaded] = useState(false)
-  const [sideChats, setSideChats] = useState<ChatConversation[]>([])
-  const [activeSideChatId, setActiveSideChatId] = useState<string | null>(null)
-  const [isCreatingSideChat, setIsCreatingSideChat] = useState(false)
-  const [bindingLoadingTimedOut, setBindingLoadingTimedOut] = useState(false)
+  const controller = useSideChatController(chatId, isActive)
+
+  const {
+    allAgentsRef,
+    chatAgentsLoaded,
+    sideChats,
+    activeSideChatId,
+    setActiveSideChatId,
+    isCreatingSideChat,
+    creatingAgentIds,
+    bindingLoadingTimedOut,
+    agentBindingsQuery,
+    boundAgentIds,
+    availableSideChatAgents,
+    activeSideChat,
+    activeBackendConversationId,
+    activeAgentBinding,
+    processAgentRequest,
+    handleCloseSideChat,
+  } = controller
 
   const loadingConversations = useAtomValue(loadingConversationsAtom)
   const loadingSideChatIds = useMemo(
@@ -61,50 +71,113 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
     [loadingConversations],
   )
 
-  const activeSideChat = useMemo(
-    () => sideChats.find((conversation) => conversation.id === activeSideChatId) ?? null,
-    [activeSideChatId, sideChats],
-  )
+  const runtime = useConversationRuntime(activeBackendConversationId, isActive)
 
-  const activeBackendConversationId = activeSideChat?.backendConversationId
-  const [agentChatRequest, setAgentChatRequest] = useAtom(
-    groupAgentChatRequestAtomFamily(chatId),
+  const messagesQuery = trpc.ergatai.listConversationMessages.useQuery(
+    { conversationId: activeBackendConversationId ?? "" },
+    { enabled: isActive && !!activeBackendConversationId },
   )
-  const agentBindingsQuery = trpc.ergatai.getAgentBindings.useQuery(
-    { chatId },
-    { enabled: isActive && chatId.startsWith("chat_") },
+  const trpcUtils = trpc.useUtils()
+  const reconciledRuntimeTurnsRef = useRef<Set<string>>(new Set())
+  const prevConnectionStatusRef = useRef<ConversationRuntimeState["connectionStatus"] | undefined>(undefined)
+  const prevIsActiveRef = useRef<boolean>(isActive)
+
+  // Reset the reconcile guard whenever the active side conversation changes so a
+  // previously viewed (and already reconciled) turn can be refetched after the
+  // user switches away and back.
+  useEffect(() => {
+    reconciledRuntimeTurnsRef.current.clear()
+  }, [activeBackendConversationId])
+
+  // When the live SSE stream recovers from a reconnect, force a persisted-message
+  // resync so any events missed during the outage are repaired instead of leaving
+  // the side chat stuck on stale content.
+  useEffect(() => {
+    const previous = prevConnectionStatusRef.current
+    prevConnectionStatusRef.current = runtime?.connectionStatus
+    if (!isActive || !activeBackendConversationId) return
+    if (previous === "reconnecting" && runtime?.connectionStatus === "connected") {
+      void messagesQuery.refetch()
+      void trpcUtils.chats.get.invalidate({ id: chatId })
+    }
+  }, [isActive, activeBackendConversationId, chatId, messagesQuery.refetch, runtime?.connectionStatus, trpcUtils])
+
+  // Side chat panels are frequently activated/deactivated. When a panel becomes
+  // active again, refresh persisted messages so the user immediately sees the
+  // latest state instead of waiting for the next terminal turn.
+  useEffect(() => {
+    const wasInactive = !prevIsActiveRef.current
+    prevIsActiveRef.current = isActive
+    if (!wasInactive || !isActive || !activeBackendConversationId) return
+    void messagesQuery.refetch()
+  }, [isActive, activeBackendConversationId, messagesQuery.refetch])
+
+  const persistedMessages = useMemo(
+    () => attachSideCopyProjectionsToTrace(messagesQuery.data ?? []).map(mapSessionMessage),
+    [messagesQuery.data],
+  )
+  const activeConversationMessages = persistedMessages
+
+  const runtimeMessages = useMemo(
+    () => buildRuntimeMessages(runtime),
+    [runtime],
   )
 
   useEffect(() => {
-    if (!agentBindingsQuery.isLoading) {
-      setBindingLoadingTimedOut(false)
-      return
-    }
-    const timer = setTimeout(() => setBindingLoadingTimedOut(true), 3000)
-    return () => clearTimeout(timer)
-  }, [agentBindingsQuery.isLoading])
-  // Get list of agents already bound to this chat
-  const boundAgentIds = useMemo(() => {
-    return new Set(agentBindingsQuery.data?.map((b) => b.agentId) ?? [])
-  }, [agentBindingsQuery.data])
-
-  const {
-    messages: activeConversationMessages,
-    isLoadingMessages: isSideChatMessagesLoading,
-    runtime,
-    runtimeMessages,
-  } = useConversationSession({
-    chatId,
-    conversationId: activeBackendConversationId,
+    if (!activeBackendConversationId) return
+    console.debug("[SideChatRuntime]", {
+      conversationId: activeBackendConversationId,
+      isActive,
+      connectionStatus: runtime?.connectionStatus,
+      status: runtime?.status,
+      turnId: runtime?.turnId,
+      lastSequence: runtime?.lastSequence,
+      persistedCount: persistedMessages.length,
+      runtimeCount: runtimeMessages.length,
+    })
+  }, [
+    activeBackendConversationId,
     isActive,
-  })
+    persistedMessages.length,
+    runtime?.connectionStatus,
+    runtime?.lastSequence,
+    runtime?.status,
+    runtime?.turnId,
+    runtimeMessages.length,
+  ])
 
-  const activeAgentBinding = useMemo(
-    () => agentBindingsQuery.data?.find(
-      (binding) => binding.conversationId === activeBackendConversationId,
-    ) ?? null,
-    [activeBackendConversationId, agentBindingsQuery.data],
-  )
+  const isSideChatMessagesLoading =
+    !!activeBackendConversationId &&
+    persistedMessages.length === 0 &&
+    messagesQuery.isLoading
+
+  useEffect(() => {
+    const terminal = runtime?.status === "completed" || runtime?.status === "error"
+    if (!terminal || !activeBackendConversationId) return
+
+    const reconcileKey = [
+      activeBackendConversationId,
+      runtime?.turnId ?? "",
+      runtime?.lastSequence ?? 0,
+      runtime?.status ?? "",
+    ].join(":")
+    if (reconciledRuntimeTurnsRef.current.has(reconcileKey)) return
+    reconciledRuntimeTurnsRef.current.add(reconcileKey)
+
+    void Promise.all([
+      messagesQuery.refetch(),
+      trpcUtils.chats.get.invalidate({ id: chatId }),
+    ])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    chatId,
+    activeBackendConversationId,
+    messagesQuery.refetch,
+    runtime?.lastSequence,
+    runtime?.status,
+    runtime?.turnId,
+    trpcUtils,
+  ])
 
   useEffect(() => {
     onActiveSideChatChange?.(
@@ -117,159 +190,13 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
     )
   }, [activeSideChat, onActiveSideChatChange])
 
-  // Reset state when chatId changes
-  useEffect(() => {
-    allAgentsRef.current = []
-    setChatAgentsLoaded(false)
-    setSideChats([])
-    setActiveSideChatId(null)
-  }, [chatId])
-
-  useEffect(() => {
-    if (!isActive || chatAgentsLoaded) return
-    let cancelled = false
-
-    agentContractApi.listCoreAgents().then((agents) => {
-      if (cancelled) return
-      allAgentsRef.current = agents
-      setChatAgentsLoaded(true)
-    })
-
-    return () => {
-      cancelled = true
-    }
-  }, [isActive, chatAgentsLoaded])
-
-  const spawnAgentMutation = trpc.ergatai.spawnAgent.useMutation()
-
-  // Track in-flight creations per agent. Opening one agent must not drop
-  // clicks on other agents — those can be created in parallel.
-  const creatingAgentIdsRef = useRef<Set<string>>(new Set())
-
-  const processAgentRequest = useCallback(async (
-    agent: CoreAgentOption,
-    backendConversationId?: string,
-  ) => {
-    // The backend creates and binds target-agent conversations during
-    // agent-to-agent routing. The side chat only needs to attach to the
-    // existing conversation; creating brand-new side conversations is not
-    // supported here.
-    if (!backendConversationId) {
-      toast.error("This agent has no bound conversation yet")
-      return
-    }
-
-    const conversation = await chatContractApi.createConversation(
-      agent,
-      backendConversationId,
-    )
-
-    setSideChats((current) =>
-      current.some(
-        (item) =>
-          item.backendConversationId === backendConversationId ||
-          item.agent.id === agent.id,
-      )
-        ? current
-        : [...current, conversation],
-    )
-    setActiveSideChatId(conversation.id)
-  }, [])
-
-  // Stable ref for useEffect — doesn't change across renders
-  const processAgentRequestRef = useRef(processAgentRequest)
-  processAgentRequestRef.current = processAgentRequest
-
-  const stableProcessRequest = useCallback((agent: CoreAgentOption, backendConversationId?: string) => {
-    processAgentRequestRef.current(agent, backendConversationId)
-  }, [])
-
-  useEffect(() => {
-    if (!agentChatRequest) return
-    const request = agentChatRequest
-
-    // Check if conversation already exists in sideChats
-    const existingConversation = request.conversationId
-      ? sideChats.find(
-          (conversation) =>
-            conversation.backendConversationId === request.conversationId,
-        )
-      : sideChats.find(
-          (conversation) => conversation.agent.id === request.agentId,
-        )
-
-    if (existingConversation) {
-      // Messages come from the conversation session/runtime, not the parent snapshot.
-      setAgentChatRequest(null)
-      setActiveSideChatId(existingConversation.id)
-      return
-    }
-
-    // Core agents can be attached without waiting for profile discovery.
-    // Loaded runtime profiles are still preferred because they carry the
-    // user's display name and command overrides.
-    const groupAgent =
-      allAgentsRef.current.find((agent) => agent.id === request.agentId) ??
-      CORE_AGENT_OPTIONS.find((agent) => agent.id === request.agentId)
-
-    if (!groupAgent) {
-      // Runtime agents spawned by the backend (e.g. answering a supervisor
-      // question) may not resolve to a core agent id. Fall back to the
-      // binding's display name instead of silently dropping the request.
-      const binding = request.conversationId
-        ? agentBindingsQuery.data?.find(
-            (item) => item.conversationId === request.conversationId,
-          )
-        : undefined
-      if (!binding) {
-        setAgentChatRequest(null)
-        return
-      }
-      setAgentChatRequest(null)
-      stableProcessRequest(
-        {
-          id: request.agentId,
-          name: binding.agentName,
-          defaultCommand: binding.agentCommand ?? request.agentId,
-        },
-        request.conversationId,
-      )
-      return
-    }
-
-    setAgentChatRequest(null)
-    stableProcessRequest(groupAgent, request.conversationId)
-  }, [
-    stableProcessRequest,
-    agentChatRequest,
-    sideChats,
-    chatAgentsLoaded,
-    agentBindingsQuery.data,
-  ])
-
-  // Side chat is conversation-session first:
-  // 1. useConversationSession loads persisted messages and runtime events
-  // 2. useChatInstance handles local streaming via Transport
-  // 3. runtimeMessages cover turns started outside the mounted Chat instance
-
-  const handleCloseSideChat = useCallback((conversationId: string) => {
-    const closingIndex = sideChats.findIndex((conversation) => conversation.id === conversationId)
-    const nextChats = sideChats.filter((conversation) => conversation.id !== conversationId)
-
-    setSideChats(nextChats)
-    if (conversationId === activeSideChatId) {
-      const nextActive = nextChats[Math.min(closingIndex, nextChats.length - 1)]
-      setActiveSideChatId(nextActive?.id ?? null)
-    }
-  }, [activeSideChatId, sideChats])
-
   return (
     <>
       {sideChats.length > 0 && (
         <div className="flex h-9 w-full min-w-0 flex-shrink-0 items-center border-b border-border/50">
           <div className="flex min-w-0 items-center gap-1 overflow-x-auto px-1 scrollbar-thin scrollbar-thumb-muted-foreground/20">
             {sideChats.map((conversation) => {
-              const Icon = getCoreAgentIcon(conversation.agent.id as CoreAgentId)
+              const Icon = getCoreAgentIcon(conversation.agent.id as any)
               const isActive = conversation.id === activeSideChatId
               const loadingKey = conversation.backendConversationId ?? conversation.id
               const isLoading = loadingSideChatIds.has(loadingKey)
@@ -331,25 +258,23 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
-              {allAgentsRef.current
-                .filter((agent) => !boundAgentIds.has(agent.id))
-                .map((agent) => {
-                  const Icon = getCoreAgentIcon(agent.id as CoreAgentId)
+              {availableSideChatAgents.map((agent) => {
+                const Icon = getCoreAgentIcon(agent.id as any)
 
-                  return (
-                    <DropdownMenuItem
-                      key={agent.id}
-                      disabled={isCreatingSideChat}
-                      onSelect={() => {
-                        void processAgentRequest(agent)
-                      }}
-                      className="flex items-center gap-2 text-xs"
-                    >
-                      <Icon className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
-                      <span className="min-w-0 truncate">{agent.name}</span>
-                    </DropdownMenuItem>
-                  )
-                })}
+                return (
+                  <DropdownMenuItem
+                    key={agent.id}
+                    disabled={isCreatingSideChat}
+                    onSelect={() => {
+                      void processAgentRequest(agent)
+                    }}
+                    className="flex items-center gap-2 text-xs"
+                  >
+                    <Icon className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 truncate">{agent.name}</span>
+                  </DropdownMenuItem>
+                )
+              })}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -383,26 +308,24 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
           <div className="w-full max-w-64 px-6 text-center">
             <p className="text-sm font-medium">Select an agent to chat</p>
             <div className="mt-5 space-y-3">
-              {allAgentsRef.current
-                .filter((agent) => !boundAgentIds.has(agent.id))
-                .map((agent) => {
-                  const Icon = getCoreAgentIcon(agent.id)
+              {availableSideChatAgents.map((agent) => {
+                const Icon = getCoreAgentIcon(agent.id as any)
 
-                  return (
-                    <button
-                      key={agent.id}
-                      type="button"
-                      disabled={isCreatingSideChat}
-                      onClick={() => {
-                        void processAgentRequest(agent)
-                      }}
-                      className="flex w-full items-center gap-2 rounded-lg border border-border/70 bg-background px-3 py-2 text-sm transition-colors hover:bg-accent/50 disabled:opacity-50"
-                    >
-                      <Icon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
-                      <span className="truncate">{agent.name}</span>
-                    </button>
-                  )
-                })}
+                return (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    disabled={isCreatingSideChat}
+                    onClick={() => {
+                      void processAgentRequest(agent)
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg border border-border/70 bg-background px-3 py-2 text-sm transition-colors hover:bg-accent/50 disabled:opacity-50"
+                  >
+                    <Icon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                    <span className="truncate">{agent.name}</span>
+                  </button>
+                )
+              })}
             </div>
           </div>
         </div>

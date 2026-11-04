@@ -316,7 +316,7 @@ export const TerminalTabs = memo(function TerminalTabs({
   const textRefs = useRef<Map<string, HTMLSpanElement>>(new Map())
   const [truncatedTabs, setTruncatedTabs] = useState<Set<string>>(new Set())
   const [showLeftGradient, setShowLeftGradient] = useState(false)
-  const [showRightGradient, setShowRightGradient] = useState(false)
+  const [_showRightGradient, setShowRightGradient] = useState(false)
   const [editingTerminalId, setEditingTerminalId] = useState<string | null>(
     null,
   )

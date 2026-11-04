@@ -20,7 +20,7 @@ export function MessageGroup({ children, isLastGroup }: MessageGroupProps) {
     let currentBubbleEl: HTMLDivElement | null = null
 
     const setupResizeObserver = () => {
-      // Disconnect previous observer if any
+      // Disconnect previous observer if unknown
       if (observer) {
         observer.disconnect()
         observer = null

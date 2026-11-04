@@ -89,6 +89,7 @@ function extractPrInfo(command: string, stdout: string): GitPrInfo | null {
  * Priority: last PR > last commit (PR is more significant).
  * Returns null if no git activity found.
  */
+ 
 export function extractGitActivity(parts: any[]): GitActivity | null {
   let lastCommit: GitCommitInfo | null = null
   let lastPr: GitPrInfo | null = null

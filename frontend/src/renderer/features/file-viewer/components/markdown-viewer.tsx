@@ -13,8 +13,7 @@ import {
   MarkdownIcon,
   CodeIcon,
 } from "@/components/ui/icons"
-import { Kbd } from "@/components/ui/kbd"
-import { getFileIconByExtension } from "../../agents/mentions/file-icon-utils"
+import { getFileIconByExtension } from "../../agents"
 import {
   Tooltip,
   TooltipContent,
@@ -26,7 +25,7 @@ import { preferredEditorAtom } from "@/lib/atoms"
 import { useResolvedHotkeyDisplay } from "@/lib/hotkeys"
 import { APP_META } from "../../../../shared/external-apps"
 import { ChatMarkdownRenderer } from "@/components/chat-markdown-renderer"
-import { CopyButton } from "../../agents/ui/message-action-buttons"
+import { CopyButton } from "../../agents"
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -34,7 +33,8 @@ import {
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu"
 import { EDITOR_ICONS } from "@/lib/editor-icons"
-import { fileViewerWordWrapAtom, fileViewerDisplayModeAtom } from "../../agents/atoms"
+import { OpenInEditorButton } from "./open-in-editor-button"
+import { fileViewerWordWrapAtom, fileViewerDisplayModeAtom } from "../../agents"
 
 const FILE_VIEWER_MODES = [
   { value: "side-peek" as const, label: "Sidebar", Icon: IconSidePeek },
@@ -293,28 +293,12 @@ function Header({
       {/* Right side: Actions */}
       <div className="flex items-center gap-1 flex-shrink-0">
         {/* Open in editor */}
-        <Tooltip delayDuration={500}>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={handleOpenInEditor}
-              className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer rounded-md px-1.5 py-1 hover:bg-accent hover:text-accent-foreground transition-colors"
-            >
-              <span className="hidden @[400px]:inline">Open in</span>
-              {EDITOR_ICONS[preferredEditor] && (
-                <img
-                  src={EDITOR_ICONS[preferredEditor]}
-                  alt=""
-                  className="h-3.5 w-3.5 flex-shrink-0"
-                />
-              )}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" showArrow={false}>
-            Open in {editorMeta.label}
-            {openInEditorHotkey && <Kbd className="normal-case font-sans">{openInEditorHotkey}</Kbd>}
-          </TooltipContent>
-        </Tooltip>
+        <OpenInEditorButton
+          onClick={handleOpenInEditor}
+          label={editorMeta.label}
+          iconSrc={EDITOR_ICONS[preferredEditor]}
+          hotkey={openInEditorHotkey}
+        />
 
         {/* View mode toggle */}
         {content && (

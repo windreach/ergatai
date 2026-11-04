@@ -1,6 +1,7 @@
 import { trpcClient } from "@/lib/trpc"
 import { createTrpcTerminalProvider } from "./create-provider"
 import type { TerminalProvider } from "./types"
+import type { TerminalRoutes, StreamEventShape } from "./create-provider"
 
 export const backendManagedProvider: TerminalProvider = createTrpcTerminalProvider({
   id: "backend-managed",
@@ -16,20 +17,19 @@ export const backendManagedProvider: TerminalProvider = createTrpcTerminalProvid
       cwd: request.cwd,
     })
   },
-  routes: {
-    write: trpcClient.backendTerminal.write,
-    resize: trpcClient.backendTerminal.resize,
-    signal: trpcClient.backendTerminal.signal,
-    kill: trpcClient.backendTerminal.kill,
-    detach: trpcClient.backendTerminal.detach,
-    clearScrollback: trpcClient.backendTerminal.clearScrollback,
-    stream: trpcClient.backendTerminal.stream,
-  },
+  // Proxy used to lazily resolve tRPC routes and avoid circular dependencies during module
+  // initialization. Type assertion needed because the Proxy doesn't perfectly match the
+  // expected TerminalProvider routes interface at compile time.
+  routes: new Proxy({} as Record<string, unknown>, {
+    get(_target, prop) {
+      return (trpcClient.backendTerminal as Record<string, unknown>)[prop as string]
+    },
+  }) as TerminalRoutes<StreamEventShape>,
   onStreamEvent(event, handlers) {
     if (event.type === "data" && event.data !== undefined) {
       handlers.onData(event.data)
     } else if (event.type === "exit") {
-      handlers.onExit(event.exitCode)
+      handlers.onExit(event.exitCode ?? 0)
     } else if (event.type === "resync") {
       handlers.onReset?.()
     }

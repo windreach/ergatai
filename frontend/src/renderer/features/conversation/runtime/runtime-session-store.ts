@@ -30,7 +30,7 @@ import type {
   ConversationRuntimeError,
 } from "./contracts"
 
-import type { Message } from "../../agents/stores/message-store"
+import type { Message } from "../../agents"
 
 import {
   readPersistedSequence,
@@ -38,6 +38,7 @@ import {
   removePersistedSequence,
 } from "./runtime-sequence-persistence"
 import { getConversationProjectionService } from "./conversation-projection-service"
+import { StableSnapshotCache } from "@/lib/stable-snapshot-cache"
 
 // ============================================================================
 // SESSION STATE - Internal state structure
@@ -80,7 +81,7 @@ export type RuntimeSessionState = {
   /** Queued messages */
   queue: ConversationQueueItem[]
 
-  /** Current error (if any) */
+  /** Current error (if unknown) */
   error: ConversationRuntimeError | null
 
   /** Creation timestamp */
@@ -90,7 +91,7 @@ export type RuntimeSessionState = {
   updatedAt: Date
 
   /** Cached public state (for stable snapshots) */
-  cachedPublicState: ConversationRuntimeState | null
+  publicStateCache: StableSnapshotCache<ConversationRuntimeState>
 
   /** Current turn ID (for preventing stale callbacks from updating state) */
   currentTurnId: string | null
@@ -178,6 +179,16 @@ class RuntimeSessionStoreImpl {
   }
 
   /**
+   * Centralized invalidation of the cached public snapshot.
+   *
+   * All session mutations should go through this instead of touching
+   * `cachedPublicState` directly, so cache policy changes have a single
+   * entry point and invalidation is not accidentally omitted.
+   */
+  private invalidateCachedState(session: RuntimeSessionState): void {
+    session.publicStateCache.invalidate()
+  }
+  /**
    * Get the public runtime state for a conversation.
    * Returns cached state for stable snapshots (useSyncExternalStore compatibility).
    *
@@ -188,15 +199,9 @@ class RuntimeSessionStoreImpl {
     const session = this.getSession(conversationId)
     if (!session) return null
 
-    // Return cached state if available (stable snapshot)
-    if (session.cachedPublicState) {
-      return session.cachedPublicState
-    }
-
-    // Build and cache new state
-    const state = this.toRuntimeState(session)
-    session.cachedPublicState = state
-    return state
+    // Delegate to the stable snapshot cache so invalidation/recompute logic
+    // lives in one place (see StableSnapshotCache).
+    return session.publicStateCache.get(() => this.toRuntimeState(session))
   }
 
   /**
@@ -209,7 +214,7 @@ class RuntimeSessionStoreImpl {
   setCurrentTurnId(conversationId: string, turnId: string | null): void {
     const session = this.ensureSession(conversationId)
     session.currentTurnId = turnId
-    session.cachedPublicState = null // Invalidate cache
+    this.invalidateCachedState(session)
     session.updatedAt = new Date()
 
     this.notifyListeners(conversationId)
@@ -236,7 +241,7 @@ class RuntimeSessionStoreImpl {
   incrementLocalSequence(conversationId: string): number {
     const session = this.ensureSession(conversationId)
     session.localSequence += 1
-    session.cachedPublicState = null // Invalidate cache
+    this.invalidateCachedState(session)
 
     // Persist sequence to localStorage for stream resumption after UI reload
     persistSequence(conversationId, session.localSequence)
@@ -253,7 +258,7 @@ class RuntimeSessionStoreImpl {
   setStatus(conversationId: string, status: ConversationStatus): void {
     const session = this.ensureSession(conversationId)
     session.status = status
-    session.cachedPublicState = null // Invalidate cache
+    this.invalidateCachedState(session)
     session.updatedAt = new Date()
 
     this.notifyListeners(conversationId)
@@ -292,7 +297,7 @@ class RuntimeSessionStoreImpl {
 
     session.persistedMessages = this.normalizeMessages(session, messages)
     session.visibleMessages = this.mergeMessages(session)
-    session.cachedPublicState = null
+    this.invalidateCachedState(session)
     session.updatedAt = new Date()
 
     this.notifyListeners(conversationId)
@@ -324,7 +329,7 @@ class RuntimeSessionStoreImpl {
 
     session.localMessages = this.normalizeMessages(session, messages)
     session.visibleMessages = this.mergeMessages(session)
-    session.cachedPublicState = null // Invalidate cache
+    this.invalidateCachedState(session)
     session.updatedAt = new Date()
 
     this.notifyListeners(conversationId)
@@ -358,7 +363,7 @@ class RuntimeSessionStoreImpl {
 
     session.runtimeMessages = this.normalizeMessages(session, messages)
     session.visibleMessages = this.mergeMessages(session)
-    session.cachedPublicState = null // Invalidate cache
+    this.invalidateCachedState(session)
     session.updatedAt = new Date()
 
     this.notifyListeners(conversationId)
@@ -402,7 +407,7 @@ class RuntimeSessionStoreImpl {
     if (index !== -1) {
       session.runtimeMessages[index] = updater(session.runtimeMessages[index]!)
       session.visibleMessages = this.mergeMessages(session)
-      session.cachedPublicState = null // Invalidate cache
+      this.invalidateCachedState(session)
       session.updatedAt = new Date()
 
       this.notifyListeners(conversationId)
@@ -418,7 +423,7 @@ class RuntimeSessionStoreImpl {
   setStreamingMessageId(conversationId: string, messageId: string | null): void {
     const session = this.ensureSession(conversationId)
     session.streamingMessageId = messageId
-    session.cachedPublicState = null // Invalidate cache
+    this.invalidateCachedState(session)
     session.updatedAt = new Date()
 
     this.notifyListeners(conversationId)
@@ -433,7 +438,7 @@ class RuntimeSessionStoreImpl {
   setLastRuntimeSequence(conversationId: string, sequence: number): void {
     const session = this.ensureSession(conversationId)
     session.lastRuntimeSequence = sequence
-    session.cachedPublicState = null // Invalidate cache
+    this.invalidateCachedState(session)
     session.updatedAt = new Date()
 
     // Persist sequence to localStorage for stream resumption after UI reload
@@ -451,7 +456,7 @@ class RuntimeSessionStoreImpl {
   addQueueItem(conversationId: string, item: ConversationQueueItem): void {
     const session = this.ensureSession(conversationId)
     session.queue.push(item)
-    session.cachedPublicState = null // Invalidate cache
+    this.invalidateCachedState(session)
     session.updatedAt = new Date()
 
     this.notifyListeners(conversationId)
@@ -466,7 +471,7 @@ class RuntimeSessionStoreImpl {
   removeQueueItem(conversationId: string, itemId: string): void {
     const session = this.ensureSession(conversationId)
     session.queue = session.queue.filter((item) => item.id !== itemId)
-    session.cachedPublicState = null // Invalidate cache
+    this.invalidateCachedState(session)
     session.updatedAt = new Date()
 
     this.notifyListeners(conversationId)
@@ -488,7 +493,7 @@ class RuntimeSessionStoreImpl {
     }
     session.contextUsed = used
     session.contextWindow = size
-    session.cachedPublicState = null // Invalidate cache
+    this.invalidateCachedState(session)
     session.updatedAt = new Date()
 
     this.notifyListeners(conversationId)
@@ -510,7 +515,7 @@ class RuntimeSessionStoreImpl {
     const index = session.queue.findIndex((item) => item.id === itemId)
     if (index !== -1) {
       session.queue[index] = updater(session.queue[index]!)
-      session.cachedPublicState = null // Invalidate cache
+      this.invalidateCachedState(session)
       session.updatedAt = new Date()
 
       this.notifyListeners(conversationId)
@@ -526,7 +531,7 @@ class RuntimeSessionStoreImpl {
   setError(conversationId: string, error: ConversationRuntimeError | null): void {
     const session = this.ensureSession(conversationId)
     session.error = error
-    session.cachedPublicState = null // Invalidate cache
+    this.invalidateCachedState(session)
     session.updatedAt = new Date()
 
     this.notifyListeners(conversationId)
@@ -601,7 +606,7 @@ class RuntimeSessionStoreImpl {
       error: null,
       createdAt: now,
       updatedAt: now,
-      cachedPublicState: null,
+      publicStateCache: new StableSnapshotCache<ConversationRuntimeState>(),
       currentTurnId: null,
       contextUsed: undefined,
       contextWindow: undefined,
@@ -630,7 +635,12 @@ class RuntimeSessionStoreImpl {
     session: RuntimeSessionState,
     messages: Message[],
   ): Message[] {
-    return messages.map((message) => {
+    // Compute sequences in a local accumulator first so the mapping is pure
+    // with respect to the input array; session state is updated once at the end.
+    const sequenceUpdates = new Map<string, number>()
+    let localSequence = session.localSequence
+
+    const normalized = messages.map((message) => {
       // Normalize metadata across sources so dedup keys (turnId / externalMessageId)
       // are consistent regardless of whether the message came from persisted
       // history, SSE, or the local transport. Top-level fields are folded into
@@ -654,23 +664,33 @@ class RuntimeSessionStoreImpl {
       }
 
       if (typeof message.sequence === "number") {
-        session.sequenceByMessageId.set(message.id, message.sequence)
-        if (session.localSequence < message.sequence) {
-          session.localSequence = message.sequence
+        sequenceUpdates.set(message.id, message.sequence)
+        if (localSequence < message.sequence) {
+          localSequence = message.sequence
         }
         return { ...message, metadata }
       }
 
-      const existingSequence = session.sequenceByMessageId.get(message.id)
+      const existingSequence =
+        session.sequenceByMessageId.get(message.id) ?? sequenceUpdates.get(message.id)
       if (existingSequence !== undefined) {
+        sequenceUpdates.set(message.id, existingSequence)
         return { ...message, metadata, sequence: existingSequence }
       }
 
-      session.localSequence += 1
-      const sequence = session.localSequence
-      session.sequenceByMessageId.set(message.id, sequence)
+      localSequence += 1
+      const sequence = localSequence
+      sequenceUpdates.set(message.id, sequence)
       return { ...message, metadata, sequence }
     })
+
+    // Apply accumulated sequence state once.
+    session.localSequence = localSequence
+    for (const [id, sequence] of sequenceUpdates) {
+      session.sequenceByMessageId.set(id, sequence)
+    }
+
+    return normalized
   }
 
   /**

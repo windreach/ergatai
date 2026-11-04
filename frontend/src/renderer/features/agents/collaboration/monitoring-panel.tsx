@@ -1,5 +1,5 @@
 import { useMemo } from "react"
-import { FileLock2, LayoutDashboard, MessageSquare } from "lucide-react"
+import { FileLock2, LayoutDashboard } from "lucide-react"
 
 import { trpc } from "../../../lib/trpc"
 import { Badge } from "../../../components/ui/badge"
@@ -29,7 +29,7 @@ type MessageTypeStats = {
   percentage: number
 }
 
-type SystemConfig = {
+type _SystemConfig = {
   nats_initialized: boolean
   nats_port: number | null
   active_agents: number
@@ -66,7 +66,7 @@ function ContentionRow({ contention }: { contention: LockContention }) {
   )
 }
 
-function StatBar({ stat }: { stat: MessageTypeStats }) {
+function _StatBar({ stat }: { stat: MessageTypeStats }) {
   return (
     <div className="px-3 py-1.5 text-xs">
       <div className="flex items-center justify-between">

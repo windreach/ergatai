@@ -12,7 +12,28 @@ export const trpc: ReturnType<typeof createTRPCReact<AppRouter>> =
 
 /**
  * Vanilla client for use outside React components (stores, utilities)
+ *
+ * Lazily created so that importing modules which merely reference `trpcClient`
+ * does not force IPC setup (and failures) in non-browser/test environments.
  */
-export const trpcClient = createTRPCProxyClient<AppRouter>({
-  links: [ipcLink({ transformer: superjson })],
+let _trpcClient: ReturnType<typeof createTRPCProxyClient<AppRouter>> | null = null
+
+function getTrpcClient(): ReturnType<typeof createTRPCProxyClient<AppRouter>> {
+  if (!_trpcClient) {
+    _trpcClient = createTRPCProxyClient<AppRouter>({
+      links: [ipcLink({ transformer: superjson })],
+    })
+  }
+  return _trpcClient
+}
+
+export const trpcClient = new Proxy({} as ReturnType<typeof createTRPCProxyClient<AppRouter>>, {
+  get(_target, prop, receiver) {
+    const client = getTrpcClient()
+    const value = Reflect.get(client, prop, receiver)
+    if (typeof value === "function") {
+      return value.bind(client)
+    }
+    return value
+  },
 })

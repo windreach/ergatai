@@ -54,9 +54,10 @@ export function useConversationShortcuts({
 
   // Cleanup all pending timeouts on unmount
   useEffect(() => {
+    const timeoutIds = timeoutIdsRef.current
     return () => {
-      timeoutIdsRef.current.forEach((id) => clearTimeout(id))
-      timeoutIdsRef.current.clear()
+      timeoutIds.forEach((id) => clearTimeout(id))
+      timeoutIds.clear()
     }
   }, [])
 

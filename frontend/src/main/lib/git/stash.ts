@@ -1,7 +1,16 @@
-import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { simpleGit } from "simple-git"
+import {
+  mkdtemp,
+  rm
+} from "node:fs/promises"
+import {
+  tmpdir
+} from "node:os"
+import {
+  join
+} from "node:path"
+import {
+  simpleGit
+} from "simple-git"
 
 const APPLY_RETRIES = 3
 const APPLY_RETRY_DELAY_MS = 200
@@ -121,7 +130,7 @@ export async function applyRollbackStash(
     let commitHash = ""
     try {
       commitHash = (await git.raw(["rev-parse", ref])).trim()
-    } catch (error) {
+    } catch {
       console.warn(
         `[claude] Rollback checkpoint not found for sdkMessageUuid=${sdkMessageUuid}`,
       )

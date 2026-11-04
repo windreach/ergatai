@@ -259,11 +259,12 @@ pub async fn list(
     }
 
     let collaboration_mode_owned = collaboration_mode.map(|s| s.to_string());
-    let workspaces =
-        tokio::task::spawn_blocking(move || workspaces::list(collaboration_mode_owned.as_deref(), archived))
-            .await
-            .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
-            .map_err(WorkspaceManagerError::from)?;
+    let workspaces = tokio::task::spawn_blocking(move || {
+        workspaces::list(collaboration_mode_owned.as_deref(), archived)
+    })
+    .await
+    .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+    .map_err(WorkspaceManagerError::from)?;
 
     let mut result = Vec::new();
     for workspace in workspaces {
@@ -391,9 +392,9 @@ pub async fn create(
         .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
         .map_err(WorkspaceManagerError::from)?;
 
-    let existing_identical = all_workspaces.iter().find(|w| {
-        w.name == name && w.work_dir == work_dir && w.status == target_status
-    });
+    let existing_identical = all_workspaces
+        .iter()
+        .find(|w| w.name == name && w.work_dir == work_dir && w.status == target_status);
 
     if let Some(existing) = existing_identical {
         // Workspace already exists with same name, path, and status - return it
@@ -987,20 +988,11 @@ pub async fn archive(
         }
     }
 
-    // 3b. Cascade archive all active chats for this workspace
-    let ws_id = WorkspaceId::decode(workspace_id).ok();
-    if let Some(typed_id) = ws_id {
-        if let Err(e) = tokio::task::spawn_blocking(move || chats::archive_by_workspace(typed_id)).await {
-            tracing::warn!(error = %e, "Failed to spawn chat archive task");
-        }
-    }
+    // Archive state is derived from workspace.status; no cascade to chats needed.
 
     // 4. Cleanup runtime workspace
     if let Ok(workspaces) = runtime.backend().list_workspaces().await {
-        if let Some(ws) = workspaces
-            .into_iter()
-            .find(|w| w.id == workspace_id)
-        {
+        if let Some(ws) = workspaces.into_iter().find(|w| w.id == workspace_id) {
             if let Err(e) = runtime.backend().cleanup_workspace(&ws).await {
                 tracing::warn!(error = %e, "Failed to cleanup runtime workspace");
             }
@@ -1053,11 +1045,7 @@ pub async fn restore_workspace(workspace_id: &str) -> Result<Workspace, Workspac
         .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
         .map_err(WorkspaceManagerError::from)?;
 
-    // 3. 级联恢复该 workspace 下所有已归档的 chats（对称于归档时的级联）
-    let ws_id_typed = workspace_id;
-    if let Err(e) = tokio::task::spawn_blocking(move || chats::unarchive_by_workspace(ws_id_typed)).await {
-        tracing::warn!(error = %e, "Failed to spawn chat unarchive task");
-    }
+    // Restore state is derived from workspace.status; no cascade to chats needed.
 
     Ok(updated_workspace)
 }

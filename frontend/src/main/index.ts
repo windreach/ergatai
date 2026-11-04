@@ -1,28 +1,55 @@
-import { app, BrowserWindow, dialog, Menu, nativeImage, session } from "electron"
-import { existsSync, mkdirSync, readFileSync, readlinkSync, unlinkSync } from "fs"
-import { createServer } from "http"
-import { join } from "path"
-import { AuthManager, initAuthManager, getAuthManager as getAuthManagerFromModule } from "./auth-manager"
 import {
-  getLaunchDirectory,
+  app,
+  BrowserWindow,
+  Menu,
+  nativeImage
+} from "electron"
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  unlinkSync
+} from "fs"
+import {
+  createServer
+} from "http"
+import {
+  join
+} from "path"
+import {
+  AuthManager,
+  initAuthManager,
+  getAuthManager as getAuthManagerFromModule
+} from "./auth-manager"
+import {
   isCliInstalled,
   installCli,
   uninstallCli,
-  parseLaunchDirectory,
+  parseLaunchDirectory
 } from "./lib/cli"
-import { cleanupGitWatchers } from "./lib/git/watcher"
-import { getModelSnapshotManager } from "./lib/model-snapshot-manager"
-import { onUnlock as onDevToolsUnlock, isDevToolsUnlocked } from "./lib/devtools-state"
+import {
+  cleanupGitWatchers
+} from "./lib/git/watcher"
+import {
+  getModelSnapshotManager
+} from "./lib/model-snapshot-manager"
+import {
+  onUnlock as onDevToolsUnlock,
+  isDevToolsUnlocked
+} from "./lib/devtools-state"
 import {
   createMainWindow,
   createWindow,
   getWindow,
   getAllWindows,
-  setIsQuitting,
+  setIsQuitting
 } from "./windows/main"
-import { windowManager } from "./windows/window-manager"
 
-import { IS_DEV, AUTH_SERVER_PORT } from "./constants"
+import {
+  IS_DEV,
+  AUTH_SERVER_PORT
+} from "./constants"
 
 // Deep link protocol (must match package.json build.protocols.schemes)
 // Use different protocol in dev to avoid conflicts with production app
@@ -480,7 +507,6 @@ if (gotTheLock) {
     // if (IS_DEV) {
     //   app.name = "Ergatai Dev"
     // }
-
 
     // Register protocol handler (must be after app is ready)
     initialRegistration = registerProtocol()

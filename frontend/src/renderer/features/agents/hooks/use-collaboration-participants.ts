@@ -34,7 +34,7 @@ export function useCollaborationParticipants({
   // Memoize groupAgents to avoid unnecessary effect re-runs
   const stableGroupAgents = useMemo(
     () => groupAgents,
-    [JSON.stringify(groupAgents.map(a => a.id))]
+    [groupAgents],
   )
 
   useEffect(() => {

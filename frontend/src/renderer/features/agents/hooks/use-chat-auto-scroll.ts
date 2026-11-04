@@ -93,7 +93,7 @@ export function useChatAutoScroll({
     const container = containerRef.current
     if (!container) return
 
-    // Cancel any previous animation to prevent concurrent animations
+    // Cancel unknown previous animation to prevent concurrent animations
     if (animationFrameRef.current !== null) {
       cancelAnimationFrame(animationFrameRef.current)
     }
@@ -172,7 +172,7 @@ export function useChatAutoScroll({
       lastContentHeight = newContentHeight
 
       if (shouldAutoScrollRef.current) {
-        // Cancel any previous animation frame before starting a new one
+        // Cancel unknown previous animation frame before starting a new one
         if (resizeObserverFrameRef.current !== null) {
           cancelAnimationFrame(resizeObserverFrameRef.current)
         }
@@ -199,7 +199,7 @@ export function useChatAutoScroll({
     resizeObserver.observe(container)
     return () => {
       resizeObserver.disconnect()
-      // Cancel any pending animation frames
+      // Cancel unknown pending animation frames
       if (resizeObserverFrameRef.current !== null) {
         cancelAnimationFrame(resizeObserverFrameRef.current)
         resizeObserverFrameRef.current = null
@@ -214,7 +214,7 @@ export function useChatAutoScroll({
     container.addEventListener("scroll", handleScroll, { passive: true })
     return () => {
       container.removeEventListener("scroll", handleScroll)
-      // Cancel any pending animation frame on cleanup
+      // Cancel unknown pending animation frame on cleanup
       if (animationFrameRef.current !== null) {
         cancelAnimationFrame(animationFrameRef.current)
         animationFrameRef.current = null
@@ -233,7 +233,7 @@ export function useChatAutoScroll({
     const container = containerRef.current
     if (!container) return
 
-    // Cancel any previous animation frame before starting a new one
+    // Cancel unknown previous animation frame before starting a new one
     if (streamingFrameRef.current !== null) {
       cancelAnimationFrame(streamingFrameRef.current)
     }
@@ -247,7 +247,7 @@ export function useChatAutoScroll({
     })
 
     return () => {
-      // Cancel any pending animation frames on cleanup
+      // Cancel unknown pending animation frames on cleanup
       if (streamingFrameRef.current !== null) {
         cancelAnimationFrame(streamingFrameRef.current)
         streamingFrameRef.current = null

@@ -8,7 +8,7 @@ import { IconSpinner, GitHubIcon } from "../../components/ui/icons"
 import { Logo } from "../../components/ui/logo"
 import { Input } from "../../components/ui/input"
 import { trpc } from "../../lib/trpc"
-import { selectedWorkspaceAtom } from "../agents/atoms"
+import { selectedWorkspaceAtom } from "../agents"
 
 export function SelectRepoPage() {
   const [, setSelectedWorkspace] = useAtom(selectedWorkspaceAtom)

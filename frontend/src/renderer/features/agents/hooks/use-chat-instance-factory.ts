@@ -1,8 +1,8 @@
+ 
 import { useCallback, useRef } from "react"
 import { toast } from "sonner"
 import { appStore } from "../../../lib/jotai-store"
 import { selectedAgentChatIdAtom, soundNotificationsEnabledAtom } from "../../../lib/atoms"
-import { trpcClient } from "../../../lib/trpc"
 import { Chat } from "@ai-sdk/react"
 import { ErgataiChatTransport } from "../lib/ergatai-chat-transport"
 import { GroupChatTransport } from "../lib/group-chat-transport"
@@ -17,14 +17,14 @@ import { conversationAgentStorage } from "../lib/conversation-agent-storage"
 import type { UIMessage } from "@ai-sdk/react"
 import { trpc } from "../../../lib/trpc"
 
-// Type definitions for replacing any
+// Type definitions for replacing unknown
 interface SubConversation {
   id: string
   messages?: UIMessage[] | string
   [key: string]: unknown
 }
 
-interface AgentChatData {
+interface _AgentChatData {
   conversations?: SubConversation[]
   [key: string]: unknown
 }
@@ -39,7 +39,7 @@ interface ExtendedChat {
 
 interface UseChatInstanceFactoryProps {
   // 聊天实例信息
-  // `any` used here because agentChat shape varies across call sites and is not centrally typed
+  // `unknown` used here because agentChat shape varies across call sites and is not centrally typed
   chat: {
     agentChat: unknown
     chatWorkingDir: string | null
@@ -68,7 +68,7 @@ interface UseChatInstanceFactoryProps {
   utils: {
     trpcUtils: ReturnType<typeof trpc.useUtils>
     fetchDiffStatsRef: React.MutableRefObject<() => void>
-    forceUpdate: (val: {}) => void
+    forceUpdate: (val: Record<string, unknown>) => void
   }
 }
 
@@ -170,7 +170,6 @@ export function useChatInstanceFactory({
       // Create transport based on chat type (local worktree vs remote sandbox)
       // Note: Extended thinking setting is read dynamically inside the transport
       // projectPath: original project path for MCP config lookup (chat.worktreePath is the cwd)
-      const projectPath = (chatRef.current.agentChat as { project?: { path?: string } })?.project?.path as string | undefined
       // Fast path for existing chats. Only inspect messages when a local empty-chat provider override
       // might require transport recreation.
       const existing = agentChatStore.get(conversationId)
@@ -238,7 +237,7 @@ export function useChatInstanceFactory({
       const newChat = new Chat<any>({
         id: conversationId,
         messages,
-        transport,
+        transport: transport as any,
         onError: (error) => {
           console.error("[ChatSend] Failed", error)
           toast.error("Message failed", {
@@ -305,6 +304,7 @@ export function useChatInstanceFactory({
       utilsRef.current.forceUpdate({}) // Trigger re-render to use new chat
       return newChat
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   )
 

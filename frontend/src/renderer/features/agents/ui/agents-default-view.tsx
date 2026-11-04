@@ -96,7 +96,6 @@ export function AgentsDefaultView({
     },
     [
       collaborationMode,
-      createWorkspaceMutation.isPending,
       createWorkspaceMutation,
       setSelectedWorkspaceId,
       setShowNewChatForm,

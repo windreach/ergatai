@@ -9,6 +9,7 @@ export function waitForStreamingReady(conversationId: string): Promise<void> {
       return
     }
 
+    // eslint-disable-next-line prefer-const -- assigned after timeout closure captures it
     let unsub: () => void
     const timeout = setTimeout(() => {
       console.warn(

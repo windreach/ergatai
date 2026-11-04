@@ -777,34 +777,6 @@ export function IconTextNone(props: IconProps) {
   )
 }
 
-export function IconColorDefault(props: IconProps) {
-  return (
-    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" {...props}>
-      <g clipPath="url(#clip0_11223_26136)">
-        <rect
-          x="0.75"
-          y="0.75"
-          width="14.5"
-          height="14.5"
-          rx="3.25"
-          stroke="currentColor"
-          strokeWidth="1.5"
-        ></rect>
-        <path
-          opacity="0.33"
-          d="M3 15L1.5 14.5L1 13H3V15ZM7 15H5V13H7V15ZM11 15H9V13H11V15ZM14.5 14.5L13 15V13H15L14.5 14.5ZM5 13H3V11H5V13ZM9 13H7V11H9V13ZM13 13H11V11H13V13ZM3 11H1V9H3V11ZM7 11H5V9H7V11ZM11 11H9V9H11V11ZM15 11H13V9H15V11ZM5 9H3V7H5V9ZM9 9H7V7H9V9ZM13 9H11V7H13V9ZM3 7H1V5H3V7ZM7 7H5V5H7V7ZM11 7H9V5H11V7ZM15 7H13V5H15V7ZM5 5H3V3H5V5ZM9 5H7V3H9V5ZM13 5H11V3H13V5ZM3 3H1L1.5 1.5L3 1V3ZM7 3H5V1H7V3ZM11 3H9V1H11V3ZM14.5 1.5L15 3H13V1L14.5 1.5Z"
-          fill="currentColor"
-        ></path>
-      </g>
-      <defs>
-        <clipPath id="clip0_11223_26136">
-          <rect width="16" height="16" fill="white"></rect>
-        </clipPath>
-      </defs>
-    </svg>
-  )
-}
-
 export function IconBorderWidth(props: IconProps) {
   return (
     <svg
@@ -1098,36 +1070,6 @@ export function IconBorderRadius(props: IconProps) {
         d="M13.9658 3.25024H7.72168C5.82405 3.25024 4.28522 4.78817 4.28516 6.68579V14.5002H2.78516V6.68579C2.78522 3.95975 4.99562 1.75024 7.72168 1.75024H13.9658V3.25024Z"
         fill="currentColor"
       ></path>
-    </svg>
-  )
-}
-
-export function IconShadow(props: IconProps) {
-  return (
-    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" {...props}>
-      <g clipPath="url(#clip0_shadow)">
-        <path
-          opacity="0.33"
-          d="M15.25 12C15.25 13.7949 13.7949 15.25 12 15.25H4C2.20508 15.25 0.750002 13.7949 0.75 12V11.9492C1.63982 13.0724 3.00385 13.7499 4.47168 13.75H11.2832C12.8846 13.7499 14.3732 12.9417 15.25 11.6074V12Z"
-          fill="currentColor"
-          stroke="currentColor"
-          strokeWidth="1.5"
-        />
-        <rect
-          x="0.75"
-          y="0.75"
-          width="14.5"
-          height="11.5"
-          rx="3.25"
-          stroke="currentColor"
-          strokeWidth="1.5"
-        />
-      </g>
-      <defs>
-        <clipPath id="clip0_shadow">
-          <rect width="16" height="16" fill="white" />
-        </clipPath>
-      </defs>
     </svg>
   )
 }
@@ -1836,32 +1778,6 @@ export const CodeIcon = (props: LucideProps) => (
   </svg>
 )
 
-export const FilePlusIcon = ({
-  className,
-  ...props
-}: React.SVGProps<SVGSVGElement>) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    width="24"
-    height="24"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    className={className}
-    {...props}
-  >
-    <g transform="scale(1.15) translate(-1.8, -1.8)">
-      <path d="M11 21H8C6.34315 21 5 19.6569 5 18V6C5 4.34315 6.34315 3 8 3H16C17.6569 3 19 4.34315 19 6V11" />
-      <path d="M18 15V18M18 18V21M18 18H15M18 18H21" />
-      <path d="M9 7H15" />
-      <path d="M9 11H11" />
-    </g>
-  </svg>
-)
-
 export const FilePageIcon = ({
   className,
   ...props
@@ -2048,33 +1964,6 @@ export const EditIcon = ({
   >
     <g transform="scale(1.15) translate(-1.8, -1.8)">
       <path d="M13.5 5.99997L15.25 4.24997C16.4926 3.00733 18.5074 3.00733 19.75 4.24997C20.9926 5.49261 20.9926 7.50733 19.75 8.74997L18 10.5M13.5 5.99997L3.29289 16.2071C3.10536 16.3946 3 16.649 3 16.9142V21H7.08579C7.351 21 7.60536 20.8946 7.79289 20.7071L18 10.5M13.5 5.99997L18 10.5" />
-    </g>
-  </svg>
-)
-
-export const TrashIcon = ({
-  className,
-  ...props
-}: React.SVGProps<SVGSVGElement>) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    width="24"
-    height="24"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    className={className}
-    {...props}
-  >
-    <g transform="scale(1.15) translate(-1.8, -1.8)">
-      <path d="M5 6.5L5.80734 18.2064C5.91582 19.7794 7.22348 21 8.80023 21H15.1998C16.7765 21 18.0842 19.7794 18.1927 18.2064L19 6.5" />
-      <path d="M10 11V16" />
-      <path d="M14 11V16" />
-      <path d="M3.5 6H20.5" />
-      <path d="M8.07092 5.74621C8.42348 3.89745 10.0485 2.5 12 2.5C13.9515 2.5 15.5765 3.89745 15.9291 5.74621" />
     </g>
   </svg>
 )
@@ -2458,63 +2347,6 @@ export const SearchIcon = (props: LucideProps) => (
   </svg>
 )
 
-export const VariantIcon = (props: React.SVGProps<SVGSVGElement>) => {
-  return (
-    <svg
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <g transform="scale(1.05) translate(-1.5, -1.5)">
-        <circle
-          cx="6.5"
-          cy="6"
-          r="2"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <circle
-          cx="6.5"
-          cy="18"
-          r="2"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <circle
-          cx="17.5"
-          cy="6"
-          r="2"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M6.5 8V16"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M17.5 8V10C17.5 11.1046 16.6046 12 15.5 12H8.5C7.39543 12 6.5 12.8954 6.5 14V16"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </g>
-    </svg>
-  )
-}
-
 export const VideoIcon = (props: IconProps) => {
   return (
     <svg
@@ -2551,64 +2383,6 @@ export const MixedIcon = (props: IconProps) => {
           d="M7.43021 10.0321C7.15369 9.41121 7 8.72355 7 8C7 5.23858 9.23858 3 12 3C14.7614 3 17 5.23858 17 8C17 8.72355 16.8463 9.41121 16.5698 10.0321M7.43021 10.0321C4.93709 10.3149 3 12.4312 3 15C3 17.7614 5.23858 20 8 20C9.6356 20 11.0878 19.2147 12 18.0005M7.43021 10.0321C8.13538 11.6155 9.63934 12.7647 11.4302 12.9679M16.5698 10.0321C16.3828 10.0109 16.1927 10 16 10C14.3644 10 12.9122 10.7853 12 11.9995M16.5698 10.0321C19.0629 10.3149 21 12.4312 21 15C21 17.7614 18.7614 20 16 20C14.3644 20 12.9122 19.2147 12 18.0005M12 11.9995C11.7756 12.2981 11.5839 12.6227 11.4302 12.9679M12 11.9995C12.2244 12.2981 12.4161 12.6227 12.5698 12.9679M11.4302 12.9679C11.6172 12.9891 11.8073 13 12 13C12.1927 13 12.1927 12.9891 12.5698 12.9679M12.5698 12.9679C12.8463 13.5888 13 14.2764 13 15C13 16.1258 12.6279 17.1647 12 18.0005"
           stroke="currentColor"
           strokeWidth="2"
-        />
-      </g>
-    </svg>
-  )
-}
-
-export const ClickIcon = (props: IconProps) => {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      {...props}
-    >
-      <g transform="scale(1.1) translate(-1.8, -1.8)">
-        <path
-          d="M11 3V4.5"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M16.6569 5.34375L15.5962 6.40441"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M6.40392 15.5957L5.34326 16.6564"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M4.5 11H3"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M6.40392 6.40343L5.34326 5.34277"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M10.3876 11.3609L14.1309 20.8179C14.2827 21.2014 14.8074 21.2465 15.0225 20.8946L17.1554 17.4043C17.2175 17.3028 17.3028 17.2175 17.4043 17.1554L20.8946 15.0225C21.2465 14.8074 21.2014 14.2827 20.8179 14.1309L11.3609 10.3876C10.7502 10.1458 10.1458 10.7502 10.3876 11.3609Z"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="square"
-          strokeLinejoin="round"
         />
       </g>
     </svg>
@@ -2736,40 +2510,6 @@ export const BookIcon = (props: IconProps) => {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-    </svg>
-  )
-}
-
-export const DesignModeIcon = (props: IconProps) => {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      {...props}
-    >
-      <g transform="scale(1.1) translate(-1.2, -1.2)">
-        <path
-          d="M3 12C3 16.6944 7.02944 20.5 12 20.5C14.8273 20.5 11 18 12 16C13.6125 12.7751 21 18.9062 21 12C21 7.30558 16.9706 3.5 12 3.5C7.02944 3.5 3 7.30558 3 12Z"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="square"
-        />
-        <path
-          d="M7.5 10.75C8.32843 10.75 9 11.4216 9 12.25C9 13.0784 8.32843 13.75 7.5 13.75C6.67157 13.75 6 13.0784 6 12.25C6 11.4216 6.67157 10.75 7.5 10.75Z"
-          fill="currentColor"
-        />
-        <path
-          d="M15.5 8C16.3284 8 17 8.67157 17 9.5C17 10.3284 16.3284 11 15.5 11C14.6716 11 14 10.3284 14 9.5C14 8.67157 14.6716 8 15.5 8Z"
-          fill="currentColor"
-        />
-        <path
-          d="M10.5 6.5C11.3284 6.5 12 7.17157 12 8C12 8.82843 11.3284 9.5 10.5 9.5C9.67157 9.5 9 8.82843 9 8C9 7.17157 9.67157 6.5 10.5 6.5Z"
-          fill="currentColor"
-        />
-      </g>
     </svg>
   )
 }
@@ -2997,48 +2737,6 @@ export const ClipboardCheckIcon = (props: IconProps) => {
   )
 }
 
-export function MagnetIcon(props: IconProps) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      {...props}
-    >
-      <g transform="scale(1.2) translate(-1.8, -1.8)">
-        <path
-          d="M19 2.75C20.2426 2.75 21.25 3.75736 21.25 5C21.25 6.24264 20.2426 7.25 19 7.25C17.7574 7.25 16.75 6.24264 16.75 5C16.75 3.75736 17.7574 2.75 19 2.75Z"
-          stroke="currentColor"
-          strokeWidth="1.7"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M5.56687 18.4341C3.14698 16.0142 3.14698 12.0908 5.56687 9.67087L9.40078 5.83697C10.1066 5.13117 11.2509 5.13117 11.9567 5.83697C12.6625 6.54277 12.6625 7.6871 11.9567 8.3929L8.12281 12.2268C7.11452 13.2351 7.11452 14.8699 8.12281 15.8781C9.1311 16.8864 10.7659 16.8864 11.7741 15.8781L15.608 12.0442C16.3139 11.3384 17.4582 11.3384 18.164 12.0442C18.8698 12.75 18.8698 13.8944 18.164 14.6002L14.3301 18.4341C13.1201 19.644 11.5343 20.249 9.94848 20.249C8.36265 20.249 6.77682 19.644 5.56687 18.4341Z"
-          stroke="currentColor"
-          strokeWidth="1.7"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M13.9648 13.6875L16.5208 16.2434"
-          stroke="currentColor"
-          strokeWidth="1.7"
-          strokeLinecap="round"
-        />
-        <path
-          d="M7.75781 7.47998L10.3137 10.0359"
-          stroke="currentColor"
-          strokeWidth="1.7"
-          strokeLinecap="round"
-        />
-      </g>
-    </svg>
-  )
-}
-
 export const EnterIcon = (props: LucideProps) => (
   <svg
     data-testid="geist-icon"
@@ -3054,40 +2752,6 @@ export const EnterIcon = (props: LucideProps) => (
       d="M13.5 3V2.25H15V3V10C15 10.5523 14.5523 11 14 11H3.56068L5.53035 12.9697L6.06068 13.5L5.00002 14.5607L4.46969 14.0303L1.39647 10.9571C1.00595 10.5666 1.00595 9.93342 1.39647 9.54289L4.46969 6.46967L5.00002 5.93934L6.06068 7L5.53035 7.53033L3.56068 9.5H13.5V3Z"
       fill="currentColor"
     />
-  </svg>
-)
-
-export const DatabaseSearchIcon = (props: IconProps) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    width="24"
-    height="24"
-    viewBox="0 0 24 24"
-    fill="none"
-    {...props}
-  >
-    <g transform="scale(1.15) translate(-1.8, -1.8)">
-      <path
-        d="M18 13V17.9994C18 19.2029 17.282 20.3109 16.1078 20.5748C14.9071 20.8448 13.5019 21 12 21C10.4981 21 9.09291 20.8448 7.89219 20.5748C6.718 20.3109 6 19.2029 6 17.9994V13"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M20 11C20 12.1046 16.4183 13 12 13C7.58172 13 4 12.1046 4 11C4 9.89543 7.58172 9 12 9C16.4183 9 20 9.89543 20 11Z"
-        stroke="currentColor"
-        strokeWidth="2"
-      />
-      <path
-        d="M13.5528 1.8943C13.7371 1.52578 14.2631 1.52581 14.4474 1.8943L14.9259 2.8504C14.9743 2.94717 15.0528 3.02566 15.1496 3.07405L16.1057 3.55259C16.4742 3.73686 16.4742 4.26289 16.1057 4.44716L15.1496 4.9257C15.0528 4.97408 14.9743 5.05258 14.9259 5.14934L14.4474 6.10544C14.2631 6.47399 13.7371 6.47399 13.5528 6.10544L13.0743 5.14934C13.0259 5.05258 12.9474 4.97408 12.8506 4.9257L11.8945 4.44716C11.5261 4.26287 11.526 3.73685 11.8945 3.55259L12.8506 3.07405C12.9474 3.02566 13.0259 2.94717 13.0743 2.8504L13.5528 1.8943Z"
-        fill="currentColor"
-      />
-      <path
-        d="M9.35797 3.21521C9.21044 2.92083 8.78961 2.92072 8.64217 3.21521L8.22617 4.0472C8.18747 4.1246 8.12488 4.1872 8.04747 4.2259L7.21546 4.64189C6.92096 4.78932 6.92107 5.21014 7.21546 5.35767L8.04747 5.77366L8.10313 5.80686C8.15513 5.8444 8.19716 5.89446 8.22617 5.95236L8.40292 6.30683L8.64217 6.78435C8.78041 7.06081 9.15955 7.07816 9.3277 6.8361L9.35797 6.78435L9.77397 5.95236C9.81266 5.87506 9.87537 5.81235 9.95268 5.77366L10.3072 5.59594L10.7847 5.35767C11.0795 5.21025 11.0795 4.78929 10.7847 4.64189L9.95268 4.2259C9.89478 4.19689 9.84472 4.15486 9.80718 4.10286L9.77397 4.0472L9.35797 3.21521Z"
-        fill="currentColor"
-      />
-    </g>
   </svg>
 )
 
@@ -3131,66 +2795,6 @@ export const SendBookmarkIcon = (props: IconProps) => (
       <path
         d="M1.66965 14.0561C1.14837 14.2386 0.873694 14.8091 1.05614 15.3304C1.23859 15.8516 1.80907 16.1263 2.33035 15.9439L1.66965 14.0561ZM22.3304 8.94386C22.8516 8.76141 23.1263 8.19093 22.9439 7.66965C22.7614 7.14837 22.1909 6.87369 21.6696 7.05614L22.3304 8.94386ZM2.33035 15.9439L22.3304 8.94386L21.6696 7.05614L1.66965 14.0561L2.33035 15.9439Z"
         fill="currentColor"
-      />
-    </g>
-  </svg>
-)
-
-export const StrongMagicIcon = (props: IconProps) => (
-  <svg
-    width="24"
-    height="24"
-    viewBox="0 0 24 24"
-    fill="none"
-    xmlns="http://www.w3.org/2000/svg"
-    {...props}
-  >
-    <g>
-      <path
-        d="M11.017 2.81401C11.0598 2.58462 11.1815 2.37743 11.3611 2.22833C11.5406 2.07924 11.7666 1.99762 12 1.99762C12.2333 1.99762 12.4593 2.07924 12.6389 2.22833C12.8184 2.37743 12.9401 2.58462 12.983 2.81401L14.034 8.37201C14.1086 8.76716 14.3006 9.13063 14.585 9.41498C14.8693 9.69934 15.2328 9.89137 15.628 9.96601L21.186 11.017C21.4153 11.0599 21.6225 11.1816 21.7716 11.3611C21.9207 11.5406 22.0023 11.7667 22.0023 12C22.0023 12.2334 21.9207 12.4594 21.7716 12.6389C21.6225 12.8184 21.4153 12.9402 21.186 12.983L15.628 14.034C15.2328 14.1087 14.8693 14.3007 14.585 14.585C14.3006 14.8694 14.1086 15.2329 14.034 15.628L12.983 21.186C12.9401 21.4154 12.8184 21.6226 12.6389 21.7717C12.4593 21.9208 12.2333 22.0024 12 22.0024C11.7666 22.0024 11.5406 21.9208 11.3611 21.7717C11.1815 21.6226 11.0598 21.4154 11.017 21.186L9.96595 15.628C9.89131 15.2329 9.69928 14.8694 9.41492 14.585C9.13057 14.3007 8.7671 14.1087 8.37195 14.034L2.81395 12.983C2.58456 12.9402 2.37737 12.8184 2.22827 12.6389C2.07917 12.4594 1.99756 12.2334 1.99756 12C1.99756 11.7667 2.07917 11.5406 2.22827 11.3611C2.37737 11.1816 2.58456 11.0599 2.81395 11.017L8.37195 9.96601C8.7671 9.89137 9.13057 9.69934 9.41492 9.41498C9.69928 9.13063 9.89131 8.76716 9.96595 8.37201L11.017 2.81401Z"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M20 2V6"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M22 4H18"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M4 22C5.10457 22 6 21.1046 6 20C6 18.8954 5.10457 18 4 18C2.89543 18 2 18.8954 2 20C2 21.1046 2.89543 22 4 22Z"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <rect
-        x="17.75"
-        y="17.75"
-        width="4.5"
-        height="4.5"
-        rx="1.25"
-        stroke="currentColor"
-        strokeWidth="1.5"
-      />
-
-      {/* clean rhombus (top-left) */}
-      <path
-        d="M4.5 2.5L6.5 4.5L4.5 6.5L2.5 4.5Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinejoin="round"
       />
     </g>
   </svg>
@@ -3826,38 +3430,6 @@ export const CategoriesIcon = (props: IconProps) => (
   </svg>
 )
 
-export const ListSearchIcon = (props: IconProps) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    width="16"
-    height="16"
-    viewBox="0 0 24 24"
-    fill="none"
-    {...props}
-  >
-    <g transform="scale(1.2) translate(-1.8, -1.8)">
-      <path
-        d="M4 5C3.44772 5 3 5.44772 3 6C3 6.55228 3.44772 7 4 7H20C20.5523 7 21 6.55228 21 6C21 5.44772 20.5523 5 20 5H4Z"
-        fill="currentColor"
-      />
-      <path
-        d="M4 11C3.36882 11 3 11.4477 3 12C3 12.5523 3.36882 13 4 13H10C10.6312 13 11 12.5523 11 12C11 11.4477 10.6586 11 10.0274 11H4Z"
-        fill="currentColor"
-      />
-      <path
-        d="M4 17C3.5 17 3 17.4477 3 18C3 18.5523 3.5 19 4 19H11C11.5 19 12 18.5523 12 18C12 17.4477 11.5 17 11 17H4Z"
-        fill="currentColor"
-      />
-      <path
-        fillRule="evenodd"
-        clipRule="evenodd"
-        d="M19.8284 11.1722C18.2663 9.61009 15.7337 9.61009 14.1716 11.1722C12.6095 12.7343 12.6095 15.2669 14.1716 16.829C15.4895 18.147 17.4983 18.353 19.0322 17.447L20.2929 18.7077C20.6834 19.0982 21.3166 19.0982 21.7071 18.7077C22.0976 18.3172 22.0976 17.684 21.7071 17.2935L20.4464 16.0328C21.3524 14.4989 21.1464 12.4901 19.8284 11.1722ZM15.5858 12.5864C16.3668 11.8053 17.6332 11.8053 18.4142 12.5864C19.1953 13.3674 19.1953 14.6338 18.4142 15.4148C17.6332 16.1959 16.3668 16.1959 15.5858 15.4148C14.8047 14.6338 14.8047 13.3674 15.5858 12.5864Z"
-        fill="currentColor"
-      />
-    </g>
-  </svg>
-)
-
 export const CloseCircleFilledIcon = (props: IconProps) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
@@ -4181,46 +3753,6 @@ export function PrototypeIconSmall({ className }: { className?: string }) {
   )
 }
 
-export function QuestionsSkippedIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      className={className}
-    >
-      <g transform="scale(1.15) translate(-1.8, -1.8)">
-        <path
-          d="M8 19L16 19"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-        />
-        <path
-          d="M16 5H21V10"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M20.5 5.5C16 9.5 12.5 13.5 12 19"
-          stroke="currentColor"
-          strokeWidth="2"
-        />
-        <path
-          d="M12 18.9999V18.9122C12 12.9251 7.5 7 2 7.06002"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-        />
-      </g>
-    </svg>
-  )
-}
-
 export const TeamIcon = ({
   className,
   ...props
@@ -4465,60 +3997,6 @@ export const InviteTeamIcon = ({
   </svg>
 )
 
-export const MoveToTeamIcon = ({
-  className,
-  ...props
-}: React.SVGProps<SVGSVGElement>) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    viewBox="0 0 24 24"
-    fill="none"
-    className={className}
-    {...props}
-  >
-    <g transform="scale(1.15) translate(-1.8, -1.8)">
-      <path
-        d="M10 9H8"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M8 13H10"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M20 19V10C20 8.89543 19.1046 8 18 8H14"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeMiterlimit="16"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M14 19V6C14 4.89543 13.1046 4 12 4H6C4.89543 4 4 4.89543 4 6V19"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeMiterlimit="16"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M22 19H2"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeMiterlimit="16"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </g>
-  </svg>
-)
-
 export function QuestionCircleIcon(props: IconProps) {
   return (
     <svg
@@ -4614,68 +4092,6 @@ export function MagicChatPlusIcon(props: IconProps) {
   )
 }
 
-export function ContributeIcon(props: IconProps) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      width="24"
-      height="24"
-      {...props}
-    >
-      <g transform="scale(1.15) translate(-1.8, -1.8)">
-        <path
-          d="M17 5C17 5 18 6.1 18 7C19 6.1 20 6.1 20 6.1"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M4.00011 7L4.90011 6.99993V7H4.00011ZM12.0001 6.5H11.1001C11.1001 6.30527 11.1633 6.11579 11.2801 5.96L12.0001 6.5ZM12.4594 5.88767L13.1794 6.42767L13.1794 6.42767L12.4594 5.88767ZM12.2736 3.27346L11.6372 3.90985L12.2736 3.27346ZM12.0001 3L11.4209 2.31116C11.7783 2.0106 12.3063 2.03338 12.6365 2.3636L12.0001 3ZM11.0001 3.5L10.9473 2.60155L11.0001 3.5ZM9.50011 2L8.73162 1.53158C8.90651 1.24465 9.22668 1.07905 9.56191 1.10212C9.89715 1.1252 10.1916 1.33311 10.3255 1.64129L9.50011 2ZM8.50011 3L8.82998 3.83737L8.50011 3ZM4.00011 7H4.90011C4.90011 8.71208 6.28803 10.1 8.00011 10.1V11V11.9C5.29391 11.9 3.10011 9.7062 3.10011 7H4.00011ZM8.00011 11V10.1C9.71219 10.1 11.1001 8.71208 11.1001 7H12.0001H12.9001C12.9001 9.7062 10.7063 11.9 8.00011 11.9V11ZM12.0001 6.5L11.2801 5.96L11.7394 5.34767L12.4594 5.88767L13.1794 6.42767L12.7201 7.04L12.0001 6.5ZM12.2736 3.27346L11.6372 3.90985L11.3637 3.6364L12.0001 3L12.6365 2.3636L12.91 2.63706L12.2736 3.27346ZM12.0001 3C12.5793 3.68884 12.5792 3.68894 12.5791 3.68905C12.579 3.68908 12.5789 3.68919 12.5788 3.68926C12.5787 3.68941 12.5785 3.68957 12.5783 3.68973C12.5779 3.69006 12.5775 3.69042 12.577 3.6908C12.5761 3.69158 12.575 3.69247 12.5738 3.69347C12.5714 3.69548 12.5684 3.69795 12.5648 3.70085C12.5578 3.70665 12.5485 3.71419 12.5372 3.72323C12.5147 3.74126 12.4838 3.76549 12.4459 3.79395C12.371 3.85024 12.2648 3.92616 12.1394 4.00429C11.9284 4.13577 11.5128 4.3714 11.053 4.39845L11.0001 3.5L10.9473 2.60155C10.916 2.60339 10.9277 2.60825 10.991 2.58159C11.048 2.55759 11.1159 2.52123 11.1877 2.47648C11.2578 2.43281 11.3199 2.38854 11.3644 2.35509C11.3862 2.33867 11.4028 2.32565 11.4128 2.31764C11.4178 2.31365 11.4211 2.31098 11.4225 2.30981C11.4232 2.30923 11.4234 2.30904 11.4232 2.30925C11.423 2.30936 11.4228 2.30957 11.4224 2.30988C11.4222 2.31004 11.422 2.31023 11.4217 2.31044C11.4216 2.31055 11.4215 2.31066 11.4213 2.31078C11.4213 2.31084 11.4212 2.31093 11.4211 2.31096C11.421 2.31106 11.4209 2.31116 12.0001 3ZM11.0001 3.5L11.053 4.39845C10.5489 4.4281 10.1413 4.21022 9.86723 3.99883C9.59033 3.78529 9.36938 3.5183 9.2071 3.29062C9.04069 3.05715 8.90987 2.82779 8.82177 2.6604C8.77711 2.57556 8.74197 2.50384 8.71731 2.45179C8.70495 2.42571 8.69514 2.40439 8.68802 2.38865C8.68445 2.38077 8.68154 2.37428 8.67932 2.36926C8.67821 2.36675 8.67726 2.3646 8.67649 2.36284C8.6761 2.36196 8.67576 2.36118 8.67546 2.36049C8.67531 2.36014 8.67517 2.35982 8.67504 2.35952C8.67497 2.35938 8.67488 2.35917 8.67485 2.3591C8.67477 2.3589 8.67468 2.35871 9.50011 2C10.3255 1.64129 10.3255 1.64111 10.3254 1.64094C10.3254 1.64089 10.3253 1.64072 10.3252 1.64062C10.3252 1.64041 10.3251 1.64023 10.325 1.64008C10.3249 1.63976 10.3248 1.63954 10.3247 1.6394C10.3246 1.63913 10.3246 1.63921 10.3248 1.63963C10.3252 1.64046 10.3262 1.64266 10.3277 1.64611C10.3309 1.65303 10.3363 1.66494 10.344 1.68111C10.3594 1.71356 10.3832 1.76245 10.4146 1.82203C10.4785 1.94349 10.5677 2.09825 10.6729 2.24586C10.7822 2.39927 10.8846 2.51032 10.9665 2.57346C11.0511 2.63877 11.0378 2.59622 10.9473 2.60155L11.0001 3.5ZM9.50011 2C10.2686 2.46842 10.2685 2.46856 10.2684 2.4687C10.2684 2.46875 10.2683 2.46889 10.2683 2.469C10.2681 2.4692 10.268 2.46942 10.2679 2.46965C10.2676 2.4701 10.2673 2.47061 10.2669 2.47117C10.2662 2.47228 10.2654 2.4736 10.2645 2.4751C10.2626 2.47811 10.2603 2.48189 10.2575 2.4864C10.2518 2.49541 10.2443 2.50736 10.2349 2.5219C10.2162 2.55091 10.1902 2.59052 10.1576 2.63782C10.0932 2.73156 10.0003 2.85982 9.88644 2.99756C9.68902 3.23635 9.31543 3.64613 8.82998 3.83737L8.50011 3L8.17024 2.16263C8.16631 2.16418 8.20429 2.14779 8.28006 2.08141C8.35063 2.01958 8.42594 1.93918 8.49916 1.85062C8.57106 1.76366 8.63186 1.67988 8.67459 1.61775C8.69566 1.58711 8.71159 1.56283 8.72151 1.54744C8.72645 1.53976 8.72984 1.53438 8.73157 1.53161C8.73244 1.53023 8.73288 1.52951 8.7329 1.52949C8.7329 1.52948 8.7328 1.52964 8.73259 1.52999C8.73248 1.53016 8.73235 1.53038 8.73219 1.53064C8.7321 1.53078 8.73202 1.53092 8.73192 1.53108C8.73187 1.53115 8.7318 1.53128 8.73177 1.53132C8.7317 1.53145 8.73162 1.53158 9.50011 2ZM6.50011 3.5V4.4C5.87765 4.4 5.53197 4.67518 5.29017 5.11848C5.01684 5.61956 4.90006 6.32357 4.90011 6.99993L4.00011 7L3.10011 7.00007C3.10005 6.17643 3.23327 5.13044 3.70997 4.25652C4.21819 3.32482 5.12257 2.6 6.50011 2.6V3.5ZM8.50011 3L8.82998 3.83737C7.53206 4.34867 6.69607 4.4 6.50011 4.4V3.5V2.6C6.46078 2.6 7.07344 2.5947 8.17024 2.16263L8.50011 3ZM12.4594 5.88767L11.7394 5.34767C12.0678 4.90974 12.0243 4.29694 11.6372 3.90986L12.2736 3.27346L12.91 2.63706C13.9304 3.65755 14.0453 5.27312 13.1794 6.42767L12.4594 5.88767ZM12.0001 6.5H12.9001V7H12.0001H11.1001V6.5H12.0001Z"
-          fill="currentColor"
-        />
-        <rect
-          width="4"
-          height="2.5"
-          rx="0.5"
-          transform="matrix(-1 0 0 1 8 6)"
-          fill="currentColor"
-        />
-        <rect
-          width="3"
-          height="2.5"
-          rx="0.5"
-          transform="matrix(-1 0 0 1 12 6)"
-          fill="currentColor"
-        />
-        <path
-          d="M9.5 6.75H7.5"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M2 20C2 15.4635 5.48364 13.4994 8.5 14.108"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M11 20H19.2457C19.6922 20 20.0846 19.704 20.2072 19.2747L21.5994 14.4022C21.8001 13.6995 21.2725 13 20.5417 13H14.1315C13.4617 13 12.8732 13.444 12.6892 14.0879L11 20ZM11 20H7"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </g>
-    </svg>
-  )
-}
-
 export function SyncIcon(props: IconProps) {
   return (
     <svg
@@ -4689,63 +4105,6 @@ export function SyncIcon(props: IconProps) {
       <g transform="scale(1.15) translate(-1.8, -1.8)">
         <path
           d="M5 4V7.25C5 7.66421 5.33579 8 5.75 8H8.75M19.0118 20V16.75C19.0118 16.3358 18.6761 16 18.2618 16H15.0118M4 12C4 16.4183 7.58172 20 12 20C14.6362 20 17.0303 18.7249 18.5 16.7578M20 12C20 7.58172 16.4183 4 12 4C9.36378 4 6.96969 5.27512 5.5 7.24224"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </g>
-    </svg>
-  )
-}
-
-export function BranchIcon(props: IconProps) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      width="24"
-      height="24"
-      {...props}
-    >
-      <g transform="scale(1.15) translate(-1.8, -1.8)">
-        <circle
-          cx="6.5"
-          cy="6"
-          r="2"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <circle
-          cx="6.5"
-          cy="18"
-          r="2"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <circle
-          cx="17.5"
-          cy="6"
-          r="2"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M6.5 8V16"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M17.5 8V10C17.5 11.1046 16.6046 12 15.5 12H8.5C7.39543 12 6.5 12.8954 6.5 14V16"
           stroke="currentColor"
           strokeWidth="2"
           strokeLinecap="round"
@@ -4821,57 +4180,6 @@ export function AuthorIcon(props: IconProps) {
           d="M12.0011 13C8.60997 13 6.03711 15.0143 4.9836 17.8629C4.5748 18.9682 5.51944 20 6.69796 20H17.3043C18.4828 20 19.4274 18.9682 19.0186 17.8629C17.9651 15.0143 15.3923 13 12.0011 13Z"
           stroke="currentColor"
           strokeWidth="2"
-          strokeLinejoin="round"
-        />
-      </g>
-    </svg>
-  )
-}
-
-export function LibraryOutlineIcon(props: IconProps) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      width="24"
-      height="24"
-      {...props}
-    >
-      <g transform="scale(1.1) translate(-1.2, -1.2)">
-        <path
-          d="M2.75 6.75C2.75 6.19772 3.19772 5.75 3.75 5.75H5.75C6.30228 5.75 6.75 6.19772 6.75 6.75V19.25C6.75 19.8023 6.30228 20.25 5.75 20.25H3.75C3.19772 20.25 2.75 19.8023 2.75 19.25V6.75Z"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="square"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M14.257 8.46569C14.114 7.93222 14.4306 7.38388 14.9641 7.24094L17.3789 6.59389C17.9124 6.45095 18.4607 6.76753 18.6036 7.301L21.5801 18.4091C21.723 18.9426 21.4064 19.4909 20.873 19.6339L18.4581 20.2809C17.9247 20.4239 17.3763 20.1073 17.2334 19.5738L14.257 8.46569Z"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="square"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M6.75 4.75C6.75 4.19772 7.19772 3.75 7.75 3.75H12.25C12.8023 3.75 13.25 4.19772 13.25 4.75V19.25C13.25 19.8023 12.8023 20.25 12.25 20.25H7.75C7.19772 20.25 6.75 19.8023 6.75 19.25V4.75Z"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="square"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M6.75 7.875H13.25"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="square"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M6.75 16.125H13.25"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="square"
           strokeLinejoin="round"
         />
       </g>
@@ -5088,3 +4396,22 @@ export function RoadmapIcon(props: IconProps) {
     </svg>
   )
 }
+
+// Re-exported from icons.tsx to avoid duplicate definitions
+export { IconColorDefault } from './icons'
+export { IconShadow } from './icons'
+export { TrashIcon } from './icons'
+export { VariantIcon } from './icons'
+export { ClickIcon } from './icons'
+export { MagnetIcon } from './icons'
+export { StrongMagicIcon } from './icons'
+export { QuestionsSkippedIcon } from './icons'
+export { MoveToTeamIcon } from './icons'
+export { ContributeIcon } from './icons'
+export { BranchIcon } from './icons'
+export { LibraryOutlineIcon } from './icons'
+
+export { FilePlusIcon } from './icons'
+export { DesignModeIcon } from './icons'
+export { DatabaseSearchIcon } from './icons'
+export { ListSearchIcon } from './icons'

@@ -7,8 +7,8 @@ import { useFileChangeListener } from "../../lib/hooks/use-file-change-listener"
 import type { ChangedFile } from "../../../shared/changes-types"
 import { getStatusIndicator } from "./utils/status"
 import { cn } from "../../lib/utils"
-import { AgentDiffView } from "../agents/ui/agent-diff-view"
-import { viewedFilesAtomFamily } from "../agents/atoms"
+import { AgentDiffView } from "../agents"
+import { viewedFilesAtomFamily } from "../agents"
 
 interface DiffPageViewProps {
 	worktreePath?: string

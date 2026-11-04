@@ -193,7 +193,7 @@ function serializeContent(root: HTMLElement): string {
     if (el.hasAttribute("data-ultrathink")) {
       result += el.textContent || ""
       // Skip subtree
-      let next: Node | null = el.nextSibling
+      const next: Node | null = el.nextSibling
       if (next) {
         walker.currentNode = next
         node = next
@@ -213,7 +213,7 @@ function serializeContent(root: HTMLElement): string {
       const id = el.getAttribute("data-mention-id") || ""
       result += buildGenericMentionToken(id)
       // Skip subtree
-      let next: Node | null = el.nextSibling
+      const next: Node | null = el.nextSibling
       if (next) {
         walker.currentNode = next
         node = next
@@ -422,7 +422,7 @@ function walkTreeOnce(root: HTMLElement, range: Range | null): TreeWalkResult {
         }
 
         // Skip ultrathink subtree
-        let next: Node | null = el.nextSibling
+        const next: Node | null = el.nextSibling
         if (next) {
           walker.currentNode = next
           node = next
@@ -448,7 +448,7 @@ function walkTreeOnce(root: HTMLElement, range: Range | null): TreeWalkResult {
         }
 
         // Skip mention subtree
-        let next: Node | null = el.nextSibling
+        const next: Node | null = el.nextSibling
         if (next) {
           walker.currentNode = next
           node = next
@@ -613,7 +613,7 @@ export const AgentsMentionsEditor = memo(
         }, 500)
       }, [saveUndoState])
 
-      // Immediate save (for paste, mentions) - also cancels any pending debounce
+      // Immediate save (for paste, mentions) - also cancels unknown pending debounce
       const immediateSaveUndoState = useCallback(() => {
         if (debounceTimer.current) {
           clearTimeout(debounceTimer.current)
@@ -716,6 +716,7 @@ export const AgentsMentionsEditor = memo(
           lastSavedHtml.current = editorRef.current.innerHTML
           undoStack.current = [{ html: editorRef.current.innerHTML, cursorOffset: 0 }]
         }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       }, []) // Only on mount
 
       // Handle selection changes to highlight mention chips
@@ -814,7 +815,7 @@ export const AgentsMentionsEditor = memo(
         // Skip expensive trigger detection for very large text
         // This prevents UI freeze when pasting large content
         if (content.length > LARGE_TEXT_THRESHOLD) {
-          // Close any open triggers since we can't detect them
+          // Close unknown open triggers since we can't detect them
           if (triggerActive.current) {
             triggerActive.current = false
             triggerStartIndex.current = null

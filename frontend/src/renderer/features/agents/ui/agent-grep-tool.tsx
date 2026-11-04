@@ -11,10 +11,10 @@ import type { GrepToolOutput } from "./tool-types"
 import { cn } from "../../../lib/utils"
 
 interface AgentGrepToolProps {
-  // `any` is used because the part shape varies across tool call stages
+  // `unknown` is used because the part shape varies across tool call stages
   // (pending vs. completed) and output formats (string, object, array).
   // A strict interface would require discriminated unions across multiple
-  // call sites; `any` keeps this component permissive to agent output shapes.
+  // call sites; `unknown` keeps this component permissive to agent output shapes.
   part: MessagePart
   messageId?: string
   partIndex?: number
@@ -24,15 +24,16 @@ interface AgentGrepToolProps {
 const MAX_DETAIL_CHARS = 4_000
 
 // Extract human-readable match details from whatever output shape the agent produced
-function extractMatchDetails(output: any): string {
+function extractMatchDetails(output: unknown): string {
   if (!output) return ""
   if (typeof output === "string") return output.slice(0, MAX_DETAIL_CHARS)
   if (typeof output !== "object") return String(output).slice(0, MAX_DETAIL_CHARS)
-  if (typeof output.content === "string" && output.content) {
-    return output.content.slice(0, MAX_DETAIL_CHARS)
+  const o = output as { content?: unknown; filenames?: unknown }
+  if (typeof o.content === "string" && o.content) {
+    return o.content.slice(0, MAX_DETAIL_CHARS)
   }
-  if (Array.isArray(output.filenames) && output.filenames.length > 0) {
-    return output.filenames.slice(0, 50).join("\n")
+  if (Array.isArray(o.filenames) && o.filenames.length > 0) {
+    return (o.filenames as string[]).slice(0, 50).join("\n")
   }
   try {
     return JSON.stringify(output, null, 2).slice(0, MAX_DETAIL_CHARS)

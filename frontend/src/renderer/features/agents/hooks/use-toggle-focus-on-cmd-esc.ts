@@ -34,7 +34,7 @@ export function useToggleFocusOnCmdEsc(
       const editor = editorRef.current
       if (!editor) return
 
-      // Check whether focus is inside the editor (not just "any input on the page").
+      // Check whether focus is inside the editor (not just "unknown input on the page").
       // This correctly handles the case where an unrelated search box, settings field,
       // or other contenteditable element has focus.
       const activeElement = document.activeElement

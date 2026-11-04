@@ -76,7 +76,7 @@ export type AgentQueueItem = {
   message: string // Serialized value with mention tokens for mentions
   // Full parts array from UIMessage, stored to preserve images/files/other content
   // when queueing messages. Falls back to reconstructing from message string if undefined.
-  parts?: Array<{ type: string; [key: string]: any }>
+  parts?: Array<{ type: string; [key: string]: unknown }>
   images?: QueuedImage[]
   files?: QueuedFile[]
   textContexts?: QueuedTextContext[]

@@ -37,8 +37,7 @@ const BADGE_BUTTON_CLASSES =
   "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border bg-muted/30 text-xs text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors cursor-pointer overflow-hidden min-w-0"
 
 interface GitActivityBadgesProps {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- part shape varies across providers
-  parts: any[]
+  parts: unknown[]
   chatId: string
   conversationId: string
 }

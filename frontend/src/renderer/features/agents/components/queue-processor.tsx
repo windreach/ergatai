@@ -11,9 +11,8 @@ import { appStore } from "../../../lib/jotai-store"
 import { loadingConversationsAtom, setLoading, clearLoading } from "../atoms"
 import { MENTION_PREFIXES } from "../mentions/agents-mentions-editor"
 import { utf8ToBase64 } from "../utils/base64"
-import type { AgentQueueItem } from "../lib/queue-utils"
 import type { MessagePart } from "../stores/message-store"
-import { getMessageCorrelationService } from "@/features/conversation/runtime/message-correlation-service"
+import { getMessageCorrelationService } from "@/features/conversation"
 import { buildQuoteMentionToken, buildDiffMentionToken, buildPastedMentionToken } from "../mentions/mentions-utils"
 
 // Delay between processing queue items (ms)
@@ -42,6 +41,7 @@ export function QueueProcessor() {
   const backoffUntilRef = useRef<Map<string, number>>(new Map())
 
   useEffect(() => {
+    const timers = timersRef.current
     // Function to process queue for a specific conversation
     const processQueue = async (conversationId: string) => {
       // Check if already processing this conversation
@@ -247,7 +247,7 @@ export function QueueProcessor() {
 
     // Schedule processing for a conversation with delay
     const scheduleProcessing = (conversationId: string) => {
-      // Clear any existing timer for this conversation
+      // Clear unknown existing timer for this conversation
       const existingTimer = timersRef.current.get(conversationId)
       if (existingTimer) {
         clearTimeout(existingTimer)
@@ -309,10 +309,10 @@ export function QueueProcessor() {
       unsubscribeStatus()
 
       // Clear all timers
-      for (const timer of timersRef.current.values()) {
+      for (const timer of timers.values()) {
         clearTimeout(timer)
       }
-      timersRef.current.clear()
+      timers.clear()
     }
   }, [])
 

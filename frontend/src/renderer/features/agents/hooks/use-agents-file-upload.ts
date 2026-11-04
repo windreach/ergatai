@@ -198,11 +198,12 @@ export function useAgentsFileUpload() {
 
   // Cleanup all blob URLs when component unmounts
   useEffect(() => {
+    const blobUrls = blobUrlsRef.current
     return () => {
-      blobUrlsRef.current.forEach((url) => {
+      blobUrls.forEach((url) => {
         URL.revokeObjectURL(url)
       })
-      blobUrlsRef.current.clear()
+      blobUrls.clear()
     }
   }, [])
 

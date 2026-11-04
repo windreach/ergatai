@@ -32,7 +32,10 @@ impl MessageService {
     }
 
     /// 获取 Message
-    pub fn get_message(conversation_id: ConversationId, message_id: &str) -> anyhow::Result<Option<Message>> {
+    pub fn get_message(
+        conversation_id: ConversationId,
+        message_id: &str,
+    ) -> anyhow::Result<Option<Message>> {
         let message_id = ergatai_error::MessageId::decode(message_id)?;
         let message = messages::get(conversation_id, message_id)?;
         Ok(message)
@@ -76,7 +79,11 @@ impl MessageService {
     }
 
     /// 更新 Message
-    pub async fn update_message(conversation_id: ConversationId, message_id: &str, content: &str) -> anyhow::Result<bool> {
+    pub async fn update_message(
+        conversation_id: ConversationId,
+        message_id: &str,
+        content: &str,
+    ) -> anyhow::Result<bool> {
         let message_id = ergatai_error::MessageId::decode(message_id)?;
 
         // 构建新的 parts JSON
@@ -98,7 +105,10 @@ impl MessageService {
     }
 
     /// 删除 Message
-    pub async fn delete_message(conversation_id: ConversationId, message_id: &str) -> anyhow::Result<bool> {
+    pub async fn delete_message(
+        conversation_id: ConversationId,
+        message_id: &str,
+    ) -> anyhow::Result<bool> {
         let message_id = ergatai_error::MessageId::decode(message_id)?;
         let deleted = messages::delete(conversation_id, message_id).await?;
         Ok(deleted)

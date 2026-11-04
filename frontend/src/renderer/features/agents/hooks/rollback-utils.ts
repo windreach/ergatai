@@ -17,7 +17,7 @@ import type { Message, MessagePart } from "../stores/message-store"
  * Uses `unknown` for metadata to accept both strict (UIMessage) and loose (Message) types.
  * No index signature to maintain compatibility with UIMessage's strict typing.
  */
-interface RollbackMessageLike {
+export interface RollbackMessageLike {
   id: string
   role: string
   parts?: Array<{ type: string; text?: string; data?: unknown; [key: string]: unknown }>
@@ -67,16 +67,16 @@ interface RollbackParams {
 
 interface RollbackCallbacks {
   setIsRollingBack: (value: boolean) => void
-  // setMessages accepts any message-like type; executeRollback coerces to Message[] before calling
-  setMessages: (messages: unknown[] | ((current: unknown[]) => unknown[])) => void
+  // setMessages accepts unknown message-like type; executeRollback coerces to Message[] before calling
+  setMessages: (messages: RollbackMessageLike[] | ((current: RollbackMessageLike[]) => RollbackMessageLike[])) => void
   recomputeChangedFiles: () => void
   refreshDiff?: () => void
   setImagesFromDraft: (images: UploadedImage[]) => void
   setTextContextsFromDraft: (contexts: SelectedTextContext[]) => void
   setDiffTextContextsFromDraft: (contexts: DiffTextContext[]) => void
   setPastedTextsFromDraft: (texts: PastedTextFile[]) => void
-  // any justified: Editor ref type depends on the specific editor component used
-  editorRef: React.RefObject<any>
+  // unknown justified: Editor ref type depends on the specific editor component used
+  editorRef: React.RefObject<unknown>
 }
 
 /**
@@ -217,7 +217,7 @@ export async function executeRollback(
 
     // Restore all user message content into input
     if (cleanedText) {
-      editorRef.current?.setValue(cleanedText)
+      (editorRef.current as { setValue?: (value: string) => void } | null)?.setValue?.(cleanedText)
     }
     if (userMsgImages.length > 0) {
       setImagesFromDraft(userMsgImages)
@@ -231,7 +231,7 @@ export async function executeRollback(
     if (restoredPastedTexts.length > 0) {
       setPastedTextsFromDraft(restoredPastedTexts)
     }
-    editorRef.current?.focus()
+    (editorRef.current as { focus?: () => void } | null)?.focus?.()
   } catch (error) {
     console.error("[executeRollback] UI restoration failed (rollback succeeded):", error)
     setIsRollingBack(false)

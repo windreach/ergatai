@@ -19,8 +19,8 @@ import type {
   ResolvedAgentRuntime,
 } from "./contracts"
 
-import { getAgentRuntimeStatusState, refreshAgentRuntimeStatus } from "../../agents/lib/agent-runtime-status-store"
-import { agentContractApi } from "../../agents/lib/agent-contract-api"
+import { getAgentRuntimeStatusState, refreshAgentRuntimeStatus } from "../../agents/public"
+import { agentContractApi } from "../../agents/public"
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -158,7 +158,7 @@ class AgentRuntimeResolverImpl implements AgentRuntimeResolver {
     const statusState = getAgentRuntimeStatusState()
 
     // If cache is empty or never updated, refresh it
-    // This can happen if the resolver is called before any React hook subscribes
+    // This can happen if the resolver is called before unknown React hook subscribes
     if (!statusState.updatedAt || statusState.agents.length === 0) {
       try {
         await refreshAgentRuntimeStatus()
@@ -216,7 +216,7 @@ class AgentRuntimeResolverImpl implements AgentRuntimeResolver {
       // Query the backend for available agent profiles
       const profiles = await agentContractApi.listProfiles()
 
-      // Check if the agentId matches any registered profile
+      // Check if the agentId matches unknown registered profile
       // agentId could be a profile name or a runtime-generated ID
       // Use normalizeProviderName to handle case and naming variations
       // (e.g., "claude-code" vs "claude code" vs "Claude-Code")

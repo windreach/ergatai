@@ -15,6 +15,8 @@ pub mod collaboration_session_service;
 pub mod conversation_runtime;
 pub mod conversation_service;
 pub mod dag_service;
+pub mod deletion_helpers;
+pub mod deletion_queue_worker;
 pub mod initial_prompt_turns;
 pub mod lock_service;
 pub mod message_service;

@@ -4,9 +4,9 @@ import { useSetAtom } from "jotai"
 import { ChevronLeft } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 
-import { ClaudeCodeIcon, IconSpinner } from "../../components/ui/icons"
+import { IconSpinner } from "../../components/ui/icons"
 import { Input } from "../../components/ui/input"
-import { Logo } from "../../components/ui/logo"
+import { ClaudeCodeDualHeader } from "../../components/dialogs/claude-login-modal"
 import {
   anthropicOnboardingCompletedAtom,
   billingMethodAtom,
@@ -38,7 +38,7 @@ export function AnthropicOnboardingPage() {
   const [userClickedConnect, setUserClickedConnect] = useState(false)
   const [urlOpened, setUrlOpened] = useState(false)
   const [savedOauthUrl, setSavedOauthUrl] = useState<string | null>(null)
-  const [ignoredExistingToken, setIgnoredExistingToken] = useState(false)
+  const [_ignoredExistingToken, setIgnoredExistingToken] = useState(false)
   const [isUsingExistingToken, setIsUsingExistingToken] = useState(false)
   const [existingTokenError, setExistingTokenError] = useState<string | null>(null)
   const urlOpenedRef = useRef(false)
@@ -274,24 +274,10 @@ export function AnthropicOnboardingPage() {
 
       <div className="w-full max-w-[440px] space-y-8 px-4">
         {/* Header with dual icons */}
-        <div className="text-center space-y-4">
-          <div className="flex items-center justify-center gap-2 p-2 mx-auto w-max rounded-full border border-border">
-            <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center">
-              <Logo className="w-5 h-5" fill="white" />
-            </div>
-            <div className="w-10 h-10 rounded-full bg-[#D97757] flex items-center justify-center">
-              <ClaudeCodeIcon className="w-6 h-6 text-white" />
-            </div>
-          </div>
-          <div className="space-y-1">
-            <h1 className="text-base font-semibold tracking-tight">
-              Connect Claude Code
-            </h1>
-            <p className="text-sm text-muted-foreground">
-              Connect your Claude Code subscription to get started
-            </p>
-          </div>
-        </div>
+        <ClaudeCodeDualHeader
+          title="Connect Claude Code"
+          subtitle="Connect your Claude Code subscription to get started"
+        />
 
         {/* Content */}
         <div className="space-y-6 flex flex-col items-center">

@@ -17,21 +17,21 @@ import {
   customHotkeysAtom,
   betaKanbanEnabledAtom,
 } from "../../lib/atoms"
-import { selectedAgentChatIdAtom, selectedWorkspaceAtom, selectedDraftIdAtom, showNewChatFormAtom, desktopViewAtom, fileSearchDialogOpenAtom } from "../agents/atoms"
+import { selectedAgentChatIdAtom, selectedWorkspaceAtom, selectedDraftIdAtom, showNewChatFormAtom, desktopViewAtom, fileSearchDialogOpenAtom } from "../agents"
 import { trpc } from "../../lib/trpc"
-import { useAgentsHotkeys } from "../agents/lib/agents-hotkeys-manager"
-import { toggleSearchAtom } from "../agents/search"
+import { useAgentsHotkeys } from "../agents"
+import { toggleSearchAtom } from "../agents"
 import { ClaudeLoginModal } from "../../components/dialogs/claude-login-modal"
 import { TooltipProvider } from "../../components/ui/tooltip"
 import { ResizableSidebar } from "../../components/ui/resizable-sidebar"
-import { AgentsSidebar } from "../sidebar/agents-sidebar"
-import { AgentsContent } from "../agents/ui/agents-content"
+import { AgentsSidebar } from "../sidebar"
+import { AgentsContent } from "../agents"
 import { UpdateBanner } from "../../components/update-banner"
 import { WindowsTitleBar } from "../../components/windows-title-bar"
 import { useUpdateChecker } from "../../lib/hooks/use-update-checker"
-import { useAgentConversationStore } from "../agents/stores/conversation-store"
-import { QueueProcessor } from "../agents/components/queue-processor"
-import { SettingsSidebar } from "../settings/settings-sidebar"
+import { useAgentConversationStore } from "../agents"
+import { QueueProcessor } from "../agents"
+import { SettingsSidebar } from "../settings"
 
 // ============================================================================
 // Constants
@@ -89,7 +89,7 @@ export function AgentsLayout() {
   useUpdateChecker()
 
   const [sidebarOpen, setSidebarOpen] = useAtom(agentsSidebarOpenAtom)
-  const [sidebarWidth, setSidebarWidth] = useAtom(agentsSidebarWidthAtom)
+  const [_sidebarWidth, _setSidebarWidth] = useAtom(agentsSidebarWidthAtom)
   const setSettingsActiveTab = useSetAtom(agentsSettingsDialogActiveTabAtom)
   const setSettingsDialogOpen = useSetAtom(agentsSettingsDialogOpenAtom)
   const desktopView = useAtomValue(desktopViewAtom)
@@ -206,7 +206,8 @@ export function AgentsLayout() {
     // Type guard: onWorktreeSetupFailed may not be in all DesktopApi type definitions
     if (!desktopApi || !("onWorktreeSetupFailed" in desktopApi)) return
 
-    const unsubscribe = (desktopApi as any).onWorktreeSetupFailed((payload: { kind: "create-failed" | "setup-failed"; message: string; projectId: string }) => {
+    const unsubscribe =
+      (desktopApi as { onWorktreeSetupFailed: (cb: (payload: { kind: "create-failed" | "setup-failed"; message: string; projectId: string }) => void) => () => void }).onWorktreeSetupFailed((payload: { kind: "create-failed" | "setup-failed"; message: string; projectId: string }) => {
       const errorMessage = payload.message.replace(/\s+/g, " ").trim()
       const title =
         payload.kind === "create-failed"

@@ -200,7 +200,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   const sessionInfo = useAtomValue(sessionInfoAtom)
 
   // Fetch skills from filesystem (cached for 5 minutes)
-  const { data: skills = [], isFetching: isFetchingSkills } = trpc.skills.listEnabled.useQuery(
+  const { data: skills = [], isFetching: _isFetchingSkills } = trpc.skills.listEnabled.useQuery(
     projectPath ? { cwd: projectPath } : undefined,
     {
       enabled: isOpen && scope !== "agents",
@@ -209,7 +209,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   )
 
   // Fetch custom agents from filesystem (cached for 5 minutes)
-  const { data: customAgents = [], isFetching: isFetchingAgents } = trpc.agents.listEnabled.useQuery(
+  const { data: customAgents = [], isFetching: _isFetchingAgents } = trpc.agents.listEnabled.useQuery(
     projectPath ? { cwd: projectPath } : undefined,
     {
       enabled: isOpen,
@@ -237,8 +237,8 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   // Priority: sandboxId (includes uncommitted) > branch (GitHub API) > cached file_tree
   const {
     data: fileResults = [],
-    isLoading,
-    isFetching,
+    isLoading: _isLoading,
+    isFetching: _isFetching,
     error,
   } = api.github.searchFiles.useQuery(
     {
@@ -421,7 +421,6 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   const hasOnlyFiles = !hasSkills && !hasAgents && !hasTools
 
   // Determine if we're in a subpage view (or showing files directly when no skills/agents/tools)
-  const isInSubpage = showingFilesList || showingSkillsList || showingAgentsList || showingToolsList || hasOnlyFiles
 
   // Filter category options based on available data
   const availableCategoryOptions = useMemo(() => {
@@ -584,7 +583,6 @@ export const AgentsFileMention = memo(function AgentsFileMention({
     if (!isOpen || !dropdownRef.current) return
 
     // Account for header element
-    const headerOffset = 1
     if (selectedIndex === 0) {
       dropdownRef.current.scrollTo({ top: 0, behavior: "auto" })
       return
@@ -651,7 +649,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   const placeAbove = placementRef.current === "above"
 
   // Compute final top based on placement
-  let finalTop = placeAbove
+  const finalTop = placeAbove
     ? position.top - gap
     : position.top + gap + caretOffsetBelow
 

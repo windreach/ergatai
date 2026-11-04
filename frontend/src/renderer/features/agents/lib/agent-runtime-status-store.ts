@@ -11,7 +11,7 @@ export type AgentRuntimeStatusState = {
 
 type Listener = () => void
 
-const POLL_INTERVAL_MS = 5_000
+const POLL_INTERVAL_MS = 10_000
 const STOP_DELAY_MS = 10_000
 
 let state: AgentRuntimeStatusState = {

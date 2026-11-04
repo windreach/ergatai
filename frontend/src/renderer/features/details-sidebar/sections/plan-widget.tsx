@@ -9,7 +9,7 @@ import { PlanIcon, ExpandIcon, CollapseIcon, IconSpinner } from "@/components/ui
 import { ChatMarkdownRenderer } from "@/components/chat-markdown-renderer"
 import { trpc } from "@/lib/trpc"
 import { planContentCacheAtomFamily } from "../atoms"
-import type { AgentMode } from "../../agents/atoms"
+import type { AgentMode } from "../../agents"
 
 interface PlanWidgetProps {
   /** Chat ID for cache */

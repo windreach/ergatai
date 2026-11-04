@@ -7,6 +7,7 @@
 
 import * as fs from "fs/promises"
 import * as path from "path"
+import { execSync } from "child_process"
 import * as os from "os"
 import { ipcMain } from "electron"
 import { parse as parseJsonc } from "jsonc-parser"
@@ -37,9 +38,9 @@ export interface VSCodeThemeData {
   name: string
   type: "light" | "dark"
   colors: Record<string, string>
-  tokenColors?: any[]
+  tokenColors?: unknown[]
   semanticHighlighting?: boolean
-  semanticTokenColors?: Record<string, any>
+  semanticTokenColors?: Record<string, unknown>
   source: "imported"
   path: string
 }
@@ -121,7 +122,6 @@ async function scanExtensionsDir(extensionsDir: string, source: EditorSource): P
 
   try {
     // Always use execSync to get directory listing (fs.readdir has caching issues in Electron)
-    const { execSync } = require("child_process")
     const lsOutput = execSync(`ls -1 "${extensionsDir}"`, { encoding: "utf-8" })
     const lsEntries = lsOutput.trim().split("\n").filter(Boolean)
 

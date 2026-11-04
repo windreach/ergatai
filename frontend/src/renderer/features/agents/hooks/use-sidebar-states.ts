@@ -14,13 +14,13 @@ import { customHotkeysAtom } from "../../../lib/atoms"
 import {
   terminalSidebarOpenAtomFamily,
   terminalDisplayModeAtom,
-} from "../../terminal/atoms"
+} from "../../terminal"
 import {
   detailsSidebarOpenAtom,
   detailsSidebarTabAtom,
   sideChatSidebarOpenAtom,
   unifiedSidebarEnabledAtom,
-} from "../../details-sidebar/atoms"
+} from "../../details-sidebar"
 import { useAgentConversationStore } from "../stores/conversation-store"
 import { pendingBuildPlanConversationIdAtom } from "../atoms"
 import { useResolvedHotkeyDisplay, getResolvedKeys } from "../../../lib/hotkeys"

@@ -5,7 +5,7 @@ import { Switch } from "../../ui/switch"
 import { trpc } from "../../../lib/trpc"
 import { toast } from "sonner"
 import { Copy, FolderOpen, RefreshCw, Terminal, Check, Scan, WifiOff, FileJson } from "lucide-react"
-import { showMessageJsonAtom } from "../../../features/agents/atoms"
+import { showMessageJsonAtom } from "../../../features/agents"
 import { isMockChatEnabled, setMockChatEnabled } from "../../../features/agents/lib/mock-chat-transport"
 
 // Hook to detect narrow screen

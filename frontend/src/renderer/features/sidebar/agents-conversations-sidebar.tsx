@@ -13,7 +13,7 @@
  */
 "use client"
 
-import React, { useMemo, useState, useCallback, useRef, useEffect, memo } from "react"
+import React, { useMemo, useState, useCallback, useRef, useEffect } from "react"
 import { createPortal } from "react-dom"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { motion, AnimatePresence } from "motion/react"
@@ -26,17 +26,12 @@ import {
   selectedAgentChatIdAtom,
   previousAgentChatIdAtom,
   conversationFilesAtom,
-  MAX_CHAT_AGENT_LOGOS,
-  chatAgentLogosAtom,
-  createChatAgentLogos,
-  type ChatAgentLogo,
   justCreatedIdsAtom,
   pendingUserQuestionsAtom,
-  registeredAgentsAtom,
   undoStackAtom,
   suppressInputFocusAtom,
   type UndoItem,
-} from "../agents/atoms"
+} from "../agents"
 import {
   selectedTeamIdAtom,
   selectedConversationIdsAtom,
@@ -54,18 +49,14 @@ import { appStore } from "../../lib/jotai-store"
 import {
   useAgentConversationStore,
   type ConversationMeta,
-} from "../agents/stores/conversation-store"
+} from "../agents"
 import { useShallow } from "zustand/react/shallow"
 import {
-  PlusIcon,
   ArchiveIcon,
   IconDoubleChevronLeft,
-  IconSpinner,
   LoadingDot,
   PlanIcon,
   AgentIcon,
-  IconOpenSidebar,
-  ClockIcon,
   QuestionIcon,
 } from "../../components/ui/icons"
 import {
@@ -74,10 +65,8 @@ import {
   TooltipTrigger,
 } from "../../components/ui/tooltip"
 import { Kbd } from "../../components/ui/kbd"
-import { isDesktopApp, getShortcutKey } from "../../lib/utils/platform"
 import { useResolvedHotkeyDisplay } from "../../lib/hotkeys"
-import { TrafficLightSpacer } from "../agents/components/traffic-light-spacer"
-import { PopoverTrigger } from "../../components/ui/popover"
+import { TrafficLightSpacer } from "../agents"
 import { AlignJustify } from "lucide-react"
 import {
   ContextMenu,
@@ -98,149 +87,24 @@ import {
 } from "../../components/ui/alert-dialog"
 import { api } from "../../lib/api-adapter"
 import { toast } from "sonner"
-import { AgentsRenameConversationDialog } from "../agents/components/agents-rename-conversation-dialog"
-import { SearchCombobox } from "../../components/ui/search-combobox"
-import { ConversationContextMenu } from "../agents/ui/conversation-context-menu"
-import { ConversationDropdownMenu } from "../agents/ui/conversation-dropdown-menu"
+import { AgentsRenameConversationDialog } from "../agents"
+import { ConversationContextMenu } from "../agents"
+import { ConversationDropdownMenu } from "../agents"
 import { formatTimeAgo } from "../../lib/utils/format-time-ago"
 import { pluralize } from "../../lib/utils/pluralize"
 import { useHotkeys } from "react-hotkeys-hook"
-import { useConversationDraftsCache, getConversationDraftKey } from "../agents/lib/drafts"
+import { useConversationDraftsCache, getConversationDraftKey } from "../agents"
 import { Checkbox } from "../../components/ui/checkbox"
 import { TypewriterText } from "../../components/ui/typewriter-text"
-import { getCoreAgentIcon } from "../agents/components/core-agent-selector"
-import {
-  hasStoredGroupAgentIds,
-  loadGroupAgentIds,
-  loadGroupAgents,
-} from "../agents/collaboration/group-agent-storage"
-import { useCollaborationMode } from "../agents/collaboration/use-collaboration-mode"
+
+
+import { useCollaborationMode } from "../agents"
 
 // Isolated Search History Popover for sidebar - prevents parent re-renders when popover opens/closes
-interface SidebarSearchHistoryPopoverProps {
-  sortedConversations: ConversationMeta[]
-  loadingConversations: Map<string, string>
-  conversationsUnseenChanges: Set<string>
-  pendingQuestionsMap: Map<string, { conversationId: string }>
-  allConversationsLength: number
-  onSelect: (conversation?: ConversationMeta) => void
-}
 
 function displayText(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback
 }
-
-
-
-function ChatAgentLogoBadge({ logo }: { logo: ChatAgentLogo }) {
-  const [avatarFailed, setAvatarFailed] = useState(false)
-  const AgentLogo = getCoreAgentIcon(logo.agentId)
-
-  return (
-    <span
-      title={logo.name}
-      aria-label={logo.name}
-      className="relative flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-background"
-    >
-      {logo.avatarUrl && !avatarFailed ? (
-        <img
-          src={logo.avatarUrl}
-          alt={logo.name}
-          className="h-full w-full rounded-sm object-contain"
-          onError={() => setAvatarFailed(true)}
-        />
-      ) : (
-        <AgentLogo className="h-3 w-3 text-muted-foreground/50" />
-      )}
-    </span>
-  )
-}
-
-const SidebarSearchHistoryPopover = memo(function SidebarSearchHistoryPopover({
-  sortedConversations,
-  loadingConversations,
-  conversationsUnseenChanges,
-  pendingQuestionsMap,
-  allConversationsLength,
-  onSelect,
-}: SidebarSearchHistoryPopoverProps) {
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false)
-
-  const handleSelect = useCallback((conversation?: ConversationMeta) => {
-    onSelect(conversation)
-    setIsHistoryOpen(false)
-  }, [onSelect])
-
-  const renderItem = useCallback((conversation?: ConversationMeta) => {
-    const timeAgo = formatTimeAgo(conversation?.updated_at || conversation?.created_at)
-    const isLoading = loadingConversations.has(conversation?.id || "")
-    const hasUnseen = conversationsUnseenChanges.has(conversation?.id || "")
-    const mode = conversation?.mode || "agent"
-    const hasPendingQuestion = pendingQuestionsMap.has(conversation?.id || "")
-
-    return (
-      <div className="flex items-center gap-2 flex-1 min-w-0">
-        <div className="flex-shrink-0 w-4 h-4 flex items-center justify-center relative">
-          {hasPendingQuestion ? (
-            <QuestionIcon className="w-4 h-4 text-blue-500" />
-          ) : isLoading ? (
-            <IconSpinner className="w-4 h-4 text-muted-foreground" />
-          ) : mode === "plan" ? (
-            <PlanIcon className="w-4 h-4 text-muted-foreground" />
-          ) : (
-            <AgentIcon className="w-4 h-4 text-muted-foreground" />
-          )}
-          {hasUnseen && !isLoading && !hasPendingQuestion && (
-            <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-popover flex items-center justify-center">
-              <div className="w-1.5 h-1.5 rounded-full bg-[#307BD0]" />
-            </div>
-          )}
-        </div>
-        <span className="text-sm truncate flex-1">
-          {conversation?.name || "New Chat"}
-        </span>
-        <span className="text-sm text-muted-foreground whitespace-nowrap">
-          {timeAgo}
-        </span>
-      </div>
-    )
-  }, [loadingConversations, conversationsUnseenChanges, pendingQuestionsMap])
-
-  return (
-    <SearchCombobox
-      isOpen={isHistoryOpen}
-      onOpenChange={setIsHistoryOpen}
-      items={sortedConversations}
-      onSelect={handleSelect}
-      placeholder="Search chats..."
-      emptyMessage="No results"
-      getItemValue={(conversation) => `${conversation?.name || "New Chat"} ${conversation?.id}`}
-      renderItem={renderItem}
-      side="bottom"
-      align="end"
-      sideOffset={4}
-      collisionPadding={16}
-      trigger={
-        <Tooltip delayDuration={500}>
-          <TooltipTrigger asChild>
-            <PopoverTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md"
-                disabled={allConversationsLength === 0}
-              >
-                <ClockIcon className="h-4 w-4" />
-              </Button>
-            </PopoverTrigger>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Conversation history</TooltipContent>
-        </Tooltip>
-      }
-    />
-  )
-})
-
 interface AgentsConversationsSidebarProps {
   onClose?: () => void
   isMobile?: boolean
@@ -256,15 +120,15 @@ interface AgentsConversationsSidebarProps {
 
 export function AgentsConversationsSidebar({
   onClose,
-  isMobile = false,
+  isMobile: _isMobile = false,
   onBackToChats,
   isSidebarOpen = false,
-  isLoading = false,
+  isLoading: _isLoading = false,
   workspaceId,
-  workspaceName,
+  workspaceName: _workspaceName,
   agentName,
   onNewChatClick,
-  onChatSelect,
+  onChatSelect: _onChatSelect,
 }: AgentsConversationsSidebarProps) {
   // Use shallow comparison to prevent re-renders when arrays have same content
   const {
@@ -349,12 +213,12 @@ export function AgentsConversationsSidebar({
   const [justCreatedIds, setJustCreatedIds] = useAtom(justCreatedIdsAtom)
   const pendingQuestionsMap = useAtomValue(pendingUserQuestionsAtom)
   const rawMode = useAtomValue(defaultAgentModeAtom)
-  const defaultAgentMode = rawMode === "plan" ? "plan" : "agent"
+  const _defaultAgentMode = rawMode === "plan" ? "plan" : "agent"
 
   // Pending plan approvals from DB - only for open conversations
   const { data: pendingPlanApprovalsData } = trpc.chats.getPendingPlanApprovals.useQuery(
     { openConversationIds },
-    { refetchInterval: 5000, enabled: openConversationIds.length > 0, placeholderData: (prev) => prev }
+    { refetchInterval: 10000, enabled: openConversationIds.length > 0, placeholderData: (prev) => prev }
   )
   const pendingPlanApprovals = useMemo(() => {
     const set = new Set<string>()
@@ -633,7 +497,7 @@ export function AgentsConversationsSidebar({
   // Uses direct DOM manipulation instead of state to avoid re-renders
   const handleConversationMouseEnter = useCallback(
     (conversationId: string, name: string, cardElement: HTMLElement) => {
-      // Clear any existing timer
+      // Clear unknown existing timer
       if (conversationTooltipTimerRef.current) {
         clearTimeout(conversationTooltipTimerRef.current)
       }
@@ -724,8 +588,8 @@ export function AgentsConversationsSidebar({
 
   const renameMutation = api.agents.renameConversation.useMutation({
     // Note: store is updated optimistically in handleRenameSave, no need for onSuccess
-    onError: (error) => {
-      if (error.data?.code === "NOT_FOUND") {
+    onError: (error: unknown) => {
+      if ((error as { data?: { code?: string } })?.data?.code === "NOT_FOUND") {
         toast.error("Send a message first before renaming this conversation")
       } else {
         toast.error("Failed to rename conversation")
@@ -778,7 +642,7 @@ export function AgentsConversationsSidebar({
     [renamingConversation, renameMutation, setJustCreatedIds],
   )
 
-  const handleSelectFromHistory = useCallback((conversation?: ConversationMeta) => {
+  const _handleSelectFromHistory = useCallback((conversation?: ConversationMeta) => {
     if (!conversation?.id) return
     const state = useAgentConversationStore.getState()
     const isAlreadyOpen = state.openConversationIds.includes(conversation.id)
@@ -790,7 +654,7 @@ export function AgentsConversationsSidebar({
   }, [])
 
   // Sort conversations by most recent first for history
-  const sortedConversations = useMemo(
+  const _sortedConversations = useMemo(
     () =>
       [...allConversations].sort((a, b) => {
         const aT = new Date(a.updated_at || a.created_at || "0").getTime()

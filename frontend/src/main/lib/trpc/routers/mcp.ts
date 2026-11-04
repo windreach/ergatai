@@ -1,5 +1,10 @@
-import { z } from "zod"
-import { publicProcedure, router } from "../index"
+import {
+  z
+} from "zod"
+import {
+  publicProcedure,
+  router
+} from "../index"
 import {
   readClaudeConfig,
   updateClaudeConfigAtomic,
@@ -7,14 +12,18 @@ import {
   removeMcpServerConfig,
   getMergedGlobalMcpServers,
   GLOBAL_MCP_PATH,
-  type McpServerConfig,
+  type McpServerConfig
 } from "../../claude-config"
 import {
   fetchMcpTools,
-  fetchMcpToolsStdio,
+  fetchMcpToolsStdio
 } from "../../mcp-tools"
-import { ergataiFetch } from "../../ergatai/api"
-import { getClaudeShellEnvironment } from "../../claude/env"
+import {
+  ergataiFetch
+} from "../../ergatai/api"
+import {
+  getClaudeShellEnvironment
+} from "../../claude/env"
 
 // ── Session tracking (for hasActive/abortAll exports) ──────────────────
 
@@ -29,7 +38,7 @@ export function abortAllClaudeSessions(): void {
 }
 
 export function clearClaudeCaches(): void {
-  // Invalidate any cached MCP config
+  // Invalidate unknown cached MCP config
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -44,7 +53,7 @@ type McpServerEntry = McpServerConfig & {
   serverInfo?: { name: string; version: string }
 }
 
-async function buildMcpGroups(): Promise<
+async function _buildMcpGroups(): Promise<
   Array<{ groupName: string; projectPath: string | null; mcpServers: McpServerEntry[] }>
 > {
   const globalServers = await getMergedGlobalMcpServers()
@@ -97,7 +106,7 @@ function resolveMcpProjectPath(
   return GLOBAL_MCP_PATH
 }
 
-function toMcpServerEntries(servers: Record<string, McpServerConfig>) {
+function _toMcpServerEntries(servers: Record<string, McpServerConfig>) {
   return Object.entries(servers).map(([name, cfg]) => ({
     ...cfg,
     name,

@@ -1,5 +1,5 @@
 import { Component, type ReactNode } from "react"
-import { Provider as JotaiProvider, useAtomValue, useSetAtom } from "jotai"
+import { Provider as JotaiProvider, useSetAtom } from "jotai"
 import { ThemeProvider, useTheme } from "next-themes"
 import { useEffect } from "react"
 import { Toaster } from "sonner"
@@ -7,17 +7,12 @@ import { AlertCircle, RefreshCw } from "lucide-react"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { TRPCProvider } from "./contexts/TRPCProvider"
 import { WindowProvider, getInitialWindowParams } from "./contexts/WindowContext"
-import { selectedAgentChatIdAtom } from "./features/agents/atoms"
-import { useAgentConversationStore } from "./features/agents/stores/conversation-store"
-import { AgentsLayout } from "./features/layout/agents-layout"
+import { selectedAgentChatIdAtom } from "./features/agents"
+import { useAgentConversationStore } from "./features/agents"
+import { AgentsLayout } from "./features/layout"
 import { identify, initAnalytics, shutdown } from "./lib/analytics"
-import {
-  apiKeyOnboardingCompletedAtom,
-  billingMethodAtom,
-} from "./lib/atoms"
 import { appStore } from "./lib/jotai-store"
 import { VSCodeThemeProvider } from "./lib/themes/theme-provider"
-import { trpc } from "./lib/trpc"
 
 interface GlobalErrorBoundaryProps {
   children: ReactNode
@@ -102,10 +97,6 @@ function ThemedToaster() {
 }
 
 function AppContent() {
-  const billingMethod = useAtomValue(billingMethodAtom)
-  const setBillingMethod = useSetAtom(billingMethodAtom)
-  const apiKeyOnboardingCompleted = useAtomValue(apiKeyOnboardingCompletedAtom)
-  const setApiKeyOnboardingCompleted = useSetAtom(apiKeyOnboardingCompletedAtom)
   const setSelectedChatId = useSetAtom(selectedAgentChatIdAtom)
   const { setActiveConversation, addToOpenConversations, setChatId } = useAgentConversationStore()
 
@@ -131,7 +122,7 @@ function AppContent() {
         setSelectedChatId(null)
       }
     })
-  }, [])
+  }, [setSelectedChatId])
 
   // 移除了自动创建默认项目的逻辑
   // 原因：这段代码会导致竞态条件和数据不一致

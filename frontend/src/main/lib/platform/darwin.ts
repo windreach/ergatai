@@ -2,16 +2,26 @@
  * macOS Platform Provider
  */
 
-import { exec, execSync } from "node:child_process"
-import { existsSync, lstatSync, readlinkSync } from "node:fs"
+import {
+  exec
+} from "node:child_process"
+import {
+  existsSync,
+  lstatSync,
+  readlinkSync
+} from "node:fs"
 import * as path from "node:path"
-import { promisify } from "node:util"
-import { BasePlatformProvider } from "./base"
+import {
+  promisify
+} from "node:util"
+import {
+  BasePlatformProvider
+} from "./base"
 import type {
   ShellConfig,
   PathConfig,
   CliConfig,
-  EnvironmentConfig,
+  EnvironmentConfig
 } from "./types"
 
 const execAsync = promisify(exec)
@@ -71,7 +81,7 @@ export class DarwinPlatformProvider extends BasePlatformProvider {
   }
 
   getEnvironmentConfig(): EnvironmentConfig {
-    const home = this.getHome()
+    const _home = this.getHome()
 
     return {
       homeVar: "HOME",

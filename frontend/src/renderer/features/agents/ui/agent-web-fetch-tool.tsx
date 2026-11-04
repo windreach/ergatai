@@ -27,7 +27,7 @@ function formatBytes(bytes: number): string {
 
 /**
  * Props for AgentWebFetchTool component.
- * Note: `part` is typed as `any` because it represents a tool-specific part structure
+ * Note: `part` is typed as `unknown` because it represents a tool-specific part structure
  * from the AI SDK that varies by tool type. The web fetch tool has its own input/output
  * shape (url, result, bytes, code) that doesn't fit a generic interface.
  */

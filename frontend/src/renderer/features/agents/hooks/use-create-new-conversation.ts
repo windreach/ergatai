@@ -1,5 +1,5 @@
 import { useCallback } from "react"
-import type { Chat } from "@ai-sdk/react"
+import type { Chat, UIMessage } from "@ai-sdk/react"
 import type { agentChatStore } from "../stores/agent-chat-store"
 
 interface UseCreateNewConversationOptions {
@@ -12,7 +12,7 @@ interface UseCreateNewConversationOptions {
   selectedChatId: string | null
   setUnseenChanges: (updater: (prev: Set<string>) => Set<string>) => void
   notifyAgentComplete: (name: string) => void
-  syncFinishedMessagesToChatCache: (conversationId: string, chat: Chat<any>) => void
+  syncFinishedMessagesToChatCache: (conversationId: string, chat: Chat<UIMessage>) => void
   pruneIfDetachedAndIdle: (conversationId: string, parentChatId: string) => void
   agentChat?: { name?: string }
   isGroupMode: boolean
@@ -24,27 +24,7 @@ interface UseCreateNewConversationOptions {
   fetchDiffStatsRef: React.RefObject<() => void>
 }
 
-export function useCreateNewConversation({
-  worktreePath,
-  chatId,
-  defaultAgentMode,
-  activeConversationId,
-  inferProviderFromMessages,
-  setConversationUnseenChanges,
-  selectedChatId,
-  setUnseenChanges,
-  notifyAgentComplete,
-  syncFinishedMessagesToChatCache,
-  pruneIfDetachedAndIdle,
-  agentChat,
-  isGroupMode,
-  setJustCreatedIds,
-  setConversationProviderOverrides,
-  agentChatStore,
-  forceUpdate,
-  setLoadingConversations,
-  fetchDiffStatsRef,
-}: UseCreateNewConversationOptions) {
+export function useCreateNewConversation(_options: UseCreateNewConversationOptions) {
   const handleCreateNewConversation = useCallback(async () => {
     // Backend no longer supports creating child conversations
     // This feature has been removed

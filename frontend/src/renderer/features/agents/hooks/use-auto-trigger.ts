@@ -65,7 +65,7 @@ export function useAutoTrigger({
     // Clear messages to avoid duplicates
     setMessages([])
 
-  }, [messages, isStreaming, conversationId, isGroupMode, setMessages])
+  }, [messages, isStreaming, conversationId, isGroupMode, setMessages, hasTriggeredAutoGenerateRef])
 
   // Effect 2: After messages are cleared, send the message
   useEffect(() => {

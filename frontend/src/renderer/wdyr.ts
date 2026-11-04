@@ -1,4 +1,3 @@
-/// <reference types="@welldone-software/why-did-you-render" />
 import React from "react"
 import whyDidYouRender from "@welldone-software/why-did-you-render"
 
@@ -24,7 +23,7 @@ if (import.meta.env.DEV && WDYR_ENABLED) {
     collapseGroups: true,
 
     notifier: (info) => {
-      const name = info.displayName || (info.Component as any)?.name || "Unknown"
+      const name = info.displayName || (info.Component as { name?: string } | null)?.name || "Unknown"
       const now = Date.now()
 
       // Reset count if outside time window
@@ -36,9 +35,10 @@ if (import.meta.env.DEV && WDYR_ENABLED) {
       renderCounts[name].lastTime = now
 
       // Log every render with prop names (safely handle different data types)
-      const getDiffNames = (diff: any) => {
+      const getDiffNames = (diff: unknown) => {
         if (!diff) return []
-        if (Array.isArray(diff)) return diff.map((d: any) => d?.pathString || d?.name || 'unknown')
+        if (Array.isArray(diff))
+        return diff.map((d: unknown) => (d as { pathString?: string; name?: string } | null)?.pathString || (d as { pathString?: string; name?: string } | null)?.name || 'unknown')
         if (typeof diff === 'object') return Object.keys(diff)
         return []
       }

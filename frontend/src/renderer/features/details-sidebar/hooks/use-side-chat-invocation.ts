@@ -21,17 +21,20 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef } from "react"
-import { useChatInstance } from "../../agents/hooks/use-chat-instance"
-import type { MessagePart } from "../../agents/stores/message-store"
-import { useConversationInvocation, useSessionState } from "../../conversation/runtime/use-conversation-invocation"
-import { useRuntimeSessionMessageProjection } from "../../conversation/runtime"
-import { getAdapterRegistry } from "../../conversation/runtime/runtime-adapter"
-import { useRuntimeSessionSources } from "../../conversation/runtime/use-runtime-session-sources"
-import { getConversationProjectionService } from "../../conversation/runtime/conversation-projection-service"
-import { getMessageCorrelationService } from "../../conversation/runtime/message-correlation-service"
+import { useChatInstance } from "../../agents"
+import type { MessagePart } from "../../agents"
+import { useConversationInvocation, useSessionState } from "../../conversation"
+import { useRuntimeSessionMessageProjection } from "../../conversation"
+import { getAdapterRegistry } from "../../conversation"
+import { useRuntimeSessionSources } from "../../conversation"
+import { getConversationProjectionService } from "../../conversation"
+import { getMessageCorrelationService } from "../../conversation"
 import type { ChatConversation } from "../lib/chat-contract-api"
 import type { UIMessage } from "@ai-sdk/react"
-const projectionService = getConversationProjectionService()
+// Getter function instead of module-level constant to avoid forcing early initialization
+// of the projection service. This allows the service to be lazily created on first use,
+// which can help with module loading order and test isolation.
+const getProjectionService = () => getConversationProjectionService()
 
 /**
  * Side chat invocation hook.
@@ -80,11 +83,11 @@ export function useSideChatInvocation({
   const sessionState = useSessionState(runtimeConversationId)
 
   const persistedSessionMessages = useMemo(
-    () => (conversation.messages ?? []).map((message) => projectionService.normalizeRawMessage(message)),
+    () => (conversation.messages ?? []).map((message) => getProjectionService().normalizeRawMessage(message, "persisted")),
     [conversation.messages],
   )
   const localSessionMessages = useMemo(
-    () => chatInstance.messages.map((message) => projectionService.normalizeRawMessage(message)),
+    () => chatInstance.messages.map((message) => getProjectionService().normalizeRawMessage(message, "local")),
     [chatInstance.messages],
   )
 
@@ -102,7 +105,7 @@ export function useSideChatInvocation({
       !(chatInstance.status === "streaming" || chatInstance.status === "submitted")) &&
     (runtimeStatus === "streaming" || persistedSessionMessages.length === 0)
   const backendRuntimeMessages = useMemo(
-    () => (backendRuntimeEnabled ? runtimeMessages.map((message) => projectionService.normalizeRawMessage(message)) : []),
+    () => (backendRuntimeEnabled ? runtimeMessages.map((message) => getProjectionService().normalizeRawMessage(message, "runtime")) : []),
     [backendRuntimeEnabled, runtimeMessages],
   )
 
@@ -175,7 +178,7 @@ export function useSideChatInvocation({
             correlationId,
           },
         })
-        await ci.sendMessage(message)
+        await ci.sendMessage(message as unknown as Parameters<typeof ci.sendMessage>[0])
       },
       stop: async () => {
         // Delegate to existing Chat instance
@@ -263,6 +266,7 @@ export function useSideChatInvocation({
       agentId,
       isStreaming,
       streamingStatus,
+      visibleMessages,
     ],
   )
 }

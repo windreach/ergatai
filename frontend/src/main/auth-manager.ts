@@ -1,4 +1,6 @@
-import { app } from "electron"
+import {
+  app
+} from "electron"
 
 export interface DesktopUser {
   id: string

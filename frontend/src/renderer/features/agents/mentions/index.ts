@@ -6,7 +6,7 @@ export {
 } from "./agents-mentions-editor"
 
 // Re-export MENTION_PREFIXES from canonical source (12 items)
-export { MENTION_PREFIXES } from "../../mentions/types/core"
+export { MENTION_PREFIXES } from "../../mentions"
 
 export { AgentsFileMention } from "./agents-file-mention"
 

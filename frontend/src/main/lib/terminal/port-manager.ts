@@ -40,7 +40,7 @@ class PortManager extends EventEmitter {
 		this.sessions.delete(paneId)
 		this.removePortsForPane(paneId)
 
-		// Cancel any pending hint scan for this pane
+		// Cancel unknown pending hint scan for this pane
 		const pendingTimeout = this.pendingHintScans.get(paneId)
 		if (pendingTimeout) {
 			clearTimeout(pendingTimeout)

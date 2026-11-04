@@ -37,7 +37,7 @@ export class MapErrorBoundary extends React.Component<
 
   render() {
     if (this.state.hasError) {
-      // You can render any custom fallback UI
+      // You can render unknown custom fallback UI
       return (
         <div className="p-4 text-sm text-destructive">
           <h3 className="font-semibold">Something went wrong</h3>

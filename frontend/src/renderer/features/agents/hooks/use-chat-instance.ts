@@ -8,9 +8,8 @@ import { syncMessagesWithStatusAtom } from "../stores/message-store"
 import type { MessagePart } from "../stores/message-store"
 import { useStreamingStatusStore } from "../stores/streaming-status-store"
 import { clearConversationRuntimeCaches } from "../stores/conversation-runtime-cleanup"
-import { trpc } from "@/lib/trpc"
-import { getMessageCorrelationService } from "@/features/conversation/runtime/message-correlation-service"
-import type { ChatConversation, ChatMessage } from "@/features/details-sidebar/lib/chat-contract-api"
+import { getMessageCorrelationService } from "@/features/conversation"
+import type { ChatConversation } from "@/features/details-sidebar"
 import type { AgentMessageMetadata } from "../ui/agent-message-usage"
 
 /**
@@ -21,9 +20,9 @@ export function useChatInstance({
   conversation,
   chatId,
   agentId,
-  isActive = true,
+  isActive: _isActive = true,
   transportConfig,
-  onMessagePersisted,
+  onMessagePersisted: _onMessagePersisted,
 }: {
   conversation: ChatConversation
   chatId: string
@@ -44,56 +43,6 @@ export function useChatInstance({
   const queue = useMessageQueueStore((s) => s.queues[runtimeConversationId] ?? EMPTY_QUEUE)
   const addToQueue = useMessageQueueStore((s) => s.addToQueue)
   const removeFromQueue = useMessageQueueStore((s) => s.removeFromQueue)
-
-  // Map backend messages to UI messages
-  // UIMessage<AgentMessageMetadata> provides type safety for agent-specific metadata fields
-  // while maintaining compatibility with the AI SDK's generic message structure
-  const mapMessage = useCallback((message: ChatMessage): UIMessage<AgentMessageMetadata> => {
-    const parts = (message.parts?.length
-      ? message.parts
-      : [
-          ...(message.images ?? []).map((image) => ({
-            type: "data-image",
-            data: {
-              filename: image.filename,
-              url: image.url,
-              base64Data: image.base64Data,
-              mediaType: image.mediaType,
-            },
-          })),
-          { type: "text", text: message.content },
-        ]) as UIMessage<AgentMessageMetadata>["parts"]
-
-    // Keep role as-is - "agent" stays "agent" so MessageRolePolicy.isInitiator() returns true
-    const role = message.role as "user" | "assistant" | "agent"
-
-    // Merge all metadata including new agent message fields
-    const { messageType, ...restMetadata } = message.metadata || {}
-    const mergedMetadata: AgentMessageMetadata = {
-      ...restMetadata,
-      // 传递agent消息专用字段
-      fromAgentId: message.fromAgentId ?? undefined,
-      fromAgentName: message.fromAgentName ?? undefined,
-      messageType: (message.messageType as "request" | "response" | "broadcast") ?? undefined,
-      agentContent: message.content,  // Use content field from backend
-      senderAgentId: message.senderAgentId ?? undefined,
-      senderAgentName: message.senderAgentName ?? undefined,
-      // Carry backend-assigned turnId into metadata so the projection service
-      // can deduplicate across sources (persisted / runtime / local transport).
-      // Prefer the top-level turnId field; fall back to metadata.turnId.
-      turnId: message.turnId
-        ?? (typeof (restMetadata as Record<string, unknown>).turnId === "string"
-          ? ((restMetadata as Record<string, unknown>).turnId as string)
-          : undefined),
-    }
-
-    return {
-      id: message.id,
-      role: role as UIMessage<AgentMessageMetadata>["role"],
-      metadata: mergedMetadata,
-      parts,
-    }
-  }, [])
 
   // Intentional no-op: backend owns message persistence via SSE-driven accumulation.
   // Kept as a hook point in case client-side persistence is re-introduced later.
@@ -126,14 +75,17 @@ export function useChatInstance({
           mode: "agent",
         })
 
-    // `Chat<any>` is required because @ai-sdk/react's Chat class has a generic constraint
+    // `Chat<unknown>` is required because @ai-sdk/react's Chat class has a generic constraint
     // `UI_MESSAGE extends UIMessage`, where UIMessage.role is strictly 'system' | 'user' | 'assistant'.
     // Ergatai extends this with an 'agent' role for agent-initiated messages, which doesn't satisfy
     // the UIMessage constraint. The Chat class is a runtime container that doesn't validate message
-    // types, so `any` is safe here. We use UIMessage<AgentMessageMetadata> elsewhere for type safety.
+    // types, so `unknown` is safe here. We use UIMessage<AgentMessageMetadata> elsewhere for type safety.
+     
     return new Chat<any>({
       id: runtimeConversationId,
-      messages: conversation.messages.map(mapMessage),
+      // Chat instance is transport-only: persisted/runtime messages are owned by
+      // the shared RuntimeSessionStore, not by the AI SDK Chat instance.
+      messages: [],
       transport,
       onError: (error) => {
         toast.error(error.message || "Failed to send message")
@@ -158,15 +110,8 @@ export function useChatInstance({
 
   const isStreaming = status === "streaming" || status === "submitted"
 
-  // A side chat can be attached to a backend conversation after the chat
-  // snapshot has already loaded. Seed an empty local Chat instance once the
-  // persisted messages become available, without overwriting an active turn.
-  useEffect(() => {
-    if (isStreaming || messages.length > 0 || conversation.messages.length === 0) {
-      return
-    }
-    setMessages(conversation.messages.map(mapMessage))
-  }, [conversation.messages, isStreaming, mapMessage, messages.length, setMessages])
+  // Chat instance is transport-only: persisted/runtime messages are owned by
+  // the shared RuntimeSessionStore, so there is no client-side seeding here.
 
   // Sync messages with store
   const syncMessages = useSetAtom(syncMessagesWithStatusAtom)

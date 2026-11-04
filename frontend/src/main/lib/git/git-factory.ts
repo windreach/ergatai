@@ -1,6 +1,15 @@
-import { simpleGit, type SimpleGit, type SimpleGitOptions } from "simple-git";
-import { stat, unlink } from "fs/promises";
-import { join } from "path";
+import {
+  simpleGit,
+  type SimpleGit,
+  type SimpleGitOptions
+} from "simple-git";
+import {
+  stat,
+  unlink
+} from "fs/promises";
+import {
+  join
+} from "path";
 
 /**
  * Default timeout values for git operations (in milliseconds)
@@ -71,7 +80,7 @@ export async function withGitLock<T>(
 	worktreePath: string,
 	operation: () => Promise<T>
 ): Promise<T> {
-	// Chain this operation onto the existing lock (if any)
+	// Chain this operation onto the existing lock (if unknown)
 	// This creates a queue: each operation waits for the previous one to complete
 	const previousLock = operationLocks.get(worktreePath) || Promise.resolve();
 
@@ -104,7 +113,7 @@ export async function withGitLock<T>(
 /**
  * Known lock files that git creates during operations
  */
-const GIT_LOCK_FILES = [
+const _GIT_LOCK_FILES = [
 	".git/index.lock",
 	".git/config.lock",
 	".git/HEAD.lock",
@@ -256,7 +265,7 @@ export async function getRepositoryState(worktreePath: string): Promise<{
 	const status = await git.status();
 
 	// Check for state indicators via git status
-	const isRebasing = status.current?.includes("(no branch") || false;
+	const _isRebasing = status.current?.includes("(no branch") || false;
 	const hasConflicts = status.conflicted.length > 0;
 
 	// More accurate state detection via git internals

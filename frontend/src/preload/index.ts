@@ -215,9 +215,9 @@ export interface VSCodeThemeData {
   name: string
   type: "light" | "dark"
   colors: Record<string, string>
-  tokenColors?: any[]
+  tokenColors?: unknown[]
   semanticHighlighting?: boolean
-  semanticTokenColors?: Record<string, any>
+  semanticTokenColors?: Record<string, unknown>
   source: "imported"
   path: string
 }

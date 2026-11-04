@@ -2,15 +2,24 @@
  * Windows Platform Provider
  */
 
-import { existsSync } from "node:fs"
-import { copyFile, mkdir, unlink, rmdir } from "node:fs/promises"
+import {
+  existsSync
+} from "node:fs"
+import {
+  copyFile,
+  mkdir,
+  unlink,
+  rmdir
+} from "node:fs/promises"
 import * as path from "node:path"
-import { BasePlatformProvider } from "./base"
+import {
+  BasePlatformProvider
+} from "./base"
 import type {
   ShellConfig,
   PathConfig,
   CliConfig,
-  EnvironmentConfig,
+  EnvironmentConfig
 } from "./types"
 
 export class WindowsPlatformProvider extends BasePlatformProvider {
@@ -20,7 +29,7 @@ export class WindowsPlatformProvider extends BasePlatformProvider {
   getShellConfig(): ShellConfig {
     const powershellPath =
       "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
-    const cmdPath = process.env.COMSPEC || "C:\\Windows\\System32\\cmd.exe"
+    const _cmdPath = process.env.COMSPEC || "C:\\Windows\\System32\\cmd.exe"
 
     return {
       executable: process.env.COMSPEC || powershellPath,
@@ -183,7 +192,7 @@ export class WindowsPlatformProvider extends BasePlatformProvider {
     }
   }
 
-  isCliInstalled(sourcePath: string): boolean {
+  isCliInstalled(_sourcePath: string): boolean {
     const cliConfig = this.getCliConfig()
     try {
       // Windows: just check if the file exists

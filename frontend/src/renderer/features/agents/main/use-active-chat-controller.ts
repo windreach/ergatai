@@ -1,55 +1,26 @@
 import {
   stripEmojis
 } from "../../../components/chat-markdown-renderer"
-import {
-  AgentIcon,
-  AttachIcon,
-  ClaudeCodeIcon,
-  IconCloseSidebarRight,
-  IconOpenSidebarRight,
-  IconSpinner,
-  PauseIcon,
-  UnarchiveIcon,
-  VolumeIcon
-} from "../../../components/ui/icons"
-import {
-  PromptInput,
-  PromptInputActions
-} from "../../../components/ui/prompt-input"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "../../../components/ui/tooltip"
+
+
+
+
+
+
 import {Chat, useChat} from "@ai-sdk/react"
 import {useAtom, useAtomValue, useSetAtom} from "jotai"
+
+
 import {
-  ArrowDown,
-  ChevronDown,
-  Folder,
-  GitFork,
-  TerminalSquare
-} from "lucide-react"
-import {
-  createContext,
-  memo,
   useCallback,
-  useContext,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState
 } from "react"
 import { trackMessageSent } from "../../../lib/analytics"
 import {
-  customClaudeConfigAtom,
-  defaultAgentModeAtom,
-  isDesktopAtom, isFullscreenAtom,
-  normalizeCustomClaudeConfig,
-  sessionInfoAtom,
-  selectedOllamaModelAtom,
-  soundNotificationsEnabledAtom
+  isDesktopAtom, isFullscreenAtom
 } from "../../../lib/atoms"
 import { usePendingActions } from "../hooks/use-pending-actions"
 import { useQuestionHandling } from "../hooks/use-question-handling"
@@ -74,78 +45,22 @@ import { useMessageSync } from "../hooks/use-message-sync"
 import { useMainChatInvocation } from "../hooks/use-main-chat-invocation"
 import type { RawMessage } from "../hooks/use-main-chat-invocation"
 import type { MessagePart } from "../stores/message-store"
-import {
-  DiffStateProvider,
-  DiffSidebarRenderer,
-  useDiffState,
-} from "../components/diff/diff-components"
-import { useConversationRuntime } from "../../details-sidebar/lib/conversation-runtime-gateway"
-import { buildRuntimeMessages } from "../../details-sidebar/lib/conversation-runtime-ui"
+
+
+import { useConversationRuntime } from "../../details-sidebar"
+import { buildRuntimeMessages } from "../../details-sidebar"
 import { api } from "../../../lib/api-adapter"
+
+
+
+
 import {
-  detailsSidebarOpenAtom,
-  detailsSidebarTabAtom,
-  sideChatSidebarOpenAtom,
-  unifiedSidebarEnabledAtom,
-} from "../../details-sidebar/atoms"
-import {
-  createPanelLinkScopeKey,
-  panelLinkCommandAtomFamily,
-} from "@/features/panel-link"
-import {
-  agentsChangesPanelCollapsedAtom,
-  agentsChangesPanelWidthAtom,
-  agentsDiffSidebarWidthAtom,
-  agentsPlanSidebarWidthAtom,
-  agentsPreviewSidebarOpenAtom,
-  agentsPreviewSidebarWidthAtom,
-  agentsConversationsSidebarModeAtom,
-  agentsConversationUnseenChangesAtom,
-  agentsUnseenChangesAtom,
-  clearLoading,
   compactingConversationsAtom,
-  currentPlanPathAtomFamily,
-  diffActiveTabAtom,
-  diffSidebarOpenAtomFamily,
-  diffViewDisplayModeAtom,
-  expiredUserQuestionsAtom,
-  fileSearchDialogOpenAtom,
-  fileViewerDisplayModeAtom,
-  fileViewerOpenAtomFamily,
-  fileViewerSidebarWidthAtom,
-  filteredDiffFilesAtom,
-  filteredConversationIdAtom,
-  isCreatingPrAtom,
-  justCreatedIdsAtom,
   loadingConversationsAtom,
-  MODEL_ID_MAP,
-  pendingAuthRetryMessageAtom,
   pendingBuildPlanConversationIdAtom,
-  pendingConflictResolutionMessageAtom,
-  type PendingChatHistory,
   pendingMentionAtom,
   pendingInitialPromptAtomFamily,
-  pendingPlanApprovalsAtom,
-  pendingPrMessageAtom,
-  pendingReviewMessageAtom,
-  pendingUserQuestionsAtom,
-  planSidebarOpenAtomFamily,
-  QUESTIONS_SKIPPED_MESSAGE,
-  selectedAgentChatIdAtom,
-  selectedCommitAtom,
-  selectedDiffFilePathAtom,
-  setLoading,
-  conversationFilesAtom,
-  agentsSidebarOpenAtom,
-  conversationCodexModelIdAtomFamily,
-  conversationCodexThinkingAtomFamily,
-  conversationModelIdAtomFamily,
-  conversationModeAtomFamily,
-  suppressInputFocusAtom,
-  undoStackAtom,
-  workspaceDiffCacheAtomFamily,
-  type AgentMode,
-  type SelectedCommit
+  pendingPlanApprovalsAtom
 } from "../atoms"
 import type { TextSelectionSource } from "../context/text-selection-context"
 import { useActiveChatPlan } from "./use-active-chat-plan"
@@ -160,7 +75,6 @@ import { useChangedFilesTracking } from "../hooks/use-changed-files-tracking"
 import { useFocusInputOnEnter } from "../hooks/use-focus-input-on-enter"
 import { useToggleFocusOnCmdEsc } from "../hooks/use-toggle-focus-on-cmd-esc"
 import { usePendingAuthRetry } from "../hooks/use-pending-auth-retry"
-import type { AgentQueueItem } from "../lib/queue-utils"
 import {
   isCollaborationSessionRuntimeEnabled,
   useCollaborationSession,
@@ -168,60 +82,38 @@ import {
 import { extractAgentMentions } from "../collaboration/implicit-collaboration"
 import {
   setGroupAgentRuntimeStatuses,
-  type GroupAgentRuntimeStatuses,
 } from "../collaboration/group-agent-runtime"
+
+
 import {
-  getCoreAgentProfileName,
-  type CoreAgentOption,
-} from "../lib/agent-contract-api"
-import {
-  clearConversationDraft,
-  getConversationDraftFull
+  clearConversationDraft
 } from "../lib/drafts"
+
 import {
-  createQueueItem, createTextPreview, generateQueueId,
-  toQueuedFile,
-  toQueuedImage,
-  toQueuedTextContext, toQueuedDiffTextContext, toQueuedPastedText, type DiffTextContext, type SelectedTextContext
-} from "../lib/queue-utils"
-import {
-  FileOpenProvider,
-  MENTION_PREFIXES,
   type AgentsMentionsEditorHandle,
 } from "../mentions"
-import {
-  ChatSearchBar,
-  chatSearchCurrentMatchAtom,
-  SearchHighlightProvider
-} from "../search"
+
+
 import { agentChatStore } from "../stores/agent-chat-store"
 import {useMessageQueueStore} from "../stores/message-queue-store"
 import {
-  findRollbackTargetSdkUuidForUserIndex,
-  isRollingBackAtom,
-  syncMessagesWithStatusAtom
+  isRollingBackAtom
 } from "../stores/message-store"
 import { useStreamingStatusStore } from "../stores/streaming-status-store"
 import {
   useAgentConversationStore,
-  type ConversationMeta,
 } from "../stores/conversation-store"
-import {
-  AgentDiffView,
-  diffViewModeAtom,
-  splitUnifiedDiffByFile,
-  type AgentDiffViewRef,
-  type ParsedDiffFile,
-} from "../ui/agent-diff-view"
+
+
 import {
   clearRuntimeCachesForConversation,
-  getFirstConversationId,
   CHAT_LAYOUT,
 } from "./active-chat-helpers"
 
 const mountedChatViewInnerCounts = new Map<string, number>()
 const pendingConversationCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
+ 
 export function useActiveChatController(props: {
   chat: Chat<any>
   conversationId: string
@@ -261,18 +153,18 @@ export function useActiveChatController(props: {
   conversationId,
   parentChatId,
   provider = "claude-code",
-  isFirstConversation,
-  onCreateNewConversation,
+  isFirstConversation: _isFirstConversation,
+  onCreateNewConversation: _onCreateNewConversation,
   onProviderChange,
   refreshDiff,
   teamId,
-  repository,
+  repository: _repository,
   isMobile = false,
   sandboxSetupStatus = "ready",
-  sandboxSetupError,
-  onRetrySetup,
+  sandboxSetupError: _sandboxSetupError,
+  onRetrySetup: _onRetrySetup,
   isConversationsSidebarOpen = false,
-  sandboxId,
+  sandboxId: _sandboxId,
   projectPath,
   isArchived = false,
   onRestoreWorkspace,
@@ -280,9 +172,9 @@ export function useActiveChatController(props: {
   isActive = true,
   isSplitPane = false,
   isGroupMode = false,
-  workspaceName,
-  workspaceBranch,
-  workspaceRepoName,
+  workspaceName: _workspaceName,
+  workspaceBranch: _workspaceBranch,
+  workspaceRepoName: _workspaceRepoName,
   workspaceId,
   projectId,
   persistedMessages,
@@ -347,6 +239,7 @@ const chatInvocation = useMainChatInvocation({
     persistedMessages,
     runtimeMessages: backendRuntimeMessages as unknown as Parameters<typeof useMainChatInvocation>[0]["runtimeMessages"],
     existingChat: chat, // Pass existing Chat instance to avoid duplicate
+    runtimeStatus: conversationRuntime?.status,
   })
 
 const { sessionState, invocationQueue } = chatInvocation

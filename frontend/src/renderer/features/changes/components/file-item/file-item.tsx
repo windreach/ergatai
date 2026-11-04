@@ -24,9 +24,6 @@ import {
 	ClipboardIcon,
 	ExternalLinkIcon,
 	FolderIcon,
-	PlusIcon,
-	TrashIcon,
-	UndoIcon,
 } from "../../../../components/ui/icons";
 import { Minus, Plus } from "lucide-react";
 import type { ChangedFile } from "../../../../../shared/changes-types";

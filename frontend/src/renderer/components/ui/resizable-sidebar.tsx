@@ -4,7 +4,7 @@ import { useAtom, type WritableAtom } from "jotai"
 import { AnimatePresence, motion } from "motion/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal, flushSync } from "react-dom"
-import { Kbd } from "./kbd"
+import { CloseHint } from "./close-hint"
 
 interface ResizableSidebarProps {
   isOpen: boolean
@@ -117,7 +117,7 @@ export function ResizableSidebar({
       x,
       y: tooltipY,
     }
-  }, [tooltipY, currentWidth, side])
+  }, [tooltipY, side])
 
   useEffect(() => {
     if (isOpen) {
@@ -197,8 +197,6 @@ export function ResizableSidebar({
     setTooltipY(null)
   }, [
     onClose,
-    isOpen,
-    shouldAnimate,
     isResizing,
     localWidth,
     isHoveringResizeHandle,
@@ -489,7 +487,7 @@ export function ResizableSidebar({
                     if (isResizing) {
                       return
                     }
-                    // Clear any existing timeout
+                    // Clear unknown existing timeout
                     if (tooltipTimeoutRef.current) {
                       clearTimeout(tooltipTimeoutRef.current)
                     }
@@ -529,7 +527,7 @@ export function ResizableSidebar({
                   ref={resizeHandleRef}
                   onPointerDown={handleResizePointerDown}
                   onMouseEnter={(e) => {
-                    // Clear any existing timeout
+                    // Clear unknown existing timeout
                     if (tooltipTimeoutRef.current) {
                       clearTimeout(tooltipTimeoutRef.current)
                     }
@@ -622,20 +620,7 @@ export function ResizableSidebar({
                           handleClose()
                         }}
                       >
-                        {!disableClickToClose && (
-                          <div className="flex items-center gap-1 text-xs">
-                            <span>Close</span>
-                            <span className="text-muted-foreground inline-flex items-center gap-1">
-                              <span>Click</span>
-                              {closeHotkey && (
-                                <>
-                                  <span>or</span>
-                                  <Kbd>{closeHotkey}</Kbd>
-                                </>
-                              )}
-                            </span>
-                          </div>
-                        )}
+                        {!disableClickToClose && <CloseHint closeHotkey={closeHotkey} />}
                         <div className="flex items-center gap-1 text-xs">
                           <span>Resize</span>
                           <span className="text-muted-foreground">Drag</span>

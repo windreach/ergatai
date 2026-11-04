@@ -41,7 +41,7 @@ export function generatePrMessage(context: PrContext): string {
   steps.push(
     `Use gh pr create --base ${baseBranch} to create a PR. Keep the title under 80 characters and description under five sentences.`
   )
-  steps.push("If any of these steps fail, ask the user for help.")
+  steps.push("If unknown of these steps fail, ask the user for help.")
 
   // Add numbered steps
   steps.forEach((step, index) => {
@@ -69,7 +69,7 @@ Please commit and push these changes to update the PR:
 1. Run git diff to review uncommitted changes
 2. Commit them with a clear, concise commit message
 3. Push to origin to update the PR
-4. If any of these steps fail, ask the user for help.`
+4. If unknown of these steps fail, ask the user for help.`
 }
 
 /**

@@ -4,6 +4,7 @@ import { atom } from "jotai"
 import { atomFamily } from "jotai/utils"
 import { appStore } from "../../../lib/jotai-store"
 import { PROJECTION_KINDS } from "@/lib/projection-kinds"
+import { BoundedCache } from "../../../lib/bounded-cache"
 
 // Types
 export type MessageRole = "user" | "assistant" | "system" | "agent"
@@ -117,7 +118,7 @@ export const messageAtomFamily = atomFamily((_messageKey: string) =>
 )
 
 // Track active message IDs per conversation for cleanup
-const activeMessageIdsByChat = new Map<string, Set<string>>()
+const activeMessageIdsByChat = new BoundedCache<string, Set<string>>(100)
 
 // Ordered list of message IDs (for rendering order)
 export const messageIdsAtom = atom<string[]>([])
@@ -195,7 +196,7 @@ export const isMessageStreamingAtomFamily = atomFamily((messageId: string) =>
 // other parts of the same message change.
 
 // Cache for text part content to return stable references
-const textPartCache = new Map<string, string>()
+const textPartCache = new BoundedCache<string, string>(5000)
 
 export const textPartAtomFamily = atomFamily((key: string) => {
   // Key format: "<messageKey>:<partIndex>".
@@ -256,7 +257,7 @@ interface MessageStructure {
 }
 
 // Cache for message structure
-const messageStructureCache = new Map<string, MessageStructure>()
+const messageStructureCache = new BoundedCache<string, MessageStructure>(5000)
 
 export const messageStructureAtomFamily = atomFamily((messageKey: string) =>
   atom((get) => {
@@ -321,12 +322,34 @@ export const messageStructureAtomFamily = atomFamily((messageKey: string) =>
 )
 
 // ============================================================================
+// CACHE REUSE HELPERS
+// ============================================================================
+// Centralize "return the cached reference when content is structurally equal"
+// so equality rules live in one place instead of being copy-pasted across
+// every derived atom. Each helper returns the cached value when equal,
+// otherwise `undefined` (caller then stores + returns the new value).
+
+function reuseStringArrayIfEqual(
+  cached: string[] | undefined,
+  next: string[],
+): string[] | undefined {
+  if (
+    cached &&
+    cached.length === next.length &&
+    cached.every((id, i) => id === next[i])
+  ) {
+    return cached
+  }
+  return undefined
+}
+
+// ============================================================================
 // USER MESSAGE IDS - For IsolatedMessagesSection
 // ============================================================================
 // Uses a cache to return stable reference when IDs haven't changed
 // Cache is per-conversationId to avoid collisions between different chats
 
-const userMessageIdsCacheByChat = new Map<string, string[]>()
+const userMessageIdsCacheByChat = new BoundedCache<string, string[]>(500)
 export const userMessageIdsAtom = atom((get) => {
   const ids = get(messageIdsAtom)
   const roles = get(messageRolesAtom)
@@ -338,12 +361,9 @@ export const userMessageIdsAtom = atom((get) => {
 
   // Return cached array if content is the same
   const cached = userMessageIdsCacheByChat.get(conversationId)
-  if (
-    cached &&
-    newUserIds.length === cached.length &&
-    newUserIds.every((id, i) => id === cached[i])
-  ) {
-    return cached
+  const reused = reuseStringArrayIfEqual(cached, newUserIds)
+  if (reused) {
+    return reused
   }
 
   userMessageIdsCacheByChat.set(conversationId, newUserIds)
@@ -351,7 +371,7 @@ export const userMessageIdsAtom = atom((get) => {
 })
 
 // Per-conversation version for split panes
-const userMessageIdsPerChatCache = new Map<string, string[]>()
+const userMessageIdsPerChatCache = new BoundedCache<string, string[]>(500)
 export const userMessageIdsPerChatAtom = atomFamily((conversationId: string) =>
   atom((get) => {
     const ids = get(messageIdsPerChatAtom(conversationId))
@@ -362,12 +382,9 @@ export const userMessageIdsPerChatAtom = atomFamily((conversationId: string) =>
     })
 
     const cached = userMessageIdsPerChatCache.get(conversationId)
-    if (
-      cached &&
-      newUserIds.length === cached.length &&
-      newUserIds.every((id, i) => id === cached[i])
-    ) {
-      return cached
+    const reused = reuseStringArrayIfEqual(cached, newUserIds)
+    if (reused) {
+      return reused
     }
 
     userMessageIdsPerChatCache.set(conversationId, newUserIds)
@@ -380,7 +397,27 @@ export const userMessageIdsPerChatAtom = atomFamily((conversationId: string) =>
 // ============================================================================
 
 type MessageGroupType = { userMsgId: string; assistantMsgIds: string[] }
-const messageGroupsCacheByChat = new Map<string, MessageGroupType[]>()
+
+function reuseMessageGroupsIfEqual(
+  cached: MessageGroupType[] | undefined,
+  next: MessageGroupType[],
+): MessageGroupType[] | undefined {
+  if (!cached || cached.length !== next.length) return undefined
+  for (let i = 0; i < next.length; i++) {
+    const newGroup = next[i]
+    const cachedGroup = cached[i]
+    if (
+      newGroup.userMsgId !== cachedGroup?.userMsgId ||
+      newGroup.assistantMsgIds.length !== cachedGroup?.assistantMsgIds.length ||
+      !newGroup.assistantMsgIds.every((id, j) => id === cachedGroup?.assistantMsgIds[j])
+    ) {
+      return undefined
+    }
+  }
+  return cached
+}
+
+const messageGroupsCacheByChat = new BoundedCache<string, MessageGroupType[]>(500)
 
 export const messageGroupsAtom = atom((get) => {
   const ids = get(messageIdsAtom)
@@ -410,24 +447,10 @@ export const messageGroupsAtom = atom((get) => {
   }
 
   // Check if groups structurally match cached
-  const cachedMessageGroups = messageGroupsCacheByChat.get(conversationId) ?? []
-  if (groups.length === cachedMessageGroups.length) {
-    let allMatch = true
-    for (let i = 0; i < groups.length; i++) {
-      const newGroup = groups[i]
-      const cachedGroup = cachedMessageGroups[i]
-      if (
-        newGroup.userMsgId !== cachedGroup?.userMsgId ||
-        newGroup.assistantMsgIds.length !== cachedGroup?.assistantMsgIds.length ||
-        !newGroup.assistantMsgIds.every((id, j) => id === cachedGroup?.assistantMsgIds[j])
-      ) {
-        allMatch = false
-        break
-      }
-    }
-    if (allMatch) {
-      return cachedMessageGroups
-    }
+  const cachedMessageGroups = messageGroupsCacheByChat.get(conversationId)
+  const reusedGroups = reuseMessageGroupsIfEqual(cachedMessageGroups, groups)
+  if (reusedGroups) {
+    return reusedGroups
   }
 
   messageGroupsCacheByChat.set(conversationId, groups)
@@ -456,31 +479,17 @@ function buildMessageGroups(ids: string[], roles: Map<string, MessageRole>): Mes
   return groups
 }
 
-const messageGroupsPerChatCache = new Map<string, MessageGroupType[]>()
-const messageGroupsPerChatAtom = atomFamily((conversationId: string) =>
+const messageGroupsPerChatCache = new BoundedCache<string, MessageGroupType[]>(500)
+export const messageGroupsPerChatAtom = atomFamily((conversationId: string) =>
   atom((get) => {
     const ids = get(messageIdsPerChatAtom(conversationId))
     const roles = get(messageRolesPerChatAtom(conversationId))
     const groups = buildMessageGroups(ids, roles)
 
-    const cached = messageGroupsPerChatCache.get(conversationId) ?? []
-    if (groups.length === cached.length) {
-      let allMatch = true
-      for (let i = 0; i < groups.length; i++) {
-        const newGroup = groups[i]
-        const cachedGroup = cached[i]
-        if (
-          newGroup?.userMsgId !== cachedGroup?.userMsgId ||
-          newGroup?.assistantMsgIds.length !== cachedGroup?.assistantMsgIds.length ||
-          !newGroup?.assistantMsgIds.every((id, j) => id === cachedGroup?.assistantMsgIds[j])
-        ) {
-          allMatch = false
-          break
-        }
-      }
-      if (allMatch) {
-        return cached
-      }
+    const cached = messageGroupsPerChatCache.get(conversationId)
+    const reused = reuseMessageGroupsIfEqual(cached, groups)
+    if (reused) {
+      return reused
     }
 
     messageGroupsPerChatCache.set(conversationId, groups)
@@ -494,7 +503,7 @@ const messageGroupsPerChatAtom = atomFamily((conversationId: string) =>
 
 // Per-conversation versions for split panes
 // Key format: "conversationId:::userMsgId"
-const assistantIdsPerChatCache = new Map<string, string[]>()
+const assistantIdsPerChatCache = new BoundedCache<string, string[]>(500)
 export const assistantIdsPerChatAtomFamily = atomFamily((key: string) => {
   const sepIdx = key.indexOf(":::")
   const conversationId = key.slice(0, sepIdx)
@@ -505,12 +514,9 @@ export const assistantIdsPerChatAtomFamily = atomFamily((key: string) => {
     const newIds = group?.assistantMsgIds ?? []
     const cached = assistantIdsPerChatCache.get(key)
 
-    if (
-      cached &&
-      cached.length === newIds.length &&
-      cached.every((id, i) => id === newIds[i])
-    ) {
-      return cached
+    const reused = reuseStringArrayIfEqual(cached, newIds)
+    if (reused) {
+      return reused
     }
 
     assistantIdsPerChatCache.set(key, newIds)
@@ -529,7 +535,7 @@ export const isLastUserMessagePerChatAtomFamily = atomFamily((key: string) => {
 })
 
 // Key format: "conversationId:userMsgId" to isolate per chat
-const assistantIdsCacheByChat = new Map<string, string[]>()
+const assistantIdsCacheByChat = new BoundedCache<string, string[]>(500)
 export const assistantIdsForUserMsgAtomFamily = atomFamily((userMsgId: string) =>
   atom((get) => {
     const groups = get(messageGroupsAtom)
@@ -540,12 +546,9 @@ export const assistantIdsForUserMsgAtomFamily = atomFamily((userMsgId: string) =
     // Return cached array if content is the same
     const cacheKey = `${conversationId}:${userMsgId}`
     const cached = assistantIdsCacheByChat.get(cacheKey)
-    if (
-      cached &&
-      cached.length === newIds.length &&
-      cached.every((id, i) => id === newIds[i])
-    ) {
-      return cached
+    const reused = reuseStringArrayIfEqual(cached, newIds)
+    if (reused) {
+      return reused
     }
 
     assistantIdsCacheByChat.set(cacheKey, newIds)
@@ -680,7 +683,7 @@ export const isStreamingAtom = atom((get) => {
   return status === "streaming" || status === "submitted"
 })
 
-// Has any messages
+// Has unknown messages
 export const hasMessagesAtom = atom((get) => {
   const ids = get(messageIdsAtom)
   return ids.length > 0
@@ -692,7 +695,7 @@ export const hasMessagesAtom = atom((get) => {
 
 // Cache for last assistant message to avoid re-reading on every check
 // Keyed by conversationId to isolate per chat
-const lastAssistantCacheByChat = new Map<string, { id: string | null; msg: Message | null }>()
+const lastAssistantCacheByChat = new BoundedCache<string, { id: string | null; msg: Message | null }>(500)
 
 export const lastAssistantMessageAtom = atom((get) => {
   const ids = get(messageIdsAtom)
@@ -766,7 +769,7 @@ type TokenData = {
   // Track last message parts signature to detect compact boundary updates
   lastMsgPartsKey: string
 }
-const tokenDataCacheByChat = new Map<string, TokenData>()
+const tokenDataCacheByChat = new BoundedCache<string, TokenData>(500)
 
 export const messageTokenDataAtom = atom((get) => {
   const ids = get(messageIdsAtom)
@@ -873,8 +876,13 @@ export const messageTokenDataAtom = atom((get) => {
 // the expensive JSON.stringify + deep clone. The fingerprint cache is bounded
 // (MAX_MESSAGE_FINGERPRINTS) to avoid unbounded growth in long-running sessions.
 const MAX_MESSAGE_FINGERPRINTS = 5000
-const messageFingerprints = new Map<string, string>()
 const messageCheapSignatures = new Map<string, string>()
+const messageFingerprints = new BoundedCache<string, string>(
+  MAX_MESSAGE_FINGERPRINTS,
+  (key) => {
+    messageCheapSignatures.delete(key)
+  },
+)
 
 function deepClonePlain<T>(value: T): T {
   if (value instanceof Date) {
@@ -1098,14 +1106,6 @@ export const syncMessagesWithStatusAtom = atom(
         set(messageAtomFamily(messageKey), freezeDeep(deepClonePlain(msg)))
       }
 
-      // Bound cache size: drop the oldest entry when we exceed the cap.
-      if (messageFingerprints.size > MAX_MESSAGE_FINGERPRINTS) {
-        const oldestKey = messageFingerprints.keys().next().value
-        if (oldestKey !== undefined) {
-          messageFingerprints.delete(oldestKey)
-          messageCheapSignatures.delete(oldestKey)
-        }
-      }
     }
 
     // Cleanup removed message atoms to prevent memory leaks

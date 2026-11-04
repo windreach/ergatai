@@ -1,5 +1,4 @@
 import type {
-  TerminalAttachResult,
   TerminalProvider,
   TerminalStreamHandlers,
 } from "./types"
@@ -8,7 +7,7 @@ type MutationProcedure<TInput> = {
   mutate(input: TInput): Promise<void>
 }
 
-type StreamEventShape = {
+export type StreamEventShape = {
   type: string
   data?: string
   exitCode?: number
@@ -25,7 +24,7 @@ type StreamProcedure<TStreamEvent extends StreamEventShape> = {
   ): { unsubscribe(): void }
 }
 
-type TerminalRoutes<TStreamEvent extends StreamEventShape> = {
+export type TerminalRoutes<TStreamEvent extends StreamEventShape> = {
   write: MutationProcedure<{ paneId: string; data: string }>
   resize: MutationProcedure<{ paneId: string; cols: number; rows: number }>
   signal: MutationProcedure<{ paneId: string; signal?: string }>

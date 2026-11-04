@@ -1,3 +1,4 @@
+ 
 "use client"
 
 import {
@@ -29,14 +30,15 @@ export type ToolVariant = "simple" | "collapsible"
 
 /**
  * Generic tool part structure.
- * Note: `any` is used here because each tool has its own specific Part interface
+ * Note: `unknown` is used here because each tool has its own specific Part interface
  * (e.g., ThinkingToolPart, TaskToolPart) with different input/output shapes.
- * The registry needs to handle all tool types generically, so we use `any` to
- * allow TypeScript to accept any tool-specific part structure.
+ * The registry needs to handle all tool types generically, so we use `unknown` to
+ * allow TypeScript to accept unknown tool-specific part structure.
  */
 export interface ToolPart {
   type?: string
   state?: string
+   
   input?: any
   output?: any
   [key: string]: any

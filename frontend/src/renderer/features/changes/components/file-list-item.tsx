@@ -63,7 +63,7 @@ export interface FileListItemProps {
  * Memoized to prevent re-renders
  */
 export const FileListItem = memo(function FileListItem({
-  filePath,
+  filePath: _filePath,
   fileName,
   dirPath,
   status,

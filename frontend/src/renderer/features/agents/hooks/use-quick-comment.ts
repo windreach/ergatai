@@ -1,6 +1,5 @@
 import { useCallback, useState } from "react"
 import { toast } from "sonner"
-import { MENTION_PREFIXES } from "../../mentions/types"
 import { utf8ToBase64 } from "../utils/base64"
 import { createQueueItem, generateQueueId, type AgentQueueItem } from "../lib/queue-utils"
 import type { TextSelectionSource } from "../types"

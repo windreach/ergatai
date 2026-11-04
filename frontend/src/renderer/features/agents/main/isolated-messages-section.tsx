@@ -121,7 +121,7 @@ export const IsolatedMessagesSection = memo(function IsolatedMessagesSection({
     const seen = new Set<string>()
     for (const userMsgId of userMsgIds) {
       if (typeof userMsgId !== "string" || userMsgId.length === 0) {
-        // eslint-disable-next-line no-console
+         
         console.warn(
           "[IsolatedMessagesSection] Skipping message group without an id",
           { conversationId, userMsgId },
@@ -129,7 +129,7 @@ export const IsolatedMessagesSection = memo(function IsolatedMessagesSection({
         continue
       }
       if (seen.has(userMsgId)) {
-        // eslint-disable-next-line no-console
+         
         console.warn(
           "[IsolatedMessagesSection] Skipping duplicate message group id",
           { conversationId, userMsgId },

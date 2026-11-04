@@ -11,7 +11,7 @@
  */
 
 import type { ConversationRole, ConversationStatus } from "./contracts"
-import type { MessagePart } from "../../agents/stores/message-store"
+import type { MessagePart } from "../../agents"
 
 // ============================================================================
 // ADAPTER INTERFACE
@@ -88,7 +88,7 @@ export interface ConversationRuntimeAdapter {
   /**
    * Stop the current streaming response.
    *
-   * The adapter should abort any in-progress stream and update state accordingly.
+   * The adapter should abort unknown in-progress stream and update state accordingly.
    *
    * @throws {Error} If the operation cannot be stopped (adapter in invalid state, etc.)
    */
@@ -116,7 +116,7 @@ export interface ConversationRuntimeAdapter {
    * This allows the orchestrator to automatically process queue at safe points,
    * enabling "interrupt-like" behavior without explicit user action.
    *
-   * @experimental This method is defined but not yet implemented or consumed by any adapter.
+   * @experimental This method is defined but not yet implemented or consumed by unknown adapter.
    * TODO: Implement in adapters that support safe point detection, or remove if not needed.
    *
    * @param listener - Callback invoked when a safe point is reached

@@ -180,7 +180,7 @@ export function resolvePathInWorktree(
 	options: ValidatePathOptions = {},
 ): string {
 	validateRelativePath(filePath, options);
-	// Use resolve to handle any worktreePath (relative or absolute)
+	// Use resolve to handle unknown worktreePath (relative or absolute)
 	return resolve(worktreePath, normalize(filePath));
 }
 

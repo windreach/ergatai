@@ -44,7 +44,7 @@ export function SideChatSidebar({ chatId }: SideChatSidebarProps) {
       type: "sync-panel",
       panelId: "side-chat",
       open: isOpen,
-      target: activeSideChatInfo
+      target: isOpen && activeSideChatInfo
         ? {
             kind: "chat",
             id: activeSideChatInfo.id,

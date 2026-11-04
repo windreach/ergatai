@@ -1,3 +1,4 @@
+ 
 "use client"
 
 import { memo, useState, useEffect, useRef } from "react"
@@ -14,11 +15,12 @@ import type { TaskToolOutput } from "./tool-types"
 import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { cn } from "../../../lib/utils"
 
-// NOTE: Using `any` for part/nestedTools because the AI SDK emits dynamic tool structures
+// NOTE: Using `unknown` for part/nestedTools because the AI SDK emits dynamic tool structures
 // that vary by tool type. The AgentToolRegistry handles type-specific rendering, so we
 // avoid extensive type assertions here. A minimal interface would be:
-// interface AgentTaskPart { input?: { description?: string }; output?: any; ... }
+// interface AgentTaskPart { input?: { description?: string }; output?: unknown; ... }
 // but the full shape is too dynamic to capture concisely.
+ 
 interface AgentTaskToolProps {
   part: MessagePart
   nestedTools: any[]
@@ -27,7 +29,6 @@ interface AgentTaskToolProps {
 
 // Constants for rendering
 const MAX_VISIBLE_TOOLS = 5
-const TOOL_HEIGHT_PX = 24
 const TOOL_TYPE_PREFIX = "tool-"
 
 // Format elapsed time in a human-readable format

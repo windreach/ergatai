@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useMemo, useRef, useEffect, useState, useCallback, memo } from "react"
-import { useAtom, useAtomValue, useSetAtom } from "jotai"
+import { useAtom, useAtomValue } from "jotai"
 import { toast } from "sonner"
 import { trpc } from "../../../lib/trpc"
 import {

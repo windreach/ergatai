@@ -15,7 +15,7 @@ import type { ChatTransport, UIMessage, UIMessageChunk } from "ai"
 import { getOrCreateActiveAgent } from "./ergatai-agent-manager"
 import { trpcClient } from "../../../lib/trpc"
 import { useAgentConversationStore } from "../stores/conversation-store"
-import { getRuntimeSessionStore } from "../../conversation/runtime/runtime-session-store"
+import { getRuntimeSessionStore } from "../../conversation"
 import type { AgentOutputEvent } from "../../../../main/lib/ergatai/sse-client"
 import { isPersistedMessageId } from "../../../../shared/id"
 
@@ -97,7 +97,7 @@ type DataFilePart = {
 type MessagePart = TextPart | FileContentPart | DataImagePart | DataFilePart | { type: string; [key: string]: unknown }
 
 // ── sendMessage response shape (from Rust /api/v1/agents/:id/send) ──
-type SendMessageResult = {
+type _SendMessageResult = {
   status: "queued" | "direct_delivered" | "rejected"
   target_agent_id?: string
   session_id?: string
@@ -242,7 +242,7 @@ function transformEvent(
 
 // ── Safe metadata extraction ──
 // Typed metadata shape used for interrupt/correlation signals. Using `unknown`
-// plus explicit checks avoids `as any` casts that bypass runtime validation.
+// plus explicit checks avoids `as unknown` casts that bypass runtime validation.
 type ErgataiMessageMetadata = {
   interrupt?: unknown
   correlationId?: unknown
@@ -252,7 +252,7 @@ type ErgataiMessageMetadata = {
 /**
  * Safely extract metadata from a UIMessage. Returns `undefined` if the
  * message has no metadata or if the metadata is not a plain object.
- * This replaces unsafe `as any` casts with runtime validation.
+ * This replaces unsafe `as unknown` casts with runtime validation.
  */
 function extractMessageMetadata(message: UIMessage | undefined): ErgataiMessageMetadata | undefined {
   const raw = message?.metadata
@@ -281,7 +281,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
     const files = this.extractFiles(lastUser)
 
     // Phase 19: Extract interrupt flag and correlationId from message metadata
-    // Use a typed helper to avoid unsafe `as any` casts that bypass runtime validation.
+    // Use a typed helper to avoid unsafe `as unknown` casts that bypass runtime validation.
     const metadata = extractMessageMetadata(lastUser)
     const interrupt = metadata?.interrupt === true
     const messageCorrelationId =
@@ -297,7 +297,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
         : undefined
 
     // Use local variable to prevent mutation leaking across calls (HIGH severity bug fix)
-    let effectiveCorrelationId = messageCorrelationId || this.config.correlationId
+    const effectiveCorrelationId = messageCorrelationId || this.config.correlationId
 
     if (!prompt && images.length === 0 && files.length === 0) {
       throw new Error("No prompt, images, or files found in last user message")

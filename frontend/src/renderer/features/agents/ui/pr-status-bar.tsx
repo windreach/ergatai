@@ -33,7 +33,7 @@ function getStatusLabel(state: PrState, reviewDecision?: ReviewDecision): string
 
 export function PrStatusBar({ chatId, prUrl, prNumber }: PrStatusBarProps) {
   // Poll PR status every 30 seconds
-  const { data: status, isLoading, error, isError } = trpc.chats.getPrStatus.useQuery(
+  const { data: status, isLoading, error: _error, isError } = trpc.chats.getPrStatus.useQuery(
     { chatId },
     { refetchInterval: 30000, enabled: !!prNumber }
   )

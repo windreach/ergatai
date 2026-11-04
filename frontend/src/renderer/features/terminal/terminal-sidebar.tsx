@@ -5,25 +5,21 @@ import { fullThemeDataAtom } from "@/lib/atoms"
 import { motion } from "motion/react"
 import { ResizableSidebar } from "@/components/ui/resizable-sidebar"
 import { Button } from "@/components/ui/button"
+import { ModeSwitcher } from "@/components/ui/mode-switcher"
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-} from "@/components/ui/dropdown-menu"
+
+
 import {
   IconDoubleChevronRight,
-  CustomTerminalIcon,
   IconSidePeek,
   IconBottomPanel,
   PlusIcon,
 } from "@/components/ui/icons"
-import { AlignJustify, Check, ChevronsDown } from "lucide-react"
+import { AlignJustify, ChevronsDown } from "lucide-react"
 import { Kbd } from "@/components/ui/kbd"
 import { useResolvedHotkeyDisplay } from "@/lib/hotkeys"
 import { Terminal } from "./terminal"
@@ -110,36 +106,12 @@ function TerminalModeSwitcher({
   mode: TerminalDisplayMode
   onModeChange: (mode: TerminalDisplayMode) => void
 }) {
-  const currentMode = TERMINAL_MODES.find((m) => m.value === mode) ?? TERMINAL_MODES[0]
-  const CurrentIcon = currentMode.Icon
-
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-6 w-6 p-0 flex-shrink-0 hover:bg-foreground/10"
-        >
-          <CurrentIcon className="size-4 text-muted-foreground" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-[140px]">
-        {TERMINAL_MODES.map(({ value, label, Icon }) => (
-          <DropdownMenuItem
-            key={value}
-            onClick={() => onModeChange(value)}
-            className="flex items-center gap-2"
-          >
-            <Icon className="size-4 text-muted-foreground" />
-            <span className="flex-1">{label}</span>
-            {mode === value && (
-              <Check className="size-4 text-muted-foreground ml-auto" />
-            )}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <ModeSwitcher
+      modes={TERMINAL_MODES}
+      mode={mode}
+      onModeChange={(v) => onModeChange(v as TerminalDisplayMode)}
+    />
   )
 }
 
@@ -691,7 +663,7 @@ interface TerminalBottomPanelContentProps {
 }
 
 export function TerminalBottomPanelContent({
-  chatId,
+  chatId: _chatId,
   scopeKey,
   cwd,
   workspaceId,

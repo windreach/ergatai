@@ -21,7 +21,7 @@ export interface ConfigOptionInfo {
   name: string
   description: string | null
   category: string | null
-  kind: any // JSON value from backend
+  kind: unknown // JSON value from backend
 }
 
 /** Agent info from GET /api/v1/agents */

@@ -113,8 +113,7 @@ export function extractTerminalTheme(
     if (!vsCodeKeys) continue
     const color = getColorFromTheme(themeColors, vsCodeKeys)
     if (color) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ;(theme as any)[xtermKey] = color
+      ;(theme as Record<string, unknown>)[xtermKey] = color
     }
   }
   
@@ -122,7 +121,7 @@ export function extractTerminalTheme(
   const bgColor = theme.background || themeColors["editor.background"] || "#000000"
   const isLight = isLightColor(bgColor)
   
-  // Apply default ANSI colors for any missing colors
+  // Apply default ANSI colors for unknown missing colors
   const defaultAnsi = isLight ? DEFAULT_LIGHT_ANSI : DEFAULT_DARK_ANSI
   
   // Ensure all required colors are present

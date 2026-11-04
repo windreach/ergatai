@@ -22,7 +22,7 @@ export const CopyButton = memo(function CopyButton({
       await navigator.clipboard.writeText(text)
       triggerHaptic("medium")
       setCopied(true)
-      // Clear any existing timer
+      // Clear unknown existing timer
       if (timerRef.current) {
         clearTimeout(timerRef.current)
       }

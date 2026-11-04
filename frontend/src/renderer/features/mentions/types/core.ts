@@ -39,9 +39,9 @@ export interface MentionTrigger {
    * Position requirements for the trigger:
    * - 'start-of-line': Must be at the beginning of a line
    * - 'standalone': Must be preceded by whitespace or start of input
-   * - 'any': Can appear anywhere
+   * - 'unknown': Can appear anywhere
    */
-  position: "start-of-line" | "standalone" | "any"
+  position: "start-of-line" | "standalone" | "unknown"
 
   /**
    * Allow continuation after space (for multi-word search)

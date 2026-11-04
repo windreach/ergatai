@@ -1,7 +1,6 @@
 "use client"
 
 import React, { useMemo, useState, useCallback, useRef, useEffect, memo } from "react"
-import { createPortal } from "react-dom"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { motion, AnimatePresence } from "motion/react"
 import { Button } from "../../components/ui/button"
@@ -15,25 +14,18 @@ import {
   justCreatedIdsAtom,
   pendingUserQuestionsAtom,
   undoStackAtom,
-  suppressInputFocusAtom,
-  type UndoItem,
-} from "../agents/atoms"
+} from "../agents"
 import {
-  selectedTeamIdAtom,
   isDesktopAtom,
   isFullscreenAtom,
   defaultAgentModeAtom,
 } from "../../lib/atoms"
 import { trpc } from "../../lib/trpc"
-import { appStore } from "../../lib/jotai-store"
-import { useWorkspaceChatsStore, type WorkspaceChat } from "../agents/stores/workspace-chats-store"
-import { useAgentConversationStore } from "../agents/stores/conversation-store"
+import { useWorkspaceChatsStore, type WorkspaceChat } from "../agents"
+import { useAgentConversationStore } from "../agents"
 import { useShallow } from "zustand/react/shallow"
 import {
-  PlusIcon,
-  ArchiveIcon,
   IconDoubleChevronLeft,
-  IconSpinner,
   LoadingDot,
   PlanIcon,
   AgentIcon,
@@ -46,21 +38,16 @@ import {
   TooltipTrigger,
 } from "../../components/ui/tooltip"
 import { Kbd } from "../../components/ui/kbd"
-import { isDesktopApp, getShortcutKey } from "../../lib/utils/platform"
 import { useResolvedHotkeyDisplay } from "../../lib/hotkeys"
-import { TrafficLightSpacer } from "../agents/components/traffic-light-spacer"
+import { TrafficLightSpacer } from "../agents"
 import {
   ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
   ContextMenuTrigger,
 } from "../../components/ui/context-menu"
-import { api } from "../../lib/api-adapter"
-import { toast } from "sonner"
 import { formatTimeAgo } from "../../lib/utils/format-time-ago"
-import { useConversationDraftsCache, getConversationDraftKey } from "../agents/lib/drafts"
+import { useConversationDraftsCache, getConversationDraftKey } from "../agents"
 import { TypewriterText } from "../../components/ui/typewriter-text"
-import { ConversationDropdownMenu } from "../agents/ui/conversation-dropdown-menu"
+import { ConversationDropdownMenu } from "../agents"
 
 interface FileChange {
   additions: number
@@ -291,8 +278,8 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
   onBackToChats,
   isSidebarOpen = false,
   workspaceId,
-  workspaceName,
-  agentName,
+  workspaceName: _workspaceName,
+  agentName: _agentName,
   onNewChatClick,
   onChatSelect,
 }: WorkspaceChatsSidebarProps) {
@@ -305,7 +292,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
     filterQuery,
     setActiveChat,
     togglePinChat,
-    setSortBy,
+    setSortBy: _setSortBy,
     setFilterQuery,
   } = useWorkspaceChatsStore(
     useShallow((state) => ({
@@ -321,7 +308,6 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
     }))
   )
 
-  const selectedTeamId = useAtomValue(selectedTeamIdAtom)
   const [selectedChatId, setSelectedChatId] = useAtom(selectedAgentChatIdAtom)
   const previousChatId = useAtomValue(previousAgentChatIdAtom)
   const utils = trpc.useUtils()
@@ -370,7 +356,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
 
   // Resolved hotkey for tooltip
   const newAgentHotkey = useResolvedHotkeyDisplay("new-agent")
-  const [justCreatedIds, setJustCreatedIds] = useAtom(justCreatedIdsAtom)
+  const [justCreatedIds, _setJustCreatedIds] = useAtom(justCreatedIdsAtom)
   const pendingQuestionsMap = useAtomValue(pendingUserQuestionsAtom)
   const unseenChanges = useAtomValue(agentsConversationUnseenChangesAtom)
   const rawMode = useAtomValue(defaultAgentModeAtom)

@@ -120,7 +120,7 @@ export function AgentsWorktreesTab() {
           Array.isArray(win) ? win : win ? [win] : [],
         )
 
-        // Show platform section if any platform-specific commands exist
+        // Show platform section if unknown platform-specific commands exist
         if (unix || win) {
           setShowPlatformSpecific(true)
         }

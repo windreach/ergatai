@@ -184,8 +184,6 @@ export function ConversationsQuickSwitchDialog({
   selectedIndex,
   onHover,
 }: ConversationsQuickSwitchDialogProps) {
-  if (typeof window === "undefined") return null
-
   // Derive loading conversation IDs
   const loadingConversations = useAtomValue(loadingConversationsAtom)
   const loadingConversationIds = useMemo(
@@ -198,6 +196,8 @@ export function ConversationsQuickSwitchDialog({
 
   // File changes per conversation
   const conversationFiles = useAtomValue(conversationFilesAtom)
+
+  if (typeof window === "undefined") return null
 
   return createPortal(
     <AnimatePresence>

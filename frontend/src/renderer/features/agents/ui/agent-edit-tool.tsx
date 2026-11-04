@@ -34,7 +34,7 @@ const HIGHLIGHT_DEBOUNCE_MS = 50
 
 interface AgentEditToolProps {
   // AI SDK tool part shape varies by provider and version; no stable public type
-  part: MessagePart // eslint-disable-line @typescript-eslint/no-explicit-any
+  part: MessagePart  
   messageId?: string
   partIndex?: number
   chatStatus?: string
@@ -167,7 +167,7 @@ function useBatchHighlight(
       cancelled = true
       clearTimeout(timer)
     }
-  }, [linesKey, language, themeId, lines.length, isStreaming])
+  }, [linesKey, language, themeId, lines, isStreaming])
 
   return highlightedMap
 }
@@ -260,7 +260,7 @@ export const AgentEditTool = memo(function AgentEditTool({
   } | undefined
 
   const filePath = toolInput?._locations?.[0]?.path || ""
-  const oldString = toolInput?.old_string || ""
+  const _oldString = toolInput?.old_string || ""
   const newString = toolInput?.new_string || ""
 
   // For Write mode, content is in input.content
@@ -279,7 +279,7 @@ export const AgentEditTool = memo(function AgentEditTool({
   }, [filePath, projectPath])
 
   // Handler to open diff sidebar and focus on this file
-  const handleOpenInDiff = useCallback(() => {
+  const _handleOpenInDiff = useCallback(() => {
     if (!displayPath) return
     setDiffSidebarOpen(true)
     setFocusedDiffFile(displayPath)

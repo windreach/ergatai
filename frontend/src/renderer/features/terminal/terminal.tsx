@@ -19,7 +19,7 @@ import {
   setupPasteHandler,
   setupResizeHandlers,
 } from "./helpers"
-import { getTerminalTheme, getTerminalThemeFromVSCode } from "./config"
+import { getTerminalThemeFromVSCode } from "./config"
 import { parseCwd } from "./parseCwd"
 import { sanitizeForTitle } from "./commandBuffer"
 import { shellEscapePaths } from "./utils"
@@ -102,7 +102,7 @@ export function Terminal({
       xtermRef.current.writeln(
         `\r\n\r\n[Process exited with code ${event.exitCode}]`,
       )
-      xtermRef.current.writeln("[Press any key to restart]")
+      xtermRef.current.writeln("[Press unknown key to restart]")
     }
   }, [])
 
@@ -417,7 +417,7 @@ export function Terminal({
 
       // Get file paths (Electron exposes webUtils)
       const paths = files.map((file) => {
-        return (window as any).webUtils?.getPathForFile?.(file) || file.name
+        return (window as { webUtils?: { getPathForFile?: (file: File) => string } }).webUtils?.getPathForFile?.(file) || file.name
       })
       const text = shellEscapePaths(paths)
 

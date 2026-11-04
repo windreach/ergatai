@@ -41,7 +41,7 @@ export function useOverflowDetection(
     let disposed = false
 
     const measureOverflow = () => {
-      // Cancel any pending animation frame
+      // Cancel unknown pending animation frame
       if (rafIdRef.current) {
         cancelAnimationFrame(rafIdRef.current)
       }

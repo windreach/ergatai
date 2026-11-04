@@ -6,7 +6,7 @@ import { memo, useMemo, useState } from "react"
 import { OriginalMCPIcon } from "../../../components/ui/icons"
 import { sessionInfoAtom, type MCPServer } from "../../../lib/atoms"
 import { cn } from "../../../lib/utils"
-import { pendingMentionAtom } from "../../agents/atoms"
+import { pendingMentionAtom } from "../../agents"
 
 function formatToolName(toolName: string): string {
   return toolName

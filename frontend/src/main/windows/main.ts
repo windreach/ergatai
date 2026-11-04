@@ -272,7 +272,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle("window:toggle-devtools", (event) => {
     const win = getWindowFromEvent(event)
     // Check if devtools are unlocked (or in dev mode)
-    const isUnlocked = !app.isPackaged || (global as any).__devToolsUnlocked
+    const isUnlocked = !app.isPackaged || (global as { __devToolsUnlocked?: boolean }).__devToolsUnlocked
     if (win && isUnlocked) {
       win.webContents.toggleDevTools()
     }

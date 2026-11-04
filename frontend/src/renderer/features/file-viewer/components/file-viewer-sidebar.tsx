@@ -11,10 +11,9 @@ import {
   MoreHorizontal,
   WrapText,
   Map,
-  Check,
   X,
 } from "lucide-react"
-import { getFileIconByExtension } from "../../agents/mentions/file-icon-utils"
+import { getFileIconByExtension } from "../../agents"
 import {
   IconCloseSidebarRight,
   IconSidePeek,
@@ -22,8 +21,9 @@ import {
   IconFullPage,
   IconLineNumbers,
 } from "@/components/ui/icons"
-import { Kbd } from "@/components/ui/kbd"
 import { Button } from "@/components/ui/button"
+import { ModeSwitcher } from "@/components/ui/mode-switcher"
+import { OpenInEditorButton } from "./open-in-editor-button"
 import {
   Tooltip,
   TooltipContent,
@@ -34,14 +34,13 @@ import {
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuCheckboxItem,
-  DropdownMenuItem,
 } from "@/components/ui/dropdown-menu"
 import { ViewerErrorBoundary } from "@/components/ui/error-boundary"
 import { trpc } from "@/lib/trpc"
 import { preferredEditorAtom } from "@/lib/atoms"
 import { useResolvedHotkeyDisplay } from "@/lib/hotkeys"
 import { APP_META } from "../../../../shared/external-apps"
-import { CopyButton } from "../../agents/ui/message-action-buttons"
+import { CopyButton } from "../../agents"
 import { EDITOR_ICONS } from "@/lib/editor-icons"
 import {
   fileViewerWordWrapAtom,
@@ -49,7 +48,7 @@ import {
   fileViewerLineNumbersAtom,
   fileViewerDisplayModeAtom,
   type FileViewerDisplayMode,
-} from "../../agents/atoms"
+} from "../../agents"
 import { useFileContent, getErrorMessage } from "../hooks/use-file-content"
 import { getMonacoLanguage, getFileViewerType } from "../utils/language-map"
 import { getFileName } from "../utils/file-utils"
@@ -82,36 +81,12 @@ function FileViewerModeSwitcher({
   mode: FileViewerDisplayMode
   onModeChange: (mode: FileViewerDisplayMode) => void
 }) {
-  const currentMode = FILE_VIEWER_MODES.find((m) => m.value === mode) ?? FILE_VIEWER_MODES[0]
-  const CurrentIcon = currentMode.Icon
-
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-6 w-6 p-0 flex-shrink-0 hover:bg-foreground/10"
-        >
-          <CurrentIcon className="size-4 text-muted-foreground" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-[140px]">
-        {FILE_VIEWER_MODES.map(({ value, label, Icon }) => (
-          <DropdownMenuItem
-            key={value}
-            onClick={() => onModeChange(value)}
-            className="flex items-center gap-2"
-          >
-            <Icon className="size-4 text-muted-foreground" />
-            <span className="flex-1">{label}</span>
-            {mode === value && (
-              <Check className="size-4 text-muted-foreground ml-auto" />
-            )}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <ModeSwitcher
+      modes={FILE_VIEWER_MODES}
+      mode={mode}
+      onModeChange={(v) => onModeChange(v as FileViewerDisplayMode)}
+    />
   )
 }
 
@@ -150,31 +125,13 @@ function UnsupportedViewer({
   return (
     <div className="flex flex-col h-full bg-background">
       <div className="flex items-center justify-between px-2 h-10 border-b border-border/50 bg-background flex-shrink-0">
-        <div className="flex items-center gap-1 min-w-0 flex-1">
-          {/* Close + mode switcher on the left */}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 w-6 p-0 flex-shrink-0 hover:bg-foreground/10"
-            onClick={onClose}
-          >
-            {displayMode === "side-peek" ? (
-              <IconCloseSidebarRight className="size-4 text-muted-foreground" />
-            ) : (
-              <X className="size-4 text-muted-foreground" />
-            )}
-          </Button>
-          <FileViewerModeSwitcher
-            mode={displayMode}
-            onModeChange={setDisplayMode}
-          />
-          <div className="flex items-center gap-2 min-w-0 flex-1 ml-1">
-            <FileIcon filePath={filePath} />
-            <span className="text-sm font-medium truncate" title={filePath}>
-              {fileName}
-            </span>
-          </div>
-        </div>
+        <FileViewerHeaderLeft
+          displayMode={displayMode}
+          onClose={onClose}
+          filePath={filePath}
+          fileName={fileName}
+          onModeChange={setDisplayMode}
+        />
       </div>
       <div className="flex-1 flex items-center justify-center p-4">
         <div className="flex flex-col items-center gap-3 text-center max-w-[300px]">
@@ -216,55 +173,22 @@ function CodeViewerHeader({
   return (
     <div className="@container flex items-center justify-between px-2 h-10 border-b border-border/50 bg-background flex-shrink-0">
       {/* Left side: Close button + mode switcher + file info */}
-      <div className="flex items-center gap-1 min-w-0 flex-1">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-6 w-6 p-0 flex-shrink-0 hover:bg-foreground/10"
-          onClick={onClose}
-        >
-          {displayMode === "side-peek" ? (
-            <IconCloseSidebarRight className="size-4 text-muted-foreground" />
-          ) : (
-            <X className="size-4 text-muted-foreground" />
-          )}
-        </Button>
-        <FileViewerModeSwitcher
-          mode={displayMode}
-          onModeChange={setDisplayMode}
-        />
-        <div className="flex items-center gap-2 min-w-0 flex-1 ml-1">
-          <FileIcon filePath={filePath} />
-          <span className="text-sm font-medium truncate" title={filePath}>
-            {fileName}
-          </span>
-        </div>
-      </div>
+      <FileViewerHeaderLeft
+        displayMode={displayMode}
+        onClose={onClose}
+        filePath={filePath}
+        fileName={fileName}
+        onModeChange={setDisplayMode}
+      />
       {/* Right side: Actions */}
       <div className="flex items-center gap-1 flex-shrink-0">
         {/* Open in editor */}
-        <Tooltip delayDuration={500}>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={handleOpenInEditor}
-              className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer rounded-md px-1.5 py-1 hover:bg-accent hover:text-accent-foreground transition-colors"
-            >
-              <span className="hidden @[400px]:inline">Open in</span>
-              {EDITOR_ICONS[preferredEditor] && (
-                <img
-                  src={EDITOR_ICONS[preferredEditor]}
-                  alt=""
-                  className="h-3.5 w-3.5 flex-shrink-0"
-                />
-              )}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" showArrow={false}>
-            Open in {editorMeta.label}
-            {openInEditorHotkey && <Kbd className="normal-case font-sans">{openInEditorHotkey}</Kbd>}
-          </TooltipContent>
-        </Tooltip>
+        <OpenInEditorButton
+          onClick={handleOpenInEditor}
+          label={editorMeta.label}
+          iconSrc={EDITOR_ICONS[preferredEditor]}
+          hotkey={openInEditorHotkey}
+        />
 
         {/* Copy button */}
         {content && (
@@ -904,6 +828,48 @@ function CodeViewer({
           hasSelection={hasSelection}
         />
       )}
+    </div>
+  )
+}
+
+
+function FileViewerHeaderLeft({
+  displayMode,
+  onClose,
+  filePath,
+  fileName,
+  onModeChange,
+}: {
+  displayMode: FileViewerDisplayMode
+  onClose: () => void
+  filePath: string
+  fileName: string
+  onModeChange: (mode: FileViewerDisplayMode) => void
+}) {
+  return (
+    <div className="flex items-center gap-1 min-w-0 flex-1">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-6 w-6 p-0 flex-shrink-0 hover:bg-foreground/10"
+        onClick={onClose}
+      >
+        {displayMode === "side-peek" ? (
+          <IconCloseSidebarRight className="size-4 text-muted-foreground" />
+        ) : (
+          <X className="size-4 text-muted-foreground" />
+        )}
+      </Button>
+      <FileViewerModeSwitcher
+        mode={displayMode}
+        onModeChange={onModeChange}
+      />
+      <div className="flex items-center gap-2 min-w-0 flex-1 ml-1">
+        <FileIcon filePath={filePath} />
+        <span className="text-sm font-medium truncate" title={filePath}>
+          {fileName}
+        </span>
+      </div>
     </div>
   )
 }

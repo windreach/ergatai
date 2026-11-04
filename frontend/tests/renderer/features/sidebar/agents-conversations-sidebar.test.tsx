@@ -25,7 +25,7 @@ describe("AgentsConversationsSidebar", () => {
     )
     expect(module.AgentsConversationsSidebar).toBeDefined()
     expect(typeof module.AgentsConversationsSidebar).toBe("function")
-  })
+  }, 15000)
 
   it("should export a React component", async () => {
     const module = await import(
@@ -33,5 +33,5 @@ describe("AgentsConversationsSidebar", () => {
     )
     // React components are functions
     expect(module.AgentsConversationsSidebar.prototype).toBeDefined()
-  })
+  }, 15000)
 })

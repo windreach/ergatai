@@ -127,7 +127,7 @@ export function useSidebarMutex({
 
     // A sidebar (Details / side chat) opened → close conflicting panels and remember.
     //
-    // Manual opens also *invalidate* any prior auto-close tracking for that sidebar:
+    // Manual opens also *invalidate* unknown prior auto-close tracking for that sidebar:
     // if Details was previously auto-closed by Terminal, but the user now manually
     // opens it, the old `detailsClosedBy = "terminal"` flag is stale and must be
     // cleared — otherwise Terminal closing later would (incorrectly) try to restore
@@ -259,7 +259,7 @@ export function useSidebarMutex({
           set.setIsSideChatSidebarOpen(false)
         }
       } else if (!terminalConflictsWithSidebars && prevTerminalConflicted) {
-        // Transitioned out of conflict mode: clear any stale terminal-close flags.
+        // Transitioned out of conflict mode: clear unknown stale terminal-close flags.
         // The sidebars themselves stay closed (the user hasn't reopened them);
         // we just stop pretending Terminal is responsible for their state, so
         // future Terminal closes won't unexpectedly restore them.
@@ -283,7 +283,7 @@ export function useSidebarMutex({
     // via `settersRef`, which is kept in sync by a separate effect above.
     // Including them directly would couple this effect's lifetime to their
     // referential stability (which is not guaranteed for context-provided setters).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [
     isDetailsSidebarOpen,
     isSideChatSidebarOpen,

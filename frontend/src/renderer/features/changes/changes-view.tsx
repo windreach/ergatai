@@ -22,7 +22,7 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { trpc } from "../../lib/trpc";
 import { preferredEditorAtom } from "../../lib/atoms";
 import { APP_META } from "../../../shared/external-apps";
-import { fileViewerOpenAtomFamily, diffViewDisplayModeAtom, diffSidebarOpenAtomFamily, diffActiveTabAtom } from "../agents/atoms";
+import { fileViewerOpenAtomFamily, diffViewDisplayModeAtom, diffSidebarOpenAtomFamily } from "../agents";
 import { useChangesStore } from "../../lib/stores/changes-store";
 import { usePRStatus } from "../../hooks/usePRStatus";
 import { useFileChangeListener } from "../../lib/hooks/use-file-change-listener";
@@ -33,9 +33,9 @@ import { CommitInput } from "./components/commit-input";
 import { HistoryView, type CommitInfo } from "./components/history-view";
 import { DiffPageView } from "./diff-page-view";
 import { getStatusIndicator } from "./utils/status";
-import { Check, GitPullRequest } from "lucide-react";
+import { Check } from "lucide-react";
 import type { ChangedFile as HistoryChangedFile } from "../../../shared/changes-types";
-import { viewedFilesAtomFamily, type ViewedFileState } from "../agents/atoms";
+import { viewedFilesAtomFamily } from "../agents";
 import {
 	createPanelLinkScopeKey,
 	panelLinkCommandAtomFamily,
@@ -46,13 +46,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/too
 // Memoized file item component with context menu to prevent re-renders
 const ChangesFileItemWithContext = memo(function ChangesFileItemWithContext({
 	file,
-	category,
 	isSelected,
 	isChecked,
 	isViewed,
 	isHighlighted,
 	highlightedCount,
-	highlightedPaths,
 	index,
 	onSelect,
 	onDoubleClick,
@@ -289,7 +287,6 @@ export function ChangesView({
 	selectedFilePath,
 	onFileSelect: onFileSelectProp,
 	onFileOpenPinned,
-	onCreatePr,
 	onCommitSuccess,
 	onDiscardSuccess,
 	conversations = [],
@@ -332,7 +329,7 @@ export function ChangesView({
 		},
 	);
 
-	const { pr, refetch: refetchPRStatus } = usePRStatus({
+	const { refetch: refetchPRStatus } = usePRStatus({
 		worktreePath,
 		refetchInterval: 10000,
 	});
@@ -353,7 +350,6 @@ export function ChangesView({
 
 	// External actions
 	const openInFinderMutation = trpc.external.openInFinder.useMutation();
-	const openInEditorMutation = trpc.external.openFileInEditor.useMutation();
 	const openInAppMutation = trpc.external.openInApp.useMutation();
 
 	// Preferred editor
@@ -430,9 +426,11 @@ export function ChangesView({
 	} = useChangesStore();
 
 	const selectedFileState = getSelectedFile(worktreePath || "");
-	const selectedFile = selectedFilePath !== undefined
-		? (selectedFilePath ? { path: selectedFilePath } as ChangedFile : null)
-		: (selectedFileState?.file ?? null);
+	const selectedFile = useMemo(() => (
+		selectedFilePath !== undefined
+			? (selectedFilePath ? { path: selectedFilePath } as ChangedFile : null)
+			: (selectedFileState?.file ?? null)
+	), [selectedFilePath, selectedFileState?.file]);
 
 	const [fileFilter, setFileFilter] = useState("");
 	const [conversationFilter, setConversationFilter] = useState<string | null>(initialConversationFilter);
@@ -921,11 +919,6 @@ export function ChangesView({
 	const handleRevealInFinder = (filePath: string) => {
 		const absolutePath = `${worktreePath}/${filePath}`;
 		openInFinderMutation.mutate(absolutePath);
-	};
-
-	const handleOpenInEditor = (filePath: string) => {
-		const absolutePath = `${worktreePath}/${filePath}`;
-		openInEditorMutation.mutate({ path: absolutePath, cwd: worktreePath });
 	};
 
 	const handleOpenInPreferredEditor = (filePath: string) => {

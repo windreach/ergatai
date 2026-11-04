@@ -24,7 +24,7 @@ interface CommandProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 const Command = React.forwardRef<HTMLDivElement, CommandProps>(
-  ({ className, shouldFilter, value, onValueChange, children, ...props }, ref) => {
+  ({ className, shouldFilter: _shouldFilter, value: _value, onValueChange: _onValueChange, children, ...props }, ref) => {
     const [selectedValue, setSelectedValue] = React.useState<string | null>(null)
     const itemsRef = React.useRef<Map<string, HTMLDivElement>>(new Map())
     const orderedKeysRef = React.useRef<string[]>([])
@@ -60,7 +60,7 @@ const Command = React.forwardRef<HTMLDivElement, CommandProps>(
       if (keys.length > 0 && !keys.includes(selectedValue || "")) {
         setSelectedValue(keys[0] || null)
       }
-    })
+    }, [selectedValue])
 
     const handleKeyDown = React.useCallback(
       (e: React.KeyboardEvent) => {
@@ -160,7 +160,7 @@ const CommandInput = React.forwardRef<HTMLInputElement, CommandInputProps>(
         inputRef.current?.focus()
       }, 0)
       return () => clearTimeout(timer)
-    }, [])
+    }, [inputRef])
 
     return (
       <div
@@ -242,12 +242,13 @@ interface CommandItemProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 const CommandItem = React.forwardRef<HTMLDivElement, CommandItemProps>(
-  ({ className, onSelect, value, onMouseEnter, disabled, ...props }, ref) => {
+  ({ className, onSelect, value, onMouseEnter, disabled, ...props }, _ref) => {
     const context = React.useContext(CommandContext)
     const itemRef = React.useRef<HTMLDivElement>(null)
 
     // Generate a stable value if not provided
-    const itemValue = value || React.useId()
+    const generatedId = React.useId()
+    const itemValue = value || generatedId
 
     // Register this item with the Command (skip if disabled)
     React.useEffect(() => {

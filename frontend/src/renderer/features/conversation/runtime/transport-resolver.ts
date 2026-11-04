@@ -22,12 +22,11 @@ import type {
 } from "./contracts"
 
 import {
-  ErgataiChatTransport,
   createUserChatTransport,
   createAgentToAgentTransport,
-} from "../../agents/lib/ergatai-chat-transport"
+} from "../../agents/public"
 
-import { GroupChatTransport } from "../../agents/lib/group-chat-transport"
+import { GroupChatTransport } from "../../agents/public"
 
 // ============================================================================
 // TRANSPORT TYPES - Re-export actual transport interface
@@ -183,7 +182,7 @@ class TransportResolverImpl implements TransportResolver {
    * @returns Chat transport
    */
   private createGroupTransport(
-    conversation: ResolvedConversation,
+    _conversation: ResolvedConversation,
     _overrides?: ConversationSendMessageInput["transportOverrides"],
   ): ChatTransport {
     // GroupChatTransport doesn't require configuration yet

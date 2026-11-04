@@ -14,13 +14,13 @@ interface UseProviderSelectionOptions {
 
 export function useProviderSelection({
   conversationId,
-  parentChatId,
-  conversationMode,
+  parentChatId: _parentChatId,
+  conversationMode: _conversationMode,
   isStreaming,
   messages,
   onProviderChange,
-  utils,
-  conversationNameRef,
+  utils: _utils,
+  conversationNameRef: _conversationNameRef,
 }: UseProviderSelectionOptions) {
   const handleInputProviderChange = useCallback(
     (nextProvider: "claude-code" | "codex") => {

@@ -117,7 +117,7 @@ export interface AggregatedSearchResult {
   items: MentionItem[]
 
   /**
-   * Whether any provider has more results
+   * Whether unknown provider has more results
    */
   hasMore: boolean
 

@@ -3,9 +3,10 @@ import { useTheme } from "next-themes"
 import { Copy, Check, Download, AlertTriangle, RotateCcw, Maximize2, X, ZoomIn, ZoomOut, RotateCcw as ResetZoom } from "lucide-react"
 import { TransformWrapper, TransformComponent, useControls } from "react-zoom-pan-pinch"
 import { cn } from "../lib/utils"
+import { BoundedCache } from "../lib/bounded-cache"
+import DOMPurify from "dompurify"
 import {
   Dialog,
-  DialogContent,
   DialogPortal,
   DialogTitle,
 } from "./ui/dialog"
@@ -31,7 +32,7 @@ const cleanupMermaidErrors = () => {
       svg.remove()
     }
   })
-  // Also clean up any container divs mermaid creates
+  // Also clean up unknown container divs mermaid creates
   const containers = document.querySelectorAll('div[id^="dmermaid-"], div[id^="d"]')
   containers.forEach((div) => {
     if (div.parentElement === document.body && div.querySelector('svg')) {
@@ -126,7 +127,7 @@ const getMermaidConfig = (isDark: boolean): Record<string, unknown> => ({
         titleColor: "#18181b",
         edgeLabelBackground: "#fafafa",
       },
-  securityLevel: "loose" as const,
+  securityLevel: "antiscript" as const,
   fontFamily: "inherit",
 })
 
@@ -169,7 +170,7 @@ function ZoomControls() {
 const RENDER_DEBOUNCE_MS = 600
 
 // Global cache for rendered mermaid diagrams to persist across remounts
-const mermaidCache = new Map<string, string>()
+const mermaidCache = new BoundedCache<string, string>(200)
 
 // Track which mermaid blocks have finished streaming (by first N chars of code as ID)
 const finishedStreamingBlocks = new Set<string>()
@@ -243,7 +244,7 @@ const MermaidBlockInner = memo(function MermaidBlockInner({
       lastRenderedCodeRef.current = code
       lastRenderedThemeRef.current = isDark
 
-      // Clean up any error artifacts mermaid left in DOM
+      // Clean up unknown error artifacts mermaid left in DOM
       cleanupMermaidErrors()
     } catch (error) {
       if (currentRenderId !== renderIdRef.current) return
@@ -448,7 +449,7 @@ const MermaidBlockInner = memo(function MermaidBlockInner({
                 "[&_svg]:max-w-full [&_svg]:h-auto [&_svg]:mx-auto",
               )}
               onClick={openFullscreen}
-              dangerouslySetInnerHTML={{ __html: renderState.svg }}
+              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(renderState.svg) }}
             />
           )}
 
@@ -525,7 +526,7 @@ const MermaidBlockInner = memo(function MermaidBlockInner({
                         "[&_svg]:max-w-none [&_svg]:h-auto",
                         isDark ? "" : "[&_svg]:filter [&_svg]:drop-shadow-lg"
                       )}
-                      dangerouslySetInnerHTML={{ __html: renderState.svg }}
+                      dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(renderState.svg) }}
                     />
                   </TransformComponent>
                 </TransformWrapper>

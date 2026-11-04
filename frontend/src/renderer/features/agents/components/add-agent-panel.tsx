@@ -126,7 +126,7 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
           current.filter((registration) => registration.id !== agent.id),
         )
         toast.success(`${agent.name} registration removed`)
-      } catch (error) {
+      } catch {
         // Backend deletion failed — keep local state in sync with backend and surface the error
         toast.error(`Failed to delete ${agent.name}`, {
           description: "The registration was not removed. Please try again.",

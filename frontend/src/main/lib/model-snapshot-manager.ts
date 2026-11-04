@@ -9,12 +9,14 @@
  * - Only persists successfully parsed, non-empty model lists
  */
 
-import { ergataiFetch } from "./ergatai/api"
+import {
+  ergataiFetch
+} from "./ergatai/api"
 import {
   loadSnapshots,
   saveSnapshots,
   type ModelSnapshot,
-  type ModelSnapshotStore,
+  type ModelSnapshotStore
 } from "./model-snapshot-store"
 
 // ── Types ──
@@ -56,7 +58,7 @@ export class ModelSnapshotManager {
 
   /**
    * Initialize the manager by loading snapshots from disk.
-   * Must be called on app startup before any operations.
+   * Must be called on app startup before unknown operations.
    */
   async initialize(): Promise<void> {
     if (this.initialized) {
@@ -156,7 +158,7 @@ export class ModelSnapshotManager {
    * Note: Removed idle state checking - the backend can handle /model commands
    * even when the agent is busy processing other messages (confirmed via debug logs).
    */
-  async refreshModels(agent: ErgataiAgent, forceRefresh: boolean = false): Promise<AgentModelsResult> {
+  async refreshModels(agent: ErgataiAgent, _forceRefresh: boolean = false): Promise<AgentModelsResult> {
     if (!this.initialized) {
       await this.initialize()
     }
@@ -198,7 +200,7 @@ export class ModelSnapshotManager {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
         console.log(`[ModelSnapshotManager] Executing /model command for agent ${agent.agent_id} (attempt ${attempt}/${MAX_ATTEMPTS})`)
-        const result = await ergataiFetch<any>(
+        const result = await ergataiFetch<unknown>(
           `/api/v1/agents/${agent.agent_id}/execute-command`,
           {
             method: "POST",
@@ -208,8 +210,8 @@ export class ModelSnapshotManager {
 
         console.log(`[ModelSnapshotManager] Raw response from backend (attempt ${attempt}):`, JSON.stringify(result, null, 2))
 
-        const parsed = result?.parsed
-        const output = result?.output
+        const parsed = (result as { parsed?: { current?: unknown; models?: unknown } | null; output?: unknown } | null)?.parsed
+        const output = (result as { parsed?: { current?: unknown; models?: unknown } | null; output?: unknown } | null)?.output
         let models: string[] = []
         let current: string | undefined
 
@@ -282,7 +284,7 @@ export class ModelSnapshotManager {
           continue
         }
 
-        // All attempts exhausted — return existing snapshot if any
+        // All attempts exhausted — return existing snapshot if unknown
         console.warn(`[ModelSnapshotManager] Empty models after ${MAX_ATTEMPTS} attempts for ${cacheKey}, returning cached`)
         const existing = await this.getSnapshot(cacheKey)
         if (existing) {

@@ -1,14 +1,7 @@
 import { useCallback, useRef } from "react"
 import { toast } from "sonner"
-import { trpcClient } from "../../../lib/trpc"
-import { appStore } from "../../../lib/jotai-store"
-import {
-  conversationModeAtomFamily,
-  conversationModelIdAtomFamily,
-  conversationCodexModelIdAtomFamily,
-  conversationCodexThinkingAtomFamily,
-} from "../../../lib/atoms"
-import { useAgentConversationStore } from "../stores/conversation-store"
+
+
 import type { Message } from "../stores/message-store"
 
 interface UseForkConversationOptions {
@@ -19,9 +12,9 @@ interface UseForkConversationOptions {
 }
 
 export function useForkConversation({
-  conversationId,
-  parentChatId,
-  isStreaming,
+  conversationId: _conversationId,
+  parentChatId: _parentChatId,
+  isStreaming: _isStreaming,
   messages,
 
 }: UseForkConversationOptions) {
@@ -31,7 +24,7 @@ export function useForkConversation({
   messagesForForkRef.current = messages
 
   const handleForkFromMessage = useCallback(
-    async (messageId: string) => {
+    async (_messageId: string) => {
       // Backend no longer supports forking conversations
       console.warn("[use-fork-conversation] forkConversation is no longer supported")
       toast.error("Forking conversations is no longer supported")

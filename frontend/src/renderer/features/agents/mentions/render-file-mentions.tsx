@@ -33,7 +33,7 @@ export function FileOpenProvider({
 }
 
 /**
- * Hook to access the file open handler from any child component.
+ * Hook to access the file open handler from unknown child component.
  * Returns null if not inside a FileOpenProvider.
  */
 export function useFileOpen(): FileOpenHandler | null {

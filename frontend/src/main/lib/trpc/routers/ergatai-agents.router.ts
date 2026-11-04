@@ -1,62 +1,10 @@
 import {
   AgentBinding,
   AgentInfoSchema,
-  AgentOutputEvent,
   AgentPlan,
-  AgentPlanSchema,
-  AgentProfileSchema,
-  AgentProfileWithStatusSchema,
-  ApprovalPayload,
-  BackendActivityEntry,
-  BackendActivityEvent,
-  BackendAgentBinding,
-  BackendChat,
-  BackendCollaborationInteractionResult,
-  BackendCollaborationSessionDetail,
-  BackendConversation,
-  BackendConversationFileChange,
-  BackendManagedWorkspace,
-  BackendMessage,
-  BackendProject,
-  BackendWorkspace,
-  BackendWorkspaceProject,
-  BackendWorkspaceStatus,
-  Chat,
-  CollaborationContextEvent,
-  CollaborationEventPayload,
-  CollaborationInteractionResult,
-  CollaborationRuntimeEvent,
-  CollaborationSession,
-  CollaborationSessionDetail,
-  CollaborationSessionParticipant,
-  CollaborationSessionRuntimeMode,
-  CollaborationSessionState,
-  Conversation,
-  ConversationRuntimeStreamEvent,
-  ConversationSummarySchema,
-  DagEventPayload,
-  DagSubmitResponse,
-  DagValidateResponse,
-  ErgataiApiError,
-  ErgataiConversation,
-  ErgataiMessage,
-  ErgataiProject,
-  ErgataiWorkspace,
-  ErgataiWorkspaceProject,
-  ErgataiWorkspaceStatus,
   LockAuditEntry,
   LockContention,
   LockInfo,
-  Message,
-  MessageTypeStats,
-  PlanRevisionPayload,
-  Project,
-  SessionStatePayload,
-  SystemConfig,
-  TaskEventPayload,
-  Workspace,
-  WorkspaceProject,
-  WorkspaceStatus,
   agentIdSchema,
   chatIdSchema,
   clientRequestIdSchema,
@@ -68,32 +16,12 @@ import {
   isValidChatId,
   join,
   loadSnapshots,
-  mapAgentBinding,
-  mapChat,
-  mapCollaborationInteractionResult,
-  mapCollaborationSessionDetail,
-  mapConversation,
-  mapManagedWorkspace,
-  mapMessage,
-  mapProject,
-  mapWorkspace,
-  mapWorkspaceProject,
-  mapWorkspaceProjectToProject,
-  mapWorkspaceStatus,
-  messageIdSchema,
   mkdir,
   observable,
-  parseMessageMetadata,
-  parseMessageParts,
-  projectIdSchema,
   publicProcedure,
   router,
-  subscribeConversationMessages,
-  subscribeConversationRuntime,
-  subscribeRawAgentStream,
-  terminalManager,
   tmpdir,
-  z,
+  z
 } from "./ergatai-shared"
 
 export const agentsRouter = router({
@@ -102,8 +30,6 @@ export const agentsRouter = router({
     return ergataiFetch<z.infer<typeof AgentInfoSchema>[]>("/api/v1/agents")
   }),
 
-
-
   /** Get a single agent by ID */
   getAgent: publicProcedure
     .input(z.object({ agentId: agentIdSchema }))
@@ -111,8 +37,6 @@ export const agentsRouter = router({
       const agents = await ergataiFetch<z.infer<typeof AgentInfoSchema>[]>("/api/v1/agents")
       return agents.find((a) => a.agent_id === input.agentId) ?? null
     }),
-
-
 
   /** Spawn a new agent */
   spawnAgent: publicProcedure
@@ -168,8 +92,6 @@ export const agentsRouter = router({
       }
     }),
 
-
-
   /** Kill an agent */
   killAgent: publicProcedure
     .input(z.object({ agentId: agentIdSchema }))
@@ -179,8 +101,6 @@ export const agentsRouter = router({
       })
       return { success: true }
     }),
-
-
 
   /** Send a message to an agent */
   sendMessage: publicProcedure
@@ -226,8 +146,6 @@ export const agentsRouter = router({
       })
     }),
 
-
-
   // ── Agent Monitoring Endpoints ──────────────────────────────────────────
 
   /** Get agent plan */
@@ -236,13 +154,11 @@ export const agentsRouter = router({
     .query(async ({ input }): Promise<AgentPlan | null> => {
       try {
         return await ergataiFetch<AgentPlan>(`/api/v1/agents/${input.agentId}/plan`)
-      } catch (error) {
+      } catch {
         // Return null if plan not found or API error
         return null
       }
     }),
-
-
 
   /** List all agent bindings for a chat (use /agents endpoint) */
   getAgentBindings: publicProcedure
@@ -300,8 +216,6 @@ export const agentsRouter = router({
       }
     }),
 
-
-
   // ── Agent Introspection Endpoints ────────────────────────────────────────
 
   /** Get agent elicitations (pending interactive requests) */
@@ -310,8 +224,6 @@ export const agentsRouter = router({
     .query(async ({ input }) => {
       return ergataiFetch(`/api/v1/agents/${input.agentId}/elicitations`)
     }),
-
-
 
   /** Respond to an agent elicitation */
   respondToElicitation: publicProcedure
@@ -332,14 +244,10 @@ export const agentsRouter = router({
       )
     }),
 
-
-
   /** Get pending permission requests (unified approval feed) */
   getPendingPermissions: publicProcedure.query(async () => {
     return ergataiFetch("/api/v1/permissions/pending")
   }),
-
-
 
   /** Respond to a pending permission request */
   respondPermission: publicProcedure
@@ -362,8 +270,6 @@ export const agentsRouter = router({
         },
       )
     }),
-
-
 
   /** Subscribe to real-time permission lifecycle events */
   subscribePermissions: publicProcedure.subscription(() => {
@@ -472,14 +378,10 @@ export const agentsRouter = router({
     })
   }),
 
-
-
   /** Get the current permission mode (ask | auto | full_access) */
   getPermissionMode: publicProcedure.query(async () => {
     return ergataiFetch("/api/v1/permissions/mode")
   }),
-
-
 
   /** Switch the permission mode */
   setPermissionMode: publicProcedure
@@ -491,8 +393,6 @@ export const agentsRouter = router({
       })
     }),
 
-
-
   /** Get agent config options */
   getAgentConfigOptions: publicProcedure
     .input(z.object({ agentId: agentIdSchema }))
@@ -500,16 +400,12 @@ export const agentsRouter = router({
       return ergataiFetch(`/api/v1/agents/${input.agentId}/config-options`)
     }),
 
-
-
   /** Get agent available commands */
   getAgentCommands: publicProcedure
     .input(z.object({ agentId: agentIdSchema }))
     .query(async ({ input }) => {
       return ergataiFetch(`/api/v1/agents/${input.agentId}/commands`)
     }),
-
-
 
   /** Execute an agent command */
   executeAgentCommand: publicProcedure
@@ -529,8 +425,6 @@ export const agentsRouter = router({
         }),
       })
     }),
-
-
 
   /**
    * @deprecated Use `getAgentProfileModels` instead.
@@ -562,8 +456,6 @@ export const agentsRouter = router({
     }
   }),
 
-
-
   /**
    * @deprecated Use `refreshAgentProfileModels` instead.
    * This procedure writes to the old JSON snapshot store.
@@ -583,8 +475,6 @@ export const agentsRouter = router({
       await manager.saveSnapshot(input.cacheKey, input.models, input.current, false)
       return { success: true }
     }),
-
-
 
   /**
    * @deprecated Use `getAgentProfileModels` + `refreshAgentProfileModels` instead.
@@ -623,16 +513,12 @@ export const agentsRouter = router({
       }
     }),
 
-
-
   /** Get agent sessions */
   listAgentSessions: publicProcedure
     .input(z.object({ agentId: agentIdSchema }))
     .query(async ({ input }) => {
       return ergataiFetch(`/api/v1/agents/${input.agentId}/sessions`)
     }),
-
-
 
   /** Create an agent session */
   createAgentSession: publicProcedure
@@ -642,8 +528,6 @@ export const agentsRouter = router({
         method: "POST",
       })
     }),
-
-
 
   /** Load a specific agent session */
   loadAgentSession: publicProcedure
@@ -655,8 +539,6 @@ export const agentsRouter = router({
       )
     }),
 
-
-
   /** Delete a specific agent session */
   deleteAgentSession: publicProcedure
     .input(z.object({ agentId: agentIdSchema, sessionId: z.string() }))
@@ -667,8 +549,6 @@ export const agentsRouter = router({
       )
       return { success: true }
     }),
-
-
 
   // ── Agent Profile Models ──────────────────────────────────────────────────
 
@@ -687,8 +567,6 @@ export const agentsRouter = router({
       }
     }),
 
-
-
   /** Trigger model detection for an agent profile */
   refreshAgentProfileModels: publicProcedure
     .input(z.object({ profileName: z.string() }))
@@ -702,16 +580,12 @@ export const agentsRouter = router({
       })
     }),
 
-
-
   // ── Lock Monitoring Endpoints ────────────────────────────────────────────
 
   /** List all active file locks */
   listLocks: publicProcedure.query(async (): Promise<LockInfo[]> => {
     return ergataiFetch<LockInfo[]>("/api/v1/locks")
   }),
-
-
 
   /** Query file lock audit log */
   listLockAudit: publicProcedure
@@ -735,14 +609,10 @@ export const agentsRouter = router({
       )
     }),
 
-
-
   /** Get lock contention information */
   getLockContention: publicProcedure.query(async (): Promise<LockContention[]> => {
     return ergataiFetch<LockContention[]>("/api/v1/locks/contention")
   }),
-
-
 
   // ── Missing Backend API Endpoints (46 total) ─────────────────────────────
 
@@ -753,16 +623,12 @@ export const agentsRouter = router({
     return ergataiFetch("/api/v1/agents/suspended")
   }),
 
-
-
   /** Get agent events stream */
   getAgentEvents: publicProcedure
     .input(z.object({ agentId: agentIdSchema }))
     .query(async ({ input }) => {
       return ergataiFetch(`/api/v1/agents/${input.agentId}/events`)
     }),
-
-
 
   /** Send prompt to agent */
   sendPrompt: publicProcedure
@@ -777,8 +643,6 @@ export const agentsRouter = router({
       })
     }),
 
-
-
   /** Resume agent */
   resumeAgent: publicProcedure
     .input(z.object({ agentId: agentIdSchema }))
@@ -787,8 +651,6 @@ export const agentsRouter = router({
         method: "POST",
       })
     }),
-
-
 
   /** Spawn new agent session */
   spawnNewAgentSession: publicProcedure
@@ -799,8 +661,6 @@ export const agentsRouter = router({
       })
     }),
 
-
-
   /** Suspend agent */
   suspendAgent: publicProcedure
     .input(z.object({ agentId: agentIdSchema }))
@@ -810,16 +670,12 @@ export const agentsRouter = router({
       })
     }),
 
-
-
   // ── Other (3 endpoints) ────────────────────────────────────────────────
 
   /** Get locks audit log */
   getLocksAudit: publicProcedure.query(async () => {
     return ergataiFetch("/api/v1/locks/audit")
   }),
-
-
 
   /** Subscribe to permissions stream */
   subscribePermissionsStream: publicProcedure.subscription(() => {
@@ -901,8 +757,6 @@ export const agentsRouter = router({
     })
   }),
 
-
-
   /** Respond to permission request */
   respondToPermission: publicProcedure
     .input(z.object({
@@ -915,6 +769,5 @@ export const agentsRouter = router({
         body: JSON.stringify(input.response),
       })
     }),
-
 
 })

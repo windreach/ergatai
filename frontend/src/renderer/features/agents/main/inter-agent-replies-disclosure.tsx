@@ -115,7 +115,6 @@ function getInterAgentTargets(parts: unknown[]): InterAgentTarget[] {
       input?: { target_agent_id?: unknown; message?: unknown }
       output?: unknown
     }
-    const type = typeof candidate.type === "string" ? candidate.type : ""
     if (
       !isSendMessageToolPart(candidate) ||
       candidate.state !== "output-available"
@@ -167,7 +166,7 @@ function AgentReplyDisclosure({
   if (error) {
     // Surface load errors to the console; the surrounding UI falls back to
     // an empty disclosure, so we log rather than swallow silently.
-    // eslint-disable-next-line no-console
+     
     console.warn(
       `[InterAgentRepliesDisclosure] Failed to load conversation ${conversationId}:`,
       error,
@@ -199,7 +198,7 @@ function AgentReplyDisclosure({
         const isLegacyReply =
           message.role === "assistant" &&
           message.messageType === "response" &&
-          Boolean(message.parts?.every((part: any) => part?.type === "text"))
+          Boolean(message.parts?.every((part: unknown) => (part as { type?: string })?.type === "text"))
         const messageCorrelationId =
           typeof metadata?.correlationId === "string" ? metadata.correlationId : undefined
         const messageReplyToMessageId =
@@ -293,7 +292,7 @@ export function InterAgentRepliesDisclosure({
     // Depend on the actual parts array so memo recomputes when its identity
     // changes; the outer `message` reference can be unstable even when parts
     // are unchanged, leading to either stale or redundant recomputation.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
     [message?.parts],
   )
 

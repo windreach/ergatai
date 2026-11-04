@@ -17,7 +17,7 @@ interface UseGitOperationsOptions {
   setIsCreatingPr: (value: boolean) => void
   setIsReviewing: (value: boolean) => void
   setFilteredConversationId: (id: string) => void
-  createPrMutation: any
+  createPrMutation: { mutateAsync: (input: { worktreePath: string }) => Promise<unknown> }
 }
 
 export function useGitOperations({
@@ -171,7 +171,7 @@ export function useGitOperations({
     const message = `This PR has merge conflicts with the main branch. Please:
 
 1. First, fetch and merge the latest changes from main branch using git commands
-2. If there are any merge conflicts, resolve them carefully by keeping the correct code from both branches
+2. If there are unknown merge conflicts, resolve them carefully by keeping the correct code from both branches
 3. After resolving conflicts, commit the merge
 4. Push the changes to update the PR
 

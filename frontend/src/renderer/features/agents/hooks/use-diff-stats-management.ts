@@ -1,3 +1,4 @@
+ 
 import { useCallback, useEffect, useRef } from "react"
 import { trpcClient } from "../../../lib/trpc"
 
@@ -5,10 +6,11 @@ interface UseDiffStatsManagementOptions {
   worktreePath: string | null
   chatId: string | null
   isDiffSidebarOpen: boolean
+   
   setParsedFileDiffs: (files: any[] | null) => void
   setPrefetchedFileContents: (contents: Record<string, string>) => void
   setDiffContent: (content: string | null) => void
-  setDiffStats: (updater: (prev: any) => any) => void
+  setDiffStats: (updater: (prev: { isLoading: boolean; hasChanges: boolean; fileCount: number; additions: number; deletions: number }) => { isLoading: boolean; hasChanges: boolean; fileCount: number; additions: number; deletions: number }) => void
 }
 
 export function useDiffStatsManagement({

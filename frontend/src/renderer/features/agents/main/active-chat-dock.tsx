@@ -7,6 +7,7 @@ import { ConversationStatusCard } from "../ui/conversation-status-card"
 import { ChatInputArea } from "./chat-input-area"
 import { ScrollToBottomButton } from "./active-chat-ui"
 
+ 
 export function ActiveChatDock(props: any) {
   const {
     isVisiblePane,

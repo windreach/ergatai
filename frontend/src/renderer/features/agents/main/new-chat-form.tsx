@@ -60,7 +60,6 @@ import {
   extendedThinkingEnabledAtom,
   hiddenModelsAtom,
   normalizeCustomClaudeConfig,
-  showOfflineModeFeaturesAtom,
   selectedOllamaModelAtom,
   customHotkeysAtom,
 } from "../../../lib/atoms"
@@ -91,7 +90,6 @@ import { buildPastedMentionToken } from "../mentions/mentions-utils"
 import { AgentFileItem } from "../ui/agent-file-item"
 import { AgentImageItem } from "../ui/agent-image-item"
 import { AgentPastedTextItem } from "../ui/agent-pasted-text-item"
-import { AgentsHeaderControls } from "../ui/agents-header-controls"
 import { VoiceWaveIndicator } from "../ui/voice-wave-indicator"
 // import { CreateBranchDialog } from "@/app/(alpha)/agents/{components}/create-branch-dialog"
 import {
@@ -107,18 +105,18 @@ import {
 } from "../atoms"
 import {
   detailsSidebarOpenAtom,
-} from "../../details-sidebar/atoms"
-import { DetailsSidebar } from "../../details-sidebar/details-sidebar"
+} from "../../details-sidebar"
+import { DetailsSidebar } from "../../details-sidebar"
 import {
   terminalBottomHeightAtom,
   terminalDisplayModeAtom,
   terminalSidebarOpenAtomFamily,
-} from "../../terminal/atoms"
+} from "../../terminal"
 import {
   TerminalBottomPanelContent,
   TerminalSidebar,
-} from "../../terminal/terminal-sidebar"
-import { getTerminalScopeKey } from "../../terminal/utils"
+} from "../../terminal"
+import { getTerminalScopeKey } from "../../terminal"
 import { AgentSendButton } from "../components/agent-send-button"
 import { WorkspaceSelector } from "../components/workspace-selector"
 import { useCollaborationMode } from "../collaboration/use-collaboration-mode"
@@ -130,7 +128,6 @@ import {
   setGroupAgentRuntimeStatuses,
   type GroupAgentRuntimeStatuses,
 } from "../collaboration/group-agent-runtime"
-import { AgentModelSelector } from "../components/agent-model-selector"
 import { CoreAgentSelector } from "../components/core-agent-selector"
 import {
   agentContractApi,
@@ -147,7 +144,6 @@ import {
   generateDraftId,
   deleteNewChatDraft,
   markDraftVisible,
-  type DraftProject,
 } from "../lib/drafts"
 import {
   CODEX_MODELS,
@@ -155,7 +151,7 @@ import {
 } from "../lib/models"
 import { useAvailableModels } from "../hooks/use-available-models"
 // import type { PlanType } from "@/lib/config/subscription-plans"
-type PlanType = string
+type _PlanType = string
 
 type GroupInitialMessagePart = {
   type?: string
@@ -288,10 +284,10 @@ export function NewChatForm({
 }: NewChatFormProps = {}) {
   // UNCONTROLLED: just track if editor has content for send button
   const [hasContent, setHasContent] = useState(false)
-  const [selectedTeamId] = useAtom(selectedTeamIdAtom)
+  const [_selectedTeamId] = useAtom(selectedTeamIdAtom)
   const [selectedChatId, setSelectedChatId] = useAtom(selectedAgentChatIdAtom)
   const [selectedDraftId, setSelectedDraftId] = useAtom(selectedDraftIdAtom)
-  const [sidebarOpen, setSidebarOpen] = useAtom(agentsSidebarOpenAtom)
+  const [_sidebarOpen, _setSidebarOpen] = useAtom(agentsSidebarOpenAtom)
   const [conversationsSidebarMode, setConversationsSidebarMode] = useAtom(
     agentsConversationsSidebarModeAtom,
   )
@@ -321,8 +317,8 @@ export function NewChatForm({
   const currentDraftIdRef = useRef<string | null>(null)
   const unseenChanges = useAtomValue(agentsUnseenChangesAtom)
 
-  // Check if any chat has unseen changes
-  const hasAnyUnseenChanges = unseenChanges.size > 0
+  // Check if unknown chat has unseen changes
+  const _hasAnyUnseenChanges = unseenChanges.size > 0
   const [selectedWorkspace, setSelectedWorkspace] = useAtom(selectedWorkspaceAtom)
   // Fetch projects to validate selectedWorkspace exists
   const { data: projectsList, isLoading: isLoadingProjects } =
@@ -383,7 +379,7 @@ export function NewChatForm({
   const [lastSelectedAgentId, setLastSelectedAgentId] = useAtom(
     lastSelectedAgentIdAtom,
   )
-  const [lastSelectedModelId, setLastSelectedModelId] = useAtom(
+  const [lastSelectedModelId, _setLastSelectedModelId] = useAtom(
     lastSelectedModelIdAtom,
   )
   // Mode for new chat - uses user's default preference directly
@@ -428,7 +424,7 @@ export function NewChatForm({
   // A persisted "worktree" preference must not leak into plain folders. The
   // effective mode is used by the UI and creation payload.
   const effectiveWorkMode = isGitRepository ? workMode : "local"
-  const debugMode = useAtomValue(agentsDebugModeAtom)
+  const _debugMode = useAtomValue(agentsDebugModeAtom)
   const customClaudeConfig = useAtomValue(customClaudeConfigAtom)
   const normalizedCustomClaudeConfig =
     normalizeCustomClaudeConfig(customClaudeConfig)
@@ -438,7 +434,7 @@ export function NewChatForm({
   const apiKeyOnboardingCompleted = useAtomValue(apiKeyOnboardingCompletedAtom)
   const { data: claudeCodeIntegration } =
     trpc.claudeCode.getIntegration.useQuery()
-  const isClaudeConnected =
+  const _isClaudeConnected =
     Boolean(claudeCodeIntegration?.isConnected) ||
     anthropicOnboardingCompleted ||
     apiKeyOnboardingCompleted ||
@@ -475,7 +471,7 @@ export function NewChatForm({
     worktreeConfigData &&
     !worktreeConfigData.config
 
-  const handleDismissWorktreeBanner = () => {
+  const _handleDismissWorktreeBanner = () => {
     setWorktreeBannerDismissed(true)
     try {
       localStorage.setItem("worktree-banner-dismissed", "true")
@@ -488,7 +484,7 @@ export function NewChatForm({
     setSettingsDialogOpen(true)
   }
   // Parse owner/repo from GitHub URL
-  const parseGitHubUrl = (url: string) => {
+  const _parseGitHubUrl = (url: string) => {
     const match = url.match(/(?:github\.com\/)?([^\/]+)\/([^\/\s#?]+)/)
     if (!match) return null
     return `${match[1]}/${match[2].replace(/\.git$/, "")}`
@@ -544,14 +540,14 @@ export function NewChatForm({
 
   // Get available models (with offline support)
   const availableModels = useAvailableModels(backendAgentId)
-  const [selectedOllamaModel, setSelectedOllamaModel] = useAtom(selectedOllamaModelAtom)
-  const [lastSelectedCodexModelId, setLastSelectedCodexModelId] = useAtom(
+  const [selectedOllamaModel, _setSelectedOllamaModel] = useAtom(selectedOllamaModelAtom)
+  const [lastSelectedCodexModelId, _setLastSelectedCodexModelId] = useAtom(
     lastSelectedCodexModelIdAtom,
   )
   const [lastSelectedCodexThinking, setLastSelectedCodexThinking] = useAtom(
     lastSelectedCodexThinkingAtom,
   )
-  const [thinkingEnabled, setThinkingEnabled] = useAtom(
+  const [_thinkingEnabled, _setThinkingEnabled] = useAtom(
     extendedThinkingEnabledAtom,
   )
 
@@ -582,7 +578,7 @@ export function NewChatForm({
     if (model && model.id !== selectedModel.id) {
       setSelectedModel(model)
     }
-  }, [availableModels.models, availableModels.currentModelId, lastSelectedModelId])
+  }, [availableModels.models, availableModels.currentModelId, lastSelectedModelId, selectedModel.id])
 
   const hiddenModels = useAtomValue(hiddenModelsAtom)
   const codexUiModels = useMemo(
@@ -650,7 +646,7 @@ export function NewChatForm({
   const currentOllamaModel = selectedOllamaModel || availableModels.recommendedModel || availableModels.ollamaModels[0]
   const claudeAgent =
     enabledAgents.find((agent) => agent.id === "claude-code") || fallbackAgent
-  const selectedModelLabel = useMemo(() => {
+  const _selectedModelLabel = useMemo(() => {
     if (selectedAgent.id === "codex") {
       return selectedCodexModel.name
     }
@@ -677,7 +673,7 @@ export function NewChatForm({
     hasCustomClaudeConfig,
     selectedModel,
   ])
-  const [repoPopoverOpen, setRepoPopoverOpen] = useState(false)
+  const [_repoPopoverOpen, _setRepoPopoverOpen] = useState(false)
   const [branchPopoverOpen, setBranchPopoverOpen] = useState(false)
   const [lastSelectedBranches, setLastSelectedBranches] = useAtom(
     lastSelectedBranchesAtom,
@@ -765,7 +761,7 @@ export function NewChatForm({
   const [slashSearchText, setSlashSearchText] = useState("")
   const [slashPosition, setSlashPosition] = useState({ top: 0, left: 0 })
 
-  const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false)
+  const [_isModelDropdownOpen, _setIsModelDropdownOpen] = useState(false)
 
   // Voice input state
   const customHotkeys = useAtomValue(customHotkeysAtom)
@@ -776,7 +772,7 @@ export function NewChatForm({
     stopRecording,
     cancelRecording,
   } = useVoiceRecording()
-  const [isTranscribing, setIsTranscribing] = useState(false)
+  const [isTranscribing, _setIsTranscribing] = useState(false)
   // Voice transcription is disabled until a local provider is connected.
   const isVoiceAvailable = false
 
@@ -845,7 +841,7 @@ export function NewChatForm({
       return keyMatches && modifiersMatch(e)
     }
 
-    // Check if any modifier key is released
+    // Check if unknown modifier key is released
     const isModifierRelease = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase()
       return key === "control" || key === "alt" || key === "meta" || key === "shift"
@@ -879,7 +875,7 @@ export function NewChatForm({
     }
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      // Stop recording when the main key (or any modifier for modifier-only hotkeys) is released
+      // Stop recording when the main key (or unknown modifier for modifier-only hotkeys) is released
       if (!isMainKeyRelease(e)) return
 
       // Only stop if we're currently recording
@@ -1012,7 +1008,7 @@ export function NewChatForm({
       }, 0)
       return () => clearTimeout(timer)
     }
-  }, [branchPopoverOpen])
+  }, [branchPopoverOpen, branchVirtualizer])
 
   // Format relative time for branches (reuse shared utility)
   const formatRelativeTime = (dateString: string | null): string => {
@@ -1219,7 +1215,7 @@ export function NewChatForm({
 
   const handleSend = useCallback(async () => {
     // Get value from uncontrolled editor
-    let message = editorRef.current?.getValue() || ""
+    const message = editorRef.current?.getValue() || ""
 
     // Allow send if there's text, images, files, or pasted text files
     const hasText = message.trim().length > 0
@@ -1323,6 +1319,8 @@ export function NewChatForm({
     selectedChatModel,
     agentMode,
     selectedWorkspaceId,
+    collaborationMode,
+    selectedAgent.id,
   ])
 
   const handleMentionSelect = useCallback((mention: FileMentionOption) => {
@@ -1519,7 +1517,7 @@ export function NewChatForm({
   }, [])
 
   // Text file extensions that should have content read and attached
-  const TEXT_FILE_EXTENSIONS = new Set([
+  const TEXT_FILE_EXTENSIONS = useMemo(() => new Set([
     // Code
     ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
     ".py", ".rb", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".cpp", ".h", ".hpp",
@@ -1539,12 +1537,12 @@ export function NewChatForm({
     // Other
     ".sql", ".graphql", ".gql", ".prisma", ".dockerfile", ".makefile",
     ".gitignore", ".gitattributes", ".editorconfig", ".eslintrc", ".prettierrc",
-  ])
+  ]), [])
 
   const MAX_FILE_SIZE_FOR_CONTENT = 100 * 1024 // 100KB - files larger than this only get path mention
 
   // Image extensions that should be handled as attachments (base64)
-  const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"])
+  const _IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"])
 
   const handleDrop = useCallback(
     async (e: React.DragEvent) => {
@@ -1702,7 +1700,7 @@ export function NewChatForm({
         })
       })
     },
-    [validatedProject?.path, handleAddAttachments, handleAddFolder],
+    [validatedProject?.path, handleAddAttachments, handleAddFolder, MAX_FILE_SIZE_FOR_CONTENT, TEXT_FILE_EXTENSIONS],
   )
 
   // Context items for images, files, and pasted text files
@@ -1906,7 +1904,7 @@ export function NewChatForm({
                                 ? current
                                 : [...current, agent.id],
                             )
-                            // Update selectedAgent for any agent (including custom profiles like mock-agent)
+                            // Update selectedAgent for unknown agent (including custom profiles like mock-agent)
                             const matchedAgent = enabledAgents.find((item) => item.id === agent.id)
                             if (matchedAgent) {
                               setSelectedAgent(matchedAgent)

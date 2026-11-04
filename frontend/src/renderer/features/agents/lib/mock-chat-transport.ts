@@ -54,7 +54,7 @@ export function getMockGroupAgentTasks(
 ): MockGroupAgentTask[] {
   void prompt
 
-  return agents.map((agent, index) => ({
+  return agents.map((agent, _index) => ({
     agent,
     status: statuses[agent.id] ?? "pending",
   }))

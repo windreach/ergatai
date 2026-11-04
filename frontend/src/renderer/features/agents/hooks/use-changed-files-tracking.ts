@@ -20,7 +20,7 @@ export function useChangedFilesTracking(
   conversationId: string,
   isStreaming: boolean = false,
   chatId?: string,
-  projectPath?: string,
+  _projectPath?: string,
 ) {
   const setConversationFiles = useSetAtom(conversationFilesAtom)
   const conversationFiles = useAtomValue(conversationFilesAtom)
@@ -56,6 +56,7 @@ export function useChangedFilesTracking(
       next.set(conversationId, chatId)
       return next
     })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, conversationId, setConversationToChatMap])
 
   const recomputeChangedFiles = useCallback(() => {
@@ -69,7 +70,7 @@ export function useChangedFilesTracking(
   useEffect(() => {
     if (!isStreaming && messages.length > 0) {
       // Use setTimeout(…, 0) to defer refetch until after the current render cycle completes.
-      // This ensures that any pending message state updates are flushed before we query,
+      // This ensures that unknown pending message state updates are flushed before we query,
       // avoiding race conditions where we might query stale data.
       const timer = window.setTimeout(() => {
         fileChangesQuery.refetch().catch((error) => {

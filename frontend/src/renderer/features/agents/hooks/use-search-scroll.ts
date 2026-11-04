@@ -23,15 +23,14 @@ export function useSearchScroll({ chatContainerRef }: UseSearchScrollProps) {
     const container = chatContainerRef.current
     if (!container) return
 
-    // Increment lock to cancel any pending scroll operations
+    // Increment lock to cancel unknown pending scroll operations
     const currentLock = ++searchScrollLockRef.current
 
     // Use double requestAnimationFrame + small delay to ensure DOM has updated with new highlights
-    let rafId1: number | undefined
     let rafId2: number | undefined
     let timeoutId: ReturnType<typeof setTimeout> | undefined
 
-    rafId1 = requestAnimationFrame(() => {
+    const rafId1 = requestAnimationFrame(() => {
       rafId2 = requestAnimationFrame(() => {
         timeoutId = setTimeout(() => {
           // Check if this scroll operation is still valid (not superseded by newer one)
@@ -70,7 +69,7 @@ export function useSearchScroll({ chatContainerRef }: UseSearchScrollProps) {
       })
     })
 
-    // Cleanup: cancel any pending animation frames and timeouts
+    // Cleanup: cancel unknown pending animation frames and timeouts
     return () => {
       if (rafId1 !== undefined) cancelAnimationFrame(rafId1)
       if (rafId2 !== undefined) cancelAnimationFrame(rafId2)

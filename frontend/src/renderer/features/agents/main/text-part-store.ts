@@ -3,8 +3,10 @@
  * Separated from isolated-text-part.tsx to maintain Fast Refresh compatibility.
  */
 
+import { BoundedCache } from "../../../lib/bounded-cache"
+
 // Cache for text content per part
-export const textPartStore = new Map<string, string>()
+export const textPartStore = new BoundedCache<string, string>(5000)
 
 // Subscribers per part key
 export const textPartSubscribers = new Map<string, Set<() => void>>()

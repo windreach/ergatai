@@ -4,7 +4,7 @@
  */
 
 import * as React from "react"
-import { useCallback, useMemo } from "react"
+import { useCallback } from "react"
 import {
   AgentActionContext,
   AGENT_ACTIONS,
@@ -55,7 +55,7 @@ const SHORTCUT_TO_ACTION_MAP: Record<ShortcutActionId, string> = {
 }
 
 // Reverse mapping: action ID -> shortcut ID
-const ACTION_TO_SHORTCUT_MAP: Record<string, ShortcutActionId> = Object.fromEntries(
+const _ACTION_TO_SHORTCUT_MAP: Record<string, ShortcutActionId> = Object.fromEntries(
   Object.entries(SHORTCUT_TO_ACTION_MAP).map(([k, v]) => [v, k as ShortcutActionId])
 ) as Record<string, ShortcutActionId>
 

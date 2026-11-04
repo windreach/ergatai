@@ -44,7 +44,7 @@ export function registerGitWatcherIPC(): void {
 					const targetWindow = BrowserWindow.fromId(subscription.windowId);
 					if (!targetWindow || targetWindow.isDestroyed()) return;
 
-					// We're watching .git/index and .git/HEAD, so any event means a git operation occurred.
+					// We're watching .git/index and .git/HEAD, so unknown event means a git operation occurred.
 					// Invalidate status and parsedDiff caches - these are always affected by git operations.
 					// File content cache is content-addressed and will update on next request if hash changed.
 					gitCache.invalidateStatus(worktreePath);

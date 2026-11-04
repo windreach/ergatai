@@ -3,7 +3,7 @@
 import { useAtom, useSetAtom } from "jotai"
 import { X } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { pendingAuthRetryMessageAtom } from "../../features/agents/atoms"
+import { pendingAuthRetryMessageAtom } from "../../features/agents"
 import {
   agentsLoginModalOpenAtom,
   agentsSettingsDialogActiveTabAtom,
@@ -323,24 +323,10 @@ export function ClaudeLoginModal({
 
         <div className="space-y-8">
           {/* Header with dual icons */}
-          <div className="text-center space-y-4">
-            <div className="flex items-center justify-center gap-2 p-2 mx-auto w-max rounded-full border border-border">
-              <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center">
-                <Logo className="w-5 h-5" fill="white" />
-              </div>
-              <div className="w-10 h-10 rounded-full bg-[#D97757] flex items-center justify-center">
-                <ClaudeCodeIcon className="w-6 h-6 text-white" />
-              </div>
-            </div>
-            <div className="space-y-1">
-              <h1 className="text-base font-semibold tracking-tight">
-                Claude Code
-              </h1>
-              <p className="text-sm text-muted-foreground">
-                Connect your Claude Code subscription
-              </p>
-            </div>
-          </div>
+        <ClaudeCodeDualHeader
+          title="Claude Code"
+          subtitle="Connect your Claude Code subscription"
+        />
 
           {/* Content */}
           <div className="space-y-6">
@@ -428,5 +414,30 @@ export function ClaudeLoginModal({
         </div>
       </AlertDialogContent>
     </AlertDialog>
+  )
+}
+
+export function ClaudeCodeDualHeader({
+  title,
+  subtitle,
+}: {
+  title: string
+  subtitle: string
+}) {
+  return (
+    <div className="text-center space-y-4">
+      <div className="flex items-center justify-center gap-2 p-2 mx-auto w-max rounded-full border border-border">
+        <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center">
+          <Logo className="w-5 h-5" fill="white" />
+        </div>
+        <div className="w-10 h-10 rounded-full bg-[#D97757] flex items-center justify-center">
+          <ClaudeCodeIcon className="w-6 h-6 text-white" />
+        </div>
+      </div>
+      <div className="space-y-1">
+        <h1 className="text-base font-semibold tracking-tight">{title}</h1>
+        <p className="text-sm text-muted-foreground">{subtitle}</p>
+      </div>
+    </div>
   )
 }

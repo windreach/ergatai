@@ -62,7 +62,7 @@ interface UseAgentParticipantsInput {
 export function useAgentParticipants({
   chatId,
   workspaceId,
-  runtimeWorkspaceId,
+  runtimeWorkspaceId: _runtimeWorkspaceId,
   supervisorAgentId,
 }: UseAgentParticipantsInput) {
   const { agents: groupAgents, isGroupChat } = useGroupChat()
@@ -272,8 +272,6 @@ export function useAgentParticipants({
     runtimeStatuses,
     runtimeBindings,
     activeConversationId,
-    workspaceId,
-    runtimeWorkspaceId,
     supervisorAgentId,
   ])
 }

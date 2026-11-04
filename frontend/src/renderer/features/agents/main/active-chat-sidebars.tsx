@@ -3,12 +3,12 @@
 import { Button } from "../../../components/ui/button"
 import { ResizableSidebar } from "../../../components/ui/resizable-sidebar"
 import { IconCloseSidebarRight } from "../../../components/ui/icons"
-import { DiffCenterPeekDialog } from "../../changes/components/diff-center-peek-dialog"
-import { DiffFullPageView } from "../../changes/components/diff-full-page-view"
-import { DetailsSidebar } from "../../details-sidebar/details-sidebar"
-import { SideChatSidebar } from "../../details-sidebar/components/side-chat-sidebar"
+import { DiffCenterPeekDialog } from "../../changes"
+import { DiffFullPageView } from "../../changes"
+import { DetailsSidebar } from "../../details-sidebar"
+import { SideChatSidebar } from "../../details-sidebar"
 import { FileViewerSidebar } from "../../file-viewer"
-import { TerminalSidebar } from "../../terminal/terminal-sidebar"
+import { TerminalSidebar } from "../../terminal"
 import {
   agentsPlanSidebarWidthAtom,
   agentsPreviewSidebarWidthAtom,
@@ -21,6 +21,7 @@ import {
 import { AgentPlanSidebar } from "../ui/agent-plan-sidebar"
 import { AgentPreview } from "../ui/agent-preview"
 
+ 
 export function ChatViewSidebars(props: any) {
   const {
     isMobileFullscreen,
@@ -93,8 +94,8 @@ export function ChatViewSidebars(props: any) {
     meta,
     isTerminalSidebarOpen,
     setIsTerminalSidebarOpen,
-    terminalDisplayMode,
-    toggleTerminalHotkey,
+    _terminalDisplayMode,
+    _toggleTerminalHotkey,
     isCommittingCombined,
     dispatchPanelLink,
     selectedFilePath,

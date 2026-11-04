@@ -17,7 +17,7 @@ export function deriveWorkspaceStatus(
     return "needs-input"
   }
 
-  // 2. In Progress - any conversation is loading
+  // 2. In Progress - unknown conversation is loading
   if (workspacesLoading.has(chatId)) {
     return "in-progress"
   }

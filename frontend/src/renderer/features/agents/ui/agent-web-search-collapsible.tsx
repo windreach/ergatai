@@ -15,7 +15,7 @@ interface SearchResult {
 }
 
 interface AgentWebSearchCollapsibleProps {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   part: MessagePart
   chatStatus?: string
 }

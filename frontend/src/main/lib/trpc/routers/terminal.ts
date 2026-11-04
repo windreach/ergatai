@@ -1,13 +1,32 @@
 import fs from "node:fs/promises"
 import path from "node:path"
-import { z } from "zod"
-import { router, publicProcedure } from "../index"
-import { observable } from "@trpc/server/observable"
-import { terminalManager } from "../../terminal/manager"
-import type { TerminalEvent } from "../../terminal/types"
-import { TRPCError } from "@trpc/server"
-import { assertRegisteredWorktree } from "../../git/security/path-validation"
-import { isAbsolute, resolve, dirname } from "node:path"
+import {
+  z
+} from "zod"
+import {
+  router,
+  publicProcedure
+} from "../index"
+import {
+  observable
+} from "@trpc/server/observable"
+import {
+  terminalManager
+} from "../../terminal/manager"
+import type {
+  TerminalEvent
+} from "../../terminal/types"
+import {
+  TRPCError
+} from "@trpc/server"
+import {
+  assertRegisteredWorktree
+} from "../../git/security/path-validation"
+import {
+  isAbsolute,
+  resolve,
+  dirname
+} from "node:path"
 
 /**
  * SECURITY: Validate that an absolute path is within a registered worktree or project.
@@ -173,7 +192,7 @@ export const terminalRouter = router({
 	/**
 	 * Get workspace cwd for terminal initialization
 	 */
-	getWorkspaceCwd: publicProcedure.input(z.string()).query(({ input }) => {
+	getWorkspaceCwd: publicProcedure.input(z.string()).query(() => {
 		// For now, just return null - the workspace path comes from the chat/project
 		// In the future this could look up the workspace's root directory
 		return null

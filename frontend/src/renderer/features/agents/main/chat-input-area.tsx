@@ -1,27 +1,20 @@
 "use client"
 
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
-import { ChevronDown, RefreshCw } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { Button } from "../../../components/ui/button"
 import {
   AttachIcon,
   IconSpinner,
-  OriginalMCPIcon,
-  SettingsIcon,
 } from "../../../components/ui/icons"
-import { Kbd } from "../../../components/ui/kbd"
 import {
   PromptInput,
   PromptInputActions,
   PromptInputContextItems,
 } from "../../../components/ui/prompt-input"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "../../../components/ui/tooltip"
+
+
 import {
   Popover,
   PopoverContent,
@@ -36,7 +29,6 @@ import {
   extendedThinkingEnabledAtom,
   hiddenModelsAtom,
   normalizeCustomClaudeConfig,
-  showOfflineModeFeaturesAtom,
 } from "../../../lib/atoms"
 import { useConversationOllamaModel } from "../hooks/use-conversation-ollama-model"
 import { trpc } from "../../../lib/trpc"
@@ -62,7 +54,6 @@ import { AgentsSlashCommand, type SlashCommandOption } from "../commands"
 import { AgentModelSelector } from "../components/agent-model-selector"
 import { getCoreAgentIcon } from "../components/core-agent-selector"
 import { PermissionModeSelector } from "../components/permission-mode-selector"
-import { CoreAgentSelector } from "../components/core-agent-selector"
 import {
   loadGroupAgentIds,
   resolveGroupMentionAgents,
@@ -70,7 +61,6 @@ import {
 } from "../collaboration/group-agent-storage"
 import {
   agentContractApi,
-  CORE_AGENT_OPTIONS,
   type CoreAgentId,
   type CoreAgentOption,
 } from "../lib/agent-contract-api"
@@ -81,7 +71,6 @@ import {
   saveConversationDraftWithAttachments,
 } from "../lib/drafts"
 import {
-  CLAUDE_MODELS,
   CODEX_MODELS,
   type CodexThinkingLevel,
 } from "../lib/models"
@@ -481,7 +470,7 @@ export const ChatInputArea = memo(function ChatInputArea({
     onGroupAgentsChange?.(boundGroupAgents)
   }, [boundGroupAgents, onGroupAgentsChange])
 
-  const handleGroupAgentIdsChange = useCallback(
+  const _handleGroupAgentIdsChange = useCallback(
     (agentIds: CoreAgentId[]) => {
       setGroupAgentIds(agentIds)
       saveGroupAgents(
@@ -640,7 +629,7 @@ export const ChatInputArea = memo(function ChatInputArea({
         onSettled: () => setIsDetectingRuntimeModel(false),
       },
     )
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshRuntimeModelData is unstable, use ref
+     
   }, [
     agentId,
     isRuntimeModelProvider,
@@ -766,8 +755,8 @@ export const ChatInputArea = memo(function ChatInputArea({
     messageTokenData.messageCount === 0 && !isStreaming && !sandboxId
 
   // MCP status - from getAllMcpConfig query (provides global/local grouping)
-  const setSettingsOpen = useSetAtom(agentsSettingsDialogOpenAtom)
-  const setSettingsTab = useSetAtom(agentsSettingsDialogActiveTabAtom)
+  const _setSettingsOpen = useSetAtom(agentsSettingsDialogOpenAtom)
+  const _setSettingsTab = useSetAtom(agentsSettingsDialogActiveTabAtom)
 
   const {
     data: allMcpConfig,
@@ -778,9 +767,9 @@ export const ChatInputArea = memo(function ChatInputArea({
   })
 
   const [isMcpRefreshing, setIsMcpRefreshing] = useState(false)
-  const isMcpBusy = isMcpLoading || isMcpRefreshing
+  const _isMcpBusy = isMcpLoading || isMcpRefreshing
 
-  const handleRefreshMcp = useCallback(async () => {
+  const _handleRefreshMcp = useCallback(async () => {
     setIsMcpRefreshing(true)
     try {
       await refetchMcp()
@@ -804,8 +793,8 @@ export const ChatInputArea = memo(function ChatInputArea({
     }
   }, [allMcpConfig?.groups, projectPath])
 
-  const totalMcps = mcpGroups.global.length + mcpGroups.local.length
-  const connectedMcps =
+  const _totalMcps = mcpGroups.global.length + mcpGroups.local.length
+  const _connectedMcps =
     mcpGroups.global.filter((s) => s.status === "connected").length +
     mcpGroups.local.filter((s) => s.status === "connected").length
 
@@ -843,7 +832,7 @@ export const ChatInputArea = memo(function ChatInputArea({
     stopRecording: stopVoiceRecording,
     cancelRecording: cancelVoiceRecording,
   } = useVoiceRecording()
-  const [isTranscribing, setIsTranscribing] = useState(false)
+  const [isTranscribing, _setIsTranscribing] = useState(false)
   const voiceMountedRef = useRef(true)
 
   useEffect(() => {
@@ -975,7 +964,7 @@ export const ChatInputArea = memo(function ChatInputArea({
       return keyMatches && modifiersMatch(e)
     }
 
-    // Check if any modifier key is released
+    // Check if unknown modifier key is released
     const isModifierRelease = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase()
       return key === "control" || key === "alt" || key === "meta" || key === "shift"
@@ -1009,7 +998,7 @@ export const ChatInputArea = memo(function ChatInputArea({
     }
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      // Stop recording when the main key (or any modifier for modifier-only hotkeys) is released
+      // Stop recording when the main key (or unknown modifier for modifier-only hotkeys) is released
       if (!isMainKeyRelease(e)) return
 
       // Only stop if we're currently recording
@@ -1639,7 +1628,7 @@ export const ChatInputArea = memo(function ChatInputArea({
                 </div>
 
                 <div className="flex items-center gap-0.5 ml-auto flex-shrink-0">
-                  {/* Hidden file input - accepts any files */}
+                  {/* Hidden file input - accepts unknown files */}
                   <input
                     type="file"
                     ref={fileInputRef}

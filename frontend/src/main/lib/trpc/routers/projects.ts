@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { z } from "zod"
 import { router, publicProcedure } from "../index"
 import { dialog, BrowserWindow, app } from "electron"

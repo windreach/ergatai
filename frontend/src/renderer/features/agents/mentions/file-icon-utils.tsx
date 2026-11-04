@@ -17,7 +17,6 @@ import {
   PythonIcon,
   GoIcon,
   RustIcon,
-  CodeIcon,
   ReactIcon,
   MarkdownInfoIcon,
   MarkdownIcon,
@@ -388,7 +387,9 @@ function CategoryIcon({ className, categoryId }: { className?: string; categoryI
 }
 
 // Cache for category icon wrappers to avoid creating new component references on every call
-const categoryIconCache = new Map<string, ComponentType<{ className?: string }>>()
+import { BoundedCache } from "../../../lib/bounded-cache"
+
+const categoryIconCache = new BoundedCache<string, ComponentType<{ className?: string }>>(100)
 
 function getCategoryIconWrapper(categoryId: string): ComponentType<{ className?: string }> {
   let wrapper = categoryIconCache.get(categoryId)

@@ -8,25 +8,22 @@ import {
   IconCenterPeek,
   IconFullPage,
 } from "@/components/ui/icons"
-import { Kbd } from "@/components/ui/kbd"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
+
+
 import { trpc } from "@/lib/trpc"
 import { preferredEditorAtom } from "@/lib/atoms"
 import { useResolvedHotkeyDisplay } from "@/lib/hotkeys"
 import { APP_META } from "../../../../shared/external-apps"
 import { EDITOR_ICONS } from "@/lib/editor-icons"
+import { OpenInEditorButton } from "./open-in-editor-button"
 import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu"
-import { fileViewerDisplayModeAtom } from "../../agents/atoms"
-import { getFileIconByExtension } from "../../agents/mentions/file-icon-utils"
+import { fileViewerDisplayModeAtom } from "../../agents"
+import { getFileIconByExtension } from "../../agents"
 import { getFileName } from "../utils/file-utils"
 
 const FILE_VIEWER_MODES = [
@@ -129,28 +126,12 @@ export function ImageViewer({
         {/* Right side: Actions */}
         <div className="flex items-center gap-1 flex-shrink-0">
           {/* Open in editor */}
-          <Tooltip delayDuration={500}>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={handleOpenInEditor}
-                className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer rounded-md px-1.5 py-1 hover:bg-accent hover:text-accent-foreground transition-colors"
-              >
-                <span className="hidden @[400px]:inline">Open in</span>
-                {EDITOR_ICONS[preferredEditor] && (
-                  <img
-                    src={EDITOR_ICONS[preferredEditor]}
-                    alt=""
-                    className="h-3.5 w-3.5 flex-shrink-0"
-                  />
-                )}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" showArrow={false}>
-              Open in {editorMeta.label}
-              {openInEditorHotkey && <Kbd className="normal-case font-sans">{openInEditorHotkey}</Kbd>}
-            </TooltipContent>
-          </Tooltip>
+          <OpenInEditorButton
+            onClick={handleOpenInEditor}
+            label={editorMeta.label}
+            iconSrc={EDITOR_ICONS[preferredEditor]}
+            hotkey={openInEditorHotkey}
+          />
         </div>
       </div>
 

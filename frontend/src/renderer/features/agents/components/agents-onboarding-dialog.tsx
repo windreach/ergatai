@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback } from "react"
 import { AnimatePresence, motion } from "motion/react"
 import { createPortal } from "react-dom"
 // Desktop: stub for next/image
-const Image = ({ src, alt, width, height, className, style, ...rest }: any) => <img src={src} alt={alt} width={width} height={height} className={className} style={style} {...rest} />
+const Image = ({ src, alt, width, height, className, style, fill: _fill, ...rest }: React.ImgHTMLAttributes<HTMLImageElement> & { fill?: boolean }) => <img src={src} alt={alt} width={width} height={height} className={className} style={style} {...rest} />
 import { useTheme } from "next-themes"
 import { X } from "lucide-react"
 import { useAtom } from "jotai"

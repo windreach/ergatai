@@ -4,7 +4,7 @@ import { useAtom, type WritableAtom } from "jotai"
 import { AnimatePresence, motion } from "motion/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { Kbd } from "./kbd"
+import { CloseHint } from "./close-hint"
 
 interface ResizableBottomPanelProps {
   isOpen: boolean
@@ -61,7 +61,7 @@ export function ResizableBottomPanel({
       x: tooltipX,
       y: rect.top - 8,
     }
-  }, [tooltipX, currentHeight])
+  }, [tooltipX])
 
   useEffect(() => {
     if (!isOpen && wasOpenRef.current) {
@@ -333,18 +333,7 @@ export function ResizableBottomPanel({
                           handleClose()
                         }}
                       >
-                        <div className="flex items-center gap-1 text-xs">
-                          <span>Close</span>
-                          <span className="text-muted-foreground inline-flex items-center gap-1">
-                            <span>Click</span>
-                            {closeHotkey && (
-                              <>
-                                <span>or</span>
-                                <Kbd>{closeHotkey}</Kbd>
-                              </>
-                            )}
-                          </span>
-                        </div>
+                        <CloseHint closeHotkey={closeHotkey} />
                         <div className="flex items-center gap-1 text-xs">
                           <span>Resize</span>
                           <span className="text-muted-foreground">Drag</span>

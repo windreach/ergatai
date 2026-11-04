@@ -62,8 +62,31 @@ impl ChatService {
     }
 
     /// 删除 Chat（数据库已配置 ON DELETE CASCADE，会自动删除关联的 CollaborationSession 和 Conversation）
+    /// 异步清理关联的 message 表（避免阻塞 API 响应）
     pub fn delete_chat(chat_id: ChatId) -> anyhow::Result<()> {
+        use crate::user_data_db::conversations;
+
+        // 1. 先获取所有 conversation IDs（用于异步清理 message 表）
+        let conversation_ids = match conversations::list_conversation_ids_by_chat(chat_id) {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to list conversation IDs for chat cleanup; proceeding with chat deletion but message tables may not be cleaned up");
+                Vec::new()
+            }
+        };
+
+        // 2. 删除 chat（级联删除 conversations）
         chats::delete(chat_id)?;
+
+        // 3. 入队异步清理任务（删除 message 表）
+        let entity_id = chat_id.to_string();
+        crate::services::deletion_helpers::enqueue_conversation_cleanup(
+            "chat",
+            &entity_id,
+            "cleanup_chat",
+            conversation_ids,
+        );
+
         Ok(())
     }
 

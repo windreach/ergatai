@@ -123,7 +123,7 @@ function PropertyRow({
 export const InfoSection = memo(function InfoSection({
   chatId,
   worktreePath,
-  isExpanded = false,
+  isExpanded: _isExpanded = false,
   remoteInfo,
 }: InfoSectionProps) {
   // Extract folder name from path
@@ -203,7 +203,7 @@ export const InfoSection = memo(function InfoSection({
     }
   }
 
-  const handleOpenSandbox = () => {
+  const _handleOpenSandbox = () => {
     if (remoteInfo?.sandboxId) {
       const sandboxUrl = `https://3003-${remoteInfo.sandboxId}.e2b.app`
       window.desktopApi.openExternal(sandboxUrl)

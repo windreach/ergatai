@@ -24,7 +24,7 @@ export type GroupAgentChatRequest = {
   message?: string  // The actual message content to display in side chat
 }
 
-export const groupAgentChatRequestAtomFamily = atomFamily((chatId: string) =>
+export const groupAgentChatRequestAtomFamily = atomFamily((_chatId: string) =>
   atom<GroupAgentChatRequest | null>(null),
 )
 

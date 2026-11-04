@@ -1,3 +1,4 @@
+ 
 import type { Chat } from "@ai-sdk/react"
 
 /**
@@ -9,8 +10,19 @@ import type { Chat } from "@ai-sdk/react"
 // `UI_MESSAGE extends UIMessage`, where UIMessage.role is strictly 'system' | 'user' | 'assistant'.
 // Ergatai extends this with an 'agent' role for agent-initiated messages, and uses a different
 // MessagePart structure. We cannot satisfy the UIMessage constraint without forking the Chat class.
-// The Chat class is a runtime container that doesn't validate message types, so `any` is safe here.
-const chats = new Map<string, Chat<any>>()
+// The Chat class is a runtime container that doesn't validate message types, so `unknown` is safe here.
+ 
+import { BoundedCache } from "../../../lib/bounded-cache"
+
+const chats = new BoundedCache<string, Chat<any>>(1000, (id, chat) => {
+  try {
+    ;(chat as unknown as { transport?: { cleanup?: () => void } })?.transport?.cleanup?.()
+  } catch (e) {
+    console.error("[AgentChatStore] Cleanup failed:", e)
+  }
+  parentChatIds.delete(id)
+  manuallyAborted.delete(id)
+})
 const parentChatIds = new Map<string, string>() // conversationId → parentChatId (stored at creation time)
 const manuallyAborted = new Map<string, boolean>() // Track if chat was manually stopped
 
@@ -51,14 +63,7 @@ export const agentChatStore = {
   },
 
   clear: () => {
-    for (const chat of chats.values()) {
-      try {
-        // `transport` is a private field on Chat, but we need to call cleanup on clear
-        ;(chat as unknown as { transport?: { cleanup?: () => void } })?.transport?.cleanup?.()
-      } catch (e) {
-        console.error('[AgentChatStore] Cleanup failed:', e)
-      }
-    }
+    // Cleanup is handled by BoundedCache.onEvict during clear().
     chats.clear()
     parentChatIds.clear()
     manuallyAborted.clear()

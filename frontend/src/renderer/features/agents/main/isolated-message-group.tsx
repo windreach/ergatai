@@ -1,6 +1,6 @@
 "use client"
 
-import { createContext, memo, useCallback, useMemo } from "react"
+import { memo, useCallback, useMemo } from "react"
 import { useAtomValue } from "jotai"
 import type { UIMessage } from "@ai-sdk/react"
 import {
@@ -15,9 +15,6 @@ import {
 } from "../stores/message-store"
 import { MemoizedAssistantMessages } from "./messages-list"
 import { AgentMessageItem } from "./agent-message-item"
-import { MemoizedTextPart } from "./memoized-text-part"
-import { GroupAgentMessageHeader } from "../collaboration/group-agent-message-header"
-import { InterAgentRepliesDisclosure } from "./inter-agent-replies-disclosure"
 import {
   CORE_AGENT_OPTIONS,
   getCoreAgentDisplayName,
@@ -34,7 +31,6 @@ import { IconTextUndo } from "../../../components/ui/icons"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip"
 import { cn } from "../../../lib/utils"
 import { useStreamingStatusStore } from "../stores/streaming-status-store"
-import { CopyButton } from "../ui/message-action-buttons"
 
 // Note: ForkContext moved to fork-context.ts for Fast Refresh compatibility.
 import { ForkContext } from "./fork-context"
@@ -290,11 +286,13 @@ export const IsolatedMessageGroup = memo(function IsolatedMessageGroup({
       .map((p: MessagePart) => p.text)
       .join("\n") || ""
 
-  const imageParts =
-    (userMsg?.parts?.filter((p: MessagePart) => p.type === "data-image") as ImagePart[]) || []
+  const imageParts = useMemo(
+    () => (userMsg?.parts?.filter((p: MessagePart) => p.type === "data-image") as ImagePart[]) || [],
+    [userMsg?.parts],
+  )
 
   // Extract text mentions (quote/diff) to render separately above sticky block
-  // NOTE: useMemo must be called before any early returns to follow Rules of Hooks
+  // NOTE: useMemo must be called before unknown early returns to follow Rules of Hooks
   const { textMentions, cleanedText: textContent } = useMemo(
     () => extractTextMentions(rawTextContent),
     [rawTextContent]

@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm"
 import { Copy, Check } from "lucide-react"
 import { useCodeTheme } from "../lib/hooks/use-code-theme"
 import { highlightCode } from "../lib/themes/shiki-theme-loader"
+import DOMPurify from "dompurify"
 import { MermaidBlock } from "./mermaid-block"
 
 // Type for markdown component props
@@ -136,7 +137,7 @@ function CodeBlock({
           tabSize: 2,
         }}
       >
-        <code dangerouslySetInnerHTML={{ __html: htmlContent }} />
+        <code dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(htmlContent) }} />
       </pre>
     </div>
   )
@@ -254,7 +255,7 @@ const sizeStyles: Record<
 
 // Custom code component that uses our theme system
 function createCodeComponent(codeTheme: string, size: MarkdownSize, styles: typeof sizeStyles.md, isStreaming: boolean = false) {
-  return function CodeComponent({ className, children, node, ...props }: MarkdownComponentProps<"code">) {
+  return function CodeComponent({ className, children, node: _node, ..._props }: MarkdownComponentProps<"code">) {
     const match = /language-(\w+)/.exec(className || "")
     const language = match ? match[1] : undefined
     const codeContent = String(children)
@@ -551,7 +552,7 @@ const MemoizedMarkdownBlock = memo(
   function MemoizedMarkdownBlock({
     content,
     size,
-    className,
+    className: _className,
     codeTheme,
   }: {
     content: string
@@ -559,9 +560,6 @@ const MemoizedMarkdownBlock = memo(
     className?: string
     codeTheme: string
   }) {
-    // Don't render empty blocks
-    if (!content.trim()) return null
-
     const styles = sizeStyles[size]
 
     // Memoize components object - critical for preventing re-renders
@@ -685,6 +683,9 @@ const MemoizedMarkdownBlock = memo(
       }),
       [styles, codeTheme, size],
     )
+
+    // Don't render empty blocks
+    if (!content.trim()) return null
 
     return (
       <Streamdown

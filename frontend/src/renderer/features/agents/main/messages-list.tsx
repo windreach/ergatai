@@ -31,7 +31,7 @@ interface MessageStore {
 function createMessageStore(): MessageStore {
   let messages: Message[] = []
   let status = "ready"
-  let listeners = new Set<() => void>()
+  const listeners = new Set<() => void>()
 
   // Store snapshots of message state (not references!) to detect changes
   // Since AI SDK mutates objects in place, we can't compare object references
@@ -89,7 +89,7 @@ function createMessageStore(): MessageStore {
   }
 
   function stabilizeMessages(newMessages: Message[]): Message[] {
-    // Check if any message changed
+    // Check if unknown message changed
     let anyChanged = false
 
     for (const msg of newMessages) {
@@ -294,68 +294,6 @@ interface MessageItemWrapperProps {
   agentIdentity?: { id: string; name: string }
 }
 
-// Hook that only re-renders THIS component when it becomes/stops being the last message
-function useIsLastMessage(messageId: string) {
-  const store = useContext(MessageStoreContext)
-  if (!store) throw new Error("useIsLastMessage must be used within MessageStoreProvider")
-
-  const prevIsLastRef = useRef<boolean>(false)
-
-  const subscribe = useCallback((onStoreChange: () => void) => {
-    return store.subscribe(() => {
-      const lastMsgId = store.messages.length > 0 ? store.messages[store.messages.length - 1]?.id : null
-      const isLast = messageId === lastMsgId
-
-      // Only notify if THIS message's "isLast" status changed
-      if (prevIsLastRef.current !== isLast) {
-        prevIsLastRef.current = isLast
-        onStoreChange()
-      }
-    })
-  }, [store, messageId])
-
-  const getSnapshot = useCallback(() => {
-    const lastMsgId = store.messages.length > 0 ? store.messages[store.messages.length - 1]?.id : null
-    const isLast = messageId === lastMsgId
-    prevIsLastRef.current = isLast
-    return isLast
-  }, [store, messageId])
-
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
-}
-
-// Hook that only re-renders when streaming status changes
-function useIsStreaming() {
-  const store = useContext(MessageStoreContext)
-  if (!store) throw new Error("useIsStreaming must be used within MessageStoreProvider")
-
-  // Cache must be stable and only updated when values actually change
-  const cacheRef = useRef<{ isStreaming: boolean; status: string } | null>(null)
-
-  const subscribe = useCallback((onStoreChange: () => void) => {
-    return store.subscribe(() => {
-      const isStreaming = store.status === "streaming" || store.status === "submitted"
-      if (!cacheRef.current || cacheRef.current.isStreaming !== isStreaming || cacheRef.current.status !== store.status) {
-        cacheRef.current = { isStreaming, status: store.status }
-        onStoreChange()
-      }
-    })
-  }, [store])
-
-  const getSnapshot = useCallback(() => {
-    const isStreaming = store.status === "streaming" || store.status === "submitted"
-    // Return cached value if it matches current state
-    if (cacheRef.current && cacheRef.current.isStreaming === isStreaming && cacheRef.current.status === store.status) {
-      return cacheRef.current
-    }
-    // Create and cache new value
-    cacheRef.current = { isStreaming, status: store.status }
-    return cacheRef.current
-  }, [store])
-
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
-}
-
 // For non-last messages - no streaming subscription needed
 // Subscribes to message via Jotai messageAtomFamily, passes message as prop to AssistantMessageItem
 const NonStreamingMessageItem = memo(function NonStreamingMessageItem({
@@ -439,53 +377,6 @@ const StreamingMessageItem = memo(function StreamingMessageItem({
     />
   )
 })
-
-// Combined hook - get message AND isLast in one subscription to avoid double re-renders
-function useMessageWithLastStatus(messageId: string) {
-  const store = useContext(MessageStoreContext)
-  if (!store) throw new Error("useMessageWithLastStatus must be used within MessageStoreProvider")
-
-  // Track what we last returned to detect changes
-  const lastReturnedRef = useRef<{ message: Message | undefined; isLast: boolean } | null>(null)
-
-  const subscribe = useCallback((onStoreChange: () => void) => {
-    return store.subscribe(() => {
-      const currentMsg = store.messages.find(m => m.id === messageId)
-      const lastMsgId = store.messages.length > 0 ? store.messages[store.messages.length - 1]?.id : null
-      const isLast = messageId === lastMsgId
-
-      const msgChanged = lastReturnedRef.current?.message !== currentMsg
-      const isLastChanged = lastReturnedRef.current?.isLast !== isLast
-
-      // Only notify if message changed OR isLast changed
-      // DO NOT update lastReturnedRef here - only in getSnapshot!
-      if (!lastReturnedRef.current || msgChanged || isLastChanged) {
-        onStoreChange()
-      }
-    })
-  }, [store, messageId])
-
-  const getSnapshot = useCallback(() => {
-    const currentMsg = store.messages.find(m => m.id === messageId)
-    const lastMsgId = store.messages.length > 0 ? store.messages[store.messages.length - 1]?.id : null
-    const isLast = messageId === lastMsgId
-
-    // Return cached object if nothing changed
-    if (
-      lastReturnedRef.current &&
-      lastReturnedRef.current.message === currentMsg &&
-      lastReturnedRef.current.isLast === isLast
-    ) {
-      return lastReturnedRef.current
-    }
-
-    // Create new object and cache it
-    lastReturnedRef.current = { message: currentMsg, isLast }
-    return lastReturnedRef.current
-  }, [store, messageId])
-
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
-}
 
 export const MessageItemWrapper = memo(function MessageItemWrapper({
   messageId,
@@ -974,21 +865,21 @@ export const SimpleIsolatedGroup = memo(function SimpleIsolatedGroup({
   const showMessageJson = useAtomValue(showMessageJsonAtom)
   const isDev = import.meta.env.DEV
 
-  if (!userMsg) return null
-
   // User message data
-  const rawTextContent = userMsg.parts
+  const rawTextContent = userMsg?.parts
     ?.filter((p: MessagePart) => p.type === "text")
     .map((p: MessagePart) => p.text)
     .join("\n") || ""
 
-  const imageParts = userMsg.parts?.filter((p: MessagePart) => p.type === "data-image") || []
+  const imageParts = userMsg?.parts?.filter((p: MessagePart) => p.type === "data-image") || []
 
   // Extract text mentions (quote/diff) to render separately above sticky block
   const { textMentions, cleanedText: textContent } = useMemo(
     () => extractTextMentions(rawTextContent),
     [rawTextContent]
   )
+
+  if (!userMsg) return null
 
   // Show cloning when sandbox is being set up
   const shouldShowCloning =

@@ -370,6 +370,24 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
         "#,
     )?;
 
+    // Deletion queue for batched/async physical cleanup (archive/delete peak shaving)
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS deletion_queue (
+            id INTEGER PRIMARY KEY,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            payload TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_deletion_queue_status ON deletion_queue(status, created_at);
+        "#,
+    )?;
+
     Ok(())
 }
 
@@ -638,7 +656,10 @@ pub struct Message {
 /// Helper function to map a database row to a Message struct.
 /// Used across multiple query functions to avoid code duplication.
 /// NOTE: With per-conversation tables, conversation_id is passed separately.
-pub fn map_row_to_message(conversation_id: ConversationId, row: &rusqlite::Row) -> rusqlite::Result<Message> {
+pub fn map_row_to_message(
+    conversation_id: ConversationId,
+    row: &rusqlite::Row,
+) -> rusqlite::Result<Message> {
     Ok(Message {
         message_id: row.get(0)?,
         conversation_id,
@@ -733,7 +754,10 @@ pub mod workspaces {
         Ok(workspace)
     }
 
-    pub fn list(collaboration_mode: Option<&str>, archived: Option<bool>) -> Result<Vec<Workspace>> {
+    pub fn list(
+        collaboration_mode: Option<&str>,
+        archived: Option<bool>,
+    ) -> Result<Vec<Workspace>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
@@ -1124,10 +1148,12 @@ pub mod chats {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT chat_id, workspace_id, name, collaboration_mode, worktree_path, branch, base_branch, pr_url, pr_number, created_at, updated_at, archived_at
-             FROM chats
-             WHERE ?1 IS NULL OR workspace_id = ?1
-             ORDER BY created_at DESC",
+            "SELECT c.chat_id, c.workspace_id, c.name, c.collaboration_mode, c.worktree_path, c.branch, c.base_branch, c.pr_url, c.pr_number, c.created_at, c.updated_at,
+                    CASE WHEN w.status = 'archived' THEN COALESCE(c.archived_at, w.updated_at) ELSE c.archived_at END AS archived_at
+             FROM chats c
+             LEFT JOIN workspaces w ON c.workspace_id = w.workspace_id
+             WHERE ?1 IS NULL OR c.workspace_id = ?1
+             ORDER BY c.created_at DESC",
         )?;
         let chats = stmt.query_map(params![workspace_id], |row| {
             Ok(Chat {
@@ -1153,8 +1179,11 @@ pub mod chats {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT chat_id, workspace_id, name, collaboration_mode, worktree_path, branch, base_branch, pr_url, pr_number, created_at, updated_at, archived_at
-             FROM chats WHERE chat_id = ?1",
+            "SELECT c.chat_id, c.workspace_id, c.name, c.collaboration_mode, c.worktree_path, c.branch, c.base_branch, c.pr_url, c.pr_number, c.created_at, c.updated_at,
+                    CASE WHEN w.status = 'archived' THEN COALESCE(c.archived_at, w.updated_at) ELSE c.archived_at END AS archived_at
+             FROM chats c
+             LEFT JOIN workspaces w ON c.workspace_id = w.workspace_id
+             WHERE c.chat_id = ?1",
         )?;
 
         let mut rows = stmt.query_map(params![chat_id], |row| {
@@ -1242,32 +1271,134 @@ pub mod chats {
         Ok(())
     }
 
-    pub fn archive_by_workspace(ws_id: WorkspaceId) -> Result<usize> {
+    // ==================== Deletion Queue ====================
+
+    #[derive(Debug, Clone)]
+    pub struct DeletionJob {
+        pub id: i64,
+        pub entity_type: String,
+        pub entity_id: String,
+        pub action: String,
+        pub payload: Option<String>,
+        pub retry_count: i64,
+    }
+
+    pub fn enqueue_deletion(
+        entity_type: &str,
+        entity_id: &str,
+        action: &str,
+        payload: Option<&str>,
+    ) -> Result<i64> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+            .as_secs() as i64;
+        conn.execute(
+            "INSERT INTO deletion_queue (entity_type, entity_id, action, payload, status, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?5)",
+            params![entity_type, entity_id, action, payload, now],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn dequeue_deletions(limit: usize) -> Result<Vec<DeletionJob>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        // Use BEGIN IMMEDIATE to acquire a reserved lock upfront, preventing
+        // other writers from starting. This makes the SELECT + UPDATE atomic,
+        // avoiding race conditions where two workers dequeue the same jobs.
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| {
+            let mut stmt = conn.prepare(
+                "SELECT id, entity_type, entity_id, action, payload, retry_count \
+                 FROM deletion_queue WHERE status = 'pending' \
+                 ORDER BY created_at ASC, id ASC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![limit as i64], |row| {
+                Ok(DeletionJob {
+                    id: row.get(0)?,
+                    entity_type: row.get(1)?,
+                    entity_id: row.get(2)?,
+                    action: row.get(3)?,
+                    payload: row.get(4)?,
+                    retry_count: row.get(5)?,
+                })
+            })?;
+            let mut jobs = Vec::new();
+            for job in rows {
+                jobs.push(job?);
+            }
+            // Mark as processing
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+                .as_secs() as i64;
+            for job in &jobs {
+                conn.execute(
+                    "UPDATE deletion_queue SET status = 'processing', updated_at = ?1 WHERE id = ?2",
+                    params![now, job.id],
+                )?;
+            }
+            Ok(jobs)
+        })();
+        match result {
+            Ok(jobs) => {
+                // If COMMIT fails, the transaction is still open and the connection
+                // is in an inconsistent state. Roll back to release the lock cleanly
+                // rather than leaving the mutex guard to drop inside an open txn.
+                if let Err(commit_err) = conn.execute_batch("COMMIT") {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(commit_err);
+                }
+                Ok(jobs)
+            }
+            Err(e) => {
+                conn.execute_batch("ROLLBACK")?;
+                Err(e)
+            }
+        }
+    }
+
+    /// Reset any jobs stuck in 'processing' state back to 'pending'.
+    /// Called on worker startup to recover from crashes.
+    pub fn reset_stale_processing_jobs() -> Result<usize> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
             .as_secs() as i64;
         let affected = conn.execute(
-            "UPDATE chats SET archived_at = ?1, updated_at = ?1 WHERE workspace_id = ?2 AND archived_at IS NULL",
-            params![now, ws_id],
+            "UPDATE deletion_queue SET status = 'pending', updated_at = ?1 WHERE status = 'processing'",
+            params![now],
         )?;
         Ok(affected)
     }
 
-    pub fn unarchive_by_workspace(ws_id: WorkspaceId) -> Result<usize> {
+    pub fn mark_deletion_done(id: i64) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.execute("DELETE FROM deletion_queue WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn mark_deletion_failed(id: i64, max_retries: i64) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
             .as_secs() as i64;
-        let affected = conn.execute(
-            "UPDATE chats SET archived_at = NULL, updated_at = ?1 WHERE workspace_id = ?2 AND archived_at IS NOT NULL",
-            params![now, ws_id],
+        // Increment retry; if exceeded, mark failed (dead letter)
+        conn.execute(
+            "UPDATE deletion_queue SET retry_count = retry_count + 1, \
+             status = CASE WHEN retry_count + 1 >= ?2 THEN 'failed' ELSE 'pending' END, \
+             updated_at = ?1 WHERE id = ?3",
+            params![now, max_retries, id],
         )?;
-        Ok(affected)
+        Ok(())
     }
 
     pub fn find_by_worktree_path(path: &str) -> Result<Option<Chat>> {
@@ -1544,6 +1675,37 @@ pub mod conversations {
             })
         })?;
         conversations.collect()
+    }
+
+    pub fn list_conversation_ids_by_workspace(
+        workspace_id: WorkspaceId,
+    ) -> Result<Vec<ConversationId>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT c.conversation_id FROM conversations c \
+             JOIN chats ch ON c.chat_id = ch.chat_id \
+             WHERE ch.workspace_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![workspace_id], |row| row.get::<_, ConversationId>(0))?;
+        let mut ids = Vec::new();
+        for id in rows {
+            ids.push(id?);
+        }
+        Ok(ids)
+    }
+
+    pub fn list_conversation_ids_by_chat(chat_id: ChatId) -> Result<Vec<ConversationId>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT conversation_id FROM conversations WHERE chat_id = ?1")?;
+        let rows = stmt.query_map(params![chat_id], |row| row.get::<_, ConversationId>(0))?;
+        let mut ids = Vec::new();
+        for id in rows {
+            ids.push(id?);
+        }
+        Ok(ids)
     }
 
     pub fn list_by_chat(chat_id: ChatId) -> Result<Vec<Conversation>> {
@@ -1962,7 +2124,9 @@ pub mod messages {
             table_name
         ))?;
 
-        let mut rows = stmt.query_map(params![message_id], |row| map_row_to_message(conversation_id, row))?;
+        let mut rows = stmt.query_map(params![message_id], |row| {
+            map_row_to_message(conversation_id, row)
+        })?;
 
         match rows.next() {
             Some(Ok(msg)) => Ok(Some(msg)),
@@ -2089,8 +2253,9 @@ pub mod messages {
              ORDER BY sequence ASC",
             table_name
         ))?;
-        let messages =
-            stmt.query_map(params![after_sequence], |row| map_row_to_message(conversation_id, row))?;
+        let messages = stmt.query_map(params![after_sequence], |row| {
+            map_row_to_message(conversation_id, row)
+        })?;
         messages.collect()
     }
 
@@ -2145,7 +2310,11 @@ pub mod messages {
             )",
             table_name
         );
-        let exists: bool = match conn.query_row(&sql, params![external_message_id, legacy_message_id_i64], |row| row.get(0)) {
+        let exists: bool = match conn.query_row(
+            &sql,
+            params![external_message_id, legacy_message_id_i64],
+            |row| row.get(0),
+        ) {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(error = %e, "message_exists query failed; treating as not exists");
@@ -2177,7 +2346,11 @@ pub mod messages {
             )",
             table_name
         );
-        let message_exists: bool = match conn.query_row(&message_exists_sql, params![external_message_id], |row| row.get(0)) {
+        let message_exists: bool = match conn.query_row(
+            &message_exists_sql,
+            params![external_message_id],
+            |row| row.get(0),
+        ) {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(error = %e, "message_exists query failed; treating as not exists");
@@ -2502,7 +2675,7 @@ pub mod messages {
 
         // First get all conversation_ids for this collaboration session
         let mut stmt = conn.prepare(
-            "SELECT conversation_id FROM conversations WHERE collaboration_session_id = ?1"
+            "SELECT conversation_id FROM conversations WHERE collaboration_session_id = ?1",
         )?;
         let conversation_ids: Vec<ConversationId> = stmt
             .query_map(params![collaboration_session_id], |row| row.get(0))?
@@ -2536,9 +2709,8 @@ pub mod messages {
         let conn = db.lock().unwrap();
 
         // First get all conversation_ids for this chat
-        let mut stmt = conn.prepare(
-            "SELECT conversation_id FROM conversations WHERE chat_id = ?1"
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT conversation_id FROM conversations WHERE chat_id = ?1")?;
         let conversation_ids: Vec<ConversationId> = stmt
             .query_map(params![chat_id], |row| row.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -2848,7 +3020,9 @@ pub mod messages {
 
         let messages = match (limit, offset) {
             (Some(l), Some(o)) => stmt
-                .query_map(params![l, o], |row| map_row_to_message(conversation_id, row))?
+                .query_map(params![l, o], |row| {
+                    map_row_to_message(conversation_id, row)
+                })?
                 .collect::<Result<Vec<_>>>()?,
             (Some(l), None) => stmt
                 .query_map(params![l], |row| map_row_to_message(conversation_id, row))?

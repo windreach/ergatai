@@ -1,15 +1,32 @@
-import type { ChangedFile, GitChangesStatus } from "../../../shared/changes-types";
-import { simpleGit } from "simple-git";
-import { z } from "zod";
-import { publicProcedure, router } from "../trpc";
-import { assertRegisteredWorktree, secureFs } from "./security";
-import { applyNumstatToFiles } from "./utils/apply-numstat";
+import type {
+  ChangedFile,
+  GitChangesStatus
+} from "../../../shared/changes-types";
 import {
-	parseGitLog,
-	parseGitStatus,
-	parseNameStatus,
+  simpleGit
+} from "simple-git";
+import {
+  z
+} from "zod";
+import {
+  publicProcedure,
+  router
+} from "../trpc";
+import {
+  assertRegisteredWorktree,
+  secureFs
+} from "./security";
+import {
+  applyNumstatToFiles
+} from "./utils/apply-numstat";
+import {
+  parseGitLog,
+  parseGitStatus,
+  parseNameStatus
 } from "./utils/parse-status";
-import { gitCache } from "./cache";
+import {
+  gitCache
+} from "./cache";
 
 export const createStatusRouter = () => {
 	return router({
@@ -152,7 +169,7 @@ export const createStatusRouter = () => {
 				try {
 					await assertRegisteredWorktree(input.worktreePath);
 					return true;
-				} catch (error) {
+				} catch {
 					return false;
 				}
 			}),

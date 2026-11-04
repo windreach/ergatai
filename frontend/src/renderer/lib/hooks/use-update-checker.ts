@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useRef } from "react"
 import { useAtom } from "jotai"
-import { updateStateAtom, type UpdateState } from "../atoms"
+import { updateStateAtom } from "../atoms"
 
 // Note: Update checks are now triggered by window focus in main process (auto-updater.ts)
 // This hook only handles events and provides actions

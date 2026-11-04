@@ -8,6 +8,7 @@ import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areToolPropsEqual } from "./agent-tool-utils"
 import { cn } from "../../../lib/utils"
 import { highlightCode } from "../../../lib/themes/shiki-theme-loader"
+import DOMPurify from "dompurify"
 import { useCodeTheme } from "../../../lib/hooks/use-code-theme"
 
 import type { MessagePart } from "../stores/message-store"
@@ -183,13 +184,10 @@ function formatOutputForDisplay(output: unknown): string {
  * Removes script tags and event handlers while preserving safe formatting tags.
  */
 function sanitizeHtml(html: string): string {
-  return html
-    // Remove script tags and their content
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
-    // Remove event handlers (onclick, onerror, etc.)
-    .replace(/\son\w+\s*=\s*"[^"]*"/gi, "")
-    .replace(/\son\w+\s*=\s*'[^']*'/gi, "")
-    .replace(/\son\w+\s*=\s*[^\s>]+/gi, "")
+  // Use DOMPurify for robust XSS protection while preserving Shiki's formatting.
+  return DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true },
+  })
 }
 
 /** Highlighted JSON code block using shiki */

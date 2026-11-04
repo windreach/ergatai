@@ -44,14 +44,14 @@ export function TRPCProvider({ children }: TRPCProviderProps) {
     // The test router is also conditionally registered (see routers/index.ts),
     // so even if window.trpc is accessed in production, test.* procedures won't exist.
     if (typeof window !== "undefined") {
-      const isTestMode = (window as any).desktopApi?.isTestMode === true
+      const isTestMode = (window as { desktopApi?: { isTestMode?: boolean } }).desktopApi?.isTestMode === true
       if (isTestMode) {
         // Expose vanilla proxy client for e2e tests
-        ;(window as any).trpc = vanillaTrpcClient
+        ;(window as { trpc?: unknown }).trpc = vanillaTrpcClient
       }
       // Debug-only: expose for DevTools console access (dev builds only)
       if (process.env.NODE_ENV === "development") {
-        ;(window as any).trpcClient = client
+        ;(window as { trpcClient?: unknown }).trpcClient = client
       }
     }
     return client

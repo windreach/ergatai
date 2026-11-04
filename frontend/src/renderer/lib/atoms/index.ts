@@ -1,7 +1,7 @@
 import { atom } from "jotai"
 import { atomFamily, atomWithStorage } from "jotai/utils"
 import type { SyncStorage } from "jotai/vanilla/utils/atomWithStorage"
-import { desktopViewAtom as _desktopViewAtom } from "../../features/agents/atoms"
+import { desktopViewAtom as _desktopViewAtom } from "../../features/agents"
 
 const ERGATAI_SESSION_INFO_KEY = "ergatai-session-info"
 const LEGACY_SESSION_INFO_KEY = "21st-session-info"
@@ -62,7 +62,6 @@ export {
   // Diff atoms
   agentsDiffSidebarWidthAtom,
   agentsChangesPanelWidthAtom,
-  agentsDiffSidebarOpenAtom,
   agentsFocusedDiffFileAtom,
   filteredDiffFilesAtom,
   conversationFilesAtom,
@@ -109,7 +108,7 @@ export {
 
   desktopViewAtom,
   type DesktopView,
-} from "../../features/agents/atoms"
+} from "../../features/agents"
 
 // ============================================
 // TEAM ATOMS (unique to lib/atoms)
@@ -553,7 +552,7 @@ export const autoAdvanceTargetAtom = atomWithStorage<AutoAdvanceTarget>(
 // Preferences - Default Agent Mode
 // Controls what mode new chats/conversations start in (Plan = read-only, Agent = can edit)
 // Re-using AgentMode type from features/agents/atoms
-import { type AgentMode as AgentModeType } from "../../features/agents/atoms"
+import { type AgentMode as AgentModeType } from "../../features/agents"
 
 // Migration: convert old isPlanMode boolean to new defaultAgentMode string
 // This runs once when the module loads
@@ -628,9 +627,9 @@ export type VSCodeFullTheme = {
   name: string
   type: "light" | "dark"
   colors: Record<string, string> // UI and terminal colors
-  tokenColors?: any[] // Syntax highlighting rules
+  tokenColors?: Array<{ name?: string; scope?: string | string[]; settings?: { foreground?: string; background?: string; fontStyle?: string } }> // Syntax highlighting rules
   semanticHighlighting?: boolean // Enable semantic highlighting
-  semanticTokenColors?: Record<string, any> // Semantic token color overrides
+  semanticTokenColors?: Record<string, unknown> // Semantic token color overrides
   source: "builtin" | "imported" | "discovered"
   path?: string // File path for imported/discovered themes
 }
@@ -710,7 +709,7 @@ export const importedThemesAtom = atomWithStorage<VSCodeFullTheme[]>(
  * All available full themes (built-in + imported + discovered)
  * This is a derived atom that combines all theme sources
  */
-export const allFullThemesAtom = atom<VSCodeFullTheme[]>((get) => {
+export const allFullThemesAtom = atom<VSCodeFullTheme[]>((_get) => {
   // This will be populated by the theme provider
   // For now, return empty - will be set imperatively
   return []

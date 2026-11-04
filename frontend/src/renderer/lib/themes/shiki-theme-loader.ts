@@ -2,6 +2,7 @@ import * as shiki from "shiki"
 import { isBuiltinTheme } from "../vscode-themes"
 import { getBuiltinThemeById } from "./builtin-themes"
 import type { VSCodeFullTheme } from "../atoms"
+import { BoundedCache } from "../bounded-cache"
 
 /**
  * Shared Shiki highlighter instance
@@ -126,7 +127,7 @@ export async function getHighlighter(): Promise<shiki.Highlighter> {
 }
 
 // Cache for full themes (from the new full theme system)
-const fullThemesCache = new Map<string, any>()
+const fullThemesCache = new BoundedCache<string, unknown>(100)
 
 /**
  * Load a full VS Code theme into Shiki
@@ -149,7 +150,7 @@ export async function loadFullTheme(theme: VSCodeFullTheme): Promise<void> {
       tokenColors: theme.tokenColors || [],
     }
 
-    await highlighter.loadTheme(shikiTheme)
+    await highlighter.loadTheme(shikiTheme as shiki.ThemeRegistration)
     fullThemesCache.set(theme.id, shikiTheme)
   } catch (error) {
     console.error(`Failed to load full theme ${theme.id}:`, error)
@@ -234,7 +235,7 @@ export async function ensureThemeLoaded(themeId: string): Promise<void> {
 /**
  * Check if a theme is available (loaded or can be loaded)
  */
-function isThemeAvailable(themeId: string): boolean {
+function _isThemeAvailable(themeId: string): boolean {
   return (
     isShikiBundledTheme(themeId) ||
     fullThemesCache.has(themeId) ||

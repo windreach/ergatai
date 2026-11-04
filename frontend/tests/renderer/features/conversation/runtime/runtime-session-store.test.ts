@@ -591,3 +591,95 @@ describe("RuntimeSessionStore", () => {
     })
   })
 })
+
+describe("Cached public state", () => {
+  it("returns the same snapshot reference until a mutation occurs", () => {
+    const store = getRuntimeSessionStore()
+    store.ensureSession("conv-cache")
+
+    const first = store.getRuntimeState("conv-cache")
+    const second = store.getRuntimeState("conv-cache")
+
+    expect(second).toBe(first)
+  })
+
+  it("returns a new snapshot reference after a mutation", () => {
+    const store = getRuntimeSessionStore()
+    store.ensureSession("conv-cache")
+
+    const before = store.getRuntimeState("conv-cache")
+    store.setStatus("conv-cache", "streaming")
+    const after = store.getRuntimeState("conv-cache")
+
+    expect(after).not.toBe(before)
+    expect(after?.status).toBe("streaming")
+  })
+
+  it("returns a new snapshot reference after message ingestion", () => {
+    const store = getRuntimeSessionStore()
+    store.ensureSession("conv-cache")
+
+    const before = store.getRuntimeState("conv-cache")
+    store.setPersistedMessages("conv-cache", [
+      { id: "m1", role: "assistant", parts: [{ type: "text", text: "hi" }] } as Message,
+    ])
+    const after = store.getRuntimeState("conv-cache")
+
+    expect(after).not.toBe(before)
+    expect(after?.visibleMessages).toHaveLength(1)
+  })
+})
+
+describe("Persisted snapshot staleness guard", () => {
+  it("ignores a shorter persisted snapshot that is an identical prefix", () => {
+    const store = getRuntimeSessionStore()
+    store.ensureSession("conv-stale")
+
+    const m1 = {
+      id: "m1",
+      role: "assistant",
+      parts: [{ type: "text", text: "a" }],
+      metadata: {},
+      sequence: 1,
+    } as Message
+    const m2 = {
+      id: "m2",
+      role: "assistant",
+      parts: [{ type: "text", text: "b" }],
+      metadata: {},
+      sequence: 2,
+    } as Message
+
+    store.setPersistedMessages("conv-stale", [m1, m2])
+    store.setPersistedMessages("conv-stale", [m1])
+
+    const state = store.getRuntimeState("conv-stale")
+    expect(state?.visibleMessages).toHaveLength(2)
+  })
+
+  it("applies a shorter persisted snapshot when content changed", () => {
+    const store = getRuntimeSessionStore()
+    store.ensureSession("conv-stale")
+
+    const m1 = {
+      id: "m1",
+      role: "assistant",
+      parts: [{ type: "text", text: "a" }],
+      sequence: 1,
+    } as Message
+    const m1Updated = {
+      id: "m1",
+      role: "assistant",
+      parts: [{ type: "text", text: "a-updated" }],
+      metadata: {},
+      sequence: 1,
+    } as Message
+
+    store.setPersistedMessages("conv-stale", [m1])
+    store.setPersistedMessages("conv-stale", [m1Updated])
+
+    const state = store.getRuntimeState("conv-stale")
+    expect(state?.visibleMessages).toHaveLength(1)
+    expect(state?.visibleMessages[0]?.parts?.[0]).toMatchObject({ text: "a-updated" })
+  })
+})

@@ -6,7 +6,7 @@ interface UseKeyboardStopProps {
   isStreaming: boolean
   conversationId: string
   stop: () => Promise<void>
-  displayQuestions: any
+  displayQuestions: unknown
   handleQuestionsSkip: () => Promise<void>
 }
 
@@ -47,7 +47,7 @@ export function useKeyboardStop({
           '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [data-radix-popper-content-wrapper], [data-state="open"]',
         )
 
-        // Also check if any dialog/modal is open anywhere in the document (not just at event target)
+        // Also check if unknown dialog/modal is open anywhere in the document (not just at event target)
         // This prevents stopping stream when settings dialog is open but not focused
         const hasOpenDialog = document.querySelector(
           '[role="dialog"][aria-modal="true"], [data-modal="agents-settings"]',

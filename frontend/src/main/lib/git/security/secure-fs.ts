@@ -2,12 +2,10 @@ import type { Stats } from "node:fs";
 import {
 	lstat,
 	open,
-	readFile,
 	readlink,
 	realpath,
 	rm,
 	stat,
-	writeFile,
 } from "node:fs/promises";
 import { O_NOFOLLOW, O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC } from "node:constants";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -61,9 +59,9 @@ function isPathWithinWorktree(
  *
  * This function walks up the directory tree to find the first existing
  * ancestor and validates it. It also detects dangling symlinks by checking
- * if any component is a symlink pointing outside the worktree.
+ * if unknown component is a symlink pointing outside the worktree.
  *
- * @throws PathValidationError if any ancestor escapes the worktree
+ * @throws PathValidationError if unknown ancestor escapes the worktree
  */
 async function assertParentInWorktree(
 	worktreePath: string,

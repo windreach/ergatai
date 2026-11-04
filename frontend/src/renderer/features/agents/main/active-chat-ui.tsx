@@ -2,9 +2,7 @@
 
 import {
   CheckIcon,
-  CollapseIcon,
   CopyIcon,
-  ExpandIcon,
 } from "../../../components/ui/icons"
 import { Kbd } from "../../../components/ui/kbd"
 import {
@@ -14,10 +12,8 @@ import {
 } from "../../../components/ui/tooltip"
 import { cn } from "../../../lib/utils"
 import { useHaptic } from "../hooks/use-haptic"
-import {
-  ArrowDown,
-  ListTree,
-} from "lucide-react"
+import { CollapsibleStepsHeader } from "../components/collapsible-steps-header"
+import { ArrowDown } from "lucide-react"
 import { AnimatePresence, motion } from "motion/react"
 import {
   memo,
@@ -36,7 +32,7 @@ export const CodexIcon = (props: React.SVGProps<SVGSVGElement>) => (
 // Copy button component with tooltip feedback (matches project style)
 export function CopyButton({
   onCopy,
-  isMobile = false,
+  isMobile: _isMobile = false,
 }: {
   onCopy: () => void
   isMobile?: boolean
@@ -79,7 +75,7 @@ export function CopyButton({
 export const ScrollToBottomButton = memo(function ScrollToBottomButton({
   containerRef,
   onScrollToBottom,
-  hasStackedCards = false,
+  hasStackedCards: _hasStackedCards = false,
   conversationId,
   isActive = true,
   isSplitPane = false,
@@ -213,40 +209,13 @@ export function CollapsibleSteps({
   return (
     <div className="mb-2" data-collapsible-steps="true">
       {/* Header row - styled like AgentToolCall with expand icon on right */}
-      <div
-        className="flex items-center justify-between rounded-md py-0.5 px-2 cursor-pointer hover:bg-muted/50 transition-colors"
-        onClick={() => setIsExpanded(!isExpanded)}
-      >
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <ListTree className="w-3.5 h-3.5 flex-shrink-0" />
-          <span className="font-medium whitespace-nowrap">
-            {stepsCount} {stepsCount === 1 ? "step" : "steps"}
-          </span>
-        </div>
-        <button
-          className="p-1 rounded-md hover:bg-accent transition-[background-color,transform] duration-150 ease-out active:scale-95"
-          onClick={(e) => {
-            e.stopPropagation()
-            setIsExpanded(!isExpanded)
-          }}
-        >
-          <div className="relative w-4 h-4">
-            <ExpandIcon
-              className={cn(
-                "absolute inset-0 w-4 h-4 text-muted-foreground transition-[opacity,transform] duration-200 ease-out",
-                isExpanded ? "opacity-0 scale-75" : "opacity-100 scale-100",
-              )}
-            />
-            <CollapseIcon
-              className={cn(
-                "absolute inset-0 w-4 h-4 text-muted-foreground transition-[opacity,transform] duration-200 ease-out",
-                isExpanded ? "opacity-100 scale-100" : "opacity-0 scale-75",
-              )}
-            />
-          </div>
-        </button>
-      </div>
+      <CollapsibleStepsHeader
+        stepsCount={stepsCount}
+        isExpanded={isExpanded}
+        onToggle={() => setIsExpanded(!isExpanded)}
+      />
       {isExpanded && children}
     </div>
   )
 }
+

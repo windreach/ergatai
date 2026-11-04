@@ -1,6 +1,16 @@
-import { app } from "electron"
-import { join } from "path"
-import { appendFile, mkdir, stat, readdir, unlink } from "fs/promises"
+import {
+  app
+} from "electron"
+import {
+  join
+} from "path"
+import {
+  appendFile,
+  mkdir,
+  stat,
+  readdir,
+  unlink
+} from "fs/promises"
 
 // Check if logging is enabled (lazy check after app is ready)
 function isEnabled(): boolean {
@@ -90,7 +100,7 @@ export async function logRawClaudeMessage(
     const dir = await ensureLogsDir()
 
     // Create new file for new session OR rotate if current file is too large
-    const previousSessionId = currentSessionId
+    const _previousSessionId = currentSessionId
     const needsNewFile =
       sessionId !== currentSessionId ||
       (currentLogFile && (await shouldRotateLog(currentLogFile)))

@@ -43,7 +43,7 @@ class WindowManager {
     window.on("closed", () => {
       // Cleanup git watcher subscriptions for this window to prevent memory leaks
       cleanupWindowSubscriptions(electronId)
-      // Release any chat ownership held by this window
+      // Release unknown chat ownership held by this window
       this.releaseAllChats(electronId)
 
       this.windows.delete(electronId)
@@ -204,7 +204,7 @@ class WindowManager {
   }
 
   /**
-   * Get the electron window ID that owns a chat, if any.
+   * Get the electron window ID that owns a chat, if unknown.
    */
   getChatOwner(chatId: string): number | undefined {
     return this.chatOwnership.get(chatId)

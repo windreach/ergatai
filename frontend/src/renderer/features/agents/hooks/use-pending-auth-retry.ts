@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react"
-import { getMessageCorrelationService } from "@/features/conversation/runtime/message-correlation-service"
+import { getMessageCorrelationService } from "@/features/conversation"
 
 interface PendingAuthRetryMessage {
   conversationId: string
@@ -94,7 +94,7 @@ export function usePendingAuthRetry({
         try {
           const message = await getMessageCorrelationService().createOptimisticMessage({
             role: "user",
-            parts: parts as any,
+            parts: parts,
           })
           await sendMessage(message as MessageParts)
         } catch (error) {

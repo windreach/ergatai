@@ -69,7 +69,7 @@ const WorkspaceItem = memo(({
 
   const archiveMutation = trpc.ergatai.archiveManagedWorkspace.useMutation({
     onSuccess: () => {
-      toast.success("Workspace archived")
+      toast.success("Workspace archived (cleanup runs in background)")
       onWorkspaceDeleted?.(workspace.id)
       void utils.ergatai.listManagedWorkspaces.invalidate()
       void utils.ergatai.listArchivedWorkspaces.invalidate()
@@ -81,7 +81,7 @@ const WorkspaceItem = memo(({
 
   const deleteMutation = trpc.ergatai.deleteManagedWorkspace.useMutation({
     onSuccess: () => {
-      toast.success("Workspace deleted")
+      toast.success("Workspace deleted (cleanup runs in background)")
       setDeleteDialogOpen(false)
       onWorkspaceDeleted?.(workspace.id)
       void utils.ergatai.listManagedWorkspaces.invalidate()
