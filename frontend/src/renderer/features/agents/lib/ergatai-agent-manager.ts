@@ -23,7 +23,6 @@ export interface ErgataiAgent {
   workspace_id: string
   state: string
   task_id?: string
-  mcp_agent_id?: string
   is_alive: boolean
   is_idle: boolean
   is_processing: boolean

@@ -112,9 +112,9 @@ export const KanbanCard = memo(function KanbanCard({
                     {hasPendingQuestion ? (
                       <motion.div
                         key="question"
-                        initial={{ opacity: 0, scale: 0.5 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.5 }}
+                        initial={{ opacity: 0, transform: "scale(0.5)" }}
+                        animate={{ opacity: 1, transform: "scale(1)" }}
+                        exit={{ opacity: 0, transform: "scale(0.5)" }}
                         transition={{ duration: 0.15 }}
                       >
                         <QuestionIcon className="w-2.5 h-2.5 text-blue-500" />
@@ -122,9 +122,9 @@ export const KanbanCard = memo(function KanbanCard({
                     ) : isLoading ? (
                       <motion.div
                         key="loading"
-                        initial={{ opacity: 0, scale: 0.5 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.5 }}
+                        initial={{ opacity: 0, transform: "scale(0.5)" }}
+                        animate={{ opacity: 1, transform: "scale(1)" }}
+                        exit={{ opacity: 0, transform: "scale(0.5)" }}
                         transition={{ duration: 0.15 }}
                       >
                         <LoadingDot isLoading={true} className="w-2.5 h-2.5 text-muted-foreground" />
@@ -132,18 +132,18 @@ export const KanbanCard = memo(function KanbanCard({
                     ) : hasPendingPlan ? (
                       <motion.div
                         key="plan"
-                        initial={{ opacity: 0, scale: 0.5 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.5 }}
+                        initial={{ opacity: 0, transform: "scale(0.5)" }}
+                        animate={{ opacity: 1, transform: "scale(1)" }}
+                        exit={{ opacity: 0, transform: "scale(0.5)" }}
                         transition={{ duration: 0.15 }}
                         className="w-1.5 h-1.5 rounded-full bg-amber-500"
                       />
                     ) : hasUnseenChanges ? (
                       <motion.div
                         key="unseen"
-                        initial={{ opacity: 0, scale: 0.5 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.5 }}
+                        initial={{ opacity: 0, transform: "scale(0.5)" }}
+                        animate={{ opacity: 1, transform: "scale(1)" }}
+                        exit={{ opacity: 0, transform: "scale(0.5)" }}
                         transition={{ duration: 0.15 }}
                       >
                         <LoadingDot isLoading={false} className="w-2.5 h-2.5 text-muted-foreground" />
@@ -151,9 +151,9 @@ export const KanbanCard = memo(function KanbanCard({
                     ) : card.isPinned ? (
                       <motion.div
                         key="pinned"
-                        initial={{ opacity: 0, scale: 0.5 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.5 }}
+                        initial={{ opacity: 0, transform: "scale(0.5)" }}
+                        animate={{ opacity: 1, transform: "scale(1)" }}
+                        exit={{ opacity: 0, transform: "scale(0.5)" }}
                         transition={{ duration: 0.15 }}
                       >
                         <Pin className="w-2.5 h-2.5 text-muted-foreground/60" />

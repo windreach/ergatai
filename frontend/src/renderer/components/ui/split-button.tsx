@@ -57,7 +57,7 @@ export function SplitButton({
 	}
 
 	return (
-		<div className="inline-flex -space-x-px divide-x divide-primary-foreground/30 rounded-lg shadow-sm shadow-black/5">
+		<div className="inline-flex -space-x-px divide-x divide-primary-foreground/30 rounded-lg shadow-md">
 			{/* Main action button */}
 			<Button
 				variant={variant}

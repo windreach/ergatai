@@ -121,15 +121,15 @@ export function AgentsRenameConversationDialog({
           {/* Main Dialog */}
           <div className="fixed top-[50%] left-[50%] translate-x-[-50%] translate-y-[-50%] z-[46] pointer-events-none">
             <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
+              initial={{ transform: "scale(0.95)", opacity: 0 }}
+              animate={{ transform: "scale(1)", opacity: 1 }}
+              exit={{ transform: "scale(0.95)", opacity: 0 }}
               transition={{ duration: 0.2, ease: EASING_CURVE }}
               onAnimationComplete={handleAnimationComplete}
               className="w-[90vw] max-w-[400px] pointer-events-auto"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="bg-background rounded-2xl border shadow-2xl overflow-hidden" data-canvas-dialog>
+              <div className="bg-background rounded-2xl shadow-2xl overflow-hidden" data-canvas-dialog>
                 <div className="p-6">
                   <h2 className="text-xl font-semibold mb-4">
                     Rename conversation

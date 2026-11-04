@@ -34,7 +34,6 @@ export interface AgentInfoResponse {
   state: string
   lifecycle_state: string
   task_id: string | null
-  mcp_agent_id: string | null
   is_alive: boolean
   is_idle: boolean
   is_processing: boolean
@@ -138,6 +137,7 @@ export type CoreAgentId =
   | "openclaw"
 
 export interface CoreAgentOption {
+  /** Profile-level id (e.g. "claude-code"). NOT a runtime agent_id. */
   id: CoreAgentId
   name: string
   description?: string

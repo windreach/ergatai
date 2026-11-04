@@ -35,6 +35,16 @@ export function parsePersistedMessagesByConversation(
       }
     }
 
+    // Agent-to-agent response messages are rendered by
+    // InterAgentRepliesDisclosure, not inline in the main chat.
+    parsedMessages = parsedMessages.filter((message) => {
+      const candidate = message as { messageType?: unknown; metadata?: unknown } | null
+      const metadata = candidate?.metadata as { messageType?: unknown } | null
+      const messageType =
+        candidate?.messageType ?? metadata?.messageType
+      return messageType !== "response"
+    })
+
     messagesById.set(conversation.id, parsedMessages)
   }
 

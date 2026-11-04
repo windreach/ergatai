@@ -99,6 +99,19 @@ if [[ "$backend_ready" != true ]]; then
   exit 1
 fi
 
+# Electron's setuid sandbox helper needs root ownership/mode 4755. In
+# containers or unprivileged environments it is usually not configured, so
+# fall back to --no-sandbox instead of failing to launch.
+SANDBOX_HELPER="$FRONTEND_DIR/node_modules/electron/dist/chrome-sandbox"
+if [ ! -u "$SANDBOX_HELPER" ] || [ "$(stat -c %u "$SANDBOX_HELPER" 2>/dev/null || echo 1)" != "0" ]; then
+  export NO_SANDBOX=1
+fi
+
+# Dev builds run more reliably with software rendering; avoids GPU process
+# crashes on machines/containers without fully working GPU drivers (e.g.
+# missing NVIDIA VA-API support).
+export ELECTRON_DISABLE_GPU=1
+
 echo "── Starting frontend (Electron dev) ──"
 cd "$FRONTEND_DIR"
 bun run dev:frontend >> "$FRONTEND_LOG" 2>&1 &

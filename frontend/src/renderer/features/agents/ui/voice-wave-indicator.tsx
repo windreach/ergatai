@@ -30,9 +30,9 @@ export const VoiceWaveIndicator = memo(function VoiceWaveIndicator({
 
   useEffect(() => {
     if (!isRecording) {
-      // Reset bar heights when not recording
+      // Reset bar scales when not recording
       barsRef.current.forEach((bar) => {
-        if (bar) bar.style.height = `${BAR_RESET_HEIGHT}%`
+        if (bar) bar.style.transform = `scaleY(${BAR_RESET_HEIGHT / 100})`
       })
       return
     }
@@ -52,7 +52,8 @@ export const VoiceWaveIndicator = memo(function VoiceWaveIndicator({
       const levelHeight = audioLevel * (BAR_MAX_HEIGHT - BAR_BASE_HEIGHT) * centerFactor * randomVariation
       const finalHeight = BAR_BASE_HEIGHT + levelHeight
 
-      bar.style.height = `${finalHeight}%`
+      // Use scaleY transform instead of height for GPU-accelerated animation
+      bar.style.transform = `scaleY(${finalHeight / 100})`
     })
   }, [isRecording, audioLevel])
 
@@ -75,8 +76,8 @@ export const VoiceWaveIndicator = memo(function VoiceWaveIndicator({
               barsRef.current[i] = null
             }
           }}
-          className="w-[3px] bg-foreground rounded-full transition-[height] duration-75 ease-out"
-          style={{ height: `${BAR_RESET_HEIGHT}%` }}
+          className="h-full w-[3px] origin-bottom bg-foreground rounded-full transition-transform duration-75 ease-out"
+          style={{ transform: `scaleY(${BAR_RESET_HEIGHT / 100})` }}
         />
       ))}
     </div>

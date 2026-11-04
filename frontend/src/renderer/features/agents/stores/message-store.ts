@@ -60,6 +60,10 @@ export interface Message {
   createdAt?: Date
   /** Local sequence number for stable ordering (added by runtime) */
   sequence?: number
+  /** Persisted projection kind (e.g. canonical or side_copy). */
+  projectionKind?: string | null
+  /** Inter-agent message type (request/response/broadcast). */
+  messageType?: string | null
 }
 
 // ============================================================================
@@ -998,8 +1002,16 @@ export const syncMessagesWithStatusAtom = atom(
     // and should not appear in the main chat message list (avoid duplicate rendering)
     const newIds = messages
       .filter((m) => {
-        const projectionKind = (m.metadata as Record<string, unknown> | undefined)?.projectionKind
-        return projectionKind !== PROJECTION_KINDS.SIDE_COPY
+        // Projection kind is stored either as a dedicated DB/API field or in
+        // metadata, depending on the persistence path. Treat both shapes the
+        // same so side-copy replies remain attached to their send_message
+        // tool call instead of rendering inline.
+        const metadata = m.metadata as Record<string, unknown> | undefined
+        const isSideCopy =
+          m.projectionKind === PROJECTION_KINDS.SIDE_COPY ||
+          metadata?.projectionKind === PROJECTION_KINDS.SIDE_COPY ||
+          m.messageType === "response"
+        return !isSideCopy
       })
       .map((m) => m.id)
     const newRoles = new Map<string, MessageRole>()

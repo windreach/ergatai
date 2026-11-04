@@ -306,6 +306,8 @@ export function AgentImageItem({
                 src={currentImage.url}
                 alt={currentImage.filename}
                 className="max-w-[90vw] max-h-[85vh] object-contain"
+                width={800}
+                height={600}
                 onClick={(e) => e.stopPropagation()}
               />
             </ContextMenuTrigger>

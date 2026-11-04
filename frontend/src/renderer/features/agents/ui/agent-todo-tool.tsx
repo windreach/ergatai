@@ -715,7 +715,7 @@ export const AgentTodoTool = memo(function AgentTodoTool({
       </div>
 
       {/* BOTTOM BLOCK - Current task + progress (expandable) */}
-      <div className="rounded-b-lg border border-border bg-muted/20 shadow-xl shadow-background">
+      <div className="rounded-b-lg bg-muted/20 shadow-xl shadow-background">
         {/* Collapsed view - progress circle + current task + count */}
         {!isExpanded && (
           <div

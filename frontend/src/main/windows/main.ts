@@ -494,13 +494,18 @@ export function createWindow(options?: { chatId?: string; conversationId?: strin
 
   // Show window when ready
   window.on("ready-to-show", () => {
-    console.log("[Main] Window", window.id, "ready to show")
     // Start with traffic lights hidden - the renderer will show them
     // after hydration based on the persisted sidebar state
     if (process.platform === "darwin") {
       window.setWindowButtonVisibility(false)
     }
     window.show()
+    // Only center if no saved bounds exist (first launch or reset)
+    if (!window.getBounds().x && !window.getBounds().y) {
+      window.center()
+    }
+    window.focus()
+    window.moveTop()
   })
 
   // Emit fullscreen change events and manage traffic lights
@@ -638,6 +643,10 @@ export function createWindow(options?: { chatId?: string; conversationId?: strin
   // Log page load - traffic light visibility is managed by the renderer
   window.webContents.on("did-finish-load", () => {
     console.log("[Main] Page finished loading in window", window.id)
+    if (!window.isVisible()) {
+      window.show()
+    }
+    window.focus()
   })
   window.webContents.on(
     "did-fail-load",

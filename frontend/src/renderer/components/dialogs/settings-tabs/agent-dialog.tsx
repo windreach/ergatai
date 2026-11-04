@@ -164,11 +164,11 @@ export function AgentDialog({ open, onOpenChange, agent, onSuccess }: AgentDialo
           {/* Dialog */}
           <div className="fixed top-[50%] left-[50%] translate-x-[-50%] translate-y-[-50%] z-[65]">
             <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
+              initial={{ transform: "scale(0.95)", opacity: 0 }}
+              animate={{ transform: "scale(1)", opacity: 1 }}
+              exit={{ transform: "scale(0.95)", opacity: 0 }}
               transition={{ duration: 0.2 }}
-              className="w-[90vw] max-w-[600px] max-h-[85vh] flex flex-col rounded-xl bg-background border border-border shadow-2xl overflow-hidden"
+              className="w-[90vw] max-w-[600px] max-h-[85vh] flex flex-col rounded-xl bg-background shadow-2xl overflow-hidden"
               role="dialog"
               aria-modal="true"
             >

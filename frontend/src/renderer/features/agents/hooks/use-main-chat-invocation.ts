@@ -75,7 +75,8 @@ export interface ChatInstanceAPI {
 export function useMainChatInvocation({
   conversation,
   chatId,
-  agentId,
+  resolverAgentId,
+  stopAgentId,
   isActive: _isActive = true,
   persistedMessages,
   runtimeMessages = [],
@@ -84,7 +85,9 @@ export function useMainChatInvocation({
 }: {
   conversation: ChatConversation & { messages?: RawMessage[] }
   chatId: string
-  agentId?: string | null
+  resolverAgentId?: string | null
+  /** Agent ID used only for backend cancel on stop; defaults to resolverAgentId */
+  stopAgentId?: string | null
   isActive?: boolean
   /** Durable messages from the chat snapshot, separate from local streaming. */
   persistedMessages?: RawMessage[]
@@ -255,8 +258,10 @@ export function useMainChatInvocation({
       },
       stop: async () => {
         // Delegate to existing Chat instance
+        // IMPORTANT: await the stop() call to ensure the stream is fully stopped
+        // before returning to the caller (conversation-invocation-service)
         if (existingChat.stop) {
-          existingChat.stop()
+          await existingChat.stop()
         }
       },
       subscribe: (listener: (state: AdapterState) => void) => {
@@ -301,7 +306,7 @@ export function useMainChatInvocation({
             chatId,
             conversationId: runtimeConversationId,
             backendConversationId: conversation.backendConversationId,
-            agentId,
+            agentId: resolverAgentId,
             source: "main",
           },
           role: "user",
@@ -313,7 +318,7 @@ export function useMainChatInvocation({
         throw error
       }
     },
-    [invocation, chatId, runtimeConversationId, conversation.backendConversationId, agentId],
+    [invocation, chatId, runtimeConversationId, conversation.backendConversationId, resolverAgentId],
   )
 
   // Wrap send from queue to use new service
@@ -338,7 +343,7 @@ export function useMainChatInvocation({
           chatId,
           conversationId: runtimeConversationId,
           backendConversationId: conversation.backendConversationId,
-          agentId,
+          agentId: resolverAgentId,
           source: "main",
         },
         role: "user",
@@ -346,7 +351,7 @@ export function useMainChatInvocation({
         transportOverrides: undefined,
       })
     },
-    [invocation, chatId, runtimeConversationId, conversation.backendConversationId, agentId],
+    [invocation, chatId, runtimeConversationId, conversation.backendConversationId, resolverAgentId],
   )
 
   // Phase 17: Service-based enqueue function for useMessageSending
@@ -434,7 +439,7 @@ export function useMainChatInvocation({
           chatId,
           conversationId: runtimeConversationId,
           backendConversationId: conversation.backendConversationId,
-          agentId,
+          agentId: resolverAgentId,
           source: "main",
         },
         role: "user",
@@ -442,21 +447,21 @@ export function useMainChatInvocation({
         transportOverrides: undefined,
       })
     },
-    [invocation, chatId, runtimeConversationId, conversation.backendConversationId, agentId],
+    [invocation, chatId, runtimeConversationId, conversation.backendConversationId, resolverAgentId],
   )
 
   // Wrap stop handler to use new service
   // Phase 16: Only call invocation.stop(), which delegates to adapter
-  // Phase 18: Also passes agentId to call backend cancel API
+  // Phase 18: Also passes resolverAgentId to call backend cancel API
   // Don't call existingChat.stop() directly to avoid double-stop
   const handleStop = useCallback(async () => {
     // Use new service to stop (delegates to adapter.stop() + calls backend cancel API)
     await invocation.stop({
       conversationId: runtimeConversationId,
       chatId,
-      agentId, // Pass agentId to call backend cancel API
+      agentId: stopAgentId ?? resolverAgentId,
     })
-  }, [invocation, runtimeConversationId, chatId, agentId])
+  }, [invocation, runtimeConversationId, chatId, resolverAgentId, stopAgentId])
 
   // Return combined API
   return useMemo(
@@ -487,7 +492,7 @@ export function useMainChatInvocation({
       // Conversation context
       conversationId: runtimeConversationId,
       chatId,
-      agentId,
+      resolverAgentId,
     }),
     [
       existingChat,
@@ -502,7 +507,7 @@ export function useMainChatInvocation({
       serviceEnqueue,
       runtimeConversationId,
       chatId,
-      agentId,
+      resolverAgentId,
     ],
   )
 }

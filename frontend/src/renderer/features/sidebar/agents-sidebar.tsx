@@ -2218,7 +2218,7 @@ export function AgentsSidebar({
               aria-hidden
               className="pointer-events-none absolute inset-y-0.5 left-0.5 w-[calc(50%-0.125rem)] rounded-md bg-background shadow-sm"
               initial={false}
-              animate={{ x: collaborationMode === "group" ? "100%" : "0%" }}
+              animate={{ transform: `translateX(${collaborationMode === "group" ? "100%" : "0%"})` }}
               transition={{ type: "spring", stiffness: 520, damping: 40 }}
             />
             {COLLABORATION_MODES.map((id) => {
@@ -2347,9 +2347,9 @@ export function AgentsSidebar({
         {isMultiSelectMode ? (
           <motion.div
             key="multi-select-footer"
-            initial={hasFooterAnimated.current ? { opacity: 0, y: 8 } : false}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 8 }}
+            initial={hasFooterAnimated.current ? { opacity: 0, transform: "translateY(8px)" } : false}
+            animate={{ opacity: 1, transform: "translateY(0px)" }}
+            exit={{ opacity: 0, transform: "translateY(8px)" }}
             transition={{ duration: 0 }}
             onAnimationComplete={() => {
               hasFooterAnimated.current = true
@@ -2388,9 +2388,9 @@ export function AgentsSidebar({
         ) : (
           <motion.div
             key="normal-footer"
-            initial={hasFooterAnimated.current ? { opacity: 0, y: 8 } : false}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 8 }}
+            initial={hasFooterAnimated.current ? { opacity: 0, transform: "translateY(8px)" } : false}
+            animate={{ opacity: 1, transform: "translateY(0px)" }}
+            exit={{ opacity: 0, transform: "translateY(8px)" }}
             transition={{ duration: 0 }}
             onAnimationComplete={() => {
               hasFooterAnimated.current = true

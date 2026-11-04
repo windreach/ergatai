@@ -43,13 +43,18 @@ export const api = {
         const chatId = args?.chatId
         // chats.get expects a chat/container ID, not a conversation ID.
         const isValidChatId = !!chatId?.startsWith("chat_")
+        // Separate React Query's `select` from the options forwarded to tRPC.
+        // The adapter performs its own transformation of the raw chat payload, so
+        // `select` must be applied *after* that transformation (not to the raw
+        // server data, which would corrupt the adapter's input).
+        const { select: userSelect, ...restOpts } = opts ?? {}
         const result = trpc.chats.get.useQuery(
           { id: chatId ?? "" },
           {
-            ...(opts ?? {}),
-            enabled: !!isValidChatId && opts?.enabled !== false,
-            staleTime: opts?.staleTime ?? 0,
-            gcTime: opts?.gcTime ?? 30_000,
+            ...restOpts,
+            enabled: !!isValidChatId && restOpts?.enabled !== false,
+            staleTime: restOpts?.staleTime ?? 0,
+            gcTime: restOpts?.gcTime ?? 30_000,
           },
         )
 
@@ -57,7 +62,7 @@ export const api = {
         const transformedData = useMemo(() => {
           if (result.data === undefined) return undefined
           if (result.data === null) return null
-          return {
+          const base = {
             ...result.data,
             // Desktop uses worktrees, not sandboxes
             sandbox_id: null,
@@ -233,7 +238,12 @@ export const api = {
               }
             }),
           }
-        }, [result.data])
+        const finalData = typeof userSelect === "function"
+          ? userSelect(base)
+          : base
+        return finalData
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- userSelect should be stable (useCallback)
+        }, [result.data, userSelect])
 
         return {
           data: transformedData,

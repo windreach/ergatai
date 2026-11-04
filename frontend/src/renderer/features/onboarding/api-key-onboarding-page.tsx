@@ -116,7 +116,7 @@ export function ApiKeyOnboardingPage() {
   // Simple API key input mode
   if (!isCustomModel) {
     return (
-      <div className="h-screen w-screen flex flex-col items-center justify-center bg-background select-none">
+      <div className="h-dvh w-dvh flex flex-col items-center justify-center bg-background select-none">
         {/* Draggable title bar area */}
         <div
           className="fixed top-0 left-0 right-0 h-10"
@@ -189,7 +189,7 @@ export function ApiKeyOnboardingPage() {
 
   // Custom model mode with all fields
   return (
-    <div className="h-screen w-screen flex flex-col items-center justify-center bg-background select-none">
+    <div className="h-dvh w-dvh flex flex-col items-center justify-center bg-background select-none">
       {/* Draggable title bar area */}
       <div
         className="fixed top-0 left-0 right-0 h-10"

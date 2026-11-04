@@ -48,7 +48,7 @@ class GlobalErrorBoundary extends Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div className="h-screen w-screen flex flex-col items-center justify-center bg-background select-none">
+        <div className="h-dvh w-dvh flex flex-col items-center justify-center bg-background select-none">
           <div className="fixed top-0 left-0 right-0 h-10" />
           <div className="w-full max-w-[440px] space-y-8 px-4">
             <div className="text-center space-y-4">
@@ -174,7 +174,7 @@ export function App() {
                 <TRPCProvider>
                   <div
                     data-agents-page
-                    className="h-screen w-screen bg-background text-foreground overflow-hidden"
+                    className="h-dvh w-dvh bg-background text-foreground overflow-hidden"
                   >
                     <AppContent />
                   </div>

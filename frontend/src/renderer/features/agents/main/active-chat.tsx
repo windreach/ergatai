@@ -968,15 +968,18 @@ export function ChatView({
     { chatId },
     {
       enabled: !!isValidChatId,
-      select: (data: any) =>
-        parsePersistedMessagesByConversation(
-          (data?.conversations ?? []) as Array<{ id: string; messages?: unknown }>,
-        ),
     },
   )
-  const persistedMessagesByConversationId =
-    (persistedMessagesQuery.data as Map<string, unknown[]> | undefined) ??
-    new Map<string, unknown[]>()
+  const persistedMessagesByConversationId = useMemo(
+    () =>
+      parsePersistedMessagesByConversation(
+        ((persistedMessagesQuery.data as any)?.conversations ?? []) as Array<{
+          id: string
+          messages?: unknown
+        }>,
+      ),
+    [persistedMessagesQuery.data],
+  )
 
   // Workspace isolation: limit mounted tabs to prevent memory growth
   // Tabs to render - handles filtering and validation of conversation tabs

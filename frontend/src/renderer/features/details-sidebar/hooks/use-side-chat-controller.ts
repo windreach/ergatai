@@ -72,6 +72,7 @@ export function useSideChatController(chatId: string, isActive: boolean): SideCh
 
   const availableSideChatAgents = useMemo(() => {
     if (!chatAgentsLoaded) return []
+    // agent.id here is a profile-level (CoreAgentOption) id, not a runtime agent_id.
     return allAgentsRef.current.filter(
       (agent) => boundAgentIds.has(agent.id) && !openedAgentIds.has(agent.id),
     )

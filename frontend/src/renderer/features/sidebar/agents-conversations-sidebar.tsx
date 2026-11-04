@@ -1482,9 +1482,9 @@ export function AgentsConversationsSidebar({
         {isMultiSelectMode && (
           <motion.div
             key="multiselect-footer"
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 8 }}
+            initial={{ opacity: 0, transform: "translateY(8px)" }}
+            animate={{ opacity: 1, transform: "translateY(0px)" }}
+            exit={{ opacity: 0, transform: "translateY(8px)" }}
             transition={{ duration: 0 }}
             className="flex-shrink-0 p-2 bg-background space-y-2 relative z-10"
             style={{

@@ -77,7 +77,7 @@ export function BillingMethodPage() {
   }
 
   return (
-    <div className="h-screen w-screen flex flex-col items-center justify-center bg-background select-none">
+    <div className="h-dvh w-dvh flex flex-col items-center justify-center bg-background select-none">
       {/* Draggable title bar area */}
       <div
         className="fixed top-0 left-0 right-0 h-10"
@@ -171,7 +171,7 @@ export function BillingMethodPage() {
           onClick={handleContinue}
           className="w-full h-8 px-3 bg-primary text-primary-foreground rounded-lg text-sm font-medium transition-[background-color,transform] duration-150 hover:bg-primary/90 active:scale-[0.97] shadow-[0_0_0_0.5px_rgb(23,23,23),inset_0_0_0_1px_rgba(255,255,255,0.14)] dark:shadow-[0_0_0_0.5px_rgb(23,23,23),inset_0_0_0_1px_rgba(255,255,255,0.14)] flex items-center justify-center"
         >
-          Continue
+          Use selected method
         </button>
       </div>
     </div>

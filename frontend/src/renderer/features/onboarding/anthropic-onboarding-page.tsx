@@ -257,7 +257,7 @@ export function AnthropicOnboardingPage() {
   const isSubmitting = flowState.step === "submitting"
 
   return (
-    <div className="h-screen w-screen flex flex-col items-center justify-center bg-background select-none">
+    <div className="h-dvh w-dvh flex flex-col items-center justify-center bg-background select-none">
       {/* Draggable title bar area */}
       <div
         className="fixed top-0 left-0 right-0 h-10"
@@ -280,7 +280,7 @@ export function AnthropicOnboardingPage() {
         />
 
         {/* Content */}
-        <div className="space-y-6 flex flex-col items-center">
+        <div className="gap-6 flex flex-col items-center">
           {/* Existing token prompt */}
           {shouldOfferExistingToken && flowState.step === "idle" && (
             <div className="space-y-4 w-full">

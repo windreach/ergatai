@@ -234,7 +234,8 @@ const conversationForBridge = useMemo(() => ({
 const chatInvocation = useMainChatInvocation({
     conversation: conversationForBridge as unknown as Parameters<typeof useMainChatInvocation>[0]["conversation"],
     chatId: parentChatId,
-    agentId: provider,
+    resolverAgentId: provider,
+    stopAgentId: backendAgentId,
     isActive,
     persistedMessages,
     runtimeMessages: backendRuntimeMessages as unknown as Parameters<typeof useMainChatInvocation>[0]["runtimeMessages"],
@@ -520,21 +521,25 @@ const handleCompact = useCallback(() => {
   }, [])
 
 const handleStop = useCallback(async () => {
-    // Backend-owned turns never entered the local AI SDK Chat transport, so
-    // cancel the runtime prompt directly using the bound agent.
-    if (isBackendStreaming && backendAgentId) {
+    // Mark as manually aborted to prevent completion sound
+    agentChatStore.setManuallyAborted(conversationId, true)
+
+    // Always cancel the backend agent when an id is available: a locally
+    // streaming turn still runs an agent on the backend, and relying on
+    // session.status being "streaming" (which may lag) would skip the cancel.
+    if (backendAgentId) {
       await trpcClient.ergatai.cancelPrompt
         .mutate({ agentId: backendAgentId })
         .catch((error) => {
           console.warn("[ActiveChat] Failed to cancel backend prompt:", error)
         })
-      return
     }
 
-    // Mark as manually aborted to prevent completion sound
-    agentChatStore.setManuallyAborted(conversationId, true)
-    await stopRef.current()
-  }, [backendAgentId, conversationId, isBackendStreaming])
+    // Unified stop: aborts the local AI SDK transport (if streaming) AND
+    // notifies the backend to cancel the prompt. Replaces the previous
+    // AI-SDK-only stop, which left the backend agent running.
+    await chatInvocation.stop()
+  }, [backendAgentId, conversationId, isBackendStreaming, chatInvocation])
 
 const addTextContext = useCallback((text: string, source: TextSelectionSource) => {
     if (source.type === "assistant-message") {

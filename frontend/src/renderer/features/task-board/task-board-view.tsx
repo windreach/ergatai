@@ -147,7 +147,7 @@ const AgentActivityCard = memo(function AgentActivityCard({
         </span>
       </div>
 
-      <div className="mt-3 rounded-lg border border-border/60 bg-muted/40 p-2">
+      <div className="mt-3 rounded-lg bg-muted/40 p-2">
         <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
           Running task
         </p>

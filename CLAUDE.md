@@ -79,24 +79,19 @@ Agent B 的 ACP session 中显示消息
 
 ### Agent ID 体系
 
-**⚠️ 重要**: 项目使用两套 Agent ID 系统，详见 [`docs/AGENT_ID_GUIDE.md`](docs/AGENT_ID_GUIDE.md)
+**⚠️ 重要**: 项目统一使用 **Snowflake `agent_id`** 作为 Agent 唯一身份。`agent_id` 跨挂起/恢复/重启保持稳定（launch 时 reuse）。详见 [`docs/AGENT_ID_GUIDE.md`](docs/AGENT_ID_GUIDE.md)
 
 | ID 类型 | 格式示例 | 存储位置 | 用途 |
 |---------|---------|---------|------|
-| **Runtime Agent ID** | `agent_502816809136_000_0000` | `AgentHandle.agent_id` | 内部追踪、数据库存储（Snowflake i64） |
-| **Cross-restart Agent ID** | `agent-1`, `ws1-agent-1` | `AgentHandle.metadata["ergatai_agent_id"]` | 消息路由、MCP 调用、API 标识（跨重启稳定） |
+| **Agent ID** | `agent_502816809136_000_0000` | `AgentHandle.agent_id` | 唯一身份、数据库存储、消息路由、MCP 调用、API 标识（Snowflake i64，跨重启稳定） |
 
 **快速决策**:
-- ✅ **对外 API**（`send_message`, `list_agents`）: 使用 `ergatai_agent_id`
-- ✅ **数据库存储**（`messages.from_agent_id`）: 使用 Snowflake `agent_id` (i64)
-- ✅ **日志追踪**: 同时记录两种 ID
+- ✅ **所有场景**（`send_message`, `list_agents`, 数据库、日志）: 使用 Snowflake `agent_id`
+- ❌ **已废弃**: `ergatai_agent_id` / `mcp_agent_id` 作为 agent 身份（MCP `list_agents` 返回的 `ergatai_agent_id` 现在直接等于 `agent_id`）
 
-**历史演进**:
-- 旧格式: `ws{x}-agent-{n}` (workspace 计数器，确定性 ID)
-- 新格式: Snowflake ID + metadata 中的稳定标识
-- 兼容层: `parse_agent_id_to_i64()` 支持两种格式转换
-
-**关键**: agent 之间发消息使用 `ergatai_agent_id`（如 `agent-1`）作为 `target_agent_id`，**不是** Snowflake `agent_id`。
+**稳定性保证**:
+- `launch_agent_scoped` 支持 `reuse_agent_id`，挂起恢复与自动 spawn 复用已有 id
+- Discovery 按 workspace + agent_id 判断进程是否变化，避免重复注册
 
 ---
 

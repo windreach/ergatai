@@ -434,6 +434,18 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                 }
 
                 if (event.type === "tool_call_start") {
+                  // Close any active reasoning/text block before starting a tool call.
+                  // Without this, if thinking finishes and a tool_call_start arrives
+                  // (with no text in between), the reasoning block stays in
+                  // "input-streaming" state and the UI keeps showing "Thinking..."
+                  // with a ticking counter until text appears or the stream ends.
+                  if (activeBlock === "reasoning") {
+                    controller.enqueue({ type: "reasoning-end", id: getReasoningBlockId() })
+                    activeBlock = null
+                  } else if (activeBlock === "text") {
+                    controller.enqueue({ type: "text-end", id: getTextBlockId() })
+                    activeBlock = null
+                  }
                   toolCallInputs.set(event.id, "")
                 } else if (event.type === "tool_call_input") {
                   toolCallInputs.set(

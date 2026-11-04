@@ -1150,7 +1150,7 @@ export const AgentTaskToolsGroup = memo(function AgentTaskToolsGroup({
 
       {/* Items list */}
       {(!isReadOnly || isExpanded) && (
-      <div className="rounded-b-lg border border-border bg-muted/20 shadow-xl shadow-background max-h-[400px] overflow-y-auto">
+      <div className="rounded-b-lg bg-muted/20 shadow-xl shadow-background max-h-[400px] overflow-y-auto">
         {itemsToRender.map((item, idx) => {
           const isLast = idx === itemsToRender.length - 1
           if (item.type === "change") {

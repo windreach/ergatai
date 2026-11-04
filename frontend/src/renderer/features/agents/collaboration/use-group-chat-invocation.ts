@@ -136,7 +136,9 @@ export function useGroupChatInvocation({
         await ci.sendMessage(message as unknown as Parameters<typeof ci.sendMessage>[0])
       },
       stop: async () => {
-        chatInstanceRef.current.stop()
+        // IMPORTANT: await the stop() call to ensure the stream is fully stopped
+        // before returning to the caller (conversation-invocation-service)
+        await chatInstanceRef.current.stop()
       },
     }
 

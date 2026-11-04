@@ -282,7 +282,11 @@ export function TextMentionBlock({ mention }: { mention: ParsedMention }) {
 
     return (
       <div
-        className={`flex items-center gap-2 pl-1 pr-2 py-1 rounded-lg bg-muted/50 min-w-[120px] max-w-[200px]${isClickable ? " cursor-pointer hover:bg-muted transition-colors" : " cursor-default"}`}
+        className={
+          isClickable
+            ? "flex items-center gap-2 pl-1 pr-2 py-1 rounded-lg bg-muted/50 min-w-[120px] max-w-[200px] cursor-pointer hover:bg-muted transition-colors"
+            : "flex items-center gap-2 pl-1 pr-2 py-1 rounded-lg bg-muted/50 min-w-[120px] max-w-[200px] cursor-default"
+        }
         title={`${mention.repository}:${mention.path}`}
         onClick={isClickable ? () => onOpenFile?.(mention.path) : undefined}
       >

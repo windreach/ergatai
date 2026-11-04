@@ -1,6 +1,19 @@
 # Agent ID 使用指南
 
-> **TL;DR**: 项目有两套 Agent ID 系统。**对外通信使用 `ergatai_agent_id`，内部存储使用 Snowflake `agent_id`**。
+> **TL;DR**: 项目统一使用 **Snowflake `agent_id`** 作为 Agent 唯一身份。`agent_id` 跨挂起/恢复/重启保持稳定（reuse 机制），`ergatai_agent_id` 已废弃，MCP 工具 `list_agents` 返回的 `ergatai_agent_id` 现在直接等于 `agent_id`。
+
+## agent_id vs profile name
+
+| 概念 | 示例 | 含义 | 用途 |
+|------|------|------|------|
+| **agent_id** | `agent_502816809136_000_0000` | 某个**运行中实例**的唯一身份（Snowflake i64，稳定） | 消息路由、取消、状态查询、绑定、数据库存储 |
+| **profile name / agent config name** | `claude-code`、`opencode` | **模板/类型**（Profile），用于 launch | 自动 spawn、展示名称、可安装性检查、MCP configured profile target |
+
+**快速决策**:
+- 发消息给已运行的 agent → 用 `agent_id`（MCP `list_agents` 返回的 `ergatai_agent_id` 现在等于 `agent_id`）
+- 自动 spawn 一个 profile → 用 profile name（MCP `list_agents` configured profile 的 `name`）
+- 数据库 / 日志 → 用 `agent_id`
+- ❌ 不要把 profile name 当作 agent 身份传给需要实例 id 的 API
 
 ---
 

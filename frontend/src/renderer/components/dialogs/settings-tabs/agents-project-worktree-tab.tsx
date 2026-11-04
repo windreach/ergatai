@@ -344,6 +344,8 @@ function ProjectDetail({ projectId }: { projectId: string }) {
                       src={iconSrc}
                       alt=""
                       className="h-full w-full object-cover"
+                      width={40}
+                      height={40}
                     />
                   ) : (
                     <FolderOpen className="h-5 w-5 text-muted-foreground" />

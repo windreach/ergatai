@@ -41,6 +41,7 @@ import { AgentTaskTool } from "../ui/agent-task-tool"
 import { AgentThinkingTool } from "../ui/agent-thinking-tool"
 import { AgentTodoTool } from "../ui/agent-todo-tool"
 import { AgentMcpToolCall } from "../ui/agent-mcp-tool-call"
+import { GroupAgentMentionTool } from "../collaboration/group-agent-mention-tool"
 import { AgentToolCall } from "../ui/agent-tool-call"
 import {
   AgentToolRegistry,
@@ -842,6 +843,24 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     }
 
     // MCP tool calls (pattern: tool-mcp__<server>__<tool>)
+    // Strict check: must be a tool part AND match send_message pattern
+    const isToolPart = part?.type === "tool-use" || part?.type?.startsWith("tool-")
+    const isSendMessageTool =
+      isToolPart &&
+      (typeof part?.type === "string" &&
+        (part.type === "send_message" ||
+         part.type === "tool-mcp__ergatai__send_message" ||
+         part.type.endsWith("__send_message")))
+
+    if (isSendMessageTool) {
+      return (
+        <GroupAgentMentionTool
+          key={idx}
+          part={part as any}
+        />
+      )
+    }
+
     const mcpInfo = parseMcpToolType(part.type)
     if (mcpInfo) {
       return (

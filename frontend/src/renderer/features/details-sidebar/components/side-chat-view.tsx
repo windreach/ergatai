@@ -164,10 +164,10 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
     if (reconciledRuntimeTurnsRef.current.has(reconcileKey)) return
     reconciledRuntimeTurnsRef.current.add(reconcileKey)
 
-    void Promise.all([
-      messagesQuery.refetch(),
-      trpcUtils.chats.get.invalidate({ id: chatId }),
-    ])
+    // SideChat's runtime-session hook already reconciles terminal turns by
+    // invalidating both the conversation query and the parent chat snapshot.
+    // Repeating it here caused two full-chat refreshes for the same turn.
+    void messagesQuery.refetch()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     chatId,
@@ -176,7 +176,6 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
     runtime?.lastSequence,
     runtime?.status,
     runtime?.turnId,
-    trpcUtils,
   ])
 
   useEffect(() => {

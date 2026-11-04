@@ -188,7 +188,7 @@ export function AgentsWorktreesTab() {
     <div className="p-6 space-y-6">
       {/* Header */}
       {!isNarrowScreen && (
-        <div className="flex flex-col space-y-1.5 text-center sm:text-left">
+        <div className="flex flex-col gap-1.5 text-center sm:text-left">
           <h3 className="text-sm font-semibold text-foreground">Worktrees</h3>
           <p className="text-xs text-muted-foreground">
             Configure setup commands that run when a new worktree is created

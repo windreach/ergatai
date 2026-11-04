@@ -103,7 +103,7 @@ export function SelectRepoPage() {
   // Clone from GitHub page
   if (showClonePage) {
     return (
-      <div className="h-screen w-screen flex flex-col items-center justify-center bg-background select-none">
+      <div className="h-dvh w-dvh flex flex-col items-center justify-center bg-background select-none">
         {/* Draggable title bar area */}
         <div
           className="fixed top-0 left-0 right-0 h-10"
@@ -173,7 +173,7 @@ export function SelectRepoPage() {
 
   // Main select repo page
   return (
-    <div className="h-screen w-screen flex flex-col items-center justify-center bg-background select-none">
+    <div className="h-dvh w-dvh flex flex-col items-center justify-center bg-background select-none">
       {/* Draggable title bar area */}
       <div
         className="fixed top-0 left-0 right-0 h-10"

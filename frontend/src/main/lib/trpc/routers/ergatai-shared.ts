@@ -551,7 +551,6 @@ export const AgentInfoSchema = z.object({
   state: z.string(),
   lifecycle_state: z.string(),
   task_id: z.string().nullable(),
-  mcp_agent_id: z.string().nullable(),
   is_alive: z.boolean(),
   is_idle: z.boolean(),
   is_processing: z.boolean(),

@@ -76,24 +76,28 @@ console.log(
 // under heavy multi-chat workloads. Must be set before app readiness/window creation.
 app.commandLine.appendSwitch("js-flags", "--max-old-space-size=8192")
 
-// GPU hardware acceleration strategy:
-// - Default: enabled (for best performance on machines with proper drivers)
-// - Fallback: software rendering (if VAAPI/OpenGL initialization fails)
-// - User override: set ELECTRON_DISABLE_GPU=1 to force software rendering
-//
-// This approach ensures the app works on all machines without requiring
-// users to manually install GPU drivers (VAAPI on Linux, etc.)
-if (process.env.ELECTRON_DISABLE_GPU === "1") {
-  console.log("[GPU] Hardware acceleration disabled via ELECTRON_DISABLE_GPU=1")
-  app.disableHardwareAcceleration()
-} else {
-  console.log("[GPU] Hardware acceleration enabled (set ELECTRON_DISABLE_GPU=1 to disable)")
+// Software rendering by default for maximum compatibility (no dev/prod split).
+// This ensures the app works on all machines without requiring users to manually
+// install GPU drivers (VAAPI on Linux, etc.) and avoids GPU process crashes.
+process.env.ELECTRON_DISABLE_GPU = "1"
+console.log("[GPU] Hardware acceleration disabled (software rendering)")
+app.disableHardwareAcceleration()
+app.commandLine.appendSwitch("disable-gpu")
+app.commandLine.appendSwitch("disable-gpu-sandbox")
+app.commandLine.appendSwitch("disable-software-rasterizer")
+app.commandLine.appendSwitch("disable-dev-shm-usage")
 
-  // Force GPU rasterization even if VAAPI fails
-  // This ensures smooth streaming rendering on machines with GPU but missing VAAPI drivers
-  app.commandLine.appendSwitch("enable-gpu-rasterization")
-  app.commandLine.appendSwitch("enable-zero-copy") // Optimize texture uploads
-  app.commandLine.appendSwitch("ignore-gpu-blacklist") // Force GPU even if blacklisted
+// Disable sandbox when explicitly requested (e.g., in containers where
+// chrome-sandbox is not properly configured with setuid root).
+if (process.env.NO_SANDBOX === "1") {
+  app.commandLine.appendSwitch("no-sandbox")
+  console.log("[Sandbox] Disabled via NO_SANDBOX=1")
+}
+
+// Optional verbose GPU logging for support/diagnostics.
+if (process.env.ERGATAI_GPU_DEBUG === "1") {
+  app.commandLine.appendSwitch("enable-logging")
+  app.commandLine.appendSwitch("v", "1")
 }
 
 // URL configuration (exported for use in other modules)

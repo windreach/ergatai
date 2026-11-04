@@ -107,14 +107,14 @@ export function AgentsOnboardingDialog() {
           {/* Main Dialog */}
           <div role="dialog" aria-modal="true" aria-label="Onboarding" className="fixed top-[50%] left-[50%] translate-x-[-50%] translate-y-[-50%] z-[46] pointer-events-none">
             <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
+              initial={{ transform: "scale(0.95)", opacity: 0 }}
+              animate={{ transform: "scale(1)", opacity: 1 }}
+              exit={{ transform: "scale(0.95)", opacity: 0 }}
               transition={{ duration: 0.2, ease: EASING_CURVE }}
               className="w-[90vw] max-w-[384px] pointer-events-auto relative"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="bg-background rounded-2xl border shadow-2xl overflow-hidden" data-canvas-dialog>
+              <div className="bg-background rounded-2xl shadow-2xl overflow-hidden" data-canvas-dialog>
                 {/* Close Button */}
                 <button
                   type="button"

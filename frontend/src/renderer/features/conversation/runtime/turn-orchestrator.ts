@@ -398,11 +398,17 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
     // If we remove first, the original item is lost and we can't track it.
     // Instead, send first, then remove based on the result.
     try {
+      // Actually dispatch the queued turn through the orchestrator. Without
+      // this call the item is dropped from the queue without ever being sent,
+      // which makes queued messages vanish (no user message, no reply).
+      const ticket = await this.send(nextItem.originalInput)
 
       // Remove the old item from queue in all success cases:
       // - If ticket.queued === true: send() re-enqueued with a new ID, so remove old item to avoid duplicates
       // - If ticket.queued === false: send succeeded, so we're done with this item
       sessionStore.removeQueueItem(conversationId, nextItem.id)
+
+      void ticket
     } catch (error) {
       console.error("[TurnOrchestrator] Failed to send queued item:", error)
 

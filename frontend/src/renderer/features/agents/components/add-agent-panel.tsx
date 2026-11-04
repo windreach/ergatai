@@ -161,7 +161,7 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
               return (
                 <article
                   key={agent.id}
-                  className="flex min-h-[132px] flex-col justify-between rounded-xl border bg-background p-3 transition-[border-color,box-shadow] duration-150 hover:border-border hover:shadow-sm"
+                  className="flex min-h-[132px] flex-col justify-between rounded-xl p-3 transition-[box-shadow] duration-150 hover:shadow-sm"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border bg-muted/40 text-foreground">
@@ -170,6 +170,8 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
                           src={agent.avatarUrl}
                           alt=""
                           className="h-full w-full object-cover"
+                          width={40}
+                          height={40}
                         />
                       ) : (
                         <RuntimeIcon className="h-5 w-5" />
@@ -251,7 +253,7 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
                 return (
                   <div
                     key={profile.name}
-                    className="flex flex-col gap-3 rounded-xl border bg-background p-3 sm:flex-row sm:items-center"
+                    className="flex flex-col gap-3 rounded-xl p-3 sm:flex-row sm:items-center"
                   >
                     <div className="flex min-w-0 flex-1 items-center gap-3">
                       <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-muted/40 text-foreground">

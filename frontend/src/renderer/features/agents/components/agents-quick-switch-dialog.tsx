@@ -51,19 +51,13 @@ export function AgentsQuickSwitchDialog({
               <div className="max-w-5xl mx-auto">
                 {/* Chat List or Empty State */}
                 {chats.length === 0 ? (
-                  <div className="px-4 py-12 text-center bg-background rounded-xl border-[0.5px]">
+                  <div className="px-4 py-12 text-center bg-background rounded-xl border border-border">
                     <p className="text-sm text-muted-foreground">
                       No recent agents
                     </p>
                   </div>
                 ) : (
-                  <div
-                    className="flex gap-3 overflow-x-auto p-3 bg-background rounded-3xl border-[0.5px]"
-                    style={{
-                      boxShadow:
-                        "0 8px 32px 0 rgba(0,0,0,0.07), 0 0px 16px 0 rgba(0,0,0,0.04), 0 -8px 24px 0 rgba(0,0,0,0.03)",
-                    }}
-                  >
+                  <div className="flex gap-3 overflow-x-auto p-3 bg-background rounded-3xl border border-border shadow-lg">
                     {chats.map((chat, index) => {
                       const isSelected = index === selectedIndex
                       const isLoading = loadingChatIds.has(chat.id)

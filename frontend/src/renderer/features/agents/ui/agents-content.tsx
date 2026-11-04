@@ -1171,9 +1171,9 @@ export function AgentsContent() {
             <motion.div
               key={collaborationMode}
               className="absolute inset-0"
-              initial={{ x: collaborationMode === "group" ? "100%" : "-100%" }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ x: collaborationMode === "group" ? "100%" : "-100%" }}
+              initial={{ transform: `translateX(${collaborationMode === "group" ? "100%" : "-100%"})` }}
+              animate={{ opacity: 1, transform: "translateX(0%)" }}
+              exit={{ transform: `translateX(${collaborationMode === "group" ? "100%" : "-100%"})` }}
               transition={{ duration: 0.28, ease: "easeOut" }}
             >
               {desktopView === "settings" ? (

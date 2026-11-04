@@ -10,8 +10,7 @@ import {
 } from "../../../components/ui/collapsible"
 import { ChevronDown } from "lucide-react"
 import { cn } from "../../../lib/utils"
-import { PROJECTION_KINDS } from "@/lib/projection-kinds"
-import { trpc } from "../../../lib/trpc"
+import { trpc, trpcClient } from "../../../lib/trpc"
 import {
   useConversationMessages,
   type Message,
@@ -24,8 +23,68 @@ type PersistedMessage = Message
 
 type ReplyItem = PersistedMessage & { text: string }
 
+function extractSendMessageText(part: unknown): string | null {
+  const candidate = part as { input?: unknown } | null
+  const input = candidate?.input
+  if (input && typeof input === "object") {
+    const obj = input as { message?: unknown; code?: unknown }
+    if (typeof obj.message === "string" && obj.message.trim().length > 0) {
+      return obj.message.trim()
+    }
+    if (typeof obj.code === "string") {
+      const code = obj.code
+      const patterns = [
+        /message\s*=\s*"([\s\S]*?)"\s*,\s*message_type/,
+        /message\s*:\s*"([\s\S]*?)"\s*,\s*message_type/,
+        /message\s*=\s*'([\s\S]*?)'\s*,\s*message_type/,
+        /message\s*:\s*'([\s\S]*?)'\s*,\s*message_type/,
+        /message\s*=\s*"([\s\S]*?)"\s*\)/,
+        /message\s*:\s*"([\s\S]*?)"\s*\)/,
+      ]
+      for (const pattern of patterns) {
+        const match = code.match(pattern)
+        if (match && match[1].trim().length > 0) {
+          return match[1].trim()
+        }
+      }
+    }
+  }
+  return null
+}
+
 function getMessageText(message: PersistedMessage) {
-  return message.parts
+  const structuredContent =
+    typeof (message as { content?: unknown }).content === "string" &&
+    (((message as { content?: string }).content ?? "").trim().length > 0)
+      ? ((message as { content?: string }).content as string).trim()
+      : null
+  if (structuredContent) return structuredContent
+
+  const allTextParts = (message.parts ?? [])
+    .filter((part): part is { type: "text"; text: string } => {
+      const p = part as { type?: unknown; text?: unknown } | null
+      return p?.type === "text" && typeof p.text === "string"
+    })
+    .map((part) => part.text)
+    .filter((text) => text.trim().length > 0)
+
+  const meaningfulTextParts = allTextParts.filter((text) => text.trim() !== "END")
+
+  if (meaningfulTextParts.length > 0) return meaningfulTextParts.join("\n").trim()
+
+  // When the only textual output is the "END" convention, the actual reply
+  // to the other agent (if any) is carried by the send_message tool call.
+  const extracted: string[] = []
+  for (const part of message.parts ?? []) {
+    const candidate = part as { type?: unknown } | null
+    if (typeof candidate?.type === "string" && candidate.type.includes("tool")) {
+      const value = extractSendMessageText(part)
+      if (value) extracted.push(value)
+    }
+  }
+  if (extracted.length > 0) return extracted.join("\n").trim()
+
+  return (message.parts ?? [])
     .filter((part): part is { type: "text"; text: string } => {
       const p = part as { type?: unknown; text?: unknown } | null
       return p?.type === "text" && typeof p.text === "string"
@@ -147,21 +206,31 @@ function AgentReplyDisclosure({
   conversationId,
   agentId,
   agentName,
+  hostConversationId,
   replyToMessageId,
   correlationId,
 }: {
   conversationId: string
   agentId: string
   agentName: string
+  hostConversationId?: string
   replyToMessageId?: string
   correlationId?: string
 }) {
-  // Pass the bound agent so the shared pipeline can subscribe to the agent
-  // stream endpoint (the conversations SSE endpoint was deprecated).
-  const { messages, isLoading, error } = useConversationMessages(
-    conversationId,
-    agentId,
+  // External agent's own conversation: used for streaming previews and as a
+  // fallback source.
+  const externalPipeline = useConversationMessages(conversationId, agentId)
+  // Host conversation: where the MCP-delivered reply (messageType "response")
+  // is persisted with its real content. Reading this avoids parsing the
+  // external agent's turn output.
+  const hostPipeline = useConversationMessages(
+    hostConversationId ?? conversationId,
+    undefined,
   )
+  const externalMessages = externalPipeline.messages
+  const hostMessages = hostConversationId ? hostPipeline.messages : []
+  const isLoading = externalPipeline.isLoading || (hostConversationId ? hostPipeline.isLoading : false)
+  const error = externalPipeline.error || (hostConversationId ? hostPipeline.error : null)
 
   if (error) {
     // Surface load errors to the console; the surrounding UI falls back to
@@ -176,64 +245,94 @@ function AgentReplyDisclosure({
   const replies = useMemo<ReplyItem[]>(() => {
     if (isLoading) return []
 
-    return (messages as PersistedMessage[])
+    const matchesRequestFor = (message: PersistedMessage) => {
+      const metadata = message.metadata as
+        | { correlationId?: unknown; replyToMessageId?: unknown }
+        | null
+      const messageCorrelationId =
+        typeof metadata?.correlationId === "string" ? metadata.correlationId : undefined
+      const messageReplyToMessageId =
+        typeof metadata?.replyToMessageId === "string"
+          ? metadata.replyToMessageId
+          : undefined
+      return !replyToMessageId && !correlationId
+        ? true
+        : messageReplyToMessageId === replyToMessageId ||
+          (Boolean(correlationId) && messageCorrelationId === correlationId)
+    }
+
+    // Host conversation: MCP-delivered replies with real content. Prefer these
+    // over the external agent's own turn output.
+    const hostReplies = hostMessages
       .filter((message) => {
         const metadata = message.metadata as
-          | {
-              senderAgentId?: unknown
-              correlationId?: unknown
-              replyToMessageId?: unknown
-              sideConversationCopy?: unknown
-              projectionKind?: unknown
-              streaming?: unknown
-            }
+          | { correlationId?: unknown; replyToMessageId?: unknown; messageType?: unknown }
           | null
-        const isSideCopy =
-          metadata?.sideConversationCopy === true ||
-          metadata?.projectionKind === PROJECTION_KINDS.SIDE_COPY ||
-          message.projectionKind === PROJECTION_KINDS.SIDE_COPY
-
-        // The disclosure shows the outbound reply projection, not the whole
-        // agent turn. Reasoning/tool events are queried separately as trace.
-        const isLegacyReply =
+        const isResponse =
+          message.messageType === "response" ||
+          metadata?.messageType === "response"
+        const agentMatches =
+          !agentName ||
+          message.fromAgentName === agentName ||
+          String(message.fromAgentId ?? "") === agentId
+        return (
           message.role === "assistant" &&
-          message.messageType === "response" &&
-          Boolean(message.parts?.every((part: unknown) => (part as { type?: string })?.type === "text"))
-        const messageCorrelationId =
-          typeof metadata?.correlationId === "string" ? metadata.correlationId : undefined
-        const messageReplyToMessageId =
-          typeof metadata?.replyToMessageId === "string"
-            ? metadata.replyToMessageId
-            : undefined
-
-        // When the send_message result has correlation metadata, only show the
-        // exact turn produced by that request. Legacy messages without either
-        // ID remain visible through the fallback path.
-        const matchesRequest =
-          !replyToMessageId && !correlationId
-            ? true
-            : messageReplyToMessageId === replyToMessageId ||
-              (Boolean(correlationId) && messageCorrelationId === correlationId)
-
-        // The bound conversation is the authoritative ownership boundary:
-        // `role: "agent"` is an inbound inter-agent request, while
-        // `role: "assistant"` is the bound agent's own reply/output.
-        // Live streaming previews (built from agent-stream deltas while the
-        // turn is running) are always shown — they are this agent's in-flight
-        // turn and carry no correlation metadata yet.
-        const isStreamingPreview = metadata?.streaming === true
-        return message.role === "assistant" &&
-          (isSideCopy || isLegacyReply || isStreamingPreview) &&
-          (isStreamingPreview || matchesRequest) &&
+          isResponse &&
+          agentMatches &&
+          matchesRequestFor(message) &&
           getMessageText(message).length > 0
+        )
       })
       .sort((left, right) => left.sequence - right.sequence)
-      .map((message) => ({
-        ...message,
-        text: getMessageText(message),
-      }))
+      .map((message) => ({ ...message, text: getMessageText(message) }))
       .filter((message) => message.text.length > 0)
-  }, [correlationId, messages, replyToMessageId, isLoading])
+
+    if (hostReplies.length > 0) return hostReplies
+
+    // External agent conversation fallback: prefer persisted turns over the
+    // in-flight streaming preview so the same reply is not rendered twice.
+    const externalPersisted = externalMessages
+      .filter((message) => {
+        const metadata = message.metadata as
+          | { streaming?: unknown; correlationId?: unknown; replyToMessageId?: unknown }
+          | null
+        const isStreamingPreview = metadata?.streaming === true
+        if (isStreamingPreview) return false
+        const matchesRequest = matchesRequestFor(message)
+        return (
+          message.role === "assistant" &&
+          matchesRequest &&
+          getMessageText(message).length > 0
+        )
+      })
+      .sort((left, right) => left.sequence - right.sequence)
+      .map((message) => ({ ...message, text: getMessageText(message) }))
+      .filter((message) => message.text.length > 0)
+
+    if (externalPersisted.length > 0) return externalPersisted
+
+    return externalMessages
+      .filter((message) => {
+        const metadata = message.metadata as { streaming?: unknown } | null
+        return (
+          message.role === "assistant" &&
+          metadata?.streaming === true &&
+          getMessageText(message).length > 0
+        )
+      })
+      .sort((left, right) => left.sequence - right.sequence)
+      .map((message) => ({ ...message, text: getMessageText(message) }))
+      .filter((message) => message.text.length > 0)
+  }, [
+    correlationId,
+    externalMessages,
+    hostMessages,
+    hostConversationId,
+    replyToMessageId,
+    isLoading,
+    agentName,
+    agentId,
+  ])
 
   // A transient empty result (e.g. a history refetch lands before the
   // correlation metadata is attached to the projected reply) must not unmount
@@ -247,6 +346,24 @@ function AgentReplyDisclosure({
   }, [replies])
   const displayReplies =
     replies.length > 0 ? replies : lastNonEmptyRepliesRef.current
+
+  // Debug logging to file (not console) for inter-agent reply lifecycle.
+  // Only enabled when ERGATAI_DEBUG_LOG=1 to avoid excessive I/O in production.
+  useEffect(() => {
+    if (typeof process !== "undefined" && process.env?.ERGATAI_DEBUG_LOG !== "1") return
+    void (trpcClient as any).files?.appendFrontendLog?.mutate?.({
+      message: JSON.stringify({
+        ts: new Date().toISOString(),
+        conversationId,
+        agentId,
+        agentName,
+        replyToMessageId,
+        correlationId,
+        repliesCount: replies.length,
+        displayCount: displayReplies.length,
+      }),
+    })
+  }, [conversationId, agentId, agentName, replyToMessageId, correlationId, replies.length, displayReplies.length])
 
   if (displayReplies.length === 0) return null
 
@@ -278,7 +395,7 @@ export function InterAgentRepliesDisclosure({
   message,
   chatId,
 }: {
-  message: { parts?: unknown[] }
+  message: { parts?: unknown[]; conversationId?: string }
   chatId: string
 }) {
   const isPersistedChat = chatId.startsWith("chat_")
@@ -329,6 +446,7 @@ export function InterAgentRepliesDisclosure({
           conversationId={binding.conversationId}
           agentId={binding.agentId}
           agentName={binding.agentName}
+          hostConversationId={message?.conversationId}
           replyToMessageId={target.messageId}
           correlationId={target.correlationId}
         />

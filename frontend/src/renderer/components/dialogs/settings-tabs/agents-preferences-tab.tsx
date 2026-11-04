@@ -183,7 +183,7 @@ export function AgentsPreferencesTab() {
     <div className="p-6 space-y-6">
       {/* Header - hidden on narrow screens since it's in the navigation bar */}
       {!isNarrowScreen && (
-        <div className="flex flex-col space-y-1.5 text-center sm:text-left">
+        <div className="flex flex-col gap-1.5 text-center sm:text-left">
           <h3 className="text-sm font-semibold text-foreground">Preferences</h3>
           <p className="text-xs text-muted-foreground">
             Configure Claude's behavior and features
@@ -194,7 +194,7 @@ export function AgentsPreferencesTab() {
       {/* Agent Behavior */}
       <div className="bg-background rounded-lg border border-border overflow-hidden">
         <div className="flex items-center justify-between p-4">
-          <div className="flex flex-col space-y-1">
+          <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
               Extended Thinking
             </span>
@@ -210,7 +210,7 @@ export function AgentsPreferencesTab() {
           />
         </div>
         <div className="flex items-center justify-between p-4 border-t border-border">
-          <div className="flex flex-col space-y-1">
+          <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
               Default Mode
             </span>
@@ -234,7 +234,7 @@ export function AgentsPreferencesTab() {
           </Select>
         </div>
         <div className="flex items-center justify-between p-4 border-t border-border">
-          <div className="flex flex-col space-y-1">
+          <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
               Include Co-Authored-By
             </span>
@@ -253,7 +253,7 @@ export function AgentsPreferencesTab() {
       {/* Notifications */}
       <div className="bg-background rounded-lg border border-border overflow-hidden">
         <div className="flex items-center justify-between p-4">
-          <div className="flex flex-col space-y-1">
+          <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
               Desktop Notifications
             </span>
@@ -264,7 +264,7 @@ export function AgentsPreferencesTab() {
           <Switch checked={desktopNotificationsEnabled} onCheckedChange={setDesktopNotificationsEnabled} />
         </div>
         <div className="flex items-center justify-between p-4 border-t border-border">
-          <div className="flex flex-col space-y-1">
+          <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
               Sound Notifications
             </span>
@@ -275,7 +275,7 @@ export function AgentsPreferencesTab() {
           <Switch checked={soundEnabled} onCheckedChange={setSoundEnabled} />
         </div>
         <div className="flex items-center justify-between p-4 border-t border-border">
-          <div className="flex flex-col space-y-1">
+          <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
               Notify When Focused
             </span>
@@ -294,7 +294,7 @@ export function AgentsPreferencesTab() {
       {/* Navigation */}
       <div className="bg-background rounded-lg border border-border overflow-hidden">
         <div className="flex items-center justify-between p-4">
-          <div className="flex flex-col space-y-1">
+          <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
               Quick Switch
             </span>
@@ -318,7 +318,7 @@ export function AgentsPreferencesTab() {
           </Select>
         </div>
         <div className="flex items-center justify-between p-4 border-t border-border">
-          <div className="flex flex-col space-y-1">
+          <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
               Auto-advance
             </span>
@@ -347,7 +347,7 @@ export function AgentsPreferencesTab() {
           </Select>
         </div>
         <div className="flex items-center justify-between p-4 border-t border-border">
-          <div className="flex flex-col space-y-1">
+          <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
               Preferred Editor
             </span>
@@ -455,7 +455,7 @@ export function AgentsPreferencesTab() {
       {/* Privacy */}
       <div className="bg-background rounded-lg border border-border overflow-hidden">
         <div className="flex items-center justify-between gap-6 p-4">
-          <div className="flex flex-col space-y-1">
+          <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
               Share Usage Analytics
             </span>

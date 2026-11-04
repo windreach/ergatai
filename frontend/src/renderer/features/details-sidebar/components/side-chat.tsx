@@ -18,6 +18,7 @@ import { ChatMessagesRenderer } from "../../agents"
 
 import { useAgentRuntimeAgents } from "../../agents/public"
 import { cn } from "@/lib/utils"
+import { trpcClient } from "@/lib/trpc"
 import { useStreamingStatusStore } from "../../agents"
 import { syncMessagesWithStatusAtom } from "../../agents"
 import { clearConversationRuntimeCaches } from "../../agents"
@@ -103,14 +104,19 @@ export function SideChat({
   } = usePastedTextFiles(runtimeConversationId)
 
   // Shared rendering abstraction: reuse the same invocation controller as the
-  // main chat, differing only in presentation/scroll. The local Chat instance
-  // is created here and handed to the controller as `existingChat`.
+  // main chat. runtimeAgentId is the transport target; profileIdForResolver is
+  // the profile-level identity for the invocation service's can-start check.
+  const runtimeAgentId = agentId
+  const profileIdForResolver = conversation.agent?.id ?? runtimeAgentId
+
   const chatInstance = useChatInstance({
     conversation,
     chatId,
-    agentId,
+    agentId: runtimeAgentId,
     isActive,
   })
+
+  const invocationAgentId = profileIdForResolver
 
   // Type assertions needed because SideChat uses ChatConversation type which is
   // structurally compatible with but not nominally identical to the types expected
@@ -118,7 +124,8 @@ export function SideChat({
   const chatInvocation = useMainChatInvocation({
     conversation: conversation as any,
     chatId,
-    agentId,
+    resolverAgentId: invocationAgentId,
+    stopAgentId: runtimeAgentId,
     isActive,
     persistedMessages: (conversation.messages ?? []) as any,
     runtimeMessages: externalMessages as any,
@@ -317,8 +324,17 @@ export function SideChat({
     if (runtimeConversationId) {
       clearLoading(setLoadingConversations, runtimeConversationId)
     }
-    stop()
-  }, [stop, runtimeConversationId, setLoadingConversations])
+    // Always cancel the bound backend agent on stop; otherwise it keeps
+    // producing output even after the UI stops.
+    if (agentId) {
+      await trpcClient.ergatai.cancelPrompt
+        .mutate({ agentId })
+        .catch((error) => {
+          console.warn("[SideChat] Failed to cancel backend prompt:", error)
+        })
+    }
+    await stop()
+  }, [stop, runtimeConversationId, setLoadingConversations, agentId])
 
   const handleCompact = useCallback(() => {
     if (isStreaming) return
@@ -416,7 +432,7 @@ export function SideChat({
                   conversationId={runtimeConversationId}
                   isStreaming={isStreaming}
                   changedFiles={[]}
-                  onStop={() => stop()}
+                  onStop={handleStop}
                 />
               </div>
             </div>

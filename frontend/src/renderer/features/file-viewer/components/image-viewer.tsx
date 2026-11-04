@@ -170,6 +170,8 @@ export function ImageViewer({
             src={`data:${data.mimeType};base64,${data.data}`}
             alt={fileName}
             className="max-w-full max-h-full object-contain rounded-sm"
+            width={800}
+            height={600}
             style={{ imageRendering: "auto" }}
           />
         )}

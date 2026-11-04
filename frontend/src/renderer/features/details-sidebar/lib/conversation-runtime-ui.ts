@@ -150,6 +150,23 @@ export function buildRuntimeMessages(
     return currentMessage
   }
 
+  /**
+   * Close any currently streaming reasoning part in the active message.
+   * Unlike the main chat transport (which emits reasoning-end blocks), the
+   * side-channel runtime builds parts directly from events. Without this
+   * helper, a reasoning part stays in "input-streaming" state forever after
+   * thinking stops but before text/tool events arrive, causing the UI to
+   * keep showing "Thinking..." with a ticking counter.
+   */
+  const closeStreamingReasoning = (message: RuntimeStreamMessage) => {
+    const parts = message.parts as RuntimePart[]
+    const lastPart = parts.length > 0 ? parts[parts.length - 1] : null
+    if (lastPart && lastPart.type === "reasoning" && lastPart.state === "input-streaming") {
+      lastPart.state = "output-available"
+      lastPart.output = { completed: true }
+    }
+  }
+
   for (const runtimeEvent of runtimeEvents) {
     const event = runtimeEvent.event
 
@@ -168,6 +185,11 @@ export function buildRuntimeMessages(
         continue
       }
 
+      // Persisted conversation message breaks the current streaming message.
+      // Close reasoning first so it doesn't stay in "input-streaming" state.
+      if (currentMessage) {
+        closeStreamingReasoning(currentMessage)
+      }
       finalizeStreamMessage()
 
       const persistedMetadata = runtimeMetadata
@@ -212,6 +234,10 @@ export function buildRuntimeMessages(
     }
 
     if (event.type === "done" || event.type === "error") {
+      // Close reasoning part before finalizing (stream ended while thinking)
+      if (currentMessage) {
+        closeStreamingReasoning(currentMessage)
+      }
       finalizeStreamMessage()
       continue
     }
@@ -221,6 +247,8 @@ export function buildRuntimeMessages(
         // Match the transport layer behavior: each text block (separated by
         // thinking or tool calls) creates a new text part.
         const message = ensureStreamMessage(event.role)
+        // Close reasoning before starting text (thinking → text transition)
+        closeStreamingReasoning(message)
         const parts = message.parts
         const lastPart = parts.length > 0 ? parts[parts.length - 1] : null
         let part: RuntimePart
@@ -256,6 +284,8 @@ export function buildRuntimeMessages(
       }
       case "tool_call_start": {
         const message = ensureStreamMessage()
+        // Close reasoning before starting a tool call (thinking → tool_call transition)
+        closeStreamingReasoning(message)
         message.parts.push({
           type: `tool-${normalizeRuntimeToolName(event.name)}`,
           toolCallId: event.id,

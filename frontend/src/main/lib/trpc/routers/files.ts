@@ -10,6 +10,7 @@ import {
   stat,
   readFile,
   writeFile,
+  appendFile,
   mkdir,
   rename as fsRename
 } from "node:fs/promises"
@@ -609,6 +610,19 @@ export const filesRouter = router({
         filename: finalFilename,
         size: text.length,
       }
+    }),
+
+  /**
+   * Append a debug line to the frontend log file
+   */
+  appendFrontendLog: publicProcedure
+    .input(z.object({ message: z.string() }))
+    .mutation(async ({ input }) => {
+      const logDir = join(app.getPath("userData"), "logs")
+      const filePath = join(logDir, "frontend.log")
+      mkdirSync(logDir, { recursive: true })
+      await appendFile(filePath, input.message + "\n", "utf-8")
+      return { ok: true }
     }),
 
   /**

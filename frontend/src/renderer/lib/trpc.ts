@@ -31,9 +31,7 @@ export const trpcClient = new Proxy({} as ReturnType<typeof createTRPCProxyClien
   get(_target, prop, receiver) {
     const client = getTrpcClient()
     const value = Reflect.get(client, prop, receiver)
-    if (typeof value === "function") {
-      return value.bind(client)
-    }
+    // Do not bind: tRPC client is proxy-based; binding breaks nested procedure calls.
     return value
   },
 })

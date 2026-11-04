@@ -195,6 +195,8 @@ export function AddAgentDialog({
                   src={avatarUrl}
                   alt=""
                   className="h-full w-full object-cover"
+                  width={40}
+                  height={40}
                 />
               ) : (
                 <span className="flex flex-col items-center gap-1">
@@ -331,7 +333,7 @@ export function AddAgentDialog({
             <div className="flex items-center gap-3">
               <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center overflow-hidden rounded-full border bg-background text-foreground">
                 {avatarUrl ? (
-                  <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
+                  <img src={avatarUrl} alt="" className="h-full w-full object-cover" width={36} height={36} />
                 ) : (
                   <SelectedIcon className="h-4 w-4" />
                 )}

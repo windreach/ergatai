@@ -156,9 +156,9 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
         <Tooltip delayDuration={300}>
           <TooltipTrigger asChild>
             <motion.button
-              initial={{ opacity: 0, scale: 0.96, y: 8 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.96, y: 8 }}
+              initial={{ opacity: 0, transform: "scale(0.96) translateY(8px)" }}
+              animate={{ opacity: 1, transform: "scale(1) translateY(0px)" }}
+              exit={{ opacity: 0, transform: "scale(0.96) translateY(8px)" }}
               transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
               onClick={onScrollToBottom}
               className={cn(

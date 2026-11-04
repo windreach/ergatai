@@ -352,6 +352,27 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
     variant: "simple",
   },
 
+  // OpenCode exposes JavaScript execution as the lowercase "execute" tool. Its
+  // input is code (not a shell command), so it must not be remapped to Bash.
+  "tool-execute": {
+    icon: Terminal,
+    title: (part) => {
+      const { isPending } = getToolStatus(part)
+      const isInputStreaming = part.state === "input-streaming"
+      if (isInputStreaming) return "Preparing code"
+      return isPending ? "Running code" : "Ran code"
+    },
+    subtitle: (part) => {
+      if (part.state === "input-streaming") return ""
+      const code = part.input?.code || ""
+      const normalized = String(code).replace(/\\\s*\n\s*/g, " ").trim()
+      return normalized.length > 50
+        ? normalized.slice(0, 47) + "..."
+        : normalized
+    },
+    variant: "simple",
+  },
+
   "tool-WebFetch": {
     icon: GlobeIcon,
     title: (part) => {

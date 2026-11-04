@@ -727,9 +727,9 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
           .map((item) => (
             <motion.div
               key={item.chatId}
-              initial={{ opacity: 0, y: 50 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 50 }}
+              initial={{ opacity: 0, transform: "translateY(50px)" }}
+              animate={{ opacity: 1, transform: "translateY(0px)" }}
+              exit={{ opacity: 0, transform: "translateY(50px)" }}
               className="fixed bottom-4 right-4 z-50"
             >
               <div className="rounded-lg bg-popover p-4 shadow-lg border">
